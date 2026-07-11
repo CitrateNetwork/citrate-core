@@ -1,0 +1,52 @@
+# created: 2026-07-11 | branch: feat/core-s0-scaffold
+# author: Claude Fable 5 (CORE-S0 scaffold agent), directed by @SaulBuilds
+# status: active
+#
+# Honest CI: only steps that pass on this scaffold. Native Tauri bundling,
+# e2e, and release signing arrive in later sprints (CORE-S7).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: rust (fmt, clippy, test, audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --workspace --locked
+      - name: audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+  node:
+    name: node (typecheck, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: typecheck
+        run: npm run typecheck
+      - name: build
+        run: npm run build

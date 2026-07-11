@@ -1,0 +1,49 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  color: #0f0f0f;
+  background-color: #f6f6f6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  margin: 0;
+  padding: 10vh 2rem 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.subtitle {
+  color: #555;
+}
+
+.status {
+  color: #555;
+}
+
+.status.error {
+  color: #b00020;
+}
+
+.block-height {
+  font-size: 1.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f6f6f6;
+    background-color: #2f2f2f;
+  }
+
+  .subtitle,
+  .status {
+    color: #bbb;
+  }
+
+  .status.error {
+    color: #ff6b6b;
+  }
+}
