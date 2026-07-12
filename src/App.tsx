@@ -7,8 +7,7 @@ import { AppState } from "./shell/state";
 import { Onboarding } from "./onboarding/Onboarding";
 import { Sidebar } from "./shell/Sidebar";
 import { SignatureCeremony, Coach, Toast, DemoPanel } from "./shell/Chrome";
-import { Dashboard } from "./surfaces/Dashboard";
-import { Wallet, Node, Storage, Comms, Commissary, Settings, Journal } from "./surfaces/stubs";
+import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal } from "./surfaces";
 
 const queryClient = new QueryClient();
 
