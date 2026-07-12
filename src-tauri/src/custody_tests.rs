@@ -722,3 +722,227 @@ fn adv_cry5_no_master_clobber_on_reinit() {
         "the keyring master must be preserved, not clobbered"
     );
 }
+
+// ===========================================================================
+// Delta re-review remediation (citrate-security #13 / 01_DELTA_REVIEW.md).
+// DR-1..DR-4 red-first: each PASSES the attack against the pre-fix code
+// (dead-code generation counter, unanchored lockout, aliasing AAD, stale
+// lockout) and fails the attack after the keyring high-water anchor / guards.
+// ===========================================================================
+
+// ----- DR-1 (a): whole-envelope rollback must fail closed ---------------
+
+#[test]
+fn adv_dr1_whole_envelope_rollback_fails_closed() {
+    // Attack: with FS write access, snapshot the ENTIRE custody.enc at gen-N
+    // (token=OLD, internally consistent: old header + old ct together), later
+    // rotate the token to NEW at gen-N+2 and add a slot, then restore the whole
+    // gen-N file. Pre-fix: the generation counter is dead code (read into `_`,
+    // never compared to any anchor), so the older validly-sealed envelope
+    // verifies and custody_get("token") resurrects OLD, silently dropping the
+    // newer slot. Post-fix: the keyring high-water generation is bumped past N
+    // when we rotate, and unlock/get reject any envelope whose generation is
+    // lower than the high-water → fail closed.
+    let (v, _f, p) = init_and_unlock(0);
+    v.put("token", &mut b"OLD-TOKEN".to_vec()).unwrap(); // gen advances
+    // Snapshot the ENTIRE gen-N envelope (header + slots together — internally
+    // consistent, so the in-envelope header fingerprint check cannot catch it).
+    let snapshot = std::fs::read(&p).unwrap();
+
+    v.put("token", &mut b"NEW-TOKEN".to_vec()).unwrap(); // rotate → gen+1
+    v.put("extra", &mut b"NEWER-SLOT".to_vec()).unwrap(); // add a slot → gen+2
+
+    // Restore the whole older envelope over the current one.
+    std::fs::write(&p, &snapshot).unwrap();
+
+    v.lock();
+    // Unlock must fail closed (rollback caught by the external high-water), and
+    // in NO case may a subsequent get return the resurrected OLD token.
+    let err = v.unlock(&mut PASS.to_vec()).unwrap_err();
+    assert!(
+        matches!(err, CustodyError::Corrupt),
+        "whole-envelope rollback must fail closed at unlock (got {err:?})"
+    );
+    // Even if a caller ignored the unlock error, the OLD value must not surface.
+    let got = v.custody_get("token");
+    assert!(
+        got.is_err(),
+        "a rolled-back OLD token must never be served (got {got:?})"
+    );
+}
+
+// ----- DR-1 (b): mid-live-session rollback must fail closed -------------
+
+#[test]
+fn adv_dr1_mid_session_rollback_fails_closed() {
+    // Attack: an already-unlocked session, then the envelope is rolled back to
+    // an older whole file UNDER the live session. Pre-fix: the next custody_get
+    // re-verifies only the in-envelope header (which is internally consistent in
+    // the old file) and serves OLD. Post-fix: each get re-checks the keyring
+    // high-water and fails closed.
+    let (v, _f, p) = init_and_unlock(0);
+    v.put("token", &mut b"OLD-TOKEN".to_vec()).unwrap();
+    let snapshot = std::fs::read(&p).unwrap();
+
+    v.put("token", &mut b"NEW-TOKEN".to_vec()).unwrap(); // rotate → gen advances
+
+    // Confirm the live session serves NEW before the rollback.
+    assert_eq!(v.custody_get("token").unwrap().as_slice(), b"NEW-TOKEN");
+
+    // Roll the whole envelope back under the still-unlocked session.
+    std::fs::write(&p, &snapshot).unwrap();
+
+    // The next get must fail closed (re-checks the high-water), NOT serve OLD.
+    let got = v.custody_get("token");
+    assert!(
+        got.is_err(),
+        "a mid-session whole-envelope rollback must fail the next get (got {got:?})"
+    );
+    if let Ok(bytes) = got {
+        assert_ne!(bytes.as_slice(), b"OLD-TOKEN", "must never serve the rolled-back OLD value");
+    }
+}
+
+// ----- DR-1 (c): honest first-init + genuine advance still work ---------
+
+#[test]
+fn adv_dr1_high_water_advances_and_persists() {
+    // The anchor must not brick the honest path: first-init sets a high-water,
+    // legitimate mutations advance it, and a normal restart (no rollback) still
+    // unlocks and reads. Guards against an over-eager fail-closed.
+    let (v, fake, p) = init_and_unlock(0);
+    v.put("token", &mut b"V1".to_vec()).unwrap();
+    v.put("token", &mut b"V2".to_vec()).unwrap();
+    let hw1 = fake
+        .get(KEYRING_GENERATION_ACCOUNT)
+        .unwrap()
+        .expect("high-water present after mutations");
+    v.lock();
+    drop(v);
+
+    // Honest restart over the same envelope + keyring: unlock + get still work.
+    let v2 = CustodyVault::new(Box::new(SharedFake(fake.clone())), p, 0);
+    v2.unlock(&mut PASS.to_vec()).unwrap();
+    assert_eq!(v2.custody_get("token").unwrap().as_slice(), b"V2");
+    // The high-water did not spuriously change on a read-only unlock+get.
+    let hw2 = fake.get(KEYRING_GENERATION_ACCOUNT).unwrap().unwrap();
+    assert_eq!(hw1, hw2, "high-water is monotone, not bumped by reads");
+}
+
+// ----- DR-2: lockout block rollback must be detected --------------------
+
+#[test]
+fn adv_dr2_lockout_rollback_detected() {
+    // Attack: capture a pristine (failures=0) lockout block, burn failures to
+    // raise the throttle, then copy the pristine block back over the high-failure
+    // one via a plain file write. Pre-fix: the lockout has no anchor, so the
+    // throttle silently resets. Post-fix: the lockout block is bound to the
+    // high-water generation, so a rollback of it is caught (fail closed).
+    let (v, _f, p) = init_and_unlock(0);
+    // Snapshot a pristine (no-failures) envelope — its lockout block is clean.
+    let pristine = std::fs::read(&p).unwrap();
+    v.lock();
+
+    // Burn MAX_ATTEMPTS wrong unlocks → lockout engages + lockout block advances.
+    for _ in 0..MAX_ATTEMPTS {
+        assert_eq!(
+            v.unlock(&mut WRONG.to_vec()).unwrap_err(),
+            CustodyError::Denied
+        );
+    }
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::LockedOut,
+        "throttle engaged"
+    );
+
+    // Roll the lockout block back by restoring the pristine envelope.
+    std::fs::write(&p, &pristine).unwrap();
+
+    // Post-fix: the rolled-back lockout block no longer matches the high-water
+    // anchor → detected/fail-closed (the throttle is NOT silently reset to a
+    // clean unlock).
+    let err = v.unlock(&mut PASS.to_vec()).unwrap_err();
+    assert!(
+        matches!(err, CustodyError::Corrupt | CustodyError::LockedOut),
+        "a rolled-back lockout block must be detected, not silently reset (got {err:?})"
+    );
+}
+
+// ----- DR-3: reserved domain-tag slot names rejected --------------------
+
+#[test]
+fn adv_dr3_reserved_slot_names_rejected() {
+    // Attack: a caller creates slots named `header` / `wrapped_dk` / `lockout`,
+    // whose per-slot AAD (`version||name`) aliases a domain-field AAD. Pre-fix:
+    // put() accepts them. Post-fix: put_inner rejects the reserved domain-tag
+    // names so no ciphertext is interchangeable across contexts.
+    let (v, _f, _p) = init_and_unlock(0);
+    for name in ["header", "wrapped_dk", "lockout"] {
+        let r = v.put(name, &mut b"x".to_vec());
+        assert!(
+            r.is_err(),
+            "reserved domain-tag slot name {name:?} must be rejected (got {r:?})"
+        );
+    }
+    // A non-reserved name still works.
+    v.put("ok-name", &mut b"y".to_vec()).unwrap();
+}
+
+// ----- DR-4: stale lockout cleared unconditionally after cooloff --------
+
+#[test]
+fn adv_dr4_cooloff_success_clears_lockout_on_disk() {
+    // Attack/robustness: burn MAX_ATTEMPTS to engage the cooloff, force the
+    // deadline into the past (elapsed), then unlock with the CORRECT passphrase.
+    // Pre-fix: the elapsed-deadline success skips the disk write, leaving a
+    // stale {failures:MAX, locked_until:past} on disk. Post-fix: the cleared
+    // lockout is written unconditionally when the elapsed branch fired.
+    let (v, fake, p) = init_and_unlock(0);
+    v.lock();
+    for _ in 0..MAX_ATTEMPTS {
+        assert_eq!(
+            v.unlock(&mut WRONG.to_vec()).unwrap_err(),
+            CustodyError::Denied
+        );
+    }
+    // Rewrite the on-disk lockout block with a deadline in the PAST (still
+    // failures=MAX), re-sealed under the real master so it authenticates. Stamp
+    // its generation to the CURRENT lockout high-water so the DR-2 anchor guard
+    // treats it as a legitimate (not rolled-back) block — we are simulating an
+    // elapsed deadline, not a rollback.
+    let mek_bytes = fake.get(KEYRING_MASTER_ACCOUNT).unwrap().unwrap();
+    let mut mek = [0u8; KEY_LEN];
+    mek.copy_from_slice(&mek_bytes);
+    let cur_gen = {
+        let b = fake.get(KEYRING_LOCKOUT_GEN_ACCOUNT).unwrap().unwrap();
+        let mut a = [0u8; 8];
+        a.copy_from_slice(&b);
+        u64::from_be_bytes(a)
+    };
+    let mut env: Envelope = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let past = LockoutState {
+        failures: MAX_ATTEMPTS,
+        locked_until_ms: Some(1), // 1ms after epoch → long elapsed
+        generation: cur_gen,
+    };
+    env.lockout = CustodyVault::seal_lockout(&mek, env.version, &past).unwrap();
+    std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
+
+    // Correct passphrase now succeeds (cooloff elapsed).
+    v.unlock(&mut PASS.to_vec()).unwrap();
+
+    // The on-disk lockout must read CLEARED (failures=0, no deadline), not the
+    // stale {failures:MAX, past}. The generation field is the DR-2 anchor and is
+    // expected to advance, so we assert on the throttle fields specifically.
+    let after: Envelope = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let cleared = CustodyVault::open_lockout(&mek, &after).unwrap();
+    assert_eq!(
+        cleared.failures, 0,
+        "an elapsed-cooloff success must clear the failure count on disk (DR-4)"
+    );
+    assert_eq!(
+        cleared.locked_until_ms, None,
+        "an elapsed-cooloff success must clear the deadline on disk (DR-4)"
+    );
+}

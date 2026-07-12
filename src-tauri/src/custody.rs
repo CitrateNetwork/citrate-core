@@ -74,9 +74,35 @@ const AAD_WRAPPED_DK: &[u8] = b"wrapped_dk";
 const AAD_HEADER: &[u8] = b"header";
 const AAD_LOCKOUT: &[u8] = b"lockout";
 
+/// DR-3: a caller slot name is forbidden if it aliases a domain-tag AAD, so the
+/// per-slot AAD (`version || name`) namespace stays disjoint from the domain
+/// fields (`version || "wrapped_dk" | "header" | "lockout"`). Without this a
+/// slot named e.g. `header` seals under an AAD byte-identical to the header
+/// field's, making ciphertext potentially interchangeable across contexts.
+fn is_reserved_domain_tag(name: &str) -> bool {
+    let n = name.as_bytes();
+    n == AAD_WRAPPED_DK || n == AAD_HEADER || n == AAD_LOCKOUT
+}
+
 /// OS keyring coordinates for the wrapping (master) key.
 const KEYRING_SERVICE: &str = "ai.citrate.core";
 const KEYRING_MASTER_ACCOUNT: &str = "custody-master-key";
+/// OS keyring account for the monotonic high-water generation anchor (DR-1).
+/// Lives OUTSIDE the attacker-writable `custody.enc`, integrity-protected by the
+/// OS keyring the same way the master key is, so a whole-envelope rollback (an
+/// older, internally-consistent `custody.enc`) is rejected: any envelope whose
+/// header generation is BELOW this high-water fails closed. Stored as 8-byte
+/// big-endian `u64`.
+const KEYRING_GENERATION_ACCOUNT: &str = "custody-generation";
+/// OS keyring account for the lockout block's OWN monotonic high-water (DR-2).
+/// Separate from the envelope generation anchor because failed-unlock lockout
+/// writes advance on attempts that do NOT mutate the envelope (the header
+/// generation stays put), so the two counters must not share a lane — otherwise
+/// a burst of failed unlocks would push the envelope anchor past the header
+/// generation and fail closed on the next legitimate unlock. A rollback of the
+/// lockout block to an older generation is below this anchor and is caught.
+/// Stored as 8-byte big-endian `u64`.
+const KEYRING_LOCKOUT_GEN_ACCOUNT: &str = "custody-lockout-generation";
 
 /// Envelope file name inside the app data dir.
 const ENVELOPE_FILE: &str = "custody.enc";
@@ -207,17 +233,33 @@ struct SealedSlot {
 /// data key is then wrapped by the keyring master key (`wrapped_dk`). Slots hold
 /// only ciphertext. Format-versioned; version is validated + AAD-bound on load.
 ///
-/// ## Integrity model (v2 — CRY-1)
+/// ## Integrity model (v2 — CRY-1, DR-1/DR-2)
 /// GCM authenticates each slot's *bytes*, but nothing in v1 authenticated *where*
 /// a slot sat or the slot set as a whole, so a disk-write attacker could swap or
 /// roll back slots. v2 binds:
 /// - **per-slot AAD** = `version || slot_name` (and `version || "wrapped_dk"`),
 ///   so a slot sealed under one name/version cannot be replayed under another;
-/// - a **DEK-sealed `header`** carrying a monotonic **generation counter** and
-///   the exact **slot-name set**, verified on unlock before any slot is trusted
-///   — this catches whole-set swap/rollback and add/remove of slots;
-/// - a **master-key-sealed `lockout`** block (`failures` + absolute deadline),
-///   so the lockout survives a process restart (CRY-3/BND-2).
+/// - a **DEK-sealed `header`** carrying a **generation counter** and the exact
+///   **slot-name→nonce fingerprint**, verified on unlock before any slot is
+///   trusted — this catches an IN-PLACE swap, add/remove, or rollback of an
+///   INDIVIDUAL slot (the on-disk fingerprint diverges from the sealed header).
+///   It does NOT by itself catch a WHOLE-envelope rollback: an older, internally
+///   consistent `custody.enc` (old header + old slots together) still verifies,
+///   because the header only proves the envelope is self-consistent, not that it
+///   is the newest one. Whole-envelope rollback is caught by the EXTERNAL anchor
+///   below (DR-1), not by this header;
+/// - a **keyring high-water generation anchor** (`custody-generation`, DR-1)
+///   OUTSIDE the attacker-writable envelope: on unlock and on every `custody_get`,
+///   any envelope whose header generation is BELOW the high-water is rejected
+///   (`Corrupt`). This is what actually defeats a whole-envelope rollback;
+/// - a **master-key-sealed `lockout`** block (`failures` + absolute deadline +
+///   its own `generation`), so the lockout survives a process restart
+///   (CRY-3/BND-2) AND is bound to a SEPARATE keyring high-water
+///   (`custody-lockout-generation`, DR-2) so a plain file-write rollback of the
+///   lockout block (resetting the throttle) is detected. HONEST LIMITATION: an
+///   attacker who has DUMPED the keyring master can forge a fresh lockout block
+///   at the current generation and remove the throttle — in that case only
+///   Argon2id remains the per-guess brake (see the sprint's DR-2 note).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Envelope {
     version: u8,
@@ -240,12 +282,18 @@ struct Envelope {
 
 /// The DEK-sealed authenticated header. Binds the whole slot set — each slot's
 /// name AND its exact sealed version (via its unique random nonce) — to a
-/// generation counter, so any swap, rollback-in-place, or add/remove of a slot
-/// is caught on unlock. Sealed under the DEK, which a disk-write attacker does
-/// not have, so it cannot be forged to match tampered slots.
+/// generation counter, so any INDIVIDUAL-slot swap, rollback-in-place, or
+/// add/remove is caught on unlock. Sealed under the DEK, which a disk-write
+/// attacker does not have, so it cannot be forged to match tampered slots.
+/// It does NOT catch a whole-envelope rollback (an older, self-consistent
+/// header+slots pair) on its own — that is the job of the keyring high-water
+/// generation anchor (DR-1), which compares this `generation` against a value
+/// held outside the envelope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Header {
-    /// Monotonic generation counter, incremented on every envelope mutation.
+    /// Generation counter, incremented on every envelope mutation. Compared
+    /// against the keyring high-water anchor (DR-1) on load/read to reject a
+    /// whole-envelope rollback.
     generation: u64,
     /// `slot_name -> slot nonce` for every slot present when this header was
     /// sealed. The GCM nonce is fresh-random per seal, so it uniquely fingerprints
@@ -275,6 +323,13 @@ struct LockoutState {
     /// Absolute unix-ms deadline the current cooloff (if any) ends. `None` = no
     /// active cooloff.
     locked_until_ms: Option<u64>,
+    /// DR-2: the envelope generation this lockout block belongs to. Bound so a
+    /// rollback of the lockout block alone (a plain file write copying a pristine
+    /// block over a high-failure one) diverges from the header generation and
+    /// the keyring high-water, and is caught. `#[serde(default)]` so a v2
+    /// envelope written before this field is read as generation 0.
+    #[serde(default)]
+    generation: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -349,12 +404,37 @@ impl CustodyVault {
         self.path.exists()
     }
 
+    // --- DR-5: mutex poison policy — recover, do not brick --------------
+    //
+    // Policy (DR-5): a panic somewhere in the (now long) critical section
+    // poisons the mutex. We RECOVER the inner guard (`into_inner`) and continue
+    // rather than let every subsequent custody call panic and brick the vault
+    // until an app restart. This is safe because the vault holds no invariant
+    // that a mid-op panic can leave half-updated in memory in a way a later op
+    // trusts: every mutating op re-reads the envelope from disk (atomic
+    // temp+fsync+rename) and re-verifies the header + anchors before acting, and
+    // fails CLOSED on the operation if anything is inconsistent. Recovering the
+    // in-memory session lock therefore fails the *operation* closed at worst,
+    // never the process. The only in-memory state under the lock is the
+    // `Option<Session>`; a poisoned guard yields it intact (or `None`), and a
+    // corrupt/absent session simply denies.
+
+    /// Lock `inner`, recovering from poison (DR-5) instead of panicking.
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, VaultInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Read the auto-lock window (seconds), recovering from poison (DR-5).
+    fn autolock_secs(&self) -> u64 {
+        *self.autolock_secs.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Update the auto-lock window (config.autolock changed). Minutes → seconds.
     /// Consumed by the config-change wire (A3/B1) and the auto-lock tests; allow
     /// dead_code so the non-test lib build does not flag this seam as unused.
     #[allow(dead_code)]
     pub fn set_autolock_mins(&self, mins: u32) {
-        *self.autolock_secs.lock().unwrap() = mins as u64 * 60;
+        *self.autolock_secs.lock().unwrap_or_else(|e| e.into_inner()) = mins as u64 * 60;
     }
 
     // --- Argon2id KDF (D-A2-1) ------------------------------------------
@@ -496,6 +576,72 @@ impl CustodyVault {
         }
     }
 
+    // --- DR-1/DR-2: keyring high-water generation anchor ----------------
+
+    /// Read a monotonic high-water counter (`account`) from the OS keyring, or
+    /// `None` if it has never been set (first init). An unreachable keyring is a
+    /// hard fault (`KeyringUnavailable`) — fail closed, never treat "can't read
+    /// the anchor" as "no anchor" (that would re-open the rollback). A malformed
+    /// entry (wrong length) is treated as tamper → `Corrupt`.
+    fn read_anchor(&self, account: &str) -> Result<Option<u64>> {
+        match self.keyring.get(account)? {
+            Some(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(CustodyError::Corrupt);
+                }
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&bytes);
+                Ok(Some(u64::from_be_bytes(b)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Advance the keyring counter `account` to `gen` if it is higher than the
+    /// current value (monotone; never lowers it). A keyring write failure is a
+    /// hard fault (fail closed) — a mutation whose anchor cannot be persisted
+    /// must not be treated as committed.
+    fn bump_anchor(&self, account: &str, gen: u64) -> Result<()> {
+        let cur = self.read_anchor(account)?.unwrap_or(0);
+        if gen > cur {
+            self.keyring.set(account, &gen.to_be_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// The envelope-generation high-water (DR-1).
+    fn read_high_water(&self) -> Result<Option<u64>> {
+        self.read_anchor(KEYRING_GENERATION_ACCOUNT)
+    }
+
+    fn bump_high_water(&self, gen: u64) -> Result<()> {
+        self.bump_anchor(KEYRING_GENERATION_ACCOUNT, gen)
+    }
+
+    /// The lockout high-water (DR-2), a SEPARATE keyring counter from the
+    /// envelope generation so failed-unlock lockout writes (which do not mutate
+    /// the envelope) cannot push the envelope anchor past the header generation.
+    fn read_lockout_hw(&self) -> Result<Option<u64>> {
+        self.read_anchor(KEYRING_LOCKOUT_GEN_ACCOUNT)
+    }
+
+    fn bump_lockout_hw(&self, gen: u64) -> Result<()> {
+        self.bump_anchor(KEYRING_LOCKOUT_GEN_ACCOUNT, gen)
+    }
+
+    /// DR-1: reject any envelope whose generation is BELOW the keyring high-water
+    /// (a whole-envelope rollback to an older, internally-consistent state). If
+    /// the envelope generation is at or above the anchor it is fresh; adopt the
+    /// (possibly higher) value into the high-water so the anchor tracks forward.
+    /// First-init (no anchor yet) seeds the anchor from the envelope generation.
+    /// Fails closed (`Corrupt`) on rollback or an unreachable/tampered anchor.
+    fn enforce_high_water(&self, generation: u64) -> Result<()> {
+        match self.read_high_water()? {
+            Some(hw) if generation < hw => Err(CustodyError::Corrupt),
+            _ => self.bump_high_water(generation),
+        }
+    }
+
     /// Mint a fresh keyring master key for a brand-new vault. CRY-5: refuses to
     /// overwrite an existing keyring master. If a master is already present the
     /// keyring is not clean — either a live vault owns it (and re-init would
@@ -520,7 +666,7 @@ impl CustodyVault {
     pub fn init(&self, passphrase: &mut [u8]) -> Result<()> {
         // Serialize init under the same mutex as unlock/put so a concurrent
         // init cannot race the keyring-master mint (BND-1/BND-3).
-        let _guard = self.inner.lock().unwrap();
+        let _guard = self.lock_inner();
         let result = self.init_inner(passphrase);
         passphrase.zeroize(); // scrub the caller's inbound passphrase (spec)
         result
@@ -570,6 +716,16 @@ impl CustodyVault {
             slots,
         };
         self.save_envelope(&env)?;
+        // DR-1: seed the keyring high-water at the generation-0 anchor. A fresh
+        // vault's newest (and only) validly-sealed generation is 0. Written
+        // AFTER the envelope so a mid-init crash cannot leave an anchor ahead of
+        // a nonexistent envelope. mint_master_key already guaranteed the keyring
+        // is clean of a stale master; if a stale high-water lingers from a prior
+        // wiped vault, `bump_high_water` only raises it (monotone), so the new
+        // gen-0 vault will still be rejected on unlock until it advances past
+        // that stale mark — an acceptable fail-closed (a leftover anchor from a
+        // deleted vault, not an availability path we optimize for).
+        self.bump_high_water(0)?;
         Ok(())
     }
 
@@ -661,7 +817,7 @@ impl CustodyVault {
         // trial is ever in flight and the persisted lockout is read+written
         // atomically. This intentionally serializes unlocks (a human types one
         // passphrase at a time; a concurrent storm is the attack).
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
 
         // CRY-2: if there is no vault, still spend one Argon2id derivation over
         // the supplied passphrase (fixed dummy salt) before denying, so
@@ -680,6 +836,22 @@ impl CustodyVault {
         let env = self.load_envelope()?;
         let mut lockout = Self::open_lockout(&mek, &env)?;
 
+        // DR-2: the master-sealed lockout block is otherwise unanchored — a plain
+        // file write can copy a pristine (failures=0) block over a high-failure
+        // one and reset the throttle undetectably. It carries the lockout
+        // generation it was written at; reject any lockout block whose generation
+        // is BELOW the lockout high-water (a rolled-back block), before it can
+        // clear the throttle. This is pre-DEK (the block is master-sealed), so it
+        // gates a wrong-passphrase attempt too. Honest limitation (see sprint): an
+        // attacker who has DUMPED the keyring master can forge a fresh block at
+        // the current generation, removing the throttle — only Argon2id remains
+        // the brake in that case. A blind FS-only rollback is caught here.
+        if let Some(hw) = self.read_lockout_hw()? {
+            if lockout.generation < hw {
+                return Err(CustodyError::Corrupt);
+            }
+        }
+
         // CRY-3/BND-2: enforce the PERSISTED lockout. The deadline is an
         // absolute unix-ms time, so it survives a process restart. Clock-rollback
         // caveat: an attacker who can wind the wall clock back past the deadline
@@ -687,6 +859,33 @@ impl CustodyVault {
         // absolute deadline (a monotonic Instant cannot survive a restart, which
         // is the stronger attacker this defends against). Argon2id cost remains
         // the always-on per-guess brake.
+        // DR-2: EVERY lockout write advances the keyring high-water and stamps
+        // that new value into `lockout.generation`. This gives the lockout block
+        // its own monotone anchor (piggybacked on the DR-1 high-water) that ticks
+        // on failed attempts even when no `put` mutation occurs — so a plain
+        // file-write rollback of the lockout block (copying a pristine, older
+        // block over a high-failure one) has a generation below the high-water
+        // and is caught by the `generation < high-water` guard above. Helper that
+        // bumps the anchor, stamps the new generation, seals + persists the block.
+        let write_lockout = |state: &LockoutState| -> Result<()> {
+            let next = self.read_lockout_hw()?.unwrap_or(0) + 1;
+            // Advance the lockout anchor BEFORE persisting the block, so a crash
+            // between the two fails closed (anchor ahead of block → next unlock
+            // rejects the now-stale block as a rollback) rather than open.
+            self.bump_lockout_hw(next)?;
+            let mut stamped = state.clone();
+            stamped.generation = next;
+            let sealed = Self::seal_lockout(&mek, env.version, &stamped)?;
+            let mut env2 = env.clone();
+            env2.lockout = sealed;
+            self.save_envelope(&env2)
+        };
+
+        // DR-4: track whether the elapsed-cooloff branch fired. If it did, the
+        // on-disk block is stale ({failures:MAX, locked_until:past}) and MUST be
+        // written cleared unconditionally on success — not skipped just because
+        // the in-memory `lockout` now equals a fresh state.
+        let mut cooloff_elapsed = false;
         if let Some(until_ms) = lockout.locked_until_ms {
             if Self::now_unix_ms() < until_ms {
                 return Err(CustodyError::LockedOut);
@@ -694,17 +893,20 @@ impl CustodyVault {
             // Cooloff elapsed: clear it and let this attempt proceed fresh.
             lockout.failures = 0;
             lockout.locked_until_ms = None;
+            cooloff_elapsed = true;
         }
 
         let outcome = self.try_derive_session(passphrase, &mek, &env);
         match outcome {
             Ok(session) => {
-                // Success resets the persisted lockout.
-                if lockout != LockoutState::default() {
-                    let cleared = Self::seal_lockout(&mek, env.version, &LockoutState::default())?;
-                    let mut env2 = env.clone();
-                    env2.lockout = cleared;
-                    self.save_envelope(&env2)?;
+                // Success resets the persisted lockout. DR-4: also write the
+                // cleared block whenever the cooloff-elapsed branch fired, so no
+                // stale {failures, past-deadline} block is left on disk. The
+                // write advances the high-water (DR-2), so the cleared block is
+                // itself anchored and cannot be rolled back to a prior state.
+                let had_state = lockout.failures != 0 || lockout.locked_until_ms.is_some();
+                if had_state || cooloff_elapsed {
+                    write_lockout(&LockoutState::default())?;
                 }
                 inner.session = Some(session);
                 Ok(())
@@ -721,12 +923,10 @@ impl CustodyVault {
                         lockout.locked_until_ms =
                             Some(Self::now_unix_ms() + LOCKOUT_COOLOFF.as_millis() as u64);
                     }
-                    let sealed = Self::seal_lockout(&mek, env.version, &lockout)?;
-                    let mut env2 = env.clone();
-                    env2.lockout = sealed;
                     // Best-effort persist; a save failure must not mask the
-                    // original denial.
-                    let _ = self.save_envelope(&env2);
+                    // original denial. DR-2: advances + stamps the high-water so
+                    // the block is anchored.
+                    let _ = write_lockout(&lockout);
                 }
                 Err(e)
             }
@@ -766,7 +966,15 @@ impl CustodyVault {
         // envelope, or an add/remove/swap of any slot, changes the set and fails
         // closed). The generation is bound under the DEK the attacker cannot
         // forge.
-        let _generation = Self::open_and_verify_header(&data_key, env)?;
+        let generation = Self::open_and_verify_header(&data_key, env)?;
+        // DR-1: the in-envelope header only proves internal consistency; a
+        // whole-envelope rollback to an OLDER, internally-consistent state
+        // (old header + old slots together) still verifies. Enforce the keyring
+        // high-water anchor OUTSIDE the envelope: reject any envelope whose
+        // generation is below the newest one we have ever observed. This is the
+        // load-time anti-rollback check. (First-init has no anchor yet →
+        // enforce_high_water seeds it; a genuinely-newer envelope adopts forward.)
+        self.enforce_high_water(generation)?;
 
         // Trial-decrypt the check-slot with its per-slot AAD (`version || name`).
         // A slot whose stored position no longer matches its sealed AAD fails
@@ -788,14 +996,14 @@ impl CustodyVault {
 
     /// Whether the session is currently unlocked (respecting auto-lock expiry).
     pub fn is_unlocked(&self) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         self.expire_if_stale(&mut inner);
         inner.session.is_some()
     }
 
     /// Drop + zeroize the session immediately.
     pub fn lock(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         // Zeroizing<[u8;N]> wipes on drop; take() drops the session here.
         inner.session = None;
     }
@@ -804,7 +1012,7 @@ impl CustodyVault {
     /// Uses a monotonic `Instant`, so wall-clock rollback cannot extend it
     /// (ADV-10).
     fn expire_if_stale(&self, inner: &mut VaultInner) {
-        let window = *self.autolock_secs.lock().unwrap();
+        let window = self.autolock_secs();
         if window == 0 {
             return; // 0 disables auto-lock
         }
@@ -830,11 +1038,20 @@ impl CustodyVault {
         if slot.starts_with('\0') {
             return Err(CustodyError::Io("reserved slot name".into()));
         }
+        // DR-3: reject the reserved domain-tag names whose per-slot AAD
+        // (`version || name`) would alias the wrapped-DK / header / lockout
+        // domain-field AAD. Even though those are separate serde fields (and an
+        // injected slot trips the header fingerprint → Corrupt), refusing them
+        // keeps every per-slot AAD disjoint from the domain-tag AAD namespace,
+        // so no ciphertext is ever interchangeable across contexts.
+        if is_reserved_domain_tag(slot) {
+            return Err(CustodyError::Io("reserved slot name".into()));
+        }
         // BND-3: hold the mutex across load→insert→reseal-header→save so
         // concurrent puts serialize (no lost-write TOCTOU) and the header
         // stays consistent with the slot set. `save_envelope` is atomic
         // (temp+fsync+rename).
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         self.expire_if_stale(&mut inner);
         let data_key = match inner.session.as_ref() {
             Some(s) => Zeroizing::new(*s.data_key),
@@ -848,11 +1065,25 @@ impl CustodyVault {
         // a fresh slot on top of an envelope that was swapped/rolled back
         // out-of-band since unlock.
         let generation = Self::open_and_verify_header(&data_key, &env)?;
+        // DR-1: this envelope must not itself be a rollback (checked at unlock,
+        // re-checked here so a between-unlock-and-put rollback cannot laundry a
+        // mutation onto a stale base). enforce_high_water also adopts a
+        // higher-than-anchor generation forward.
+        self.enforce_high_water(generation)?;
         env.slots.insert(slot.to_string(), sealed);
+        let next_gen = generation + 1;
         // Re-seal the header with the new slot set + an incremented generation
         // so the mutation is authenticated and cannot be rolled back to the
-        // pre-put state (CRY-1 rollback).
-        env.header = Self::seal_header(&data_key, env.version, generation + 1, &env.slots)?;
+        // pre-put state (CRY-1 rollback). The lockout block is NOT touched here —
+        // it is anchored to its OWN keyring counter (DR-2), a separate lane from
+        // the envelope generation, so a `put` leaves it as-is.
+        env.header = Self::seal_header(&data_key, env.version, next_gen, &env.slots)?;
+        // Advance the keyring high-water to the new generation BEFORE persisting
+        // the envelope, so a crash between the anchor bump and the envelope
+        // write fails closed (anchor ahead of envelope → next unlock rejects the
+        // now-stale envelope) rather than open (envelope ahead of anchor →
+        // rollback window). Fail-closed is the correct bias for @rule8 custody.
+        self.bump_high_water(next_gen)?;
         self.save_envelope(&env)
     }
 
@@ -874,7 +1105,13 @@ impl CustodyVault {
         // time too (not only at unlock). A slot read then authenticates its own
         // per-slot AAD (`version || slot_name`), so a swapped slot fails closed
         // rather than returning another slot's plaintext.
-        Self::open_and_verify_header(&data_key, &env)?;
+        let generation = Self::open_and_verify_header(&data_key, &env)?;
+        // DR-1 (mid-live-session): the in-envelope header is internally
+        // consistent even in a rolled-back whole envelope, so re-check the
+        // keyring high-water on EVERY get. A whole-envelope rollback under a live
+        // session (older file swapped in after unlock) has a generation below the
+        // anchor → fail closed, rather than serving the resurrected OLD value.
+        self.enforce_high_water(generation)?;
         let sealed = env.slots.get(slot).ok_or(CustodyError::Denied)?;
         Self::unseal(&data_key, sealed, &Self::aad(env.version, slot.as_bytes()))
     }
@@ -901,7 +1138,7 @@ impl CustodyVault {
     /// Fetch a copy of the current session data key, enforcing auto-lock. Errors
     /// `Denied` if locked. The returned key is zeroized on drop.
     fn with_session_key(&self) -> Result<Zeroizing<[u8; KEY_LEN]>> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
         self.expire_if_stale(&mut inner);
         match inner.session.as_ref() {
             Some(s) => Ok(Zeroizing::new(*s.data_key)),
