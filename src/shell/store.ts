@@ -24,6 +24,7 @@ import {
 } from "./state";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, ChatProvider, ToolCall } from "../agent/harness";
+import { bindSimHost } from "../bridge";
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 
@@ -49,6 +50,12 @@ export class Store {
     this.state = loadState();
     this.snap = this.state;
     this.provider = createDemoProvider(() => this.snapshot());
+    // Bind the sim adapter to this Store so the bridge (in sim mode) reads and
+    // writes the live prototype state — the 1:1 UI is preserved (CORE-A1 A1.2).
+    bindSimHost({
+      getState: () => this.state,
+      patch: (u) => this.setState(u),
+    });
   }
 
   // ---- React binding ----
