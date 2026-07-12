@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -61,6 +61,18 @@ const SALT_LEN: usize = 16;
 /// Lockout policy: N failed unlocks → cooloff (citrate-native pattern).
 const MAX_ATTEMPTS: u32 = 5;
 const LOCKOUT_COOLOFF: Duration = Duration::from_secs(5 * 60);
+
+/// Current on-disk envelope format version. Bumped to 2 for the integrity
+/// rework (CRY-1/CRY-4): per-slot AAD binding + a DEK-sealed authenticated
+/// header (generation counter + slot-set) + a master-key-sealed lockout block.
+/// v1 envelopes have no integrity binding and are rejected on load (CRY-4).
+const ENVELOPE_VERSION: u8 = 2;
+
+/// AAD domain-separation tags. Each is combined with the version byte so a slot
+/// sealed at one identity/version cannot be replayed at another (CRY-1/CRY-4).
+const AAD_WRAPPED_DK: &[u8] = b"wrapped_dk";
+const AAD_HEADER: &[u8] = b"header";
+const AAD_LOCKOUT: &[u8] = b"lockout";
 
 /// OS keyring coordinates for the wrapping (master) key.
 const KEYRING_SERVICE: &str = "ai.citrate.core";
@@ -93,6 +105,10 @@ pub enum CustodyError {
     KeyringUnavailable,
     /// The on-disk envelope is malformed or tampered.
     Corrupt,
+    /// The envelope declares an unknown or downgraded format version (CRY-4).
+    /// Distinct from `Corrupt` because it is a load-path guard, not on the
+    /// passphrase-guessing oracle surface.
+    VersionUnsupported,
     /// I/O or serialization failure.
     Io(String),
 }
@@ -105,6 +121,9 @@ impl std::fmt::Display for CustodyError {
             CustodyError::LockedOut => write!(f, "locked out: too many attempts, retry later"),
             CustodyError::KeyringUnavailable => write!(f, "keyring unavailable"),
             CustodyError::Corrupt => write!(f, "custody envelope corrupt or tampered"),
+            CustodyError::VersionUnsupported => {
+                write!(f, "custody envelope version unsupported or downgraded")
+            }
             CustodyError::Io(m) => write!(f, "custody io error: {m}"),
         }
     }
@@ -186,16 +205,76 @@ struct SealedSlot {
 
 /// The persisted envelope. `salt` derives the data key from the passphrase; the
 /// data key is then wrapped by the keyring master key (`wrapped_dk`). Slots hold
-/// only ciphertext. Format-versioned so B1/A3 can migrate.
+/// only ciphertext. Format-versioned; version is validated + AAD-bound on load.
+///
+/// ## Integrity model (v2 — CRY-1)
+/// GCM authenticates each slot's *bytes*, but nothing in v1 authenticated *where*
+/// a slot sat or the slot set as a whole, so a disk-write attacker could swap or
+/// roll back slots. v2 binds:
+/// - **per-slot AAD** = `version || slot_name` (and `version || "wrapped_dk"`),
+///   so a slot sealed under one name/version cannot be replayed under another;
+/// - a **DEK-sealed `header`** carrying a monotonic **generation counter** and
+///   the exact **slot-name set**, verified on unlock before any slot is trusted
+///   — this catches whole-set swap/rollback and add/remove of slots;
+/// - a **master-key-sealed `lockout`** block (`failures` + absolute deadline),
+///   so the lockout survives a process restart (CRY-3/BND-2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Envelope {
     version: u8,
     /// Argon2id salt (public; a salt is not secret).
     salt: Vec<u8>,
     /// The data key sealed under the keyring master key: nonce + ciphertext.
+    /// AAD = `version || "wrapped_dk"`.
     wrapped_dk: SealedSlot,
-    /// Sealed slots keyed by name (includes the reserved check-slot).
+    /// Authenticated header sealed under the DEK. AAD = `version || "header"`.
+    /// Plaintext is the JSON of [`Header`] (generation + slot-name set).
+    header: SealedSlot,
+    /// Lockout state sealed under the keyring MASTER key (not the DEK — it must
+    /// be updatable on a *failed* unlock, where no DEK is available).
+    /// AAD = `version || "lockout"`. Plaintext is the JSON of [`LockoutState`].
+    lockout: SealedSlot,
+    /// Sealed slots keyed by name (includes the reserved check-slot). Each slot's
+    /// AAD = `version || slot_name`.
     slots: BTreeMap<String, SealedSlot>,
+}
+
+/// The DEK-sealed authenticated header. Binds the whole slot set — each slot's
+/// name AND its exact sealed version (via its unique random nonce) — to a
+/// generation counter, so any swap, rollback-in-place, or add/remove of a slot
+/// is caught on unlock. Sealed under the DEK, which a disk-write attacker does
+/// not have, so it cannot be forged to match tampered slots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct Header {
+    /// Monotonic generation counter, incremented on every envelope mutation.
+    generation: u64,
+    /// `slot_name -> slot nonce` for every slot present when this header was
+    /// sealed. The GCM nonce is fresh-random per seal, so it uniquely fingerprints
+    /// a slot's exact sealed version. On unlock we require the on-disk map to
+    /// equal this map: a swapped slot (wrong nonce under a name), a rolled-back
+    /// slot (a prior nonce), or an added/removed slot all diverge and fail closed.
+    slots: BTreeMap<String, Vec<u8>>,
+}
+
+impl Header {
+    /// The `name -> nonce` fingerprint of a slot map.
+    fn fingerprint(slots: &BTreeMap<String, SealedSlot>) -> BTreeMap<String, Vec<u8>> {
+        slots
+            .iter()
+            .map(|(name, s)| (name.clone(), s.nonce.clone()))
+            .collect()
+    }
+}
+
+/// The master-key-sealed lockout block. Persisted so a process restart cannot
+/// reset the failed-attempt counter (CRY-3/BND-2). `locked_until_ms` is an
+/// ABSOLUTE wall-clock deadline (unix millis); see the clock-rollback caveat on
+/// [`CustodyVault::unlock_inner`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct LockoutState {
+    failures: u32,
+    /// Absolute unix-ms deadline the current cooloff (if any) ends. `None` = no
+    /// active cooloff.
+    locked_until_ms: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -208,14 +287,6 @@ struct Session {
     data_key: Zeroizing<[u8; KEY_LEN]>,
     /// When this session was established (for auto-lock).
     unlocked_at: Instant,
-}
-
-/// Failed-unlock tracking for the lockout guard.
-#[derive(Default)]
-struct AttemptState {
-    failures: u32,
-    /// When the current cooloff (if any) ends.
-    locked_until: Option<Instant>,
 }
 
 /// Metadata about a slot returned across the bridge — **never** the bytes.
@@ -234,12 +305,20 @@ pub struct CustodyVault {
     inner: Mutex<VaultInner>,
     /// Auto-lock window in seconds (from `config.autolock`, minutes → seconds).
     autolock_secs: Mutex<u64>,
+    /// Count of Argon2id derivations performed (CRY-2 testability). Lets a test
+    /// assert *structurally* that the absent-vault path still spends the KDF —
+    /// no flaky wall-clock timing. Incremented inside `derive_key`.
+    kdf_invocations: std::sync::atomic::AtomicU64,
 }
 
+/// In-memory vault state guarded by the mutex. The lockout counter is NOT here
+/// — it is persisted (sealed under the master key) so a restart cannot reset it
+/// (CRY-3/BND-2). The mutex serializes the whole unlock critical section so at
+/// most one Argon2id trial is in flight (BND-1) and envelope mutations are
+/// serialized + atomic (BND-3).
 #[derive(Default)]
 struct VaultInner {
     session: Option<Session>,
-    attempts: AttemptState,
 }
 
 impl CustodyVault {
@@ -251,7 +330,18 @@ impl CustodyVault {
             path,
             inner: Mutex::new(VaultInner::default()),
             autolock_secs: Mutex::new(autolock_mins as u64 * 60),
+            kdf_invocations: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// How many Argon2id derivations this vault has performed. Test-only seam
+    /// for CRY-2 (assert the absent-vault path still spends the KDF), and for
+    /// BND-1 (assert at most `MAX_ATTEMPTS` derivations run under a concurrent
+    /// wrong-guess storm). `#[cfg(test)]` keeps it out of the shipped surface.
+    #[cfg(test)]
+    fn kdf_count(&self) -> u64 {
+        self.kdf_invocations
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether an envelope exists on disk (the vault has been initialized).
@@ -282,10 +372,37 @@ impl CustodyVault {
         Ok(out)
     }
 
+    /// The single accounted KDF call site (CRY-2). Every real *and* dummy
+    /// Argon2id derivation on the unlock path goes through here so the
+    /// invocation counter reflects the true KDF work spent — this is the
+    /// structural, non-flaky signal the timing-parity test asserts on.
+    fn derive_key_counted(
+        &self,
+        passphrase: &[u8],
+        salt: &[u8],
+    ) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+        self.kdf_invocations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self::derive_key(passphrase, salt)
+    }
+
     // --- AES-256-GCM seal / unseal --------------------------------------
 
-    /// Seal `plaintext` under `key`, returning a fresh-nonce sealed slot.
-    fn seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<SealedSlot> {
+    /// Build the GCM AAD binding an item to `version || context`. `context` is
+    /// the slot name for a caller/check slot, or one of the `AAD_*` domain tags
+    /// for the wrapped DEK / header / lockout. Binding the version defeats a
+    /// downgrade (CRY-4); binding the name/tag defeats slot swap (CRY-1).
+    fn aad(version: u8, context: &[u8]) -> Vec<u8> {
+        let mut aad = Vec::with_capacity(1 + context.len());
+        aad.push(version);
+        aad.extend_from_slice(context);
+        aad
+    }
+
+    /// Seal `plaintext` under `key` with the given `aad`, returning a
+    /// fresh-nonce sealed slot. The AAD is authenticated but not stored (it is
+    /// reconstructed from `version || context` on unseal).
+    fn seal(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[u8]) -> Result<SealedSlot> {
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
@@ -295,7 +412,7 @@ impl CustodyVault {
                 nonce,
                 Payload {
                     msg: plaintext,
-                    aad: b"citrate-core-custody-v1",
+                    aad,
                 },
             )
             .map_err(|_| CustodyError::Corrupt)?;
@@ -305,23 +422,19 @@ impl CustodyVault {
         })
     }
 
-    /// Unseal a slot under `key`. GCM tag failure (wrong key OR tampered
-    /// ciphertext) fails closed with no partial plaintext (ADV-2 / ADV-5). The
-    /// tag comparison inside `aes-gcm` is constant-time.
-    fn unseal(key: &[u8; KEY_LEN], slot: &SealedSlot) -> Result<Zeroizing<Vec<u8>>> {
+    /// Unseal a slot under `key`, authenticating `aad`. GCM tag failure (wrong
+    /// key, tampered ciphertext, OR a slot replayed under the wrong name/version
+    /// — a mismatched AAD) fails closed with no partial plaintext
+    /// (ADV-2 / ADV-5 / CRY-1). The tag comparison inside `aes-gcm` is
+    /// constant-time.
+    fn unseal(key: &[u8; KEY_LEN], slot: &SealedSlot, aad: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         if slot.nonce.len() != NONCE_LEN {
             return Err(CustodyError::Corrupt);
         }
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
         let nonce = Nonce::from_slice(&slot.nonce);
         let pt = cipher
-            .decrypt(
-                nonce,
-                Payload {
-                    msg: &slot.ct,
-                    aad: b"citrate-core-custody-v1",
-                },
-            )
+            .decrypt(nonce, Payload { msg: &slot.ct, aad })
             .map_err(|_| CustodyError::Denied)?;
         Ok(Zeroizing::new(pt))
     }
@@ -330,15 +443,37 @@ impl CustodyVault {
 
     fn load_envelope(&self) -> Result<Envelope> {
         let bytes = std::fs::read(&self.path).map_err(|_| CustodyError::Denied)?;
-        serde_json::from_slice(&bytes).map_err(|_| CustodyError::Corrupt)
+        let env: Envelope = serde_json::from_slice(&bytes).map_err(|_| CustodyError::Corrupt)?;
+        // CRY-4: validate the format version explicitly. Only the current
+        // version is accepted; an unknown or downgraded version is rejected up
+        // front (before any key material is trusted) rather than silently taking
+        // a weaker path. The version is ALSO bound into every slot's AAD (CRY-1),
+        // so tampering it to `2` while keeping v1-shaped ciphertext still fails
+        // the GCM tag — this check is the fast, explicit first line.
+        if env.version != ENVELOPE_VERSION {
+            return Err(CustodyError::VersionUnsupported);
+        }
+        Ok(env)
     }
 
+    /// Persist the envelope atomically (BND-3): write a temp file, fsync it,
+    /// then rename over the target. A crash mid-write leaves either the old or
+    /// the new envelope, never a truncated one. Callers hold the vault mutex, so
+    /// mutations are also serialized (no lost-write TOCTOU).
     fn save_envelope(&self, env: &Envelope) -> Result<()> {
+        use std::io::Write;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CustodyError::Io(e.to_string()))?;
         }
         let bytes = serde_json::to_vec(env).map_err(|e| CustodyError::Io(e.to_string()))?;
-        std::fs::write(&self.path, bytes).map_err(|e| CustodyError::Io(e.to_string()))?;
+        let tmp = self.path.with_extension("enc.tmp");
+        {
+            let mut f = std::fs::File::create(&tmp).map_err(|e| CustodyError::Io(e.to_string()))?;
+            f.write_all(&bytes)
+                .map_err(|e| CustodyError::Io(e.to_string()))?;
+            f.sync_all().map_err(|e| CustodyError::Io(e.to_string()))?;
+        }
+        std::fs::rename(&tmp, &self.path).map_err(|e| CustodyError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -361,7 +496,16 @@ impl CustodyVault {
         }
     }
 
+    /// Mint a fresh keyring master key for a brand-new vault. CRY-5: refuses to
+    /// overwrite an existing keyring master. If a master is already present the
+    /// keyring is not clean — either a live vault owns it (and re-init would
+    /// clobber it, orphaning every existing secret) or the envelope was deleted
+    /// out from under a surviving master (tamper / partial-recovery). Either way
+    /// we fail closed with `Corrupt` rather than silently taking over.
     fn mint_master_key(&self) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+        if self.keyring.get(KEYRING_MASTER_ACCOUNT)?.is_some() {
+            return Err(CustodyError::Corrupt);
+        }
         let mut k = Zeroizing::new([0u8; KEY_LEN]);
         rand::thread_rng().fill_bytes(k.as_mut());
         self.keyring.set(KEYRING_MASTER_ACCOUNT, k.as_ref())?;
@@ -374,6 +518,9 @@ impl CustodyVault {
     /// derive the data key, wrap it under the master key, seal the check-slot.
     /// Fails closed if a vault already exists.
     pub fn init(&self, passphrase: &mut [u8]) -> Result<()> {
+        // Serialize init under the same mutex as unlock/put so a concurrent
+        // init cannot race the keyring-master mint (BND-1/BND-3).
+        let _guard = self.inner.lock().unwrap();
         let result = self.init_inner(passphrase);
         passphrase.zeroize(); // scrub the caller's inbound passphrase (spec)
         result
@@ -389,28 +536,97 @@ impl CustodyVault {
         // The wrapping key is their combination; the random data key (`dek`)
         // that actually seals slots is sealed under it. Losing either the
         // keyring entry OR the passphrase makes the vault unrecoverable — this
-        // is what makes the keyring genuinely load-bearing (ADV-6).
+        // is what makes the keyring genuinely load-bearing (ADV-6). CRY-5:
+        // mint refuses to clobber an existing keyring master.
         let mek = self.mint_master_key()?;
         let mut salt = [0u8; SALT_LEN];
         rand::thread_rng().fill_bytes(&mut salt);
-        let kek = Self::derive_key(passphrase, &salt)?;
+        let kek = self.derive_key_counted(passphrase, &salt)?;
         let wrap_key = Self::combine_keys(&mek, &kek);
 
         let mut dek = Zeroizing::new([0u8; KEY_LEN]);
         rand::thread_rng().fill_bytes(dek.as_mut());
-        let wrapped_dk = Self::seal(&wrap_key, dek.as_ref())?;
+        let v = ENVELOPE_VERSION;
+        let wrapped_dk = Self::seal(&wrap_key, dek.as_ref(), &Self::aad(v, AAD_WRAPPED_DK))?;
 
+        // The check-slot, sealed under the DEK with per-slot AAD (CRY-1).
         let mut slots = BTreeMap::new();
-        slots.insert(CHECK_SLOT.to_string(), Self::seal(&dek, CHECK_PLAINTEXT)?);
+        slots.insert(
+            CHECK_SLOT.to_string(),
+            Self::seal(&dek, CHECK_PLAINTEXT, &Self::aad(v, CHECK_SLOT.as_bytes()))?,
+        );
+
+        // Generation-0 header binds the slot set under the DEK (CRY-1 rollback).
+        let header = Self::seal_header(&dek, v, 0, &slots)?;
+        // Fresh lockout block, sealed under the master key (CRY-3/BND-2).
+        let lockout = Self::seal_lockout(&mek, v, &LockoutState::default())?;
 
         let env = Envelope {
-            version: 1,
+            version: v,
             salt: salt.to_vec(),
             wrapped_dk,
+            header,
+            lockout,
             slots,
         };
         self.save_envelope(&env)?;
         Ok(())
+    }
+
+    // --- header (generation + slot-set) sealed under the DEK ------------
+
+    /// Seal the authenticated header binding `generation` + the slot fingerprint
+    /// (`name -> nonce`) under the DEK. The check-slot is included; a v2 unlock
+    /// requires the on-disk fingerprint to match exactly (CRY-1 swap/rollback).
+    fn seal_header(
+        dek: &[u8; KEY_LEN],
+        version: u8,
+        generation: u64,
+        slots: &BTreeMap<String, SealedSlot>,
+    ) -> Result<SealedSlot> {
+        let header = Header {
+            generation,
+            slots: Header::fingerprint(slots),
+        };
+        let pt = serde_json::to_vec(&header).map_err(|e| CustodyError::Io(e.to_string()))?;
+        Self::seal(dek, &pt, &Self::aad(version, AAD_HEADER))
+    }
+
+    /// Decrypt + verify the header against the actual on-disk slots. Fails closed
+    /// (`Corrupt`) if the header does not unseal (tamper / rollback of the header
+    /// itself) or if the recorded `name -> nonce` fingerprint differs from what
+    /// is on disk (a slot was added, removed, swapped, or rolled back in place —
+    /// a rolled-back slot carries a prior nonce). Returns the generation.
+    fn open_and_verify_header(dek: &[u8; KEY_LEN], env: &Envelope) -> Result<u64> {
+        let pt = Self::unseal(dek, &env.header, &Self::aad(env.version, AAD_HEADER))
+            .map_err(|_| CustodyError::Corrupt)?;
+        let header: Header = serde_json::from_slice(&pt).map_err(|_| CustodyError::Corrupt)?;
+        if header.slots != Header::fingerprint(&env.slots) {
+            return Err(CustodyError::Corrupt);
+        }
+        Ok(header.generation)
+    }
+
+    // --- lockout block sealed under the keyring master key --------------
+
+    fn seal_lockout(mek: &[u8; KEY_LEN], version: u8, state: &LockoutState) -> Result<SealedSlot> {
+        let pt = serde_json::to_vec(state).map_err(|e| CustodyError::Io(e.to_string()))?;
+        Self::seal(mek, &pt, &Self::aad(version, AAD_LOCKOUT))
+    }
+
+    fn open_lockout(mek: &[u8; KEY_LEN], env: &Envelope) -> Result<LockoutState> {
+        let pt = Self::unseal(mek, &env.lockout, &Self::aad(env.version, AAD_LOCKOUT))
+            .map_err(|_| CustodyError::Corrupt)?;
+        serde_json::from_slice(&pt).map_err(|_| CustodyError::Corrupt)
+    }
+
+    /// Current wall-clock time in unix milliseconds (for the persisted lockout
+    /// deadline). Clamps a pre-epoch clock to 0.
+    fn now_unix_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 
     /// Combine the keyring master key and the passphrase-derived key into the
@@ -434,62 +650,133 @@ impl CustodyVault {
         result
     }
 
+    /// Fixed dummy salt for the absent-vault KDF (CRY-2). Not secret; its only
+    /// job is to make the no-vault path spend the same Argon2id work as a
+    /// wrong-passphrase path, so vault existence is not a timing oracle.
+    const DUMMY_SALT: [u8; SALT_LEN] = [0x5A; SALT_LEN];
+
     fn unlock_inner(&self, passphrase: &[u8]) -> Result<()> {
-        {
-            let inner = self.inner.lock().unwrap();
-            if let Some(until) = inner.attempts.locked_until {
-                if Instant::now() < until {
-                    return Err(CustodyError::LockedOut);
-                }
-            }
+        // BND-1: hold the mutex across the ENTIRE check→derive→verify→record
+        // sequence. Unlock attempts are serialized, so at most one Argon2id
+        // trial is ever in flight and the persisted lockout is read+written
+        // atomically. This intentionally serializes unlocks (a human types one
+        // passphrase at a time; a concurrent storm is the attack).
+        let mut inner = self.inner.lock().unwrap();
+
+        // CRY-2: if there is no vault, still spend one Argon2id derivation over
+        // the supplied passphrase (fixed dummy salt) before denying, so
+        // "no vault" and "wrong passphrase" cost the same KDF work. Routed
+        // through the accounted call site so the timing-parity test can assert
+        // structurally. There is no persisted lockout without an envelope.
+        if !self.is_initialized() {
+            let _ = self.derive_key_counted(passphrase, &Self::DUMMY_SALT);
+            return Err(CustodyError::Denied);
         }
 
-        // Do the crypto WITHOUT holding the lock; then record the outcome.
-        let outcome = self.try_derive_session(passphrase);
+        // The keyring master is required to read/verify the persisted lockout
+        // block AND to unwrap the DEK. Absent/unreachable keyring is an
+        // environment fault (fail closed, do NOT count toward lockout).
+        let mek = self.master_key()?;
+        let env = self.load_envelope()?;
+        let mut lockout = Self::open_lockout(&mek, &env)?;
 
-        let mut inner = self.inner.lock().unwrap();
+        // CRY-3/BND-2: enforce the PERSISTED lockout. The deadline is an
+        // absolute unix-ms time, so it survives a process restart. Clock-rollback
+        // caveat: an attacker who can wind the wall clock back past the deadline
+        // ends the cooloff early — an accepted limitation of persisting an
+        // absolute deadline (a monotonic Instant cannot survive a restart, which
+        // is the stronger attacker this defends against). Argon2id cost remains
+        // the always-on per-guess brake.
+        if let Some(until_ms) = lockout.locked_until_ms {
+            if Self::now_unix_ms() < until_ms {
+                return Err(CustodyError::LockedOut);
+            }
+            // Cooloff elapsed: clear it and let this attempt proceed fresh.
+            lockout.failures = 0;
+            lockout.locked_until_ms = None;
+        }
+
+        let outcome = self.try_derive_session(passphrase, &mek, &env);
         match outcome {
             Ok(session) => {
-                inner.attempts = AttemptState::default();
+                // Success resets the persisted lockout.
+                if lockout != LockoutState::default() {
+                    let cleared = Self::seal_lockout(&mek, env.version, &LockoutState::default())?;
+                    let mut env2 = env.clone();
+                    env2.lockout = cleared;
+                    self.save_envelope(&env2)?;
+                }
                 inner.session = Some(session);
                 Ok(())
             }
             Err(e) => {
                 // Only a genuine wrong-passphrase / corrupt-vault counts toward
                 // lockout; a missing keyring is an environment fault, not an
-                // attack, and must not brick the user.
+                // attack, and must not brick the user. We count attempts
+                // *started* under the held lock, so a concurrent storm cannot
+                // bypass the ceiling (BND-1).
                 if matches!(e, CustodyError::Denied | CustodyError::Corrupt) {
-                    inner.attempts.failures += 1;
-                    if inner.attempts.failures >= MAX_ATTEMPTS {
-                        inner.attempts.locked_until = Some(Instant::now() + LOCKOUT_COOLOFF);
+                    lockout.failures += 1;
+                    if lockout.failures >= MAX_ATTEMPTS {
+                        lockout.locked_until_ms =
+                            Some(Self::now_unix_ms() + LOCKOUT_COOLOFF.as_millis() as u64);
                     }
+                    let sealed = Self::seal_lockout(&mek, env.version, &lockout)?;
+                    let mut env2 = env.clone();
+                    env2.lockout = sealed;
+                    // Best-effort persist; a save failure must not mask the
+                    // original denial.
+                    let _ = self.save_envelope(&env2);
                 }
                 Err(e)
             }
         }
     }
 
-    /// Recover the data key (keyring master key + passphrase both required) and
-    /// verify it against the check-slot. Returns a live [`Session`] on success.
-    fn try_derive_session(&self, passphrase: &[u8]) -> Result<Session> {
-        let env = self.load_envelope()?;
+    /// Recover the data key (keyring master key + passphrase both required),
+    /// verify the authenticated header (generation + slot set — CRY-1), then
+    /// trial-decrypt the check-slot. Returns a live [`Session`] on success. The
+    /// caller supplies the already-loaded `mek` + `env` (read once under the
+    /// unlock lock).
+    fn try_derive_session(
+        &self,
+        passphrase: &[u8],
+        mek: &[u8; KEY_LEN],
+        env: &Envelope,
+    ) -> Result<Session> {
         // Recompose the wrapping key from the keyring master key + the
         // passphrase-derived key, then unwrap the data key. A wrong passphrase
-        // OR an absent/rotated master key fails the GCM tag with no oracle.
-        let mek = self.master_key()?;
-        let kek = Self::derive_key(passphrase, &env.salt)?;
-        let wrap_key = Self::combine_keys(&mek, &kek);
-        let dek_bytes = Self::unseal(&wrap_key, &env.wrapped_dk)?;
+        // OR an absent/rotated master key fails the GCM tag with no oracle. The
+        // wrapped-DEK AAD binds the version (CRY-4) + domain tag (CRY-1).
+        let kek = self.derive_key_counted(passphrase, &env.salt)?;
+        let wrap_key = Self::combine_keys(mek, &kek);
+        let dek_bytes = Self::unseal(
+            &wrap_key,
+            &env.wrapped_dk,
+            &Self::aad(env.version, AAD_WRAPPED_DK),
+        )?;
         if dek_bytes.len() != KEY_LEN {
             return Err(CustodyError::Corrupt);
         }
         let mut data_key = Zeroizing::new([0u8; KEY_LEN]);
         data_key.copy_from_slice(&dek_bytes);
 
-        // Trial-decrypt the check-slot: defense-in-depth confirmation the
-        // recovered data key is the right one.
+        // CRY-1: verify the DEK-sealed header BEFORE trusting any slot. This
+        // authenticates the whole slot set (a wholesale swap/rollback of the
+        // envelope, or an add/remove/swap of any slot, changes the set and fails
+        // closed). The generation is bound under the DEK the attacker cannot
+        // forge.
+        let _generation = Self::open_and_verify_header(&data_key, env)?;
+
+        // Trial-decrypt the check-slot with its per-slot AAD (`version || name`).
+        // A slot whose stored position no longer matches its sealed AAD fails
+        // the tag here (CRY-1 slot-swap).
         let check = env.slots.get(CHECK_SLOT).ok_or(CustodyError::Corrupt)?;
-        let pt = Self::unseal(&data_key, check)?;
+        let pt = Self::unseal(
+            &data_key,
+            check,
+            &Self::aad(env.version, CHECK_SLOT.as_bytes()),
+        )?;
         if pt.as_slice() != CHECK_PLAINTEXT {
             return Err(CustodyError::Denied);
         }
@@ -543,10 +830,29 @@ impl CustodyVault {
         if slot.starts_with('\0') {
             return Err(CustodyError::Io("reserved slot name".into()));
         }
-        let data_key = self.with_session_key()?;
-        let sealed = Self::seal(&data_key, bytes)?;
+        // BND-3: hold the mutex across load→insert→reseal-header→save so
+        // concurrent puts serialize (no lost-write TOCTOU) and the header
+        // stays consistent with the slot set. `save_envelope` is atomic
+        // (temp+fsync+rename).
+        let mut inner = self.inner.lock().unwrap();
+        self.expire_if_stale(&mut inner);
+        let data_key = match inner.session.as_ref() {
+            Some(s) => Zeroizing::new(*s.data_key),
+            None => return Err(CustodyError::Denied),
+        };
+        // Per-slot AAD binds `version || slot_name` (CRY-1).
         let mut env = self.load_envelope()?;
+        let sealed = Self::seal(&data_key, bytes, &Self::aad(env.version, slot.as_bytes()))?;
+        // Confirm the current envelope integrity before mutating it (the header
+        // + check-slot must verify under the session DEK); this prevents writing
+        // a fresh slot on top of an envelope that was swapped/rolled back
+        // out-of-band since unlock.
+        let generation = Self::open_and_verify_header(&data_key, &env)?;
         env.slots.insert(slot.to_string(), sealed);
+        // Re-seal the header with the new slot set + an incremented generation
+        // so the mutation is authenticated and cannot be rolled back to the
+        // pre-put state (CRY-1 rollback).
+        env.header = Self::seal_header(&data_key, env.version, generation + 1, &env.slots)?;
         self.save_envelope(&env)
     }
 
@@ -563,8 +869,14 @@ impl CustodyVault {
         }
         let data_key = self.with_session_key()?;
         let env = self.load_envelope()?;
+        // CRY-1: re-verify the authenticated header before serving a slot, so a
+        // swap/rollback of the envelope on disk AFTER unlock is caught at read
+        // time too (not only at unlock). A slot read then authenticates its own
+        // per-slot AAD (`version || slot_name`), so a swapped slot fails closed
+        // rather than returning another slot's plaintext.
+        Self::open_and_verify_header(&data_key, &env)?;
         let sealed = env.slots.get(slot).ok_or(CustodyError::Denied)?;
-        Self::unseal(&data_key, sealed)
+        Self::unseal(&data_key, sealed, &Self::aad(env.version, slot.as_bytes()))
     }
 
     /// Slot metadata only (never bytes). The reserved check-slot is hidden.
@@ -600,6 +912,12 @@ impl CustodyVault {
 
 // Explicit zeroize-on-drop for the session data key (defense in depth beyond
 // the Zeroizing wrapper — ADV-9).
+//
+// BND-4 (honest scope): this wiring establishes the Zeroizing type contract +
+// an explicit drop. It does NOT by itself prove the compiler emits the wipe
+// (dead-store elimination could drop it). A physical memory-residue proof is
+// DEFERRED to a zeroize-audit MIR/LLVM pass before B1 stores real wallet keys;
+// the ADV-9 test is scoped to teardown + the type contract, not a byte wipe.
 impl Drop for Session {
     fn drop(&mut self) {
         self.data_key.zeroize();

@@ -98,9 +98,18 @@ fn init_and_unlock(autolock_mins: u32) -> (CustodyVault, std::sync::Arc<FakeKeyr
 #[test]
 fn seal_unseal_roundtrips() {
     let key = [7u8; KEY_LEN];
-    let sealed = CustodyVault::seal(&key, b"hello secret").unwrap();
-    let pt = CustodyVault::unseal(&key, &sealed).unwrap();
+    let aad = CustodyVault::aad(ENVELOPE_VERSION, b"slot-x");
+    let sealed = CustodyVault::seal(&key, b"hello secret", &aad).unwrap();
+    let pt = CustodyVault::unseal(&key, &sealed, &aad).unwrap();
     assert_eq!(pt.as_slice(), b"hello secret");
+    // CRY-1: a slot sealed under one AAD (name/version) must NOT unseal under a
+    // different AAD — this is the primitive the slot-swap guard rests on.
+    let other = CustodyVault::aad(ENVELOPE_VERSION, b"slot-y");
+    assert_eq!(
+        CustodyVault::unseal(&key, &sealed, &other).unwrap_err(),
+        CustodyError::Denied,
+        "a slot must not unseal under a different slot's AAD"
+    );
 }
 
 #[test]
@@ -196,10 +205,11 @@ fn leaked(haystack: &[u8], needle: &[u8]) -> bool {
 #[test]
 fn adv5_tampered_ciphertext_fails_closed() {
     let key = [3u8; KEY_LEN];
-    let mut sealed = CustodyVault::seal(&key, b"authentic").unwrap();
+    let aad = CustodyVault::aad(ENVELOPE_VERSION, b"authentic-slot");
+    let mut sealed = CustodyVault::seal(&key, b"authentic", &aad).unwrap();
     // flip one byte of the ciphertext/tag
     sealed.ct[0] ^= 0xff;
-    let r = CustodyVault::unseal(&key, &sealed);
+    let r = CustodyVault::unseal(&key, &sealed, &aad);
     assert_eq!(r.unwrap_err(), CustodyError::Denied, "tampered ct must fail");
 
     // A tampered envelope on disk must also fail unlock closed (no partial).
@@ -237,10 +247,15 @@ fn adv6_keyring_absent_or_rotated_fails_closed() {
     v2.lock();
     fake2.rotate_master();
     let reopened = CustodyVault::new(Box::new(SharedFake(fake2.clone())), p2, 0);
-    assert_eq!(
-        reopened.unlock(&mut PASS.to_vec()).unwrap_err(),
-        CustodyError::Denied,
-        "a rotated master key must not unwrap the data key"
+    // Fail closed: a rotated master no longer authenticates the master-sealed
+    // lockout block (→ `Corrupt`, tripped before the passphrase is even tried)
+    // nor unwraps the DEK (→ `Denied`). Either way the vault does not open with
+    // the wrong master — both are fail-closed. (v2 checks the lockout block
+    // first, so the observed error is `Corrupt`.)
+    let err = reopened.unlock(&mut PASS.to_vec()).unwrap_err();
+    assert!(
+        matches!(err, CustodyError::Denied | CustodyError::Corrupt),
+        "a rotated master key must not unwrap the data key (got {err:?})"
     );
     let _ = p; // envelope path kept alive for the absent-key vault
 }
@@ -293,13 +308,19 @@ fn adv8_no_invoke_command_returns_secret_bytes() {
     // the lib.rs registration test.
 }
 
-// ----- ADV-9: zeroization — data key + secret buffers wiped -------------
+// ----- ADV-9: session teardown + Zeroizing type contract ----------------
+// SCOPE (BND-4, honest): this test proves the SESSION-TEARDOWN + Zeroizing
+// TYPE CONTRACT — that `lock()` drops the session and the key is a
+// `Zeroizing<[u8;32]>` with an explicit `Session::drop` wipe. It does NOT prove
+// the DEK BYTES are physically erased from memory (reading post-drop memory is
+// UB, so we decline that deref). A true memory-residue proof is DEFERRED to a
+// zeroize-audit MIR/LLVM pass before B1 stores real wallet keys — see the
+// sprint's BND-4 note and the code comment on `Session::drop`.
 
 #[test]
-fn adv9_zeroize_on_lock_and_drop() {
-    // The session data key is a Zeroizing<[u8;32]> and Session has an explicit
-    // Drop that zeroizes it. Prove the semantics: read the key while unlocked,
-    // lock, then confirm the session is gone (no key retained/readable).
+fn adv9_session_teardown_and_zeroizing_contract() {
+    // Read the key while unlocked, lock, then confirm the session is gone (no
+    // key retained/readable) — this is the teardown contract, not a byte wipe.
     let (v, _f, _p) = init_and_unlock(0);
     assert!(v.is_unlocked());
     let before = v.with_session_key().unwrap();
@@ -423,4 +444,281 @@ fn real_keyring_roundtrip_or_skip() {
     assert_eq!(got.as_deref(), Some(&secret[..]));
     os.delete(acct).unwrap();
     assert_eq!(os.get(acct).unwrap(), None, "deleted entry is gone");
+}
+
+// ===========================================================================
+// Rule-8 remediation suite (citrate-security #13). Each of these was written
+// RED-first: it PASSES the attack against the pre-fix (v1, constant-AAD,
+// in-memory-lockout, non-atomic) code, and fails the attack after the fix. See
+// the sprint file's remediation red→green table.
+// ===========================================================================
+
+// ----- CRY-1 (a): slot-swap on disk must fail closed --------------------
+
+#[test]
+fn adv_cry1_slot_swap_fails_closed() {
+    // Attack: with FS write access to custody.enc, swap two slots' sealed
+    // values. Pre-fix (constant AAD, no header): unlock succeeds and
+    // custody_get("alpha") returns beta's plaintext. Post-fix: the DEK-sealed
+    // header pins each slot's `name -> nonce` fingerprint, so a swap (alpha now
+    // carries beta's nonce) diverges from the header and fails closed on unlock.
+    let (v, _f, p) = init_and_unlock(0);
+    v.put("alpha", &mut b"VALUE-ALPHA".to_vec()).unwrap();
+    v.put("beta", &mut b"VALUE-BETA".to_vec()).unwrap();
+
+    // Swap the two SealedSlot values on disk (nonce + ct together).
+    let mut env: Envelope = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let a = env.slots.get("alpha").unwrap().clone();
+    let b = env.slots.get("beta").unwrap().clone();
+    env.slots.insert("alpha".into(), b);
+    env.slots.insert("beta".into(), a);
+    std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
+
+    v.lock();
+    // Header fingerprint mismatch → unlock fails closed (never returns beta's PT).
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::Corrupt,
+        "a slot swap must fail closed at unlock, never return the other slot's plaintext"
+    );
+}
+
+// ----- CRY-1 (b): slot-rollback-in-place must fail closed ---------------
+
+#[test]
+fn adv_cry1_slot_rollback_fails_closed() {
+    // Attack: snapshot a slot's OLD sealed value, later restore that prior
+    // sealed value over the slot (resurrect a revoked token). Pre-fix: served
+    // transparently (an old authentic ct decrypts fine). Post-fix: the header
+    // pins the slot's CURRENT nonce; a restored prior value carries the OLD
+    // nonce → fingerprint mismatch → fail closed.
+    let (v, _f, p) = init_and_unlock(0);
+    v.put("token", &mut b"OLD-TOKEN".to_vec()).unwrap();
+    let with_old: Envelope =
+        serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let old_slot = with_old.slots.get("token").unwrap().clone();
+
+    v.put("token", &mut b"NEW-TOKEN".to_vec()).unwrap(); // rotate the token
+
+    // Roll the SLOT back to its prior sealed value, keeping the current header.
+    let mut env: Envelope = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    env.slots.insert("token".into(), old_slot);
+    std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
+
+    v.lock();
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::Corrupt,
+        "rolling a slot back to a prior sealed value must fail closed (revoked value cannot be resurrected)"
+    );
+}
+
+// ----- CRY-1 (c): slot add/remove behind the header fails closed --------
+
+#[test]
+fn adv_cry1_slot_remove_fails_closed() {
+    // Removing a slot on disk while keeping the header (which still fingerprints
+    // it) must fail closed — the on-disk fingerprint no longer matches.
+    let (v, _f, p) = init_and_unlock(0);
+    v.put("a", &mut b"AAA".to_vec()).unwrap();
+    v.put("b", &mut b"BBB".to_vec()).unwrap();
+
+    let mut env: Envelope = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    env.slots.remove("b");
+    std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
+
+    v.lock();
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::Corrupt,
+        "removing a slot while keeping the header must fail closed"
+    );
+}
+
+// ----- CRY-4: version tamper / downgrade rejected -----------------------
+
+#[test]
+fn adv_cry4_version_downgrade_rejected() {
+    // Attack: tamper the envelope's `version` field. Pre-fix: never validated,
+    // unlock Ok. Post-fix: load_envelope rejects any version != current, AND the
+    // version is bound into every slot's AAD so a forced-2 v1-ct also fails.
+    let (v, _f, p) = init_and_unlock(0);
+    v.lock();
+    let pristine = std::fs::read(&p).unwrap();
+
+    let mut env: Envelope = serde_json::from_slice(&pristine).unwrap();
+    env.version = 0; // downgrade
+    std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::VersionUnsupported,
+        "an unknown/downgraded version must be rejected explicitly"
+    );
+
+    // Also: bumping to an unknown-future version is rejected too.
+    let mut env2: Envelope = serde_json::from_slice(&pristine).unwrap();
+    env2.version = 99;
+    std::fs::write(&p, serde_json::to_vec(&env2).unwrap()).unwrap();
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::VersionUnsupported
+    );
+}
+
+// ----- CRY-2: timing parity — absent-vault path spends the KDF ----------
+
+#[test]
+fn adv_cry2_absent_vault_spends_kdf() {
+    // Attack refuted structurally (not via flaky wall-clock): the no-vault
+    // unlock path must spend the SAME Argon2id work as a wrong-passphrase path,
+    // so vault existence is not a timing oracle. Pre-fix: absent path returned
+    // before any KDF (kdf_count unchanged). Post-fix: it runs one dummy KDF.
+    let (empty, _f, _p) = vault(0); // never initialized
+    assert!(!empty.is_initialized());
+    let before = empty.kdf_count();
+    let r = empty.unlock(&mut WRONG.to_vec());
+    let after = empty.kdf_count();
+    assert_eq!(r.unwrap_err(), CustodyError::Denied, "no-vault unlock denies");
+    assert_eq!(
+        after,
+        before + 1,
+        "the absent-vault path must spend exactly one Argon2id derivation \
+         (timing parity with wrong-passphrase — CRY-2)"
+    );
+
+    // And an initialized vault's wrong-passphrase path spends one KDF too, so
+    // the two paths are KDF-equal.
+    let (v, _f2, _p2) = init_and_unlock(0);
+    v.lock();
+    let b2 = v.kdf_count();
+    let _ = v.unlock(&mut WRONG.to_vec());
+    assert_eq!(v.kdf_count(), b2 + 1, "wrong-passphrase path spends one KDF");
+}
+
+// ----- BND-1: concurrent wrong unlocks capped at MAX_ATTEMPTS -----------
+
+#[test]
+fn adv_bnd1_concurrent_unlock_lockout_holds() {
+    // Attack: 32 concurrent unlock(WRONG). Pre-fix: the cooloff pre-check
+    // released the mutex before the crypto, so all 32 ran full Argon2id, 0
+    // rate-limited. Post-fix: the mutex is held across check→derive→record, so
+    // at most MAX_ATTEMPTS derivations run and the rest return LockedOut.
+    use std::sync::Arc;
+    let (v, _f, _p) = init_and_unlock(0);
+    v.lock();
+    let v = Arc::new(v);
+    let kdf_start = v.kdf_count();
+
+    let mut handles = vec![];
+    for _ in 0..32 {
+        let vc = Arc::clone(&v);
+        handles.push(std::thread::spawn(move || {
+            vc.unlock(&mut WRONG.to_vec())
+        }));
+    }
+    let mut locked_out = 0;
+    let mut denied = 0;
+    for h in handles {
+        match h.join().unwrap() {
+            Err(CustodyError::LockedOut) => locked_out += 1,
+            Err(CustodyError::Denied) => denied += 1,
+            other => panic!("unexpected unlock result: {other:?}"),
+        }
+    }
+    let kdf_ran = v.kdf_count() - kdf_start;
+    assert!(
+        kdf_ran <= MAX_ATTEMPTS as u64,
+        "at most MAX_ATTEMPTS Argon2id trials may run under a concurrent storm, ran {kdf_ran}"
+    );
+    assert!(locked_out >= 32 - MAX_ATTEMPTS, "the storm must be rate-limited");
+    assert!(denied <= MAX_ATTEMPTS, "denied (crypto-ran) count is capped");
+}
+
+// ----- CRY-3 / BND-2: lockout persists across a restart -----------------
+
+#[test]
+fn adv_cry3_lockout_persists_across_restart() {
+    // Attack: burn MAX_ATTEMPTS, then "restart" (drop the vault, reconstruct a
+    // fresh one over the SAME envelope + keyring). Pre-fix: the in-memory
+    // counter reset → unlock succeeds. Post-fix: the lockout is sealed into the
+    // envelope under the master key and re-armed on load → still LockedOut.
+    let (v, fake, p) = init_and_unlock(0);
+    v.lock();
+    for _ in 0..MAX_ATTEMPTS {
+        assert_eq!(
+            v.unlock(&mut WRONG.to_vec()).unwrap_err(),
+            CustodyError::Denied
+        );
+    }
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::LockedOut,
+        "locked out before restart"
+    );
+    drop(v);
+
+    // Simulated restart over the same envelope + keyring.
+    let v2 = CustodyVault::new(Box::new(SharedFake(fake.clone())), p, 0);
+    assert_eq!(
+        v2.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::LockedOut,
+        "lockout must persist across a process restart (CRY-3/BND-2)"
+    );
+}
+
+// ----- BND-3: concurrent puts both survive (no lost write) --------------
+
+#[test]
+fn adv_bnd3_concurrent_puts_both_survive() {
+    // Attack: two concurrent puts. Pre-fix: load→insert→save was not serialized,
+    // so one write was silently lost (list() == 1). Post-fix: puts serialize
+    // under the mutex + atomic temp/fsync/rename → both survive.
+    use std::sync::Arc;
+    let (v, _f, _p) = init_and_unlock(0);
+    let v = Arc::new(v);
+    let v1 = Arc::clone(&v);
+    let v2 = Arc::clone(&v);
+    let h1 = std::thread::spawn(move || v1.put("slot-1", &mut b"ONE".to_vec()));
+    let h2 = std::thread::spawn(move || v2.put("slot-2", &mut b"TWO".to_vec()));
+    h1.join().unwrap().unwrap();
+    h2.join().unwrap().unwrap();
+    let names: std::collections::BTreeSet<String> =
+        v.list().unwrap().into_iter().map(|s| s.name).collect();
+    assert!(names.contains("slot-1"), "slot-1 survived: {names:?}");
+    assert!(names.contains("slot-2"), "slot-2 survived: {names:?}");
+    // And both are readable (header stayed consistent with the slot set).
+    assert_eq!(v.custody_get("slot-1").unwrap().as_slice(), b"ONE");
+    assert_eq!(v.custody_get("slot-2").unwrap().as_slice(), b"TWO");
+}
+
+// ----- CRY-5: mint refuses to clobber an existing keyring master --------
+
+#[test]
+fn adv_cry5_no_master_clobber_on_reinit() {
+    // Attack: delete custody.enc (the keyring master survives), then re-init.
+    // Pre-fix: is_initialized() is file-exists only, so init runs and
+    // mint_master_key overwrites the master → old secrets orphaned + takeover.
+    // Post-fix: mint refuses to overwrite an existing master → re-init fails
+    // closed, the original master (and its secrets) is preserved.
+    let (v, fake, p) = init_and_unlock(0);
+    let master_before = fake.get(KEYRING_MASTER_ACCOUNT).unwrap().unwrap();
+    v.lock();
+
+    // Delete the envelope; the keyring master survives.
+    std::fs::remove_file(&p).unwrap();
+    assert!(!v.is_initialized());
+
+    // Re-init with an ATTACKER passphrase must be refused (master present).
+    let r = v.init(&mut b"attacker-passphrase".to_vec());
+    assert_eq!(
+        r.unwrap_err(),
+        CustodyError::Corrupt,
+        "re-init over a surviving keyring master must fail closed (CRY-5)"
+    );
+    // The master was NOT clobbered.
+    let master_after = fake.get(KEYRING_MASTER_ACCOUNT).unwrap().unwrap();
+    assert_eq!(
+        master_before, master_after,
+        "the keyring master must be preserved, not clobbered"
+    );
 }
