@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { wagmiConfig } from "./wagmi";
 import { store, useStore } from "./shell/store";
 import { AppState } from "./shell/state";
+import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
 import { Sidebar } from "./shell/Sidebar";
 import { SignatureCeremony, Coach, Toast, DemoPanel } from "./shell/Chrome";
@@ -100,6 +101,17 @@ function Root() {
 
   useEffect(() => {
     store.start();
+    // In a Tauri build, hydrate app config from the real on-disk store so the
+    // Settings surface reflects persisted values across restart (CORE-A1 A1.4).
+    // In sim mode this reads back the current AppState and is a no-op.
+    if (bridge.mode === "tauri") {
+      bridge.config
+        .read()
+        .then((cfg) => store.setState(cfg as Partial<AppState>))
+        .catch(() => {
+          /* honest: a failed read leaves defaults; no fabricated values */
+        });
+    }
     const onHash = () => {
       const r = (location.hash || "").replace(/^#\//, "");
       if (r && r !== store.state.route && ["dashboard", "wallet", "node", "storage", "journal", "comms", "commissary", "settings"].indexOf(r) >= 0) {

@@ -1,0 +1,80 @@
+// =====================================================================
+// citrate-core — bridge domain contracts (CORE-A1 · A1.1)
+//
+// One typed interface per domain: auth, wallet, node, memory, chat,
+// membership, commissary, comms, config. Each declares the async functions
+// its surface needs — the shapes the current `store.*` methods already imply.
+//
+// A1 wires exactly ONE domain for real (`config`, the round-trip proof). The
+// other eight are typed contracts whose sim impl delegates to the prototype
+// Store and whose Tauri impl returns `Unavailable` (Rule 1) until a later
+// phase flips it. The surfaces above these interfaces never change.
+// =====================================================================
+import type { AppConfig, KeyringStatus } from "./types";
+
+// ---- config (A1.4 — the genuinely-live domain) ----------------------
+export interface ConfigDomain {
+  /** Read the full persisted app config from the real on-disk store. */
+  read(): Promise<AppConfig>;
+  /** Persist a partial patch; returns the merged, now-persisted config. */
+  write(patch: Partial<AppConfig>): Promise<AppConfig>;
+  /** OS keyring availability, read from the platform (not fabricated). */
+  keyringStatus(): Promise<KeyringStatus>;
+}
+
+// ---- the eight seam domains -----------------------------------------
+// Their sim impls delegate to the prototype Store (1:1 UI preserved); their
+// Tauri impls throw `Unavailable` until their own later phase.
+
+export interface AuthDomain {
+  /** OIDC entitlement claim shown in Settings › Account (sim: from AppState). */
+  userinfo(): Promise<{ sub: string; email: string; tier: string; role: string; org: string | null }>;
+  signOut(): Promise<void>;
+}
+
+export interface WalletDomain {
+  balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
+  activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number }[]>;
+}
+
+export interface NodeDomain {
+  status(): Promise<{ state: string; peers: number; height: number; syncPct: number }>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface MemoryDomain {
+  assert(fact: string): Promise<"approved" | "declined">;
+  recall(query: string): Promise<string>;
+}
+
+export interface ChatDomain {
+  /** Which provider transport the harness routes to (gateway/local/demo). */
+  backend(): Promise<{ kind: string; label: string }>;
+}
+
+export interface MembershipDomain {
+  entitlement(): Promise<{ status: "active" | "expiring" | "grace" | "lapsed"; tier: string; expiresAt: string }>;
+}
+
+export interface CommissaryDomain {
+  catalog(): Promise<{ name: string; capabilities: string[] }[]>;
+}
+
+export interface CommsDomain {
+  connections(): Promise<Record<string, boolean>>;
+}
+
+// ---- the full bridge surface ----------------------------------------
+export interface BridgeContract {
+  readonly mode: "sim" | "tauri";
+  config: ConfigDomain;
+  auth: AuthDomain;
+  wallet: WalletDomain;
+  node: NodeDomain;
+  memory: MemoryDomain;
+  chat: ChatDomain;
+  membership: MembershipDomain;
+  commissary: CommissaryDomain;
+  comms: CommsDomain;
+}

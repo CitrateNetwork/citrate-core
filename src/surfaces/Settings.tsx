@@ -16,6 +16,18 @@
 import { Store } from "../shell/store";
 import { AppState, PERSONAS } from "../shell/state";
 import { LoaderMark } from "../components/LoaderMark";
+import { bridge, type AppConfig } from "../bridge";
+
+// Node-configuration + App config write through the bridge (CORE-A1 A1.4). In
+// sim mode this delegates back to the Store (1:1 UI preserved); in a Tauri
+// build it round-trips through the real on-disk config store. We optimistically
+// patch AppState (unchanged UX) and persist the same value through the bridge.
+function writeConfig(store: Store, patch: Partial<AppConfig>): void {
+  store.setState(patch as Partial<AppState>);
+  bridge.config.write(patch).catch(() => {
+    /* honest no-op: on the Tauri path a failed persist surfaces on next read */
+  });
+}
 
 const short = (h: string | null | undefined) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
 
@@ -157,7 +169,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     label: c + " %",
     cls: btnCls(s.cpuCap === c),
     go: () => {
-      store.setState({ cpuCap: c });
+      writeConfig(store, { cpuCap: c });
       store.save();
     },
   }));
@@ -206,7 +218,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     label: m + " min",
     cls: btnCls(s.autolock === m),
     go: () => {
-      store.setState({ autolock: m });
+      writeConfig(store, { autolock: m });
       store.toast("Auto-lock set to " + m + " minutes — UI and keystore share this constant");
       store.save();
     },
@@ -449,7 +461,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.net === "testnet")}
                   onClick={() => {
-                    store.setState({ net: "testnet" });
+                    writeConfig(store, { net: "testnet" });
                     store.save();
                   }}
                 >
@@ -458,7 +470,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.net === "local")}
                   onClick={() => {
-                    store.setState({ net: "local" });
+                    writeConfig(store, { net: "local" });
                     store.toast("Applies at next node start — the running sidecar is untouched");
                     store.save();
                   }}
@@ -515,7 +527,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.rpc === "local")}
                   onClick={() => {
-                    store.setState({ rpc: "local" });
+                    writeConfig(store, { rpc: "local" });
                     store.save();
                   }}
                 >
@@ -524,7 +536,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.rpc === "public")}
                   onClick={() => {
-                    store.setState({ rpc: "public" });
+                    writeConfig(store, { rpc: "public" });
                     store.save();
                   }}
                 >
@@ -662,7 +674,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.sigPolicy === "hitl")}
                   onClick={() => {
-                    store.setState({ sigPolicy: "hitl" });
+                    writeConfig(store, { sigPolicy: "hitl" });
                     store.save();
                   }}
                 >
@@ -671,7 +683,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.sigPolicy === "allow")}
                   onClick={() => {
-                    store.setState({ sigPolicy: "allow" });
+                    writeConfig(store, { sigPolicy: "allow" });
                     store.toast("Allowlist rules are user-authored per origin + contract — editor ships in the wired build");
                     store.save();
                   }}
@@ -771,7 +783,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.channel === "stable")}
                   onClick={() => {
-                    store.setState({ channel: "stable" });
+                    writeConfig(store, { channel: "stable" });
                     store.save();
                   }}
                 >
@@ -780,7 +792,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.channel === "beta")}
                   onClick={() => {
-                    store.setState({ channel: "beta" });
+                    writeConfig(store, { channel: "beta" });
                     store.save();
                   }}
                 >
@@ -810,7 +822,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(!s.telemetry)}
                   onClick={() => {
-                    store.setState({ telemetry: false });
+                    writeConfig(store, { telemetry: false });
                     store.save();
                   }}
                 >
@@ -819,7 +831,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button
                   className={btnCls(s.telemetry)}
                   onClick={() => {
-                    store.setState({ telemetry: true });
+                    writeConfig(store, { telemetry: true });
                     store.save();
                   }}
                 >
