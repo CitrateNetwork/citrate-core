@@ -1,0 +1,14 @@
+/* citrate-core — style entry.
+   Order matters: the Citrate foundation (brand tokens, type, motif) first,
+   then the two-register token set + product primitives that layer over it.
+   Both are vendored 1:1 from the design bundle (design/); see design/README
+   is absent by design — the .dc.html sources in design/ are the reference. */
+@import "./foundation.css";
+@import "./tokens.css";
+
+/* App root fills the Tauri webview; the design drives its own backgrounds
+   per surface via data-register, so the root stays neutral. */
+#root {
+  height: 100vh;
+  overflow: hidden;
+}
