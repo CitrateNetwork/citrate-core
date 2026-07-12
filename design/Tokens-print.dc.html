@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/citrate-design-system-244c4cdf-0fbf-406e-9d19-bc9db7d7b48a/styles.css">
+<link rel="stylesheet" href="citrate-core-tokens.css">
+<style>
+  html, body { margin: 0; }
+  doc-page:not(:defined) { visibility: hidden; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  @media print {
+    *, *::before, *::after {
+      animation-delay: -99s !important; animation-duration: .001s !important;
+      animation-iteration-count: 1 !important; animation-fill-mode: both !important;
+      animation-play-state: running !important; transition-duration: 0s !important;
+    }
+  }
+</style>
+<script>
+addEventListener('load', () => {
+  (async () => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 9000) {
+      const dp = document.querySelector('doc-page');
+      if (dp && dp.querySelector('h1')) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    try { await document.fonts.ready; } catch (e) {}
+    setTimeout(() => window.print(), 600);
+  })();
+});
+</script>
+</helmet>
+<x-import component-from-global-scope="doc-page" from="./doc-page.js" size="letter" orientation="portrait" margin="0.65in" hint-size="100%,100%">
+  <div data-register="charter" style="font-family:var(--font-sans);color:#0e0f0c;display:flex;flex-direction:column;gap:22px;">
+
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <span class="eyebrow" style="font-size:10px;">citrate-core · unified token set · deliverable 04 §7.1</span>
+      <h1 style="font-family:var(--font-display);font-weight:380;font-size:32px;line-height:1.08;letter-spacing:-0.022em;margin:0;">Two registers, one foundation</h1>
+      <p style="font-size:12.5px;line-height:1.6;color:#555851;margin:0;">Every surface styles against semantic tokens — <span class="mono" style="font-size:11px;">--srf-*, --tx-*, --line-*, --accent</span> — defined per register in <span class="mono" style="font-size:11px;">citrate-core-tokens.css</span>. A subtree switches register with one attribute: <span class="mono" style="font-size:11px;">data-register="charter | instrument"</span>. Brand color, type, spacing, radii, and motion come from the Citrate foundation and are shared by both registers.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;break-inside:avoid;">
+      <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px;break-inside:avoid;">
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <span style="font-family:var(--font-display);font-weight:440;font-size:17px;">Charter</span>
+          <span class="mono" style="font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:#84867f;">light · civic · onboarding, commissary, settings, comms</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;">
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#f4f1ea;border:1px solid #d9dad4;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-0</span><span class="mono" style="font-size:9.5px;color:#84867f;">#f4f1ea · page</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#faf8f3;border:1px solid #d9dad4;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-1</span><span class="mono" style="font-size:9.5px;color:#84867f;">#faf8f3 · card</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#ffffff;border:1px solid #d9dad4;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-2</span><span class="mono" style="font-size:9.5px;color:#84867f;">#ffffff · instrument, dialogs</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#f1efe8;border:1px solid #d9dad4;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-inset</span><span class="mono" style="font-size:9.5px;color:#84867f;">#f1efe8 · wells, code</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#0e0f0c;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--tx-1</span><span class="mono" style="font-size:9.5px;color:#84867f;">#0e0f0c · primary text</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#555851;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--tx-2</span><span class="mono" style="font-size:9.5px;color:#84867f;">#555851 · secondary</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#84867f;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--tx-3</span><span class="mono" style="font-size:9.5px;color:#84867f;">#84867f · tertiary</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#d9dad4;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--line-1 / 2</span><span class="mono" style="font-size:9.5px;color:#84867f;">#d9dad4 · #c3c4be · hairlines, fields</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#5a8205;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--accent-text</span><span class="mono" style="font-size:9.5px;color:#84867f;">#5a8205 · AA accent on cream</span></div>
+        </div>
+      </div>
+      <div style="background:#0e1a13;border:1px solid #0e0f0c;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px;color:#e9efe7;break-inside:avoid;">
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          <span style="font-family:var(--font-display);font-weight:440;font-size:17px;">Instrument</span>
+          <span class="mono" style="font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:rgba(233,239,231,.5);">dark · live · dashboard, node, wallet, storage</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;">
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#0e1a13;border:1px solid rgba(233,239,231,.26);flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-0</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">#0e1a13 · panel field</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#12211a;border:1px solid rgba(233,239,231,.26);flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-1</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">#12211a · inset A</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#17291e;border:1px solid rgba(233,239,231,.26);flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-2</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">#17291e · inset B</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#0b1410;border:1px solid rgba(233,239,231,.26);flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--srf-inset</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">#0b1410 · wells, log tails</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#e9efe7;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--tx-1</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">#e9efe7 · primary text</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#b9c6bd;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--tx-2</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">#b9c6bd · zone silver</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:rgba(233,239,231,.52);flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--tx-3</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">rgba(233,239,231,.52)</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:rgba(233,239,231,.13);flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--line-1 / 2</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">.13 / .26 alpha hairlines</span></div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#8ecc09;flex-shrink:0;"></span><span class="mono" style="font-size:9.5px;width:70px;">--accent-text</span><span class="mono" style="font-size:9.5px;color:rgba(233,239,231,.55);">#8ecc09 · AA on dark</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;break-inside:avoid;">
+      <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px;break-inside:avoid;">
+        <span class="eyebrow" style="font-size:9px;">Brand accents · reserved</span>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#8ecc09;flex-shrink:0;"></span><span class="mono" style="font-size:9px;">citrate green #8ecc09 — witness, settle, sign</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#ffbd10;flex-shrink:0;"></span><span class="mono" style="font-size:9px;">citrate yellow #ffbd10 — pending, evidence</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#0f2a1a;flex-shrink:0;"></span><span class="mono" style="font-size:9px;">evergreen #0f2a1a — nav, trust anchor</span></div>
+        <p style="font-size:9px;line-height:1.5;color:#84867f;margin:0;">Never a fill larger than a button. If brand color covers more than 8% of a screen, the design is wrong.</p>
+      </div>
+      <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px;break-inside:avoid;">
+        <span class="eyebrow" style="font-size:9px;">Semantic · per register</span>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#ecf5d4;border:1px solid #4f8a05;flex-shrink:0;"></span><span class="mono" style="font-size:9px;">--ok #4f8a05 / dark #8ecc09</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#fff1c4;border:1px solid #b07b00;flex-shrink:0;"></span><span class="mono" style="font-size:9px;">--warn #b07b00 / dark #ffbd10</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#f6e1de;border:1px solid #a72414;flex-shrink:0;"></span><span class="mono" style="font-size:9px;">--danger #a72414 / dark #dd7259</span></div>
+        <div style="display:flex;align-items:center;gap:8px;"><span style="width:18px;height:18px;border-radius:4px;background:#dbe7ef;border:1px solid #1b4965;flex-shrink:0;"></span><span class="mono" style="font-size:9px;">--info #1b4965 / dark #4cc3d5</span></div>
+      </div>
+      <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px;break-inside:avoid;">
+        <span class="eyebrow" style="font-size:9px;">Zone hues · categorical</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <span style="width:18px;height:18px;border-radius:4px;background:#4cc3d5;"></span>
+          <span style="width:18px;height:18px;border-radius:4px;background:#ffbd10;"></span>
+          <span style="width:18px;height:18px;border-radius:4px;background:#e0699f;"></span>
+          <span style="width:18px;height:18px;border-radius:4px;background:#8b8ef5;"></span>
+          <span style="width:18px;height:18px;border-radius:4px;background:#8ecc09;"></span>
+          <span style="width:18px;height:18px;border-radius:4px;background:#b9c6bd;"></span>
+        </div>
+        <p style="font-size:9px;line-height:1.5;color:#84867f;margin:0;">cyan · amber · magenta · indigo · green · silver. Categorical only — tenants, ceremony origins, data series. Never for status.</p>
+        <div style="border-top:1px solid #d9dad4;padding-top:6px;display:flex;flex-direction:column;gap:3px;">
+          <span class="mono" style="font-size:8.5px;color:#84867f;">ceremony origin mapping</span>
+          <span class="mono" style="font-size:8.5px;">user #5a8205 · node-agent #1b4965 · chat #5d60c9 · micro-app #a8497a</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;break-inside:avoid;">
+      <span class="eyebrow" style="font-size:9px;">Type · Space Grotesk display, Geist UI, Geist Mono data</span>
+      <div style="display:flex;flex-direction:column;gap:9px;">
+        <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #ecebe4;padding-bottom:9px;"><span class="mono" style="font-size:8.5px;color:#84867f;width:170px;flex-shrink:0;">display · SG 380 · 44–46px · -0.022em</span><span style="font-family:var(--font-display);font-weight:380;font-size:24px;line-height:1.06;letter-spacing:-0.022em;">The federation's house.</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #ecebe4;padding-bottom:9px;"><span class="mono" style="font-size:8.5px;color:#84867f;width:170px;flex-shrink:0;">page title · SG 420 · 24–32px</span><span style="font-family:var(--font-display);font-weight:420;font-size:17px;">Grant + stake ceremony</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #ecebe4;padding-bottom:9px;"><span class="mono" style="font-size:8.5px;color:#84867f;width:170px;flex-shrink:0;">big numeral · SG 380 tabular</span><span class="tabular" style="font-family:var(--font-display);font-weight:380;font-size:24px;">32,000</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #ecebe4;padding-bottom:9px;"><span class="mono" style="font-size:8.5px;color:#84867f;width:170px;flex-shrink:0;">body · Geist 400 · 13–15px / 1.55</span><span style="font-size:11.5px;line-height:1.55;">Every stage is resumable. Close the app at any point — it resumes from server and chain truth.</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #ecebe4;padding-bottom:9px;"><span class="mono" style="font-size:8.5px;color:#84867f;width:170px;flex-shrink:0;">compliance label · Mono 500 · +0.14em</span><span class="mono" style="font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:#555851;">Signature ceremony · data source — /userinfo</span></div>
+        <div style="display:flex;align-items:baseline;gap:12px;"><span class="mono" style="font-size:8.5px;color:#84867f;width:170px;flex-shrink:0;">data · Mono 400 tabular · 11–13px</span><span class="mono tabular" style="font-size:10px;">0xfd27…685e · 131,244 · 24 peers · 0.0018 SALT</span></div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;break-inside:avoid;">
+      <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:6px;break-inside:avoid;">
+        <span class="eyebrow" style="font-size:9px;">Spacing · 8pt grid</span>
+        <span class="mono" style="font-size:9px;line-height:1.9;">--s-1 4 · --s-2 8 · --s-3 12 · --s-4 16<br>--s-5 20 · --s-6 24 · --s-7 32 · --s-8 40<br>page pad 20/26 · card pad 16–18 · gap 12–16</span>
+      </div>
+      <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:6px;break-inside:avoid;">
+        <span class="eyebrow" style="font-size:9px;">Radii + rules</span>
+        <span class="mono" style="font-size:9px;line-height:1.9;">--r-1 6 buttons/inputs · --r-2 8 cards<br>--r-3 12 modals · pill 999 status only<br>hairlines 1px, never drop shadows;<br>shadow only on modals + popovers</span>
+      </div>
+      <div style="background:#faf8f3;border:1px solid #d9dad4;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:6px;break-inside:avoid;">
+        <span class="eyebrow" style="font-size:9px;">Motion</span>
+        <span class="mono" style="font-size:9px;line-height:1.9;">fast 140ms · base 220ms · slow 420ms<br>ccStamp 700ms spring — witness marks<br>ccRowStroke 1.8s — filing choreography<br>ccPulse 2.4s — live dots<br>prefers-reduced-motion kills all of it</span>
+      </div>
+    </div>
+
+    <div style="border-top:2px solid #0e0f0c;padding-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:14px;break-inside:avoid;">
+      <p style="font-size:10.5px;line-height:1.7;color:#555851;margin:0;">Green marks the consequential moment — approve, witness, settle — and nothing else. Yellow is pending and evidence. Status pills are the only pills. Numbers are always tabular, always sourced, and unknown renders as "—" with a reason, never a placeholder.</p>
+      <p style="font-size:10.5px;line-height:1.7;color:#555851;margin:0;">The lattice motif appears at most once per surface. Backgrounds are solid. No gradients, no colored shadows, no emoji. Locked cards invite with the one unlock action; org-scoped content is hidden, never "locked."</p>
+    </div>
+
+  </div>
+</x-import>
+</x-dc>
+</body>
+</html>

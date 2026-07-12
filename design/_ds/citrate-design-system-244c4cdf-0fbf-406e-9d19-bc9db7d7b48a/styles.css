@@ -1,0 +1,7 @@
+/* =============================================================
+   Citrate Network — design system entry stylesheet
+   Consumers link THIS one file; it pulls in the full token,
+   type, and motif foundation.
+   ============================================================= */
+
+@import url("./colors_and_type.css");

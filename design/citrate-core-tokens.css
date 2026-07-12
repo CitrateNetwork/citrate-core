@@ -1,0 +1,191 @@
+/* =====================================================================
+   citrate-core — unified token set (deliverable 04 §7.1)
+   Two registers over the Citrate foundation (colors_and_type.css):
+
+     Charter    — light, civic, document-like. Onboarding, membership,
+                  Commissary, Settings, Comms.
+     Instrument — dark, live telemetry. Dashboard, Node, Wallet, Storage.
+
+   Every component styles against the semantic --srf/--tx/--line/--accent
+   tokens below, so a subtree switches register with one attribute:
+       <div data-register="instrument"> … </div>
+   Base brand tokens (--citrate-green, --font-*, --s-*, --r-*, --dur-*,
+   --ease-*) come from the design-system foundation and are shared.
+   ===================================================================== */
+
+:root,
+[data-register="charter"] {
+  --srf-0: #f4f1ea;            /* page                     */
+  --srf-1: #faf8f3;            /* card                     */
+  --srf-2: #ffffff;            /* raised card / instrument */
+  --srf-inset: #f1efe8;        /* wells, code, rails       */
+  --tx-1: #0e0f0c;             /* primary text             */
+  --tx-2: #555851;             /* secondary                */
+  --tx-3: #84867f;             /* tertiary / captions      */
+  --line-1: #d9dad4;           /* hairlines                */
+  --line-2: #c3c4be;           /* form fields, dividers    */
+  --line-strong: #0e0f0c;      /* document rules           */
+
+  --accent: #8ecc09;           /* the consequential moment */
+  --accent-deep: #5a8205;
+  --accent-text: #5a8205;      /* AA accent text on paper  */
+  --accent-wash: #e8f3c6;
+
+  --ok: #4f8a05;      --ok-bg: #ecf5d4;
+  --warn: #b07b00;    --warn-bg: #fff1c4;
+  --danger: #a72414;  --danger-bg: #f6e1de;
+  --info: #1b4965;    --info-bg: #dbe7ef;
+
+  --focus-ring: 0 0 0 3px rgba(142,204,9,.35);
+}
+
+[data-register="instrument"] {
+  --srf-0: #0e1a13;            /* panel field  (ALF)       */
+  --srf-1: #12211a;            /* inset A      (ALF)       */
+  --srf-2: #17291e;            /* inset B      (ALF)       */
+  --srf-inset: #0b1410;
+  --tx-1: #e9efe7;
+  --tx-2: #b9c6bd;             /* zone silver              */
+  --tx-3: rgba(233,239,231,.52);
+  --line-1: rgba(233,239,231,.13);
+  --line-2: rgba(233,239,231,.26);
+  --line-strong: #e9efe7;
+
+  --accent: #8ecc09;
+  --accent-deep: #a7e22e;      /* hover lightens on dark   */
+  --accent-text: #8ecc09;
+  --accent-wash: rgba(142,204,9,.10);
+
+  --ok: #8ecc09;      --ok-bg: rgba(142,204,9,.12);
+  --warn: #ffbd10;    --warn-bg: rgba(255,189,16,.12);
+  --danger: #dd7259;  --danger-bg: rgba(167,36,20,.22);
+  --info: #4cc3d5;    --info-bg: rgba(76,195,213,.12);
+
+  --focus-ring: 0 0 0 3px rgba(142,204,9,.4);
+}
+
+/* Zone hues (categorical, both registers — ALF handoff) */
+:root {
+  --z-cyan: #4cc3d5;
+  --z-amber: #ffbd10;
+  --z-magenta: #e0699f;
+  --z-indigo: #8b8ef5;
+  --z-green: #8ecc09;
+  --z-silver: #b9c6bd;
+}
+
+/* ---------------------------------------------------------------------
+   Base reset (page-level)
+   -------------------------------------------------------------------- */
+html, body { margin: 0; padding: 0; height: 100%; background: #f4f1ea; }
+* { box-sizing: border-box; }
+a { color: var(--accent-text, #5a8205); text-decoration: none; }
+a:hover { color: var(--accent-deep, #5a8205); text-decoration: underline; }
+button { font: inherit; }
+
+::selection { background: #ffbd10; color: #0e0f0c; }
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------------------------------------------------------------------
+   Product chrome classes — lifted from the console kit, made
+   register-aware by pointing at the semantic tokens.
+   -------------------------------------------------------------------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 34px; padding: 0 14px;
+  border-radius: var(--r-1);
+  font-family: var(--font-sans); font-weight: 500; font-size: 13px;
+  white-space: nowrap; cursor: pointer; border: 1px solid transparent;
+  transition: background var(--dur-fast) var(--ease-standard),
+              color var(--dur-fast) var(--ease-standard),
+              border-color var(--dur-fast) var(--ease-standard),
+              transform var(--dur-fast) var(--ease-standard);
+}
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #0e0f0c; border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-deep); color: #0e0f0c; border-color: var(--accent-deep); }
+[data-register="charter"] .btn-primary:hover { color: #ffffff; }
+.btn-secondary { background: var(--tx-1); color: var(--srf-0); border-color: var(--tx-1); }
+.btn-secondary:hover { opacity: .88; }
+.btn-ghost { background: transparent; color: var(--tx-1); border-color: var(--line-2); }
+.btn-ghost:hover { background: var(--srf-1); border-color: var(--tx-1); }
+.btn-danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger-bg); }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+.btn-lg { height: 42px; padding: 0 18px; font-size: 14px; }
+
+.input {
+  font-family: var(--font-sans); font-size: 14px;
+  padding: 8px 12px; height: 36px;
+  border: 1px solid var(--line-2); background: var(--srf-2); color: var(--tx-1);
+  border-radius: var(--r-1); width: 100%; outline: none;
+  transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
+}
+.input:focus { border-color: var(--tx-1); box-shadow: var(--focus-ring); }
+.input::placeholder { color: var(--tx-3); }
+
+.lbl {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--tx-2);
+  margin-bottom: 6px; display: block;
+}
+.eyebrow {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--tx-3);
+}
+.surface { background: var(--srf-2); border: 1px solid var(--line-1); border-radius: var(--r-2); }
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum","lnum"; }
+.tabular { font-variant-numeric: tabular-nums lining-nums; font-feature-settings: "tnum","lnum"; }
+
+/* Lattice on Instrument surfaces */
+.lattice-dots-instrument {
+  background-image: radial-gradient(circle at 1px 1px, rgba(233,239,231,.10) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* ---------------------------------------------------------------------
+   Motion — named, reusable, all killed by prefers-reduced-motion
+   -------------------------------------------------------------------- */
+@keyframes ccPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+@keyframes ccFadeUp { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: translateY(0) } }
+@keyframes ccStamp {
+  0% { opacity: 0; transform: scale(.55) rotate(-6deg) }
+  70% { opacity: 1; transform: scale(1.06) rotate(1deg) }
+  100% { opacity: 1; transform: scale(1) rotate(0deg) }
+}
+@keyframes ccRowStroke { from { background: rgba(142,204,9,.22) } to { background: transparent } }
+@keyframes ccCaret { 0%,100% { opacity: 1 } 50% { opacity: 0 } }
+@keyframes ccComet { to { stroke-dashoffset: -264 } }
+@keyframes ccBarSlide { from { background-position: 0 0 } to { background-position: 28px 0 } }
+
+.cc-fade-up { animation: ccFadeUp var(--dur-slow) var(--ease-standard) both; }
+.cc-stamp { animation: ccStamp 700ms var(--ease-spring) both; }
+.cc-row-stroke { animation: ccRowStroke 1.8s var(--ease-standard) 1; }
+
+/* Journal layout — degrades with available width */
+.journal-grid {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr) minmax(230px, 280px);
+  gap: 16px;
+}
+@media (max-width: 1280px) {
+  .journal-grid { grid-template-columns: 190px minmax(0, 1fr); }
+  .journal-capture { grid-column: 1 / -1; min-height: 340px; }
+}
+@media (max-width: 1000px) {
+  .journal-grid { grid-template-columns: 166px minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
