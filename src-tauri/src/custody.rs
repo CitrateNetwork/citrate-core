@@ -88,20 +88,38 @@ fn is_reserved_domain_tag(name: &str) -> bool {
 const KEYRING_SERVICE: &str = "ai.citrate.core";
 const KEYRING_MASTER_ACCOUNT: &str = "custody-master-key";
 /// OS keyring account for the monotonic high-water generation anchor (DR-1).
-/// Lives OUTSIDE the attacker-writable `custody.enc`, integrity-protected by the
-/// OS keyring the same way the master key is, so a whole-envelope rollback (an
-/// older, internally-consistent `custody.enc`) is rejected: any envelope whose
+/// Lives OUTSIDE the attacker-writable `custody.enc`, so a **filesystem-only**
+/// whole-envelope rollback (an older, internally-consistent `custody.enc`
+/// restored while the keyring is untouched) is rejected: any envelope whose
 /// header generation is BELOW this high-water fails closed. Stored as 8-byte
 /// big-endian `u64`.
+///
+/// SCOPE (F-1 — honest limit): this anchor defends FS-only rollback, NOT an
+/// attacker who can WRITE OR DELETE keyring entries. An attacker with a
+/// keyring-write/delete capability who DELETES this entry (leaving
+/// `custody-master-key`) downgrades the vault to NO rollback protection,
+/// because a deleted/absent anchor is intentionally treated as first-init (see
+/// `read_anchor`) so a legitimately-lost anchor — keychain reset, machine
+/// migration, backup-restore — still opens the vault. From inside the vault a
+/// maliciously-deleted anchor is indistinguishable from a legitimately-lost
+/// one. Closing that gap needs a second, master-sealed "anchor-initialized"
+/// bit (owner-decision follow-up; it trades keychain-reset/migration
+/// recoverability — see the sprint's Day-4 note), not shipped here. Stored as
+/// 8-byte big-endian `u64`.
 const KEYRING_GENERATION_ACCOUNT: &str = "custody-generation";
 /// OS keyring account for the lockout block's OWN monotonic high-water (DR-2).
 /// Separate from the envelope generation anchor because failed-unlock lockout
 /// writes advance on attempts that do NOT mutate the envelope (the header
 /// generation stays put), so the two counters must not share a lane — otherwise
 /// a burst of failed unlocks would push the envelope anchor past the header
-/// generation and fail closed on the next legitimate unlock. A rollback of the
-/// lockout block to an older generation is below this anchor and is caught.
-/// Stored as 8-byte big-endian `u64`.
+/// generation and fail closed on the next legitimate unlock. A **filesystem-only**
+/// rollback of the lockout block to an older generation is below this anchor and
+/// is caught. Same F-1 delete-downgrade limit as `custody-generation`: an
+/// attacker who can DELETE this entry reverts the throttle to no-anchor
+/// (first-init), resetting the lockout — deletion is treated as first-init for
+/// availability. Additionally (already-known limit), a DUMPED keyring master
+/// lets the throttle be forged at the current generation, leaving only Argon2id
+/// as the per-guess brake. Stored as 8-byte big-endian `u64`.
 const KEYRING_LOCKOUT_GEN_ACCOUNT: &str = "custody-lockout-generation";
 
 /// Envelope file name inside the app data dir.
@@ -251,15 +269,23 @@ struct SealedSlot {
 /// - a **keyring high-water generation anchor** (`custody-generation`, DR-1)
 ///   OUTSIDE the attacker-writable envelope: on unlock and on every `custody_get`,
 ///   any envelope whose header generation is BELOW the high-water is rejected
-///   (`Corrupt`). This is what actually defeats a whole-envelope rollback;
+///   (`Corrupt`). This defeats a **filesystem-only** whole-envelope rollback (the
+///   envelope restored while the keyring anchor is untouched). SCOPE (F-1): it
+///   does NOT defend an attacker who can DELETE the keyring anchor — a
+///   deleted/absent anchor is intentionally treated as first-init for
+///   availability (a legitimately-lost anchor must still open the vault), so a
+///   delete-then-rollback downgrades to no rollback protection. See
+///   `custody-generation` / `read_anchor` for the full limit;
 /// - a **master-key-sealed `lockout`** block (`failures` + absolute deadline +
 ///   its own `generation`), so the lockout survives a process restart
 ///   (CRY-3/BND-2) AND is bound to a SEPARATE keyring high-water
-///   (`custody-lockout-generation`, DR-2) so a plain file-write rollback of the
-///   lockout block (resetting the throttle) is detected. HONEST LIMITATION: an
-///   attacker who has DUMPED the keyring master can forge a fresh lockout block
-///   at the current generation and remove the throttle — in that case only
-///   Argon2id remains the per-guess brake (see the sprint's DR-2 note).
+///   (`custody-lockout-generation`, DR-2) so a **filesystem-only** rollback of the
+///   lockout block (resetting the throttle) is detected. HONEST LIMITATIONS: an
+///   attacker who can DELETE the lockout anchor resets it to first-init (same F-1
+///   delete-downgrade as DR-1); and an attacker who has DUMPED the keyring master
+///   can forge a fresh lockout block at the current generation and remove the
+///   throttle — in either case only Argon2id remains the per-guess brake (see the
+///   sprint's DR-2 / Day-4 notes).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Envelope {
     version: u8,
@@ -288,7 +314,9 @@ struct Envelope {
 /// It does NOT catch a whole-envelope rollback (an older, self-consistent
 /// header+slots pair) on its own — that is the job of the keyring high-water
 /// generation anchor (DR-1), which compares this `generation` against a value
-/// held outside the envelope.
+/// held outside the envelope. That anchor defends only a FILESYSTEM-only
+/// rollback; an attacker who can DELETE the keyring anchor downgrades past it
+/// (F-1 — see `custody-generation` / `read_anchor`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Header {
     /// Generation counter, incremented on every envelope mutation. Compared
@@ -581,8 +609,20 @@ impl CustodyVault {
     /// Read a monotonic high-water counter (`account`) from the OS keyring, or
     /// `None` if it has never been set (first init). An unreachable keyring is a
     /// hard fault (`KeyringUnavailable`) — fail closed, never treat "can't read
-    /// the anchor" as "no anchor" (that would re-open the rollback). A malformed
-    /// entry (wrong length) is treated as tamper → `Corrupt`.
+    /// the anchor" as "no anchor". A malformed entry (wrong length) is treated as
+    /// tamper → `Corrupt`.
+    ///
+    /// F-1 (honest limit): a DELETED/absent entry maps to `Ok(None)`, which both
+    /// guards (`enforce_high_water`, the lockout-gen check) treat as benign
+    /// first-init. This is a deliberate AVAILABILITY choice — a legitimately-lost
+    /// anchor (keychain reset, machine migration, backup-restore) must still open
+    /// the vault — but it means the rollback defense is FS-only: an attacker who
+    /// can DELETE this keyring entry (a keyring-write/delete capability), while
+    /// leaving `custody-master-key`, downgrades a whole-envelope rollback back
+    /// into a re-seed with NO rollback protection. From inside the vault we cannot
+    /// distinguish maliciously-deleted from legitimately-lost without a second,
+    /// master-sealed "anchor-initialized" bit (owner-decision follow-up, not
+    /// shipped here — see the sprint Day-4 note).
     fn read_anchor(&self, account: &str) -> Result<Option<u64>> {
         match self.keyring.get(account)? {
             Some(bytes) => {
@@ -630,11 +670,19 @@ impl CustodyVault {
     }
 
     /// DR-1: reject any envelope whose generation is BELOW the keyring high-water
-    /// (a whole-envelope rollback to an older, internally-consistent state). If
-    /// the envelope generation is at or above the anchor it is fresh; adopt the
-    /// (possibly higher) value into the high-water so the anchor tracks forward.
-    /// First-init (no anchor yet) seeds the anchor from the envelope generation.
-    /// Fails closed (`Corrupt`) on rollback or an unreachable/tampered anchor.
+    /// (a **filesystem-only** whole-envelope rollback to an older,
+    /// internally-consistent state). If the envelope generation is at or above the
+    /// anchor it is fresh; adopt the (possibly higher) value into the high-water so
+    /// the anchor tracks forward. First-init OR a deleted/absent anchor (`None`)
+    /// seeds the anchor from the envelope generation.
+    ///
+    /// F-1 (honest limit): because `None` is treated as first-init (an availability
+    /// choice — see `read_anchor`), this guard does NOT defend against an attacker
+    /// who can DELETE the `custody-generation` keyring entry: deleting the anchor
+    /// then restoring an older envelope re-seeds instead of rejecting, downgrading
+    /// to no rollback protection. The defense holds only against an attacker
+    /// limited to FILESYSTEM writes (anchor intact). Fails closed (`Corrupt`) on
+    /// an in-place rollback, or an unreachable/tampered anchor.
     fn enforce_high_water(&self, generation: u64) -> Result<()> {
         match self.read_high_water()? {
             Some(hw) if generation < hw => Err(CustodyError::Corrupt),
@@ -1071,7 +1119,10 @@ impl CustodyVault {
         // higher-than-anchor generation forward.
         self.enforce_high_water(generation)?;
         env.slots.insert(slot.to_string(), sealed);
-        let next_gen = generation + 1;
+        // `checked_add` hygiene: unreachable in practice (~1.8e19 puts to
+        // overflow a u64 generation) but fail closed (`Corrupt`) rather than
+        // debug-panic / release-wrap if the counter ever saturates.
+        let next_gen = generation.checked_add(1).ok_or(CustodyError::Corrupt)?;
         // Re-seal the header with the new slot set + an incremented generation
         // so the mutation is authenticated and cannot be rolled back to the
         // pre-put state (CRY-1 rollback). The lockout block is NOT touched here —
