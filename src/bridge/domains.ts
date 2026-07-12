@@ -10,7 +10,7 @@
 // Store and whose Tauri impl returns `Unavailable` (Rule 1) until a later
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
-import type { AppConfig, KeyringStatus } from "./types";
+import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "./types";
 
 // ---- config (A1.4 — the genuinely-live domain) ----------------------
 export interface ConfigDomain {
@@ -20,6 +20,22 @@ export interface ConfigDomain {
   write(patch: Partial<AppConfig>): Promise<AppConfig>;
   /** OS keyring availability, read from the platform (not fabricated). */
   keyringStatus(): Promise<KeyringStatus>;
+}
+
+// ---- custody (A2 — the OS-keyring vault) ----------------------------
+// Status + slot METADATA only. This domain NEVER returns secret bytes to the
+// frontend (ADV-8); reading a secret is an in-process Rust API, not an invoke.
+export interface CustodyDomain {
+  /** Vault status: initialized / unlocked / auto-lock / keyring (real in Tauri). */
+  status(): Promise<CustodyStatus>;
+  /** Initialize a fresh vault from a passphrase (mints the keyring master key). */
+  init(passphrase: string): Promise<void>;
+  /** Unlock the session with the passphrase. */
+  unlock(passphrase: string): Promise<void>;
+  /** Lock the session (drops + zeroizes the in-memory data key). */
+  lock(): Promise<void>;
+  /** Slot metadata only — never secret bytes. */
+  listSlots(): Promise<SlotInfo[]>;
 }
 
 // ---- the eight seam domains -----------------------------------------
@@ -69,6 +85,7 @@ export interface CommsDomain {
 export interface BridgeContract {
   readonly mode: "sim" | "tauri";
   config: ConfigDomain;
+  custody: CustodyDomain;
   auth: AuthDomain;
   wallet: WalletDomain;
   node: NodeDomain;

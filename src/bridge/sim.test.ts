@@ -76,3 +76,32 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(await bridge.config.keyringStatus()).toBe("unavailable");
   });
 });
+
+// CORE-A2 A2.5 — sim custody: simulates lock/unlock UI STATE ONLY. It holds no
+// real secret and stores nothing; the real vault lives in the Tauri/Rust path.
+describe("sim adapter — custody UI state only (no real secret, stores nothing)", () => {
+  it("status reflects sim lock state and reads autolock from host config", async () => {
+    const { host } = fakeHost({ autolock: 15 } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const st = await bridge.custody.status();
+    expect(st.unlocked).toBe(false);
+    expect(st.autolockMins).toBe(15);
+    // No OS keyring on the web shim — honest, matches config.keyringStatus.
+    expect(st.keyringStatus).toBe("unavailable");
+  });
+
+  it("unlock then lock flips UI state; no secret is stored anywhere", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await bridge.custody.unlock("anything");
+    expect((await bridge.custody.status()).unlocked).toBe(true);
+    await bridge.custody.lock();
+    expect((await bridge.custody.status()).unlocked).toBe(false);
+  });
+
+  it("listSlots returns no real slots in sim (metadata only, never bytes)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    expect(await bridge.custody.listSlots()).toEqual([]);
+  });
+});

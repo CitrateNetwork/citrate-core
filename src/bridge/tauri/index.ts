@@ -9,7 +9,7 @@
 // these throws with a real invoke, copying the config shape exactly.
 // =====================================================================
 import { invoke } from "@tauri-apps/api/core";
-import type { AppConfig, KeyringStatus } from "../types";
+import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "../types";
 import type { BridgeContract } from "../domains";
 import { Unavailable } from "../types";
 
@@ -29,6 +29,27 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async keyringStatus(): Promise<KeyringStatus> {
         return invoke<KeyringStatus>("config_keyring_status");
+      },
+    },
+
+    // ---- custody: REAL invoke of the A2 vault commands ----
+    // NOTE: there is deliberately no `get` here — no invoke command returns
+    // secret bytes (ADV-8). Reading a secret is an in-process Rust API.
+    custody: {
+      async status(): Promise<CustodyStatus> {
+        return invoke<CustodyStatus>("custody_status");
+      },
+      async init(passphrase: string): Promise<void> {
+        await invoke("custody_init", { passphrase });
+      },
+      async unlock(passphrase: string): Promise<void> {
+        await invoke("custody_unlock", { passphrase });
+      },
+      async lock(): Promise<void> {
+        await invoke("custody_lock");
+      },
+      async listSlots(): Promise<SlotInfo[]> {
+        return invoke<SlotInfo[]>("custody_list");
       },
     },
 

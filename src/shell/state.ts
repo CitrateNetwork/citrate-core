@@ -197,6 +197,12 @@ export interface AppState {
   net: "testnet" | "local";
   cpuCap: number;
   autolock: number;
+  /**
+   * CORE-A2 runtime custody lock state (NOT persisted). In a Tauri build the
+   * store refreshes this from the real `custody_status`; in web-dev it is a sim
+   * UI shim. `"unknown"` before the first status read.
+   */
+  custodyLock: "locked" | "unlocked" | "unknown";
   sigPolicy: "hitl" | "allow";
   channel: "stable" | "beta";
   telemetry: boolean;
@@ -315,6 +321,10 @@ export function freshState(pid: string): AppState {
     net: "testnet",
     cpuCap: 50,
     autolock: 30,
+    // Sim default: the prototype presents an unlocked, provisioned vault so the
+    // Keys-&-security section still renders. A Tauri build overwrites this from
+    // the real custody_status on load.
+    custodyLock: "unlocked",
     sigPolicy: "hitl",
     channel: "stable",
     telemetry: false,

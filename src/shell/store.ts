@@ -24,7 +24,7 @@ import {
 } from "./state";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, ChatProvider, ToolCall } from "../agent/harness";
-import { bindSimHost } from "../bridge";
+import { bindSimHost, bridge } from "../bridge";
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 
@@ -75,6 +75,40 @@ export class Store {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => this.tick(), 600);
+    // CORE-A2 — pull the real custody lock state into the Keys-&-security
+    // section. In a Tauri build this reads the live vault (custody_status); in
+    // web-dev it is the sim shim. Failures leave the field "unknown" (honest).
+    void this.refreshCustody();
+  }
+
+  /**
+   * Refresh the runtime custody lock state from the bridge. Reads real vault
+   * status in a Tauri build; the sim shim in web-dev. Never throws — an
+   * unavailable/failed read is reported honestly as `"unknown"`.
+   */
+  async refreshCustody(): Promise<void> {
+    try {
+      const st = await bridge.custody.status();
+      this.setState({
+        custodyLock: st.unlocked ? "unlocked" : "locked",
+        // config.autolock is the single source of truth; keep UI in sync.
+        autolock: st.autolockMins,
+      });
+    } catch {
+      this.setState({ custodyLock: "unknown" });
+    }
+  }
+
+  /** Unlock the custody vault, then refresh lock state. */
+  async custodyUnlock(passphrase: string): Promise<void> {
+    await bridge.custody.unlock(passphrase);
+    await this.refreshCustody();
+  }
+
+  /** Lock the custody vault, then refresh lock state. */
+  async custodyLock(): Promise<void> {
+    await bridge.custody.lock();
+    await this.refreshCustody();
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer);

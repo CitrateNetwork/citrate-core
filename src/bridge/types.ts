@@ -66,3 +66,25 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
 };
 
 export type KeyringStatus = "available" | "unavailable" | "unknown";
+
+/**
+ * Custody vault status crossing the bridge (CORE-A2). Metadata ONLY — the
+ * bridge custody domain NEVER returns secret bytes to the frontend (ADV-8).
+ * Reading a secret is an in-process Rust API (`custody_get`), not an invoke.
+ */
+export interface CustodyStatus {
+  /** An on-disk envelope exists (the vault has been initialized). */
+  initialized: boolean;
+  /** A session is currently unlocked (respecting auto-lock). */
+  unlocked: boolean;
+  /** Auto-lock window in minutes (mirrors `config.autolock`). */
+  autolockMins: number;
+  /** OS keyring availability, read from the platform (not fabricated). */
+  keyringStatus: KeyringStatus;
+}
+
+/** Slot metadata crossing the bridge — name + ciphertext length, never bytes. */
+export interface SlotInfo {
+  name: string;
+  bytes: number;
+}

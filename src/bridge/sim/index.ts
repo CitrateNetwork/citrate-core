@@ -11,7 +11,7 @@
 // packaged Tauri build — the sim path is unreachable there (Rule 1).
 // =====================================================================
 import type { AppState } from "../../shell/state";
-import type { AppConfig, KeyringStatus } from "../types";
+import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "../types";
 import type { BridgeContract } from "../domains";
 import { assertSimAllowed } from "../mode";
 
@@ -25,6 +25,14 @@ export interface SimHost {
 
 export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
   const s = () => host.getState();
+
+  // Sim custody: UI STATE ONLY. This holds NO real secret and stores nothing —
+  // it exists so the prototype's Keys-&-security section still renders a
+  // plausible lock/unlock in web-dev. The real vault (envelope + keyring +
+  // crypto) lives entirely in the Tauri/Rust path (A2). Guarded out of packaged
+  // builds by `assertSimAllowed`.
+  let simUnlocked = false;
+  let simInitialized = true; // the prototype presents an already-provisioned vault
 
   return {
     // ---- config: in sim, config lives in AppState (localStorage-backed) ----
@@ -52,6 +60,40 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("config.keyringStatus");
         // The web/dev shim has no OS keyring; be honest about that.
         return "unavailable";
+      },
+    },
+
+    // ---- custody: SIM UI STATE ONLY (no real secret, stores nothing) ----
+    custody: {
+      async status(): Promise<CustodyStatus> {
+        assertSimAllowed("custody.status");
+        return {
+          initialized: simInitialized,
+          unlocked: simUnlocked,
+          autolockMins: s().autolock,
+          // No OS keyring on the web shim — honest, matches config.keyringStatus.
+          keyringStatus: "unavailable",
+        };
+      },
+      async init(_passphrase: string): Promise<void> {
+        assertSimAllowed("custody.init");
+        // Simulate provisioning; NO passphrase is derived or stored.
+        simInitialized = true;
+        simUnlocked = true;
+      },
+      async unlock(_passphrase: string): Promise<void> {
+        assertSimAllowed("custody.unlock");
+        // UI state only — the web shim performs no crypto and holds no secret.
+        simUnlocked = true;
+      },
+      async lock(): Promise<void> {
+        assertSimAllowed("custody.lock");
+        simUnlocked = false;
+      },
+      async listSlots(): Promise<SlotInfo[]> {
+        assertSimAllowed("custody.listSlots");
+        // The prototype vault exposes no real slots; metadata only, no bytes.
+        return [];
       },
     },
 

@@ -616,6 +616,50 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {/* ---------- Keys & security ---------- */}
         {s.sSec === "keys" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* CORE-A2 — real custody lock state (custody_status in a Tauri
+                build; sim shim in web-dev). Metadata only; no secret bytes. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+              <span className="eyebrow">Custody vault</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ flex: 1 }}>
+                  <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Session lock</span>
+                  <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
+                    Argon2id + AES-256-GCM envelope · OS-keyring-sealed master key · auto-lock {s.autolock} min
+                  </span>
+                </span>
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    color:
+                      s.custodyLock === "unlocked" ? "var(--ok)" : s.custodyLock === "locked" ? "var(--warn)" : "var(--tx-3)",
+                  }}
+                >
+                  {s.custodyLock === "unlocked" ? "UNLOCKED" : s.custodyLock === "locked" ? "LOCKED" : "UNKNOWN"}
+                </span>
+                {s.custodyLock === "unlocked" ? (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      void store.custodyLock();
+                      store.toast("Vault locked — the in-memory data key is zeroized");
+                    }}
+                  >
+                    Lock now
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      void store.custodyUnlock("");
+                      store.toast("Unlock prompts for your passphrase in the wired build");
+                    }}
+                  >
+                    Unlock…
+                  </button>
+                )}
+              </div>
+            </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Keystore</span>
               <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 10 }}>

@@ -20,7 +20,7 @@ import type { AppState } from "../shell/state";
 import { DEFAULT_APP_CONFIG } from "./types";
 
 export type { BridgeContract } from "./domains";
-export type { AppConfig, KeyringStatus } from "./types";
+export type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "./types";
 export { Unavailable, isUnavailable } from "./types";
 
 // --- sim host binding (dev only) -------------------------------------

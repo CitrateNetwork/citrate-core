@@ -8,18 +8,43 @@
 //! (CORE-S2).
 
 mod config;
+mod custody;
 mod seam;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .setup(|app| {
+            // CORE-A2 — build the process-wide custody vault (real OS keyring +
+            // app-data envelope), seeded with the persisted config.autolock (the
+            // A1 single source of truth). @rule8: no secret bytes cross invoke.
+            let handle = app.handle();
+            let autolock = config::config_read(handle.clone())
+                .map(|c| c.autolock)
+                .unwrap_or_else(|_| config::AppConfig::default().autolock);
+            let state = custody::build_custody_state(handle, autolock)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // config — the one genuinely-live domain (A1.4)
             config::config_read,
             config::config_write,
             config::config_keyring_status,
+            // custody — the OS-keyring vault (A2). NOTE: custody_get is NOT here;
+            // it is an in-process pub fn — no invoke command returns secret bytes.
+            custody::custody_status,
+            custody::custody_init,
+            custody::custody_unlock,
+            custody::custody_lock,
+            custody::custody_put,
+            custody::custody_list,
+            custody::custody_keyring_status,
             // seam domains — honest Unavailable until each later phase (A1.3)
             seam::auth_userinfo,
             seam::auth_sign_out,
@@ -57,5 +82,37 @@ mod tests {
         let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
             .expect("tauri.conf.json must be valid JSON");
         assert_eq!(conf["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    /// ADV-8 boundary, asserted structurally against the real source: the
+    /// invoke_handler registers exactly the seven metadata/status custody
+    /// commands and NEVER `custody_get` (the in-process secret-reading pub fn).
+    /// No invoke command returns secret bytes.
+    #[test]
+    fn no_custody_invoke_command_returns_secret_bytes() {
+        let src = include_str!("lib.rs");
+        // The registered custody commands (all return status / () / metadata).
+        for cmd in [
+            "custody::custody_status",
+            "custody::custody_init",
+            "custody::custody_unlock",
+            "custody::custody_lock",
+            "custody::custody_put",
+            "custody::custody_list",
+            "custody::custody_keyring_status",
+        ] {
+            assert!(src.contains(cmd), "custody command not registered: {cmd}");
+        }
+        // The secret-reading API must NEVER be registered as an invoke command.
+        // Registration would take the form `<mod>::<fn>,` inside the
+        // generate_handler![...] list. The needle is assembled from parts so
+        // this test's own prose (which names the fn) cannot trip the check; the
+        // only way it matches is a genuine handler-registration line.
+        let getter = "custody_g".to_string() + "et";
+        let needle = format!("custody::{getter},");
+        assert!(
+            !src.contains(&needle),
+            "the in-process secret getter must not be an invoke command (ADV-8 boundary)"
+        );
     }
 }
