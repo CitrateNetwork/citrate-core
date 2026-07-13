@@ -122,6 +122,20 @@ struct Behavior {
     wrong_issuer: bool,
     /// Emit a wrong audience (ADV-7 aud).
     wrong_audience: bool,
+    /// OIDC-1: OMIT the `aud` claim entirely (audience-confusion bypass probe).
+    omit_aud: bool,
+    /// OIDC-2: OMIT the `kid` from the id_token header.
+    omit_kid: bool,
+    /// OIDC-2: serve a MULTI-KEY JWKS (attacker key first, real key second),
+    /// both kid-less, to probe the "first key" fallback.
+    multikey_jwks: bool,
+    /// A3-04/OIDC-3: on the refresh grant, mint an id_token for a DIFFERENT sub
+    /// (subject-substitution probe).
+    refresh_wrong_sub: bool,
+    /// OIDC-2: sign the id_token with the ATTACKER key (the one published FIRST
+    /// in the multi-key JWKS). Under a "first key" fallback + a kid-less token,
+    /// this attacker-signed token would VERIFY. The fix rejects kid-less+multikey.
+    sign_with_attacker: bool,
 }
 
 impl MockAuthority {
@@ -137,6 +151,13 @@ impl MockAuthority {
         let point = secret.public_key().to_encoded_point(false);
         let jwk_x = b64url(point.x().unwrap());
         let jwk_y = b64url(point.y().unwrap());
+        // A second, unrelated key (never signs the real token) for the OIDC-2
+        // multi-key JWKS probe.
+        let attacker = SecretKey::random(&mut rand::thread_rng());
+        let apoint = attacker.public_key().to_encoded_point(false);
+        let attacker_x = b64url(apoint.x().unwrap());
+        let attacker_y = b64url(apoint.y().unwrap());
+        let attacker_pem = attacker.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
 
         let behavior = Arc::new(StdMutex::new(Behavior::default()));
         let claims = Arc::new(StdMutex::new(json!({
@@ -156,6 +177,9 @@ impl MockAuthority {
             signing_pem: secret.to_pkcs8_pem(LineEnding::LF).unwrap().to_string(),
             jwk_x,
             jwk_y,
+            attacker_x,
+            attacker_y,
+            attacker_pem,
             live_codes: Arc::new(StdMutex::new(HashMap::new())),
             valid_refresh: Arc::new(StdMutex::new(std::collections::HashSet::new())),
             behavior: behavior.clone(),
@@ -236,6 +260,12 @@ struct ServerCtx {
     signing_pem: String, // PKCS#8 PEM of the ES256 test key
     jwk_x: String,
     jwk_y: String,
+    /// A second, UNRELATED key — the "attacker key" for the OIDC-2 multi-key
+    /// JWKS probe. Published FIRST in the multikey JWKS; signs the token only
+    /// under the `sign_with_attacker` knob.
+    attacker_x: String,
+    attacker_y: String,
+    attacker_pem: String,
     live_codes: Arc<StdMutex<HashMap<String, CodeGrant>>>,
     valid_refresh: Arc<StdMutex<std::collections::HashSet<String>>>,
     behavior: Arc<StdMutex<Behavior>>,
@@ -306,7 +336,7 @@ impl ServerCtx {
             self.valid_refresh.lock().unwrap().remove(&rt);
             let new_rt = format!("rt_{}", rand_hex());
             self.valid_refresh.lock().unwrap().insert(new_rt.clone());
-            let id_token = self.mint_id_token("");
+            let id_token = self.mint_id_token("", true);
             let out = self.token_json(&id_token, Some(&new_rt));
             write_resp(stream, 200, "application/json", &out);
             return;
@@ -330,7 +360,7 @@ impl ServerCtx {
             write_resp(stream, 400, "application/json", "{\"error\":\"invalid_grant\"}");
             return;
         }
-        let id_token = self.mint_id_token(&grant.nonce);
+        let id_token = self.mint_id_token(&grant.nonce, false);
         let rt = format!("rt_{}", rand_hex());
         self.valid_refresh.lock().unwrap().insert(rt.clone());
         let out = self.token_json(&id_token, Some(&rt));
@@ -347,8 +377,9 @@ impl ServerCtx {
         )
     }
 
-    /// Mint an id_token, honoring the current `behavior` knobs (ADV-7).
-    fn mint_id_token(&self, nonce: &str) -> String {
+    /// Mint an id_token, honoring the current `behavior` knobs (ADV-7 + OIDC).
+    /// `refresh` selects the refresh-grant path (drives `refresh_wrong_sub`).
+    fn mint_id_token(&self, nonce: &str, refresh: bool) -> String {
         let b = self.behavior.lock().unwrap().clone();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -373,22 +404,37 @@ impl ServerCtx {
         let claims = self.claims.lock().unwrap().clone();
         let mut payload = json!({
             "iss": iss,
-            "aud": aud,
             "exp": exp,
             "iat": now,
             "nonce": effective_nonce,
         });
-        if let (Some(obj), Some(extra)) = (payload.as_object_mut(), claims.as_object()) {
-            for (k, v) in extra {
-                obj.insert(k.clone(), v.clone());
+        if let Some(obj) = payload.as_object_mut() {
+            // OIDC-1 probe: only include `aud` when NOT omitting it.
+            if !b.omit_aud {
+                obj.insert("aud".to_string(), json!(aud));
+            }
+            if let Some(extra) = claims.as_object() {
+                for (k, v) in extra {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            // A3-04/OIDC-3 probe: swap the subject on the refresh id_token.
+            if refresh && b.refresh_wrong_sub {
+                obj.insert("sub".to_string(), json!("attacker-sub"));
             }
         }
         let mut header = JwtHeader::new(jsonwebtoken::Algorithm::ES256);
-        header.kid = Some("test-key-1".to_string());
+        // OIDC-2 probe: optionally omit the header kid.
+        if !b.omit_kid {
+            header.kid = Some("test-key-1".to_string());
+        }
         let key = if b.forge_signature {
             let other = SecretKey::random(&mut rand::thread_rng());
             let pem = other.to_pkcs8_pem(LineEnding::LF).unwrap();
             EncodingKey::from_ec_pem(pem.as_bytes()).unwrap()
+        } else if b.sign_with_attacker {
+            // Signed by the attacker key (published FIRST in the multikey JWKS).
+            EncodingKey::from_ec_pem(self.attacker_pem.as_bytes()).unwrap()
         } else {
             EncodingKey::from_ec_pem(self.signing_pem.as_bytes()).unwrap()
         };
@@ -396,10 +442,22 @@ impl ServerCtx {
     }
 
     fn handle_jwks(&self, stream: &mut TcpStream) {
-        let body = format!(
-            "{{\"keys\":[{{\"kty\":\"EC\",\"crv\":\"P-256\",\"kid\":\"test-key-1\",\"x\":\"{}\",\"y\":\"{}\"}}]}}",
-            self.jwk_x, self.jwk_y
-        );
+        let b = self.behavior.lock().unwrap().clone();
+        let body = if b.multikey_jwks {
+            // OIDC-2 probe: two kid-less keys — an attacker key FIRST, then the
+            // real one. A "first key" fallback would verify against the attacker.
+            format!(
+                "{{\"keys\":[\
+                 {{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"{}\",\"y\":\"{}\"}},\
+                 {{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"{}\",\"y\":\"{}\"}}]}}",
+                self.attacker_x, self.attacker_y, self.jwk_x, self.jwk_y
+            )
+        } else {
+            format!(
+                "{{\"keys\":[{{\"kty\":\"EC\",\"crv\":\"P-256\",\"kid\":\"test-key-1\",\"x\":\"{}\",\"y\":\"{}\"}}]}}",
+                self.jwk_x, self.jwk_y
+            )
+        };
         write_resp(stream, 200, "application/json", &body);
     }
 
@@ -813,6 +871,114 @@ fn run_id_token_attack(set: impl FnOnce(&mut Behavior)) {
     );
     // Nothing was vaulted on a failed login.
     assert!(!vault.list().unwrap().iter().any(|s| s.name == REFRESH_SLOT));
+}
+
+// ===========================================================================
+// OIDC-1 — audience-confusion: an id_token that OMITS `aud` must be rejected
+// (absence must NOT bypass the audience binding — the classic multi-RP token
+// substitution). Red-first: without `set_required_spec_claims(aud)` + the manual
+// `aud.contains(client_id)` re-check, an aud-less token was accepted with
+// attacker-chosen claims.
+// ===========================================================================
+
+#[test]
+fn oidc1_absent_aud_is_rejected() {
+    run_id_token_attack(|b| b.omit_aud = true);
+}
+
+#[test]
+fn oidc1_wrong_aud_still_rejected() {
+    // Present-but-wrong aud (the original ADV-7 case) remains rejected.
+    run_id_token_attack(|b| b.wrong_audience = true);
+}
+
+// ===========================================================================
+// OIDC-2 — JWKS key selection: a kid-LESS id_token against a MULTI-key JWKS must
+// fail closed (no "first key" fallback that an attacker-ordered JWKS could
+// exploit). Red-first: the old `_ => true` matcher picked the first (attacker)
+// key and accepted a token it did not sign to verify against the real key.
+// ===========================================================================
+
+#[test]
+fn oidc2_kidless_token_multikey_jwks_is_rejected() {
+    // The attacker publishes their key FIRST in a kid-less multi-key JWKS and
+    // signs the id_token with it. Under a "first key" fallback this token would
+    // VERIFY (attacker forges any claims). The fix rejects kid-less+multikey, so
+    // the attacker-signed token is refused.
+    run_id_token_attack(|b| {
+        b.omit_kid = true;
+        b.multikey_jwks = true;
+        b.sign_with_attacker = true;
+    });
+}
+
+#[test]
+fn oidc2_kidless_token_single_key_jwks_accepted() {
+    // Positive control: a kid-less token against a SINGLE-key JWKS is
+    // unambiguous and still validates (real key, real signature).
+    let auth = MockAuthority::start();
+    {
+        let mut b = auth.behavior();
+        b.omit_kid = true; // single-key JWKS (multikey_jwks stays false)
+    }
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let st = mgr.login_with(&vault, |u| auth.drive_browser(u)).unwrap();
+    assert!(st.signed_in);
+}
+
+// ===========================================================================
+// A3-04 / OIDC-3 — refresh id_token re-validation + `sub` continuity. A refresh
+// response whose id_token is minted for a DIFFERENT subject must be rejected
+// (subject substitution), not silently adopted.
+// ===========================================================================
+
+#[test]
+fn a3_04_refresh_subject_substitution_is_rejected() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    // Establish a session for the legitimate sub.
+    mgr.login_with(&vault, |u| auth.drive_browser(u)).unwrap();
+    let prior = mgr.status().sub.clone();
+    assert!(prior.is_some());
+    // The authority now mints refresh id_tokens for a DIFFERENT sub.
+    auth.behavior().refresh_wrong_sub = true;
+    let r = mgr.refresh(&vault);
+    assert_eq!(
+        r.unwrap_err(),
+        AuthError::IdTokenInvalid,
+        "a refresh id_token for a different subject must be rejected"
+    );
+}
+
+// ===========================================================================
+// A3-01 — custody boundary: the `custody_put` INVOKE path must not address a
+// backend-owned slot (`oidc-refresh`), so a compromised/XSS'd webview cannot
+// overwrite the vaulted refresh token. The in-process `put` (used by the auth
+// backend) is unrestricted; the command wrapper is the untrusted boundary.
+// ===========================================================================
+
+#[test]
+fn a3_01_backend_reserved_slot_predicate() {
+    use crate::custody::is_backend_reserved_slot;
+    assert!(is_backend_reserved_slot(REFRESH_SLOT));
+    assert!(is_backend_reserved_slot("oidc-refresh"));
+    assert!(is_backend_reserved_slot("oidc-anything"));
+    // Ordinary user slots are NOT reserved (webview may write those).
+    assert!(!is_backend_reserved_slot("my-note"));
+    assert!(!is_backend_reserved_slot("gateway-key"));
+}
+
+#[test]
+fn a3_01_in_process_put_still_writes_backend_slot() {
+    // The in-process API (what the auth backend uses) can write the reserved slot
+    // — only the invoke command is gated. Prove the round-trip still works.
+    let (vault, _f, _p) = fresh_vault();
+    let mut bytes = b"rt_secret".to_vec();
+    vault.put(REFRESH_SLOT, &mut bytes).unwrap();
+    let got = vault.custody_get(REFRESH_SLOT).unwrap();
+    assert_eq!(&got[..], b"rt_secret");
 }
 
 // ===========================================================================

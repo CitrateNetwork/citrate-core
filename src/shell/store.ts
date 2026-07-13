@@ -29,6 +29,20 @@ import { BRIDGE_MODE } from "../bridge/mode";
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 
+/**
+ * A3-03 — is an entitlement `expiresAt` claim in the past? An unparseable or
+ * absent value is treated as NOT-expired (the authority is the source of truth
+ * for entitlement; a malformed date is not a downgrade signal — the Rust
+ * id_token `exp` guard already fails a genuinely expired token). Accepts an ISO
+ * date/datetime or a unix-seconds string.
+ */
+function isExpiredClaim(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return false;
+  const ms = /^\d+$/.test(expiresAt) ? Number(expiresAt) * 1000 : Date.parse(expiresAt);
+  if (!Number.isFinite(ms)) return false;
+  return ms < Date.now();
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -140,10 +154,21 @@ export class Store {
     org: string | null;
     role: string | null;
     kycStatus: string | null;
+    expiresAt?: string | null;
   }): void {
     if (!st.signedIn) return;
     const patch: Partial<AppState> = {};
-    if (st.tier) patch.tier = st.tier;
+    // A3-03: enforce the entitlement expiry at the DECISION point — a claim whose
+    // `expiresAt` is in the past is downgraded to the free tier + lapsed, so no
+    // gated surface stays unlocked on a stale claim. A valid future expiry keeps
+    // the claimed tier and marks the entitlement active.
+    if (isExpiredClaim(st.expiresAt)) {
+      patch.tier = "free";
+      patch.entitlement = "lapsed";
+    } else if (st.tier) {
+      patch.tier = st.tier;
+      patch.entitlement = "active";
+    }
     patch.org = st.org;
     if (st.role) patch.citrateRole = st.role;
     // KYC claim → the S2 seam's five states (none/pending/verified/failed/review).

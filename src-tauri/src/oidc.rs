@@ -313,10 +313,21 @@ impl LoopbackListener {
 }
 
 /// The `(code, state)` parsed off the loopback callback.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct CallbackParams {
     code: String,
     state: String,
+}
+
+// A3-06: redact the authorization `code` (a bearer secret until exchanged) from
+// any `{:?}`/dbg!/tracing output. No raw code ever reaches a log.
+impl std::fmt::Debug for CallbackParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackParams")
+            .field("code", &"<redacted>")
+            .field("state", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Parse `code` + `state` from a callback request target
@@ -387,7 +398,7 @@ impl UrlIntoString for url::Url {
 
 /// The `/token` response. `access_token` + `refresh_token` are secret; this
 /// struct is confined to the exchange path and never serialized back out.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     #[serde(default)]
@@ -395,6 +406,22 @@ struct TokenResponse {
     id_token: String,
     #[serde(default = "default_expires_in")]
     expires_in: u64,
+}
+
+// A3-06: redact all token material from any `{:?}`/dbg!/tracing output. Even the
+// id_token (which carries claims) is not printed. No token ever reaches a log.
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("id_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
 }
 
 fn default_expires_in() -> u64 {
@@ -425,10 +452,33 @@ pub struct Claims {
     pub email: Option<String>,
 }
 
+/// An id_token `aud` claim: OIDC allows a single string OR an array of strings.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Audience {
+    /// Whether `client_id` is (one of) the audience(s).
+    fn contains(&self, client_id: &str) -> bool {
+        match self {
+            Audience::One(a) => a == client_id,
+            Audience::Many(v) => v.iter().any(|a| a == client_id),
+        }
+    }
+}
+
 /// Registered id_token claims we validate against (iss/aud/exp/nonce).
 #[derive(Debug, Deserialize)]
 struct IdTokenClaims {
     iss: String,
+    /// OIDC-1: `aud` is a REQUIRED, non-defaulted field. A token that omits `aud`
+    /// fails to deserialize here (and is separately marked required in the
+    /// `Validation`), closing the audience-confusion bypass where an absent `aud`
+    /// would otherwise pass `set_audience`.
+    aud: Audience,
     #[serde(default)]
     nonce: Option<String>,
     // The entitlement/identity claims ride along in the id_token too; we reuse
@@ -666,9 +716,30 @@ impl AuthManager {
     }
 
     /// Validate an id_token against the authority JWKS + registered claims
-    /// (iss/aud/exp/signature) and the `nonce` we minted (ADV-7). Returns the
+    /// (iss/aud/exp/nbf/signature) and the `nonce` we minted (ADV-7). Returns the
     /// parsed identity/entitlement claims.
     fn validate_id_token(&self, id_token: &str, expected_nonce: &str) -> Result<Claims> {
+        let data = self.decode_and_validate_id_token(id_token)?;
+        // nonce binds this id_token to THIS login attempt (replay defense).
+        match data.nonce.as_deref() {
+            Some(n) if constant_time_eq(n.as_bytes(), expected_nonce.as_bytes()) => {}
+            _ => return Err(AuthError::IdTokenInvalid),
+        }
+        Ok(data.claims)
+    }
+
+    /// OIDC-3/A3-04: validate a refresh-response id_token WITHOUT the nonce check
+    /// (a refresh grant omits `nonce`). iss/aud/exp/nbf/signature still enforced.
+    fn validate_id_token_no_nonce(&self, id_token: &str) -> Result<Claims> {
+        Ok(self.decode_and_validate_id_token(id_token)?.claims)
+    }
+
+    /// Shared id_token decode + signature + registered-claim validation. Enforces
+    /// ES256 (alg pinned + header-gated), `aud` REQUIRED and equal to our
+    /// client_id (OIDC-1 — absent `aud` is rejected, not silently accepted),
+    /// `iss` required + re-checked, `exp` + `nbf` validated. Does NOT check nonce
+    /// (callers add that where applicable).
+    fn decode_and_validate_id_token(&self, id_token: &str) -> Result<IdTokenClaims> {
         let header =
             jsonwebtoken::decode_header(id_token).map_err(|_| AuthError::IdTokenInvalid)?;
         // ES256 only — reject any other alg (an `alg:none` / HS downgrade fails
@@ -681,37 +752,58 @@ impl AuthManager {
         let mut validation = Validation::new(Algorithm::ES256);
         validation.set_issuer(&[&self.cfg.issuer]);
         validation.set_audience(&[&self.cfg.client_id]);
+        // OIDC-1: mark iss + aud REQUIRED (jsonwebtoken's default only requires
+        // `exp`). Without this, a token that OMITS `aud` bypasses `set_audience`.
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
         validation.validate_exp = true;
-        validation.leeway = 0;
+        // OIDC-4: reject not-yet-valid tokens; small leeway for clock skew.
+        validation.validate_nbf = true;
+        validation.leeway = 30;
 
-        let data = jsonwebtoken::decode::<IdTokenClaims>(id_token, &key, &validation)
+        let token = jsonwebtoken::decode::<IdTokenClaims>(id_token, &key, &validation)
             .map_err(|_| AuthError::IdTokenInvalid)?;
+        let data = token.claims;
 
-        // iss is enforced by `set_issuer`; re-check defensively.
-        if data.claims.iss != self.cfg.issuer {
+        // Defensive re-checks mirroring the library validation (belt + braces):
+        // iss must equal our authority, and aud MUST contain our client_id — an
+        // absent aud already failed deserialization + required-claims, this
+        // guarantees a present-but-wrong or array aud is bound too (OIDC-1).
+        if data.iss != self.cfg.issuer {
             return Err(AuthError::IdTokenInvalid);
         }
-        // nonce binds this id_token to THIS login attempt (replay defense).
-        match data.claims.nonce.as_deref() {
-            Some(n) if constant_time_eq(n.as_bytes(), expected_nonce.as_bytes()) => {}
-            _ => return Err(AuthError::IdTokenInvalid),
+        if !data.aud.contains(&self.cfg.client_id) {
+            return Err(AuthError::IdTokenInvalid);
         }
-        Ok(data.claims.claims)
+        Ok(data)
     }
 
     /// Fetch the JWKS and build the ES256 decoding key for `kid`.
+    ///
+    /// OIDC-2 key-selection policy (no first-key fallback):
+    /// - token HAS a `kid` → require an EXACT `kid` match; else reject. A
+    ///   kid-less JWKS key is NOT a match for a kid-bearing token.
+    /// - token has NO `kid` → accept ONLY if the JWKS publishes exactly ONE key
+    ///   (unambiguous). A kid-less token against a multi-key JWKS is rejected
+    ///   (fail closed) rather than silently binding to the first key — which
+    ///   otherwise lets an attacker-ordered JWKS or a rotation window decide the
+    ///   verifying key by position instead of identity.
     fn jwk_decoding_key(&self, kid: Option<&str>) -> Result<DecodingKey> {
         let body = self.http.get(&self.cfg.jwks, None)?;
         let jwks: Jwks = serde_json::from_str(&body).map_err(|_| AuthError::IdTokenInvalid)?;
-        let jwk = jwks
-            .keys
-            .iter()
-            .find(|k| match (kid, k.kid.as_deref()) {
-                (Some(want), Some(have)) => want == have,
-                // No kid on either side: accept the sole key.
-                _ => true,
-            })
-            .ok_or(AuthError::IdTokenInvalid)?;
+        let jwk = match kid {
+            Some(want) => jwks
+                .keys
+                .iter()
+                .find(|k| k.kid.as_deref() == Some(want))
+                .ok_or(AuthError::IdTokenInvalid)?,
+            None => {
+                // No kid: only a single-key JWKS is unambiguous.
+                if jwks.keys.len() != 1 {
+                    return Err(AuthError::IdTokenInvalid);
+                }
+                &jwks.keys[0]
+            }
+        };
         if jwk.kty.as_deref() != Some("EC") {
             return Err(AuthError::IdTokenInvalid);
         }
@@ -751,15 +843,40 @@ impl AuthManager {
         )?;
         let tokens: TokenResponse =
             serde_json::from_str(&body).map_err(|_| AuthError::TokenExchange)?;
+
+        // A3-04: if the refresh response carries an id_token, RE-VALIDATE it
+        // (iss/aud/exp/ES256 signature via JWKS) — a refresh grant normally omits
+        // `nonce`, so nonce is not re-checked, but the signature/issuer/audience/
+        // expiry must still hold. Enforce `sub` CONTINUITY against the prior
+        // session: a refreshed session must belong to the same subject, so a
+        // swapped/injected id_token for a different user fails closed.
+        let prior_sub = {
+            let guard = self.lock();
+            guard.as_ref().map(|s| s.claims.sub.clone())
+        };
+        if !tokens.id_token.is_empty() {
+            let refreshed = self.validate_id_token_no_nonce(&tokens.id_token)?;
+            if let Some(prev) = prior_sub.as_deref() {
+                if !prev.is_empty() && !refreshed.sub.is_empty() && refreshed.sub != prev {
+                    return Err(AuthError::IdTokenInvalid);
+                }
+            }
+        }
+
         // Rotate: store the NEW refresh token if the authority rotated it.
         if let Some(new_refresh) = tokens.refresh_token {
             self.store_refresh(vault, new_refresh)?;
         }
         // A refreshed access token carries fresh claims via /userinfo (federation
-        // RP rule); but the token response may also embed an id_token. Prefer a
-        // live /userinfo re-check for entitlement, falling back to prior claims.
+        // RP rule); prefer a live /userinfo re-check for entitlement.
         self.set_session_token(&tokens.access_token, tokens.expires_in);
         let claims = self.userinfo_inner(&tokens.access_token)?;
+        // sub continuity also holds against /userinfo.
+        if let Some(prev) = prior_sub.as_deref() {
+            if !prev.is_empty() && !claims.sub.is_empty() && claims.sub != prev {
+                return Err(AuthError::IdTokenInvalid);
+            }
+        }
         self.set_session_claims(claims.clone());
         Ok(AuthStatus::from_claims(&claims))
     }

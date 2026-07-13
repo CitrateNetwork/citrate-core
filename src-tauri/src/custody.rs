@@ -125,6 +125,19 @@ const KEYRING_LOCKOUT_GEN_ACCOUNT: &str = "custody-lockout-generation";
 /// Envelope file name inside the app data dir.
 const ENVELOPE_FILE: &str = "custody.enc";
 
+/// Slot-name prefix reserved for BACKEND-OWNED secrets (A3 `oidc-refresh`, future
+/// B1 wallet keys). The **in-process** `put`/`custody_get`/`clear_slot` APIs may
+/// address these freely (that is how the backend stores them); the
+/// `#[tauri::command] custody_put` INVOKE path rejects them so the webview can
+/// never overwrite/plant a backend secret (A3-01 — seals the A2 I-2 custody
+/// boundary against a compromised/XSS'd frontend calling the raw `invoke`).
+pub const BACKEND_SLOT_PREFIX: &str = "oidc-";
+
+/// Whether `slot` is a backend-owned slot the invoke boundary must refuse.
+pub fn is_backend_reserved_slot(slot: &str) -> bool {
+    slot.starts_with(BACKEND_SLOT_PREFIX)
+}
+
 /// The reserved check-slot: a known plaintext sealed under the data key. Unlock
 /// trial-decrypts it; a wrong passphrase fails the GCM tag. Its name starts with
 /// a NUL so it can never collide with a caller slot and is filtered from `list`.
@@ -1325,6 +1338,16 @@ pub fn custody_put(
     slot: String,
     mut bytes: Vec<u8>,
 ) -> std::result::Result<(), String> {
+    // A3-01 boundary: the INVOKE path must not address a backend-owned slot
+    // (e.g. `oidc-refresh`). Otherwise a compromised/XSS'd webview could call the
+    // raw `invoke("custody_put", { slot: "oidc-refresh", ... })` and overwrite the
+    // vaulted refresh token. In-process `put` (used by A3/B1) is unrestricted; the
+    // command wrapper is where the untrusted frontend crosses, so the guard lives
+    // here. Zeroize the inbound bytes even on rejection.
+    if is_backend_reserved_slot(&slot) {
+        bytes.zeroize();
+        return Err("reserved slot name".into());
+    }
     let r = state.0.put(&slot, &mut bytes).map_err(err_str);
     bytes.zeroize();
     r
