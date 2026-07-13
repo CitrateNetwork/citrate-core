@@ -61,8 +61,11 @@ base64 = "0.22"
 #   (a `crypto`-only feature upstream would trim this). The transitive
 #   `citrate-security = { path = "../core/security" }` resolves inside the
 #   citrate-chain git checkout (the sibling crate is present at that rev).
-bip39 = { version = "1.2", features = ["std"] }
-citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "55f284b" }
+bip39 = { version = "1.2", features = ["std", "zeroize"] }
+# B1.1-F-1: lean crypto-only wallet-core (default-features=false) keeps the zk/execution
+# stack (citrate-execution -> ark-groth16 -> tracing-subscriber / RUSTSEC-2025-0055) OUT of
+# the key path. Pinned to citrate-chain 3dce61c (the lean-feature commit).
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "3dce61c", default-features = false, features = ["crypto"] }
 # hex: encode the (non-secret) public key for display in WalletInfo.
 hex = "0.4"
 
