@@ -23,13 +23,15 @@ jobs:
     # credential is honored.
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # secrets can't be referenced in a step `if:`, so map it into env first.
+      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Authenticate to private federation repos (citrate-chain)
-        if: ${{ secrets.CITRATE_CHAIN_READ_TOKEN != '' }}
+        if: ${{ env.CHAIN_TOKEN != '' }}
         run: |
           git config --global \
-            url."https://x-access-token:${{ secrets.CITRATE_CHAIN_READ_TOKEN }}@github.com/".insteadOf \
+            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
             "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
         with:
