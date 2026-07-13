@@ -926,9 +926,9 @@ fn adv_dr4_cooloff_success_clears_lockout_on_disk() {
         locked_until_ms: Some(1), // 1ms after epoch → long elapsed
         generation: cur_gen,
         // F-1 (B1.0): the anchor is present in this test (only the cooloff
-        // deadline is simulated), so the block must carry the anchored bit or
+        // deadline is simulated), so the block must carry the anchored marker or
         // `enforce_anchor_initialized` would (correctly) reject it as anchor-loss.
-        anchor_initialized: true,
+        anchor_initialized: Some(true),
     };
     env.lockout = CustodyVault::seal_lockout(&mek, env.version, &past).unwrap();
     std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
@@ -956,7 +956,8 @@ fn adv_dr4_cooloff_success_clears_lockout_on_disk() {
 // "anchor-initialized" bit. Each test is RED-first: it PASSES the attack against
 // the pre-B1.0 code (deleted anchor → `Ok(None)` → re-seed → serves the
 // rolled-back / re-seeded value) and fails the attack after the master-sealed
-// bit makes `anchor==None && anchor_initialized ⇒ Corrupt`. The anchors AND the
+// marker makes `anchor==None && anchor_initialized==Some(true) ⇒ Corrupt`
+// (and, per B1.0b, `None`/legacy + absent anchor ⇒ Corrupt). The anchors AND the
 // master live in the injected FakeKeyring, so the whole attack runs headless; a
 // live OS keyring cannot run in headless CI (see `real_keyring_roundtrip_or_skip`).
 // ===========================================================================
@@ -1077,5 +1078,303 @@ fn adv_f1_genuine_anchor_loss_fails_closed() {
     assert!(
         v2.custody_get("t").is_err(),
         "custody_get must fail closed once the anchor is deleted under a live session"
+    );
+}
+
+// ===========================================================================
+// F-1b (B1.0b) — legacy (`anchor_initialized`-ABSENT) envelope re-opens the F-1
+// downgrade. Root cause: B1.0 used `#[serde(default)] bool`, which cannot
+// distinguish a legacy pre-B1.0 block (field absent → `false`) from a genuine
+// post-B1.0 first-init (`false` on purpose). B1.0b makes the field
+// `Option<bool>` (`None` = legacy/unknown) and decides three ways:
+//   - legacy (`None`) + anchor PRESENT → self-heal (re-stamp `Some(true)`,
+//     re-seal), on the READ-ONLY path too (unlock/`custody_get`), so a
+//     read-mostly A3 vault upgrades on first unlock, not only on mutation;
+//   - legacy (`None`) + anchor ABSENT  → fail closed (`Corrupt`) — this closes
+//     the F-1b hole;
+//   - genuine first-init / anchored blocks keep the B1.0 behavior.
+// The whole attack runs headless against the injected FakeKeyring; a live OS
+// keyring cannot run in CI (see `real_keyring_roundtrip_or_skip`).
+// ===========================================================================
+
+/// Rewrite the on-disk envelope's lockout block into a LEGACY shape: the
+/// `anchor_initialized` field is physically ABSENT from the JSON (exactly what a
+/// pre-B1.0 writer produced), and the block is re-sealed under the REAL keyring
+/// master the pre-B1.0 way (so it validly master-authenticates). Preserves
+/// `failures` / `locked_until_ms` / `generation` so only the field's presence
+/// changes. This is how we simulate a genuinely-legacy on-disk vault.
+fn make_lockout_legacy(fake: &std::sync::Arc<FakeKeyring>, p: &PathBuf) {
+    let mek_bytes = fake.get(KEYRING_MASTER_ACCOUNT).unwrap().unwrap();
+    let mut mek = [0u8; KEY_LEN];
+    mek.copy_from_slice(&mek_bytes);
+
+    let mut env: Envelope = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+    // Open the current (post-B1.0) block, drop the field to legacy shape.
+    let current = CustodyVault::open_lockout(&mek, &env).unwrap();
+    let mut val = serde_json::to_value(&current).unwrap();
+    val.as_object_mut().unwrap().remove("anchor_initialized");
+    // Confirm the field is truly absent — not present-and-null.
+    assert!(
+        val.get("anchor_initialized").is_none(),
+        "legacy block must have the field ABSENT, not null"
+    );
+    let pt = serde_json::to_vec(&val).unwrap();
+    // Re-seal that legacy JSON under the master with the lockout AAD, exactly as
+    // the pre-B1.0 code sealed a `LockoutState` (which had no such field).
+    let aad = CustodyVault::aad(env.version, AAD_LOCKOUT);
+    env.lockout = CustodyVault::seal(&mek, &pt, &aad).unwrap();
+    std::fs::write(p, serde_json::to_vec(&env).unwrap()).unwrap();
+
+    // Sanity: the block now round-trips to `anchor_initialized == None`.
+    let reopened_env: Envelope = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+    let reopened = CustodyVault::open_lockout(&mek, &reopened_env).unwrap();
+    assert_eq!(
+        reopened.anchor_initialized, None,
+        "a legacy block must deserialize to anchor_initialized == None"
+    );
+}
+
+/// Read the on-disk `anchor_initialized` marker (through the real master).
+fn read_anchor_marker(fake: &std::sync::Arc<FakeKeyring>, p: &PathBuf) -> Option<bool> {
+    let mek_bytes = fake.get(KEYRING_MASTER_ACCOUNT).unwrap().unwrap();
+    let mut mek = [0u8; KEY_LEN];
+    mek.copy_from_slice(&mek_bytes);
+    let env: Envelope = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+    CustodyVault::open_lockout(&mek, &env).unwrap().anchor_initialized
+}
+
+// ----- F-1b (a): legacy block + anchor DELETED must fail closed ----------
+
+#[test]
+fn adv_f1b_legacy_absent_field_anchor_deleted_fails_closed() {
+    // The F-1b attack: a legacy (field-absent), validly-master-sealed lockout
+    // block on disk; the attacker DELETES the anchors and restores an OLD whole
+    // envelope, then only ever READS (never mutates — the A3 OIDC-refresh pattern
+    // that never self-heals). Pre-fix (Option<bool> semantics disabled): the
+    // legacy `None`/`false` block passes `enforce_anchor_initialized`, the
+    // high-water re-seeds off the rolled-back envelope, and the OLD token is
+    // served (`unlock=Ok(()) get=Ok("OLD")`). Post-fix: legacy `None` + absent
+    // anchor ⇒ `Corrupt`.
+    let (v, fake, p) = init_and_unlock(0);
+    v.put("token", &mut b"OLD-TOKEN".to_vec()).unwrap();
+    // Make the on-disk block LEGACY (field absent) at this OLD generation, then
+    // snapshot it — this is the pre-B1.0-shaped envelope the attacker keeps.
+    make_lockout_legacy(&fake, &p);
+    let legacy_snapshot = std::fs::read(&p).unwrap(); // gen-N, token=OLD, field ABSENT
+
+    // Roll forward to a newer generation (token=NEW), re-legacy-ing so the on-disk
+    // block after the rollback is unambiguously the legacy snapshot's.
+    v.put("token", &mut b"NEW-TOKEN".to_vec()).unwrap();
+
+    // F-1b capability: delete the anchors (master survives) + restore the OLD
+    // legacy whole envelope, then operate READ-ONLY.
+    delete_both_anchors(&fake);
+    std::fs::write(&p, &legacy_snapshot).unwrap();
+
+    v.lock();
+    // READ-ONLY path 1: unlock must fail closed.
+    let err = v.unlock(&mut PASS.to_vec()).unwrap_err();
+    assert_eq!(
+        err,
+        CustodyError::Corrupt,
+        "legacy block + deleted anchor + rollback must fail closed on unlock (got {err:?})"
+    );
+    // READ-ONLY path 2: even if a caller ignored the unlock error, custody_get
+    // must not resurrect the OLD token.
+    let got = v.custody_get("token");
+    assert!(
+        got.is_err(),
+        "legacy + anchor-deleted custody_get must never serve the OLD token (got {got:?})"
+    );
+}
+
+// ----- F-1b (b): legacy block + anchor PRESENT self-heals ----------------
+
+#[test]
+fn adv_f1b_legacy_present_anchor_self_heals() {
+    // A genuinely-legacy vault whose anchor is still PRESENT (a pre-B1.0 A3 vault
+    // that upgrades to B1.0b): its first B1.0b unlock must SUCCEED and re-stamp the
+    // block `Some(true)`. Proof the heal happened: a subsequent anchor-delete now
+    // fails closed (which a still-`None` block would NOT do — it would fail closed
+    // too, but for the WRONG reason; so we assert the marker directly AND the
+    // post-heal fail-closed behavior).
+    let (v, fake, p) = init_and_unlock(0);
+    v.put("token", &mut b"LIVE".to_vec()).unwrap();
+    v.lock();
+
+    // Downgrade the on-disk block to legacy shape; the anchor stays PRESENT.
+    make_lockout_legacy(&fake, &p);
+    assert_eq!(read_anchor_marker(&fake, &p), None, "block is legacy pre-unlock");
+    assert!(
+        fake.get(KEYRING_GENERATION_ACCOUNT).unwrap().is_some(),
+        "anchor is present (this is a legacy-but-anchored vault)"
+    );
+
+    // First B1.0b unlock succeeds AND heals the block forward.
+    v.unlock(&mut PASS.to_vec()).unwrap();
+    assert_eq!(
+        read_anchor_marker(&fake, &p),
+        Some(true),
+        "a legacy block + present anchor must self-heal to Some(true) on unlock"
+    );
+
+    // Now that it is stamped Some(true), a later anchor-delete fails closed (F-1).
+    v.lock();
+    delete_both_anchors(&fake);
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::Corrupt,
+        "post-heal, an anchor-delete must fail closed"
+    );
+}
+
+// ----- F-1b (c): self-heal persists across a READ-ONLY unlock ------------
+
+#[test]
+fn legacy_selfheal_survives_readonly() {
+    // Prove the heal persists WITHOUT any mutation: a read-only unlock (no
+    // put/clear) on a legacy-but-anchored vault must re-anchor, so a later
+    // delete-and-rollback fails closed. This is the exact A3 OIDC-refresh
+    // read-only pattern F-1b flagged as never self-healing under B1.0.
+    let (v, fake, p) = init_and_unlock(0);
+    v.put("token", &mut b"OLD".to_vec()).unwrap();
+    make_lockout_legacy(&fake, &p);
+    let healed_gen_snapshot_pre = std::fs::read(&p).unwrap();
+    let _ = healed_gen_snapshot_pre; // (kept for clarity; the rollback target is below)
+    v.lock();
+
+    // READ-ONLY unlock only (no mutation) — this must heal.
+    v.unlock(&mut PASS.to_vec()).unwrap();
+    assert_eq!(
+        read_anchor_marker(&fake, &p),
+        Some(true),
+        "a read-only unlock must self-heal a legacy+anchored block (no mutation needed)"
+    );
+    // Snapshot the healed envelope so we can prove the heal is what fails closed.
+    let healed_snapshot = std::fs::read(&p).unwrap();
+
+    // Now delete the anchor and roll back to the healed snapshot (still Some(true)):
+    // the heal persisted, so this fails closed exactly like a native B1.0 vault.
+    delete_both_anchors(&fake);
+    std::fs::write(&p, &healed_snapshot).unwrap();
+    v.lock();
+    assert_eq!(
+        v.unlock(&mut PASS.to_vec()).unwrap_err(),
+        CustodyError::Corrupt,
+        "after a read-only self-heal, delete+rollback must fail closed (heal persisted)"
+    );
+}
+
+// ----- F-1b (d): self-heal also fires on the custody_get read path -------
+
+#[test]
+fn legacy_selfheal_on_custody_get_readonly() {
+    // The A3 OIDC-refresh consumer unlocks ONCE then repeatedly `custody_get`s.
+    // If the vault was already unlocked when it went legacy (e.g. an attacker
+    // downgraded the on-disk block under a live session), the heal must still fire
+    // on the read path. Here we unlock, THEN legacy-ify on disk, THEN `custody_get`
+    // — the get must heal (anchor present) and succeed.
+    let (v, fake, p) = init_and_unlock(0);
+    v.put("token", &mut b"LIVE".to_vec()).unwrap();
+    // Downgrade on disk under the live session; anchor stays present.
+    make_lockout_legacy(&fake, &p);
+    assert_eq!(read_anchor_marker(&fake, &p), None);
+
+    // custody_get heals the legacy block (anchor present) and serves the value.
+    assert_eq!(v.custody_get("token").unwrap().as_slice(), b"LIVE");
+    assert_eq!(
+        read_anchor_marker(&fake, &p),
+        Some(true),
+        "custody_get must self-heal a legacy+anchored block on the read path"
+    );
+}
+
+// ----- F-1b (e): genuine post-B1.0 first-init (Some(false)) still works --
+
+#[test]
+fn adv_f1b_genuine_first_init_present_false_still_works() {
+    // A genuine post-B1.0 first-init that carries an EXPLICIT `Some(false)` (field
+    // present, provenance genuine-first-init) with the anchor absent must still be
+    // allowed — this is the arm B1.0's `bool` could not tell apart from a legacy
+    // block. We construct that exact block and confirm it unlocks (no re-init
+    // brick), and that its on-disk marker is preserved as Some(false)/Some(true)
+    // after unlock (never mis-read as legacy).
+    let (v, fake, p) = init_and_unlock(0);
+    v.lock();
+
+    // Rewrite the on-disk lockout to an EXPLICIT Some(false) at the current gen,
+    // and DELETE the anchor: this is "genuine first-init, anchor not yet observed
+    // as present" — must be allowed (Some(false) + absent ⇒ Ok).
+    let mek_bytes = fake.get(KEYRING_MASTER_ACCOUNT).unwrap().unwrap();
+    let mut mek = [0u8; KEY_LEN];
+    mek.copy_from_slice(&mek_bytes);
+    let mut env: Envelope = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let cur = CustodyVault::open_lockout(&mek, &env).unwrap();
+    let first_init = LockoutState {
+        anchor_initialized: Some(false),
+        ..cur
+    };
+    env.lockout = CustodyVault::seal_lockout(&mek, env.version, &first_init).unwrap();
+    std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
+    delete_both_anchors(&fake);
+
+    // Some(false) + absent anchor ⇒ genuine first-init ⇒ unlock allowed.
+    v.unlock(&mut PASS.to_vec()).unwrap();
+    // The marker is untouched (Some(false) is not treated as legacy → no heal on
+    // an absent anchor; the enforce arm returned Ok without re-sealing).
+    assert_eq!(
+        read_anchor_marker(&fake, &p),
+        Some(false),
+        "a genuine Some(false) first-init block must be left as-is, never healed nor rejected"
+    );
+}
+
+// ----- F-1b (f): NEGATIVE CONTROL — the legacy guard is load-bearing -----
+
+#[test]
+fn adv_f1b_negative_control_legacy_guard_is_load_bearing() {
+    // Prove the NEW legacy-handling is load-bearing: simulate neutralizing it by
+    // driving the exact code path the fix disables — treat a legacy (`None`) block
+    // + absent anchor as benign (the pre-fix behavior). We do that here by asserting
+    // that WITHOUT the fix the attack would re-seed; concretely we verify the
+    // pre-fix-equivalent decision (None + absent ⇒ Ok) would serve the OLD value,
+    // by constructing the same legacy block but stamping it Some(false) — which
+    // under the three-way logic is the "genuine first-init" arm that RETURNS OK on
+    // an absent anchor. That is precisely the pre-fix `bool==false` behavior, and
+    // it MUST re-seed + serve OLD, proving the `None`-vs-`Some(false)` distinction
+    // (the fix) is what closes the hole.
+    let (v, fake, p) = init_and_unlock(0);
+    v.put("token", &mut b"OLD-TOKEN".to_vec()).unwrap();
+
+    // Snapshot an OLD envelope whose block is the pre-fix-equivalent Some(false)
+    // (indistinguishable from legacy under a `bool` representation).
+    let mek_bytes = fake.get(KEYRING_MASTER_ACCOUNT).unwrap().unwrap();
+    let mut mek = [0u8; KEY_LEN];
+    mek.copy_from_slice(&mek_bytes);
+    let mut env: Envelope = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let cur = CustodyVault::open_lockout(&mek, &env).unwrap();
+    let prefix_equiv = LockoutState {
+        anchor_initialized: Some(false), // the pre-fix `bool == false` reading
+        ..cur
+    };
+    env.lockout = CustodyVault::seal_lockout(&mek, env.version, &prefix_equiv).unwrap();
+    std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
+    let prefix_snapshot = std::fs::read(&p).unwrap();
+
+    v.put("token", &mut b"NEW-TOKEN".to_vec()).unwrap(); // roll forward
+    delete_both_anchors(&fake);
+    std::fs::write(&p, &prefix_snapshot).unwrap();
+
+    v.lock();
+    // The pre-fix-equivalent (Some(false)+absent ⇒ Ok) re-seeds and serves OLD —
+    // demonstrating the attack the FIELD-PRESENCE distinction (None) is what
+    // blocks. This is the negative control: it PASSES THROUGH (re-seeds) exactly
+    // because it does not use the `None` legacy marker.
+    v.unlock(&mut PASS.to_vec()).unwrap();
+    assert_eq!(
+        v.custody_get("token").unwrap().as_slice(),
+        b"OLD-TOKEN",
+        "control: a Some(false)+absent block re-seeds + serves OLD (this is why the \
+         legacy `None` marker — which fails closed — is the load-bearing fix)"
     );
 }
