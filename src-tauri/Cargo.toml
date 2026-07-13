@@ -43,8 +43,41 @@ url = "2"
 #   coordinate decoding.
 sha2 = "0.10"
 base64 = "0.22"
+# CORE-B1 — the wallet keystore crypto library (Option A / D-B1.1-1). Used ONLY
+#   for BIP39 create/import + BIP44 secp256k1 HD derivation (m/44'/60'/0'/0/i) +
+#   UnifiedKey signing/address derivation. We do NOT use its KeyManager /
+#   keys.json / session — the A2 custody vault (custody.rs) is the SOLE custody
+#   store; the sealed BIP39 entropy lives only there. Git dep pinned to the
+#   independently-reviewed B1.1.0 commit (citrate-chain 55f284b); Rule 12 [[drift]]
+#   entry landed first in citrate-federation/manifest.toml.
+#   NOTE on features: `default-features = false` does NOT build at rev 55f284b —
+#   `types.rs::default_keystore_path` references `dirs::` UNCONDITIONALLY while the
+#   `dirs` dep is `native`-feature-gated, so the crate only compiles with the
+#   default `native` feature on. We keep the default feature (do NOT patch upstream:
+#   that would break the reviewed pin). Cost: the `native` feature pulls tokio /
+#   reqwest / bincode / dirs / primitive-types / citrate-consensus / citrate-execution
+#   into the tree even though Option A uses ONLY the stateless crypto path
+#   (secp256k1_from_mnemonic + UnifiedKey). Flagged for the reviewer as a follow-up
+#   (a `crypto`-only feature upstream would trim this). The transitive
+#   `citrate-security = { path = "../core/security" }` resolves inside the
+#   citrate-chain git checkout (the sibling crate is present at that rev).
+bip39 = { version = "1.2", features = ["std", "zeroize"] }
+# B1.1-F-1: lean crypto-only wallet-core (default-features=false) keeps the zk/execution
+# stack (citrate-execution -> ark-groth16 -> tracing-subscriber / RUSTSEC-2025-0055) OUT of
+# the key path. Pinned to citrate-chain 3dce61c (the lean-feature commit).
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "3dce61c", default-features = false, features = ["crypto"] }
+# hex: encode the (non-secret) public key for display in WalletInfo.
+hex = "0.4"
 
 [dev-dependencies]
 # Test-only mock OIDC authority: p256 signs the id_token with a TEST key and
 #   serves its public coords as JWKS, so the full flow is exercised headlessly.
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+# CORE-B1.1 test-only: ecrecover round-trip proof (WP-3 / B1.1-ADV) — recover the
+#   signer's verifying key from a recoverable secp256k1 signature and confirm it
+#   maps back to the derived EVM address. Same k256 0.13 the wallet-core crate
+#   uses (transitive), pinned here as a direct dev-dep so the test can name the
+#   recovery types. sha3 = the Keccak-256 used to derive the address from the
+#   recovered uncompressed pubkey (matches wallet-core's derive_address).
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"

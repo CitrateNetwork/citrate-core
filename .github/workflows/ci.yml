@@ -15,8 +15,24 @@ jobs:
   rust:
     name: rust (fmt, clippy, test, audit)
     runs-on: ubuntu-latest
+    # citrate-core depends on private federation crates (citrate-wallet-core, from
+    # the private citrate-chain repo). Cargo's git fetch needs read credentials the
+    # default GITHUB_TOKEN does not carry cross-repo. Provide a read-only token as
+    # secret CITRATE_CHAIN_READ_TOKEN (fine-grained PAT, Contents:read on
+    # citrate-chain; or a deploy key). Fetch via the system git so the insteadOf
+    # credential is honored.
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # secrets can't be referenced in a step `if:`, so map it into env first.
+      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Authenticate to private federation repos (citrate-chain)
+        if: ${{ env.CHAIN_TOKEN != '' }}
+        run: |
+          git config --global \
+            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
