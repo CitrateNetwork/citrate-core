@@ -468,9 +468,15 @@ impl Audience {
             Audience::Many(v) => v.iter().any(|a| a == client_id),
         }
     }
+
+    /// Whether `aud` names MORE than one audience (OIDC Core §3.1.3.7 — a
+    /// multi-valued `aud` triggers the `azp` requirement).
+    fn is_multi(&self) -> bool {
+        matches!(self, Audience::Many(v) if v.len() > 1)
+    }
 }
 
-/// Registered id_token claims we validate against (iss/aud/exp/nonce).
+/// Registered id_token claims we validate against (iss/aud/azp/exp/nonce).
 #[derive(Debug, Deserialize)]
 struct IdTokenClaims {
     iss: String,
@@ -479,6 +485,12 @@ struct IdTokenClaims {
     /// `Validation`), closing the audience-confusion bypass where an absent `aud`
     /// would otherwise pass `set_audience`.
     aud: Audience,
+    /// NEW-1: `azp` (authorized party). OIDC Core §3.1.3.7 rules 4–5: when `aud`
+    /// is multi-valued the RP MUST require `azp` and, if `azp` is present, it MUST
+    /// equal our `client_id`. Optional in the wire (single-aud tokens may omit
+    /// it); the multi-aud requirement is enforced in `decode_and_validate_id_token`.
+    #[serde(default)]
+    azp: Option<String>,
     #[serde(default)]
     nonce: Option<String>,
     // The entitlement/identity claims ride along in the id_token too; we reuse
@@ -773,6 +785,24 @@ impl AuthManager {
         }
         if !data.aud.contains(&self.cfg.client_id) {
             return Err(AuthError::IdTokenInvalid);
+        }
+        // NEW-1 (OIDC Core §3.1.3.7 rules 4–5): a MULTI-valued `aud` requires
+        // `azp` to be present AND equal to our client_id — otherwise a token
+        // issued to a DIFFERENT authorized party that merely lists us in `aud`
+        // (confused-deputy / multi-client misissuance) would be accepted. For a
+        // single `aud` (the normal case) `azp` is optional; but if `azp` IS
+        // present it must still name us (never a different party).
+        match (data.aud.is_multi(), data.azp.as_deref()) {
+            // Multi-aud with no azp, or an azp that isn't us → reject.
+            (true, None) => return Err(AuthError::IdTokenInvalid),
+            (true, Some(azp)) if azp != self.cfg.client_id => {
+                return Err(AuthError::IdTokenInvalid)
+            }
+            // Single-aud but a present azp that names someone else → reject.
+            (false, Some(azp)) if azp != self.cfg.client_id => {
+                return Err(AuthError::IdTokenInvalid)
+            }
+            _ => {}
         }
         Ok(data)
     }

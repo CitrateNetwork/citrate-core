@@ -136,6 +136,11 @@ struct Behavior {
     /// in the multi-key JWKS). Under a "first key" fallback + a kid-less token,
     /// this attacker-signed token would VERIFY. The fix rejects kid-less+multikey.
     sign_with_attacker: bool,
+    /// NEW-1: emit a MULTI-valued `aud` = [client_id, "attacker-extra"].
+    multi_aud: bool,
+    /// NEW-1: set `azp` to this value; `None` omits the claim. Combined with
+    /// `multi_aud` to probe OIDC Core §3.1.3.7 rules 4–5.
+    azp: Option<String>,
 }
 
 impl MockAuthority {
@@ -411,7 +416,16 @@ impl ServerCtx {
         if let Some(obj) = payload.as_object_mut() {
             // OIDC-1 probe: only include `aud` when NOT omitting it.
             if !b.omit_aud {
-                obj.insert("aud".to_string(), json!(aud));
+                // NEW-1 probe: a MULTI-valued aud lists us AND an attacker party.
+                if b.multi_aud {
+                    obj.insert("aud".to_string(), json!([aud, "attacker-extra"]));
+                } else {
+                    obj.insert("aud".to_string(), json!(aud));
+                }
+            }
+            // NEW-1 probe: emit `azp` when set.
+            if let Some(azp) = &b.azp {
+                obj.insert("azp".to_string(), json!(azp));
             }
             if let Some(extra) = claims.as_object() {
                 for (k, v) in extra {
@@ -920,6 +934,49 @@ fn oidc2_kidless_token_single_key_jwks_accepted() {
     {
         let mut b = auth.behavior();
         b.omit_kid = true; // single-key JWKS (multikey_jwks stays false)
+    }
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let st = mgr.login_with(&vault, |u| auth.drive_browser(u)).unwrap();
+    assert!(st.signed_in);
+}
+
+// ===========================================================================
+// NEW-1 — multi-aud + azp (OIDC Core §3.1.3.7 rules 4–5). A multi-valued `aud`
+// that lists us alongside another party must be rejected UNLESS `azp` names us.
+// A single-aud token with an `azp` naming someone else is also rejected.
+// ===========================================================================
+
+#[test]
+fn new1_multi_aud_without_azp_is_rejected() {
+    // aud = [citrate-core, attacker-extra], no azp → reject (§3.1.3.7 rule 4).
+    run_id_token_attack(|b| b.multi_aud = true);
+}
+
+#[test]
+fn new1_multi_aud_with_foreign_azp_is_rejected() {
+    // aud multi + azp = attacker-extra (not us) → reject (§3.1.3.7 rule 5).
+    run_id_token_attack(|b| {
+        b.multi_aud = true;
+        b.azp = Some("attacker-extra".to_string());
+    });
+}
+
+#[test]
+fn new1_single_aud_with_foreign_azp_is_rejected() {
+    // Single aud (us) but azp names a different party → reject: a present azp
+    // must still be us.
+    run_id_token_attack(|b| b.azp = Some("attacker-extra".to_string()));
+}
+
+#[test]
+fn new1_multi_aud_with_our_azp_is_accepted() {
+    // Positive control: aud multi + azp = citrate-core (us) → accepted.
+    let auth = MockAuthority::start();
+    {
+        let mut b = auth.behavior();
+        b.multi_aud = true;
+        b.azp = Some("citrate-core".to_string());
     }
     let mgr = manager_for(&auth);
     let (vault, _f, _p) = fresh_vault();

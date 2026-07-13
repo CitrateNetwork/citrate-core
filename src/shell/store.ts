@@ -30,16 +30,19 @@ import { BRIDGE_MODE } from "../bridge/mode";
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 
 /**
- * A3-03 — is an entitlement `expiresAt` claim in the past? An unparseable or
- * absent value is treated as NOT-expired (the authority is the source of truth
- * for entitlement; a malformed date is not a downgrade signal — the Rust
- * id_token `exp` guard already fails a genuinely expired token). Accepts an ISO
- * date/datetime or a unix-seconds string.
+ * A3-03 — is an entitlement `expiresAt` claim in the past (or anomalous)?
+ * - ABSENT (null/undefined/empty) → NOT expired: the authority legitimately may
+ *   not send an expiry; the hard id_token `exp` gate in Rust still bounds the
+ *   session.
+ * - PRESENT but UNPARSEABLE → treated as EXPIRED (fail-closed): a malformed
+ *   expiry on a T1 gating surface is an anomaly, not a licence to keep the tier.
+ * - PRESENT + in the past → expired.
+ * Accepts an ISO date/datetime or a unix-seconds string.
  */
-function isExpiredClaim(expiresAt: string | null | undefined): boolean {
+export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
   const ms = /^\d+$/.test(expiresAt) ? Number(expiresAt) * 1000 : Date.parse(expiresAt);
-  if (!Number.isFinite(ms)) return false;
+  if (!Number.isFinite(ms)) return true; // fail-closed on an unparseable value
   return ms < Date.now();
 }
 
