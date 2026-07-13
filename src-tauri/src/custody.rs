@@ -1167,6 +1167,42 @@ impl CustodyVault {
         Self::unseal(&data_key, sealed, &Self::aad(env.version, slot.as_bytes()))
     }
 
+    /// **In-process only** slot deletion for A3/B1 consumers (e.g. clearing the
+    /// `oidc-refresh` slot on logout — the A2 F-1 revocable-secret case). Like
+    /// `custody_get`/`put` this is a plain `pub fn`, never a `#[tauri::command]`.
+    /// Requires an unlocked session. Deleting an absent slot is a no-op success
+    /// (idempotent logout). Re-seals the header + advances the generation so the
+    /// deletion is authenticated and cannot be rolled back to re-materialize the
+    /// slot (CRY-1 rollback). Its only callers are A3/B1 + tests; allow dead_code
+    /// so the non-test lib build does not flag it.
+    #[allow(dead_code)]
+    pub fn clear_slot(&self, slot: &str) -> Result<()> {
+        if slot.starts_with('\0') {
+            return Err(CustodyError::Denied);
+        }
+        // Mirror `put_inner`'s BND-3 discipline: hold the mutex across
+        // load→verify→remove→reseal-header→save so the mutation is serialized and
+        // the header stays consistent with the slot set.
+        let mut inner = self.lock_inner();
+        self.expire_if_stale(&mut inner);
+        let data_key = match inner.session.as_ref() {
+            Some(s) => Zeroizing::new(*s.data_key),
+            None => return Err(CustodyError::Denied),
+        };
+        let mut env = self.load_envelope()?;
+        if !env.slots.contains_key(slot) {
+            return Ok(()); // idempotent: nothing to clear
+        }
+        // Confirm current integrity before mutating (same as put_inner).
+        let generation = Self::open_and_verify_header(&data_key, &env)?;
+        self.enforce_high_water(generation)?;
+        env.slots.remove(slot);
+        let next_gen = generation.checked_add(1).ok_or(CustodyError::Corrupt)?;
+        env.header = Self::seal_header(&data_key, env.version, next_gen, &env.slots)?;
+        self.bump_high_water(next_gen)?;
+        self.save_envelope(&env)
+    }
+
     /// Slot metadata only (never bytes). The reserved check-slot is hidden.
     pub fn list(&self) -> Result<Vec<SlotInfo>> {
         // Listing metadata does not require an unlock — but an uninitialized

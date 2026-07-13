@@ -105,3 +105,33 @@ describe("sim adapter — custody UI state only (no real secret, stores nothing)
     expect(await bridge.custody.listSlots()).toEqual([]);
   });
 });
+
+// CORE-A3 A3.3 — sim auth derives the claim-derived AuthStatus from the live
+// persona/AppState (the entitlement engine input) and carries NO token.
+describe("sim adapter — auth persona claim (A3.3 sim half)", () => {
+  it("status is signed-out before S1 completes (onboarding gate)", async () => {
+    const { host } = fakeHost({ stage: "s1", s1: "idle", persona: "p1" } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const st = await bridge.auth.status();
+    expect(st.signedIn).toBe(false);
+  });
+
+  it("status reflects the persona entitlement once signed in; never a token", async () => {
+    const { host } = fakeHost({ stage: "done", persona: "p4", tier: "enterprise", org: "BA-7" } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const st = await bridge.auth.status();
+    expect(st.signedIn).toBe(true);
+    expect(st.tier).toBe("enterprise");
+    expect(st.org).toBe("BA-7");
+    expect(st.role).toBe("org-seat");
+    // No token material anywhere in the sim status either (ADV-8).
+    expect(JSON.stringify(st)).not.toContain("token");
+  });
+
+  it("logout + kycStart are inert no-ops in the shim (no real token to leak)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await expect(bridge.auth.logout()).resolves.toBeUndefined();
+    await expect(bridge.auth.kycStart()).resolves.toBeUndefined();
+  });
+});

@@ -88,3 +88,37 @@ export interface SlotInfo {
   name: string;
   bytes: number;
 }
+
+/**
+ * CORE-A3 — the claim-derived auth status crossing the bridge. This is the ONLY
+ * thing the auth commands return: flags + entitlement claims, NEVER a token
+ * (ADV-8). The rotating refresh token lives in the A2 custody vault; the access
+ * token lives only in Rust memory. Neither ever crosses this boundary.
+ */
+export interface AuthStatus {
+  /** A live session exists (an access token is held in the Rust process). */
+  signedIn: boolean;
+  sub: string | null;
+  tier: string | null;
+  org: string | null;
+  role: string | null;
+  /** KYC claim: none | pending | verified | failed | review (S2 seam). */
+  kycStatus: string | null;
+  /** Smart-wallet address claim (display only — A3 does NOT sign; rule 3). */
+  walletAddr: string | null;
+  /** Entitlement expiry (from the claim), for the Settings/onboarding UI. */
+  expiresAt: string | null;
+  email: string | null;
+}
+
+export const SIGNED_OUT_AUTH: AuthStatus = {
+  signedIn: false,
+  sub: null,
+  tier: null,
+  org: null,
+  role: null,
+  kycStatus: null,
+  walletAddr: null,
+  expiresAt: null,
+  email: null,
+};

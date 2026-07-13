@@ -80,7 +80,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     { k: "sub", v: "usr_2af4c19e…" + P.initials.toLowerCase(), color: "var(--tx-1)" },
     { k: "email", v: P.email, color: "var(--tx-1)" },
     { k: "tier", v: effTier + (effTier !== s.tier ? " (was " + s.tier + ")" : ""), color: "var(--tx-1)" },
-    { k: "role", v: P.role, color: "var(--tx-1)" },
+    { k: "role", v: s.citrateRole || P.role, color: "var(--tx-1)" },
     { k: "org", v: s.org || "—", color: s.org ? "var(--info)" : "var(--tx-3)" },
     {
       k: "expiresAt",
@@ -315,7 +315,13 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Opens account-hub /account in your browser — shared OIDC session")}>
                   Manage account ↗
                 </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Signs out and revokes the refresh token at the authority — reset the prototype to replay onboarding")}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    void store.authLogout();
+                    store.toast("Signed out — refresh token revoked at the authority and cleared from the vault");
+                  }}
+                >
                   Sign out
                 </button>
               </div>
