@@ -9,7 +9,7 @@
 // these throws with a real invoke, copying the config shape exactly.
 // =====================================================================
 import { invoke } from "@tauri-apps/api/core";
-import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "../types";
+import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo, AuthStatus } from "../types";
 import type { BridgeContract } from "../domains";
 import { Unavailable } from "../types";
 
@@ -53,13 +53,28 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
     },
 
-    // ---- the eight seam domains: honest Unavailable until their phase ----
+    // ---- auth: REAL OIDC loopback-PKCE (A3) ----
+    // Every command returns claim-derived AuthStatus (or void) — no token ever
+    // crosses this boundary (ADV-8). The refresh token lives in the A2 vault;
+    // the access token stays in Rust memory.
     auth: {
-      async userinfo() {
-        return unavailable("auth", "userinfo");
+      async status(): Promise<AuthStatus> {
+        return invoke<AuthStatus>("auth_status");
       },
-      async signOut() {
-        return unavailable("auth", "signOut");
+      async login(): Promise<AuthStatus> {
+        return invoke<AuthStatus>("auth_login");
+      },
+      async userinfo(): Promise<AuthStatus> {
+        return invoke<AuthStatus>("auth_userinfo");
+      },
+      async refresh(): Promise<AuthStatus> {
+        return invoke<AuthStatus>("auth_refresh");
+      },
+      async logout(): Promise<void> {
+        await invoke("auth_logout");
+      },
+      async kycStart(): Promise<void> {
+        await invoke("kyc_start");
       },
     },
     wallet: {

@@ -11,8 +11,10 @@
 // packaged Tauri build — the sim path is unreachable there (Rule 1).
 // =====================================================================
 import type { AppState } from "../../shell/state";
-import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "../types";
+import { PERSONAS } from "../../shell/state";
+import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo, AuthStatus } from "../types";
 import type { BridgeContract } from "../domains";
+import { SIGNED_OUT_AUTH } from "../types";
 import { assertSimAllowed } from "../mode";
 
 // The sim adapter is bound to the running Store via a state getter + a
@@ -97,15 +99,36 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
     },
 
-    // ---- the eight seam domains: delegate to the live Store snapshot ----
+    // ---- auth: SIM persona flow (dev shim). Derives the claim-derived
+    // AuthStatus from the live prototype persona/AppState so web-dev renders the
+    // Account/entitlement UI 1:1. Guarded out of packaged builds; the real OIDC
+    // flow lives in the Tauri/Rust path (A3). No token exists here to leak.
     auth: {
-      async userinfo() {
-        assertSimAllowed("auth.userinfo");
-        const st = s();
-        return { sub: "usr_2af4c19e", email: "", tier: st.tier, role: "member", org: st.org };
+      async status(): Promise<AuthStatus> {
+        assertSimAllowed("auth.status");
+        return simAuthStatus(s());
       },
-      async signOut() {
-        assertSimAllowed("auth.signOut");
+      async login(): Promise<AuthStatus> {
+        assertSimAllowed("auth.login");
+        // The prototype "signs in" by advancing its own onboarding state; the
+        // shim just reflects the current persona claim.
+        return simAuthStatus(s());
+      },
+      async userinfo(): Promise<AuthStatus> {
+        assertSimAllowed("auth.userinfo");
+        return simAuthStatus(s());
+      },
+      async refresh(): Promise<AuthStatus> {
+        assertSimAllowed("auth.refresh");
+        return simAuthStatus(s());
+      },
+      async logout(): Promise<void> {
+        assertSimAllowed("auth.logout");
+        // No real token in the shim; the Store resets prototype state elsewhere.
+      },
+      async kycStart(): Promise<void> {
+        assertSimAllowed("auth.kycStart");
+        // The prototype drives KYC via its own onboarding timers.
       },
     },
 
@@ -180,5 +203,31 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         return s().connections;
       },
     },
+  };
+}
+
+/**
+ * Derive the claim-derived AuthStatus from the prototype persona + AppState.
+ * This mirrors the shape the real Rust `auth_status` returns, so the entitlement
+ * engine + Account UI read one contract in both sim and Tauri. `signedIn` is
+ * false until the prototype has completed S1 sign-in (stage past s1), so the
+ * onboarding S1 gate behaves the same way it does against real login events.
+ */
+function simAuthStatus(st: AppState): AuthStatus {
+  const p = PERSONAS[st.persona] || PERSONAS.p1;
+  const signedIn = st.stage === "done" || ["s2", "s3", "s4", "s5", "s6"].includes(st.stage) || st.s1 === "done";
+  if (!signedIn) return SIGNED_OUT_AUTH;
+  const effTier = st.entitlement === "lapsed" ? "free" : st.tier;
+  const kyc = st.hasSbt || st.s2 === "verified" ? "verified" : st.s2 === "none" ? "none" : st.s2;
+  return {
+    signedIn: true,
+    sub: "usr_2af4c19e" + p.initials.toLowerCase(),
+    tier: effTier,
+    org: st.org,
+    role: p.role,
+    kycStatus: kyc,
+    walletAddr: st.walletAddr,
+    expiresAt: st.entitlement === "lapsed" ? "2026-06-28" : "2027-07-11",
+    email: p.email,
   };
 }

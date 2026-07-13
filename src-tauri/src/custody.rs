@@ -125,6 +125,19 @@ const KEYRING_LOCKOUT_GEN_ACCOUNT: &str = "custody-lockout-generation";
 /// Envelope file name inside the app data dir.
 const ENVELOPE_FILE: &str = "custody.enc";
 
+/// Slot-name prefix reserved for BACKEND-OWNED secrets (A3 `oidc-refresh`, future
+/// B1 wallet keys). The **in-process** `put`/`custody_get`/`clear_slot` APIs may
+/// address these freely (that is how the backend stores them); the
+/// `#[tauri::command] custody_put` INVOKE path rejects them so the webview can
+/// never overwrite/plant a backend secret (A3-01 — seals the A2 I-2 custody
+/// boundary against a compromised/XSS'd frontend calling the raw `invoke`).
+pub const BACKEND_SLOT_PREFIX: &str = "oidc-";
+
+/// Whether `slot` is a backend-owned slot the invoke boundary must refuse.
+pub fn is_backend_reserved_slot(slot: &str) -> bool {
+    slot.starts_with(BACKEND_SLOT_PREFIX)
+}
+
 /// The reserved check-slot: a known plaintext sealed under the data key. Unlock
 /// trial-decrypts it; a wrong passphrase fails the GCM tag. Its name starts with
 /// a NUL so it can never collide with a caller slot and is filtered from `list`.
@@ -1167,6 +1180,42 @@ impl CustodyVault {
         Self::unseal(&data_key, sealed, &Self::aad(env.version, slot.as_bytes()))
     }
 
+    /// **In-process only** slot deletion for A3/B1 consumers (e.g. clearing the
+    /// `oidc-refresh` slot on logout — the A2 F-1 revocable-secret case). Like
+    /// `custody_get`/`put` this is a plain `pub fn`, never a `#[tauri::command]`.
+    /// Requires an unlocked session. Deleting an absent slot is a no-op success
+    /// (idempotent logout). Re-seals the header + advances the generation so the
+    /// deletion is authenticated and cannot be rolled back to re-materialize the
+    /// slot (CRY-1 rollback). Its only callers are A3/B1 + tests; allow dead_code
+    /// so the non-test lib build does not flag it.
+    #[allow(dead_code)]
+    pub fn clear_slot(&self, slot: &str) -> Result<()> {
+        if slot.starts_with('\0') {
+            return Err(CustodyError::Denied);
+        }
+        // Mirror `put_inner`'s BND-3 discipline: hold the mutex across
+        // load→verify→remove→reseal-header→save so the mutation is serialized and
+        // the header stays consistent with the slot set.
+        let mut inner = self.lock_inner();
+        self.expire_if_stale(&mut inner);
+        let data_key = match inner.session.as_ref() {
+            Some(s) => Zeroizing::new(*s.data_key),
+            None => return Err(CustodyError::Denied),
+        };
+        let mut env = self.load_envelope()?;
+        if !env.slots.contains_key(slot) {
+            return Ok(()); // idempotent: nothing to clear
+        }
+        // Confirm current integrity before mutating (same as put_inner).
+        let generation = Self::open_and_verify_header(&data_key, &env)?;
+        self.enforce_high_water(generation)?;
+        env.slots.remove(slot);
+        let next_gen = generation.checked_add(1).ok_or(CustodyError::Corrupt)?;
+        env.header = Self::seal_header(&data_key, env.version, next_gen, &env.slots)?;
+        self.bump_high_water(next_gen)?;
+        self.save_envelope(&env)
+    }
+
     /// Slot metadata only (never bytes). The reserved check-slot is hidden.
     pub fn list(&self) -> Result<Vec<SlotInfo>> {
         // Listing metadata does not require an unlock — but an uninitialized
@@ -1289,6 +1338,16 @@ pub fn custody_put(
     slot: String,
     mut bytes: Vec<u8>,
 ) -> std::result::Result<(), String> {
+    // A3-01 boundary: the INVOKE path must not address a backend-owned slot
+    // (e.g. `oidc-refresh`). Otherwise a compromised/XSS'd webview could call the
+    // raw `invoke("custody_put", { slot: "oidc-refresh", ... })` and overwrite the
+    // vaulted refresh token. In-process `put` (used by A3/B1) is unrestricted; the
+    // command wrapper is where the untrusted frontend crosses, so the guard lives
+    // here. Zeroize the inbound bytes even on rejection.
+    if is_backend_reserved_slot(&slot) {
+        bytes.zeroize();
+        return Err("reserved slot name".into());
+    }
     let r = state.0.put(&slot, &mut bytes).map_err(err_str);
     bytes.zeroize();
     r

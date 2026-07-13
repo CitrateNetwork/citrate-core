@@ -31,6 +31,25 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     }
     case "config_keyring_status":
       return "available";
+    // CORE-A3 auth commands — claim-derived AuthStatus (never a token).
+    case "auth_status":
+    case "auth_login":
+    case "auth_userinfo":
+    case "auth_refresh":
+      return {
+        signedIn: true,
+        sub: "usr_2af4c19e",
+        tier: "pilot",
+        org: null,
+        role: "member",
+        kycStatus: "verified",
+        walletAddr: "0xabc",
+        expiresAt: "2027-07-11",
+        email: "dana@example.com",
+      };
+    case "auth_logout":
+    case "kyc_start":
+      return undefined;
     default:
       // seam domains reject with the honest unavailable message
       throw `unavailable: ${cmd} is not wired in this build`;
@@ -89,10 +108,10 @@ describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", 
     await expect(bridge.wallet.balances()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
-  it("every seam domain rejects with Unavailable", async () => {
+  it("every still-unwired seam domain rejects with Unavailable", async () => {
     const bridge = createTauriBridge();
+    // NOTE: `auth` is now genuinely wired (CORE-A3) and is asserted separately.
     const calls = [
-      () => bridge.auth.userinfo(),
       () => bridge.node.status(),
       () => bridge.memory.recall("x"),
       () => bridge.membership.entitlement(),
@@ -103,5 +122,38 @@ describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", 
     for (const c of calls) {
       await expect(c()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
     }
+  });
+});
+
+// CORE-A3 A3.3 — the auth domain now invokes the real OIDC commands. This is the
+// frontend half of the boundary: every auth invoke returns claim-derived flags
+// (AuthStatus) and NEVER a token (ADV-8). The Rust half is `cargo test`
+// (oidc::tests). Here we assert the adapter calls the right commands and passes
+// the claim-derived status straight through — no token field is even present.
+describe("tauri adapter — auth domain invokes real OIDC commands (A3.3)", () => {
+  it("status/login/userinfo/refresh return claim-derived flags, never a token", async () => {
+    const bridge = createTauriBridge();
+    for (const call of [
+      () => bridge.auth.status(),
+      () => bridge.auth.login(),
+      () => bridge.auth.userinfo(),
+      () => bridge.auth.refresh(),
+    ]) {
+      const st = await call();
+      expect(st.signedIn).toBe(true);
+      expect(st.tier).toBe("pilot");
+      // The AuthStatus shape has no token field at all (ADV-8 boundary).
+      expect(Object.keys(st)).not.toContain("access_token");
+      expect(Object.keys(st)).not.toContain("refresh_token");
+      expect(JSON.stringify(st)).not.toContain("token");
+    }
+  });
+
+  it("logout + kycStart invoke their commands and return void", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.auth.logout()).resolves.toBeUndefined();
+    await expect(bridge.auth.kycStart()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("auth_logout", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("kyc_start", undefined);
   });
 });

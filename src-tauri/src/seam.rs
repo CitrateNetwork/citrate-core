@@ -24,8 +24,8 @@ macro_rules! seam_cmd {
     };
 }
 
-seam_cmd!(auth_userinfo, "auth", "userinfo");
-seam_cmd!(auth_sign_out, "auth", "signOut");
+// NOTE: `auth_*` seam stubs were replaced by the real OIDC commands in CORE-A3
+// (see `oidc.rs`). The `auth` bridge domain is now genuinely wired.
 seam_cmd!(wallet_balances, "wallet", "balances");
 seam_cmd!(wallet_activity, "wallet", "activity");
 seam_cmd!(node_status, "node", "status");
@@ -58,7 +58,6 @@ mod tests {
     #[test]
     fn all_seam_domains_report_unavailable() {
         for r in [
-            auth_userinfo(),
             node_status(),
             memory_recall(),
             membership_entitlement(),

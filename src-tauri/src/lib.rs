@@ -9,6 +9,7 @@
 
 mod config;
 mod custody;
+mod oidc;
 mod seam;
 
 use tauri::Manager;
@@ -29,6 +30,10 @@ pub fn run() {
             let state = custody::build_custody_state(handle, autolock)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             app.manage(state);
+            // CORE-A3 — the auth manager (real loopback-PKCE OIDC against
+            // auth.citrate.ai; refresh token → the A2 vault; access token in
+            // memory only; @rule8: no token crosses invoke). Consumes A2.
+            app.manage(oidc::build_auth_state());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -45,9 +50,16 @@ pub fn run() {
             custody::custody_put,
             custody::custody_list,
             custody::custody_keyring_status,
+            // auth — real OIDC loopback-PKCE (A3). Replaces the A1 auth seam
+            // stubs. Every command returns claim-derived AuthStatus or (); NO
+            // command returns a token (ADV-8 boundary; see oidc::tests).
+            oidc::auth_status,
+            oidc::auth_login,
+            oidc::auth_userinfo,
+            oidc::auth_refresh,
+            oidc::auth_logout,
+            oidc::kyc_start,
             // seam domains — honest Unavailable until each later phase (A1.3)
-            seam::auth_userinfo,
-            seam::auth_sign_out,
             seam::wallet_balances,
             seam::wallet_activity,
             seam::node_status,

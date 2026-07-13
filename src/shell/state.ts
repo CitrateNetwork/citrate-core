@@ -135,6 +135,12 @@ export interface AppState {
   persona: string;
   tier: string;
   org: string | null;
+  /**
+   * CORE-A3 entitlement engine — the `citrate_role` claim (member / operator /
+   * builder / org-seat). In a Tauri build this comes from the live /userinfo
+   * entitlement claim; in web-dev from the sim persona. Gates Settings RBAC.
+   */
+  citrateRole: string;
   entitlement: "active" | "expiring" | "grace" | "lapsed";
   stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "done";
   s1: "idle" | "waiting" | "attest" | "done";
@@ -259,6 +265,7 @@ export function freshState(pid: string): AppState {
     persona: pid,
     tier: P.fresh ? "free" : P.tier,
     org: P.org,
+    citrateRole: P.role,
     entitlement: "active",
     stage: P.fresh ? "s0" : "done",
     s1: "idle",
@@ -465,7 +472,7 @@ export function freshState(pid: string): AppState {
 
 // keys persisted (verbatim from design save())
 export const PERSIST_KEYS: (keyof AppState)[] = [
-  "persona", "tier", "org", "entitlement", "stage", "s2", "s3", "s5", "s5n", "hasGrant", "hasSbt",
+  "persona", "tier", "org", "citrateRole", "entitlement", "stage", "s2", "s3", "s5", "s5n", "hasGrant", "hasSbt",
   "liquid", "selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
   "telemetry", "storageMode", "coachDone", "dataDir", "s5hash", "walletAddr", "socketPath",

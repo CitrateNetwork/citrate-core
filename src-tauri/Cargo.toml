@@ -25,3 +25,26 @@ argon2 = "0.5"
 aes-gcm = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 rand = "0.8"
+# CORE-A3 — OIDC loopback-PKCE sign-in.
+# ureq: light blocking HTTP client (rustls TLS) for /token, /userinfo, JWKS,
+#   revoke. Chosen over reqwest (not already in the Tauri tree; pulls tokio +
+#   hyper). Blocking is correct here: the flow runs on a spawned thread, not the
+#   Tauri async runtime.
+ureq = { version = "3", features = ["json"] }
+# jsonwebtoken (ES256): id_token signature + claim (nonce/iss/aud/exp) validation
+#   against the authority JWKS. Backed by aws-lc-rs (a maintained, FIPS-oriented
+#   crypto provider) rather than the rust_crypto umbrella — the latter pulls the
+#   `rsa` crate (RUSTSEC-2023-0071, Marvin timing) even though A3 only uses ES256.
+#   aws-lc-rs provides ES256 with no `rsa` in the tree, keeping `cargo audit` clean.
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs", "use_pem"] }
+# url: build the /authorize request + parse the single loopback callback line.
+url = "2"
+# sha2 + base64: PKCE S256 (challenge = base64url(sha256(verifier))) and JWK
+#   coordinate decoding.
+sha2 = "0.10"
+base64 = "0.22"
+
+[dev-dependencies]
+# Test-only mock OIDC authority: p256 signs the id_token with a TEST key and
+#   serves its public coords as JWKS, so the full flow is exercised headlessly.
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }

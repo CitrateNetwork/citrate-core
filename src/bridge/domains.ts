@@ -10,7 +10,7 @@
 // Store and whose Tauri impl returns `Unavailable` (Rule 1) until a later
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
-import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "./types";
+import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo, AuthStatus } from "./types";
 
 // ---- config (A1.4 — the genuinely-live domain) ----------------------
 export interface ConfigDomain {
@@ -42,10 +42,23 @@ export interface CustodyDomain {
 // Their sim impls delegate to the prototype Store (1:1 UI preserved); their
 // Tauri impls throw `Unavailable` until their own later phase.
 
+// ---- auth (A3 — real OIDC loopback-PKCE) ----------------------------
+// Every method returns the claim-derived AuthStatus (or void) — NEVER a token
+// (ADV-8). In Tauri these invoke the real Rust OIDC commands; in sim they drive
+// the prototype persona flow (guarded out of packaged builds).
 export interface AuthDomain {
-  /** OIDC entitlement claim shown in Settings › Account (sim: from AppState). */
-  userinfo(): Promise<{ sub: string; email: string; tier: string; role: string; org: string | null }>;
-  signOut(): Promise<void>;
+  /** Current claim-derived status (signedIn + entitlement flags). */
+  status(): Promise<AuthStatus>;
+  /** Run the loopback-PKCE sign-in; opens the system browser. Returns status. */
+  login(): Promise<AuthStatus>;
+  /** Live /userinfo entitlement re-check (the federation RP rule). */
+  userinfo(): Promise<AuthStatus>;
+  /** Silent refresh from the vaulted refresh token (survives restart). */
+  refresh(): Promise<AuthStatus>;
+  /** Revoke the refresh token + clear the vault slot + wipe the session. */
+  logout(): Promise<void>;
+  /** Open the KYC flow in the browser (S2). Status is then read via userinfo. */
+  kycStart(): Promise<void>;
 }
 
 export interface WalletDomain {

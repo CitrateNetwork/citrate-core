@@ -25,8 +25,26 @@ import {
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { bindSimHost, bridge } from "../bridge";
+import { BRIDGE_MODE } from "../bridge/mode";
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
+
+/**
+ * A3-03 — is an entitlement `expiresAt` claim in the past (or anomalous)?
+ * - ABSENT (null/undefined/empty) → NOT expired: the authority legitimately may
+ *   not send an expiry; the hard id_token `exp` gate in Rust still bounds the
+ *   session.
+ * - PRESENT but UNPARSEABLE → treated as EXPIRED (fail-closed): a malformed
+ *   expiry on a T1 gating surface is an anomaly, not a licence to keep the tier.
+ * - PRESENT + in the past → expired.
+ * Accepts an ISO date/datetime or a unix-seconds string.
+ */
+export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return false;
+  const ms = /^\d+$/.test(expiresAt) ? Number(expiresAt) * 1000 : Date.parse(expiresAt);
+  if (!Number.isFinite(ms)) return true; // fail-closed on an unparseable value
+  return ms < Date.now();
+}
 
 export class Store {
   state: AppState;
@@ -79,6 +97,10 @@ export class Store {
     // section. In a Tauri build this reads the live vault (custody_status); in
     // web-dev it is the sim shim. Failures leave the field "unknown" (honest).
     void this.refreshCustody();
+    // CORE-A3 — fold the live entitlement claim into the engine on launch. In a
+    // Tauri build this reads the real /userinfo-derived status (silent if signed
+    // out); in web-dev it reads the sim persona. Honest no-op on failure.
+    void this.refreshAuth();
   }
 
   /**
@@ -109,6 +131,80 @@ export class Store {
   async custodyLock(): Promise<void> {
     await bridge.custody.lock();
     await this.refreshCustody();
+  }
+
+  // ---------- CORE-A3 auth (real OIDC in Tauri; sim persona in web-dev) ----
+  /**
+   * Pull the live claim-derived auth status from the bridge and fold it into the
+   * entitlement engine (tier/org/role/entitlement) + the KYC S2 state. In a
+   * Tauri build this reads the real /userinfo entitlement claim; in web-dev it
+   * reads the sim persona. Never throws — an unavailable/failed read leaves the
+   * prior state untouched (honest).
+   */
+  async refreshAuth(): Promise<void> {
+    try {
+      const st = await bridge.auth.status();
+      this.applyAuthStatus(st);
+    } catch {
+      /* honest no-op: the auth domain reported unavailable / not signed in */
+    }
+  }
+
+  /** Fold a claim-derived AuthStatus into AppState (the entitlement engine). */
+  private applyAuthStatus(st: {
+    signedIn: boolean;
+    tier: string | null;
+    org: string | null;
+    role: string | null;
+    kycStatus: string | null;
+    expiresAt?: string | null;
+  }): void {
+    if (!st.signedIn) return;
+    const patch: Partial<AppState> = {};
+    // A3-03: enforce the entitlement expiry at the DECISION point — a claim whose
+    // `expiresAt` is in the past is downgraded to the free tier + lapsed, so no
+    // gated surface stays unlocked on a stale claim. A valid future expiry keeps
+    // the claimed tier and marks the entitlement active.
+    if (isExpiredClaim(st.expiresAt)) {
+      patch.tier = "free";
+      patch.entitlement = "lapsed";
+    } else if (st.tier) {
+      patch.tier = st.tier;
+      patch.entitlement = "active";
+    }
+    patch.org = st.org;
+    if (st.role) patch.citrateRole = st.role;
+    // KYC claim → the S2 seam's five states (none/pending/verified/failed/review).
+    if (st.kycStatus === "verified") patch.s2 = "verified";
+    else if (st.kycStatus === "pending") patch.s2 = "pending";
+    else if (st.kycStatus === "failed") patch.s2 = "failed";
+    else if (st.kycStatus === "review") patch.s2 = "review";
+    this.setState(patch);
+  }
+
+  /** Run the real loopback-PKCE sign-in (Tauri), then fold in the claim. */
+  async authLogin(): Promise<void> {
+    const st = await bridge.auth.login();
+    this.applyAuthStatus(st);
+    this.save();
+  }
+
+  /** Live /userinfo entitlement re-check, folded into the entitlement engine. */
+  async authUserinfo(): Promise<void> {
+    const st = await bridge.auth.userinfo();
+    this.applyAuthStatus(st);
+  }
+
+  /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
+  async authLogout(): Promise<void> {
+    await bridge.auth.logout();
+    this.setState({ tier: "free", citrateRole: "member", org: null });
+    this.save();
+  }
+
+  /** Open KYC in the browser; S2 status then arrives via userinfo polling. */
+  async kycStart(): Promise<void> {
+    await bridge.auth.kycStart();
   }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
@@ -573,6 +669,21 @@ export class Store {
   }
   onS1Start(): void {
     this.setState({ s1: "waiting" });
+    // Tauri: drive the REAL loopback-PKCE sign-in. The system browser opens; on
+    // success the entitlement claim folds in and S1 completes. A failure/cancel
+    // returns to idle (honest — no faked success).
+    if (BRIDGE_MODE === "tauri") {
+      void this.authLogin()
+        .then(() => {
+          this.setState({ s1: "done" });
+          this.save();
+        })
+        .catch(() => {
+          this.setState({ s1: "idle" });
+        });
+      return;
+    }
+    // Web-dev sim: the prototype attestation animation (no real auth).
     this._s1t = setTimeout(() => {
       this.setState({ s1: "attest", s1c: 0 });
       setTimeout(() => this.setState({ s1c: 1 }), 700);
@@ -590,10 +701,37 @@ export class Store {
   }
   onS2Start(): void {
     this.setState({ s2: "pending" });
+    // Tauri: open the REAL KYC flow in the browser, then poll /userinfo for the
+    // kyc_status claim change (none→pending→verified/failed/review). The S2 UI
+    // drives entirely off the real claim.
+    if (BRIDGE_MODE === "tauri") {
+      void this.kycStart().catch(() => {
+        /* browser open failed — stay pending; the user can retry */
+      });
+      this.pollKyc();
+      return;
+    }
+    // Web-dev sim: resolve to the persona's scripted outcome after a beat.
     setTimeout(() => {
       this.setState({ s2: this.state.kycOutcome });
       this.save();
     }, 2600);
+  }
+
+  /**
+   * Poll the live /userinfo entitlement for a KYC status change while S2 is
+   * pending (Tauri only). Stops once the claim resolves to a terminal state.
+   */
+  private pollKyc(): void {
+    if (BRIDGE_MODE !== "tauri") return;
+    const tick = () => {
+      if (this.state.s2 !== "pending") return; // resolved or navigated away
+      void this.authUserinfo().finally(() => {
+        if (this.state.s2 === "pending") setTimeout(tick, 5000);
+        else this.save();
+      });
+    };
+    setTimeout(tick, 5000);
   }
   onS3Pay(): void {
     this.setState({ s3: "paying" });
