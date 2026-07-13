@@ -11,6 +11,7 @@ mod config;
 mod custody;
 mod oidc;
 mod seam;
+mod wallet;
 
 use tauri::Manager;
 

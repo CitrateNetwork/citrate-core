@@ -128,17 +128,26 @@ const KEYRING_LOCKOUT_GEN_ACCOUNT: &str = "custody-lockout-generation";
 /// Envelope file name inside the app data dir.
 const ENVELOPE_FILE: &str = "custody.enc";
 
-/// Slot-name prefix reserved for BACKEND-OWNED secrets (A3 `oidc-refresh`, future
-/// B1 wallet keys). The **in-process** `put`/`custody_get`/`clear_slot` APIs may
-/// address these freely (that is how the backend stores them); the
-/// `#[tauri::command] custody_put` INVOKE path rejects them so the webview can
-/// never overwrite/plant a backend secret (A3-01 — seals the A2 I-2 custody
-/// boundary against a compromised/XSS'd frontend calling the raw `invoke`).
-pub const BACKEND_SLOT_PREFIX: &str = "oidc-";
+/// Slot-name prefixes reserved for BACKEND-OWNED secrets. The **in-process**
+/// `put`/`custody_get`/`clear_slot` APIs may address these freely (that is how the
+/// backend stores them); the `#[tauri::command] custody_put` INVOKE path rejects
+/// them so the webview can never overwrite/plant a backend secret (A3-01 — seals
+/// the A2 I-2 custody boundary against a compromised/XSS'd frontend calling the
+/// raw `invoke`).
+///
+/// - `oidc-` — A3's rotating refresh token (`oidc-refresh`).
+/// - `wallet-` — B1's wallet keystore: the sealed BIP39 entropy for the signing
+///   key (`wallet-entropy-0`). This is the FIRST non-reissuable secret in the
+///   vault, so the invoke-boundary reservation is load-bearing — a webview
+///   `custody_put("wallet-…", …)` that could plant/overwrite the key would be
+///   fund-relevant. B1.1 mirrors the `oidc-` reservation here (B1.1-ADV-R).
+const BACKEND_SLOT_PREFIXES: &[&str] = &["oidc-", "wallet-"];
 
-/// Whether `slot` is a backend-owned slot the invoke boundary must refuse.
+/// Whether `slot` is a backend-owned slot the invoke boundary must refuse. Checks
+/// EVERY reserved prefix (`oidc-`, `wallet-`), so a single guard at the invoke
+/// boundary covers both A3 tokens and B1 wallet keys.
 pub fn is_backend_reserved_slot(slot: &str) -> bool {
-    slot.starts_with(BACKEND_SLOT_PREFIX)
+    BACKEND_SLOT_PREFIXES.iter().any(|p| slot.starts_with(p))
 }
 
 /// The reserved check-slot: a known plaintext sealed under the data key. Unlock
