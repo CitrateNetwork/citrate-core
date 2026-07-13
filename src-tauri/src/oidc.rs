@@ -7,18 +7,27 @@
 //! holds or touches a wallet key.
 //!
 //! ## Flow (A3.1)
-//! 1. `auth_login` binds a single-use loopback listener on `127.0.0.1:<random>`
+//! 1. `auth_login` fetches the authority discovery document
+//!    (`${issuer}/.well-known/openid-configuration`, HTTPS + cert-verified),
+//!    verifies its `issuer` equals the hardcoded trust anchor
+//!    (`https://auth.citrate.ai` — no attacker-authority swap), and derives the
+//!    `authorization`/`token`/`userinfo`/`jwks` endpoints from it (the authority
+//!    serves `/auth`, `/token`, `/me`, `/jwks` — NOT the OIDC-default paths). It
+//!    then binds a single-use loopback listener on `127.0.0.1:<random>`
 //!    (RFC 8252 — never `0.0.0.0`), mints a PKCE verifier + `state` + `nonce`,
-//!    builds the `/authorize` URL (`code_challenge_method=S256`, scope
+//!    builds the authorization URL (`code_challenge_method=S256`, scope
 //!    `openid profile wallet kyc offline_access`,
-//!    `redirect_uri=http://127.0.0.1:<port>/callback`), and opens the system
+//!    `redirect_uri=http://127.0.0.1:<port>/auth/callback`), and opens the system
 //!    browser (tauri-plugin-opener).
 //! 2. The listener accepts ONE callback, parses `code`+`state` from the request
 //!    line, validates `state` (CSRF — ADV-1/ADV-6), then closes. A bind-timeout
 //!    fails closed and releases the port (ADV-10).
 //! 3. `code` is exchanged at `/token` with the `code_verifier` (PKCE — ADV-2).
 //!    The returned `id_token` is validated (nonce/iss/aud/exp/signature via the
-//!    authority JWKS — ADV-7).
+//!    authority JWKS — ADV-7). The authority signs **RS256** (JWKS RSA key); the
+//!    accepted algs are driven by discovery's
+//!    `id_token_signing_alg_values_supported` ∩ what we can verify, and
+//!    `header.alg` is gated to the matched JWKS key's alg (OIDC-1 alg-pin held).
 //!
 //! ## Token custody (A3.2 — mirrors A2's I-2 boundary)
 //! - The rotating **refresh token → the A2 custody vault** (slot `oidc-refresh`,
@@ -71,41 +80,77 @@ const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 // Authority endpoint config
 // ---------------------------------------------------------------------------
 
-/// The OIDC authority endpoints + the `citrate-core` client id. In production
-/// these point at auth.citrate.ai; tests inject the mock authority's base URL.
-/// `redirect_base` is filled per-attempt with the actual loopback port.
+/// The OIDC authority TRUST ANCHOR + the `citrate-core` client id. This holds the
+/// hardcoded prod `issuer` (never derived from the wire) and the discovery URL;
+/// the actual protocol endpoints (authorization/token/userinfo/jwks) are NOT
+/// guessed — they are fetched from the discovery document at login/refresh and
+/// gated so the discovery `issuer` equals this `issuer` (no attacker-authority
+/// swap). Tests inject the mock authority's base URL + discovery URL.
 #[derive(Debug, Clone)]
 pub struct AuthorityConfig {
-    pub authorize: String,
-    pub token: String,
-    pub userinfo: String,
-    pub jwks: String,
-    pub revoke: String,
+    /// The discovery document URL (`${issuer}/.well-known/openid-configuration`).
+    /// Fetched over HTTPS (cert-verified) at login/refresh.
+    pub discovery: String,
+    /// The `/kyc/start` seam URL. Not part of the OIDC discovery document, so it
+    /// is derived from the issuer directly (S2 browser-open only, not a protocol
+    /// endpoint).
     pub kyc_start: String,
+    /// The hardcoded production issuer — the TRUST ANCHOR. The discovery `issuer`
+    /// MUST equal this or the whole flow fails closed (no endpoint is trusted from
+    /// an authority whose issuer we did not pin).
     pub issuer: String,
     pub client_id: String,
 }
 
 impl AuthorityConfig {
-    /// Production authority (auth.citrate.ai). Not exercised in CI (the authority
-    /// is being redeployed — see the sprint's hard-dep note); the mock authority
-    /// fixture drives every test. Kept here so a Tauri build wires the real
-    /// endpoints; allow dead_code so the non-test lib build does not flag it when
-    /// only the injected constructor is used.
+    /// Production authority (auth.citrate.ai). The endpoints are NOT hardcoded
+    /// here anymore — they come from discovery (the authority serves `/auth`,
+    /// `/token`, `/me`, `/jwks`, NOT the OIDC-default paths). We hardcode only the
+    /// discovery URL, the issuer trust anchor, the client id, and the kyc seam.
+    /// `allow(dead_code)`: only exercised by a Tauri build; the mock drives CI.
     #[allow(dead_code)]
     pub fn production() -> Self {
         let base = "https://auth.citrate.ai";
         AuthorityConfig {
-            authorize: format!("{base}/authorize"),
-            token: format!("{base}/token"),
-            userinfo: format!("{base}/userinfo"),
-            jwks: format!("{base}/.well-known/jwks.json"),
-            revoke: format!("{base}/revoke"),
+            discovery: format!("{base}/.well-known/openid-configuration"),
             kyc_start: format!("{base}/kyc/start"),
             issuer: base.to_string(),
             client_id: "citrate-core".to_string(),
         }
     }
+}
+
+/// The OIDC protocol endpoints resolved FROM the discovery document. Only built
+/// after the discovery `issuer` has been verified against the trust anchor, so
+/// these URLs are authority-attested, not guessed.
+#[derive(Debug, Clone)]
+struct Endpoints {
+    authorization: String,
+    token: String,
+    userinfo: String,
+    jwks: String,
+    /// The revocation endpoint (`revocation_endpoint`). Optional in discovery; a
+    /// logout best-effort-revokes only when present.
+    revocation: Option<String>,
+    /// The id_token signing algs the authority advertises
+    /// (`id_token_signing_alg_values_supported`). Intersected with what we can
+    /// verify (RS256/ES256) to pin the accepted alg set.
+    id_token_signing_algs: Vec<String>,
+}
+
+/// The discovery document fields A3 consumes (RFC 8414 / OIDC Discovery).
+#[derive(Debug, Deserialize)]
+struct DiscoveryDoc {
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    /// OIDC serves userinfo at `userinfo_endpoint` (the authority uses `/me`).
+    userinfo_endpoint: String,
+    jwks_uri: String,
+    #[serde(default)]
+    revocation_endpoint: Option<String>,
+    #[serde(default)]
+    id_token_signing_alg_values_supported: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -360,19 +405,21 @@ fn parse_callback_target(target: &str) -> Result<CallbackParams> {
 // /authorize URL builder (ADV-3)
 // ---------------------------------------------------------------------------
 
-/// Build the `/authorize` URL. `code_challenge_method` is hard-wired to `S256`
+/// Build the authorization-endpoint URL (from the discovered
+/// `authorization_endpoint`). `code_challenge_method` is hard-wired to `S256`
 /// (ADV-3 — no caller can request `plain`).
 fn build_authorize_url(
-    cfg: &AuthorityConfig,
+    authorization_endpoint: &str,
+    client_id: &str,
     redirect_uri: &str,
     challenge: &str,
     state: &str,
     nonce: &str,
 ) -> Result<String> {
-    let mut url = url::Url::parse(&cfg.authorize).map_err(|_| AuthError::Network)?;
+    let mut url = url::Url::parse(authorization_endpoint).map_err(|_| AuthError::Network)?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", &cfg.client_id)
+        .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)
         .append_pair("scope", SCOPE)
         .append_pair("state", state)
@@ -508,15 +555,27 @@ struct Jwks {
     keys: Vec<Jwk>,
 }
 
-/// One JWK. A3's authority signs id_tokens with ES256, so we consume EC P-256
-/// keys (`kty=EC`, `crv=P-256`, `x`/`y`). `kid` selects the key by the token
-/// header.
+/// One JWK. The live authority signs id_tokens with **RS256** (`kty=RSA`, the
+/// modulus `n` + exponent `e`); we also keep EC P-256 support (`kty=EC`,
+/// `crv=P-256`, `x`/`y`) so a future per-client ES256 key verifies without a
+/// code change. `kid` selects the key by the token header; `alg`, when the JWKS
+/// publishes it, is the pin the token `header.alg` is gated against.
 #[derive(Debug, Deserialize)]
 struct Jwk {
     #[serde(default)]
     kid: Option<String>,
     #[serde(default)]
     kty: Option<String>,
+    /// The key's algorithm, e.g. `RS256`/`ES256`. When present it is authoritative
+    /// for the alg-pin (`header.alg` must equal it). The live JWKS publishes it.
+    #[serde(default)]
+    alg: Option<String>,
+    // RSA (RS256) components.
+    #[serde(default)]
+    n: Option<String>,
+    #[serde(default)]
+    e: Option<String>,
+    // EC (ES256) components.
     #[serde(default)]
     x: Option<String>,
     #[serde(default)]
@@ -657,6 +716,33 @@ impl AuthManager {
             .unwrap_or(0)
     }
 
+    // --- discovery (consumed at login + refresh) ------------------------
+
+    /// Fetch + validate the authority discovery document, returning the resolved
+    /// protocol endpoints. The document is fetched over the configured
+    /// `discovery` URL (HTTPS + cert-verified in prod via ureq/rustls), and its
+    /// `issuer` MUST equal our hardcoded trust anchor (`self.cfg.issuer`) — a
+    /// mismatch fails closed so an attacker cannot swap in a look-alike authority
+    /// whose endpoints we would otherwise consume. Endpoints are then taken FROM
+    /// the (issuer-verified) document, never guessed.
+    fn discover(&self) -> Result<Endpoints> {
+        let body = self.http.get(&self.cfg.discovery, None)?;
+        let doc: DiscoveryDoc = serde_json::from_str(&body).map_err(|_| AuthError::Network)?;
+        // TRUST ANCHOR: the discovery issuer must equal the pinned prod issuer.
+        // This is the gate that makes every derived endpoint trustworthy.
+        if doc.issuer != self.cfg.issuer {
+            return Err(AuthError::IdTokenInvalid);
+        }
+        Ok(Endpoints {
+            authorization: doc.authorization_endpoint,
+            token: doc.token_endpoint,
+            userinfo: doc.userinfo_endpoint,
+            jwks: doc.jwks_uri,
+            revocation: doc.revocation_endpoint,
+            id_token_signing_algs: doc.id_token_signing_alg_values_supported,
+        })
+    }
+
     // --- A3.1: the login flow -------------------------------------------
 
     /// Run the full loopback-PKCE sign-in against the authority, storing the
@@ -671,18 +757,32 @@ impl AuthManager {
     where
         F: FnOnce(&str) -> Result<()>,
     {
+        // 0. Resolve the real endpoints from the (issuer-verified) discovery doc.
+        //    The authority serves `/auth` `/token` `/me` `/jwks` — not the OIDC
+        //    defaults — so we consume discovery instead of guessing.
+        let endpoints = self.discover()?;
+
         // 1. Bind the single-use loopback listener FIRST so we know the port.
         let listener = LoopbackListener::bind()?;
-        let redirect_uri = format!("http://127.0.0.1:{}/callback", listener.port());
+        // The authority registered `http://127.0.0.1:<port>/auth/callback` (verified
+        // 303). The old `/callback` path 400s — this is the correct redirect path.
+        let redirect_uri = format!("http://127.0.0.1:{}/auth/callback", listener.port());
 
-        // 2. Mint PKCE + state + nonce and build the /authorize URL.
+        // 2. Mint PKCE + state + nonce and build the authorization URL (from the
+        //    discovered `authorization_endpoint`).
         let pkce = Pkce::new();
         let state = random_token();
         let nonce = random_token();
-        let auth_url =
-            build_authorize_url(&self.cfg, &redirect_uri, &pkce.challenge, &state, &nonce)?;
+        let auth_url = build_authorize_url(
+            &endpoints.authorization,
+            &self.cfg.client_id,
+            &redirect_uri,
+            &pkce.challenge,
+            &state,
+            &nonce,
+        )?;
 
-        // 3. Open the browser (or, in tests, hit the mock /authorize).
+        // 3. Open the browser (or, in tests, hit the mock authorization endpoint).
         open_browser(&auth_url)?;
 
         // 4. Wait for exactly one callback; validate state (CSRF — ADV-1/6).
@@ -692,10 +792,10 @@ impl AuthManager {
         }
 
         // 5. Exchange the code (with the PKCE verifier — ADV-2).
-        let tokens = self.exchange_code(&cb.code, &pkce.verifier, &redirect_uri)?;
+        let tokens = self.exchange_code(&endpoints, &cb.code, &pkce.verifier, &redirect_uri)?;
 
         // 6. Validate the id_token (nonce/iss/aud/exp/sig — ADV-7).
-        let claims = self.validate_id_token(&tokens.id_token, &nonce)?;
+        let claims = self.validate_id_token(&endpoints, &tokens.id_token, &nonce)?;
 
         // 7. Persist the refresh token in the A2 vault (A3.2); access token in
         //    memory only. The vault must be unlocked — else fail closed.
@@ -707,15 +807,17 @@ impl AuthManager {
         Ok(AuthStatus::from_claims(&claims))
     }
 
-    /// Exchange an authorization `code` at `/token` with the PKCE `verifier`.
+    /// Exchange an authorization `code` at the token endpoint with the PKCE
+    /// `verifier`.
     fn exchange_code(
         &self,
+        endpoints: &Endpoints,
         code: &str,
         verifier: &str,
         redirect_uri: &str,
     ) -> Result<TokenResponse> {
         let body = self.http.post_form(
-            &self.cfg.token,
+            &endpoints.token,
             &[
                 ("grant_type", "authorization_code"),
                 ("code", code),
@@ -730,8 +832,13 @@ impl AuthManager {
     /// Validate an id_token against the authority JWKS + registered claims
     /// (iss/aud/exp/nbf/signature) and the `nonce` we minted (ADV-7). Returns the
     /// parsed identity/entitlement claims.
-    fn validate_id_token(&self, id_token: &str, expected_nonce: &str) -> Result<Claims> {
-        let data = self.decode_and_validate_id_token(id_token)?;
+    fn validate_id_token(
+        &self,
+        endpoints: &Endpoints,
+        id_token: &str,
+        expected_nonce: &str,
+    ) -> Result<Claims> {
+        let data = self.decode_and_validate_id_token(endpoints, id_token)?;
         // nonce binds this id_token to THIS login attempt (replay defense).
         match data.nonce.as_deref() {
             Some(n) if constant_time_eq(n.as_bytes(), expected_nonce.as_bytes()) => {}
@@ -742,26 +849,52 @@ impl AuthManager {
 
     /// OIDC-3/A3-04: validate a refresh-response id_token WITHOUT the nonce check
     /// (a refresh grant omits `nonce`). iss/aud/exp/nbf/signature still enforced.
-    fn validate_id_token_no_nonce(&self, id_token: &str) -> Result<Claims> {
-        Ok(self.decode_and_validate_id_token(id_token)?.claims)
+    fn validate_id_token_no_nonce(&self, endpoints: &Endpoints, id_token: &str) -> Result<Claims> {
+        Ok(self
+            .decode_and_validate_id_token(endpoints, id_token)?
+            .claims)
     }
 
-    /// Shared id_token decode + signature + registered-claim validation. Enforces
-    /// ES256 (alg pinned + header-gated), `aud` REQUIRED and equal to our
-    /// client_id (OIDC-1 — absent `aud` is rejected, not silently accepted),
-    /// `iss` required + re-checked, `exp` + `nbf` validated. Does NOT check nonce
-    /// (callers add that where applicable).
-    fn decode_and_validate_id_token(&self, id_token: &str) -> Result<IdTokenClaims> {
+    /// Shared id_token decode + signature + registered-claim validation.
+    ///
+    /// **Alg pin (OIDC-1 — do NOT regress).** The accepted alg set is driven by
+    /// discovery's `id_token_signing_alg_values_supported` INTERSECTED with what
+    /// we can actually verify (RS256 + ES256). The token `header.alg` must be in
+    /// that set AND must equal the alg the matched JWKS key carries (for the
+    /// token's `kid`) — so `alg:none`, HS256, and any alg the authority does not
+    /// advertise/key are rejected BEFORE any signature work. The `Validation` is
+    /// built with exactly that single, key-attested alg (never a broad allow-list).
+    ///
+    /// Also enforces `aud` REQUIRED and equal to our client_id (OIDC-1 — absent
+    /// `aud` is rejected, not silently accepted), `iss` required + re-checked,
+    /// `exp` + `nbf` validated. Does NOT check nonce (callers add that where
+    /// applicable).
+    fn decode_and_validate_id_token(
+        &self,
+        endpoints: &Endpoints,
+        id_token: &str,
+    ) -> Result<IdTokenClaims> {
         let header =
             jsonwebtoken::decode_header(id_token).map_err(|_| AuthError::IdTokenInvalid)?;
-        // ES256 only — reject any other alg (an `alg:none` / HS downgrade fails
-        // here before any signature check).
-        if header.alg != Algorithm::ES256 {
+        // Resolve the JWKS key for this token's kid AND the alg it must verify
+        // under. `jwk_decoding_key` returns (key, key_alg) where key_alg is the
+        // alg pinned by the JWKS key (its published `alg`, or the sole alg the
+        // key type can produce). `alg:none`/HS never survive: an HS/none header
+        // simply won't equal the RSA/EC key's alg, and no key material exists for
+        // it in the JWKS.
+        let (key, key_alg) = self.jwk_decoding_key(endpoints, header.kid.as_deref())?;
+
+        // Alg-pin gate 1: the authority must ADVERTISE this alg in discovery
+        // (∩ what we can verify), and the token header's alg must equal the key's
+        // alg. Both must hold — advertised, keyed, and header-matched.
+        if !self.authority_accepts_alg(endpoints, key_alg) {
             return Err(AuthError::IdTokenInvalid);
         }
-        let key = self.jwk_decoding_key(header.kid.as_deref())?;
+        if header.alg != key_alg {
+            return Err(AuthError::IdTokenInvalid);
+        }
 
-        let mut validation = Validation::new(Algorithm::ES256);
+        let mut validation = Validation::new(key_alg);
         validation.set_issuer(&[&self.cfg.issuer]);
         validation.set_audience(&[&self.cfg.client_id]);
         // OIDC-1: mark iss + aud REQUIRED (jsonwebtoken's default only requires
@@ -807,7 +940,39 @@ impl AuthManager {
         Ok(data)
     }
 
-    /// Fetch the JWKS and build the ES256 decoding key for `kid`.
+    /// The set of algs A3 can actually VERIFY (built into this client). The
+    /// accepted set is always this ∩ what the authority advertises — never
+    /// broader than what we can cryptographically check.
+    fn verifiable_algs() -> [Algorithm; 2] {
+        // RS256 (the live authority) + ES256 (kept so a future per-client ES256
+        // key verifies without a code change). NOT HS*, NOT `none`.
+        [Algorithm::RS256, Algorithm::ES256]
+    }
+
+    /// Whether `alg` is BOTH verifiable by us AND advertised by the authority in
+    /// discovery (`id_token_signing_alg_values_supported`). If discovery does not
+    /// list any algs (older/thin authority), fall back to the verifiable set so
+    /// the RS256 key still works — but never accept an alg we cannot verify.
+    fn authority_accepts_alg(&self, endpoints: &Endpoints, alg: Algorithm) -> bool {
+        if !Self::verifiable_algs().contains(&alg) {
+            return false;
+        }
+        let advertised = &endpoints.id_token_signing_algs;
+        if advertised.is_empty() {
+            return true;
+        }
+        advertised
+            .iter()
+            .filter_map(|s| alg_from_str(s))
+            .any(|a| a == alg)
+    }
+
+    /// Fetch the JWKS and build the decoding key for `kid`, returning the key and
+    /// the alg it is pinned to (its published `alg`, or the sole alg its key type
+    /// can produce). RS256 (RSA `n`/`e`) is the live case; ES256 (EC `x`/`y`) is
+    /// kept for a future per-client key. RSA verification goes through the
+    /// `jsonwebtoken` `aws_lc_rs` backend — the `rsa` crate (RUSTSEC-2023-0071) is
+    /// never pulled in.
     ///
     /// OIDC-2 key-selection policy (no first-key fallback):
     /// - token HAS a `kid` → require an EXACT `kid` match; else reject. A
@@ -817,8 +982,12 @@ impl AuthManager {
     ///   (fail closed) rather than silently binding to the first key — which
     ///   otherwise lets an attacker-ordered JWKS or a rotation window decide the
     ///   verifying key by position instead of identity.
-    fn jwk_decoding_key(&self, kid: Option<&str>) -> Result<DecodingKey> {
-        let body = self.http.get(&self.cfg.jwks, None)?;
+    fn jwk_decoding_key(
+        &self,
+        endpoints: &Endpoints,
+        kid: Option<&str>,
+    ) -> Result<(DecodingKey, Algorithm)> {
+        let body = self.http.get(&endpoints.jwks, None)?;
         let jwks: Jwks = serde_json::from_str(&body).map_err(|_| AuthError::IdTokenInvalid)?;
         let jwk = match kid {
             Some(want) => jwks
@@ -834,12 +1003,40 @@ impl AuthManager {
                 &jwks.keys[0]
             }
         };
-        if jwk.kty.as_deref() != Some("EC") {
-            return Err(AuthError::IdTokenInvalid);
+        match jwk.kty.as_deref() {
+            Some("RSA") => {
+                // The JWKS key's alg pins the accepted header alg. If the key
+                // publishes `alg`, honor it (must be RS*); else default to RS256
+                // for an RSA key. An EC/HS alg on an RSA key is a mismatch → fail.
+                let alg = match jwk.alg.as_deref() {
+                    Some(a) => alg_from_str(a).ok_or(AuthError::IdTokenInvalid)?,
+                    None => Algorithm::RS256,
+                };
+                if !matches!(alg, Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512) {
+                    return Err(AuthError::IdTokenInvalid);
+                }
+                let n = jwk.n.as_deref().ok_or(AuthError::IdTokenInvalid)?;
+                let e = jwk.e.as_deref().ok_or(AuthError::IdTokenInvalid)?;
+                let key = DecodingKey::from_rsa_components(n, e)
+                    .map_err(|_| AuthError::IdTokenInvalid)?;
+                Ok((key, alg))
+            }
+            Some("EC") => {
+                let alg = match jwk.alg.as_deref() {
+                    Some(a) => alg_from_str(a).ok_or(AuthError::IdTokenInvalid)?,
+                    None => Algorithm::ES256,
+                };
+                if !matches!(alg, Algorithm::ES256 | Algorithm::ES384) {
+                    return Err(AuthError::IdTokenInvalid);
+                }
+                let x = jwk.x.as_deref().ok_or(AuthError::IdTokenInvalid)?;
+                let y = jwk.y.as_deref().ok_or(AuthError::IdTokenInvalid)?;
+                let key =
+                    DecodingKey::from_ec_components(x, y).map_err(|_| AuthError::IdTokenInvalid)?;
+                Ok((key, alg))
+            }
+            _ => Err(AuthError::IdTokenInvalid),
         }
-        let x = jwk.x.as_deref().ok_or(AuthError::IdTokenInvalid)?;
-        let y = jwk.y.as_deref().ok_or(AuthError::IdTokenInvalid)?;
-        DecodingKey::from_ec_components(x, y).map_err(|_| AuthError::IdTokenInvalid)
     }
 
     // --- A3.2: refresh-token custody + lifecycle ------------------------
@@ -859,12 +1056,14 @@ impl AuthManager {
     /// stored token, and refresh the in-memory access token + claims. Survives an
     /// app restart because the token lives in the vault, not memory.
     pub fn refresh(&self, vault: &CustodyVault) -> Result<AuthStatus> {
+        // Re-resolve endpoints from discovery (same trust-anchor gate as login).
+        let endpoints = self.discover()?;
         let refresh = vault.custody_get(REFRESH_SLOT).map_err(AuthError::from)?;
         let refresh_str = std::str::from_utf8(&refresh)
             .map_err(|_| AuthError::Custody)?
             .to_string();
         let body = self.http.post_form(
-            &self.cfg.token,
+            &endpoints.token,
             &[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", &refresh_str),
@@ -885,7 +1084,7 @@ impl AuthManager {
             guard.as_ref().map(|s| s.claims.sub.clone())
         };
         if !tokens.id_token.is_empty() {
-            let refreshed = self.validate_id_token_no_nonce(&tokens.id_token)?;
+            let refreshed = self.validate_id_token_no_nonce(&endpoints, &tokens.id_token)?;
             if let Some(prev) = prior_sub.as_deref() {
                 if !prev.is_empty() && !refreshed.sub.is_empty() && refreshed.sub != prev {
                     return Err(AuthError::IdTokenInvalid);
@@ -900,7 +1099,7 @@ impl AuthManager {
         // A refreshed access token carries fresh claims via /userinfo (federation
         // RP rule); prefer a live /userinfo re-check for entitlement.
         self.set_session_token(&tokens.access_token, tokens.expires_in);
-        let claims = self.userinfo_inner(&tokens.access_token)?;
+        let claims = self.userinfo_inner(&endpoints, &tokens.access_token)?;
         // sub continuity also holds against /userinfo.
         if let Some(prev) = prior_sub.as_deref() {
             if !prev.is_empty() && !claims.sub.is_empty() && claims.sub != prev {
@@ -917,18 +1116,19 @@ impl AuthManager {
     /// entitlement claim from the authority using the in-memory access token, and
     /// updates the session claims. Errors `NotSignedIn` if there is no session.
     pub fn userinfo(&self) -> Result<AuthStatus> {
+        let endpoints = self.discover()?;
         let access = {
             let guard = self.lock();
             let sess = guard.as_ref().ok_or(AuthError::NotSignedIn)?;
             sess.access_token.to_string()
         };
-        let claims = self.userinfo_inner(&access)?;
+        let claims = self.userinfo_inner(&endpoints, &access)?;
         self.set_session_claims(claims.clone());
         Ok(AuthStatus::from_claims(&claims))
     }
 
-    fn userinfo_inner(&self, access: &str) -> Result<Claims> {
-        let body = self.http.get(&self.cfg.userinfo, Some(access))?;
+    fn userinfo_inner(&self, endpoints: &Endpoints, access: &str) -> Result<Claims> {
+        let body = self.http.get(&endpoints.userinfo, Some(access))?;
         serde_json::from_str::<Claims>(&body).map_err(|_| AuthError::Network)
     }
 
@@ -948,16 +1148,25 @@ impl AuthManager {
     /// signed-out client never keeps a live token locally.
     pub fn logout(&self, vault: &CustodyVault) -> Result<()> {
         // Read + revoke the refresh token if the vault is unlocked and holds one.
+        // The revocation endpoint comes from discovery (`revocation_endpoint`,
+        // served at `/token/revocation`). Discovery is best-effort here: if the
+        // authority is unreachable or advertises no revocation endpoint, we skip
+        // the network revoke — the LOCAL secret is still cleared below, so a
+        // signed-out client never keeps a live token locally.
         if let Ok(refresh) = vault.custody_get(REFRESH_SLOT) {
             if let Ok(refresh_str) = std::str::from_utf8(&refresh) {
-                let _ = self.http.post_form(
-                    &self.cfg.revoke,
-                    &[
-                        ("token", refresh_str),
-                        ("token_type_hint", "refresh_token"),
-                        ("client_id", &self.cfg.client_id),
-                    ],
-                );
+                if let Ok(endpoints) = self.discover() {
+                    if let Some(revocation) = endpoints.revocation.as_deref() {
+                        let _ = self.http.post_form(
+                            revocation,
+                            &[
+                                ("token", refresh_str),
+                                ("token_type_hint", "refresh_token"),
+                                ("client_id", &self.cfg.client_id),
+                            ],
+                        );
+                    }
+                }
             }
         }
         // Clear the vault slot (revocable secret — the A2 F-1 case). Best-effort:
@@ -1017,6 +1226,21 @@ impl AuthManager {
         if let Some(sess) = self.lock().as_mut() {
             sess.claims = claims;
         }
+    }
+}
+
+/// Map a JWS `alg` string to the `jsonwebtoken::Algorithm`. Returns `None` for
+/// an unknown / unsupported alg — including `none` and the HS* family, which A3
+/// never verifies (so a header/JWKS advertising them can never pin an accepted
+/// alg). Only the RS* / ES* families we can verify are mapped.
+fn alg_from_str(s: &str) -> Option<Algorithm> {
+    match s {
+        "RS256" => Some(Algorithm::RS256),
+        "RS384" => Some(Algorithm::RS384),
+        "RS512" => Some(Algorithm::RS512),
+        "ES256" => Some(Algorithm::ES256),
+        "ES384" => Some(Algorithm::ES384),
+        _ => None,
     }
 }
 

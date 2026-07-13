@@ -3,12 +3,19 @@
 // Every ADV-* here is written RED-FIRST: the guard is neutralized, the test is
 // shown failing, the guard restored, the test green (see the sprint's red→green
 // table + the PR body). The whole flow runs HEADLESS against an in-test mock
-// OIDC authority — a real std `TcpListener` server implementing /authorize,
-// /token, /jwks, /userinfo, /revoke — plus the A2 custody vault over an
+// OIDC authority that MIRRORS THE REAL auth.citrate.ai: a real std `TcpListener`
+// server serving a discovery document (`/.well-known/openid-configuration`)
+// whose endpoints are `/auth` (authorization), `/token`, `/me` (userinfo),
+// `/jwks`, `/token/revocation`; signing id_tokens with an **RS256** test key
+// (the live authority signs RS256 — one RSA JWKS key); and registering the
+// `/auth/callback` loopback redirect. Plus the A2 custody vault over an
 // in-memory keyring fake. No live authority, real browser, or OS keyring is
 // touched; those are honestly out-of-scope for CI and flagged in the sprint.
 //
-// The mock authority is a #[cfg(test)] fixture. It is NOT shipped (D-A3-2).
+// The mock authority is a #[cfg(test)] fixture. It is NOT shipped (D-A3-2). It
+// uses STATIC test RSA keys (embedded below) so no key-gen crate — and in
+// particular NOT the banned `rsa` crate (RUSTSEC-2023-0071) — is pulled in;
+// signing goes through jsonwebtoken's `aws_lc_rs` backend from a PEM.
 
 use super::*;
 use std::collections::HashMap;
@@ -18,12 +25,88 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use jsonwebtoken::{encode, EncodingKey, Header as JwtHeader};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
-use p256::pkcs8::{EncodePrivateKey, LineEnding};
-use p256::SecretKey;
 use serde_json::json;
 
 use crate::custody::{CustodyVault, Keyring};
+
+// ===========================================================================
+// STATIC test RSA keys (test-only; NEVER shipped). Two independent 2048-bit RSA
+// keys: the real signer and an "attacker" key for the OIDC-2 multi-key JWKS
+// probe. Each JWK modulus `n` (base64url) is precomputed to match its PEM; the
+// exponent is the RSA default `e = AQAB` (65537). Mirrors the live authority's
+// single RSA RS256 JWKS key. No `rsa` crate — jsonwebtoken signs from the PEM
+// via `aws_lc_rs`.
+// ===========================================================================
+
+/// The real test signer (PKCS#8 PEM). Its public JWK is `(TEST_RSA1_N, "AQAB")`.
+const TEST_RSA1_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDYmVXIFX8XKTab
+5xheHZFEsjeR4t7C0iIix00QraBHo8L0ONqoqjRg9BB7dAeFPDyNdRrT0MG39chT
+SPivimHZJLOa6kwuNeNmq/Jy8f7xDV2noJAhA2xC0EqTe10aJAXvdjIpyq/frRAE
+tOQ0rDMLBYO0Yr5DPR552QW7B2TEW7hDqdkF+g93C5CEDx7Fu72xjDpcD3exssSo
+mzIaqbPZTntvRaz2GCBTDjO4gRmQdVBgpEdDCX0u1FuMqVKGbzLde4pYESVzUVSZ
+OVoE+7NGg7DCrq16FkwZWTrZtmAfP3yMOmiJLaCnNl7nPsVBpPCHWSIYgB61Z07O
+h5qgFUlvAgMBAAECggEAIQATqr1jtKKp2Ez4UHaOyHmir85yBBrB6qyU2EKr1d5k
+eJMk9WehPVhSHo0KDEmmLCM4aCc5LI7863uFsDEUQWIvHx4tZyj8sYrnEI5AOne/
+2idDblQ4LWHQyvGTuMTeRqKqd+WSsDCM7TqmPkQyLq6zZ0tYE6R/PS9MiTdSKfxL
+sKMh4j6ENlNW4vAumVpXSITiLfXqVxIJGgjctDjsZkf9FCcSitp1jI5bx4QxztW/
++E01D+qI5aJlBKMiU0ltNMXmSEgw5rCE3f9riyhb3xijeoKJRqKm4kTSO34sdBLC
+bAp19nTAOJiT1CBnv8/CU/dPecS78Kht65SLq/xMaQKBgQDsGCGfI+u/yVfHNizl
+xMZqtU7+L6zmDvBKHatB/PXFSfFGz50zzCJVwwX7cCFtg/fuuPVboztZQZdVUooC
+NSNiT7+jR6C4+/TEGyIvsKZZ55oRKJ6wvDaEJWm2M0mtDCGme0umjvsv7Jv32Zih
+ts8/gmttqT+m9yzCghCNeaC7VQKBgQDq3GqZry3PKDBOkNl95/zsJy3pNhl91994
+q1hevmoNMVaBM73wxOs+WHNHBy0AjWlJMdGZk/h5ZqeWL6ht3i+S9wdHOrsAU4is
+hxuc0OM0uMMmqVEj3JCy4U3URmx+63LKEo0GGdEMUeANJZbcizteuhLRZ209bmGO
+EUeP/ssZswKBgBhujtwnHXhlX54P7yl/6YCVbq1DRcMw/JDO7TAQ+2YFNuC7D2uS
+zmLNocrZWbw5kei0Xz+ybqvX6886kWmVEipUUmKVQP6jpDq/DBSfVTesjfcEmxdz
+Ark+Hehq+k7cGIdf7v43gar98038yJzDjELoPjHE9/9RSOKADzJ0ybtZAoGBAK3N
+jenLdLgQAqexk/IT4t0UJWqnSXgSb+MJ0izS9wJqV5znoJFz+K67oBuZGNmGzLqI
+7pabpU6aBD0laZxcx5IX00AIG2kjaEpc9bc38lwKuwh6VnyWdlKaXxFPSG0oaltW
+HRy9sDFQyeCQx7LQKpBwXQqwYmwKqpELAo1yPfT3AoGAcMCwrhj8l+hr5J7+HKhW
+jYXcXgv/jroKmxEE1Tz17FmNuihOJx9+uXGG0imgl49pdFW2Hj2kmhrE575It1kB
+KvWq18Ra2ECYTtk9toWC6MCCtBBE/9u2u2UHTJrmag2V6cBzpOEpydKkaz/wfKnR
+bmZ9UIL3o8OGKXSB4O9itQo=
+-----END PRIVATE KEY-----";
+
+/// Base64url modulus `n` matching `TEST_RSA1_PEM` (the real signer's JWK).
+const TEST_RSA1_N: &str = "2JlVyBV_Fyk2m-cYXh2RRLI3keLewtIiIsdNEK2gR6PC9DjaqKo0YPQQe3QHhTw8jXUa09DBt_XIU0j4r4ph2SSzmupMLjXjZqvycvH-8Q1dp6CQIQNsQtBKk3tdGiQF73YyKcqv360QBLTkNKwzCwWDtGK-Qz0eedkFuwdkxFu4Q6nZBfoPdwuQhA8exbu9sYw6XA93sbLEqJsyGqmz2U57b0Ws9hggUw4zuIEZkHVQYKRHQwl9LtRbjKlShm8y3XuKWBElc1FUmTlaBPuzRoOwwq6tehZMGVk62bZgHz98jDpoiS2gpzZe5z7FQaTwh1kiGIAetWdOzoeaoBVJbw";
+
+/// The "attacker" test key (PKCS#8 PEM). Published FIRST in the OIDC-2 multi-key
+/// JWKS probe; signs the token only under the `sign_with_attacker` knob.
+const TEST_RSA2_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC1XNMhJtTTtdhz
+RNXiuXwL9Rvt1NnEc+osl5QQLn92fsVYR9P7v0SEP9HrBURFDoxmzuR9b/UKQZRX
+kdlMRHotZTYx6JpOc4yjONNemgLzManlHdbUpIDzQZDFmyf5gj6Apgb5KISWnMET
+BuFgaNboeVYus/wJ5h4FoTj2WZh//NsSt0YDVAPboA7c1EfgMJmizrhO6T7V8K8m
+I2Q9oCTCjCX9yaYf12aa6weRnRcQ2vwXHs9COL89POlB2hsE6UBoxudI9SiZCIBa
+LS1z7oLMbIyE+3SFtCp7EXl8PXO9uvmOun1KYX/cJ4Ml6COFwpD9GO9I1Xk6KAZi
+0tn5g7vLAgMBAAECggEAbmwL6B1aa2RGWzhH+Xjxe95KmO2FgUUKCQhpD8kftifN
+Q8jH2nlD4DlzN+LHBDytY1MIbw8hZJM1HHQil3sB4G3FJ3H1sVpNAHvyxaCDt0o/
+pM4cJO/byz/aQ1YKarHQGEf96umugH0EWO9RfX+XiYeG33yaMfS3xrm4ktVOMm3d
+GeIQ4wsAuc3EwXyL6Av45SSIghZJQv6L617AujEzdJ2iI29NzlfX5h8sHim5EEts
+9PUNfWswJd/8AMq4sfzUKbrrcQj0ezP1gHg0RSwSRR5sTsBDOidQ8QL17DAgUiDr
+9pYlMYgvifEgnpisjdI78sxpfTrgp8KHRFZ4wl3VYQKBgQDXyFYm5N/5cwTTvcfC
+2RGrsJerq7dRJ8L7obS7NwVJUHa4sBXDxaKD8kzN6nvpfyab8tvCKbzyEQhOWNPK
+sSsUWHbOsQTK9X0kgKEG3gmbh3+NALyDj7BIFIAC7JhxLLDACwZMuR75IBWEeiCS
+180RMXov+WYQzER5G1AixhF26QKBgQDXKjQXUrqxKSohjZIPb8zq77q6UeCK9b2c
+3tAGSpyrMBJhjlACV+l5Nculnu5r+y0FgsCnvLIryO2FDaddS484jtYz5itulpGn
+jXIzaHtECGvNU0cGc3OqMmVutrdKo5ykw0Ul2vEkeH7kQLs9Vg7/KpviURaNC8w7
+BjaN07hUkwKBgQCkdj6jekHy/+Un9TdxnLxJHVkcMM6RfjqwSvlSz4ap8DfsX9jW
+06Uf5+b98r/qoUyuA5XXELS/0peAD1es3we0hBBZTLYYcq6kyZzxfP3ZmpZuw6bq
+pvN2nJlMoUM2zxcP59cvVtDyk6+SvvpgsTXM6ubz9aQDHYz6uQSE3G2nMQKBgHe7
+R3N3GOZ+5q/3LMEkUJ6nunv2FgKdzt7dalsl59qnDIN3AvTa4NQPaHyIXVp/UkVP
+xk9RBMCyteGlgG29Hzy012PYAHEwnmrjnhoXWQi5uutuHQbs9f9Ovf0G9iY1t3RE
+KVVwaWIHH216y/bMzdmWZ1pgDzF70DFEOtVfbKK7AoGAHTszyURSXRokla5WmxPs
+mYcLgHkGHrlZvR+GRdaPWUv9nH8aHFLf6exLMezZlb6d38FqR88m5xScNbUGZWqQ
+aKwrvFVlsP/AyczKAkkSYXVpi/SEV6GGdUMNa91Sw1kzaIGW8Rzne1SBvxsAUCW6
+k4m87phrUAqAuut70PKfqOY=
+-----END PRIVATE KEY-----";
+
+/// Base64url modulus `n` matching `TEST_RSA2_PEM` (the attacker JWK).
+const TEST_RSA2_N: &str = "tVzTISbU07XYc0TV4rl8C_Ub7dTZxHPqLJeUEC5_dn7FWEfT-79EhD_R6wVERQ6MZs7kfW_1CkGUV5HZTER6LWU2MeiaTnOMozjTXpoC8zGp5R3W1KSA80GQxZsn-YI-gKYG-SiElpzBEwbhYGjW6HlWLrP8CeYeBaE49lmYf_zbErdGA1QD26AO3NRH4DCZos64Tuk-1fCvJiNkPaAkwowl_cmmH9dmmusHkZ0XENr8Fx7PQji_PTzpQdobBOlAaMbnSPUomQiAWi0tc-6CzGyMhPt0hbQqexF5fD1zvbr5jrp9SmF_3CeDJegjhcKQ_RjvSNV5OigGYtLZ-YO7yw";
+
+/// RSA public exponent — the RSA default 65537 = `AQAB` (both test keys).
+const TEST_RSA_E: &str = "AQAB";
 
 // ===========================================================================
 // A2 custody vault over an in-memory keyring (A3's real store dependency).
@@ -141,6 +224,13 @@ struct Behavior {
     /// NEW-1: set `azp` to this value; `None` omits the claim. Combined with
     /// `multi_aud` to probe OIDC Core §3.1.3.7 rules 4–5.
     azp: Option<String>,
+    /// A3-AUTH: the discovery document advertises a WRONG `issuer` (an
+    /// attacker-authority swap) — the client's trust-anchor gate must reject it.
+    wrong_discovery_issuer: bool,
+    /// A3-AUTH: sign the id_token with the WRONG alg header (`ES256`) while the
+    /// JWKS key is RSA/RS256 — an alg-confusion / header-forgery probe. The
+    /// alg-pin (header.alg must equal the JWKS key's alg) must reject it.
+    forge_alg_es256: bool,
 }
 
 impl MockAuthority {
@@ -151,19 +241,9 @@ impl MockAuthority {
         let issuer = base.clone();
         let client_id = "citrate-core".to_string();
 
-        // TEST signing key (never shipped). Public coords → JWKS.
-        let secret = SecretKey::random(&mut rand::thread_rng());
-        let point = secret.public_key().to_encoded_point(false);
-        let jwk_x = b64url(point.x().unwrap());
-        let jwk_y = b64url(point.y().unwrap());
-        // A second, unrelated key (never signs the real token) for the OIDC-2
-        // multi-key JWKS probe.
-        let attacker = SecretKey::random(&mut rand::thread_rng());
-        let apoint = attacker.public_key().to_encoded_point(false);
-        let attacker_x = b64url(apoint.x().unwrap());
-        let attacker_y = b64url(apoint.y().unwrap());
-        let attacker_pem = attacker.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
-
+        // TEST RS256 signing key (never shipped) — mirrors the live authority's
+        // single RSA JWKS key. Public modulus/exponent → JWKS. A second, unrelated
+        // RSA key (never signs the real token) drives the OIDC-2 multi-key probe.
         let behavior = Arc::new(StdMutex::new(Behavior::default()));
         let claims = Arc::new(StdMutex::new(json!({
             "sub": "usr_2af4c19e",
@@ -177,14 +257,9 @@ impl MockAuthority {
         })));
 
         let srv = ServerCtx {
+            base: base.clone(),
             issuer: issuer.clone(),
             client_id: client_id.clone(),
-            signing_pem: secret.to_pkcs8_pem(LineEnding::LF).unwrap().to_string(),
-            jwk_x,
-            jwk_y,
-            attacker_x,
-            attacker_y,
-            attacker_pem,
             live_codes: Arc::new(StdMutex::new(HashMap::new())),
             valid_refresh: Arc::new(StdMutex::new(std::collections::HashSet::new())),
             behavior: behavior.clone(),
@@ -214,13 +289,12 @@ impl MockAuthority {
         }
     }
 
+    /// Wire the client to the mock via its DISCOVERY URL only (mirrors prod: the
+    /// client hardcodes the discovery URL + issuer trust anchor + client id, and
+    /// derives every protocol endpoint from the discovery document).
     fn config(&self) -> AuthorityConfig {
         AuthorityConfig {
-            authorize: format!("{}/authorize", self.base),
-            token: format!("{}/token", self.base),
-            userinfo: format!("{}/userinfo", self.base),
-            jwks: format!("{}/jwks", self.base),
-            revoke: format!("{}/revoke", self.base),
+            discovery: format!("{}/.well-known/openid-configuration", self.base),
             kyc_start: format!("{}/kyc/start", self.base),
             issuer: self.issuer.clone(),
             client_id: self.client_id.clone(),
@@ -247,6 +321,25 @@ impl MockAuthority {
         deliver_callback(loc);
         Ok(())
     }
+
+    /// Test helper: the resolved `Endpoints` for direct-path tests (ADV-2/3/5)
+    /// that call the private `exchange_code`/`build_authorize_url` without running
+    /// the full login. Mirrors what `discover()` yields from the mock's document.
+    fn endpoints(&self) -> Endpoints {
+        Endpoints {
+            authorization: format!("{}/auth", self.base),
+            token: format!("{}/token", self.base),
+            userinfo: format!("{}/me", self.base),
+            jwks: format!("{}/jwks", self.base),
+            revocation: Some(format!("{}/token/revocation", self.base)),
+            id_token_signing_algs: vec!["RS256".to_string()],
+        }
+    }
+
+    /// The authorization-endpoint URL for the mock (the `/auth` path).
+    fn authorize_endpoint(&self) -> String {
+        format!("{}/auth", self.base)
+    }
 }
 
 impl Drop for MockAuthority {
@@ -260,17 +353,12 @@ impl Drop for MockAuthority {
 
 /// The server-side context (owned by the accept thread).
 struct ServerCtx {
+    /// This authority's base URL — used to build the discovery document's
+    /// absolute endpoint URLs (`/auth`, `/token`, `/me`, `/jwks`,
+    /// `/token/revocation`), exactly as the live authority advertises them.
+    base: String,
     issuer: String,
     client_id: String,
-    signing_pem: String, // PKCS#8 PEM of the ES256 test key
-    jwk_x: String,
-    jwk_y: String,
-    /// A second, UNRELATED key — the "attacker key" for the OIDC-2 multi-key
-    /// JWKS probe. Published FIRST in the multikey JWKS; signs the token only
-    /// under the `sign_with_attacker` knob.
-    attacker_x: String,
-    attacker_y: String,
-    attacker_pem: String,
     live_codes: Arc<StdMutex<HashMap<String, CodeGrant>>>,
     valid_refresh: Arc<StdMutex<std::collections::HashSet<String>>>,
     behavior: Arc<StdMutex<Behavior>>,
@@ -292,14 +380,45 @@ impl ServerCtx {
                 write_resp(stream, 200, "text/plain", "bye");
                 return true;
             }
-            ("GET", "/authorize") => self.handle_authorize(stream, &query),
+            // Discovery — the real authority's endpoint paths (/auth, /token, /me,
+            // /jwks, /token/revocation), advertised over the well-known doc.
+            ("GET", "/.well-known/openid-configuration") => self.handle_discovery(stream),
+            ("GET", "/auth") => self.handle_authorize(stream, &query),
             ("POST", "/token") => self.handle_token(stream, &body),
             ("GET", "/jwks") => self.handle_jwks(stream),
-            ("GET", "/userinfo") => self.handle_userinfo(stream),
-            ("POST", "/revoke") => self.handle_revoke(stream, &body),
+            ("GET", "/me") => self.handle_userinfo(stream),
+            ("POST", "/token/revocation") => self.handle_revoke(stream, &body),
             _ => write_resp(stream, 404, "text/plain", "not found"),
         }
         false
+    }
+
+    /// Serve the OIDC discovery document, MIRRORING auth.citrate.ai: issuer + the
+    /// real endpoint paths (`/auth`, `/token`, `/me`, `/jwks`,
+    /// `/token/revocation`) and `id_token_signing_alg_values_supported: ["RS256"]`.
+    /// The `omit_discovery_issuer_match` / `wrong_discovery_issuer` knobs probe the
+    /// trust-anchor gate.
+    fn handle_discovery(&self, stream: &mut TcpStream) {
+        let b = self.behavior.lock().unwrap().clone();
+        let issuer = if b.wrong_discovery_issuer {
+            "https://evil.example".to_string()
+        } else {
+            self.issuer.clone()
+        };
+        let doc = json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{}/auth", self.base),
+            "token_endpoint": format!("{}/token", self.base),
+            "userinfo_endpoint": format!("{}/me", self.base),
+            "jwks_uri": format!("{}/jwks", self.base),
+            "revocation_endpoint": format!("{}/token/revocation", self.base),
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "id_token_signing_alg_values_supported": ["RS256"],
+            "scopes_supported": ["openid", "profile", "wallet", "kyc", "offline_access"],
+        });
+        write_resp(stream, 200, "application/json", &doc.to_string());
     }
 
     fn handle_authorize(&self, stream: &mut TcpStream, q: &HashMap<String, String>) {
@@ -437,39 +556,51 @@ impl ServerCtx {
                 obj.insert("sub".to_string(), json!("attacker-sub"));
             }
         }
-        let mut header = JwtHeader::new(jsonwebtoken::Algorithm::ES256);
+        // The live authority signs RS256; the mock mirrors that.
+        let mut header = JwtHeader::new(jsonwebtoken::Algorithm::RS256);
         // OIDC-2 probe: optionally omit the header kid.
         if !b.omit_kid {
             header.kid = Some("test-key-1".to_string());
         }
         let key = if b.forge_signature {
-            let other = SecretKey::random(&mut rand::thread_rng());
-            let pem = other.to_pkcs8_pem(LineEnding::LF).unwrap();
-            EncodingKey::from_ec_pem(pem.as_bytes()).unwrap()
+            // Sign with the "attacker" RSA key but keep the real key's kid → the
+            // JWKS key for that kid won't verify this signature.
+            EncodingKey::from_rsa_pem(TEST_RSA2_PEM.as_bytes()).unwrap()
         } else if b.sign_with_attacker {
             // Signed by the attacker key (published FIRST in the multikey JWKS).
-            EncodingKey::from_ec_pem(self.attacker_pem.as_bytes()).unwrap()
+            EncodingKey::from_rsa_pem(TEST_RSA2_PEM.as_bytes()).unwrap()
         } else {
-            EncodingKey::from_ec_pem(self.signing_pem.as_bytes()).unwrap()
+            EncodingKey::from_rsa_pem(TEST_RSA1_PEM.as_bytes()).unwrap()
         };
-        encode(&header, &payload, &key).unwrap()
+        let jwt = encode(&header, &payload, &key).unwrap();
+        if b.forge_alg_es256 {
+            // Alg-confusion probe: rewrite the (RS256-signed) token's HEADER to
+            // claim `alg:ES256` while the JWKS key is RSA/RS256. jsonwebtoken
+            // cannot ENCODE that mismatch directly, so we splice the header JSON
+            // and reuse the RS256 signature — the client's alg-pin must reject on
+            // `header.alg != key.alg` BEFORE any signature check anyway.
+            rewrite_jwt_alg(&jwt, "ES256")
+        } else {
+            jwt
+        }
     }
 
     fn handle_jwks(&self, stream: &mut TcpStream) {
         let b = self.behavior.lock().unwrap().clone();
+        // Mirror the live JWKS: RSA keys with `alg:"RS256"` + modulus/exponent.
         let body = if b.multikey_jwks {
             // OIDC-2 probe: two kid-less keys — an attacker key FIRST, then the
             // real one. A "first key" fallback would verify against the attacker.
             format!(
                 "{{\"keys\":[\
-                 {{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"{}\",\"y\":\"{}\"}},\
-                 {{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"{}\",\"y\":\"{}\"}}]}}",
-                self.attacker_x, self.attacker_y, self.jwk_x, self.jwk_y
+                 {{\"kty\":\"RSA\",\"alg\":\"RS256\",\"use\":\"sig\",\"n\":\"{}\",\"e\":\"{}\"}},\
+                 {{\"kty\":\"RSA\",\"alg\":\"RS256\",\"use\":\"sig\",\"n\":\"{}\",\"e\":\"{}\"}}]}}",
+                TEST_RSA2_N, TEST_RSA_E, TEST_RSA1_N, TEST_RSA_E
             )
         } else {
             format!(
-                "{{\"keys\":[{{\"kty\":\"EC\",\"crv\":\"P-256\",\"kid\":\"test-key-1\",\"x\":\"{}\",\"y\":\"{}\"}}]}}",
-                self.jwk_x, self.jwk_y
+                "{{\"keys\":[{{\"kty\":\"RSA\",\"alg\":\"RS256\",\"use\":\"sig\",\"kid\":\"test-key-1\",\"n\":\"{}\",\"e\":\"{}\"}}]}}",
+                TEST_RSA1_N, TEST_RSA_E
             )
         };
         write_resp(stream, 200, "application/json", &body);
@@ -567,6 +698,22 @@ fn rand_hex() -> String {
     let mut b = [0u8; 8];
     rand::thread_rng().fill_bytes(&mut b);
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Rewrite the `alg` in a JWT's header to `new_alg`, keeping the original
+/// (RS256) signature. Used only by the alg-confusion probe — the client's
+/// alg-pin rejects on the header/JWKS-key alg mismatch before verifying, so the
+/// stale signature is irrelevant. base64url decode header → patch `alg` → re-encode.
+fn rewrite_jwt_alg(jwt: &str, new_alg: &str) -> String {
+    let parts: Vec<&str> = jwt.split('.').collect();
+    let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[0])
+        .unwrap();
+    let mut header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+    header["alg"] = json!(new_alg);
+    let new_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&header).unwrap());
+    format!("{}.{}.{}", new_header, parts[1], parts[2])
 }
 
 /// Build an AuthManager wired to the mock authority over the real ureq client.
@@ -706,13 +853,22 @@ fn adv2_pkce_verifier_mismatch_rejects_token_exchange() {
     let mgr = manager_for(&auth);
 
     let pkce = super::Pkce::new();
-    let redirect = "http://127.0.0.1:1/callback";
-    let url = build_authorize_url(&auth.config(), redirect, &pkce.challenge, "st", "no").unwrap();
+    let redirect = "http://127.0.0.1:1/auth/callback";
+    let ep = auth.endpoints();
+    let url = build_authorize_url(
+        &auth.authorize_endpoint(),
+        &auth.config().client_id,
+        redirect,
+        &pkce.challenge,
+        "st",
+        "no",
+    )
+    .unwrap();
     let loc = location_of(&url);
     let code = parse_query(&loc).get("code").cloned().unwrap();
 
     // Wrong verifier → invalid_grant → TokenExchange error.
-    let bad = mgr.exchange_code(&code, "totally-wrong-verifier", redirect);
+    let bad = mgr.exchange_code(&ep, &code, "totally-wrong-verifier", redirect);
     assert_eq!(bad.unwrap_err(), AuthError::TokenExchange);
 }
 
@@ -723,11 +879,20 @@ fn adv2b_correct_verifier_succeeds() {
     let auth = MockAuthority::start();
     let mgr = manager_for(&auth);
     let pkce = super::Pkce::new();
-    let redirect = "http://127.0.0.1:1/callback";
-    let url = build_authorize_url(&auth.config(), redirect, &pkce.challenge, "st", "no").unwrap();
+    let redirect = "http://127.0.0.1:1/auth/callback";
+    let ep = auth.endpoints();
+    let url = build_authorize_url(
+        &auth.authorize_endpoint(),
+        &auth.config().client_id,
+        redirect,
+        &pkce.challenge,
+        "st",
+        "no",
+    )
+    .unwrap();
     let loc = location_of(&url);
     let code = parse_query(&loc).get("code").cloned().unwrap();
-    let ok = mgr.exchange_code(&code, &pkce.verifier, redirect);
+    let ok = mgr.exchange_code(&ep, &code, &pkce.verifier, redirect);
     assert!(ok.is_ok());
 }
 
@@ -739,14 +904,15 @@ fn adv2b_correct_verifier_succeeds() {
 fn adv3_plain_downgrade_rejected_and_client_never_offers_it() {
     let auth = MockAuthority::start();
     let url = build_authorize_url(
-        &auth.config(),
-        "http://127.0.0.1:1/callback",
+        &auth.authorize_endpoint(),
+        &auth.config().client_id,
+        "http://127.0.0.1:1/auth/callback",
         "chal",
         "st",
         "no",
     )
     .unwrap();
-    // (a) Our /authorize URL always carries method=S256 — never plain (ADV-3).
+    // (a) Our authorization URL always carries method=S256 — never plain (ADV-3).
     assert!(url.contains("code_challenge_method=S256"));
     assert!(!url.contains("plain"));
 
@@ -760,6 +926,131 @@ fn adv3_plain_downgrade_rejected_and_client_never_offers_it() {
         .map(|r| r.headers().get("location").is_some())
         .unwrap_or(false);
     assert!(!is_302, "a plain PKCE downgrade must not yield an auth code");
+}
+
+// ===========================================================================
+// A3-AUTH-1 — redirect path. The live authority registered
+// `http://127.0.0.1:<port>/auth/callback` (verified 303); the old `/callback`
+// path 400s. The full login builds the redirect_uri; assert its PATH is
+// `/auth/callback` (RED: reverting to `/callback` makes this assert fail).
+// ===========================================================================
+
+#[test]
+fn a3auth1_redirect_uri_path_is_auth_callback() {
+    // Capture the redirect_uri the login flow actually sends by intercepting the
+    // authorization request the mock receives (it echoes `redirect_uri` into its
+    // 302 Location). We drive a real login and read the delivered callback path.
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+
+    let seen_path = Arc::new(StdMutex::new(String::new()));
+    let seen_path2 = seen_path.clone();
+    mgr.login_with(&vault, |auth_url| {
+        // The mock's 302 Location is `<redirect_uri>?code=..&state=..`; parse the
+        // redirect_uri's PATH out of it and record it before delivering.
+        let loc = location_of(auth_url);
+        let parsed = url::Url::parse(&loc).unwrap();
+        *seen_path2.lock().unwrap() = parsed.path().to_string();
+        deliver_callback(loc);
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(
+        *seen_path.lock().unwrap(),
+        "/auth/callback",
+        "the loopback redirect path MUST be /auth/callback (authority registration), not /callback"
+    );
+}
+
+// ===========================================================================
+// A3-AUTH-2 — discovery trust anchor. The client fetches the discovery document
+// and MUST reject one whose `issuer` != the pinned prod issuer (attacker-
+// authority swap). RED: dropping the `doc.issuer != self.cfg.issuer` gate lets
+// the swapped-issuer authority's endpoints be consumed.
+// ===========================================================================
+
+#[test]
+fn a3auth2_discovery_issuer_mismatch_is_rejected() {
+    let auth = MockAuthority::start();
+    auth.behavior().wrong_discovery_issuer = true;
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let r = mgr.login_with(&vault, |u| auth.drive_browser(u));
+    assert_eq!(
+        r.unwrap_err(),
+        AuthError::IdTokenInvalid,
+        "a discovery doc whose issuer != the trust anchor must fail closed"
+    );
+    // Nothing vaulted when discovery is rejected.
+    assert!(!vault.list().unwrap().iter().any(|s| s.name == REFRESH_SLOT));
+}
+
+// ===========================================================================
+// A3-AUTH-3 — RS256 verification. The live authority signs RS256 (one RSA JWKS
+// key). A valid RS256 id_token is ACCEPTED (positive control — the whole flow
+// now runs on RS256, not ES256); a forged-alg header (ES256 stamped on an
+// RSA-keyed token) is REJECTED by the alg-pin (header.alg must equal the JWKS
+// key's alg). This is the OIDC-1 alg-pin, re-expressed for the RS256 authority.
+// ===========================================================================
+
+#[test]
+fn a3auth3_valid_rs256_id_token_accepted() {
+    // Positive control: with NO tamper the RS256-signed id_token validates and
+    // signs the member in — proving the RS256 JWKS path (n/e via aws_lc_rs) works.
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+    let st = mgr.login_with(&vault, |u| auth.drive_browser(u)).unwrap();
+    assert!(st.signed_in);
+}
+
+#[test]
+fn a3auth3_forged_alg_header_is_rejected() {
+    // alg-confusion probe: the token header claims ES256 while the JWKS key is
+    // RSA/RS256. Rejected by the alg-pin (`header.alg != key_alg`), backstopped by
+    // jsonwebtoken's own `Validation::new(RS256)` — defense in depth. `alg:none`
+    // and HS256 headers die the same way (they never equal the RSA key's alg).
+    run_id_token_attack(|b| b.forge_alg_es256 = true);
+}
+
+#[test]
+fn a3auth3_alg_pin_gates_on_discovery_and_verifiable_set() {
+    // Unit-isolate the alg-pin's `authority_accepts_alg` (the part jsonwebtoken
+    // does NOT do): the accepted alg must be BOTH verifiable by us AND advertised
+    // in discovery `id_token_signing_alg_values_supported`.
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+
+    // Authority advertises only RS256 (the live shape).
+    let rs_only = Endpoints {
+        authorization: format!("{}/auth", auth.base),
+        token: format!("{}/token", auth.base),
+        userinfo: format!("{}/me", auth.base),
+        jwks: format!("{}/jwks", auth.base),
+        revocation: None,
+        id_token_signing_algs: vec!["RS256".to_string()],
+    };
+    assert!(mgr.authority_accepts_alg(&rs_only, Algorithm::RS256));
+    // ES256 is verifiable by us, but NOT advertised → rejected (no silent widen).
+    assert!(!mgr.authority_accepts_alg(&rs_only, Algorithm::ES256));
+    // HS256 is never verifiable → rejected regardless of advertising.
+    assert!(!mgr.authority_accepts_alg(&rs_only, Algorithm::HS256));
+
+    // An authority advertising ES256 too → ES256 now accepted (future per-client).
+    let rs_es = Endpoints {
+        id_token_signing_algs: vec!["RS256".to_string(), "ES256".to_string()],
+        ..rs_only.clone()
+    };
+    assert!(mgr.authority_accepts_alg(&rs_es, Algorithm::ES256));
+    // Empty advertised set → fall back to the verifiable set (thin authority).
+    let thin = Endpoints {
+        id_token_signing_algs: vec![],
+        ..rs_only.clone()
+    };
+    assert!(mgr.authority_accepts_alg(&thin, Algorithm::RS256));
+    assert!(!mgr.authority_accepts_alg(&thin, Algorithm::HS256));
 }
 
 // ===========================================================================
@@ -791,18 +1082,27 @@ fn adv5_code_is_single_use() {
     let auth = MockAuthority::start();
     let mgr = manager_for(&auth);
     let pkce = super::Pkce::new();
-    let redirect = "http://127.0.0.1:1/callback";
-    let url = build_authorize_url(&auth.config(), redirect, &pkce.challenge, "st", "no").unwrap();
+    let redirect = "http://127.0.0.1:1/auth/callback";
+    let ep = auth.endpoints();
+    let url = build_authorize_url(
+        &auth.authorize_endpoint(),
+        &auth.config().client_id,
+        redirect,
+        &pkce.challenge,
+        "st",
+        "no",
+    )
+    .unwrap();
     let loc = location_of(&url);
     let code = parse_query(&loc).get("code").cloned().unwrap();
 
     // First exchange succeeds; replay of the SAME code is rejected (single-use).
-    assert!(mgr.exchange_code(&code, &pkce.verifier, redirect).is_ok());
-    let replay = mgr.exchange_code(&code, &pkce.verifier, redirect);
+    assert!(mgr.exchange_code(&ep, &code, &pkce.verifier, redirect).is_ok());
+    let replay = mgr.exchange_code(&ep, &code, &pkce.verifier, redirect);
     assert_eq!(replay.unwrap_err(), AuthError::TokenExchange);
 
     // Injection: a code that was never issued is likewise rejected.
-    let injected = mgr.exchange_code("code_never_issued", &pkce.verifier, redirect);
+    let injected = mgr.exchange_code(&ep, "code_never_issued", &pkce.verifier, redirect);
     assert_eq!(injected.unwrap_err(), AuthError::TokenExchange);
 }
 
@@ -1116,7 +1416,7 @@ fn adv9_refresh_token_absent_from_errors() {
     assert!(rt_str.starts_with("rt_"));
 
     // Force a refresh failure (revoke server-side first) and inspect the error.
-    let _ = ureq::post(format!("{}/revoke", auth.base))
+    let _ = ureq::post(format!("{}/token/revocation", auth.base))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send(format!("token={rt_str}"));
     let err = mgr.refresh(&vault).unwrap_err();
