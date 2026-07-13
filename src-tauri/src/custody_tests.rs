@@ -925,6 +925,10 @@ fn adv_dr4_cooloff_success_clears_lockout_on_disk() {
         failures: MAX_ATTEMPTS,
         locked_until_ms: Some(1), // 1ms after epoch → long elapsed
         generation: cur_gen,
+        // F-1 (B1.0): the anchor is present in this test (only the cooloff
+        // deadline is simulated), so the block must carry the anchored bit or
+        // `enforce_anchor_initialized` would (correctly) reject it as anchor-loss.
+        anchor_initialized: true,
     };
     env.lockout = CustodyVault::seal_lockout(&mek, env.version, &past).unwrap();
     std::fs::write(&p, serde_json::to_vec(&env).unwrap()).unwrap();
@@ -944,5 +948,134 @@ fn adv_dr4_cooloff_success_clears_lockout_on_disk() {
     assert_eq!(
         cleared.locked_until_ms, None,
         "an elapsed-cooloff success must clear the deadline on disk (DR-4)"
+    );
+}
+
+// ===========================================================================
+// F-1 (B1.0) — anchor-deletion downgrade, closed by the master-sealed
+// "anchor-initialized" bit. Each test is RED-first: it PASSES the attack against
+// the pre-B1.0 code (deleted anchor → `Ok(None)` → re-seed → serves the
+// rolled-back / re-seeded value) and fails the attack after the master-sealed
+// bit makes `anchor==None && anchor_initialized ⇒ Corrupt`. The anchors AND the
+// master live in the injected FakeKeyring, so the whole attack runs headless; a
+// live OS keyring cannot run in headless CI (see `real_keyring_roundtrip_or_skip`).
+// ===========================================================================
+
+/// Delete BOTH keyring high-water anchor entries, leaving `custody-master-key`.
+/// This is the exact F-1 capability: a keyring delete on the anchors only.
+fn delete_both_anchors(fake: &std::sync::Arc<FakeKeyring>) {
+    fake.delete(KEYRING_GENERATION_ACCOUNT).unwrap();
+    fake.delete(KEYRING_LOCKOUT_GEN_ACCOUNT).unwrap();
+    assert!(
+        fake.get(KEYRING_GENERATION_ACCOUNT).unwrap().is_none(),
+        "generation anchor deleted"
+    );
+    assert!(
+        fake.get(KEYRING_LOCKOUT_GEN_ACCOUNT).unwrap().is_none(),
+        "lockout-generation anchor deleted"
+    );
+    // The master key survives — that is the whole point of the F-1 capability.
+    assert!(
+        fake.get(KEYRING_MASTER_ACCOUNT).unwrap().is_some(),
+        "master key must survive the anchor delete (F-1 capability)"
+    );
+}
+
+// ----- F-1 (a): delete-then-rollback must fail closed -------------------
+
+#[test]
+fn adv_f1_delete_then_rollback_fails_closed() {
+    // Attack: snapshot the whole envelope at gen-N (token=OLD), rotate to a newer
+    // generation (token=NEW), then DELETE both keyring anchor entries and restore
+    // the OLD whole envelope. Pre-B1.0: the deleted anchor reads `None`, treated
+    // as first-init, so the high-water re-seeds from the rolled-back envelope and
+    // unlock serves the resurrected OLD token. Post-B1.0: the master-sealed
+    // anchor-initialized bit (still `true` in the OLD envelope's lockout block)
+    // + an ABSENT anchor ⇒ fail closed (`Corrupt`) before any re-seed.
+    let (v, fake, p) = init_and_unlock(0);
+    v.put("token", &mut b"OLD-TOKEN".to_vec()).unwrap(); // gen advances
+    let snapshot = std::fs::read(&p).unwrap(); // gen-N, token=OLD, bit=true
+
+    v.put("token", &mut b"NEW-TOKEN".to_vec()).unwrap(); // rotate → higher gen
+
+    // The F-1 capability: delete the anchors (master survives), roll the envelope
+    // back to the older whole file.
+    delete_both_anchors(&fake);
+    std::fs::write(&p, &snapshot).unwrap();
+
+    v.lock();
+    // Unlock must fail closed — the anchor is gone but the master-sealed bit says
+    // this vault WAS anchored.
+    let err = v.unlock(&mut PASS.to_vec()).unwrap_err();
+    assert_eq!(
+        err,
+        CustodyError::Corrupt,
+        "delete-then-rollback must fail closed, not re-seed the OLD token (got {err:?})"
+    );
+    // And even if a caller ignored the unlock error, the OLD value must not surface.
+    let got = v.custody_get("token");
+    assert!(
+        got.is_err(),
+        "a resurrected OLD token must never be served after anchor-delete (got {got:?})"
+    );
+}
+
+// ----- F-1 (b): genuine first-init still works --------------------------
+
+#[test]
+fn adv_f1_genuine_first_init_still_works() {
+    // A truly fresh vault: no keyring anchor, and the master-sealed
+    // anchor-initialized bit is only set BY init. Init + unlock + round-trip must
+    // succeed — the F-1 guard must not brick the honest first-init path (anchor
+    // absent AND bit not-yet-set is the ONE benign absent-anchor case).
+    let (v, fake, _p) = vault(0);
+    // Precondition: a genuinely clean keyring (no anchor, no master).
+    assert!(fake.get(KEYRING_GENERATION_ACCOUNT).unwrap().is_none());
+    assert!(fake.get(KEYRING_MASTER_ACCOUNT).unwrap().is_none());
+
+    v.init(&mut PASS.to_vec()).unwrap();
+    // Init seeded the anchor AND stamped the master-sealed bit true.
+    assert!(
+        fake.get(KEYRING_GENERATION_ACCOUNT).unwrap().is_some(),
+        "init seeds the keyring high-water anchor"
+    );
+    v.unlock(&mut PASS.to_vec()).unwrap();
+    v.put("token", &mut b"HELLO".to_vec()).unwrap();
+    assert_eq!(v.custody_get("token").unwrap().as_slice(), b"HELLO");
+}
+
+// ----- F-1 (c): genuine anchor-loss (no rollback) fails closed ----------
+
+#[test]
+fn adv_f1_genuine_anchor_loss_fails_closed() {
+    // Anchored vault; delete ONLY the anchor entries (no envelope rollback at
+    // all). Pre-B1.0: the deleted anchor reads `None` → treated as first-init →
+    // silently re-seeds and unlocks. Post-B1.0: the master-sealed bit says the
+    // vault WAS anchored, so an ABSENT anchor fails closed (`Corrupt`) — recovery
+    // is an explicit re-init (documented accepted tradeoff: the BIP39 seed is the
+    // real wallet recovery, D-B1-1), NOT a silent re-seed.
+    let (v, fake, _p) = init_and_unlock(0);
+    v.put("token", &mut b"LIVE".to_vec()).unwrap();
+    v.lock();
+
+    // Genuine anchor loss: keychain reset / migration wipes the anchors, master
+    // survives, envelope UNCHANGED (no rollback).
+    delete_both_anchors(&fake);
+
+    let err = v.unlock(&mut PASS.to_vec()).unwrap_err();
+    assert_eq!(
+        err,
+        CustodyError::Corrupt,
+        "genuine anchor loss must fail closed (explicit re-init required), not silently re-seed (got {err:?})"
+    );
+    // A live-session read path is also gated: even with an unlocked session, an
+    // absent anchor + set bit fails the read.
+    let (v2, fake2, _p2) = init_and_unlock(0);
+    v2.put("t", &mut b"LIVE2".to_vec()).unwrap();
+    assert_eq!(v2.custody_get("t").unwrap().as_slice(), b"LIVE2");
+    delete_both_anchors(&fake2);
+    assert!(
+        v2.custody_get("t").is_err(),
+        "custody_get must fail closed once the anchor is deleted under a live session"
     );
 }
