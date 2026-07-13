@@ -322,8 +322,14 @@ fn read_entropy(vault: &CustodyVault) -> Result<Zeroizing<Vec<u8>>> {
 ///
 /// This is the in-process sign PROOF for B1.1 (WP-3). It is deliberately NOT a
 /// `#[tauri::command]` — no invoke command signs, and none returns key material.
-/// The sanctioned command-exposed signing path is the SignatureCeremony (B1.2).
-pub fn sign_message(vault: &CustodyVault, message: &[u8]) -> Result<Vec<u8>> {
+///
+/// **B1.2 gating (@rule8):** this is `pub(crate)`, not `pub`, and the ONLY
+/// sanctioned caller is [`crate::ceremony::SignatureCeremony::approve`] — the
+/// single human-in-the-loop signing path. No other code path in the crate signs
+/// (B1.2-ADV-1/7). CLAUDE.md rule 3: all signing goes through the ceremony;
+/// signing outside it is forbidden. The call-site invariant is asserted
+/// structurally in `ceremony_tests::adv1_adv7_signer_only_reachable_via_approve`.
+pub(crate) fn sign_message(vault: &CustodyVault, message: &[u8]) -> Result<Vec<u8>> {
     let entropy = read_entropy(vault)?;
     let key = derive_key_from_entropy(&entropy)?;
     let sig = key.sign(message);

@@ -111,6 +111,58 @@ export interface AuthStatus {
   email: string | null;
 }
 
+/**
+ * CORE-B1.2 — the SignatureCeremony bridge types. The `signing` domain is the
+ * ONE human-in-the-loop signing path: a caller SUBMITS an intent (never signs),
+ * a human APPROVES a specific ceremony id, and only then a signature is produced.
+ * NONE of these types carries key/seed/entropy material (I-2): a request returns
+ * a decoded VIEW, an approve returns a SIGNATURE (hex), never a key.
+ */
+export type IntentKind = "personal_sign" | "typed_data" | "transaction";
+
+/** A signature intent submitted to the ceremony. `origin` is displayed verbatim
+ * (never trusted to be benign); `raw` is the hex payload to sign. */
+export interface SignatureIntent {
+  /** Who is asking (origin URL / "local-user" / agent id). Displayed verbatim. */
+  origin: string;
+  kind: IntentKind;
+  /** Chain id the intent targets (40204 for Citrate). */
+  chainId: number;
+  /** Hex payload to sign (message bytes / typed-data JSON / tx bytes). */
+  raw: string;
+}
+
+/** The decoded, human-readable action surfaced for approval. `action` is
+ * `"Unrecognized"` when the calldata cannot be decoded (raw-ack gated). */
+export interface DecodedAction {
+  action: string;
+  cost: string;
+  destination: string;
+}
+
+/** The pending ceremony view returned by `request` — id + TRUE origin + decoded
+ * action. Carries NO signature and NO key material (safe across the bridge). */
+export interface CeremonyView {
+  /** The single-use id the human must approve/reject EXPLICITLY (no "latest"). */
+  id: string;
+  /** The TRUE origin, displayed verbatim (anti-spoof). */
+  origin: string;
+  kind: IntentKind;
+  chainId: number;
+  decoded: DecodedAction;
+  /** Approval is BLOCKED until an explicit raw-mode ack (undecodable calldata). */
+  requiresRawAck: boolean;
+}
+
+/** A signature result — hex `r||s`, NEVER key material. */
+export interface Signature {
+  sigHex: string;
+  kind: IntentKind;
+}
+
+/** The Unrecognized action marker (undecodable calldata → raw-ack gated). */
+export const UNRECOGNIZED_ACTION = "Unrecognized";
+
 export const SIGNED_OUT_AUTH: AuthStatus = {
   signedIn: false,
   sub: null,

@@ -12,9 +12,19 @@
 // =====================================================================
 import type { AppState } from "../../shell/state";
 import { PERSONAS } from "../../shell/state";
-import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo, AuthStatus } from "../types";
+import type {
+  AppConfig,
+  KeyringStatus,
+  CustodyStatus,
+  SlotInfo,
+  AuthStatus,
+  SignatureIntent,
+  CeremonyView,
+  Signature,
+  DecodedAction,
+} from "../types";
 import type { BridgeContract } from "../domains";
-import { SIGNED_OUT_AUTH } from "../types";
+import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION } from "../types";
 import { assertSimAllowed } from "../mode";
 
 // The sim adapter is bound to the running Store via a state getter + a
@@ -27,6 +37,38 @@ export interface SimHost {
 
 export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
   const s = () => host.getState();
+
+  // Sim SignatureCeremony: STATE MACHINE ONLY. The web shim holds NO real key
+  // and cannot sign — the real ceremony (vault-gated signer) lives entirely in
+  // the Tauri/Rust path (B1.2). This models request→approve→reject (single-use
+  // consumption, the raw-ack gate, explicit-id binding) so the dev UI behaves
+  // identically, and returns a CLEARLY-FAKE, honestly-labeled sim signature
+  // (never dressed as a real one). Guarded out of packaged builds.
+  const simCeremonies = new Map<string, CeremonyView>();
+  let simCeremonyId = 1;
+
+  const simDecode = (intent: SignatureIntent): { decoded: DecodedAction; rawAck: boolean } => {
+    // Mirror the Rust decode intent-by-intent so the dev UI shows the same shape.
+    if (intent.kind === "personal_sign") {
+      let text: string | null = null;
+      try {
+        const hex = intent.raw.startsWith("0x") ? intent.raw.slice(2) : intent.raw;
+        const bytes = hex.match(/.{1,2}/g)?.map((h) => parseInt(h, 16)) ?? [];
+        text = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+      } catch {
+        text = null;
+      }
+      if (text !== null) {
+        return {
+          decoded: { action: `Sign message: "${text.slice(0, 120)}"`, cost: "no funds moved", destination: intent.origin },
+          rawAck: false,
+        };
+      }
+    }
+    // typed_data / transaction / undecodable → Unrecognized (raw-ack gated),
+    // matching the Rust default for shapes the shim does not decode.
+    return { decoded: { action: UNRECOGNIZED_ACTION, cost: "", destination: "" }, rawAck: true };
+  };
 
   // Sim custody: UI STATE ONLY. This holds NO real secret and stores nothing —
   // it exists so the prototype's Keys-&-security section still renders a
@@ -129,6 +171,42 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async kycStart(): Promise<void> {
         assertSimAllowed("auth.kycStart");
         // The prototype drives KYC via its own onboarding timers.
+      },
+    },
+
+    // ---- signing: SIM STATE MACHINE ONLY (no real key, no real signature) ----
+    signing: {
+      async request(intent: SignatureIntent): Promise<CeremonyView> {
+        assertSimAllowed("signing.request");
+        const { decoded, rawAck } = simDecode(intent);
+        const id = String(simCeremonyId++);
+        const view: CeremonyView = {
+          id,
+          origin: intent.origin, // TRUE origin, verbatim (anti-spoof), same as Rust
+          kind: intent.kind,
+          chainId: intent.chainId,
+          decoded,
+          requiresRawAck: rawAck,
+        };
+        simCeremonies.set(id, view);
+        return view;
+      },
+      async approve(id: string, rawAck: boolean): Promise<Signature> {
+        assertSimAllowed("signing.approve");
+        const view = simCeremonies.get(id);
+        if (!view) throw new Error("ceremony: unknown or already-consumed id");
+        // Consume-first (single-use) + raw-ack gate, mirroring the Rust core.
+        if (view.requiresRawAck && !rawAck) {
+          throw new Error("ceremony: undecodable calldata requires an explicit raw-mode ack");
+        }
+        simCeremonies.delete(id);
+        // HONEST: the web shim cannot produce a real signature (no key). Return a
+        // clearly-labeled sim value; it is never presented as a live signature.
+        return { sigHex: "sim-unsigned-no-real-key", kind: view.kind };
+      },
+      async reject(id: string): Promise<void> {
+        assertSimAllowed("signing.reject");
+        if (!simCeremonies.delete(id)) throw new Error("ceremony: unknown or already-consumed id");
       },
     },
 

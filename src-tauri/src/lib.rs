@@ -7,6 +7,7 @@
 //! (D-13); signing routes through the Rust SignatureCeremony once it exists
 //! (CORE-S2).
 
+mod ceremony;
 mod config;
 mod custody;
 mod oidc;
@@ -35,6 +36,13 @@ pub fn run() {
             // auth.citrate.ai; refresh token → the A2 vault; access token in
             // memory only; @rule8: no token crosses invoke). Consumes A2.
             app.manage(oidc::build_auth_state());
+            // CORE-B1.2 — the SignatureCeremony: the SINGLE human-in-the-loop
+            // signing path. Every signature intent (user or, later, agent /
+            // micro-app) routes through one approval surface; the gated
+            // `wallet::sign_message` is reachable ONLY from `approve`. @rule8:
+            // this LIFTS Rule 3 — all signing goes through this ceremony. No
+            // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
+            app.manage(ceremony::build_ceremony_state());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -60,6 +68,14 @@ pub fn run() {
             oidc::auth_refresh,
             oidc::auth_logout,
             oidc::kyc_start,
+            // signing — the B1.2 SignatureCeremony (the ONE HITL signing path).
+            // sign_request returns a CeremonyId + decoded intent (NO signature);
+            // sign_approve returns the signature hex ONLY (never key/seed/entropy
+            // — I-2 compile barrier holds); sign_reject consumes with no sig. The
+            // gated wallet::sign_message is reachable ONLY via approve (@rule8).
+            ceremony::sign_request,
+            ceremony::sign_approve,
+            ceremony::sign_reject,
             // seam domains — honest Unavailable until each later phase (A1.3)
             seam::wallet_balances,
             seam::wallet_activity,

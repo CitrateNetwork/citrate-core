@@ -10,7 +10,16 @@
 // Store and whose Tauri impl returns `Unavailable` (Rule 1) until a later
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
-import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo, AuthStatus } from "./types";
+import type {
+  AppConfig,
+  KeyringStatus,
+  CustodyStatus,
+  SlotInfo,
+  AuthStatus,
+  SignatureIntent,
+  CeremonyView,
+  Signature,
+} from "./types";
 
 // ---- config (A1.4 — the genuinely-live domain) ----------------------
 export interface ConfigDomain {
@@ -61,6 +70,21 @@ export interface AuthDomain {
   kycStart(): Promise<void>;
 }
 
+// ---- signing (B1.2 — the ONE human-in-the-loop signing path) --------
+// The gated Rust signer is reachable ONLY through this domain's approve. A
+// caller (user / agent / micro-app) SUBMITS an intent; a human APPROVES a
+// specific id; only then is a signature produced. No method returns key/seed/
+// entropy material (I-2) — request returns a decoded view, approve a signature.
+export interface SigningDomain {
+  /** Submit an intent → a PENDING ceremony (id + decoded action). Signs NOTHING. */
+  request(intent: SignatureIntent): Promise<CeremonyView>;
+  /** Approve a SPECIFIC pending id (no "approve latest"/auto-approve). `rawAck`
+   * MUST be true to approve undecodable calldata. Returns the signature hex. */
+  approve(id: string, rawAck: boolean): Promise<Signature>;
+  /** Reject a pending ceremony — consumes it, produces no signature. */
+  reject(id: string): Promise<void>;
+}
+
 export interface WalletDomain {
   balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
   activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number }[]>;
@@ -100,6 +124,7 @@ export interface BridgeContract {
   config: ConfigDomain;
   custody: CustodyDomain;
   auth: AuthDomain;
+  signing: SigningDomain;
   wallet: WalletDomain;
   node: NodeDomain;
   memory: MemoryDomain;

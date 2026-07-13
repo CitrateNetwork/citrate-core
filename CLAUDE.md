@@ -17,9 +17,21 @@ Start at `.agentile/AGENT_ENTRY.md`. Canonical truth is the federation planset
    real. Chain reads hit the live 40204 RPC or show an honest error.
 2. **Test count monotone (Rule 2).** `cargo test --workspace --locked` count
    never decreases. Record the count when it changes (sprint file).
-3. **All signatures via SignatureCeremony** once it exists (CORE-S2, I-2).
-   Until then: no signing code paths at all. No sidecar, daemon, or remote
-   service ever holds a user key.
+3. **All signatures via the SignatureCeremony (Rule 3 — LIFTED by CORE-B1.2).**
+   The SignatureCeremony now EXISTS (`src-tauri/src/ceremony.rs`): the single
+   human-in-the-loop signing path. EVERY signature — from the user, and later
+   from any node-agent / chat-agent / micro-app — routes through it. The gated
+   signer (`wallet::sign_message`, `pub(crate)`) is reachable ONLY from
+   `SignatureCeremony::approve`; **signing anywhere else is forbidden.** No
+   `#[tauri::command]` signs or returns key/seed/entropy (I-2 compile barrier);
+   the command surface is `sign_request` / `sign_approve` / `sign_reject`, which
+   return a ceremony id / decoded intent / signature-hex / status only. Approval
+   is bound to an explicit CeremonyId (no auto-approve, no "approve latest");
+   undecodable calldata is blocked until an explicit raw-mode ack; one approval
+   yields exactly one signature (single-use); a locked vault fails closed. No
+   sidecar, daemon, or remote service ever holds a user key or signs directly.
+   (The recoverable EIP-155 tx-signing form is deferred to B1.4; B1.2 signs via
+   the message path under the lean `crypto` build.)
 4. **Never commit to main.** All work on a feature branch + PR via `gh`.
    Commit with explicit paths only (`git add <paths>`, never `-A`/`.`).
    Never merge anything — the owner merges.

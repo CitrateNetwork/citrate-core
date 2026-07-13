@@ -9,7 +9,16 @@
 // these throws with a real invoke, copying the config shape exactly.
 // =====================================================================
 import { invoke } from "@tauri-apps/api/core";
-import type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo, AuthStatus } from "../types";
+import type {
+  AppConfig,
+  KeyringStatus,
+  CustodyStatus,
+  SlotInfo,
+  AuthStatus,
+  SignatureIntent,
+  CeremonyView,
+  Signature,
+} from "../types";
 import type { BridgeContract } from "../domains";
 import { Unavailable } from "../types";
 
@@ -75,6 +84,23 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async kycStart(): Promise<void> {
         await invoke("kyc_start");
+      },
+    },
+    // ---- signing: REAL invoke of the B1.2 SignatureCeremony ----
+    // request → a decoded PENDING view (NO signature); approve → the signature
+    // hex ONLY (never key/seed/entropy — I-2); reject → consumed, no signature.
+    // The gated Rust signer is reachable only via sign_approve.
+    signing: {
+      async request(intent: SignatureIntent): Promise<CeremonyView> {
+        return invoke<CeremonyView>("sign_request", { intent });
+      },
+      async approve(id: string, rawAck: boolean): Promise<Signature> {
+        // Tauri maps snake_case Rust args from camelCase JS keys; `raw_ack`
+        // arrives as `rawAck`.
+        return invoke<Signature>("sign_approve", { id, rawAck });
+      },
+      async reject(id: string): Promise<void> {
+        await invoke("sign_reject", { id });
       },
     },
     wallet: {

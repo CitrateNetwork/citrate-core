@@ -135,3 +135,43 @@ describe("sim adapter — auth persona claim (A3.3 sim half)", () => {
     await expect(bridge.auth.kycStart()).resolves.toBeUndefined();
   });
 });
+
+// CORE-B1.2 — sim signing is the STATE MACHINE ONLY (no real key, no real sig).
+// The dev shim models request→approve→reject (single-use, raw-ack gate, explicit
+// id) so the dev UI behaves like the real ceremony, and returns a CLEARLY-FAKE
+// signature that is never presented as live. The real vault-gated signer is the
+// Tauri/Rust path (B1.2 cargo tests).
+describe("sim adapter — signing ceremony state machine (dev shim)", () => {
+  it("request returns a decoded PENDING view; approve consumes it (single-use)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const view = await bridge.signing.request({ origin: "https://app.citrate.ai", kind: "personal_sign", chainId: 40204, raw: "0x68656c6c6f" });
+    expect(view.origin).toBe("https://app.citrate.ai"); // TRUE origin, verbatim
+    expect(view.decoded.action).toContain("Sign message");
+    expect(view.requiresRawAck).toBe(false);
+    const sig = await bridge.signing.approve(view.id, false);
+    // Honest: the shim holds no key — the sim signature is clearly labeled, never
+    // a real one.
+    expect(sig.sigHex).toContain("sim");
+    // Single-use: a replay errors.
+    await expect(bridge.signing.approve(view.id, false)).rejects.toBeTruthy();
+  });
+
+  it("undecodable calldata is raw-ack gated in the shim too", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const view = await bridge.signing.request({ origin: "agent", kind: "transaction", chainId: 40204, raw: "0x02f86b" });
+    expect(view.requiresRawAck).toBe(true);
+    await expect(bridge.signing.approve(view.id, false)).rejects.toBeTruthy();
+    const view2 = await bridge.signing.request({ origin: "agent", kind: "transaction", chainId: 40204, raw: "0x02f86b" });
+    await expect(bridge.signing.approve(view2.id, true)).resolves.toBeTruthy();
+  });
+
+  it("reject consumes without a signature; unknown id errors", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const view = await bridge.signing.request({ origin: "o", kind: "personal_sign", chainId: 40204, raw: "0x68656c6c6f" });
+    await expect(bridge.signing.reject(view.id)).resolves.toBeUndefined();
+    await expect(bridge.signing.reject(view.id)).rejects.toBeTruthy();
+  });
+});

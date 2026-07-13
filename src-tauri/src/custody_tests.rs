@@ -308,6 +308,42 @@ fn adv8_no_invoke_command_returns_secret_bytes() {
     // the lib.rs registration test.
 }
 
+// ----- B1.1-F-3: the custody_put COMMAND is wired to the reservation guard --
+// (opportunistic fast-follow, closed in B1.2). ADV-R proved the PREDICATE
+// (`is_backend_reserved_slot`) is correct; F-3 proves that predicate is actually
+// WIRED into the #[tauri::command] custody_put — i.e. the invoke boundary rejects
+// a backend-reserved slot BEFORE reaching `state.0.put`, so a compromised webview
+// cannot plant/overwrite the wallet (`wallet-`) or OIDC (`oidc-`) secret.
+
+#[test]
+fn f3_custody_put_command_is_wired_to_the_reservation_guard() {
+    // Functional half: the predicate rejects the reserved prefixes the command
+    // guards (both wallet- and oidc-), and does not over-reject a caller slot.
+    assert!(is_backend_reserved_slot("wallet-entropy-0"));
+    assert!(is_backend_reserved_slot("oidc-refresh"));
+    assert!(!is_backend_reserved_slot("user-note"));
+
+    // Wiring half (source-scan of the REAL custody.rs): the custody_put command
+    // body must consult the guard and return early on a reserved slot, and must
+    // do so BEFORE the `state.0.put` seal. NEGATIVE CONTROL (stated): deleting the
+    // `if is_backend_reserved_slot(&slot)` early-return from custody_put — leaving
+    // only the predicate — makes the reserved slot writable from the invoke path
+    // (the exact A3-01/B1.1-ADV-R plant/overwrite), and this test fails.
+    let src = include_str!("custody.rs");
+    let cmd_start = src
+        .find("pub fn custody_put(")
+        .expect("custody_put command must exist");
+    let cmd_body = &src[cmd_start..];
+    let put_call = cmd_body.find("state.0.put(").expect("custody_put must seal via state.0.put");
+    let guard = cmd_body
+        .find("is_backend_reserved_slot(&slot)")
+        .expect("custody_put must consult the reservation guard");
+    assert!(
+        guard < put_call,
+        "the reservation guard must run BEFORE the seal (reject reserved slots first)"
+    );
+}
+
 // ----- ADV-9: session teardown + Zeroizing type contract ----------------
 // SCOPE (BND-4, honest): this test proves the SESSION-TEARDOWN + Zeroizing
 // TYPE CONTRACT — that `lock()` drops the session and the key is a
