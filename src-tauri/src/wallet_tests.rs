@@ -422,12 +422,26 @@ fn adv_s_no_secret_in_debug_or_errors() {
         dbg.contains("<redacted>"),
         "WalletCreate Debug must redact the mnemonic"
     );
-    for word in created.mnemonic.split_whitespace() {
-        assert!(
-            !dbg.contains(word),
-            "no mnemonic word may appear in Debug output"
-        );
-    }
+    // The full secret phrase must never appear. Redaction is all-or-nothing, so
+    // checking the whole phrase is the meaningful assertion. (B1.1-F-4: the prior
+    // per-word loop substring-collided single dictionary words like "add"/"age"
+    // against field names such as `address`, making the test flaky.)
+    assert!(
+        !dbg.contains(&*created.mnemonic),
+        "the mnemonic phrase must not appear in Debug output"
+    );
+    // Belt-and-suspenders against a partial leak, without the flakiness: a
+    // 3-word prefix is high-entropy and cannot collide with field names/hex.
+    let prefix = created
+        .mnemonic
+        .split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        !dbg.contains(&prefix),
+        "no multi-word mnemonic prefix may appear in Debug output"
+    );
 
     // Error Display/Debug must be secret-free (coarse, no crate error echo).
     for e in [
