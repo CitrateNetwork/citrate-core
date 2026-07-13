@@ -375,28 +375,56 @@ struct LockoutState {
     /// envelope written before this field is read as generation 0.
     #[serde(default)]
     generation: u64,
-    /// F-1 (B1.0): the master-sealed "anchor-initialized" bit that closes the
-    /// anchor-deletion downgrade. It lives on THIS block because the block is
-    /// already sealed under the keyring MASTER key (not the DEK) and is already
-    /// read on every unlock path (before the DEK exists), so an attacker who can
-    /// DELETE the plaintext keyring anchor entries (`custody-generation` /
-    /// `custody-lockout-generation`) still cannot forge or clear this field
-    /// without the master key.
+    /// F-1 (B1.0) + F-1b (B1.0b): the master-sealed "anchor-initialized" marker
+    /// that closes the anchor-deletion downgrade. It lives on THIS block because
+    /// the block is already sealed under the keyring MASTER key (not the DEK) and
+    /// is already read on every unlock path (before the DEK exists), so an attacker
+    /// who can DELETE the plaintext keyring anchor entries (`custody-generation` /
+    /// `custody-lockout-generation`) still cannot forge or clear this field without
+    /// the master key.
     ///
-    /// Semantics: set `true` exactly once, at genuine first-init (`init_inner`),
-    /// the same moment the keyring high-water is first seeded. Thereafter, if the
-    /// keyring anchor is ABSENT (`None`) while this bit is `true`, the vault was
-    /// anchored and its anchor was deleted or lost — we fail closed (`Corrupt`)
-    /// on load / unlock / `custody_get` instead of silently re-seeding the
-    /// high-water from a (possibly rolled-back) envelope. This trades away silent
+    /// ## Why `Option<bool>` and not `bool` (F-1b)
+    /// B1.0 used a `#[serde(default)] bool`. But a `bool` cannot distinguish a
+    /// legacy pre-B1.0 lockout block (the field is ABSENT on disk, so
+    /// serde-default reads it as `false`) from a genuine post-B1.0 first-init
+    /// (`false` written on purpose). The independent review (F-1b, MEDIUM) showed
+    /// this re-opens F-1: a legacy, validly-master-sealed block reads `false`,
+    /// `enforce_anchor_initialized` returns `Ok`, and delete-then-rollback re-seeds
+    /// off the rolled-back envelope with NO master key needed. `Option<bool>` makes
+    /// legacy-absence detectable:
+    /// - **`None`** — field ABSENT: a legacy pre-B1.0 block, provenance UNKNOWN.
+    /// - **`Some(false)`** — field PRESENT, genuine post-B1.0 first-init (the anchor
+    ///   is being seeded in the same init; not yet re-observed as anchored).
+    /// - **`Some(true)`** — field PRESENT, the vault WAS anchored.
+    ///
+    /// ## Three-way decision (`enforce_anchor_initialized`)
+    /// evaluated wherever this master-sealed block is opened (unlock, `custody_get`,
+    /// and before mutation in `put`/`clear_slot`), so the read-only path is covered:
+    /// - `Some(true)` + anchor ABSENT ⇒ `Corrupt` (the F-1 delete/loss case).
+    /// - `Some(true)` + anchor PRESENT ⇒ `Ok` (normal anchored vault).
+    /// - `Some(false)` + anchor ABSENT ⇒ `Ok` (genuine first-init; the ONE benign
+    ///   absent-anchor case, preserved from B1.0).
+    /// - `None` (legacy) + anchor PRESENT ⇒ **self-heal**: this is a real existing
+    ///   vault whose anchor still vouches for it; re-stamp `Some(true)`, re-seal
+    ///   under the master key, continue. Converts legacy A3 vaults forward on their
+    ///   FIRST B1.0b unlock/read (not only on mutation — closes the read-only
+    ///   window F-1b flagged for the A3 OIDC-refresh pattern).
+    /// - `None` (legacy) + anchor ABSENT ⇒ **`Corrupt`** (fail closed). This is
+    ///   indistinguishable from the F-1b attack (a legacy block whose anchor was
+    ///   deleted, restored over a rolled-back envelope), so refuse. Recovery is an
+    ///   explicit re-init; the BIP39 seed is the real wallet recovery (D-B1-1).
+    ///
+    /// Set to `Some(true)` at genuine first-init (`init_inner`) and on every lockout
+    /// write (`write_lockout`). Legacy `None` blocks are healed to `Some(true)` on
+    /// first unlock/read when the anchor is present. This trades away silent
     /// keychain-reset / machine-migration / backup-restore recoverability of the
-    /// ANCHOR (that path now needs an explicit re-init); for a BIP39-seed-backed
-    /// wallet the seed phrase is the real recovery, so this is the accepted
-    /// tradeoff (D-B1-1 / owner-approved). `#[serde(default)]` (= `false`) so an
-    /// older v2 envelope written before this field reads as not-yet-anchored;
-    /// such a genuinely-legacy vault is re-anchored on its next envelope mutation.
+    /// ANCHOR (that path needs an explicit re-init); accepted tradeoff
+    /// (D-B1-1 / owner-approved). `#[serde(default)]` yields `None` for a legacy
+    /// block; `serde` omits `None` only if paired with `skip_serializing_if`, which
+    /// we deliberately do NOT use so a healed/initialized block always writes an
+    /// explicit `Some(_)`.
     #[serde(default)]
-    anchor_initialized: bool,
+    anchor_initialized: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -752,31 +780,80 @@ impl CustodyVault {
         }
     }
 
-    /// F-1 (B1.0): close the anchor-deletion downgrade. The keyring high-water
+    /// F-1 (B1.0) + F-1b (B1.0b): close the anchor-deletion downgrade, including
+    /// for LEGACY (pre-B1.0, field-absent) lockout blocks. The keyring high-water
     /// anchor (DR-1) treats an ABSENT anchor as first-init for availability, so an
     /// attacker who can DELETE `custody-generation` (leaving `custody-master-key`)
     /// converts a whole-envelope rollback into a silent re-seed. This guard binds
-    /// a master-sealed "anchor-initialized" bit (`LockoutState::anchor_initialized`)
-    /// that only the keyring master can set/forge: if the keyring anchor is ABSENT
-    /// but the master-sealed bit says the vault WAS anchored, fail closed
-    /// (`Corrupt`) — the anchor was deleted or genuinely lost while anchored;
-    /// either way do not silently re-seed the high-water from a possibly
-    /// rolled-back envelope.
+    /// a master-sealed "anchor-initialized" marker
+    /// (`LockoutState::anchor_initialized: Option<bool>`) that only the keyring
+    /// master can set/forge, and takes `&env` + `&mek` so it can SELF-HEAL a legacy
+    /// block in place (re-seal under the master) on the read-only path.
     ///
-    /// Genuine first-init (anchor absent AND bit `false`) is preserved → `Ok`.
-    /// Genuine anchor LOSS (keychain reset / migration) now also fails closed;
-    /// recovery is an explicit re-init (the BIP39 seed is the real wallet
-    /// recovery — D-B1-1, accepted tradeoff). Called on every load path that
-    /// reaches the master-sealed lockout block, so it fires on unlock AND — via a
-    /// master-key open — on every `custody_get`.
-    fn enforce_anchor_initialized(&self, anchor_initialized: bool) -> Result<()> {
+    /// Three-way decision (see the field doc on `LockoutState::anchor_initialized`):
+    /// - `Some(true)`  + anchor ABSENT  ⇒ `Corrupt` (F-1 delete/loss).
+    /// - `Some(true)`  + anchor PRESENT ⇒ `Ok`.
+    /// - `Some(false)` + anchor ABSENT  ⇒ `Ok` (genuine first-init — the one benign
+    ///   absent-anchor case, preserved from B1.0).
+    /// - `None` (legacy) + anchor PRESENT ⇒ self-heal (re-stamp `Some(true)`,
+    ///   re-seal under `mek`, persist) then `Ok`. Closes the F-1b read-only window:
+    ///   a legacy A3/OIDC vault that only ever unlocks + reads now upgrades forward
+    ///   on its FIRST B1.0b unlock/read, so a later anchor-delete fails closed.
+    /// - `None` (legacy) + anchor ABSENT ⇒ `Corrupt`. Indistinguishable from the
+    ///   F-1b attack (legacy block, anchor deleted, envelope rolled back), so
+    ///   refuse; recovery is an explicit re-init (BIP39 seed — D-B1-1).
+    ///
+    /// Called on every load path that reaches the master-sealed lockout block, so
+    /// it fires on unlock AND — via a master-key open — on every `custody_get`, and
+    /// before every `put`/`clear_slot` mutation. The self-heal re-seal only ever
+    /// happens when the anchor is PRESENT (the anchor already vouches for the
+    /// vault), so it cannot be used to launder an unanchored/rolled-back block: an
+    /// attacker who deletes the anchor lands in the `None`+absent ⇒ `Corrupt` arm
+    /// and never reaches a heal.
+    fn enforce_anchor_initialized(
+        &self,
+        lockout: &LockoutState,
+        env: &Envelope,
+        mek: &[u8; KEY_LEN],
+    ) -> Result<()> {
         // `read_high_water` returns `None` for an ABSENT/deleted anchor and errors
         // (`KeyringUnavailable`) for an unreachable keyring — the latter propagates
         // (fail closed), never masquerading as "absent".
-        if self.read_high_water()?.is_none() && anchor_initialized {
-            return Err(CustodyError::Corrupt);
+        let anchor_present = self.read_high_water()?.is_some();
+        match (lockout.anchor_initialized, anchor_present) {
+            // F-1: was-anchored but the anchor is gone (deleted or genuinely lost).
+            (Some(true), false) => Err(CustodyError::Corrupt),
+            // Normal anchored vault, or genuine first-init (Some(false) + absent).
+            (Some(_), _) => Ok(()),
+            // F-1b: legacy block whose anchor still vouches for it — self-heal.
+            (None, true) => self.heal_legacy_anchor(lockout, env, mek),
+            // F-1b: legacy block + no anchor — indistinguishable from the attack.
+            (None, false) => Err(CustodyError::Corrupt),
         }
-        Ok(())
+    }
+
+    /// F-1b (B1.0b): upgrade a LEGACY (`anchor_initialized == None`) lockout block
+    /// to `Some(true)` and re-seal it under the keyring master, persisting the
+    /// envelope. Called ONLY when the keyring anchor is PRESENT — the anchor already
+    /// vouches for this vault, so stamping it as anchored is sound and makes a later
+    /// anchor-delete fail closed (F-1). The re-seal preserves `failures`,
+    /// `locked_until_ms`, and `generation` unchanged, so it neither resets the
+    /// throttle nor trips the DR-2 lockout high-water (`generation == hw`, not below),
+    /// and it does not touch the DEK-sealed header / slots / envelope generation, so
+    /// DR-1 is untouched. It runs on the read-only path (unlock / `custody_get`) too,
+    /// so a read-mostly A3 vault heals without waiting for a mutation.
+    fn heal_legacy_anchor(
+        &self,
+        lockout: &LockoutState,
+        env: &Envelope,
+        mek: &[u8; KEY_LEN],
+    ) -> Result<()> {
+        let mut healed = lockout.clone();
+        healed.anchor_initialized = Some(true);
+        let sealed = Self::seal_lockout(mek, env.version, &healed)?;
+        let mut env2 = env.clone();
+        env2.lockout = sealed;
+        self.save_envelope(&env2)
     }
 
     /// Mint a fresh keyring master key for a brand-new vault. CRY-5: refuses to
@@ -850,7 +927,7 @@ impl CustodyVault {
             &mek,
             v,
             &LockoutState {
-                anchor_initialized: true,
+                anchor_initialized: Some(true),
                 ..LockoutState::default()
             },
         )?;
@@ -996,8 +1073,10 @@ impl CustodyVault {
         // high-water from this (possibly rolled-back) envelope. This gates the
         // whole unlock, including a wrong-passphrase attempt, and precedes the
         // DR-2 lockout-anchor check (a deleted anchor must fail even if the
-        // lockout block itself looks pristine).
-        self.enforce_anchor_initialized(lockout.anchor_initialized)?;
+        // lockout block itself looks pristine). F-1b: also self-heals a legacy
+        // (field-absent) block forward when the anchor is present — closing the
+        // read-only window — and fails closed on a legacy block with no anchor.
+        self.enforce_anchor_initialized(&lockout, &env, &mek)?;
 
         // DR-2: the master-sealed lockout block is otherwise unanchored — a plain
         // file write can copy a pristine (failures=0) block over a high-failure
@@ -1044,7 +1123,7 @@ impl CustodyVault {
             // `LockoutState::default()` reset (on unlock success) from clearing
             // the bit, and lazily re-anchors a legacy v2 block (which read the
             // field as `false`) on its next lockout write.
-            stamped.anchor_initialized = true;
+            stamped.anchor_initialized = Some(true);
             let sealed = Self::seal_lockout(&mek, env.version, &stamped)?;
             let mut env2 = env.clone();
             env2.lockout = sealed;
@@ -1235,7 +1314,17 @@ impl CustodyVault {
         // never launder a re-seed onto a rolled-back base.
         let mek = self.master_key()?;
         let lockout = Self::open_lockout(&mek, &env)?;
-        self.enforce_anchor_initialized(lockout.anchor_initialized)?;
+        self.enforce_anchor_initialized(&lockout, &env, &mek)?;
+        // F-1b: this mutation re-saves the WHOLE envelope (including `env.lockout`).
+        // If the block was legacy (`None`) and just self-healed, carry `Some(true)`
+        // into the block we are about to persist so this mutation does not clobber
+        // the heal back to `None`. `save_envelope` below writes the whole env once,
+        // so this re-seal (generation/failures/deadline preserved) is the record.
+        if lockout.anchor_initialized != Some(true) {
+            let mut healed = lockout.clone();
+            healed.anchor_initialized = Some(true);
+            env.lockout = Self::seal_lockout(&mek, env.version, &healed)?;
+        }
         let sealed = Self::seal(&data_key, bytes, &Self::aad(env.version, slot.as_bytes()))?;
         // Confirm the current envelope integrity before mutating it (the header
         // + check-slot must verify under the session DEK); this prevents writing
@@ -1288,7 +1377,10 @@ impl CustodyVault {
         // anchored, fail closed (`Corrupt`) instead of serving a re-seeded read.
         let mek = self.master_key()?;
         let lockout = Self::open_lockout(&mek, &env)?;
-        self.enforce_anchor_initialized(lockout.anchor_initialized)?;
+        // F-1b: legacy block + anchor present ⇒ self-heal on this read path too
+        // (the A3 OIDC-refresh read-only pattern never mutates, so it must upgrade
+        // here); legacy block + anchor absent ⇒ fail closed.
+        self.enforce_anchor_initialized(&lockout, &env, &mek)?;
         // CRY-1: re-verify the authenticated header before serving a slot, so a
         // swap/rollback of the envelope on disk AFTER unlock is caught at read
         // time too (not only at unlock). A slot read then authenticates its own
@@ -1335,7 +1427,15 @@ impl CustodyVault {
         // put_inner) so a delete-then-clear can't launder a re-seed either.
         let mek = self.master_key()?;
         let lockout = Self::open_lockout(&mek, &env)?;
-        self.enforce_anchor_initialized(lockout.anchor_initialized)?;
+        self.enforce_anchor_initialized(&lockout, &env, &mek)?;
+        // F-1b: carry a self-heal into this whole-envelope save (same rationale as
+        // put_inner) so a `clear` on a legacy block does not clobber it back to
+        // `None`.
+        if lockout.anchor_initialized != Some(true) {
+            let mut healed = lockout.clone();
+            healed.anchor_initialized = Some(true);
+            env.lockout = Self::seal_lockout(&mek, env.version, &healed)?;
+        }
         // Confirm current integrity before mutating (same as put_inner).
         let generation = Self::open_and_verify_header(&data_key, &env)?;
         self.enforce_high_water(generation)?;
