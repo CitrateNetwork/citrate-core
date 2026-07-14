@@ -124,6 +124,12 @@ pub fn run() {
             agent::agent_status,
             agent::agent_start,
             agent::agent_stop,
+            // user_claim (C2-F-1, @rule8) — the USER Claim button. Reads the REAL
+            // claimable (eth_call), and either returns an HONEST "nothing to claim"
+            // for 0, or bridges the real claimRewards() intent into a PENDING
+            // ceremony the human approves via sign_and_broadcast (B1.4). NEVER a sim
+            // balance mutation presented as a settled chain claim (Rule 1).
+            agent::user_claim,
             // memory — the real citrate-memories mcp_serve daemon under the
             // SidecarSupervisor (C3). Replaces the A1.3 memory_recall seam stub:
             // memory_status returns the supervisor state + socket path (never the

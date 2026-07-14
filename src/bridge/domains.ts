@@ -22,6 +22,13 @@ import type {
   BroadcastResult,
 } from "./types";
 
+/** C2-F-1 — the outcome of pressing Claim. Either a REAL pending ceremony the
+ * human must approve via `signing.broadcast` (B1.4), or an honest "nothing to
+ * claim" when the on-chain claimable is 0. NEVER a faked settlement. */
+export type ClaimResult =
+  | { kind: "ceremony"; view: CeremonyView }
+  | { kind: "nothing"; claimableWei: string };
+
 // ---- config (A1.4 — the genuinely-live domain) ----------------------
 export interface ConfigDomain {
   /** Read the full persisted app config from the real on-disk store. */
@@ -121,6 +128,16 @@ export interface AgentDomain {
    * split is NOT fabricated for live reads (Rule 1 / I-3).
    */
   earnings(): Promise<{ claimableWei: string; walletAddress: string; contract: string }>;
+  /**
+   * CORE-C2-F-1 (@rule8) — the USER Claim button. Reads the REAL claimable
+   * (`ContributionAccounting.claimable(addr)` eth_call), then EITHER bridges the
+   * real `claimRewards()` intent into a PENDING ceremony the human approves via
+   * `signing.broadcast` (B1.4 → a real 40204 tx), OR returns an honest "nothing to
+   * claim" when the claimable is 0. It NEVER mutates a local balance or fabricates
+   * a settled-claim hash (Rule 1). The Tauri impl invokes the `user_claim` command;
+   * the sim impl is guarded out of packaged builds and never claims for real.
+   */
+  claim(): Promise<ClaimResult>;
 }
 
 // The citrate-memories mcp_serve daemon under the SidecarSupervisor (CORE-C3).

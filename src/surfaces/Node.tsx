@@ -107,26 +107,15 @@ export function Node({ store, s }: SurfaceProps) {
     s.claimable < 5
       ? "Claims batch until ≥ 5 SALT to avoid dust gas — " + fmt2(5 - s.claimable) + " SALT to go."
       : "Claimable is above the 5 SALT dust threshold.";
+  // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL claim path
+  // (`store.claimRewards` → `bridge.agent.claim` → the real `claimRewards()`
+  // ceremony → B1.4 broadcast in the desktop build; an honest "nothing to claim"
+  // when the on-chain claimable is 0, and an honest "web preview cannot settle"
+  // otherwise). It does NOT locally mutate liquid/claimable and it does NOT toast a
+  // fabricated "Claimed — balance updated from chain" (Rule 1 / I-3): the balance
+  // changes ONLY when the real tx settles and `claimable` is re-read from chain.
   const onClaim = () => {
-    const amt = s.claimable;
-    store.requestSig({
-      origin: "node-agent",
-      requester: "node-agent · earnings sweep 127.0.0.1:19600",
-      title: "Claim " + fmt2(amt) + " SALT rewards",
-      rows: [
-        { k: "Action", v: "claimRewards() — unsigned request, routed through the ceremony" },
-        { k: "Contract", v: "ContributionAccounting · 0xcdd2…faef · 40204" },
-        { k: "Claimable", v: fmt2(amt) + " SALT · on-chain claimable(address) balance" },
-      ],
-      cost: "est. gas 0.0014 SALT",
-      sponsor: "gas sponsored — standard daily budget",
-      sponsorColor: "var(--ok)",
-      apply: (h) => {
-        store.setState((st) => ({ liquid: st.liquid + amt, claimable: 0 }));
-        store.addActivity("Claim rewards", "+" + fmt2(amt) + " SALT", h);
-        store.toast("Claimed — balance updated from chain");
-      },
-    });
+    void store.claimRewards();
   };
   const hbAge = s.node === "off" ? null : s.hb;
   const hbStr = hbAge == null ? "—" : "last ack " + hbAge.toFixed(0) + "s ago · 30s window";

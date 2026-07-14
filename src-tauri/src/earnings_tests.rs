@@ -246,6 +246,18 @@ fn user_claim_request_is_the_node_agent_shape() {
     );
 }
 
+/// C2-F-3: the user claim request carries the DISJOINT `USER_CLAIM_ID` (top bit
+/// set), NOT the old hardcoded `id: 0`. This is what keeps a user claim from
+/// aliasing a node-agent request (whose ids are small + sequential) in the agent
+/// bridge's shared dedup map.
+#[test]
+fn user_claim_request_uses_disjoint_id_space() {
+    let req = user_claim_request(1);
+    assert_eq!(req.id, USER_CLAIM_ID, "user claim uses the disjoint id space");
+    assert_eq!(USER_CLAIM_ID, 1u64 << 63, "top bit set — unreachable by the node-agent counter");
+    assert_ne!(req.id, 0, "must NOT be the old colliding id: 0 (C2-F-3)");
+}
+
 /// The user claim request routes cleanly through the SAME bridge intent builder
 /// the node-agent path uses (origin "agent:node-agent", a legible Call, not
 /// raw-gated) — proving the user Claim and the sweep share ONE ceremony path.

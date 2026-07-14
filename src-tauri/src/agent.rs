@@ -724,21 +724,70 @@ impl AgentManager {
             .into_iter()
             .find(|r| r.is_pending())
             .ok_or(AgentError::NoPending)?;
+        let id = self.bridge_request(ceremony, vault, rpc, &req)?;
+        Ok((id, req))
+    }
 
-        // C1.2-F-1 (LOW): dedup per node-agent request id. Under the map lock,
-        // check whether this id already maps to a ceremony that is STILL pending;
-        // if so, return it verbatim (one request → one ceremony → one broadcast).
-        // A stale entry (the ceremony was already approved/rejected → no longer
-        // pending) is dropped so a legitimate re-accrual can mint a fresh one.
+    /// **C2-F-1 — the USER Claim path.** Build the user's unsigned `claimRewards()`
+    /// request (via [`crate::earnings::user_claim_request`], carrying the REAL
+    /// claimable in its context — the value the caller just read on-chain), and
+    /// bridge it into a PENDING ceremony through the SAME
+    /// [`Self::bridge_request`] path the node-agent sweep uses. Returns the
+    /// ceremony id the HUMAN must approve via the ceremony's own
+    /// `sign_and_broadcast` (B1.4) — this method signs NOTHING and touches no key.
+    ///
+    /// The user claim carries the DISJOINT [`crate::earnings::USER_CLAIM_ID`], so it
+    /// can never alias a node-agent request in the shared dedup map (C2-F-3). If the
+    /// caller has nothing to claim (`claimable_wei == 0`) we return
+    /// [`AgentError::NoPending`] — an HONEST "nothing to claim", never a fabricated
+    /// settlement (Rule 1). The claim's on-chain effect is REAL: the ceremony signs
+    /// the SAME `claimRewards()` 4 bytes the contract expects and broadcasts to
+    /// 40204; there is no local balance mutation presented as a chain claim.
+    pub fn bridge_user_claim<T: crate::rpc::RpcTransport>(
+        &self,
+        ceremony: &SignatureCeremony,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        claimable_wei: u128,
+    ) -> Result<(String, AgentSignatureRequest), AgentError> {
+        // Honest zero: nothing to claim → no ceremony, no tx (Rule 1 / I-3).
+        if claimable_wei == 0 {
+            return Err(AgentError::NoPending);
+        }
+        let req = crate::earnings::user_claim_request(claimable_wei);
+        let id = self.bridge_request(ceremony, vault, rpc, &req)?;
+        Ok((id, req))
+    }
+
+    /// The shared, ATOMIC check-and-mint that turns ONE unsigned request (from the
+    /// node-agent sweep OR the user Claim button) into AT MOST ONE pending ceremony.
+    /// Signs nothing; produces no key material.
+    ///
+    /// C1.2-F-1 (dedup) + C2-F-2 (atomicity): a request id maps to at most one
+    /// still-pending ceremony. A FAST PATH returns an existing pending ceremony
+    /// without estimating gas or minting. Otherwise the check-and-mint is performed
+    /// under a SINGLE hold of the `bridged` lock (a re-check + `ceremony.request` +
+    /// insert), so two concurrent bridges of the same id cannot each mint a
+    /// ceremony — the loser re-checks under the lock and reuses the winner's.
+    fn bridge_request<T: crate::rpc::RpcTransport>(
+        &self,
+        ceremony: &SignatureCeremony,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        req: &AgentSignatureRequest,
+    ) -> Result<String, AgentError> {
+        // FAST PATH: under the map lock, if this id already maps to a STILL-pending
+        // ceremony, return it verbatim WITHOUT estimating gas or minting. A stale
+        // entry (the ceremony was already approved/rejected) is dropped so a
+        // legitimate re-accrual can mint a fresh one. Releasing the lock here is
+        // safe because the SLOW path below re-checks under the lock before minting
+        // (the C2-F-2 double-check).
         {
             let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = map.get(&req.id) {
                 if ceremony.status(existing).is_some() {
-                    // Still-pending ceremony for this request → reuse it.
-                    return Ok((existing.clone(), req));
+                    return Ok(existing.clone());
                 }
-                // The mapped ceremony was consumed; drop the stale entry and fall
-                // through to mint a new one for this (re-emitted) request.
                 map.remove(&req.id);
             }
         }
@@ -749,16 +798,37 @@ impl AgentManager {
             .map(|w| w.address)
             .map_err(|e| AgentError::Ceremony(e.to_string()))?;
         // Real gas estimate for the contract call (never a fabricated number).
-        let gas = rpc.estimate_gas(estimate_gas_call(&req)).ok();
-        let intent = intent_from_request(&req, &from, gas);
+        // Computed BEFORE the mint lock so the (potentially blocking) RPC does not
+        // hold the dedup map; a concurrent winner may make this estimate moot, in
+        // which case its ceremony is discarded below (idempotent read, no harm).
+        let gas = rpc.estimate_gas(estimate_gas_call(req)).ok();
+
+        // C2-F-2 (LOW): the check-and-mint MUST be atomic. Two concurrent bridges
+        // of the SAME still-pending req.id previously raced between the fast-path
+        // check (lock released) and the insert (lock re-acquired) — both saw an
+        // empty slot, both minted a ceremony, and the second insert overwrote the
+        // first, leaving TWO approvable ceremonies for one request (a double-claim
+        // surface). We now hold the map lock across the RE-CHECK + mint + insert:
+        // whichever thread wins the lock mints exactly one ceremony and records it;
+        // the loser re-checks under the same lock, finds the winner's still-pending
+        // ceremony, and returns THAT (discarding its own would-be mint). Exactly one
+        // ceremony per request id. `ceremony.request`/`status` lock only the
+        // ceremony's OWN mutex (disjoint from `bridged`), so holding `bridged`
+        // across them cannot deadlock.
+        let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = map.get(&req.id) {
+            if ceremony.status(existing).is_some() {
+                // A concurrent bridge already minted for this id — reuse it and do
+                // NOT mint a second ceremony (the atomicity that closes C2-F-2; the
+                // estimate above is simply discarded).
+                return Ok(existing.clone());
+            }
+            map.remove(&req.id);
+        }
+        let intent = intent_from_request(req, &from, gas);
         let view = ceremony.request(intent);
-        // Record the request→ceremony mapping so a duplicate bridge for the same
-        // still-pending request cannot mint a second ceremony (C1.2-F-1).
-        self.bridged
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(req.id, view.id.clone());
-        Ok((view.id, req))
+        map.insert(req.id, view.id.clone());
+        Ok(view.id)
     }
 
     /// The human-approval leg (WP2): approve a bridged ceremony `id` (bound to the
@@ -877,6 +947,50 @@ pub fn agent_start(state: State<'_, AgentState>) -> std::result::Result<(), Stri
 pub fn agent_stop(state: State<'_, AgentState>) -> std::result::Result<(), String> {
     state.0.stop();
     Ok(())
+}
+
+/// **Command — user_claim (C2-F-1, @rule8).** The USER's Claim button. It does the
+/// REAL claim, NEVER a sim mutation presented as a chain settlement:
+///   1. read the vault wallet's REAL claimable from
+///      `ContributionAccounting.claimable(addr)` via `eth_call` on the live 40204
+///      RPC (the same read `agent_earnings` surfaces — Rule 1, no fabricated value),
+///   2. if it is `0`, return an HONEST error ("nothing to claim") — no ceremony, no
+///      tx, no faked balance change,
+///   3. otherwise bridge the unsigned `claimRewards()` intent (carrying the real
+///      claimable) into a PENDING [`crate::ceremony::SignatureCeremony`] and return
+///      the [`crate::ceremony::CeremonyView`] (id + decoded action). Signs NOTHING.
+///
+/// The HUMAN then approves the returned ceremony id via `sign_and_broadcast`
+/// (B1.4) — the SAME single human-in-the-loop path a node-agent sweep or a user tx
+/// takes. There is NO local balance mutation and NO fabricated "claimed" hash: the
+/// balance only changes when the real broadcast tx settles on-chain and the tab
+/// re-reads `claimable`. Requires the vault UNLOCKED (to read the public address +
+/// sign at approve); a locked/absent vault fails closed with a clear error.
+#[tauri::command]
+pub fn user_claim(
+    agent: State<'_, AgentState>,
+    ceremony: State<'_, crate::ceremony::CeremonyState>,
+    custody: State<'_, crate::custody::CustodyState>,
+) -> std::result::Result<crate::ceremony::CeremonyView, String> {
+    // Read the wallet's public address (never the key) + the REAL claimable.
+    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let rpc = crate::rpc::RpcClient::citrate();
+    let snap = crate::earnings::read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
+    let claimable_wei: u128 = snap
+        .claimable_wei
+        .parse()
+        .map_err(|_| "earnings: claimable is not a u128 wei value".to_string())?;
+    // Bridge the REAL claim into a pending ceremony (honest 0 → NoPending error).
+    let (id, _req) = agent
+        .0
+        .bridge_user_claim(&ceremony.0, &custody.0, &rpc, claimable_wei)
+        .map_err(|e| e.to_string())?;
+    // Return the pending ceremony view so the human approves it via the ceremony's
+    // own sign_and_broadcast (B1.4) — this command never signs.
+    ceremony
+        .0
+        .status(&id)
+        .ok_or_else(|| "ceremony: pending claim not found after bridge".to_string())
 }
 
 /// A minimal writer helper for the token file used only by tests that need to
