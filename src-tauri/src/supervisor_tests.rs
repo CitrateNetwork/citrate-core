@@ -125,7 +125,7 @@ fn crash_produces_record_and_restart() {
         max_delay: Duration::from_millis(50),
         max_retries: 5,
     };
-    let sup = Supervisor::start(cfg);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
 
     // Wait until it is Running with a pid.
     let st = sup.wait_until(|s| matches!(s, SupervisorState::Running), Duration::from_secs(5));
@@ -191,7 +191,7 @@ fn fork_bomb_is_bounded_and_backoff_increases() {
         max_delay: Duration::from_millis(40),
         max_retries: 4,
     };
-    let sup = Supervisor::start(cfg);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
 
     // It MUST reach the terminal Failed state (bounded — not a tight loop).
     let st = sup.wait_until(|s| matches!(s, SupervisorState::Failed), Duration::from_secs(10));
@@ -249,7 +249,7 @@ fn fork_bomb_bound_is_load_bearing() {
         max_delay: Duration::from_millis(1),
         max_retries: u32::MAX,
     };
-    let sup = Supervisor::start(cfg);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
 
     // Give it time to churn through MANY restarts.
     let st = sup.wait_until(
@@ -283,7 +283,7 @@ fn graceful_stop_kills_child_and_does_not_restart() {
     let crash_file = tmp.path("crashes.jsonl");
     let spec = SidecarSpec::new("stoppable", sleep_bin(), vec!["60".into()]);
     let cfg = SupervisorConfig::new(spec, &crash_file);
-    let sup = Supervisor::start(cfg);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
 
     let st = sup.wait_until(|s| matches!(s, SupervisorState::Running), Duration::from_secs(5));
     let pid = st.pid.expect("running pid");
@@ -323,7 +323,7 @@ fn drop_kills_child_no_orphan() {
     let crash_file = tmp.path("crashes.jsonl");
     let spec = SidecarSpec::new("orphan-check", sleep_bin(), vec!["60".into()]);
     let cfg = SupervisorConfig::new(spec, &crash_file);
-    let sup = Supervisor::start(cfg);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
 
     let st = sup.wait_until(|s| matches!(s, SupervisorState::Running), Duration::from_secs(5));
     let pid = st.pid.expect("running pid");
@@ -368,7 +368,7 @@ fn args_with_shell_metacharacters_are_literal_not_a_shell() {
         max_delay: Duration::from_millis(20),
         max_retries: 1,
     };
-    let sup = Supervisor::start(cfg);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
 
     // Let touch run at least once (then the supervisor may loop/Fail; we don't
     // care — we only assert the filesystem effect of the FIRST run).
@@ -408,7 +408,7 @@ fn failing_health_check_triggers_restart() {
     let health = HealthCheck {
         interval: Duration::from_millis(30),
         // First probe healthy (return true), subsequent probes unhealthy.
-        probe: Box::new(move || calls2.fetch_add(1, Ordering::SeqCst) == 0),
+        probe: Arc::new(move || calls2.fetch_add(1, Ordering::SeqCst) == 0),
     };
     let mut spec = SidecarSpec::new("healthy?", sleep_bin(), vec!["60".into()]);
     spec.health_check = Some(health);
@@ -419,7 +419,7 @@ fn failing_health_check_triggers_restart() {
         max_delay: Duration::from_millis(30),
         max_retries: 3,
     };
-    let sup = Supervisor::start(cfg);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
 
     // The failing probe must drive at least one restart (restarts >= 1), and a
     // crash record with the health-failure reason exists.
@@ -515,5 +515,391 @@ fn spec_has_no_shell_field_source_check() {
     assert!(
         src.contains("Command::new(&self.bin)"),
         "spawn is not the expected direct Command::new(path) form"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WP-1 / F-1 (RED-FIRST): CONSECUTIVE, not LIFETIME. A child that runs HEALTHY
+// for `healthy_after`, then crashes, repeated MORE times than `max_retries`,
+// must KEEP getting restarted — never permanently `Failed` — because the
+// crashes are non-consecutive (each is preceded by a sustained-healthy run that
+// resets the counter). This FAILS against the lifetime-counter code (which would
+// hit `Failed` after max_retries LIFETIME crashes) and passes after the F-1 fix.
+//
+// Maps to formal INV-1 (an intermittently-crashing-but-recovering child is never
+// permanently Failed).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn intermittent_crashes_with_healthy_runs_never_permanently_fail() {
+    let tmp = TmpDir::new("intermittent");
+    let crash_file = tmp.path("crashes.jsonl");
+    // A long-lived child we kill repeatedly; between kills it stays Running well
+    // past `healthy_after`, so each crash is NON-consecutive (counter resets).
+    let spec = SidecarSpec::new("longlived", sleep_bin(), vec!["60".into()]);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    // Small real thresholds so the test is fast but the semantics are exact:
+    // a run that stays up >= 80ms counts as sustained-healthy → reset.
+    cfg.healthy_after = Duration::from_millis(80);
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 2,
+        max_delay: Duration::from_millis(30),
+        // Cap = 3. We will crash the child 6 times (> cap). Under a LIFETIME
+        // counter it would be Failed by crash #4; under CONSECUTIVE it never is.
+        max_retries: 3,
+    };
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    let crashes_to_do = 6u32; // strictly greater than max_retries(3)
+    for i in 0..crashes_to_do {
+        // Wait until it is Running with a fresh pid.
+        let st = sup.wait_until(
+            |s| matches!(s, SupervisorState::Running),
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            st.state,
+            SupervisorState::Running,
+            "child not Running before intended crash #{i} (state {:?}) — it may have \
+             wrongly reached Failed under a lifetime counter",
+            st.state
+        );
+        let pid = st.pid.expect("running child has a pid");
+
+        // Let it stay healthy past `healthy_after` so the consecutive counter
+        // resets, THEN crash it. (Generous margin over the 80ms threshold.)
+        std::thread::sleep(Duration::from_millis(160));
+
+        // It must still be Running (a healthy sustained run), and NOT Failed.
+        let mid = sup.status();
+        assert_ne!(
+            mid.state,
+            SupervisorState::Failed,
+            "supervisor reached Failed after a HEALTHY interval + {} prior crashes \
+             — the counter is LIFETIME, not CONSECUTIVE (F-1 not fixed)",
+            i
+        );
+
+        // Crash it (kill out from under the supervisor).
+        signal_pid(pid, libc::SIGKILL);
+
+        // Wait for the restart to be observed (restarts counter advances).
+        let want = i + 1;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let s = sup.status();
+            if s.restarts >= want {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "supervisor did not restart after crash #{i} (restarts {}, state {:?}) \
+                 — it may be stuck in Failed (lifetime counter)",
+                s.restarts,
+                s.state
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // After MORE crashes than max_retries, the supervisor is STILL alive (never
+    // permanently Failed) because every crash was preceded by a healthy reset.
+    let end = sup.wait_until(
+        |s| matches!(s, SupervisorState::Running),
+        Duration::from_secs(5),
+    );
+    assert_ne!(
+        end.state,
+        SupervisorState::Failed,
+        "intermittently-crashing-but-recovering child reached terminal Failed — \
+         F-1 (consecutive-not-lifetime) is NOT holding"
+    );
+    assert!(
+        end.restarts >= crashes_to_do,
+        "expected at least {crashes_to_do} restarts, got {}",
+        end.restarts
+    );
+
+    sup.stop();
+}
+
+// ---------------------------------------------------------------------------
+// WP-1 / F-1 (companion): the fork-bomb bound STILL holds with the reset in
+// place — a child that ONLY crash-loops (NO healthy interval ever) reaches
+// Failed within max_retries. This is the two-properties-at-once proof: reset on
+// healthy (above) must NOT let a fast crash-loop evade the cap (here). `false`
+// exits instantly, so it never stays up `healthy_after` → never resets.
+//
+// Maps to formal INV-2 (crash-loop-only child reaches Failed within max_retries).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn crash_loop_without_healthy_interval_still_hits_cap_after_reset_fix() {
+    let tmp = TmpDir::new("forkbomb-reset");
+    let crash_file = tmp.path("crashes.jsonl");
+    let spec = SidecarSpec::new("flapper2", false_bin(), vec![]);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    // `healthy_after` is LARGE relative to the child's (instant) lifetime, so an
+    // instantly-exiting child can NEVER accrue a sustained-healthy run → the
+    // counter never resets → the cap is reached.
+    cfg.healthy_after = Duration::from_secs(30);
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(5),
+        multiplier: 2,
+        max_delay: Duration::from_millis(40),
+        max_retries: 4,
+    };
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    let st = sup.wait_until(
+        |s| matches!(s, SupervisorState::Failed),
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        st.state,
+        SupervisorState::Failed,
+        "instant-exit child never reached Failed WITH the reset fix present — the \
+         reset wrongly let a fast crash-loop evade the fork-bomb cap"
+    );
+    // Bounded: exactly max_retries + 1 crashes, never an unbounded flood.
+    let records = read_crash_records(&crash_file);
+    assert_eq!(
+        records.len(),
+        5, // initial run + max_retries(4)
+        "fork-bomb bound off after reset fix: {} crashes",
+        records.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WP-2 / F-2 (RED-FIRST): a slow/HANGING health probe must NOT stall crash
+// detection OR teardown. Against the old inline-probe code, a probe that blocks
+// for T seconds would delay crash detection and block Drop→join for T. Here the
+// probe blocks far longer than the test budget; the supervisor must still detect
+// a real child crash AND complete `stop()` within a bounded time.
+//
+// Maps to formal: the model runs the probe as an event that cannot preempt the
+// crash/stop transitions (liveness of Stop/crash-detection).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hanging_health_probe_does_not_stall_crash_detection_or_stop() {
+    let tmp = TmpDir::new("hang-probe");
+    let crash_file = tmp.path("crashes.jsonl");
+
+    // A probe that BLOCKS effectively forever (10s) once invoked. Under the old
+    // inline design this would freeze the monitor loop for 10s.
+    let health = HealthCheck {
+        interval: Duration::from_millis(30),
+        probe: Arc::new(move || {
+            std::thread::sleep(Duration::from_secs(10));
+            true
+        }),
+    };
+    let mut spec = SidecarSpec::new("hang", sleep_bin(), vec!["60".into()]);
+    spec.health_check = Some(health);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    cfg.healthy_after = Duration::from_secs(30);
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 2,
+        max_delay: Duration::from_millis(30),
+        max_retries: 5,
+    };
+    // Keep teardown bound tight so the assertion is meaningful.
+    cfg.join_timeout = Duration::from_secs(3);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    let st = sup.wait_until(
+        |s| matches!(s, SupervisorState::Running),
+        Duration::from_secs(5),
+    );
+    let pid = st.pid.expect("running pid");
+
+    // Let the probe get invoked (interval 30ms) so it is mid-hang.
+    std::thread::sleep(Duration::from_millis(120));
+
+    // (a) crash detection is NOT stalled by the hanging probe: kill the child and
+    // the supervisor must notice + restart within a bounded time (far less than
+    // the probe's 10s hang). A wedged probe also counts as unhealthy, so a
+    // restart happens either way; what matters is it happens FAST.
+    signal_pid(pid, libc::SIGKILL);
+    let restart_deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if sup.status().restarts >= 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < restart_deadline,
+            "hanging health probe stalled crash detection — no restart within 3s \
+             (probe hangs 10s); F-2 not fixed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // (b) teardown is NOT stalled: stop() must return within a bounded time even
+    // though a probe thread may still be hanging.
+    let t0 = std::time::Instant::now();
+    sup.stop();
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "stop() took {elapsed:?} — a hanging probe stalled teardown (F-2 not fixed)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WP-2 (companion): dropping a supervisor whose child is HUNG (ignores SIGTERM)
+// still completes teardown within the bounded join — no unbounded Drop→join.
+// The child traps SIGTERM (via a shell that ignores it) but SIGKILL still ends
+// it within stop_grace, and the bounded join returns promptly regardless.
+//
+// Maps to formal INV-4 (Off/Failed implies no live child) + bounded teardown.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn drop_with_bounded_join_returns_promptly() {
+    let tmp = TmpDir::new("bounded-join");
+    let crash_file = tmp.path("crashes.jsonl");
+    let spec = SidecarSpec::new("joinbound", sleep_bin(), vec!["60".into()]);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    cfg.stop_grace = Duration::from_millis(200);
+    cfg.join_timeout = Duration::from_secs(2);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    let st = sup.wait_until(
+        |s| matches!(s, SupervisorState::Running),
+        Duration::from_secs(5),
+    );
+    let pid = st.pid.expect("running pid");
+
+    let t0 = std::time::Instant::now();
+    drop(sup);
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "drop() took {elapsed:?} — teardown join is not bounded (F-2)"
+    );
+    // No orphan: the child is dead.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while pid_alive(pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!pid_alive(pid), "child orphaned after bounded-join drop (pid {pid})");
+}
+
+// ---------------------------------------------------------------------------
+// WP-3 coverage: spawn-failure (bad binary path) → bounded backoff → Failed.
+// A nonexistent binary can never spawn; it must NOT tight-loop — the same
+// max_retries cap applies and the supervisor reaches terminal Failed. This is
+// the spawn-fail arm the review flagged as untested.
+//
+// Maps to formal INV-2 (crash-loop bound; spawn-fail is a crash) + the
+// spawn-fail→Failed transition.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spawn_failure_reaches_failed_within_bound() {
+    let tmp = TmpDir::new("spawn-fail");
+    let crash_file = tmp.path("crashes.jsonl");
+    // A path that does not exist → Command::spawn returns Err every time.
+    let bogus = tmp.path("definitely-not-a-real-binary-xyz");
+    let spec = SidecarSpec::new("ghost", bogus, vec![]);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    cfg.healthy_after = Duration::from_secs(30); // spawn never succeeds → no reset
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(5),
+        multiplier: 2,
+        max_delay: Duration::from_millis(20),
+        max_retries: 3,
+    };
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    let st = sup.wait_until(
+        |s| matches!(s, SupervisorState::Failed),
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        st.state,
+        SupervisorState::Failed,
+        "spawn-failure never reached Failed — the bad-binary arm is not bounded"
+    );
+    // Bounded: initial spawn attempt + max_retries spawn attempts = 4 records.
+    let records = read_crash_records(&crash_file);
+    assert_eq!(
+        records.len(),
+        4,
+        "spawn-fail crash count off (bound not applied to spawn arm): {}",
+        records.len()
+    );
+    assert!(
+        records.iter().all(|r| r.exit.starts_with("spawn failed")),
+        "spawn-fail records not tagged as spawn failures: {records:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// WP-3 coverage: STOP during BACKOFF cancels the pending restart. A crash puts
+// the supervisor into Backoff; a stop() arriving during that window must go Off
+// and NOT respawn. This is the stop-during-backoff transition the review flagged
+// as untested.
+//
+// Maps to formal INV-3 (an intentional stop never triggers a restart) + the
+// Backoff→Stop→Off transition (cancels the scheduled restart).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stop_during_backoff_cancels_pending_restart() {
+    let tmp = TmpDir::new("stop-backoff");
+    let crash_file = tmp.path("crashes.jsonl");
+    // Instant-exit child so it enters Backoff quickly; a LONG base delay so the
+    // Backoff window is wide enough to inject a stop() before the respawn.
+    let spec = SidecarSpec::new("backoff-stop", false_bin(), vec![]);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_secs(5), // wide Backoff window
+        multiplier: 2,
+        max_delay: Duration::from_secs(10),
+        max_retries: 5,
+    };
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    // Wait until it is in Backoff (crashed once, waiting to respawn).
+    let st = sup.wait_until(
+        |s| matches!(s, SupervisorState::Backoff { .. }),
+        Duration::from_secs(5),
+    );
+    assert!(
+        matches!(st.state, SupervisorState::Backoff { .. }),
+        "did not reach Backoff before stop (state {:?})",
+        st.state
+    );
+    let crashes_before = read_crash_records(&crash_file).len();
+
+    // Stop during Backoff: must cancel the pending restart and go Off.
+    sup.stop();
+    let after = sup.status();
+    assert_eq!(
+        after.state,
+        SupervisorState::Off,
+        "stop during Backoff did not go Off (state {:?})",
+        after.state
+    );
+
+    // Give it well past the (5s) base delay a respawn WOULD have used — confirm
+    // no new crash record appeared (the pending restart was truly cancelled).
+    std::thread::sleep(Duration::from_millis(300));
+    let still = sup.status();
+    assert_eq!(
+        still.state,
+        SupervisorState::Off,
+        "supervisor left Off after stop-during-backoff (respawned?): {:?}",
+        still.state
+    );
+    let crashes_after = read_crash_records(&crash_file).len();
+    assert_eq!(
+        crashes_after, crashes_before,
+        "a restart happened after stop-during-backoff (crash records grew {crashes_before}->{crashes_after})"
     );
 }
