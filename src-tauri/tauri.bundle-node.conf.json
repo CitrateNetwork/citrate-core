@@ -3,7 +3,8 @@
   "bundle": {
     "externalBin": [
       "binaries/citrate",
-      "binaries/node-agent"
+      "binaries/node-agent",
+      "binaries/mem-mcp"
     ]
   }
 }

@@ -24,9 +24,37 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract } from "../domains";
+import type { BridgeContract, MemoryResult, MemoryNeighbor } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION } from "../types";
 import { assertSimAllowed } from "../mode";
+import { GRAPH } from "../../data/seed";
+
+// The sim MemoryDomain maps the prototype seed GRAPH into the SAME contract the
+// real C3 daemon returns. The seed uses tenant "chain-facts"; the REAL ingest
+// tenant is "chain-state" (sprint Concern 2), so we alias here for parity.
+const SIM_TENANT_ALIAS: Record<string, string> = { "chain-state": "chain-facts", "chain-facts": "chain-facts", personal: "personal" };
+
+function simTenantResult(tenant: string): MemoryResult {
+  const seedTenant = SIM_TENANT_ALIAS[tenant] ?? tenant;
+  const nodes = GRAPH.nodes.filter((n) => n.tenant === seedTenant);
+  return {
+    tenant,
+    totalInTenant: nodes.length,
+    hits: nodes.map((n) => ({ id: n.id, kind: n.kind, title: n.label })),
+  };
+}
+
+function simNeighbors(idPrefix: string): MemoryNeighbor[] {
+  // Edges in the seed touching the node whose id starts with idPrefix.
+  const byId: Record<string, (typeof GRAPH.nodes)[number]> = {};
+  GRAPH.nodes.forEach((n) => (byId[n.id] = n));
+  const out: MemoryNeighbor[] = [];
+  for (const [a, b] of GRAPH.links) {
+    if (a.startsWith(idPrefix) && byId[b]) out.push({ direction: "out", kind: "References", title: byId[b].label, proposed: false });
+    else if (b.startsWith(idPrefix) && byId[a]) out.push({ direction: "in", kind: "References", title: byId[a].label, proposed: false });
+  }
+  return out;
+}
 
 // The sim adapter is bound to the running Store via a state getter + a
 // setState-style patcher, injected at bridge assembly. This keeps the Store
@@ -273,14 +301,42 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
     },
 
+    // The sim MemoryDomain drives the prototype seed GRAPH (design preview only;
+    // guarded out of packaged builds by assertSimAllowed). It shapes the seed
+    // into the SAME MemoryResult/MemoryNeighbor contract the real C3 daemon
+    // returns, so the Storage surface renders identically in sim and tauri.
     memory: {
+      async status() {
+        assertSimAllowed("memory.status");
+        return { state: "running", socketPath: s().socketPath, semantic: false };
+      },
+      async start() {
+        assertSimAllowed("memory.start");
+      },
+      async stop() {
+        assertSimAllowed("memory.stop");
+      },
       async assert() {
         assertSimAllowed("memory.assert");
         return "approved";
       },
-      async recall() {
+      async recall(tenant: string) {
         assertSimAllowed("memory.recall");
-        return "ok";
+        return simTenantResult(tenant);
+      },
+      async search(tenant: string, query: string) {
+        assertSimAllowed("memory.search");
+        const r = simTenantResult(tenant);
+        const q = query.toLowerCase();
+        return { ...r, hits: r.hits.filter((h) => (h.title + " " + h.kind).toLowerCase().includes(q)) };
+      },
+      async neighbors(_tenant: string, idPrefix: string) {
+        assertSimAllowed("memory.neighbors");
+        return simNeighbors(idPrefix);
+      },
+      async constellation() {
+        assertSimAllowed("memory.constellation");
+        return [simTenantResult("personal"), simTenantResult("chain-state")];
       },
     },
 

@@ -234,6 +234,42 @@ export interface AppState {
   graphQ: string;
   dataReady: boolean;
   s6ready?: boolean;
+  /**
+   * CORE-C3 runtime memory graph (NOT persisted). In a Tauri build the Storage
+   * surface fetches this from the REAL mcp_serve daemon via
+   * `bridge.memory.constellation()`; nodes/links/tenant-totals come from the
+   * per-user encrypted store — never fabricated (Rule 1). `memGraphState`
+   * reflects the fetch honestly: "idle" before the first read, "loading" while
+   * in flight, "ready" once real nodes arrive, "unavailable" when the daemon is
+   * not running / the socket is unreachable (the UI then shows an honest
+   * empty/offline state, never a sim graph).
+   */
+  memGraph?: MemGraph;
+  memGraphState: "idle" | "loading" | "ready" | "unavailable";
+}
+
+/** One tenant's real node count + its parsed nodes, from the memory daemon. */
+export interface MemTenant {
+  tenant: string;
+  totalInTenant: number;
+}
+/** A laid-out memory-graph node (deterministic layout over the real store). */
+export interface MemGraphNode {
+  id: string;
+  label: string;
+  tenant: string;
+  kind: string;
+  detail: string;
+  x: number;
+  y: number;
+  z: number;
+}
+/** The real memory constellation: laid-out nodes + tenant totals. Links are
+ * derived deterministically from tenant adjacency (edges are a per-node fetch). */
+export interface MemGraph {
+  nodes: MemGraphNode[];
+  links: [string, string][];
+  tenants: MemTenant[];
 }
 
 function greeting(P: Persona): ChatMsg {
@@ -356,6 +392,7 @@ export function freshState(pid: string): AppState {
     blocksProposed: 0,
     graphQ: "",
     dataReady: true,
+    memGraphState: "idle",
   };
   const today = new Date().toISOString().slice(0, 10);
   if (P.fresh) {
