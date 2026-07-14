@@ -133,6 +133,23 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         await invoke("node_stop");
       },
     },
+    // ---- agent: the node-agent under the SidecarSupervisor (C1.2) ----
+    // status returns the supervisor state + whether a bearer session exists
+    // (never the token); start spawns the daemon with a per-session OsRng bearer
+    // handed via a 0600 file; stop releases the supervisor + wipes the bearer.
+    // Signature requests route through the ceremony (origin "agent:node-agent");
+    // the node-agent holds no keys. No secret ever crosses this boundary.
+    agent: {
+      async status(): Promise<{ state: string; authed: boolean }> {
+        return invoke("agent_status");
+      },
+      async start() {
+        await invoke("agent_start");
+      },
+      async stop() {
+        await invoke("agent_stop");
+      },
+    },
     memory: {
       async assert() {
         return unavailable("memory", "assert");

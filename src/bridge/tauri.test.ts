@@ -105,6 +105,14 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "node_start":
     case "node_stop":
       return undefined;
+    // CORE-C1.2 node-agent — under the SidecarSupervisor. status returns the
+    // supervisor state + whether a bearer session exists (NEVER the token);
+    // start/stop return void. No secret ever crosses this boundary.
+    case "agent_status":
+      return { state: "running", authed: true };
+    case "agent_start":
+    case "agent_stop":
+      return undefined;
     default:
       throw `unavailable: ${cmd} is not wired in this build`;
   }
@@ -308,5 +316,29 @@ describe("tauri adapter — node domain is wired to the real citrate-node (C1.1)
     expect(invokeMock).toHaveBeenCalledWith("node_start", undefined);
     await bridge.node.stop();
     expect(invokeMock).toHaveBeenCalledWith("node_stop", undefined);
+  });
+});
+
+// CORE-C1.2 — the agent domain invokes the real node-agent commands under the
+// SidecarSupervisor. status returns {state, authed} — the bearer token is NEVER
+// exposed across the bridge. start/stop invoke the spawn/release commands.
+describe("tauri adapter — agent domain is wired to the real node-agent (C1.2)", () => {
+  it("status invokes agent_status and exposes NO bearer token", async () => {
+    const bridge = createTauriBridge();
+    const st = await bridge.agent.status();
+    expect(invokeMock).toHaveBeenCalledWith("agent_status", undefined);
+    expect(st).toEqual({ state: "running", authed: true });
+    // The shape carries only {state, authed} — no token/bearer field exists.
+    expect(Object.keys(st).sort()).toEqual(["authed", "state"]);
+    expect(JSON.stringify(st)).not.toContain("bearer");
+    expect(JSON.stringify(st)).not.toContain("token");
+  });
+
+  it("start invokes agent_start and stop invokes agent_stop", async () => {
+    const bridge = createTauriBridge();
+    await bridge.agent.start();
+    expect(invokeMock).toHaveBeenCalledWith("agent_start", undefined);
+    await bridge.agent.stop();
+    expect(invokeMock).toHaveBeenCalledWith("agent_stop", undefined);
   });
 });

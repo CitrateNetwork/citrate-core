@@ -102,6 +102,18 @@ export interface NodeDomain {
   stop(): Promise<void>;
 }
 
+// The node-agent under the SidecarSupervisor (CORE-C1.2). `status` returns the
+// supervisor state + whether a bearer session exists — NEVER the bearer token.
+// `start` spawns the daemon with a per-session OsRng bearer (handed via a 0600
+// file); `stop` releases the supervisor and wipes the session bearer. The
+// node-agent's unsigned signature requests route through the SignatureCeremony
+// (origin "agent:node-agent") — it holds no keys and never signs directly.
+export interface AgentDomain {
+  status(): Promise<{ state: string; authed: boolean }>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export interface MemoryDomain {
   assert(fact: string): Promise<"approved" | "declined">;
   recall(query: string): Promise<string>;
@@ -133,6 +145,7 @@ export interface BridgeContract {
   signing: SigningDomain;
   wallet: WalletDomain;
   node: NodeDomain;
+  agent: AgentDomain;
   memory: MemoryDomain;
   chat: ChatDomain;
   membership: MembershipDomain;

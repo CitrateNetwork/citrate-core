@@ -7,6 +7,7 @@
 //! (D-13); signing routes through the Rust SignatureCeremony once it exists
 //! (CORE-S2).
 
+mod agent;
 mod ceremony;
 mod config;
 mod custody;
@@ -53,6 +54,14 @@ pub fn run() {
             // and is handed to the spawned node via the CITRATE_STORAGE_KEY env.
             // node_status reads REAL height/peers from the node's local RPC.
             app.manage(node::build_node_state(&app.handle().clone())?);
+            // CORE-C1.2 — the AgentManager: the node-agent under the
+            // SidecarSupervisor with a bearer-authed supervision surface. @rule8:
+            // the per-session bearer is minted with OsRng, handed to the child via
+            // a 0600 token file (the grounded IPC channel), never logged/Debug'd,
+            // and zeroized on stop. The node-agent's UNSIGNED SignatureRequests
+            // route ONLY through the SignatureCeremony (origin "agent:node-agent")
+            // — it holds no keys and can never sign directly (ADV-7).
+            app.manage(agent::build_agent_state(&app.handle().clone())?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -95,6 +104,15 @@ pub fn run() {
             node::node_status,
             node::node_start,
             node::node_stop,
+            // node-agent — the node-agent under the SidecarSupervisor (C1.2).
+            // agent_status returns the supervisor state + whether a bearer
+            // session exists (NEVER the token); agent_start spawns the daemon
+            // with a minted 0600 bearer file (@rule8); agent_stop releases the
+            // supervisor + wipes the session bearer. Signature requests bridge
+            // through the ceremony only (no direct-sign path — ADV-7).
+            agent::agent_status,
+            agent::agent_start,
+            agent::agent_stop,
             // seam domains — honest Unavailable until each later phase (A1.3)
             seam::wallet_balances,
             seam::wallet_activity,

@@ -181,6 +181,18 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_hex_quantity(&result, "eth_gasPrice")
     }
 
+    /// `eth_estimateGas({from,to,value,data})` → the gas the node estimates a
+    /// call needs (real value from the node; CORE-C1.2 agent bridge). A
+    /// node-agent contract call (`claimRewards`, `bidOnJob`, …) carries calldata
+    /// but no gas — B1.4's `finalize` refuses to GUESS execution gas, so the
+    /// agent bridge asks the node for a real estimate rather than fabricating a
+    /// number (Rule 1). `params` is the pre-built call object (caller-shaped so we
+    /// stay transport-only). Returns the estimated gas limit.
+    pub fn estimate_gas(&self, call: Value) -> Result<u64, RpcError> {
+        let result = self.request("eth_estimateGas", json!([call]))?;
+        parse_hex_quantity(&result, "eth_estimateGas")
+    }
+
     /// `eth_blockNumber` → the node's current head height (real value from the
     /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
     /// a `0x`-prefixed hex quantity.

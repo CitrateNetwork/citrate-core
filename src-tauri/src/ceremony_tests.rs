@@ -229,6 +229,11 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
         ("config.rs", include_str!("config.rs")),
         ("rpc.rs", include_str!("rpc.rs")),
         ("txdecode.rs", include_str!("txdecode.rs")),
+        // CORE-C1.2: the node-agent bridge must ALSO never reach the gated signer
+        // directly — the "a sidecar signs directly" attack (ADV-7). The agent
+        // module reaches signatures ONLY through the ceremony approve path.
+        ("agent.rs", include_str!("agent.rs")),
+        ("node.rs", include_str!("node.rs")),
         ("lib.rs", include_str!("lib.rs")),
     ];
     // Assemble each needle from parts so this test's own prose cannot self-match.

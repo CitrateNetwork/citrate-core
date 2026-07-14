@@ -259,6 +259,20 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
     },
 
+    agent: {
+      async status() {
+        assertSimAllowed("agent.status");
+        // Sim mirrors the node's lifecycle; no real bearer session in sim.
+        return { state: s().node, authed: false };
+      },
+      async start() {
+        assertSimAllowed("agent.start");
+      },
+      async stop() {
+        assertSimAllowed("agent.stop");
+      },
+    },
+
     memory: {
       async assert() {
         assertSimAllowed("memory.assert");
