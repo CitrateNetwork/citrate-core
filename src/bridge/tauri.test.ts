@@ -97,8 +97,15 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       if (!signMock.map.delete(id)) throw "ceremony: unknown or already-consumed id";
       return undefined;
     }
+    // CORE-C1.1 node — real citrate-node under the SidecarSupervisor. status
+    // returns the node's real sync shape; start/stop return void. No secret
+    // ever crosses this boundary.
+    case "node_status":
+      return { state: "running", peers: 3, height: 420, syncPct: 100 };
+    case "node_start":
+    case "node_stop":
+      return undefined;
     default:
-      // seam domains reject with the honest unavailable message
       throw `unavailable: ${cmd} is not wired in this build`;
   }
 });
@@ -157,9 +164,9 @@ describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", 
 
   it("every still-unwired seam domain rejects with Unavailable", async () => {
     const bridge = createTauriBridge();
-    // NOTE: `auth` is now genuinely wired (CORE-A3) and is asserted separately.
+    // NOTE: `auth` (CORE-A3) and `node` (CORE-C1.1) are now genuinely wired and
+    // are asserted separately.
     const calls = [
-      () => bridge.node.status(),
       () => bridge.memory.recall("x"),
       () => bridge.membership.entitlement(),
       () => bridge.commissary.catalog(),
@@ -278,5 +285,28 @@ describe("tauri adapter — signing domain invokes the SignatureCeremony (B1.2.1
     expect(Object.keys(result).sort()).toEqual(["blockNumber", "txHash"]);
     // Single-use: a second broadcast on the same id is rejected.
     await expect(bridge.signing.broadcast(view.id, true)).rejects.toBeTruthy();
+  });
+});
+
+// CORE-C1.1 — the node domain now invokes the real citrate-node commands under
+// the SidecarSupervisor. status returns the node's real sync shape
+// ({state,peers,height,syncPct}); start/stop invoke the spawn/release commands.
+// No secret ever crosses this boundary.
+describe("tauri adapter — node domain is wired to the real citrate-node (C1.1)", () => {
+  it("status invokes node_status and passes the real sync shape through", async () => {
+    const bridge = createTauriBridge();
+    const st = await bridge.node.status();
+    expect(invokeMock).toHaveBeenCalledWith("node_status", undefined);
+    expect(st).toEqual({ state: "running", peers: 3, height: 420, syncPct: 100 });
+    // No token / secret field is even present in the shape.
+    expect(Object.keys(st).sort()).toEqual(["height", "peers", "state", "syncPct"]);
+  });
+
+  it("start invokes node_start and stop invokes node_stop", async () => {
+    const bridge = createTauriBridge();
+    await bridge.node.start();
+    expect(invokeMock).toHaveBeenCalledWith("node_start", undefined);
+    await bridge.node.stop();
+    expect(invokeMock).toHaveBeenCalledWith("node_stop", undefined);
   });
 });

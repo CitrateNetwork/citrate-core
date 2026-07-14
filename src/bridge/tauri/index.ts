@@ -117,15 +117,20 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         return unavailable("wallet", "activity");
       },
     },
+    // ---- node: REAL citrate-node under the SidecarSupervisor (C1.1) ----
+    // status returns the node's REAL sync state (height/peers from its local
+    // JSON-RPC, state from the supervisor); start spawns the node with an
+    // encrypted data dir (@rule8 keyring storage key); stop releases the
+    // supervisor (no orphan). No secret ever crosses this boundary.
     node: {
-      async status() {
-        return unavailable("node", "status");
+      async status(): Promise<{ state: string; peers: number; height: number; syncPct: number }> {
+        return invoke("node_status");
       },
       async start() {
-        return unavailable("node", "start");
+        await invoke("node_start");
       },
       async stop() {
-        return unavailable("node", "stop");
+        await invoke("node_stop");
       },
     },
     memory: {

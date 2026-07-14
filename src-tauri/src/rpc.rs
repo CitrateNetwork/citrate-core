@@ -181,6 +181,21 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_hex_quantity(&result, "eth_gasPrice")
     }
 
+    /// `eth_blockNumber` → the node's current head height (real value from the
+    /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
+    /// a `0x`-prefixed hex quantity.
+    pub fn block_number(&self) -> Result<u64, RpcError> {
+        let result = self.request("eth_blockNumber", json!([]))?;
+        parse_hex_quantity(&result, "eth_blockNumber")
+    }
+
+    /// `net_peerCount` → the node's live peer count (real value; CORE-C1.1
+    /// NodeDomain status). Returned as a `0x`-prefixed hex quantity.
+    pub fn peer_count(&self) -> Result<u64, RpcError> {
+        let result = self.request("net_peerCount", json!([]))?;
+        parse_hex_quantity(&result, "net_peerCount")
+    }
+
     /// `eth_sendRawTransaction(rawHex)` → the tx hash the node accepted. `raw`
     /// is the RLP-signed tx bytes; we submit the canonical `0x…` hex form.
     pub fn send_raw_transaction(&self, raw: &[u8]) -> Result<String, RpcError> {

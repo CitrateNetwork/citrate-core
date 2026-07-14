@@ -25,3 +25,10 @@ dist-ssr
 
 # Rust workspace target (workspace root is repo root)
 target/
+
+# CORE-C1.1 (D-C1-1): the bundled citrate-node sidecar binary is large and is
+# NOT committed. Tauri's externalBin resolves `binaries/citrate-<target-triple>`
+# at bundle time; per-platform CI cross-build of these is an S7 item. Keep the
+# directory's README, ignore the binaries.
+src-tauri/binaries/*
+!src-tauri/binaries/README.md

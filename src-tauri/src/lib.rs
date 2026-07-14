@@ -10,6 +10,7 @@
 mod ceremony;
 mod config;
 mod custody;
+mod node;
 mod oidc;
 mod rpc;
 mod seam;
@@ -46,6 +47,12 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             app.manage(ceremony::build_ceremony_state());
+            // CORE-C1.1 — the NodeManager: the real citrate-node under the
+            // SidecarSupervisor with an encrypted data dir. @rule8: the 32-byte
+            // storage master key lives in the OS keyring (never on disk clear)
+            // and is handed to the spawned node via the CITRATE_STORAGE_KEY env.
+            // node_status reads REAL height/peers from the node's local RPC.
+            app.manage(node::build_node_state(&app.handle().clone())?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -80,12 +87,17 @@ pub fn run() {
             ceremony::sign_approve,
             ceremony::sign_and_broadcast,
             ceremony::sign_reject,
+            // node — the real citrate-node under the SidecarSupervisor (C1.1).
+            // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
+            // from the node's local RPC; node_start spawns the node with an
+            // encrypted data dir (@rule8 keyring storage key); node_stop releases
+            // the supervisor (SIGTERM→grace→SIGKILL, no orphan).
+            node::node_status,
+            node::node_start,
+            node::node_stop,
             // seam domains — honest Unavailable until each later phase (A1.3)
             seam::wallet_balances,
             seam::wallet_activity,
-            seam::node_status,
-            seam::node_start,
-            seam::node_stop,
             seam::memory_assert,
             seam::memory_recall,
             seam::chat_backend,
