@@ -5,13 +5,13 @@ author: Claude Fable 5, directed by @SaulBuilds
 status: active
 ---
 
-# src-tauri/binaries — bundled sidecars: citrate-node (D-C1-1) + node-agent (C1.2)
+# src-tauri/binaries — bundled sidecars: citrate-node (D-C1-1) + node-agent (C1.2) + mem-mcp (C3)
 
-Two sidecars are bundled as **Tauri `externalBin`s**: the `citrate` node (C1.1)
-and the `node-agent` (C1.2). Both externalBin declarations live in a SEPARATE
-overlay config, `tauri.bundle-node.conf.json`
-(`bundle.externalBin: ["binaries/citrate", "binaries/node-agent"]`), NOT in the
-base `tauri.conf.json`.
+Three sidecars are bundled as **Tauri `externalBin`s**: the `citrate` node (C1.1),
+the `node-agent` (C1.2), and the `mem-mcp` memory daemon (C3). All externalBin
+declarations live in a SEPARATE overlay config, `tauri.bundle-node.conf.json`
+(`bundle.externalBin: ["binaries/citrate", "binaries/node-agent", "binaries/mem-mcp"]`),
+NOT in the base `tauri.conf.json`.
 
 **Why an overlay and not the base config:** `tauri-build` (the `build.rs` step)
 validates every `externalBin` path *on every `cargo build`* — so putting it in
@@ -24,9 +24,15 @@ npx tauri build --config src-tauri/tauri.bundle-node.conf.json
 ```
 
 At runtime the app resolves each sidecar from the bundled resource dir
-(`node::resolve_node_bin` / `agent::resolve_agent_bin`) or from an override env
-var (`CITRATE_NODE_BIN` / `CITRATE_NODE_AGENT_BIN`), so dev and tests never need
-the bundle.
+(`node::resolve_node_bin` / `agent::resolve_agent_bin` / `memory::resolve_mem_mcp_bin`)
+or from an override env var (`CITRATE_NODE_BIN` / `CITRATE_NODE_AGENT_BIN` /
+`CITRATE_MEM_MCP_BIN`), so dev and tests never need the bundle.
+
+**mem-mcp is SPAWNED, not a Cargo dependency** — no `mem-*` workspace crate
+appears in `src-tauri`'s `cargo tree` (the lean-tree invariant). The heavy
+rocksdb + transformer build and the ~440 MB bge embedding model are an **S7**
+bundle item; until then the memory daemon is bundled/resolved like the other two
+sidecars and its live graph is a documented proof (`scripts/c3_live_proof.sh`).
 
 Tauri resolves the platform binary by target-triple suffix, so this directory
 must contain, per build host:
@@ -39,6 +45,9 @@ binaries/citrate-x86_64-pc-windows-msvc.exe  # Windows (out of beta scope, O-4)
 binaries/node-agent-aarch64-apple-darwin     # Apple Silicon macOS (node-agent)
 binaries/node-agent-x86_64-apple-darwin      # Intel macOS (node-agent)
 binaries/node-agent-x86_64-unknown-linux-gnu # Linux (node-agent)
+binaries/mem-mcp-aarch64-apple-darwin        # Apple Silicon macOS (mem-mcp)
+binaries/mem-mcp-x86_64-apple-darwin         # Intel macOS (mem-mcp)
+binaries/mem-mcp-x86_64-unknown-linux-gnu    # Linux (mem-mcp)
 ```
 
 **The binaries are NOT committed** (each is 20+ MB) — they are `.gitignore`d
@@ -71,6 +80,19 @@ cp target/release/node-agent \
    /path/to/citrate-core/src-tauri/binaries/node-agent-$TRIPLE
 ```
 
+The **mem-mcp** memory daemon (example bin `mcp_serve`, package `mem-mcp`, from
+citrate-memories; source pin tracked via a Rule-12 `[[drift]]` entry on
+citrate-federation planset/core-beta-wiring). The daemon is the
+`mcp_serve` example, built with the `rocksdb,transformer` features:
+
+```bash
+# from citrate-memories:
+cargo build --release -p mem-mcp --example mcp_serve --features rocksdb,transformer
+TRIPLE=$(rustc -vV | sed -n 's/host: //p')
+cp target/release/examples/mcp_serve \
+   /path/to/citrate-core/src-tauri/binaries/mem-mcp-$TRIPLE
+```
+
 ## Running without a bundle (dev + tests)
 
 For `tauri dev` and headless runs bypass the bundle by pointing the app at
@@ -79,10 +101,11 @@ already-built binaries:
 ```bash
 export CITRATE_NODE_BIN=/absolute/path/to/citrate
 export CITRATE_NODE_AGENT_BIN=/absolute/path/to/node-agent
+export CITRATE_MEM_MCP_BIN=/absolute/path/to/mcp_serve
 ```
 
-`resolve_node_bin` / `resolve_agent_bin` honour the override env first, then fall
-back to the bundled resource dir.
+`resolve_node_bin` / `resolve_agent_bin` / `resolve_mem_mcp_bin` honour the
+override env first, then fall back to the bundled resource dir.
 
 ## CI cross-build (S7)
 

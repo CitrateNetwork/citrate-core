@@ -20,7 +20,13 @@ import type {
   Signature,
   BroadcastResult,
 } from "../types";
-import type { BridgeContract, ClaimResult } from "../domains";
+import type {
+  BridgeContract,
+  ClaimResult,
+  MemoryStatus,
+  MemoryResult,
+  MemoryNeighbor,
+} from "../domains";
 import { Unavailable } from "../types";
 
 function unavailable(domain: string, op: string): never {
@@ -172,12 +178,33 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         return { kind: "ceremony", view };
       },
     },
+    // ---- memory: REAL mcp_serve daemon over its Unix socket (C3) ----
     memory: {
+      async status() {
+        return invoke<MemoryStatus>("memory_status");
+      },
+      async start() {
+        await invoke("memory_start");
+      },
+      async stop() {
+        await invoke("memory_stop");
+      },
+      // `assert` (a signed WRITE) still routes through the SignatureCeremony in a
+      // later WP — honest Unavailable until then, never a fabricated "approved".
       async assert() {
         return unavailable("memory", "assert");
       },
-      async recall() {
-        return unavailable("memory", "recall");
+      async recall(tenant: string, budget?: number) {
+        return invoke<MemoryResult>("memory_recall", { tenant, budget });
+      },
+      async search(tenant: string, query: string, budget?: number) {
+        return invoke<MemoryResult>("memory_search", { tenant, query, budget });
+      },
+      async neighbors(tenant: string, idPrefix: string, budget?: number) {
+        return invoke<MemoryNeighbor[]>("memory_neighbors", { tenant, idPrefix, budget });
+      },
+      async constellation(budget?: number) {
+        return invoke<MemoryResult[]>("memory_constellation", { budget });
       },
     },
     chat: {

@@ -31,7 +31,10 @@ macro_rules! seam_cmd {
 seam_cmd!(wallet_balances, "wallet", "balances");
 seam_cmd!(wallet_activity, "wallet", "activity");
 seam_cmd!(memory_assert, "memory", "assert");
-seam_cmd!(memory_recall, "memory", "recall");
+// NOTE: `memory_recall` was replaced by the real citrate-memories mcp_serve
+// wiring in CORE-C3 (see `memory.rs`). recall/search/neighbors are genuinely
+// wired; only the `assert` WRITE path remains a seam stub (it routes through the
+// SignatureCeremony in a later WP).
 seam_cmd!(chat_backend, "chat", "backend");
 seam_cmd!(membership_entitlement, "membership", "entitlement");
 seam_cmd!(commissary_catalog, "commissary", "catalog");
@@ -58,7 +61,7 @@ mod tests {
     fn all_seam_domains_report_unavailable() {
         for r in [
             wallet_activity(),
-            memory_recall(),
+            commissary_catalog(),
             membership_entitlement(),
             comms_connections(),
         ] {
