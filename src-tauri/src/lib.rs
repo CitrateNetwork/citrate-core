@@ -11,7 +11,9 @@ mod ceremony;
 mod config;
 mod custody;
 mod oidc;
+mod rpc;
 mod seam;
+mod txdecode;
 mod wallet;
 
 use tauri::Manager;
@@ -75,6 +77,7 @@ pub fn run() {
             // gated wallet::sign_message is reachable ONLY via approve (@rule8).
             ceremony::sign_request,
             ceremony::sign_approve,
+            ceremony::sign_and_broadcast,
             ceremony::sign_reject,
             // seam domains — honest Unavailable until each later phase (A1.3)
             seam::wallet_balances,

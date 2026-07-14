@@ -59,7 +59,9 @@
 // module so the non-test lib build does not flag the deliberately-in-process API.
 #![allow(dead_code)]
 
-use citrate_wallet_core::{secp256k1_from_mnemonic, UnifiedKey};
+use citrate_wallet_core::{
+    secp256k1_from_mnemonic, sign_eip155_legacy_tx, LegacyTxFields, SignedTx, UnifiedKey,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::custody::{CustodyError, CustodyVault};
@@ -335,6 +337,43 @@ pub(crate) fn sign_message(vault: &CustodyVault, message: &[u8]) -> Result<Vec<u
     let sig = key.sign(message);
     Ok(sig)
     // `entropy` + `key` zeroize on drop here.
+}
+
+/// **In-process only.** Sign a REAL legacy EIP-155 transaction with the stored
+/// wallet's default account (CORE-B1.4). Requires the vault UNLOCKED (fails
+/// closed if locked). Reads the sealed entropy, re-derives the `UnifiedKey`,
+/// unwraps its secp256k1 `SigningKey`, and calls the LEAN upstream primitive
+/// `citrate_wallet_core::sign_eip155_legacy_tx(&key, &fields, chain_id)` — the
+/// same audited crypto (keccak + k256 recoverable + RLP) exercised by the
+/// wallet-core spec-vector tests. Returns the [`SignedTx`] (raw RLP ready for
+/// `eth_sendRawTransaction` + the tx hash + v/r/s) — NEVER key material.
+///
+/// The entropy + derived `UnifiedKey` zeroize on drop here; the wallet-core
+/// signer zeroizes its intermediate signing-hash buffer (WAL-04) before return.
+///
+/// **B1.4 gating (@rule8):** like [`sign_message`], this is `pub(crate)` and the
+/// ONLY sanctioned caller is [`crate::ceremony::SignatureCeremony`]'s transaction
+/// approval path. No other code path in the crate signs a transaction. CLAUDE.md
+/// rule 3: all signing goes through the ceremony; signing outside it is forbidden.
+pub(crate) fn sign_transaction(
+    vault: &CustodyVault,
+    fields: &LegacyTxFields,
+    chain_id: u64,
+) -> Result<SignedTx> {
+    let entropy = read_entropy(vault)?;
+    let key = derive_key_from_entropy(&entropy)?;
+    // Unwrap the secp256k1 signing key. The B1.1 derivation always yields a
+    // Secp256k1 UnifiedKey for `m/44'/60'/0'/0/0`; a non-secp key would be a
+    // derivation bug (fail closed rather than sign with the wrong curve).
+    let signed = match &key {
+        UnifiedKey::Secp256k1(sk) => {
+            sign_eip155_legacy_tx(sk, fields, chain_id).map_err(|_| WalletError::Derivation)?
+        }
+        _ => return Err(WalletError::Derivation),
+    };
+    Ok(signed)
+    // `entropy` + `key` (its inner k256::SigningKey) zeroize on drop here; the
+    // wallet-core signer already zeroized the intermediate signing hash.
 }
 
 #[cfg(test)]

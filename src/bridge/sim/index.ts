@@ -21,6 +21,7 @@ import type {
   SignatureIntent,
   CeremonyView,
   Signature,
+  BroadcastResult,
   DecodedAction,
 } from "../types";
 import type { BridgeContract } from "../domains";
@@ -203,6 +204,23 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // HONEST: the web shim cannot produce a real signature (no key). Return a
         // clearly-labeled sim value; it is never presented as a live signature.
         return { sigHex: "sim-unsigned-no-real-key", kind: view.kind };
+      },
+      async broadcast(id: string, rawAck: boolean): Promise<BroadcastResult> {
+        assertSimAllowed("signing.broadcast");
+        // HONEST (Rule 1): the web shim holds NO key and reaches NO chain — it
+        // cannot sign or broadcast a real 40204 tx. Consume the ceremony (mirror
+        // the single-use/raw-ack state machine) then THROW rather than fabricate
+        // a tx hash. The real signer+broadcast lives entirely in the Tauri/Rust
+        // path (B1.4). Guarded out of packaged builds.
+        const view = simCeremonies.get(id);
+        if (!view) throw new Error("ceremony: unknown or already-consumed id");
+        if (view.requiresRawAck && !rawAck) {
+          throw new Error("ceremony: undecodable calldata requires an explicit raw-mode ack");
+        }
+        simCeremonies.delete(id);
+        throw new Error(
+          "signing.broadcast: the web shim cannot sign or broadcast a real 40204 transaction (no key, no chain). Use the packaged Tauri app.",
+        );
       },
       async reject(id: string): Promise<void> {
         assertSimAllowed("signing.reject");

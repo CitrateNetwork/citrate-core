@@ -630,6 +630,7 @@ dependencies = [
  "keyring",
  "p256",
  "rand 0.8.7",
+ "rlp",
  "serde",
  "serde_json",
  "sha2",
@@ -646,7 +647,7 @@ dependencies = [
 [[package]]
 name = "citrate-wallet-core"
 version = "0.4.0"
-source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=3dce61c#3dce61c3a60f9f496e6489e9e6246f75a8cc449e"
+source = "git+https://github.com/CitrateNetwork/citrate-chain.git?rev=47a6f92#47a6f92b81f81a3ca288b3e0121428b3a6459598"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4534,7 +4535,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.59.0",

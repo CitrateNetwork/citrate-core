@@ -82,6 +82,16 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       signMock.map.delete(id); // single-use consume
       return { sigHex: "ab".repeat(64), kind: view.kind };
     }
+    case "sign_and_broadcast": {
+      // CORE-B1.4 — sign the real EIP-155 tx + broadcast; return the real tx
+      // hash + block (never key material). Single-use consume + raw-ack gate.
+      const id = String(args?.id);
+      const view = signMock.map.get(id);
+      if (!view) throw "ceremony: unknown or already-consumed id";
+      if (view.requiresRawAck && !args?.rawAck) throw "ceremony: undecodable calldata requires an explicit raw-mode ack";
+      signMock.map.delete(id); // single-use consume
+      return { txHash: "0x" + "ab".repeat(32), blockNumber: 100 };
+    }
     case "sign_reject": {
       const id = String(args?.id);
       if (!signMock.map.delete(id)) throw "ceremony: unknown or already-consumed id";
@@ -251,5 +261,22 @@ describe("tauri adapter — signing domain invokes the SignatureCeremony (B1.2.1
     await expect(bridge.signing.approve(view.id, false)).rejects.toBeTruthy();
     // An unknown id rejects.
     await expect(bridge.signing.reject("does-not-exist")).rejects.toBeTruthy();
+  });
+
+  // CORE-B1.4 — broadcast invokes sign_and_broadcast and returns the real tx
+  // hash + block (never key material); single-use consume holds across invoke.
+  it("broadcast invokes sign_and_broadcast, returns the real tx hash + block, single-use", async () => {
+    const bridge = createTauriBridge();
+    const view = await bridge.signing.request({ origin: "app", kind: "transaction", chainId: 40204, raw: '{"to":"0x35","value":"0x1"}' });
+    // The raw JSON tx here is raw-gated by this mock's decode (non-personal_sign);
+    // broadcast WITH the explicit ack signs + broadcasts.
+    const result = await bridge.signing.broadcast(view.id, true);
+    expect(result.txHash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(result.blockNumber).toBe(100);
+    expect(invokeMock).toHaveBeenCalledWith("sign_and_broadcast", { id: view.id, rawAck: true });
+    // No key material in the result — only public tx facts.
+    expect(Object.keys(result).sort()).toEqual(["blockNumber", "txHash"]);
+    // Single-use: a second broadcast on the same id is rejected.
+    await expect(bridge.signing.broadcast(view.id, true)).rejects.toBeTruthy();
   });
 });

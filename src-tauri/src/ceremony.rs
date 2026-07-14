@@ -165,6 +165,34 @@ pub struct Signature {
     pub kind: IntentKind,
 }
 
+/// Broadcast/poll configuration for [`SignatureCeremony::approve_and_broadcast`]:
+/// the chain id to bind (EIP-155) plus the receipt-poll budget. Grouped into one
+/// param so the approve+broadcast signature stays legible.
+#[derive(Debug, Clone, Copy)]
+pub struct BroadcastConfig {
+    /// The EIP-155 chain id (40204 for Citrate).
+    pub chain_id: u64,
+    /// How many times to poll `eth_getTransactionReceipt` before timing out.
+    pub poll_attempts: u32,
+    /// The delay between receipt polls.
+    pub poll_interval: std::time::Duration,
+}
+
+/// The result of a ceremony-approved transaction that was SIGNED (real EIP-155
+/// legacy tx from the vault key) and BROADCAST to the live 40204 RPC (B1.4).
+/// Carries only PUBLIC facts — the accepted tx hash, and (once mined) the block
+/// number the node confirmed inclusion in. NEVER key/seed/entropy material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BroadcastResult {
+    /// The transaction hash the node accepted (`0x…`).
+    #[serde(rename = "txHash")]
+    pub tx_hash: String,
+    /// The block number the tx was included in, once the receipt is available
+    /// (`None` if broadcast succeeded but the receipt has not yet been polled).
+    #[serde(rename = "blockNumber")]
+    pub block_number: Option<u64>,
+}
+
 /// Errors from the ceremony surface. Deliberately coarse + secret-free: no
 /// variant carries key/seed/entropy bytes, and the custody/vault failures all
 /// collapse so a caller cannot probe vault internals through the ceremony.
@@ -182,6 +210,13 @@ pub enum CeremonyError {
     NoWallet,
     /// The signer failed for a non-custody reason (bad payload, derivation).
     SignFailed,
+    /// A transaction intent's payload could not be decoded to signable legacy-tx
+    /// fields at broadcast time (B1.4) — e.g. calldata present with no gas.
+    UndecodableTransaction,
+    /// The signed tx could not be broadcast / confirmed on 40204 (B1.4). Carries
+    /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
+    /// key material (the broadcast client never sees a key).
+    Broadcast(String),
 }
 
 impl std::fmt::Display for CeremonyError {
@@ -197,6 +232,10 @@ impl std::fmt::Display for CeremonyError {
             CeremonyError::VaultLocked => write!(f, "ceremony: vault locked or signing denied"),
             CeremonyError::NoWallet => write!(f, "ceremony: no wallet stored"),
             CeremonyError::SignFailed => write!(f, "ceremony: signing failed"),
+            CeremonyError::UndecodableTransaction => {
+                write!(f, "ceremony: transaction payload is not signable legacy-tx")
+            }
+            CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
         }
     }
 }
@@ -365,6 +404,107 @@ impl SignatureCeremony {
         })
     }
 
+    /// **Step 2 (transaction) — approve + sign + broadcast (B1.4).** The ONLY
+    /// path that produces a REAL, broadcastable 40204 transaction. It preserves
+    /// EVERY B1.2 invariant of [`approve`]:
+    ///   * consume-first under the lock (single-use; a racing/replayed approve on
+    ///     the same id sees `None` → `UnknownCeremony`, B1.2-ADV-10),
+    ///   * undecodable calldata REQUIRES `raw_ack == true` (re-inserted on a
+    ///     missing ack so a legitimate retry works; B1.2-ADV-5),
+    ///   * signs through the vault (fails CLOSED if locked; B1.2-ADV-3),
+    ///   * returns only PUBLIC facts (tx hash + block) — never key material.
+    ///
+    /// Flow after the guards clear: decode the tx intent → fetch the pending
+    /// nonce (`eth_getTransactionCount(from,"pending")`) + gas price
+    /// (`eth_gasPrice`) from the LIVE RPC (Rule 1, real values) → sign the real
+    /// EIP-155 legacy tx with the vault key via `wallet::sign_transaction` (which
+    /// calls the lean `sign_eip155_legacy_tx`, zeroizing) → broadcast the raw tx
+    /// (`eth_sendRawTransaction`) → poll the receipt for block inclusion.
+    ///
+    /// `rpc` is injected so tests mock the transport (Rule 1: the mock is a TEST
+    /// transport; production wires [`crate::rpc::RpcClient::citrate`]).
+    pub fn approve_and_broadcast<T: crate::rpc::RpcTransport>(
+        &self,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+        id: &str,
+        raw_ack: bool,
+        cfg: BroadcastConfig,
+    ) -> Result<BroadcastResult> {
+        let BroadcastConfig {
+            chain_id,
+            poll_attempts,
+            poll_interval,
+        } = cfg;
+        let key = Self::parse_id(id).ok_or(CeremonyError::UnknownCeremony)?;
+
+        // Consume-first (B1.2-ADV-10): remove under the lock before any signing.
+        let pending = {
+            let mut map = self.lock();
+            map.remove(&key).ok_or(CeremonyError::UnknownCeremony)?
+        };
+
+        // Raw-ack gate (B1.2-ADV-5): re-insert on a missing ack so the human can
+        // retry WITH it; this call broadcasts nothing.
+        if pending.requires_raw_ack && !raw_ack {
+            self.lock().insert(key, pending);
+            return Err(CeremonyError::RawAckRequired);
+        }
+
+        // Decode the tx intent to signable fields (may still be undecodable at
+        // this depth — e.g. calldata with no gas). The ceremony is ALREADY
+        // consumed (fail-closed single-use): a decode/sign/broadcast error here
+        // cannot re-approve this id.
+        let (parsed, _display) = crate::txdecode::decode_transaction(&pending.intent.raw)
+            .ok_or(CeremonyError::UndecodableTransaction)?;
+
+        // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
+        // `from` the dApp names sources the pending nonce; absent a `from` we
+        // cannot fetch a nonce, so the dApp must have supplied one.
+        let fetched_nonce = match (&parsed.nonce, &parsed.from) {
+            (Some(n), _) => *n,
+            (None, Some(from)) => rpc
+                .pending_nonce(from)
+                .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+            (None, None) => return Err(CeremonyError::UndecodableTransaction),
+        };
+        let fetched_gas_price = match &parsed.gas_price {
+            Some(g) => *g,
+            None => rpc
+                .gas_price()
+                .map_err(|e| CeremonyError::Broadcast(e.to_string()))?,
+        };
+
+        let fields = parsed
+            .finalize(fetched_nonce, fetched_gas_price)
+            .ok_or(CeremonyError::UndecodableTransaction)?;
+
+        // Sign the REAL tx with the vault key (fails closed if locked — the
+        // gated signer reads the sealed entropy via the A2 session gate).
+        let signed = wallet::sign_transaction(vault, &fields, chain_id)?;
+
+        // Broadcast + poll for inclusion. `send_raw_transaction` returns the
+        // node-accepted hash; the receipt poll confirms block inclusion.
+        let tx_hash = rpc
+            .send_raw_transaction(&signed.raw)
+            .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
+        let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
+        let block_number = match receipt {
+            Ok(r) => Some(r.block_number),
+            // The tx WAS accepted (we have a hash); the receipt just did not land
+            // within the poll budget. Return the hash honestly with no block yet
+            // rather than failing (the caller can re-poll). A hard RPC error on
+            // the poll surfaces as a broadcast error.
+            Err(crate::rpc::RpcError::ReceiptTimeout) => None,
+            Err(e) => return Err(CeremonyError::Broadcast(e.to_string())),
+        };
+
+        Ok(BroadcastResult {
+            tx_hash,
+            block_number,
+        })
+    }
+
     /// **Step 2' — reject.** Consume the ceremony with no signature. Unknown id
     /// (never created / already consumed) → `UnknownCeremony`.
     pub fn reject(&self, id: &str) -> Result<()> {
@@ -411,7 +551,25 @@ fn decode_intent(intent: &SignatureIntent) -> DecodedAction {
     match intent.kind {
         IntentKind::PersonalSign => decode_personal_sign(intent),
         IntentKind::TypedData => decode_typed_data(intent),
-        IntentKind::Transaction => unrecognized(),
+        IntentKind::Transaction => decode_transaction_intent(intent),
+    }
+}
+
+/// Decode a `transaction` intent for the approval UI (B1.4). B1.2 blanket-marked
+/// every transaction `Unrecognized`; B1.4 runs the real legacy-tx decoder
+/// ([`crate::txdecode::decode_transaction`]) so the human sees `{action, cost,
+/// destination}` for a legible tx. A payload we CANNOT decode to a legible tx
+/// (not a JSON tx object, opaque contract-creation with no init code, malformed
+/// fields) STILL returns `Unrecognized`, so undecodable calldata remains raw-ack
+/// gated (Rule 1 / B1.2-ADV-5 — no fabricated benign summary).
+fn decode_transaction_intent(intent: &SignatureIntent) -> DecodedAction {
+    match crate::txdecode::decode_transaction(&intent.raw) {
+        Some((_, display)) => DecodedAction {
+            action: display.action,
+            cost: display.cost,
+            destination: display.destination,
+        },
+        None => unrecognized(),
     }
 }
 
@@ -543,6 +701,41 @@ pub fn sign_approve(
     ceremony
         .0
         .approve(&custody.0, &id, raw_ack)
+        .map_err(err_str)
+}
+
+/// **Command — sign_and_broadcast (B1.4).** The ONLY command that produces a
+/// REAL, broadcast 40204 transaction. It consumes a pending `transaction`
+/// ceremony bound to `id` (no auto-approve / no "approve latest"), signs the real
+/// EIP-155 legacy tx with the vault key, broadcasts to the live 40204 RPC, polls
+/// the receipt, and returns the PUBLIC [`BroadcastResult`] (tx hash + block) —
+/// NEVER key/seed/entropy (I-2). `rawAck` must be set explicitly to approve an
+/// undecodable-calldata ceremony (B1.2-ADV-5); fails closed if the vault is
+/// locked (B1.2-ADV-3). All B1.2 single-use/consume-first invariants hold.
+#[tauri::command]
+pub fn sign_and_broadcast(
+    ceremony: State<'_, CeremonyState>,
+    custody: State<'_, crate::custody::CustodyState>,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<BroadcastResult, String> {
+    // Production wiring: the live 40204 RPC client + chain id, with a sane
+    // receipt-poll budget (30 attempts × 2s = up to 60s for inclusion). Blocking
+    // HTTP is correct here — the command runs off the async runtime.
+    let rpc = crate::rpc::RpcClient::citrate();
+    ceremony
+        .0
+        .approve_and_broadcast(
+            &custody.0,
+            &rpc,
+            &id,
+            raw_ack,
+            BroadcastConfig {
+                chain_id: crate::rpc::CITRATE_CHAIN_ID,
+                poll_attempts: 30,
+                poll_interval: std::time::Duration::from_secs(2),
+            },
+        )
         .map_err(err_str)
 }
 

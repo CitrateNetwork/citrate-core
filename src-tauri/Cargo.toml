@@ -64,8 +64,11 @@ base64 = "0.22"
 bip39 = { version = "1.2", features = ["std", "zeroize"] }
 # B1.1-F-1: lean crypto-only wallet-core (default-features=false) keeps the zk/execution
 # stack (citrate-execution -> ark-groth16 -> tracing-subscriber / RUSTSEC-2025-0055) OUT of
-# the key path. Pinned to citrate-chain 3dce61c (the lean-feature commit).
-citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "3dce61c", default-features = false, features = ["crypto"] }
+# the key path. B1.4: re-pinned 3dce61c -> 47a6f92 (the B1.4.0 lean EIP-155 tx-signing
+# commit + its canonical-RLP r/s trim fix, #69 follow-ups) so the ceremony can sign a real
+# 40204 legacy tx via `sign_eip155_legacy_tx`. Still lean: features=["crypto"], no
+# reqwest/tokio/citrate-consensus. Rule 12 [[drift]] landed first in citrate-federation.
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "47a6f92", default-features = false, features = ["crypto"] }
 # hex: encode the (non-secret) public key for display in WalletInfo.
 hex = "0.4"
 
@@ -81,3 +84,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
 #   recovered uncompressed pubkey (matches wallet-core's derive_address).
 k256 = { version = "0.13", features = ["ecdsa"] }
 sha3 = "0.10"
+# CORE-B1.4 test-only: reconstruct the EIP-155 signing-hash RLP payload in the
+# ceremony tx-broadcast test to ecrecover the broadcast signature back to the
+# wallet address. Same `rlp` 0.5 the wallet-core lean crypto path uses.
+rlp = "0.5"

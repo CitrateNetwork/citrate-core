@@ -15,10 +15,11 @@
 //   • eth_accounts / eth_requestAccounts return the wallet ADDRESS from the
 //     bridge wallet domain — never a private key.
 //   • Rejection maps to the EIP-1193 user-rejected error (code 4001).
-//   • eth_sendTransaction routes INTO the ceremony (so the human approves the
-//     signature), then returns an HONEST "broadcast deferred to B1.4" error —
-//     it never fabricates a tx hash (Rule 1). The recoverable EIP-155 tx signer
-//     + real 40204 broadcast land in B1.4.
+//   • eth_sendTransaction routes INTO the ceremony (so the human approves), then
+//     — B1.4 — the vault key signs the REAL EIP-155 legacy tx in Rust and the
+//     app broadcasts it to the live 40204 RPC, returning the REAL node-accepted
+//     tx hash. It never fabricates a hash (Rule 1); if signing/broadcast fails
+//     the underlying error propagates. (The B1.3 4900 deferral is removed.)
 //   • `origin` in the intent is the TRUE caller origin, displayed verbatim by
 //     the Rust ceremony (anti-spoof). The connector never sends a "benign" flag.
 //
@@ -149,7 +150,16 @@ function payloadForKind(kind: IntentKind, params: unknown): string {
  * every method to reads / accounts / ceremony and NEVER signs in JS.
  */
 export function createCeremonyProvider(deps: CeremonyProviderDeps): CeremonyProvider {
-  async function driveCeremony(kind: IntentKind, params: unknown): Promise<string> {
+  /**
+   * Drive request → human approval for `kind`/`params`, returning the pending
+   * ceremony view id + the human's raw-ack once approved. Signs NOTHING itself;
+   * the caller then either `approve`s (message/typed-data) or `broadcast`s (tx).
+   * A rejection / errored approval consumes the ceremony and throws 4001.
+   */
+  async function requestAndAwaitApproval(
+    kind: IntentKind,
+    params: unknown,
+  ): Promise<{ id: string; rawAck: boolean }> {
     const intent: SignatureIntent = {
       origin: deps.origin, // TRUE caller origin — never a caller-claimed flag.
       kind,
@@ -172,9 +182,23 @@ export function createCeremonyProvider(deps: CeremonyProviderDeps): CeremonyProv
       await deps.signing.reject(view.id).catch(() => {});
       throw userRejectedError();
     }
-    // 3) Approve the SPECIFIC id → the Rust ceremony produces the signature.
-    const result = await deps.signing.approve(view.id, decision.rawAck);
+    return { id: view.id, rawAck: decision.rawAck };
+  }
+
+  /** Message / typed-data path: approve the specific id → the ceremony's sig hex. */
+  async function driveCeremony(kind: IntentKind, params: unknown): Promise<string> {
+    const { id, rawAck } = await requestAndAwaitApproval(kind, params);
+    // Approve the SPECIFIC id → the Rust ceremony produces the signature.
+    const result = await deps.signing.approve(id, rawAck);
     return result.sigHex;
+  }
+
+  /** Transaction path (B1.4): approve the specific id → sign the real EIP-155 tx
+   * with the vault key → broadcast to 40204 → return the REAL tx hash. */
+  async function driveTransaction(params: unknown): Promise<string> {
+    const { id, rawAck } = await requestAndAwaitApproval("transaction", params);
+    const result = await deps.signing.broadcast(id, rawAck);
+    return result.txHash;
   }
 
   return {
@@ -190,20 +214,14 @@ export function createCeremonyProvider(deps: CeremonyProviderDeps): CeremonyProv
       // ---- signing: route through the ceremony (human-in-the-loop) ----
       const kind = SIGNING_METHODS[method];
       if (kind) {
-        const sigHex = await driveCeremony(kind, params);
         if (method === "eth_sendTransaction") {
-          // The ceremony approved the signature, but the recoverable EIP-155
-          // tx signer + real 40204 broadcast are B1.4. HONESTLY defer — never
-          // fabricate a tx hash (Rule 1).
-          throw new ProviderRpcError(
-            4900,
-            "eth_sendTransaction: the signature ceremony completed, but on-chain " +
-              "broadcast is not yet wired (deferred to B1.4). No transaction hash " +
-              "can be returned honestly at this stage.",
-          );
+          // B1.4: the ceremony approves, the vault key signs the real EIP-155 tx,
+          // and it is broadcast to 40204 — return the REAL tx hash the node
+          // accepted (no more 4900 deferral; no fabricated hash — Rule 1).
+          return driveTransaction(params);
         }
         // personal_sign / typed_data → return the ceremony's signature hex.
-        return sigHex;
+        return driveCeremony(kind, params);
       }
 
       // ---- everything else is a READ → straight to the transport. No ceremony ----

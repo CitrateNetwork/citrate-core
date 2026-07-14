@@ -19,6 +19,7 @@ import type {
   SignatureIntent,
   CeremonyView,
   Signature,
+  BroadcastResult,
 } from "./types";
 
 // ---- config (A1.4 — the genuinely-live domain) ----------------------
@@ -81,6 +82,11 @@ export interface SigningDomain {
   /** Approve a SPECIFIC pending id (no "approve latest"/auto-approve). `rawAck`
    * MUST be true to approve undecodable calldata. Returns the signature hex. */
   approve(id: string, rawAck: boolean): Promise<Signature>;
+  /** CORE-B1.4 — approve a SPECIFIC pending TRANSACTION id, sign the real EIP-155
+   * tx with the vault key, broadcast it to the live 40204 RPC, and return the
+   * real tx hash + block (never key material). Same explicit-id / raw-ack /
+   * single-use / fail-closed invariants as `approve`. */
+  broadcast(id: string, rawAck: boolean): Promise<BroadcastResult>;
   /** Reject a pending ceremony — consumes it, produces no signature. */
   reject(id: string): Promise<void>;
 }

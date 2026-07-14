@@ -160,6 +160,19 @@ export interface Signature {
   kind: IntentKind;
 }
 
+/**
+ * CORE-B1.4 — the result of a ceremony-approved transaction that was SIGNED (real
+ * EIP-155 legacy tx from the vault key) and BROADCAST to the live 40204 RPC.
+ * Carries only PUBLIC facts: the node-accepted tx hash and (once mined) the block
+ * number. NEVER key/seed/entropy material.
+ */
+export interface BroadcastResult {
+  /** The transaction hash the node accepted (`0x…`). */
+  txHash: string;
+  /** The block number the tx was included in, once the receipt is available. */
+  blockNumber: number | null;
+}
+
 /** The Unrecognized action marker (undecodable calldata → raw-ack gated). */
 export const UNRECOGNIZED_ACTION = "Unrecognized";
 

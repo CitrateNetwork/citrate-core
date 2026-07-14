@@ -6,8 +6,9 @@
 // SignatureIntent to the bridge's `signing` domain (which drives the Rust
 // SignatureCeremony) and returns what the ceremony produced. It holds no key
 // and performs no crypto. Reads bypass the ceremony straight to the viem
-// transport. Rejection maps to EIP-1193 4001. `eth_sendTransaction` routes to
-// the ceremony but honestly defers the broadcast to B1.4 (no fabricated hash).
+// transport. Rejection maps to EIP-1193 4001. `eth_sendTransaction` routes
+// through the ceremony then broadcasts the real signed tx to 40204 (B1.4),
+// returning the real node-accepted tx hash (never a fabricated hash).
 // =====================================================================
 import { describe, it, expect, vi } from "vitest";
 import {
@@ -19,6 +20,7 @@ import type {
   SignatureIntent,
   CeremonyView,
   Signature,
+  BroadcastResult,
 } from "../bridge/types";
 
 // A mock signing domain whose approve is only reached via an explicit approval.
@@ -26,6 +28,8 @@ import type {
 function mockSigning(opts?: {
   requiresRawAck?: boolean;
   sigHex?: string;
+  txHash?: string;
+  blockNumber?: number | null;
 }) {
   const requiresRawAck = opts?.requiresRawAck ?? false;
   const requestSpy = vi.fn(async (intent: SignatureIntent): Promise<CeremonyView> => ({
@@ -40,11 +44,22 @@ function mockSigning(opts?: {
     if (id !== "ceremony-1") throw new Error("unknown id");
     return { sigHex: opts?.sigHex ?? "0xdeadbeef", kind: "personal_sign" };
   });
+  // B1.4: the transaction path calls broadcast → real tx hash + block.
+  const broadcastSpy = vi.fn(async (id: string, _rawAck: boolean): Promise<BroadcastResult> => {
+    if (id !== "ceremony-1") throw new Error("unknown id");
+    return {
+      txHash:
+        opts?.txHash ??
+        "0xabc0000000000000000000000000000000000000000000000000000000000abc",
+      blockNumber: opts?.blockNumber ?? 100,
+    };
+  });
   const rejectSpy = vi.fn(async (_id: string): Promise<void> => {});
   return {
-    domain: { request: requestSpy, approve: approveSpy, reject: rejectSpy },
+    domain: { request: requestSpy, approve: approveSpy, broadcast: broadcastSpy, reject: rejectSpy },
     requestSpy,
     approveSpy,
+    broadcastSpy,
     rejectSpy,
   };
 }
@@ -134,29 +149,43 @@ describe("B1.3 ceremony connector — signing routes through the bridge only", (
     expect(t.spy).not.toHaveBeenCalled();
   });
 
-  // B1.3-ADV-5: eth_sendTransaction never returns a fabricated hash pre-B1.4.
-  it("B1.3-ADV-5: eth_sendTransaction routes to the ceremony then honestly defers broadcast (no fake hash)", async () => {
-    const { domain, requestSpy, approveSpy } = mockSigning({ requiresRawAck: true });
+  // B1.4: eth_sendTransaction routes through the ceremony → the vault key signs
+  // the real EIP-155 tx → broadcast → the REAL node-accepted tx hash is returned.
+  it("B1.4: eth_sendTransaction routes through the ceremony then broadcasts, returning the real tx hash", async () => {
+    const realHash = "0xdeadbeef00000000000000000000000000000000000000000000000000000abc";
+    const { domain, requestSpy, broadcastSpy, approveSpy } = mockSigning({
+      requiresRawAck: true,
+      txHash: realHash,
+      blockNumber: 4242,
+    });
     const provider = createCeremonyProvider(deps({ signing: domain }));
+    const result = await provider.request({
+      method: "eth_sendTransaction",
+      params: [{ to: "0xdead", value: "0x1" }],
+    });
+    // The wagmi caller gets the REAL tx hash (not a signature, not a fake hash).
+    expect(result).toBe(realHash);
+    // The tx path drives request → broadcast (NOT the message-only approve).
+    expect(requestSpy).toHaveBeenCalledTimes(1);
+    expect(broadcastSpy).toHaveBeenCalledTimes(1);
+    expect(broadcastSpy).toHaveBeenCalledWith("ceremony-1", true); // rawAck passed through
+    expect(approveSpy).not.toHaveBeenCalled();
+  });
+
+  // B1.4 negative control: a rejected tx ceremony never broadcasts (no tx hash).
+  it("B1.4: a rejected eth_sendTransaction throws 4001 and never broadcasts", async () => {
+    const { domain, broadcastSpy, rejectSpy } = mockSigning();
+    const provider = createCeremonyProvider(deps({ signing: domain, approvalHook: async () => null }));
     let caught: unknown;
     try {
-      await provider.request({
-        method: "eth_sendTransaction",
-        params: [{ to: "0xdead", value: "0x1" }],
-      });
+      await provider.request({ method: "eth_sendTransaction", params: [{ to: "0xdead", value: "0x1" }] });
     } catch (e) {
       caught = e;
     }
-    // It must throw an honest deferral, NOT resolve with a hash.
     expect(caught).toBeInstanceOf(ProviderRpcError);
-    const msg = (caught as ProviderRpcError).message.toLowerCase();
-    expect(msg).toContain("b1.4");
-    expect(msg).toContain("broadcast");
-    // The ceremony WAS driven (intent submitted + approved) before deferral.
-    expect(requestSpy).toHaveBeenCalledTimes(1);
-    expect(approveSpy).toHaveBeenCalledTimes(1);
-    // And the thrown value carries no 0x…64-hex tx hash masquerading as a result.
-    expect((caught as ProviderRpcError).message).not.toMatch(/0x[0-9a-fA-F]{64}/);
+    expect((caught as ProviderRpcError).code).toBe(4001);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+    expect(rejectSpy).toHaveBeenCalledWith("ceremony-1");
   });
 
   // B1.3-INT: request → view → approve → the caller receives the ceremony sig.

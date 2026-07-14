@@ -18,6 +18,7 @@ import type {
   SignatureIntent,
   CeremonyView,
   Signature,
+  BroadcastResult,
 } from "../types";
 import type { BridgeContract } from "../domains";
 import { Unavailable } from "../types";
@@ -98,6 +99,11 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         // Tauri maps snake_case Rust args from camelCase JS keys; `raw_ack`
         // arrives as `rawAck`.
         return invoke<Signature>("sign_approve", { id, rawAck });
+      },
+      async broadcast(id: string, rawAck: boolean): Promise<BroadcastResult> {
+        // CORE-B1.4 — sign the real EIP-155 tx with the vault key + broadcast to
+        // 40204, returning the real tx hash + block. Never returns key material.
+        return invoke<BroadcastResult>("sign_and_broadcast", { id, rawAck });
       },
       async reject(id: string): Promise<void> {
         await invoke("sign_reject", { id });
