@@ -12,6 +12,7 @@ mod ceremony;
 mod config;
 mod custody;
 mod memory;
+mod earnings;
 mod node;
 mod oidc;
 mod rpc;
@@ -126,8 +127,10 @@ pub fn run() {
             // memory — the real citrate-memories mcp_serve daemon under the
             // SidecarSupervisor (C3). Replaces the A1.3 memory_recall seam stub:
             // memory_status returns the supervisor state + socket path (never the
-            // store key); memory_start spawns the daemon (@rule8 keyring store
-            // key); recall/search/neighbors speak JSON-RPC over the daemon's Unix
+            // store key); memory_start spawns the daemon (a keyring wrapping key is
+            // minted for forward-compat, but the store is NOT encrypted at rest
+            // today — plaintext on a fresh store; see memory.rs honest residual);
+            // recall/search/neighbors speak JSON-RPC over the daemon's Unix
             // socket; constellation feeds the Storage graph with REAL nodes.
             memory::memory_status,
             memory::memory_start,
@@ -139,6 +142,13 @@ pub fn run() {
             // seam domains — honest Unavailable until each later phase (A1.3).
             // memory_assert stays a seam stub: the assert WRITE path routes
             // through the SignatureCeremony (a later WP), not C3's read wiring.
+            // earnings — the REAL on-chain claimable read (C2). agent_earnings
+            // reads ContributionAccounting.claimable(vaultAddress) via eth_call on
+            // 40204 (Rule 1: the single real value; no sim per-source breakdown).
+            // A claim is a SIGNED value-bearing write that routes through the
+            // SignatureCeremony (agent bridge → B1.4), never signed here (@rule8).
+            earnings::agent_earnings,
+            // seam domains — honest Unavailable until each later phase (A1.3)
             seam::wallet_balances,
             seam::wallet_activity,
             seam::memory_assert,

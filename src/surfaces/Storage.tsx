@@ -7,7 +7,8 @@
 //
 // Data source — CORE-C3: the graph is served by the REAL mcp_serve daemon
 // over its Unix socket. `bridge.memory.constellation()` recalls the personal +
-// chain-state tenants from the per-user encrypted store; nodes/labels/tenant
+// chain-state tenants from the per-user local store (at-rest encryption is a
+// v2 item — see memory.rs; the store is NOT encrypted on disk today); nodes/labels/tenant
 // counts come from that store. A deterministic layout places the real nodes.
 // When the daemon is not running / the socket is unreachable, the surface shows
 // an HONEST offline/empty state — never a fabricated (seed) graph (Rule 1).
@@ -235,7 +236,7 @@ export function Storage({ store, s }: SurfaceProps) {
       <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Storage</span>
         <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-          per-user memory graph · encrypted · yours
+          per-user memory graph · local · yours
         </span>
         <span style={{ marginLeft: "auto", display: "flex", gap: 14 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>

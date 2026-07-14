@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 
@@ -34,6 +34,15 @@ const fmtDur = (sec: number | null): string => {
 export function Node({ store, s }: SurfaceProps) {
   const pinCidEl = useRef<HTMLInputElement | null>(null);
   const pinBondEl = useRef<HTMLInputElement | null>(null);
+
+  // CORE-C2 — when the Earning tab is open, pull the REAL claimable from
+  // ContributionAccounting.claimable(vaultAddress) via eth_call (Rule 11). The
+  // decomposition (Validation/Pinning/Compute) has NO on-chain source and is
+  // labeled as an off-chain estimate below (Rule 1 / I-3).
+  useEffect(() => {
+    if (s.nTab === "earn") void store.refreshEarnings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.nTab]);
 
   const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
 
@@ -89,6 +98,10 @@ export function Node({ store, s }: SurfaceProps) {
   const earnPinStr = fmt2(s.earnPin);
   const earnCompStr = fmt2(s.earnComp);
   const claimStr = fmt2(s.claimable);
+  const claimSourceStr =
+    s.earnSource === "chain"
+      ? "from ContributionAccounting.claimable() · eth_call 40204"
+      : "prototype value — pending on-chain read";
   const claimDisabled = s.claimable < 5;
   const claimNote =
     s.claimable < 5
@@ -101,9 +114,9 @@ export function Node({ store, s }: SurfaceProps) {
       requester: "node-agent · earnings sweep 127.0.0.1:19600",
       title: "Claim " + fmt2(amt) + " SALT rewards",
       rows: [
-        { k: "Action", v: "claimRewards() — unsigned request from the sweep" },
-        { k: "Contract", v: "ContributionAccounting · 40204" },
-        { k: "Breakdown", v: "validation " + fmt2(s.earnVal) + " · pinning " + fmt2(s.earnPin) + " · compute " + fmt2(s.earnComp) },
+        { k: "Action", v: "claimRewards() — unsigned request, routed through the ceremony" },
+        { k: "Contract", v: "ContributionAccounting · 0xcdd2…faef · 40204" },
+        { k: "Claimable", v: fmt2(amt) + " SALT · on-chain claimable(address) balance" },
       ],
       cost: "est. gas 0.0014 SALT",
       sponsor: "gas sponsored — standard daily budget",
@@ -353,31 +366,32 @@ export function Node({ store, s }: SurfaceProps) {
       {s.nTab === "earn" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
               <span className="eyebrow">Validation</span>
               <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnValStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>block rewards + bonuses</span>
+              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
             </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
               <span className="eyebrow">Pinning</span>
               <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnPinStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>storage bonds honored</span>
+              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
             </div>
-            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, opacity: 0.72 }}>
               <span className="eyebrow">Compute</span>
               <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26 }}>{earnCompStr}</span>
-              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>verifiable inference jobs</span>
+              <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>off-chain estimate — not in claimable</span>
             </div>
             <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4, borderColor: "var(--accent)" }}>
               <span className="eyebrow" style={{ color: "var(--accent-text)" }}>Claimable</span>
               <span className="tabular" style={{ fontFamily: "var(--font-display)", fontSize: 26, color: "var(--accent-text)" }}>{claimStr}</span>
+              <span className="mono" style={{ fontSize: 10, color: s.earnSource === "chain" ? "var(--ok)" : "var(--tx-3)" }}>{claimSourceStr}</span>
               <button className="btn btn-primary btn-sm" onClick={onClaim} disabled={claimDisabled} style={{ marginTop: 4, alignSelf: "flex-start" }}>
                 Claim
               </button>
             </div>
           </div>
           <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0 }}>
-            {claimNote} Accrued figures are lifetime by source; claiming signs the node-agent's unsigned claimRewards() request through the ceremony.
+            {claimNote} The single Claimable figure is the on-chain ContributionAccounting.claimable(address) balance; the per-source split above is an off-chain estimate the contract does not expose. Claiming signs the unsigned claimRewards() request through the ceremony.
           </p>
           <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>

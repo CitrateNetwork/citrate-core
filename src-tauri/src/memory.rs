@@ -1,6 +1,9 @@
 //! citrate-core — MemoryDomain: the citrate-memories `mcp_serve` daemon under
-//! the SidecarSupervisor (CORE-C3). @rule8 · per-user encrypted store + a
-//! keyring-held store wrapping key.
+//! the SidecarSupervisor (CORE-C3). @rule8 SEAM (honest residual below):
+//! the store is NOT encrypted at rest in production today (the grounded
+//! mem-mcp daemon runs plaintext on a fresh store); a keyring-held wrapping
+//! key is minted for forward-compat but wraps nothing until an upstream
+//! mem-store external-KEK change lands. Do NOT claim "encrypted-at-rest".
 //!
 //! This wires the `MemoryDomain { recall; search; neighbors }` bridge seam to
 //! the REAL `mem-mcp` daemon (`mcp_serve <db-path> <sock-path>`) spawned through

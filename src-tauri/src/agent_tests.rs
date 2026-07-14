@@ -584,6 +584,124 @@ fn bridge_request_to_ceremony_to_broadcast_end_to_end() {
     );
 }
 
+// ===========================================================================
+// WP2 @rule8 — C1.2-F-1 dedup: one request → one ceremony → one broadcast
+// ===========================================================================
+
+/// C1.2-F-1 (the RED test / negative control): a still-`pending` node-agent
+/// request bridged TWICE must map to the SAME ceremony — never two. Without the
+/// dedup, two bridges mint two ceremony ids, which could each be approved into a
+/// SECOND broadcast (a double-claim). The invariant: one request id → one
+/// ceremony id.
+#[test]
+fn duplicate_bridge_of_same_request_reuses_one_ceremony() {
+    let (v, _p) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    // The node-agent serves the SAME pending claimRewards on both polls (it keeps
+    // re-emitting a pending request until it is observed).
+    let one = serde_json::to_string(&vec![claim_rewards_request()]).unwrap();
+    let mgr = mock_manager(Box::new(MockSupervisionSync::new(vec![
+        MockSupervisionSync::resp(200, &one),
+        MockSupervisionSync::resp(200, &one),
+    ])));
+    // estimateGas is called once per NEW ceremony; script two just in case, so a
+    // buggy second-ceremony path would still run (and then be caught by the id
+    // assertion) rather than erroring on a missing mock.
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x8000".into())),
+        ok(JsonValue::String("0x8000".into())),
+    ]));
+
+    let (id1, _r1) = mgr.bridge_one_pending(&ceremony, &v, &rpc).expect("bridge 1");
+    let (id2, _r2) = mgr.bridge_one_pending(&ceremony, &v, &rpc).expect("bridge 2");
+    assert_eq!(id1, id2, "same pending request must map to ONE ceremony (C1.2-F-1)");
+    // And the second bridge did NOT consume a second gas estimate (it reused the
+    // existing ceremony), so exactly one estimateGas hit the RPC.
+    let estimate_calls = rpc
+        .transport
+        .requests
+        .borrow()
+        .iter()
+        .filter(|r| r["method"] == "eth_estimateGas")
+        .count();
+    assert_eq!(estimate_calls, 1, "the reused bridge does not re-estimate gas");
+}
+
+/// C1.2-F-1 end-to-end: two bridges of one still-pending request, then approve —
+/// exactly ONE broadcast reaches the chain, and the second ceremony id (== the
+/// first) is already consumed so it cannot be approved again (`UnknownCeremony`).
+#[test]
+fn dedup_yields_exactly_one_broadcast_for_one_request() {
+    let (v, _p) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    let one = serde_json::to_string(&vec![claim_rewards_request()]).unwrap();
+    let (mgr, _shared) = mock_manager_shared(vec![
+        MockSupervisionSync::resp(200, &one),
+        MockSupervisionSync::resp(200, &one),
+        MockSupervisionSync::resp(200, "\"observed\""), // POST /observed after the ONE broadcast
+    ]);
+    let tx_hash = "0xabc0000000000000000000000000000000000000000000000000000000000abc";
+    // Only ONE broadcast's worth of RPC is scripted: estimateGas → nonce →
+    // gasPrice → sendRaw → receipt. A second broadcast would run out of scripted
+    // responses and error — the test proves there IS no second broadcast.
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x8000".into())),      // eth_estimateGas (bridge 1)
+        ok(JsonValue::String("0x7".into())),         // eth_getTransactionCount
+        ok(JsonValue::String("0x77359400".into())),  // eth_gasPrice
+        ok(JsonValue::String(tx_hash.into())),       // eth_sendRawTransaction
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+    ]));
+
+    let (id1, req) = mgr.bridge_one_pending(&ceremony, &v, &rpc).expect("bridge 1");
+    let (id2, _req2) = mgr.bridge_one_pending(&ceremony, &v, &rpc).expect("bridge 2 (dup)");
+    assert_eq!(id1, id2, "dedup: one ceremony");
+
+    // Approve once → one broadcast.
+    let result = mgr
+        .approve_bridged_and_report(&ceremony, &v, &rpc, &id1, false, &req, bcfg(2))
+        .expect("one approval → one broadcast");
+    assert_eq!(result.tx_hash, tx_hash);
+
+    // The (identical) second id is already consumed — a second approval finds
+    // nothing → UnknownCeremony (no double-broadcast, single-use holds).
+    let second = mgr.approve_bridged_and_report(&ceremony, &v, &rpc, &id2, false, &req, bcfg(2));
+    assert!(
+        matches!(second, Err(AgentError::Ceremony(_))),
+        "the consumed ceremony cannot broadcast again: {second:?}"
+    );
+}
+
+/// After a bridged request is approved+broadcast, its dedup entry is cleared, so
+/// a node-agent that RE-EMITS the same request id later (a legitimate new
+/// accrual) can bridge a FRESH ceremony (dedup does not permanently pin an id).
+#[test]
+fn dedup_entry_clears_after_broadcast_so_reaccrual_bridges_fresh() {
+    let (v, _p) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    let one = serde_json::to_string(&vec![claim_rewards_request()]).unwrap();
+    let (mgr, _shared) = mock_manager_shared(vec![
+        MockSupervisionSync::resp(200, &one), // poll 1
+        MockSupervisionSync::resp(200, "\"observed\""), // observe after broadcast 1
+        MockSupervisionSync::resp(200, &one), // poll 2 (re-emitted, same id)
+    ]);
+    let tx_hash = "0xabc0000000000000000000000000000000000000000000000000000000000abc";
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x8000".into())),      // estimateGas (bridge 1)
+        ok(JsonValue::String("0x7".into())),         // nonce
+        ok(JsonValue::String("0x77359400".into())),  // gasPrice
+        ok(JsonValue::String(tx_hash.into())),       // sendRaw
+        ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })),
+        ok(JsonValue::String("0x8000".into())),      // estimateGas (bridge 2, fresh)
+    ]));
+
+    let (id1, req) = mgr.bridge_one_pending(&ceremony, &v, &rpc).expect("bridge 1");
+    mgr.approve_bridged_and_report(&ceremony, &v, &rpc, &id1, false, &req, bcfg(2))
+        .expect("broadcast 1");
+    // The re-emitted request bridges a NEW ceremony (entry was cleared).
+    let (id2, _req2) = mgr.bridge_one_pending(&ceremony, &v, &rpc).expect("bridge 2 fresh");
+    assert_ne!(id1, id2, "a re-accrual after broadcast bridges a fresh ceremony");
+}
+
 /// ADV-7 no-direct-sign (behavioural): bridging a request returns a CEREMONY id,
 /// NEVER a signature. The node-agent origin has no signing shortcut — a signature
 /// exists only after an explicit ceremony approval.

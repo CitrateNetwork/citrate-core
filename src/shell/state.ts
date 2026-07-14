@@ -181,6 +181,14 @@ export interface AppState {
   earnComp: number;
   earnToday: number;
   claimable: number;
+  /**
+   * CORE-C2 — where `claimable` currently comes from. "chain" once the real
+   * `ContributionAccounting.claimable(addr)` eth_call has resolved (Rule 11 data
+   * source); "sim" for the prototype value before/without a live read. The
+   * Earning tab captions the claimable card with this so a real read is never
+   * confused with the prototype number (Rule 1).
+   */
+  earnSource: "chain" | "sim";
   activity: Activity[];
   justSigned: string | null;
   queue: CerSpec[];
@@ -342,6 +350,7 @@ export function freshState(pid: string): AppState {
     earnComp: 0,
     earnToday: 0,
     claimable: 0,
+    earnSource: "sim",
     activity: [],
     justSigned: null,
     queue: [],

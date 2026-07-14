@@ -193,6 +193,24 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_hex_quantity(&result, "eth_estimateGas")
     }
 
+    /// `eth_call({to,data}, "latest")` → the raw returned bytes of a read-only
+    /// contract call (CORE-C2 earnings: `ContributionAccounting.claimable`). The
+    /// node returns a `0x`-prefixed hex string of the ABI-encoded return; we hand
+    /// back the decoded bytes for the caller's ABI decoder. Real value from the
+    /// live 40204 RPC (Rule 1 — no fabricated read). `call` is the pre-built call
+    /// object (`{to, data}`); we pin the block tag to `"latest"`.
+    pub fn eth_call(&self, call: Value) -> Result<Vec<u8>, RpcError> {
+        let result = self.request("eth_call", json!([call, "latest"]))?;
+        let s = result
+            .as_str()
+            .ok_or_else(|| RpcError::MissingField("eth_call: result not a string".into()))?;
+        let stripped = s
+            .strip_prefix("0x")
+            .ok_or_else(|| RpcError::MissingField("eth_call: missing 0x prefix".into()))?;
+        hex::decode(stripped)
+            .map_err(|_| RpcError::MissingField(format!("eth_call: result not hex ({s})")))
+    }
+
     /// `eth_blockNumber` → the node's current head height (real value from the
     /// spawned node's local RPC; CORE-C1.1 NodeDomain status). The node returns
     /// a `0x`-prefixed hex quantity.
