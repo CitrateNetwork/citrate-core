@@ -304,14 +304,33 @@ pub fn address(vault: &CustodyVault) -> Result<WalletInfo> {
 
 /// **In-process only.** Read the sealed entropy from the vault. `custody_get`
 /// requires an unlocked session (fails closed `Denied` when locked) and returns
-/// a `Zeroizing` buffer. `Denied` maps to `NotFound` (absent slot) OR `Custody`
-/// (locked) — we cannot distinguish (no oracle), so callers that need the
-/// locked-vs-missing distinction do not get it; both fail closed. We map to
-/// `NotFound` since a create/import always precedes a legitimate read.
+/// a `Zeroizing` buffer.
+///
+/// B1.2-R2 (CLOSED in B1.5): custody's `custody_get` returns the SAME opaque
+/// `Denied` for BOTH "locked" and "absent slot" — deliberately, so the passphrase
+/// path has no wrong-vs-empty oracle (see custody.rs). That opacity is a *custody
+/// crypto* property and must NOT change. But the wallet layer can still give a
+/// crisper UX signal WITHOUT re-introducing that oracle: `is_unlocked()` reflects
+/// only the SESSION state (a boolean the app already exposes via `custody_status`
+/// on the invoke surface), never anything passphrase-derived. So on a `Denied`
+/// read we consult it: a LOCKED vault → `Custody` (→ `VaultLocked` at the ceremony,
+/// "unlock" hint); an UNLOCKED vault where the read still denied → `NotFound`
+/// (absent slot, "create a wallet" hint). This is fail-closed either way (no key
+/// is read, no signature produced); it only improves the ADV-3 signal
+/// (locked-approve now surfaces `VaultLocked`, not `NoWallet`). It adds no
+/// oracle: `is_unlocked` is passphrase-independent and already invoke-observable.
 fn read_entropy(vault: &CustodyVault) -> Result<Zeroizing<Vec<u8>>> {
     match vault.custody_get(WALLET_ENTROPY_SLOT) {
         Ok(e) => Ok(e),
-        Err(CustodyError::Denied) => Err(WalletError::NotFound),
+        Err(CustodyError::Denied) => {
+            if vault.is_unlocked() {
+                // Unlocked but the slot read denied → the slot is genuinely absent.
+                Err(WalletError::NotFound)
+            } else {
+                // Locked → fail closed with the locked signal (B1.2-R2).
+                Err(WalletError::Custody)
+            }
+        }
         Err(e) => Err(e.into()),
     }
 }
