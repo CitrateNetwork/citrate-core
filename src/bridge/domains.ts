@@ -112,6 +112,15 @@ export interface AgentDomain {
   status(): Promise<{ state: string; authed: boolean }>;
   start(): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * CORE-C2 — the REAL on-chain claimable. Reads
+   * `ContributionAccounting.claimable(vaultAddress)` via `eth_call` on 40204
+   * (data source: eth_call, Rule 11) and returns the single real claimable in
+   * wei of SALT + its data source. There is NO per-source breakdown field: the
+   * contract exposes none, so the Earning tab's sim validation/pinning/compute
+   * split is NOT fabricated for live reads (Rule 1 / I-3).
+   */
+  earnings(): Promise<{ claimableWei: string; walletAddress: string; contract: string }>;
 }
 
 export interface MemoryDomain {

@@ -642,6 +642,31 @@ export class Store {
     }, 1500);
   }
 
+  /**
+   * CORE-C2 — pull the REAL claimable from the chain and fold it into state.
+   * Reads `ContributionAccounting.claimable(vaultAddress)` via `eth_call` on
+   * 40204 through the bridge (data source: eth_call, Rule 11). On success the
+   * claimable becomes a chain value (`earnSource: "chain"`); a fresh node
+   * honestly reads 0. There is NO per-source breakdown from chain — the sim
+   * `earnVal`/`earnPin`/`earnComp` are left as-is and the Earning tab labels them
+   * as off-chain estimates (Rule 1 / I-3: no fabricated on-chain split).
+   *
+   * Failures (locked vault, RPC blip) are swallowed to a toast — the tab keeps
+   * showing the last honest value rather than a fabricated one.
+   */
+  async refreshEarnings(): Promise<void> {
+    try {
+      const e = await bridge.agent.earnings();
+      // Wei string → SALT number for the prototype's numeric display.
+      const salt = Number(BigInt(e.claimableWei)) / 1e18;
+      this.setState({ claimable: salt, earnSource: "chain" });
+      this.save();
+    } catch (err) {
+      // Honest: no fabricated fallback. Keep the prior value, note the source.
+      this.toast("Claimable unavailable — " + String((err as Error).message ?? err));
+    }
+  }
+
   openMicroApp(a: { name?: string; capabilities?: string[] }): void {
     this.requestSig({
       origin: "micro-app",
