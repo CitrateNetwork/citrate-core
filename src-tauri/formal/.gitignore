@@ -1,0 +1,6 @@
+# TLC model-checker run artifacts (not source).
+*_TTrace_*.tla
+*_TTrace_*.bin
+states/
+*.st
+MC.out

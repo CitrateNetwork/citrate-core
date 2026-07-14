@@ -148,11 +148,16 @@ impl Default for BackoffPolicy {
 /// supply any check (TCP connect, HTTP 200, a pidfile) without this module
 /// depending on a transport.
 pub struct HealthCheck {
-    /// How often to run the probe while Running.
+    /// How often to run the probe while Running. This interval is ALSO the
+    /// probe's timeout: the probe runs off the monitor thread (F-2), and a probe
+    /// that has not answered within `interval` is treated as unhealthy so a
+    /// wedged probe recovers the child instead of stalling supervision.
     pub interval: Duration,
-    /// The probe: returns `true` if the child is healthy. Must be cheap +
-    /// non-blocking-ish (it runs on the monitor thread between waits).
-    pub probe: Box<dyn Fn() -> bool + Send + Sync>,
+    /// The probe: returns `true` if the child is healthy. `Arc` (not `Box`) so
+    /// the runner can hand it to a dedicated probe thread — the probe NEVER runs
+    /// inline on the monitor thread, so even a blocking/hanging probe cannot
+    /// stall crash detection or teardown (F-2).
+    pub probe: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl std::fmt::Debug for HealthCheck {
@@ -307,6 +312,17 @@ pub struct SupervisorStatus {
 /// stop. Bounded so `stop()` always returns promptly.
 const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(5);
 
+/// Default sustained-healthy window: once a respawned child has stayed `Running`
+/// this long (measured on the injected [`Clock`]), the consecutive-failure
+/// counter resets to 0 (see [`SupervisorConfig::healthy_after`] + the F-1 fix).
+const DEFAULT_HEALTHY_AFTER: Duration = Duration::from_secs(30);
+
+/// Hard upper bound on how long `Drop`/`stop` will block joining the monitor
+/// thread, so a hung child or a wedged health probe can never hang teardown
+/// forever (the F-2 liveness fix). The monitor's own SIGKILL escalation makes a
+/// child die within `stop_grace`; this bounds the residual wait on the join.
+const DEFAULT_JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Max bytes of stderr retained for a crash record (the bounded tail).
 pub const STDERR_TAIL_BYTES: usize = 4096;
 
@@ -320,18 +336,29 @@ pub struct SupervisorConfig {
     pub crash_record_path: PathBuf,
     /// How long to wait for a graceful SIGTERM exit before SIGKILL.
     pub stop_grace: Duration,
+    /// How long a respawned child must stay continuously `Running` before the
+    /// consecutive-failure counter resets to 0 (the F-1 fix). A child that
+    /// crash-loops faster than this NEVER resets, so the fork-bomb cap still
+    /// bounds it. Measured on the injected [`Clock`].
+    pub healthy_after: Duration,
+    /// Hard cap on how long teardown (`stop`/`Drop`) blocks joining the monitor
+    /// thread, so a hung child or wedged probe cannot hang teardown forever
+    /// (the F-2 fix).
+    pub join_timeout: Duration,
     /// The clock (inject a fake in tests).
     pub clock: Arc<dyn Clock>,
 }
 
 impl SupervisorConfig {
-    /// A config with default backoff / grace / system clock.
+    /// A config with default backoff / grace / healthy-after / system clock.
     pub fn new(spec: SidecarSpec, crash_record_path: impl Into<PathBuf>) -> Self {
         SupervisorConfig {
             spec,
             backoff: BackoffPolicy::new(),
             crash_record_path: crash_record_path.into(),
             stop_grace: DEFAULT_STOP_GRACE,
+            healthy_after: DEFAULT_HEALTHY_AFTER,
+            join_timeout: DEFAULT_JOIN_TIMEOUT,
             clock: Arc::new(SystemClock),
         }
     }
@@ -351,9 +378,10 @@ enum ControlMsg {
 /// Shared state between the controller handle and the monitor thread.
 struct Shared {
     status: Mutex<SupervisorStatus>,
-    /// The live child's pid, mirrored out of the monitor for signalling from
-    /// the controller side without reaching into the monitor's `Child`.
-    /// (The monitor owns the `Child`; the controller signals by pid.)
+    /// The injected clock, shared so `backoff_or_control` can anchor
+    /// `Backoff { next_retry_ms }` on the same time source as crash records.
+    /// (The monitor OWNS the `Child` and does all signalling; the controller
+    /// never signals a child by pid — it sends control messages instead.)
     clock: Arc<dyn Clock>,
 }
 
@@ -383,14 +411,18 @@ pub struct Supervisor {
     control: Sender<ControlMsg>,
     monitor: Option<JoinHandle<()>>,
     name: String,
+    /// Hard cap on how long teardown blocks joining the monitor thread (F-2).
+    join_timeout: Duration,
 }
 
 impl Supervisor {
     /// Spawn the sidecar and start supervising it. Returns immediately; the
     /// monitor thread does the spawning + waiting + restarting. The initial
-    /// status is `Starting`.
-    pub fn start(config: SupervisorConfig) -> Self {
+    /// status is `Starting`. Returns `Err` if the OS refuses the monitor thread
+    /// (e.g. thread exhaustion) — no `.expect`, so the caller decides (F-2 LOW).
+    pub fn start(config: SupervisorConfig) -> std::io::Result<Self> {
         let name = config.spec.name.clone();
+        let join_timeout = config.join_timeout;
         let shared = Arc::new(Shared {
             status: Mutex::new(SupervisorStatus {
                 name: name.clone(),
@@ -405,14 +437,14 @@ impl Supervisor {
         let monitor_shared = shared.clone();
         let monitor = std::thread::Builder::new()
             .name(format!("supervisor:{name}"))
-            .spawn(move || run_monitor(config, monitor_shared, rx))
-            .expect("supervisor monitor thread must spawn");
-        Supervisor {
+            .spawn(move || run_monitor(config, monitor_shared, rx))?;
+        Ok(Supervisor {
             shared,
             control: tx,
             monitor: Some(monitor),
             name,
-        }
+            join_timeout,
+        })
     }
 
     /// A cloneable, read-only status snapshot. Safe to poll from the Tauri
@@ -445,9 +477,28 @@ impl Supervisor {
 
     /// Tear the supervisor down entirely: stop the child and join the monitor
     /// thread. Called by `Drop`; exposed so callers can join deterministically.
+    ///
+    /// The join is BOUNDED by `join_timeout` (F-2): a `JoinHandle` has no timed
+    /// join in std, so we poll `is_finished()` up to the bound and only `join()`
+    /// once it has finished (an immediate, non-blocking join). If the monitor
+    /// has not finished within the bound — which cannot happen from a hung child
+    /// (SIGKILL escalation kills it within `stop_grace`) but could in principle
+    /// from a wedged detached probe thread — we DETACH rather than block teardown
+    /// forever. The detached monitor holds no supervisor lock and owns no live
+    /// child at that point (it terminates the child before exiting), so this is
+    /// safe: teardown returns and the process is not hung.
     pub fn shutdown(&mut self) {
         let _ = self.control.send(ControlMsg::Shutdown);
         if let Some(handle) = self.monitor.take() {
+            let deadline = std::time::Instant::now() + self.join_timeout;
+            while !handle.is_finished() {
+                if std::time::Instant::now() >= deadline {
+                    // Bound exceeded: detach (drop the handle) instead of an
+                    // unbounded `join()`. No orphan/lock is leaked (see doc).
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             let _ = handle.join();
         }
     }
@@ -619,10 +670,16 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
         backoff,
         crash_record_path,
         stop_grace,
+        healthy_after,
+        join_timeout: _join_timeout,
         clock,
     } = config;
 
-    // Consecutive-failure counter → drives the backoff delay + the Failed cap.
+    // CONSECUTIVE-failure counter → drives the backoff delay + the Failed cap.
+    // Reset to 0 once a respawned child stays Running for `healthy_after` (F-1),
+    // so an intermittently-crashing-but-recovering child is never permanently
+    // Failed — while a fast crash-loop (which never reaches `healthy_after`)
+    // never resets and still hits the cap.
     let mut consecutive_failures: u32 = 0;
 
     loop {
@@ -669,10 +726,21 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
         }
 
         // --- supervise: wait for exit OR a control message OR a health failure ---
-        let outcome =
-            supervise_running(&mut child, &control, spec.health_check.as_ref(), stop_grace);
+        let report = supervise_running(
+            &mut child,
+            &control,
+            spec.health_check.as_ref(),
+            healthy_after,
+            clock.as_ref(),
+        );
+        // F-1: a run that stayed healthy long enough resets the consecutive
+        // counter, so the NEXT crash starts a fresh backoff ramp and an
+        // intermittently-crashing child is never permanently Failed.
+        if report.sustained_healthy {
+            consecutive_failures = 0;
+        }
 
-        match outcome {
+        match report.outcome {
             RunOutcome::Stopped => {
                 // Intentional stop: NOT a crash. No record, no restart. Off.
                 terminate_child(&mut child, stop_grace);
@@ -763,51 +831,182 @@ enum RunOutcome {
     Stopped,
     /// A `Shutdown` control message arrived.
     Shutdown,
-    /// A health-check probe failed.
+    /// A health-check probe failed (returned `false`) or hung past its timeout.
     Unhealthy,
 }
 
+/// What `supervise_running` observed during one Running episode: how the episode
+/// ended (`outcome`) AND whether the child stayed continuously Running long
+/// enough (`>= healthy_after`, measured on the injected clock) to count as a
+/// SUSTAINED-healthy run. `sustained_healthy` is the F-1 reset trigger — the
+/// monitor resets `consecutive_failures` to 0 when it is set.
+struct RunReport {
+    outcome: RunOutcome,
+    sustained_healthy: bool,
+}
+
+/// A non-blocking, single-shot health-probe runner. The probe closure runs on
+/// its OWN thread so a probe that BLOCKS (or hangs forever) cannot stall the
+/// monitor's crash-detection / control-message handling (the F-2 liveness fix).
+/// The monitor polls `poll()` each loop; a probe that does not answer within the
+/// health interval is treated as unhealthy (a wedged probe is not "healthy").
+struct ProbeRunner {
+    handle: Option<JoinHandle<bool>>,
+}
+
+impl ProbeRunner {
+    /// Spawn the probe on its own thread. The closure is `Arc`-shared so the
+    /// monitor keeps supervising while it runs. Returns `None` if the OS refuses
+    /// the thread (treated by the caller as "no probe in flight").
+    fn spawn(probe: &Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        let p = probe.clone();
+        let handle = std::thread::Builder::new()
+            .name("supervisor:probe".into())
+            .spawn(move || p())
+            .ok();
+        ProbeRunner { handle }
+    }
+
+    /// Whether a probe is currently in flight.
+    fn in_flight(&self) -> bool {
+        self.handle.as_ref().is_some_and(|h| !h.is_finished())
+    }
+
+    /// If the probe thread has finished, join it and return its result; else
+    /// `None` (still running). Non-blocking.
+    fn poll(&mut self) -> Option<bool> {
+        match &self.handle {
+            Some(h) if h.is_finished() => {
+                // The thread is done; join is immediate. A panicked probe is
+                // treated as unhealthy (a probe that panicked did not attest
+                // health).
+                let h = self.handle.take().expect("checked Some");
+                Some(h.join().unwrap_or(false))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Wait while the child is Running: poll for exit, for a control message, and
-/// (if configured) run the health probe on its interval. Returns as soon as one
-/// of them fires. Uses short polling so a control message is handled promptly
-/// without a blocking `wait()` that would ignore the channel.
+/// (if configured) run the health probe OFF-THREAD on its interval. Returns as
+/// soon as one of them fires. Uses short polling so a control message is handled
+/// promptly without a blocking `wait()` that would ignore the channel, and the
+/// health probe never blocks this loop (F-2). Also measures how long the child
+/// has stayed continuously Running (on the injected `clock`) to decide whether
+/// the run was SUSTAINED-healthy (F-1 reset trigger).
 fn supervise_running(
     child: &mut Child,
     control: &Receiver<ControlMsg>,
     health: Option<&HealthCheck>,
-    _stop_grace: Duration,
-) -> RunOutcome {
+    healthy_after: Duration,
+    clock: &dyn Clock,
+) -> RunReport {
     let poll = Duration::from_millis(20);
     let mut since_probe = Duration::ZERO;
+    let started_ms = clock.now_unix_ms();
+    let healthy_after_ms = healthy_after.as_millis() as u64;
+    let mut sustained_healthy = false;
+    // In-flight off-thread probe + how long it has been running (for the timeout).
+    let mut probe: Option<ProbeRunner> = None;
+    let mut probe_elapsed = Duration::ZERO;
+    // A probe must answer within its own interval; a probe that has not answered
+    // by this bound is treated as unhealthy (wedged probe != healthy).
+    let probe_timeout = health.map(|hc| hc.interval).unwrap_or(Duration::ZERO);
+
+    // Helper: mark sustained-healthy once the child has been Running long enough.
+    macro_rules! refresh_health {
+        () => {
+            if !sustained_healthy {
+                let elapsed = clock.now_unix_ms().saturating_sub(started_ms);
+                if elapsed >= healthy_after_ms {
+                    sustained_healthy = true;
+                }
+            }
+        };
+    }
+
     loop {
+        refresh_health!();
         // 1) control message (non-blocking).
         match control.try_recv() {
-            Ok(ControlMsg::Stop) => return RunOutcome::Stopped,
-            Ok(ControlMsg::Shutdown) => return RunOutcome::Shutdown,
+            Ok(ControlMsg::Stop) => {
+                return RunReport {
+                    outcome: RunOutcome::Stopped,
+                    sustained_healthy,
+                }
+            }
+            Ok(ControlMsg::Shutdown) => {
+                return RunReport {
+                    outcome: RunOutcome::Shutdown,
+                    sustained_healthy,
+                }
+            }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 // Controller dropped → treat as shutdown (no orphan).
-                return RunOutcome::Shutdown;
+                return RunReport {
+                    outcome: RunOutcome::Shutdown,
+                    sustained_healthy,
+                };
             }
         }
         // 2) child exit (non-blocking reap).
         match child.try_wait() {
-            Ok(Some(status)) => return RunOutcome::Crashed { status },
+            Ok(Some(status)) => {
+                return RunReport {
+                    outcome: RunOutcome::Crashed { status },
+                    sustained_healthy,
+                }
+            }
             Ok(None) => {}
             Err(_) => {
                 // Cannot query the child; treat as crashed so we recover.
-                return RunOutcome::Crashed {
-                    status: default_failed_status(),
+                return RunReport {
+                    outcome: RunOutcome::Crashed {
+                        status: default_failed_status(),
+                    },
+                    sustained_healthy,
                 };
             }
         }
-        // 3) health probe on its interval.
+        // 3) health probe, run OFF-THREAD and bounded by a timeout so it can
+        //    never stall this loop (F-2).
         if let Some(hc) = health {
-            since_probe += poll;
-            if since_probe >= hc.interval {
-                since_probe = Duration::ZERO;
-                if !(hc.probe)() {
-                    return RunOutcome::Unhealthy;
+            match &mut probe {
+                // A probe is in flight: check for its result or a timeout.
+                Some(runner) => {
+                    if let Some(healthy) = runner.poll() {
+                        probe = None;
+                        probe_elapsed = Duration::ZERO;
+                        if !healthy {
+                            return RunReport {
+                                outcome: RunOutcome::Unhealthy,
+                                sustained_healthy,
+                            };
+                        }
+                    } else {
+                        probe_elapsed += poll;
+                        if probe_elapsed >= probe_timeout {
+                            // The probe is wedged past its interval — unhealthy.
+                            // We DROP the runner (its detached thread may still
+                            // be blocked, but it holds no supervisor lock and
+                            // cannot block teardown). Restart recovers the child.
+                            return RunReport {
+                                outcome: RunOutcome::Unhealthy,
+                                sustained_healthy,
+                            };
+                        }
+                    }
+                }
+                // No probe in flight: start one when the interval elapses.
+                None => {
+                    since_probe += poll;
+                    if since_probe >= hc.interval {
+                        since_probe = Duration::ZERO;
+                        probe = Some(ProbeRunner::spawn(&hc.probe));
+                        probe_elapsed = Duration::ZERO;
+                    }
                 }
             }
         }
