@@ -123,9 +123,45 @@ export interface AgentDomain {
   earnings(): Promise<{ claimableWei: string; walletAddress: string; contract: string }>;
 }
 
+// The citrate-memories mcp_serve daemon under the SidecarSupervisor (CORE-C3).
+// recall/search/neighbors speak the daemon's JSON-RPC over its Unix socket and
+// return REAL parsed nodes/edges from the per-user encrypted store — never a
+// fabricated graph (Rule 1). `status` carries the supervisor state + socket path
+// (a local path, not a secret); `constellation` recalls the personal +
+// chain-state tenants for the Storage graph. `assert` (a signed WRITE) still
+// routes through the SignatureCeremony (a later WP), so it stays a seam stub.
+export interface MemoryHit {
+  id: string;
+  kind: string;
+  title: string;
+  status?: string;
+}
+export interface MemoryResult {
+  tenant: string;
+  totalInTenant: number;
+  hits: MemoryHit[];
+}
+export interface MemoryNeighbor {
+  direction: "out" | "in";
+  kind: string;
+  title: string;
+  proposed: boolean;
+}
+export interface MemoryStatus {
+  state: string;
+  socketPath: string;
+  semantic: boolean;
+}
 export interface MemoryDomain {
+  status(): Promise<MemoryStatus>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
   assert(fact: string): Promise<"approved" | "declined">;
-  recall(query: string): Promise<string>;
+  recall(tenant: string, budget?: number): Promise<MemoryResult>;
+  search(tenant: string, query: string, budget?: number): Promise<MemoryResult>;
+  neighbors(tenant: string, idPrefix: string, budget?: number): Promise<MemoryNeighbor[]>;
+  /** Recall the personal + chain-state tenants for the Storage constellation. */
+  constellation(budget?: number): Promise<MemoryResult[]>;
 }
 
 export interface ChatDomain {

@@ -1,21 +1,30 @@
 // =====================================================================
 // citrate-core — Storage surface (1:1 from design/CitrateCore.dc.html
 // "===== STORAGE =====" section). The 2.5D memory constellation
-// (personal + chain-facts tenants), graph search, lexical/semantic mode
+// (personal + chain-state tenants), graph search, lexical/semantic mode
 // with an honest embedding-model download, tenant counts, and the local
 // memory MCP endpoint.
 //
-// Data source — the graph is served by the local memory MCP socket
-// (s.socketPath); tenant counts, node labels/details, and links come from
-// that store. Wiring replaces the seed GRAPH module, not this UI (Rule 1).
+// Data source — CORE-C3: the graph is served by the REAL mcp_serve daemon
+// over its Unix socket. `bridge.memory.constellation()` recalls the personal +
+// chain-state tenants from the per-user local store (at-rest encryption is a
+// v2 item — see memory.rs; the store is NOT encrypted on disk today); nodes/labels/tenant
+// counts come from that store. A deterministic layout places the real nodes.
+// When the daemon is not running / the socket is unreachable, the surface shows
+// an HONEST offline/empty state — never a fabricated (seed) graph (Rule 1).
+// The UI is unchanged from the design; only the seed GRAPH module is replaced.
 // Renders in the Instrument (dark) register — no data-register wrapper.
 // =====================================================================
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { SurfaceProps } from "./shared";
-import { GRAPH } from "../data/seed";
+import { bridge } from "../bridge";
+import type { MemGraph, MemGraphNode } from "../shell/state";
 
-// tenant → node colour (matches --z-green / --z-cyan; verbatim from design)
+// tenant → node colour (matches --z-green / --z-cyan; verbatim from design).
+// The REAL chain tenant is "chain-state" (the daemon's name); "chain-facts" is
+// kept as an alias so the design copy and any legacy label both map to cyan.
 const col = (t: string) => (t === "personal" ? "#8ecc09" : "#4cc3d5");
+const isChain = (t: string) => t === "chain-state" || t === "chain-facts";
 
 const prefersReducedMotion = (): boolean => {
   try {
@@ -26,17 +35,59 @@ const prefersReducedMotion = (): boolean => {
 };
 
 /**
+ * Deterministic layout for the REAL store nodes: personal nodes on the left,
+ * chain-state on the right, each ringed by tenant so the same store always
+ * lays out identically (no RNG — the layout is a pure function of the node ids
+ * and their order, so re-fetching does not jitter the constellation).
+ */
+function layoutGraph(tenants: { tenant: string; totalInTenant: number }[], rawNodes: { id: string; label: string; tenant: string; kind: string }[]): MemGraph {
+  const centers: Record<string, { cx: number; cy: number }> = {
+    personal: { cx: 430, cy: 280 },
+    "chain-state": { cx: 830, cy: 280 },
+    "chain-facts": { cx: 830, cy: 280 },
+  };
+  const perTenant: Record<string, number> = {};
+  const nodes: MemGraphNode[] = rawNodes.map((n, i) => {
+    const c = centers[n.tenant] ?? { cx: 630, cy: 280 };
+    const k = (perTenant[n.tenant] = (perTenant[n.tenant] ?? 0) + 1) - 1;
+    // Ring placement: golden-angle-ish deterministic spiral for a calm spread.
+    const ang = k * 2.399963; // golden angle in radians
+    const rad = 34 + k * 15;
+    return {
+      id: n.id,
+      label: n.label,
+      tenant: n.tenant,
+      kind: n.kind,
+      detail: `${n.kind} · tenant ${n.tenant}`,
+      x: c.cx + Math.cos(ang) * rad,
+      y: c.cy + Math.sin(ang) * rad,
+      z: 0.85 + ((i % 5) * 0.12),
+    };
+  });
+  // Links: connect each node to the previous node in its tenant (a stable spine)
+  // — the real per-edge blast-radius is a memory.neighbors fetch on selection.
+  const byTenant: Record<string, string[]> = {};
+  nodes.forEach((n) => (byTenant[n.tenant] = byTenant[n.tenant] ?? []).push(n.id));
+  const links: [string, string][] = [];
+  Object.values(byTenant).forEach((ids) => {
+    for (let i = 1; i < ids.length; i++) links.push([ids[i - 1], ids[i]]);
+  });
+  return { nodes, links, tenants };
+}
+
+/**
  * The 2.5D memory constellation. Ported faithfully from the design's
  * constellation() method: draws the link lines (every 5th a slow "comet"),
  * then each node as a soft halo + core + mono label. Pan by dragging the
  * canvas; click a node to select, click empty space to deselect. The comet
- * animation is suppressed under prefers-reduced-motion.
+ * animation is suppressed under prefers-reduced-motion. Now driven by the REAL
+ * memory graph (`s.memGraph`) instead of the seed module.
  */
-function Constellation({ store, s }: SurfaceProps) {
+function Constellation({ store, s, graph }: SurfaceProps & { graph: MemGraph }) {
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const reduce = prefersReducedMotion();
 
-  const G = GRAPH;
+  const G = graph;
   const byId: Record<string, (typeof G.nodes)[number]> = {};
   G.nodes.forEach((n) => {
     byId[n.id] = n;
@@ -105,14 +156,65 @@ function Constellation({ store, s }: SurfaceProps) {
   );
 }
 
+/** An honest offline/empty panel — shown when the memory daemon is not running
+ * or its socket is unreachable. NEVER a sim graph (Rule 1). */
+function ConstellationOffline({ state }: { state: "loading" | "unavailable" | "idle" }) {
+  const msg =
+    state === "loading"
+      ? "Connecting to your memory graph…"
+      : "Memory daemon offline — start it to load your graph.";
+  return (
+    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6 }}>
+      <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>{msg}</span>
+      <span className="mono" style={{ fontSize: 10, color: "var(--tx-4, var(--tx-3))" }}>no fabricated nodes are shown</span>
+    </div>
+  );
+}
+
 export function Storage({ store, s }: SurfaceProps) {
-  const selNode = s.sel ? GRAPH.nodes.find((n) => n.id === s.sel) : null;
+  // CORE-C3: fetch the REAL constellation from the mcp_serve daemon on mount.
+  // A transport failure (daemon not running) is honest: memGraphState becomes
+  // "unavailable" and the surface shows an offline state — never seed data.
+  useEffect(() => {
+    let cancelled = false;
+    store.setState({ memGraphState: "loading" });
+    bridge.memory
+      .constellation()
+      .then((tenants) => {
+        if (cancelled) return;
+        const rawNodes = tenants.flatMap((t) =>
+          t.hits.map((h) => ({ id: h.id, label: h.title, tenant: t.tenant, kind: h.kind }))
+        );
+        const graph = layoutGraph(
+          tenants.map((t) => ({ tenant: t.tenant, totalInTenant: t.totalInTenant })),
+          rawNodes
+        );
+        store.setState({ memGraph: graph, memGraphState: "ready" });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Honest: the daemon is not running / unreachable. Show offline, not seed.
+        store.setState({ memGraph: undefined, memGraphState: "unavailable" });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const graph = s.memGraph;
+  const ready = s.memGraphState === "ready" && !!graph;
+
+  const selNode = ready && s.sel ? graph!.nodes.find((n) => n.id === s.sel) : null;
   const selColor = selNode ? (selNode.tenant === "personal" ? "#8ecc09" : "#4cc3d5") : "#8ecc09";
 
   const modelBarW = (s.modelPct | 0) + "%";
   const modelPctStr = (((s.modelPct / 100) * 440) | 0) + " MB";
-  const personalCount = GRAPH.nodes.filter((n) => n.tenant === "personal").length;
-  const chainCount = GRAPH.nodes.filter((n) => n.tenant === "chain-facts").length;
+  // Tenant totals are the REAL daemon-reported counts (never a fabricated number).
+  const tenantTotal = (pred: (t: string) => boolean) =>
+    (graph?.tenants ?? []).filter((t) => pred(t.tenant)).reduce((a, t) => a + t.totalInTenant, 0);
+  const personalCount = tenantTotal((t) => t === "personal");
+  const chainCount = tenantTotal(isChain);
 
   const onSemantic = () => {
     store.setState({ storageMode: "dl", modelPct: 0 });
@@ -122,7 +224,7 @@ export function Storage({ store, s }: SurfaceProps) {
     store.copy('{"mcpServers":{"citrate-memory":{"command":"mcp_connect","args":["' + s.socketPath + '"]}}}', "Agent config copied");
 
   const gq = (s.graphQ || "").toLowerCase();
-  const gMatches = gq.length >= 2 ? GRAPH.nodes.filter((n) => (n.label + " " + n.detail).toLowerCase().indexOf(gq) >= 0) : [];
+  const gMatches = ready && gq.length >= 2 ? graph!.nodes.filter((n) => (n.label + " " + n.detail).toLowerCase().indexOf(gq) >= 0) : [];
   const qMatches = gMatches.slice(0, 4).map((n) => ({
     id: n.id,
     label: n.label,
@@ -134,7 +236,7 @@ export function Storage({ store, s }: SurfaceProps) {
       <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Storage</span>
         <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-          per-user memory graph · encrypted · yours
+          per-user memory graph · local · yours
         </span>
         <span style={{ marginLeft: "auto", display: "flex", gap: 14 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -146,7 +248,7 @@ export function Storage({ store, s }: SurfaceProps) {
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--z-cyan)" }}></span>
             <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-              chain-facts
+              chain-state
             </span>
           </span>
         </span>
@@ -155,7 +257,11 @@ export function Storage({ store, s }: SurfaceProps) {
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 300px", gap: 16, flex: 1, minHeight: 420 }}>
         {/* constellation canvas */}
         <div className="surface" style={{ position: "relative", overflow: "hidden", minHeight: 0, background: "var(--srf-inset)" }}>
-          <Constellation store={store} s={s} />
+          {ready ? (
+            <Constellation store={store} s={s} graph={graph!} />
+          ) : (
+            <ConstellationOffline state={s.memGraphState === "ready" ? "loading" : (s.memGraphState as "loading" | "unavailable" | "idle")} />
+          )}
           {selNode && (
             <div
               className="cc-fade-up"
@@ -252,17 +358,17 @@ export function Storage({ store, s }: SurfaceProps) {
             <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span style={{ fontSize: 12.5 }}>personal</span>
               <span className="mono tabular" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                {personalCount} nodes
+                {ready ? `${personalCount} nodes` : "—"}
               </span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 12.5 }}>chain-facts</span>
+              <span style={{ fontSize: 12.5 }}>chain-state</span>
               <span className="mono tabular" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                {chainCount} nodes
+                {ready ? `${chainCount} nodes` : "—"}
               </span>
             </div>
             <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0, borderTop: "1px solid var(--line-1)", paddingTop: 8 }}>
-              chain-facts carries network params, the 40204 contract catalog, and your own wallet and validator events. Full chain-state ingest is upcoming — this is the honest v1 subset.
+              chain-state carries network params, the 40204 contract catalog, and your own wallet and validator events. Full chain-state ingest is upcoming — this is the honest v1 subset.
             </p>
           </div>
 

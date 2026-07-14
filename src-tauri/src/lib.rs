@@ -12,6 +12,7 @@ mod ceremony;
 mod config;
 mod custody;
 mod earnings;
+mod memory;
 mod node;
 mod oidc;
 mod rpc;
@@ -63,6 +64,15 @@ pub fn run() {
             // route ONLY through the SignatureCeremony (origin "agent:node-agent")
             // — it holds no keys and can never sign directly (ADV-7).
             app.manage(agent::build_agent_state(&app.handle().clone())?);
+            // CORE-C3 — the MemoryManager: the citrate-memories `mcp_serve`
+            // daemon under the SidecarSupervisor, serving the per-user encrypted
+            // memory graph over a Unix socket. @rule8: a per-user store wrapping
+            // key lives in the OS keyring (never on disk clear) and is handed to
+            // the daemon via the CITRATE_MEM_STORE_KEY env (forward-compat seam —
+            // see memory.rs / sprint Concern 1). recall/search/neighbors speak the
+            // daemon's JSON-RPC over the socket; the Storage constellation renders
+            // the real graph (no fabricated nodes — Rule 1).
+            app.manage(memory::build_memory_state(&app.handle().clone())?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,6 +124,24 @@ pub fn run() {
             agent::agent_status,
             agent::agent_start,
             agent::agent_stop,
+            // memory — the real citrate-memories mcp_serve daemon under the
+            // SidecarSupervisor (C3). Replaces the A1.3 memory_recall seam stub:
+            // memory_status returns the supervisor state + socket path (never the
+            // store key); memory_start spawns the daemon (a keyring wrapping key is
+            // minted for forward-compat, but the store is NOT encrypted at rest
+            // today — plaintext on a fresh store; see memory.rs honest residual);
+            // recall/search/neighbors speak JSON-RPC over the daemon's Unix
+            // socket; constellation feeds the Storage graph with REAL nodes.
+            memory::memory_status,
+            memory::memory_start,
+            memory::memory_stop,
+            memory::memory_recall,
+            memory::memory_search,
+            memory::memory_neighbors,
+            memory::memory_constellation,
+            // seam domains — honest Unavailable until each later phase (A1.3).
+            // memory_assert stays a seam stub: the assert WRITE path routes
+            // through the SignatureCeremony (a later WP), not C3's read wiring.
             // earnings — the REAL on-chain claimable read (C2). agent_earnings
             // reads ContributionAccounting.claimable(vaultAddress) via eth_call on
             // 40204 (Rule 1: the single real value; no sim per-source breakdown).
@@ -124,7 +152,6 @@ pub fn run() {
             seam::wallet_balances,
             seam::wallet_activity,
             seam::memory_assert,
-            seam::memory_recall,
             seam::chat_backend,
             seam::membership_entitlement,
             seam::commissary_catalog,

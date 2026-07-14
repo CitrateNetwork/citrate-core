@@ -113,6 +113,24 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "agent_start":
     case "agent_stop":
       return undefined;
+    // CORE-C3 memory — the mcp_serve daemon under the SidecarSupervisor. status
+    // returns supervisor state + socket path (NEVER the store key); recall/
+    // search/neighbors/constellation return REAL parsed nodes from the store.
+    case "memory_status":
+      return { state: "running", socketPath: "/tmp/memdag.sock", semantic: false };
+    case "memory_start":
+    case "memory_stop":
+      return undefined;
+    case "memory_recall":
+    case "memory_search":
+      return { tenant: (args?.tenant as string) ?? "personal", totalInTenant: 2, hits: [{ id: "0a1b2c3d4e", kind: "ChainContract", title: "LiquidStakingPool" }] };
+    case "memory_neighbors":
+      return [{ direction: "out", kind: "References", title: "chain 40204 params", proposed: false }];
+    case "memory_constellation":
+      return [
+        { tenant: "personal", totalInTenant: 1, hits: [{ id: "aa11", kind: "Doc", title: "note" }] },
+        { tenant: "chain-state", totalInTenant: 1, hits: [{ id: "bb22", kind: "ChainNetwork", title: "chain 40204 params" }] },
+      ];
     // CORE-C2 earnings — the REAL claimable from
     // ContributionAccounting.claimable(addr) via eth_call. Returns the single
     // real claimable (wei) + its data source; NO per-source breakdown.
@@ -184,7 +202,9 @@ describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", 
     // NOTE: `auth` (CORE-A3) and `node` (CORE-C1.1) are now genuinely wired and
     // are asserted separately.
     const calls = [
-      () => bridge.memory.recall("x"),
+      // memory.assert (a signed WRITE) stays a seam stub until it routes through
+      // the ceremony; recall/search/neighbors are now genuinely wired (C3).
+      () => bridge.memory.assert("x"),
       () => bridge.membership.entitlement(),
       () => bridge.commissary.catalog(),
       () => bridge.comms.connections(),
@@ -361,5 +381,48 @@ describe("tauri adapter — agent domain is wired to the real node-agent (C1.2)"
     expect(e.contract).toBe("0xcdd2477387279c7d44a1053f44db5dac0fd8faef");
     // The response carries ONLY the single claimable — no per-source breakdown.
     expect(Object.keys(e).sort()).toEqual(["claimableWei", "contract", "walletAddress"]);
+  });
+});
+
+// CORE-C3 — the memory domain invokes the real mcp_serve daemon commands under
+// the SidecarSupervisor. recall/search/neighbors/constellation return REAL
+// parsed nodes from the per-user encrypted store; status carries the socket path
+// but NEVER the store wrapping key. No sim graph is presented as live (Rule 1).
+describe("tauri adapter — memory domain is wired to the real mcp_serve daemon (C3)", () => {
+  it("status invokes memory_status, carries the socket path, NEVER the store key", async () => {
+    const bridge = createTauriBridge();
+    const st = await bridge.memory.status();
+    expect(invokeMock).toHaveBeenCalledWith("memory_status", undefined);
+    expect(st.socketPath).toBe("/tmp/memdag.sock");
+    expect(st.semantic).toBe(false);
+    // No key material ever crosses the bridge.
+    expect(JSON.stringify(st)).not.toContain("key");
+    expect(JSON.stringify(st)).not.toMatch(/[0-9a-f]{64}/i);
+  });
+
+  it("recall/search invoke the real tools and pass the tenant + parsed hits through", async () => {
+    const bridge = createTauriBridge();
+    const r = await bridge.memory.recall("chain-state", 15);
+    expect(invokeMock).toHaveBeenCalledWith("memory_recall", { tenant: "chain-state", budget: 15 });
+    expect(r.tenant).toBe("chain-state");
+    expect(r.hits[0].title).toBe("LiquidStakingPool");
+    await bridge.memory.search("personal", "telemetry");
+    expect(invokeMock).toHaveBeenCalledWith("memory_search", { tenant: "personal", query: "telemetry", budget: undefined });
+  });
+
+  it("neighbors + constellation invoke real commands and never fabricate a graph", async () => {
+    const bridge = createTauriBridge();
+    const nbs = await bridge.memory.neighbors("personal", "0a1b2c3d4e");
+    expect(invokeMock).toHaveBeenCalledWith("memory_neighbors", { tenant: "personal", idPrefix: "0a1b2c3d4e", budget: undefined });
+    expect(nbs[0].direction).toBe("out");
+    const graph = await bridge.memory.constellation();
+    expect(invokeMock).toHaveBeenCalledWith("memory_constellation", { budget: undefined });
+    // The real graph carries both tenants — personal + the REAL chain-state name.
+    expect(graph.map((t) => t.tenant).sort()).toEqual(["chain-state", "personal"]);
+  });
+
+  it("memory.assert (a signed WRITE) is still honestly Unavailable until the ceremony WP", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.memory.assert("x")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 });
