@@ -213,6 +213,12 @@ pub enum CeremonyError {
     /// A transaction intent's payload could not be decoded to signable legacy-tx
     /// fields at broadcast time (B1.4) — e.g. calldata present with no gas.
     UndecodableTransaction,
+    /// F-2 (B1.5): the tx intent's `from` does not match the vault wallet
+    /// address. Caught BEFORE any nonce-fetch/sign so the ceremony never signs a
+    /// tx the vault key cannot author, and never leaks the mismatch to the node
+    /// as a downstream nonce/sender rejection. Carries NO key material — only the
+    /// (public) claimed-vs-actual addresses, so the human sees why it was refused.
+    FromMismatch { claimed: String, wallet: String },
     /// The signed tx could not be broadcast / confirmed on 40204 (B1.4). Carries
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
@@ -235,6 +241,10 @@ impl std::fmt::Display for CeremonyError {
             CeremonyError::UndecodableTransaction => {
                 write!(f, "ceremony: transaction payload is not signable legacy-tx")
             }
+            CeremonyError::FromMismatch { claimed, wallet } => write!(
+                f,
+                "ceremony: tx `from` ({claimed}) does not match this wallet ({wallet})"
+            ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
         }
     }
@@ -457,6 +467,27 @@ impl SignatureCeremony {
         // cannot re-approve this id.
         let (parsed, _display) = crate::txdecode::decode_transaction(&pending.intent.raw)
             .ok_or(CeremonyError::UndecodableTransaction)?;
+
+        // F-2 (B1.5): assert the tx `from` is THIS vault's wallet address BEFORE
+        // any nonce-fetch/sign. A dApp (or a spoofing origin) can name any `from`;
+        // if it is not the address the vault key derives to, the signed tx would
+        // be authored by the wrong sender and the node would reject it downstream
+        // on a nonce/sender mismatch — an opaque failure with a live-RPC round
+        // trip already spent. Catch it here with a CLEAR, key-free error and sign
+        // NOTHING. The compare is case-insensitive (the wallet emits lowercase
+        // hex; a dApp may send EIP-55 checksummed). An ABSENT `from` is left to
+        // the nonce block below (a dApp that omits `from` must supply a nonce, or
+        // it errors `UndecodableTransaction`) — we cannot mismatch what was not
+        // claimed, and no wrong-sender tx can be produced without a `from`.
+        if let Some(claimed) = parsed.from.as_deref() {
+            let wallet = wallet::address(vault)?.address;
+            if !claimed.eq_ignore_ascii_case(&wallet) {
+                return Err(CeremonyError::FromMismatch {
+                    claimed: claimed.to_string(),
+                    wallet,
+                });
+            }
+        }
 
         // Nonce + gas price from the LIVE RPC (Rule 1 — never hardcoded). The
         // `from` the dApp names sources the pending nonce; absent a `from` we

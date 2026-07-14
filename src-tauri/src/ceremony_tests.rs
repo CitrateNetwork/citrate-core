@@ -72,6 +72,23 @@ fn vault_with_wallet() -> (CustodyVault, PathBuf) {
     (v, p)
 }
 
+/// A fresh vault over a temp envelope + in-memory keyring, initialized and
+/// unlocked, but with NO wallet stored (for the B1.5-R2 absent-slot contrast).
+fn vault_no_wallet() -> (CustodyVault, PathBuf) {
+    let mut p = std::env::temp_dir();
+    let uniq = format!("citrate-core-ceremony-nowallet-{}-{}.enc", std::process::id(), {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        N.fetch_add(1, Ordering::Relaxed)
+    });
+    p.push(uniq);
+    let _ = std::fs::remove_file(&p);
+    let v = CustodyVault::new(Box::new(FakeKeyring::default()), p.clone(), 0);
+    v.init(&mut PASS.to_vec()).expect("init");
+    v.unlock(&mut PASS.to_vec()).expect("unlock");
+    (v, p)
+}
+
 /// A `personal_sign` intent over a UTF-8 message (decodable → not raw-gated).
 fn personal_sign_intent(msg: &str) -> SignatureIntent {
     SignatureIntent {
@@ -183,57 +200,84 @@ fn integration_reject_consumes_without_signature() {
 
 #[test]
 fn adv1_adv7_signer_only_reachable_via_approve() {
-    // STRUCTURAL call-site proof against the real sources. `wallet::sign_message`
-    // is `pub(crate)`; the ONLY sanctioned call is `ceremony::approve`. Enumerate
-    // every crate source and assert the only NON-DEFINITION, NON-TEST reference to
-    // the signer is inside ceremony.rs.
+    // STRUCTURAL call-site proof against the real sources. BOTH gated signers —
+    // `wallet::sign_message` (B1.2) AND `wallet::sign_transaction` (B1.4) — are
+    // `pub(crate)`; the ONLY sanctioned call sites are in `ceremony.rs`
+    // (`approve` signs messages; `approve_and_broadcast` signs transactions).
+    // Enumerate every crate source and assert the only NON-DEFINITION, NON-TEST
+    // reference to EITHER signer is inside ceremony.rs.
     //
-    // NEGATIVE CONTROL (stated): add `let _ = wallet::sign_message(vault, b"x");`
-    // to ANY module other than ceremony.rs (e.g. a seam command, an oidc helper),
-    // or register a `#[tauri::command]` that calls it, and this test fails — that
-    // is the "sidecar/agent/other-path signs" attack (B1.2-ADV-1/7) we forbid.
-    // Also: widening the signer back to `pub` would let an out-of-crate sidecar
-    // call it; `pub(crate)` (asserted below) closes that.
+    // F-1 (B1.5, from citrate-security #23 / B1.4 review): the B1.4 review noted
+    // this guard covered ONLY `sign_message`, leaving `sign_transaction`
+    // structurally ungated. Both signers must be reachable ONLY from ceremony
+    // approval. This test now scans for BOTH so the tx signer cannot be invoked
+    // from a sidecar/agent/command bypass either.
+    //
+    // NEGATIVE CONTROL (stated + reproduced in the PR return): add
+    // `let _ = wallet::sign_message(vault, b"x");` OR
+    // `let _ = wallet::sign_transaction(vault, &fields, 40204);` to ANY module
+    // other than ceremony.rs (a seam command, an oidc helper), or register a
+    // `#[tauri::command]` that calls either, and this test fails — that is the
+    // "sidecar/agent/other-path signs" attack (ADV-1/ADV-7) we forbid. Also:
+    // widening EITHER signer back to `pub` would let an out-of-crate sidecar call
+    // it; `pub(crate)` (asserted below) closes that.
     let sources: &[(&str, &str)] = &[
         ("wallet.rs", include_str!("wallet.rs")),
         ("custody.rs", include_str!("custody.rs")),
         ("oidc.rs", include_str!("oidc.rs")),
         ("seam.rs", include_str!("seam.rs")),
         ("config.rs", include_str!("config.rs")),
+        ("rpc.rs", include_str!("rpc.rs")),
+        ("txdecode.rs", include_str!("txdecode.rs")),
         ("lib.rs", include_str!("lib.rs")),
     ];
-    // Assemble the needle from parts so this test's own prose cannot self-match.
-    let call = "sign_".to_string() + "message(";
+    // Assemble each needle from parts so this test's own prose cannot self-match.
+    // BOTH signer invocation forms are forbidden outside ceremony.rs.
+    let calls = [
+        "sign_".to_string() + "message(",
+        "sign_".to_string() + "transaction(",
+    ];
     for (name, src) in sources {
-        // Strip the test module of wallet.rs (its B1.1 tests legitimately call the
-        // signer) so we only scan non-test code. We look for the call form
-        // `sign_message(` used as an invocation, not the `fn sign_message` def.
+        // Strip the test module (wallet.rs's B1.1/B1.4 tests legitimately call the
+        // signers) so we only scan non-test code. We look for the call forms
+        // `sign_message(` / `sign_transaction(` used as invocations, not the
+        // `fn sign_message` / `fn sign_transaction` defs.
         let non_test = strip_test_module(src);
         for line in non_test.lines() {
             let t = line.trim_start();
-            if t.contains(&call) && !t.contains("fn sign_") && !t.starts_with("//") {
-                panic!(
-                    "{name}: the gated signer is invoked outside ceremony::approve: `{}`",
-                    line.trim()
-                );
+            for call in &calls {
+                if t.contains(call) && !t.contains("fn sign_") && !t.starts_with("//") {
+                    panic!(
+                        "{name}: a gated signer is invoked outside ceremony approval: `{}`",
+                        line.trim()
+                    );
+                }
             }
         }
     }
-    // The signer IS invoked from ceremony.rs (positive control — the one path).
+    // BOTH signers ARE invoked from ceremony.rs (positive control — the one path
+    // each: approve → sign_message, approve_and_broadcast → sign_transaction).
     let ceremony_src = include_str!("ceremony.rs");
     let ceremony_non_test = strip_test_module(ceremony_src);
-    assert!(
-        ceremony_non_test.contains(&call),
-        "the sanctioned path (ceremony::approve) must invoke the signer"
-    );
-    // The signer is `pub(crate)`, not `pub` — an out-of-crate sidecar cannot reach
-    // it. NEGATIVE CONTROL: change `pub(crate) fn sign_message` back to `pub fn`
-    // and this assertion fails.
+    for call in &calls {
+        assert!(
+            ceremony_non_test.contains(call),
+            "the sanctioned path (ceremony approval) must invoke the gated signer `{call}`"
+        );
+    }
+    // BOTH signers are `pub(crate)`, not `pub` — an out-of-crate sidecar cannot
+    // reach either. NEGATIVE CONTROL: change `pub(crate) fn sign_message` or
+    // `pub(crate) fn sign_transaction` back to `pub fn` and this fails.
     let wallet_src = include_str!("wallet.rs");
     assert!(
-        wallet_src.contains("pub(crate) fn sign_")
+        wallet_src.contains("pub(crate) fn sign_message")
             && !wallet_src.contains("pub fn sign_message"),
-        "the signer must be pub(crate) (crate-private), never pub"
+        "the message signer must be pub(crate) (crate-private), never pub"
+    );
+    assert!(
+        wallet_src.contains("pub(crate) fn sign_transaction")
+            && !wallet_src.contains("pub fn sign_transaction"),
+        "the transaction signer must be pub(crate) (crate-private), never pub"
     );
 }
 
@@ -344,6 +388,42 @@ fn adv3_approve_while_locked_fails_closed() {
     v.unlock(&mut PASS.to_vec()).expect("re-unlock");
     let v2 = c.request(personal_sign_intent("after unlock"));
     assert!(c.approve(&v, &v2.id, false).is_ok(), "signing works again after unlock");
+}
+
+#[test]
+fn b1_5_r2_locked_approve_surfaces_vault_locked_not_no_wallet() {
+    // B1.2-R2 (CLOSED in B1.5): a LOCKED-vault approve on a vault that HAS a
+    // wallet now surfaces the crisper `VaultLocked`, not `NoWallet`. Pre-B1.5,
+    // `read_entropy` mapped a locked-vault `custody_get` Denial to `NotFound` →
+    // `NoWallet` (no locked-vs-absent oracle in custody), so the user got a
+    // misleading "no wallet" hint on a locked vault. B1.5 consults the
+    // passphrase-INDEPENDENT `is_unlocked()` (no new oracle) so locked → Custody
+    // → VaultLocked. Still fail-closed (no signature).
+    //
+    // NEGATIVE CONTROL (stated): revert `read_entropy`'s is_unlocked() branch
+    // (map every Denied → NotFound) and this asserts NoWallet instead — the exact
+    // R2 mislabel. The security property (a closed error, no sig) is unchanged;
+    // only the label improves.
+    let (v, _p) = vault_with_wallet(); // a wallet IS stored
+    let c = SignatureCeremony::new();
+    let view = c.request(personal_sign_intent("lock then approve"));
+    v.lock();
+    let r = c.approve(&v, &view.id, false);
+    assert_eq!(
+        r.err(),
+        Some(CeremonyError::VaultLocked),
+        "a locked approve on a wallet-bearing vault must surface VaultLocked (R2), not NoWallet"
+    );
+    // Contrast: a vault with NO wallet, UNLOCKED, still surfaces NoWallet (the
+    // is_unlocked() branch correctly distinguishes absent-slot from locked).
+    let (empty, _pe) = vault_no_wallet();
+    let c2 = SignatureCeremony::new();
+    let ev = c2.request(personal_sign_intent("no wallet here"));
+    assert_eq!(
+        c2.approve(&empty, &ev.id, false).err(),
+        Some(CeremonyError::NoWallet),
+        "an UNLOCKED vault with no wallet stored must surface NoWallet (absent slot)"
+    );
 }
 
 // =========================================================================
@@ -573,12 +653,199 @@ fn ceremony_errors_are_secret_free() {
         CeremonyError::SignFailed,
         CeremonyError::UndecodableTransaction,
         CeremonyError::Broadcast("node: insufficient funds".into()),
+        CeremonyError::FromMismatch {
+            claimed: "0x000000000000000000000000000000000000dead".into(),
+            wallet: "0x000000000000000000000000000000000000beef".into(),
+        },
     ] {
         let s = format!("{e} {e:?}");
         // No error carries the canonical mnemonic or any hex-looking key blob.
         assert!(!s.to_lowercase().contains("abandon"), "no mnemonic in error text");
+        // NOTE: FromMismatch deliberately carries PUBLIC addresses (claimed +
+        // actual) so the human can see why a tx was refused; those are not
+        // secret. The canonical ADDRESS assertion is scoped to the variants that
+        // must not echo it — FromMismatch is constructed above with placeholder
+        // (0x…dead / 0x…beef) addresses precisely so this sweep still holds.
         assert!(!s.contains(CANONICAL_ADDRESS), "errors do not echo addresses/keys");
     }
+}
+
+// =========================================================================
+// B1.5-ADV-8 (cross-cutting) — no key/seed/mnemonic/entropy in errors or Debug
+// across the WHOLE custody path: wallet + ceremony + rpc + txdecode. Individual
+// modules assert this locally (wallet_tests::adv_s, custody_tests::adv7,
+// ceremony_errors_are_secret_free); B1.5 consolidates a single sweep spanning
+// all four surfaces + the real ParsedTx Debug (which carries the `from` address
+// but NOT calldata secrets) so the reviewer has ONE cross-cutting ADV-8 anchor.
+// (This is the @rule8 consolidation the sprint asks for — not new product.)
+// =========================================================================
+
+#[test]
+fn adv8_no_secret_across_wallet_ceremony_rpc_txdecode() {
+    use crate::rpc::RpcError;
+
+    // Drive a REAL create on a fresh vault so we have a live mnemonic/entropy to
+    // hunt for, then assert NONE of it leaks through any error/Debug on the path.
+    let mut p = std::env::temp_dir();
+    p.push(format!("citrate-core-adv8-{}-{}.enc", std::process::id(), {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        N.fetch_add(1, Ordering::Relaxed)
+    }));
+    let _ = std::fs::remove_file(&p);
+    let v = CustodyVault::new(Box::new(FakeKeyring::default()), p.clone(), 0);
+    v.init(&mut PASS.to_vec()).expect("init");
+    v.unlock(&mut PASS.to_vec()).expect("unlock");
+    let created = crate::wallet::create(&v).expect("create a fresh wallet for live secret material");
+    let mnemonic = created.mnemonic.clone();
+    let first_word = mnemonic.split_whitespace().next().unwrap().to_string();
+    let three_word_prefix = mnemonic
+        .split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let entropy_numseq = bip39::Mnemonic::parse(&*mnemonic)
+        .expect("parse")
+        .to_entropy()
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Collect the Debug + Display of every error surface + the ParsedTx Debug
+    // across all four modules into one haystack.
+    let mut haystack = String::new();
+
+    // wallet errors
+    for e in [
+        crate::wallet::WalletError::Custody,
+        crate::wallet::WalletError::InvalidMnemonic,
+        crate::wallet::WalletError::AlreadyExists,
+        crate::wallet::WalletError::NotFound,
+        crate::wallet::WalletError::Derivation,
+    ] {
+        haystack.push_str(&format!("{e} {e:?} "));
+    }
+    // ceremony errors (incl. the new FromMismatch + a Broadcast carrying a node msg)
+    for e in [
+        CeremonyError::UnknownCeremony,
+        CeremonyError::RawAckRequired,
+        CeremonyError::VaultLocked,
+        CeremonyError::NoWallet,
+        CeremonyError::SignFailed,
+        CeremonyError::UndecodableTransaction,
+        CeremonyError::Broadcast("node: insufficient funds for gas * price".into()),
+        CeremonyError::FromMismatch {
+            claimed: "0x1111111111111111111111111111111111111111".into(),
+            wallet: "0x2222222222222222222222222222222222222222".into(),
+        },
+    ] {
+        haystack.push_str(&format!("{e} {e:?} "));
+    }
+    // rpc errors (the broadcast client's surface)
+    for e in [
+        RpcError::Transport("connect refused".into()),
+        RpcError::BadResponse("not json".into()),
+        RpcError::Node("nonce too low".into()),
+        RpcError::MissingField("result".into()),
+        RpcError::ReceiptTimeout,
+    ] {
+        haystack.push_str(&format!("{e} {e:?} "));
+    }
+    // txdecode ParsedTx Debug — carries the (public) `from`, `to`, value, and
+    // calldata length shape, but is derived from a JSON tx object, never a key.
+    // Prove a real decode's Debug carries no secret material.
+    let (parsed, display) = crate::txdecode::decode_transaction(
+        &serde_json::json!({
+            "from": created.address,
+            "to": "0x3535353535353535353535353535353535353535",
+            "value": "0x1",
+            "data": "0x",
+        })
+        .to_string(),
+    )
+    .expect("decode");
+    haystack.push_str(&format!("{parsed:?} {display:?} "));
+
+    // The whole cross-module haystack must be free of ANY secret needle.
+    let hay_lower = haystack.to_lowercase();
+    assert!(
+        !hay_lower.contains(&first_word.to_lowercase()) || first_word.len() < 4,
+        "no mnemonic word may appear across wallet/ceremony/rpc/txdecode surfaces"
+    );
+    assert!(
+        !hay_lower.contains(&three_word_prefix.to_lowercase()),
+        "no multi-word mnemonic prefix (high-entropy needle) may appear on any surface"
+    );
+    assert!(
+        !haystack.contains(&entropy_numseq),
+        "the sealed entropy (serde number-array form) must not appear on any surface"
+    );
+    // And the raw mnemonic string never appears verbatim anywhere.
+    assert!(
+        !haystack.contains(&*mnemonic),
+        "the mnemonic must never appear verbatim on any error/Debug surface"
+    );
+}
+
+// =========================================================================
+// B1.5-ADV-5 (end-to-end, tx path) — a spoofing origin cannot fake a benign tx:
+// the ceremony surfaces the TRUE origin verbatim AND decodes the ACTUAL tx; an
+// undecodable tx is raw-gated on the broadcast path too. This extends B1.2's
+// message-path adv5 to the NEW B1.4 transaction path (the sprint's ADV-5 note).
+// =========================================================================
+
+#[test]
+fn adv5_tx_path_true_origin_and_undecodable_raw_gated_end_to_end() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+
+    // A malicious origin names a benign-looking label but the DECODE is computed
+    // from the actual tx object — the human sees the real destination + value,
+    // and the TRUE origin verbatim (never a caller-claimed "benign" flag).
+    let evil_origin = "https://evil.example (pretending to be app.citrate.ai)";
+    let legible = SignatureIntent {
+        origin: evil_origin.to_string(),
+        kind: IntentKind::Transaction,
+        chain_id: 40204,
+        raw: serde_json::json!({
+            "from": canonical_addr_lower(),
+            "to": "0x3535353535353535353535353535353535353535",
+            "value": "0xde0b6b3a7640000", // 1e18 wei — the REAL amount
+            "data": "0x",
+        })
+        .to_string(),
+    };
+    let view = c.request(legible);
+    assert_eq!(view.origin, evil_origin, "the TRUE origin is surfaced verbatim on the tx path");
+    assert!(
+        view.decoded.action.contains("1000000000000000000"),
+        "the decode reflects the ACTUAL value, not a fabricated benign summary: {}",
+        view.decoded.action
+    );
+    assert_eq!(view.decoded.destination, "0x3535353535353535353535353535353535353535");
+    assert!(!view.requires_raw_ack, "a legible tx is decodable (no raw-ack)");
+
+    // An UNDECODABLE tx (opaque non-JSON bytes) is raw-gated, and approve_and_broadcast
+    // WITHOUT the ack broadcasts NOTHING — end-to-end on the new tx path.
+    let opaque = SignatureIntent {
+        origin: "agent:node-agent".to_string(),
+        kind: IntentKind::Transaction,
+        chain_id: 40204,
+        raw: hex::encode([0x02u8, 0xf8, 0x6b, 0x82]),
+    };
+    let ov = c.request(opaque);
+    assert_eq!(ov.decoded.action, UNRECOGNIZED_ACTION, "undecodable tx → Unrecognized");
+    assert!(ov.requires_raw_ack, "undecodable calldata is raw-gated on the tx path");
+
+    // NEGATIVE CONTROL (stated): if approve_and_broadcast skipped the
+    // `requires_raw_ack && !raw_ack` gate, this blind approval would sign +
+    // broadcast undecodable calldata as if benign — the exact spoof. Blocked.
+    let mock = MockRpc::new(vec![]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(&v, &client, &ov.id, false, bcfg(1));
+    assert_eq!(r.err(), Some(CeremonyError::RawAckRequired), "no ack → blocked, nothing signed");
+    assert!(client.transport.requests.borrow().is_empty(), "no RPC touched for a raw-gated tx");
 }
 
 // =========================================================================
@@ -872,6 +1139,111 @@ fn b1_4_broadcast_node_error_surfaces_no_fake_hash() {
         Err(CeremonyError::Broadcast(m)) => assert!(m.contains("insufficient funds"), "node reason surfaced: {m}"),
         other => panic!("expected a Broadcast error carrying the node reason, got {other:?}"),
     }
+}
+
+// =========================================================================
+// B1.5-F-2 — approve_and_broadcast asserts `from == the vault wallet address`
+// BEFORE nonce-fetch/sign. Match → proceeds; mismatch → a clear FromMismatch
+// error, NO sign, NO broadcast, no RPC touched (not a downstream nonce reject).
+// (Carried from citrate-security #23 / the B1.4 review.)
+// =========================================================================
+
+#[test]
+fn b1_5_f2_from_matching_wallet_proceeds_to_broadcast() {
+    // The MATCH branch: `from` == the canonical wallet address → the tx signs and
+    // broadcasts exactly as before (F-2 does not regress the happy path).
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower(); // == the vault wallet address
+    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x1".into())),        // nonce
+        ok(JsonValue::String("0x3b9aca00".into())), // gas price
+        ok(JsonValue::String("0xhashok".into())),   // sendRaw
+        ok(serde_json::json!({ "blockNumber": "0x5", "status": "0x1" })),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let result = c
+        .approve_and_broadcast(&v, &client, &view.id, false, bcfg(1))
+        .expect("a from==wallet tx must broadcast");
+    assert_eq!(result.tx_hash, "0xhashok");
+    assert_eq!(result.block_number, Some(5));
+    // The RPC WAS reached (F-2 passed, then the normal flow ran).
+    assert!(
+        !client.transport.requests.borrow().is_empty(),
+        "a matching-from tx must reach the RPC (F-2 must not block the happy path)"
+    );
+}
+
+#[test]
+fn b1_5_f2_from_mismatch_fails_closed_before_sign_or_broadcast() {
+    // The MISMATCH branch (the F-2 fix). A spoofing origin names a `from` that is
+    // NOT the vault wallet. Pre-fix: the ceremony would fetch the nonce for the
+    // WRONG account, sign a tx the vault key cannot author, and let the NODE
+    // reject it (opaque, a live RPC round-trip already spent). Post-fix: caught
+    // BEFORE any nonce-fetch/sign with a clear `FromMismatch`, NO RPC touched.
+    //
+    // NEGATIVE CONTROL (stated): remove the `parsed.from == wallet` assertion in
+    // approve_and_broadcast and this test flips — the mock would be hit (nonce
+    // fetch), the vault would sign, and the failure would surface as a downstream
+    // node/broadcast error (or, with a scripted node, a wrong-sender tx) instead
+    // of a clean pre-sign FromMismatch. The guard is that assertion.
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let spoof_from = "0x000000000000000000000000000000000000dead"; // NOT the wallet
+    let view = c.request(tx_intent(
+        spoof_from,
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
+
+    // Script responses that MUST NOT be consumed (proves no RPC round-trip).
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x1".into())),
+        ok(JsonValue::String("0x1".into())),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
+
+    // Exact error variant + the (public, key-free) claimed/actual addresses.
+    match r {
+        Err(CeremonyError::FromMismatch { claimed, wallet }) => {
+            assert_eq!(claimed.to_lowercase(), spoof_from.to_lowercase(), "claimed from echoed");
+            assert_eq!(
+                wallet.to_lowercase(),
+                canonical_addr_lower(),
+                "the actual vault wallet address is surfaced"
+            );
+        }
+        other => panic!("expected FromMismatch, got {other:?}"),
+    }
+    // NO RPC was touched — not a nonce fetch, not a broadcast (fail closed BEFORE
+    // the live round-trip; not a downstream node rejection).
+    assert!(
+        client.transport.requests.borrow().is_empty(),
+        "a from-mismatch must not fetch a nonce, sign, or broadcast (no RPC touched)"
+    );
+    // The ceremony is CONSUMED (consume-first single-use), so the spoofed id
+    // cannot be retried — fail closed AND single-use.
+    assert_eq!(
+        c.pending_count(),
+        0,
+        "a from-mismatch approve still consumes the id (fail-closed single-use)"
+    );
+}
+
+#[test]
+fn b1_5_f2_from_mismatch_error_is_secret_free() {
+    // The FromMismatch error carries only the two PUBLIC addresses — never key,
+    // seed, entropy, or mnemonic material.
+    let e = CeremonyError::FromMismatch {
+        claimed: "0x000000000000000000000000000000000000dead".into(),
+        wallet: CANONICAL_ADDRESS.into(),
+    };
+    let s = format!("{e} {e:?}");
+    assert!(!s.to_lowercase().contains("abandon"), "no mnemonic in FromMismatch");
+    assert!(s.contains("dead") && s.contains("9858"), "both addresses surfaced for the human");
 }
 
 #[test]
