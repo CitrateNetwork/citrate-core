@@ -113,6 +113,15 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "agent_start":
     case "agent_stop":
       return undefined;
+    // CORE-C2 earnings — the REAL claimable from
+    // ContributionAccounting.claimable(addr) via eth_call. Returns the single
+    // real claimable (wei) + its data source; NO per-source breakdown.
+    case "agent_earnings":
+      return {
+        claimableWei: "9410000000000000000",
+        walletAddress: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
+        contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
+      };
     default:
       throw `unavailable: ${cmd} is not wired in this build`;
   }
@@ -340,5 +349,17 @@ describe("tauri adapter — agent domain is wired to the real node-agent (C1.2)"
     expect(invokeMock).toHaveBeenCalledWith("agent_start", undefined);
     await bridge.agent.stop();
     expect(invokeMock).toHaveBeenCalledWith("agent_stop", undefined);
+  });
+
+  // CORE-C2 — earnings invokes the real agent_earnings command; the single real
+  // claimable (wei) + its data source cross the boundary, NO fabricated split.
+  it("earnings invokes agent_earnings and returns the real claimable + data source", async () => {
+    const bridge = createTauriBridge();
+    const e = await bridge.agent.earnings();
+    expect(invokeMock).toHaveBeenCalledWith("agent_earnings", undefined);
+    expect(e.claimableWei).toBe("9410000000000000000");
+    expect(e.contract).toBe("0xcdd2477387279c7d44a1053f44db5dac0fd8faef");
+    // The response carries ONLY the single claimable — no per-source breakdown.
+    expect(Object.keys(e).sort()).toEqual(["claimableWei", "contract", "walletAddress"]);
   });
 });

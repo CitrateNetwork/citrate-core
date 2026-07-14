@@ -11,6 +11,7 @@ mod agent;
 mod ceremony;
 mod config;
 mod custody;
+mod earnings;
 mod node;
 mod oidc;
 mod rpc;
@@ -113,6 +114,12 @@ pub fn run() {
             agent::agent_status,
             agent::agent_start,
             agent::agent_stop,
+            // earnings — the REAL on-chain claimable read (C2). agent_earnings
+            // reads ContributionAccounting.claimable(vaultAddress) via eth_call on
+            // 40204 (Rule 1: the single real value; no sim per-source breakdown).
+            // A claim is a SIGNED value-bearing write that routes through the
+            // SignatureCeremony (agent bridge → B1.4), never signed here (@rule8).
+            earnings::agent_earnings,
             // seam domains — honest Unavailable until each later phase (A1.3)
             seam::wallet_balances,
             seam::wallet_activity,

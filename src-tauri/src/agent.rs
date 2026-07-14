@@ -73,6 +73,7 @@
 // only reached by that wiring + the tests, mirroring node.rs's staged consumers.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -467,6 +468,14 @@ pub struct AgentManager {
     /// The session bearer token, minted on `start`, held ONLY here as Zeroizing,
     /// lent per-request, wiped on `stop`/drop. Never logged / Debug'd / in errors.
     bearer: Mutex<Option<Zeroizing<String>>>,
+    /// C1.2-F-1 dedup map: node-agent request `id` → the ceremony `id` already
+    /// minted for it. A still-`pending` request maps to AT MOST ONE ceremony, so
+    /// two `bridge_one_pending` calls for the same request return the SAME
+    /// ceremony (never a second one → never a second broadcast). The entry is
+    /// CLEARED once the request is observed/broadcast (in `approve_bridged_and_
+    /// report`) so a later legitimate re-accrual under the same id can bridge
+    /// afresh. Cleared wholesale on `stop` (a new session starts clean).
+    bridged: Mutex<HashMap<u64, String>>,
 }
 
 /// The bridge status shape surfaced to the AgentDomain seam. Carries only PUBLIC
@@ -514,6 +523,7 @@ impl AgentManager {
             transport,
             sup: Mutex::new(None),
             bearer: Mutex::new(None),
+            bridged: Mutex::new(HashMap::new()),
         }
     }
 
@@ -586,6 +596,12 @@ impl AgentManager {
         // Drop the in-memory bearer (Zeroizing wipes it) and remove the file.
         *self.bearer.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let _ = std::fs::remove_file(&self.token_path);
+        // C1.2-F-1: a new session starts with a clean dedup map (request ids are
+        // per-session on the node-agent side).
+        self.bridged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// The current supervisor state + whether a bearer session exists. PUBLIC
@@ -674,11 +690,16 @@ impl AgentManager {
     /// The full C1.2 bridge for ONE pending request (WP2, the ADV-7 path):
     ///   1. fetch the node-agent's pending signature requests (bearer-authed),
     ///   2. take the first `pending` one (else [`AgentError::NoPending`]),
-    ///   3. estimate the call's gas from the live RPC (`eth_estimateGas`) — the
+    ///   3. **C1.2-F-1 dedup:** if this request `id` ALREADY has a still-pending
+    ///      ceremony, return THAT ceremony (no second ceremony, no second
+    ///      broadcast). Only mint a new ceremony if there is none, or the prior
+    ///      one was already consumed (approved/rejected).
+    ///   4. estimate the call's gas from the live RPC (`eth_estimateGas`) — the
     ///      node-agent request has no gas and B1.4 won't guess one (Rule 1),
-    ///   4. wrap it in a `SignatureIntent{origin:"agent:node-agent", …}` and
+    ///   5. wrap it in a `SignatureIntent{origin:"agent:node-agent", …}` and
     ///      `request` it into the ceremony (creates a PENDING ceremony — NO key),
-    ///   5. return the ceremony id + the request so the HUMAN can approve it.
+    ///      record `req.id → ceremony.id` in the dedup map,
+    ///   6. return the ceremony id + the request so the HUMAN can approve it.
     ///
     /// This is the split the ADV-7 property demands: bridging NEVER signs. A
     /// signature is produced ONLY when the human later approves the returned
@@ -703,6 +724,25 @@ impl AgentManager {
             .into_iter()
             .find(|r| r.is_pending())
             .ok_or(AgentError::NoPending)?;
+
+        // C1.2-F-1 (LOW): dedup per node-agent request id. Under the map lock,
+        // check whether this id already maps to a ceremony that is STILL pending;
+        // if so, return it verbatim (one request → one ceremony → one broadcast).
+        // A stale entry (the ceremony was already approved/rejected → no longer
+        // pending) is dropped so a legitimate re-accrual can mint a fresh one.
+        {
+            let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = map.get(&req.id) {
+                if ceremony.status(existing).is_some() {
+                    // Still-pending ceremony for this request → reuse it.
+                    return Ok((existing.clone(), req));
+                }
+                // The mapped ceremony was consumed; drop the stale entry and fall
+                // through to mint a new one for this (re-emitted) request.
+                map.remove(&req.id);
+            }
+        }
+
         // The real signer is THIS vault's wallet — stamp its address as `from` so
         // the ceremony fetches the pending nonce for it and binds the sender.
         let from = crate::wallet::address(vault)
@@ -712,6 +752,12 @@ impl AgentManager {
         let gas = rpc.estimate_gas(estimate_gas_call(&req)).ok();
         let intent = intent_from_request(&req, &from, gas);
         let view = ceremony.request(intent);
+        // Record the request→ceremony mapping so a duplicate bridge for the same
+        // still-pending request cannot mint a second ceremony (C1.2-F-1).
+        self.bridged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(req.id, view.id.clone());
         Ok((view.id, req))
     }
 
@@ -736,6 +782,18 @@ impl AgentManager {
         cfg: BroadcastConfig,
     ) -> Result<BroadcastResult, AgentError> {
         let result = ceremony.approve_and_broadcast(vault, rpc, id, raw_ack, cfg)?;
+        // C1.2-F-1: the ceremony is now consumed (single-use) and the tx is
+        // broadcast. Drop the request→ceremony dedup entry so the map does not
+        // leak and a future legitimate re-accrual under the same id can bridge
+        // afresh. The ceremony's own consume-first guarantees THIS ceremony can
+        // never broadcast twice; clearing the entry here keeps the two invariants
+        // aligned (one request → one ceremony → one broadcast).
+        {
+            let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
+            if map.get(&req.id).map(|c| c == id).unwrap_or(false) {
+                map.remove(&req.id);
+            }
+        }
         // Best-effort observe: the tx is already broadcast; a failed report just
         // means the node-agent may re-emit (dedup-by-calldata on its side makes
         // that safe). Do NOT fail the whole bridge on a report blip.

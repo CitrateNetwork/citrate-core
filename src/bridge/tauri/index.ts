@@ -149,6 +149,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async stop() {
         await invoke("agent_stop");
       },
+      // CORE-C2 — the REAL claimable via ContributionAccounting.claimable(addr)
+      // eth_call on 40204. Returns the single real claimable (wei) + its data
+      // source; NO fabricated per-source breakdown (Rule 1). Requires the vault
+      // unlocked (to read the wallet's public address; the key is never touched).
+      async earnings(): Promise<{ claimableWei: string; walletAddress: string; contract: string }> {
+        return invoke("agent_earnings");
+      },
     },
     memory: {
       async assert() {

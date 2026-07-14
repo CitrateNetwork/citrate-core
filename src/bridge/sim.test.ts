@@ -75,6 +75,19 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     const bridge = createSimBridge(host);
     expect(await bridge.config.keyringStatus()).toBe("unavailable");
   });
+
+  // CORE-C2 — sim earnings: the prototype claimable rendered in the SAME wei
+  // shape the real eth_call returns; NO fabricated per-source breakdown field.
+  it("agent.earnings returns the single claimable (wei) + contract, no breakdown", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const e = await bridge.agent.earnings();
+    // 9.41 SALT → wei string.
+    expect(e.claimableWei).toBe("9410000000000000000");
+    expect(e.walletAddress).toBe("0xabc");
+    expect(e.contract).toBe("0xcdd2477387279c7d44a1053f44db5dac0fd8faef");
+    expect(Object.keys(e).sort()).toEqual(["claimableWei", "contract", "walletAddress"]);
+  });
 });
 
 // CORE-A2 A2.5 — sim custody: simulates lock/unlock UI STATE ONLY. It holds no

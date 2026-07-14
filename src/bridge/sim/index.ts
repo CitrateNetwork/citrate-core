@@ -271,6 +271,20 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async stop() {
         assertSimAllowed("agent.stop");
       },
+      async earnings() {
+        // Sim-only: the prototype claimable (SALT) rendered as a wei string in the
+        // SAME shape the real eth_call returns. Guarded out of packaged builds by
+        // assertSimAllowed — a real build reads ContributionAccounting.claimable
+        // (Rule 1). No per-source breakdown here either (the contract has none).
+        assertSimAllowed("agent.earnings");
+        const st = s();
+        const wei = BigInt(Math.round(st.claimable * 1e18)).toString();
+        return {
+          claimableWei: wei,
+          walletAddress: st.walletAddr,
+          contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
+        };
+      },
     },
 
     memory: {
