@@ -72,6 +72,16 @@ citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.g
 # hex: encode the (non-secret) public key for display in WalletInfo.
 hex = "0.4"
 
+# CORE-C1.0 — SidecarSupervisor process-signalling. `libc` is used ONLY for the
+# Unix `kill(pid, SIGTERM|SIGKILL|0)` on the graceful-stop / liveness path
+# (std::process has no SIGTERM, only a hard kill). It is ALREADY in the tree
+# transitively (tauri/tokio), so naming it as a direct dep adds NO new compiled
+# crate and NO new audit surface (RUSTSEC clean at 0.2.x). Unix-only: on Windows
+# (out of beta scope, O-4) the supervisor falls back to std `Child::kill`, so no
+# libc there.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Test-only mock OIDC authority: p256 signs the id_token with a TEST key and
 #   serves its public coords as JWKS, so the full flow is exercised headlessly.

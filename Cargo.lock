@@ -628,6 +628,7 @@ dependencies = [
  "jsonwebtoken",
  "k256",
  "keyring",
+ "libc",
  "p256",
  "rand 0.8.7",
  "rlp",

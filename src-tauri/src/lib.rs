@@ -13,6 +13,7 @@ mod custody;
 mod oidc;
 mod rpc;
 mod seam;
+mod supervisor;
 mod txdecode;
 mod wallet;
 
