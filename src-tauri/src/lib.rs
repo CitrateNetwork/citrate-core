@@ -114,6 +114,12 @@ pub fn run() {
             agent::agent_status,
             agent::agent_start,
             agent::agent_stop,
+            // user_claim (C2-F-1, @rule8) — the USER Claim button. Reads the REAL
+            // claimable (eth_call), and either returns an HONEST "nothing to claim"
+            // for 0, or bridges the real claimRewards() intent into a PENDING
+            // ceremony the human approves via sign_and_broadcast (B1.4). NEVER a sim
+            // balance mutation presented as a settled chain claim (Rule 1).
+            agent::user_claim,
             // earnings — the REAL on-chain claimable read (C2). agent_earnings
             // reads ContributionAccounting.claimable(vaultAddress) via eth_call on
             // 40204 (Rule 1: the single real value; no sim per-source breakdown).

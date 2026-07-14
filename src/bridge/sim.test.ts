@@ -88,6 +88,45 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(e.contract).toBe("0xcdd2477387279c7d44a1053f44db5dac0fd8faef");
     expect(Object.keys(e).sort()).toEqual(["claimableWei", "contract", "walletAddress"]);
   });
+
+  // CORE-C2-F-1 — the sim Claim button is HONEST: it mints a SIM ceremony (a
+  // legible claimRewards() Call), NEVER a settled claim. The prototype UI can
+  // render the ceremony, but approving it routes through sim signing.broadcast,
+  // which THROWS (no key, no chain) — so no balance is ever fabricated. The old
+  // faked `apply` (liquid += amt, "Claimed — balance updated from chain") is GONE.
+  it("agent.claim mints a sim ceremony (no faked settlement); approving it honestly cannot broadcast", async () => {
+    const { host, state } = fakeHost({ claimable: 9.41 } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const liquidBefore = (state as unknown as { liquid: number }).liquid;
+
+    const res = await bridge.agent.claim();
+    expect(res.kind).toBe("ceremony");
+    if (res.kind !== "ceremony") throw new Error("expected a sim ceremony");
+    // The sim shim does not decode tx calldata (honest — no real decoder), so the
+    // claim ceremony is raw-ack gated "Unrecognized", NOT a fabricated settlement.
+    // The origin is the verbatim agent origin (anti-spoof), and there is NO sig.
+    expect(res.view.origin).toBe("agent:node-agent");
+    expect("sigHex" in res.view).toBe(false);
+    // Claiming did NOT mutate the balance (no fabricated settlement — Rule 1).
+    expect((state as unknown as { liquid: number }).liquid).toBe(liquidBefore);
+    // And the sim signer HONESTLY cannot settle it (no key/chain) — it throws
+    // rather than fabricate a tx (raw-ack passed so the throw is the chain-reach
+    // refusal, not the ack gate).
+    await expect(bridge.signing.broadcast(res.view.id, true)).rejects.toBeTruthy();
+    // The balance STILL did not change after the (failed) settle attempt.
+    expect((state as unknown as { liquid: number }).liquid).toBe(liquidBefore);
+  });
+
+  // CORE-C2-F-1 — a zero prototype claimable → honest "nothing to claim", no
+  // ceremony minted, no faked balance.
+  it("agent.claim with 0 claimable returns honest 'nothing', mints no ceremony", async () => {
+    const { host } = fakeHost({ claimable: 0 } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const res = await bridge.agent.claim();
+    expect(res.kind).toBe("nothing");
+    if (res.kind !== "nothing") throw new Error("expected nothing-to-claim");
+    expect(res.claimableWei).toBe("0");
+  });
 });
 
 // CORE-A2 A2.5 — sim custody: simulates lock/unlock UI STATE ONLY. It holds no

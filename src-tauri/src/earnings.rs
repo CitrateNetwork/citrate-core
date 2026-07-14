@@ -72,6 +72,17 @@ pub fn claim_rewards_selector() -> [u8; 4] {
     CLAIM_REWARDS_SELECTOR
 }
 
+/// **C2-F-3 — user-claim id space.** The node-agent mints its `PendingSignatureRequest`
+/// ids sequentially from a small counter (grounded state.rs), so its ids live in the
+/// LOW u64 range. A user-initiated Claim shares the agent bridge's dedup map
+/// ([`crate::agent::AgentManager::bridged`], keyed by request id), so if the user
+/// claim reused `id:0` it could ALIAS a node-agent request `id:0` — two distinct
+/// intents collapsing into one dedup slot (a user claim suppressing the sweep's
+/// ceremony, or vice-versa). We give user claims a DISJOINT high id space: `1 << 63`
+/// (the top bit set), a range the node-agent's small sequential counter can never
+/// reach in practice. A user claim and a node-agent request therefore never alias.
+pub const USER_CLAIM_ID: u64 = 1u64 << 63;
+
 /// Errors from the earnings reader. Coarse + secret-free (this module never sees
 /// key material — it does a public `eth_call` read and builds unsigned calldata).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,9 +226,11 @@ pub fn read_claimable<T: crate::rpc::RpcTransport>(
 pub fn user_claim_request(claimable_wei: u128) -> crate::agent::AgentSignatureRequest {
     let calldata = format!("0x{}", hex::encode(claim_rewards_selector()));
     crate::agent::AgentSignatureRequest {
-        // A synthetic id for the user-initiated claim (distinct from the
-        // node-agent's own request ids; the bridge dedups per id).
-        id: 0,
+        // C2-F-3: a synthetic id in the DISJOINT user-claim id space (`1 << 63`,
+        // top bit set) so a user claim can NEVER alias a node-agent request in the
+        // agent bridge's shared dedup map. The node-agent's ids are small +
+        // sequential and never reach this range.
+        id: USER_CLAIM_ID,
         intent: "claimRewards".to_string(),
         to: CONTRIBUTION_ACCOUNTING.to_string(),
         calldata,

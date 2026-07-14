@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract } from "../domains";
+import type { BridgeContract, ClaimResult } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION } from "../types";
 import { assertSimAllowed } from "../mode";
 
@@ -47,6 +47,24 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
   // (never dressed as a real one). Guarded out of packaged builds.
   const simCeremonies = new Map<string, CeremonyView>();
   let simCeremonyId = 1;
+
+  // Mint a sim ceremony from an intent (the ONE place ids + decode happen), reused
+  // by `signing.request` AND the C2-F-1 `agent.claim` prototype path so both share
+  // the single sim ceremony store. Guarded by the callers' assertSimAllowed.
+  const simRequest = (intent: SignatureIntent): CeremonyView => {
+    const { decoded, rawAck } = simDecode(intent);
+    const id = String(simCeremonyId++);
+    const view: CeremonyView = {
+      id,
+      origin: intent.origin, // TRUE origin, verbatim (anti-spoof), same as Rust
+      kind: intent.kind,
+      chainId: intent.chainId,
+      decoded,
+      requiresRawAck: rawAck,
+    };
+    simCeremonies.set(id, view);
+    return view;
+  };
 
   const simDecode = (intent: SignatureIntent): { decoded: DecodedAction; rawAck: boolean } => {
     // Mirror the Rust decode intent-by-intent so the dev UI shows the same shape.
@@ -179,18 +197,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
     signing: {
       async request(intent: SignatureIntent): Promise<CeremonyView> {
         assertSimAllowed("signing.request");
-        const { decoded, rawAck } = simDecode(intent);
-        const id = String(simCeremonyId++);
-        const view: CeremonyView = {
-          id,
-          origin: intent.origin, // TRUE origin, verbatim (anti-spoof), same as Rust
-          kind: intent.kind,
-          chainId: intent.chainId,
-          decoded,
-          requiresRawAck: rawAck,
-        };
-        simCeremonies.set(id, view);
-        return view;
+        return simRequest(intent);
       },
       async approve(id: string, rawAck: boolean): Promise<Signature> {
         assertSimAllowed("signing.approve");
@@ -284,6 +291,38 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           walletAddress: st.walletAddr,
           contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
         };
+      },
+      // CORE-C2-F-1 — the Claim button in web-dev. HONEST (Rule 1): the sim holds
+      // NO key and reaches NO chain, so it can NEVER settle a real claim. If the
+      // (prototype) claimable is 0 it returns "nothing to claim"; otherwise it mints
+      // a SIM ceremony view so the prototype ceremony UI can render — but approving
+      // it routes through sim `signing.broadcast`, which THROWS rather than fabricate
+      // a settlement. There is no local balance mutation and no faked "claimed" hash.
+      // Guarded out of packaged builds by assertSimAllowed.
+      async claim(): Promise<ClaimResult> {
+        assertSimAllowed("agent.claim");
+        const st = s();
+        const wei = BigInt(Math.round(st.claimable * 1e18));
+        if (wei === 0n) {
+          return { kind: "nothing", claimableWei: wei.toString() };
+        }
+        // Mint a SIM ceremony (via the shared simRequest) so the prototype ceremony
+        // UI can render. Approving it in sim routes through signing.broadcast, which
+        // THROWS honestly (no key, no chain) — never a fabricated settlement.
+        const view = simRequest({
+          origin: "agent:node-agent",
+          kind: "transaction",
+          chainId: 40204,
+          // A legible claimRewards() selector-only calldata tx object, so the sim
+          // ceremony decodes to a Call (not raw-gated) exactly like the real path.
+          raw: JSON.stringify({
+            to: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
+            value: "0x0",
+            data: "0x372500ab",
+            chainId: "0x9d0c",
+          }),
+        });
+        return { kind: "ceremony", view };
       },
     },
 

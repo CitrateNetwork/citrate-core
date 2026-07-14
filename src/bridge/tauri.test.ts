@@ -26,6 +26,10 @@ const signMock: { map: Map<string, { id: string; origin: string; kind: string; c
   next: 1,
 };
 
+// C2-F-1: the mocked on-chain claimable `agent_earnings` returns; a test can flip
+// it to "0" to exercise the honest "nothing to claim" branch.
+const earningsMock = { claimableWei: "9410000000000000000" };
+
 const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   switch (cmd) {
     case "config_read":
@@ -118,10 +122,26 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     // real claimable (wei) + its data source; NO per-source breakdown.
     case "agent_earnings":
       return {
-        claimableWei: "9410000000000000000",
+        claimableWei: earningsMock.claimableWei,
         walletAddress: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
         contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
       };
+    // CORE-C2-F-1 user_claim — bridges the REAL claimRewards() intent into a
+    // PENDING ceremony (a legible tx Call, approvable via sign_and_broadcast).
+    // Returns a CeremonyView; NEVER a signature or a local balance mutation.
+    case "user_claim": {
+      const id = String(signMock.next++);
+      const view = {
+        id,
+        origin: "agent:node-agent",
+        kind: "transaction",
+        chainId: 40204,
+        decoded: { action: "Call claimRewards()", cost: "", destination: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef" },
+        requiresRawAck: false,
+      };
+      signMock.map.set(id, view);
+      return view;
+    }
     default:
       throw `unavailable: ${cmd} is not wired in this build`;
   }
@@ -361,5 +381,40 @@ describe("tauri adapter — agent domain is wired to the real node-agent (C1.2)"
     expect(e.contract).toBe("0xcdd2477387279c7d44a1053f44db5dac0fd8faef");
     // The response carries ONLY the single claimable — no per-source breakdown.
     expect(Object.keys(e).sort()).toEqual(["claimableWei", "contract", "walletAddress"]);
+  });
+
+  // CORE-C2-F-1 (@rule8) — the Claim button drives the REAL command. With a
+  // non-zero claimable, claim() reads the on-chain value then invokes `user_claim`,
+  // returning a REAL pending ceremony (approvable via sign_and_broadcast). It NEVER
+  // fabricates a settlement or mutates a balance across the bridge.
+  it("claim reads the on-chain claimable then invokes the REAL user_claim ceremony", async () => {
+    earningsMock.claimableWei = "9410000000000000000";
+    const bridge = createTauriBridge();
+    const res = await bridge.agent.claim();
+    // It routed to the REAL commands: agent_earnings (the read) + user_claim.
+    expect(invokeMock).toHaveBeenCalledWith("agent_earnings", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("user_claim", undefined);
+    expect(res.kind).toBe("ceremony");
+    if (res.kind !== "ceremony") throw new Error("expected a real ceremony");
+    // The returned ceremony is a legible claimRewards() Call — NOT a signature.
+    expect(res.view.decoded.action).toContain("claimRewards");
+    expect("sigHex" in res.view).toBe(false);
+    // And that ceremony is approvable through the ONE real broadcast path (B1.4).
+    const result = await bridge.signing.broadcast(res.view.id, false);
+    expect(invokeMock).toHaveBeenCalledWith("sign_and_broadcast", { id: res.view.id, rawAck: false });
+    expect(result.txHash).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  // CORE-C2-F-1 — an honest ZERO: nothing to claim → no ceremony, no user_claim
+  // invoke, no faked settlement (Rule 1). The button surfaces "nothing to claim".
+  it("claim with 0 on-chain claimable returns honest 'nothing' and does NOT invoke user_claim", async () => {
+    earningsMock.claimableWei = "0";
+    invokeMock.mockClear(); // isolate this assertion from prior tests' calls
+    const bridge = createTauriBridge();
+    const res = await bridge.agent.claim();
+    expect(res.kind).toBe("nothing");
+    expect(invokeMock).toHaveBeenCalledWith("agent_earnings", undefined);
+    expect(invokeMock).not.toHaveBeenCalledWith("user_claim", undefined);
+    earningsMock.claimableWei = "9410000000000000000"; // restore for other tests
   });
 });

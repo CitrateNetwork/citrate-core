@@ -20,7 +20,7 @@ import type {
   Signature,
   BroadcastResult,
 } from "../types";
-import type { BridgeContract } from "../domains";
+import type { BridgeContract, ClaimResult } from "../domains";
 import { Unavailable } from "../types";
 
 function unavailable(domain: string, op: string): never {
@@ -155,6 +155,21 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // unlocked (to read the wallet's public address; the key is never touched).
       async earnings(): Promise<{ claimableWei: string; walletAddress: string; contract: string }> {
         return invoke("agent_earnings");
+      },
+      // CORE-C2-F-1 (@rule8) — the REAL claim. Read the on-chain claimable; if 0,
+      // return an honest "nothing to claim" (no ceremony, no tx). Otherwise invoke
+      // `user_claim`, which bridges the real claimRewards() intent into a PENDING
+      // ceremony (returned here). The human then approves it via signing.broadcast
+      // (B1.4 → a real 40204 tx). No local balance mutation, no faked hash (Rule 1).
+      async claim(): Promise<ClaimResult> {
+        const snap = await invoke<{ claimableWei: string; walletAddress: string; contract: string }>(
+          "agent_earnings",
+        );
+        if (BigInt(snap.claimableWei) === 0n) {
+          return { kind: "nothing", claimableWei: snap.claimableWei };
+        }
+        const view = await invoke<CeremonyView>("user_claim");
+        return { kind: "ceremony", view };
       },
     },
     memory: {

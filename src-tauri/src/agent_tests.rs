@@ -702,6 +702,218 @@ fn dedup_entry_clears_after_broadcast_so_reaccrual_bridges_fresh() {
     assert_ne!(id1, id2, "a re-accrual after broadcast bridges a fresh ceremony");
 }
 
+// ---------------------------------------------------------------------------
+// C2-F-2 — a THREAD-SAFE RPC transport for the concurrency test. The module's
+// primary `MockRpc` is RefCell-backed (single-thread); this one is Mutex-backed
+// and carries a Barrier so two threads can be forced to reach the mint window
+// simultaneously (each thread still holds its OWN RpcClient — RpcClient is not
+// Sync because of its Cell<u64> request counter, so it can never be shared).
+// ---------------------------------------------------------------------------
+
+struct SyncMockRpc {
+    responses: StdMutex<VecDeque<JsonValue>>,
+    /// Tripped inside `call` (which runs AFTER the dedup fast-path check) so both
+    /// bridging threads are guaranteed past the fast-path check before EITHER
+    /// mints — this is what makes the non-atomic (pre-fix) race observable.
+    gate: std::sync::Arc<std::sync::Barrier>,
+}
+impl SyncMockRpc {
+    fn new(responses: Vec<JsonValue>, gate: std::sync::Arc<std::sync::Barrier>) -> Self {
+        SyncMockRpc {
+            responses: StdMutex::new(responses.into_iter().collect()),
+            gate,
+        }
+    }
+}
+impl RpcTransport for SyncMockRpc {
+    fn call(&self, _body: JsonValue) -> std::result::Result<JsonValue, RpcError> {
+        // Rendezvous: both threads must arrive here (post fast-path check) before
+        // either returns a gas estimate + proceeds to the mint. Wait ONCE.
+        self.gate.wait();
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| RpcError::Transport("sync mock: no scripted response".into()))
+    }
+}
+
+/// C2-F-2 (the RED test / concurrency negative control): two threads bridge the
+/// SAME still-pending node-agent request CONCURRENTLY. The check-and-mint must be
+/// ATOMIC — exactly ONE ceremony may exist for the one request id. Before the fix
+/// the check (lock released) and the insert (lock re-acquired) straddled the mint,
+/// so both threads saw an empty slot, both minted a DISTINCT ceremony, and BOTH
+/// were independently approvable → a double-claim of one request. This test forces
+/// that interleaving with a Barrier tripped inside the RPC (after the fast-path
+/// check) and asserts a single ceremony. It goes RED against the non-atomic code
+/// (two distinct approvable ceremonies) and GREEN after (one shared ceremony).
+#[test]
+fn concurrent_bridge_of_same_request_mints_exactly_one_ceremony() {
+    let (v, _p) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    // The node-agent serves the SAME pending claimRewards on every poll (both
+    // threads fetch it). One response per thread's fetch.
+    let one = serde_json::to_string(&vec![claim_rewards_request()]).unwrap();
+    let mgr = mock_manager(Box::new(MockSupervisionSync::new(vec![
+        MockSupervisionSync::resp(200, &one),
+        MockSupervisionSync::resp(200, &one),
+    ])));
+
+    // A 2-thread barrier tripped in each thread's estimate_gas call, so both are
+    // past the fast-path dedup check before either mints (maximally adversarial to
+    // the pre-fix non-atomic window).
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+    let (id_a, id_b) = std::thread::scope(|scope| {
+        let mk_client = || {
+            RpcClient::with_transport(SyncMockRpc::new(
+                vec![ok(JsonValue::String("0x8000".into()))], // one eth_estimateGas per thread
+                gate.clone(),
+            ))
+        };
+        let mgr_ref = &mgr;
+        let cer_ref = &ceremony;
+        let v_ref = &v;
+        let ca = mk_client();
+        let cb = mk_client();
+        let ha = scope.spawn(move || {
+            mgr_ref
+                .bridge_one_pending(cer_ref, v_ref, &ca)
+                .expect("bridge A")
+                .0
+        });
+        let hb = scope.spawn(move || {
+            mgr_ref
+                .bridge_one_pending(cer_ref, v_ref, &cb)
+                .expect("bridge B")
+                .0
+        });
+        (ha.join().expect("join A"), hb.join().expect("join B"))
+    });
+
+    // The atomicity invariant: both concurrent bridges resolve to the SAME
+    // ceremony id (one request → one ceremony). Pre-fix, the two threads mint
+    // DISTINCT ids and this fails.
+    assert_eq!(
+        id_a, id_b,
+        "concurrent bridges of one request must yield ONE ceremony (C2-F-2)"
+    );
+
+    // And there is exactly ONE approvable ceremony. Ceremony ids are minted
+    // sequentially from 1; if the race had minted two, "1" AND "2" would both be
+    // pending (two independently approvable double-claim ceremonies). Assert the
+    // shared id is pending and that no SECOND distinct ceremony exists.
+    assert!(
+        ceremony.status(&id_a).is_some(),
+        "the one ceremony is pending"
+    );
+    let other = if id_a == "1" { "2" } else { "1" };
+    assert!(
+        ceremony.status(other).is_none(),
+        "no second ceremony was minted for the same request (C2-F-2): {other} is present"
+    );
+}
+
+// ===========================================================================
+// C2-F-1 — the USER Claim path bridges a REAL ceremony (never a sim mutation)
+// ===========================================================================
+
+/// C2-F-1: `bridge_user_claim` turns the user's REAL claimable into a PENDING
+/// ceremony carrying the legible `claimRewards()` call — signing NOTHING. This is
+/// the real path the Claim button drives: a ceremony the human must approve via
+/// sign_and_broadcast (B1.4), NOT a local balance mutation with a fabricated hash.
+#[test]
+fn user_claim_bridges_a_real_pending_ceremony() {
+    let (v, _p) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    // No supervision fetch on the user path — the request is built locally.
+    let mgr = mock_manager(Box::new(MockSupervisionSync::new(vec![])));
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![ok(JsonValue::String("0x8000".into()))]));
+
+    let claimable = 5 * 10u128.pow(18); // 5 SALT
+    let (id, req) = mgr
+        .bridge_user_claim(&ceremony, &v, &rpc, claimable)
+        .expect("user claim bridges");
+    // The bridged request is the user-claim id space (C2-F-3) + real claimRewards().
+    assert_eq!(req.id, crate::earnings::USER_CLAIM_ID);
+    assert_eq!(req.intent, "claimRewards");
+    // A PENDING ceremony exists — nothing was signed by bridging.
+    let view = ceremony.status(&id).expect("ceremony pending");
+    assert_eq!(view.origin, crate::agent::AGENT_ORIGIN);
+    assert!(id.parse::<u64>().is_ok(), "a ceremony id, not a signature");
+}
+
+/// C2-F-1 (honest zero): a caller with NOTHING to claim gets an honest
+/// `NoPending` — no ceremony, no tx, and (crucially) no fabricated "claimed"
+/// settlement. Rule 1: 0 claimable is a real state, surfaced honestly.
+#[test]
+fn user_claim_with_zero_claimable_is_honest_nothing_to_claim() {
+    let (v, _p) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    let mgr = mock_manager(Box::new(MockSupervisionSync::new(vec![])));
+    // No RPC should be consumed — the zero check short-circuits before gas estimate.
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
+
+    let r = mgr.bridge_user_claim(&ceremony, &v, &rpc, 0);
+    assert!(
+        matches!(r, Err(AgentError::NoPending)),
+        "zero claimable → honest NoPending, never a faked claim: {r:?}"
+    );
+    // And no ceremony was minted (the ids start at 1; none is pending).
+    assert!(ceremony.status("1").is_none(), "no ceremony minted for a 0 claim");
+}
+
+// ===========================================================================
+// C2-F-3 — user-claim id and a node-agent req id do NOT alias in the dedup map
+// ===========================================================================
+
+/// C2-F-3: a USER claim (disjoint `USER_CLAIM_ID`) and a node-agent request with
+/// `id == 0` must NOT alias in the shared dedup map — they bridge to DISTINCT,
+/// independently-pending ceremonies. Before the fix the user claim hardcoded
+/// `id: 0`, colliding with a node-agent `id: 0`: one intent's ceremony would be
+/// suppressed (or reused) by the other. This proves the two id spaces are disjoint.
+#[test]
+fn user_claim_and_node_agent_id_zero_do_not_alias() {
+    let (v, _p) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+
+    // A node-agent request that happens to carry id 0 (the value the user claim
+    // used to hardcode). Served on the supervision surface for bridge_one_pending.
+    let mut na_req = claim_rewards_request();
+    na_req.id = 0;
+    let one = serde_json::to_string(&vec![na_req]).unwrap();
+    let mgr = mock_manager(Box::new(MockSupervisionSync::new(vec![
+        MockSupervisionSync::resp(200, &one),
+    ])));
+
+    // One gas estimate per DISTINCT bridged request (two here → two estimates).
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(JsonValue::String("0x8000".into())), // user claim estimate
+        ok(JsonValue::String("0x8000".into())), // node-agent (id 0) estimate
+    ]));
+
+    // Bridge the USER claim (USER_CLAIM_ID) and the node-agent request (id 0).
+    let (user_id, user_req) = mgr
+        .bridge_user_claim(&ceremony, &v, &rpc, 5 * 10u128.pow(18))
+        .expect("user claim bridges");
+    let (na_id, na_req) = mgr
+        .bridge_one_pending(&ceremony, &v, &rpc)
+        .expect("node-agent id 0 bridges");
+
+    // The two requests occupy DISJOINT id spaces...
+    assert_eq!(user_req.id, crate::earnings::USER_CLAIM_ID);
+    assert_eq!(na_req.id, 0);
+    assert_ne!(user_req.id, na_req.id, "user-claim id must not equal node-agent id 0");
+    // ...and therefore bridge to TWO DISTINCT, independently-pending ceremonies —
+    // no aliasing / suppression in the shared dedup map (C2-F-3).
+    assert_ne!(
+        user_id, na_id,
+        "distinct id spaces must mint distinct ceremonies (C2-F-3)"
+    );
+    assert!(ceremony.status(&user_id).is_some(), "user claim ceremony pending");
+    assert!(ceremony.status(&na_id).is_some(), "node-agent ceremony pending");
+}
+
 /// ADV-7 no-direct-sign (behavioural): bridging a request returns a CEREMONY id,
 /// NEVER a signature. The node-agent origin has no signing shortcut — a signature
 /// exists only after an explicit ceremony approval.

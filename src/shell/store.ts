@@ -667,6 +667,50 @@ export class Store {
     }
   }
 
+  /**
+   * CORE-C2-F-1 (@rule8) — the REAL Claim. This REPLACES the old sim-ceremony
+   * `apply` that toasted "Claimed — balance updated from chain" and locally did
+   * `setState({liquid:+amt, claimable:0})` (a fabricated settlement — Rule 1 / I-3).
+   *
+   * It drives `bridge.agent.claim()`, which reads the REAL on-chain claimable and
+   * either reports an honest "nothing to claim" (0) or mints a REAL pending
+   * ceremony (the `claimRewards()` intent). In the Tauri build that ceremony is then
+   * approved through the ONE human-in-the-loop signer via `signing.broadcast`
+   * (B1.4 → a real 40204 tx); the balance changes ONLY when the real tx settles and
+   * we re-read `claimable` from chain. In web-dev (sim) there is no key and no chain,
+   * so a claim CANNOT settle — we say so honestly and never fake a balance change.
+   */
+  async claimRewards(): Promise<void> {
+    let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
+    try {
+      res = await bridge.agent.claim();
+    } catch (err) {
+      this.toast("Claim unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    if (res.kind === "nothing") {
+      this.toast("No claimable earnings — nothing to claim.");
+      return;
+    }
+    // A REAL pending ceremony exists (id: res.view.id). In web-dev the sim signer
+    // cannot settle it — be honest rather than fabricate a claim.
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Claim prepared — claims settle only in the desktop app (no key/chain in web preview).");
+      return;
+    }
+    // Tauri: approve the real ceremony → sign + broadcast the real claimRewards()
+    // tx (B1.4). No local balance mutation; the tab re-reads claimable from chain.
+    try {
+      const result = await bridge.signing.broadcast(res.view.id, false);
+      this.addActivity("Claim rewards", "claimRewards()", result.txHash);
+      this.toast("Claim broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
+      await this.refreshEarnings();
+      this.save();
+    } catch (err) {
+      this.toast("Claim not settled — " + String((err as Error).message ?? err));
+    }
+  }
+
   openMicroApp(a: { name?: string; capabilities?: string[] }): void {
     this.requestSig({
       origin: "micro-app",
