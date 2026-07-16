@@ -35,6 +35,12 @@ function unavailable(domain: string, op: string): never {
 
 export function createTauriBridge(): Omit<BridgeContract, "mode"> {
   return {
+    // ---- shell: open an external federation link (https only) in the browser ----
+    shell: {
+      async openExternal(url: string): Promise<void> {
+        await invoke("open_external", { url });
+      },
+    },
     // ---- config: REAL round-trip through Rust (A1.4) ----
     config: {
       async read(): Promise<AppConfig> {

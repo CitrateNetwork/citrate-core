@@ -382,6 +382,20 @@ export class Store {
   }
 
   /**
+   * Open an external federation link (Atlas docs/tutorials, CitrateScan, a service
+   * webapp) in the system browser. `url` must be https. The destination RP runs
+   * its own OIDC login today; a real signed-in handoff (shared-authority SSO) is
+   * work-order WO-6. Honest toast on failure — never a silent dead click.
+   */
+  async openExternal(url: string): Promise<void> {
+    try {
+      await bridge.shell.openExternal(url);
+    } catch (err) {
+      this.toast("Could not open the link — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /**
    * Open the REAL core-membership checkout (Settings → Billing "Renew"). Uses the
    * same wired path as onboarding S3 (bridge.membership.checkout → the checkout
    * popup). Web-dev has no popup — honest message. Entitlement refresh then

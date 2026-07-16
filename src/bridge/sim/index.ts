@@ -126,6 +126,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
   let simInitialized = true; // the prototype presents an already-provisioned vault
 
   return {
+    // ---- shell: in web-dev, open the link in a new browser tab ----
+    shell: {
+      async openExternal(url: string): Promise<void> {
+        assertSimAllowed("shell.openExternal");
+        if (typeof window !== "undefined" && /^https:\/\//.test(url)) {
+          window.open(url, "_blank", "noopener,noreferrer");
+        }
+      },
+    },
     // ---- config: in sim, config lives in AppState (localStorage-backed) ----
     config: {
       async read(): Promise<AppConfig> {

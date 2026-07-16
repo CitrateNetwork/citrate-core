@@ -13,6 +13,7 @@
 import { useRef, useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { makeAddr, short, PERSONAS } from "../shell/state";
+import { scanTxUrl, scanAddrUrl } from "../data/links";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -117,6 +118,7 @@ export function Wallet({ store, s }: SurfaceProps) {
 
   const activityRows = s.activity.map((a, i) => ({
     kind: a.kind,
+    hash: a.hash,
     hashShort: short(a.hash),
     time: rel(a.ts),
     amount: a.amount,
@@ -345,9 +347,14 @@ export function Wallet({ store, s }: SurfaceProps) {
           {activityRows.map((tx, i) => (
             <div key={i} className={tx.rowClass} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr .8fr .8fr", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "center" }}>
               <span style={{ fontSize: 12.5, fontWeight: 500 }}>{tx.kind}</span>
-              <span className="mono" style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer" }} title="Opens CitrateScan">
+              <button
+                className="mono"
+                onClick={() => void store.openExternal(scanTxUrl(tx.hash))}
+                title="Open on CitrateScan"
+                style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0, textAlign: "left" }}
+              >
                 {tx.hashShort} ↗
-              </span>
+              </button>
               <span className="mono tabular" style={{ fontSize: 12, color: tx.amtColor }}>
                 {tx.amount}
               </span>
@@ -371,9 +378,14 @@ export function Wallet({ store, s }: SurfaceProps) {
                   non-transferable · minted 2026-07-11 · bound to your sub-hash
                 </span>
               </span>
-              <span className="mono" style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer" }}>
+              <button
+                className="mono"
+                onClick={() => void store.openExternal(scanAddrUrl(s.walletAddr))}
+                title="Open your address on CitrateScan"
+                style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0 }}
+              >
                 chain proof ↗
-              </span>
+              </button>
             </div>
           ) : (
             <div className="surface" style={{ padding: 18 }}>

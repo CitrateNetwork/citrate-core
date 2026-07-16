@@ -15,6 +15,7 @@
 import { SurfaceProps } from "./shared";
 import { CATALOG } from "../data/seed";
 import { RANK } from "../shell/state";
+import { federationUrl } from "../data/links";
 
 type BadgeTriple = [string, string, string];
 const badge = (st: string): BadgeTriple =>
@@ -298,9 +299,13 @@ export function Commissary({ store, s }: SurfaceProps) {
                   Copy
                 </button>
               </div>
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--accent-text)", cursor: "pointer" }}>
+              <button
+                className="mono"
+                onClick={() => void store.openExternal(federationUrl(sd.docs))}
+                style={{ fontSize: 10.5, color: "var(--accent-text)", cursor: "pointer", background: "none", border: "none", padding: 0, textAlign: "left" }}
+              >
                 docs · {sd.docs} ↗
-              </span>
+              </button>
             </div>
           ))}
         </div>
@@ -337,9 +342,13 @@ export function Commissary({ store, s }: SurfaceProps) {
                 </button>
               )}
               {d.unlocked && (
-                <span className="mono" style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", whiteSpace: "nowrap" }}>
+                <button
+                  className="mono"
+                  onClick={() => void store.openExternal(federationUrl("atlas/docs/" + d.id))}
+                  style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", whiteSpace: "nowrap", background: "none", border: "none", padding: 0 }}
+                >
                   open in Atlas ↗
-                </span>
+                </button>
               )}
             </div>
           ))}
@@ -357,9 +366,13 @@ export function Commissary({ store, s }: SurfaceProps) {
                 <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", flex: 1 }}>
                   {sv.url}
                 </span>
-                <span className="mono" style={{ fontSize: 10, color: "var(--accent-text)", whiteSpace: "nowrap", cursor: "pointer" }}>
-                  signed in · open ↗
-                </span>
+                <button
+                  className="mono"
+                  onClick={() => void store.openExternal(federationUrl(sv.url))}
+                  style={{ fontSize: 10, color: "var(--accent-text)", whiteSpace: "nowrap", cursor: "pointer", background: "none", border: "none", padding: 0 }}
+                >
+                  open ↗
+                </button>
               </div>
             </div>
           ))}

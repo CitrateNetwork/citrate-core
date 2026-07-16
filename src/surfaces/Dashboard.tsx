@@ -4,6 +4,7 @@ import { Store } from "../shell/store";
 import { AppState, nodeLabel } from "../shell/state";
 import { citrate } from "../chain";
 import { TUTORIALS } from "../data/seed";
+import { federationUrl } from "../data/links";
 
 const RANK: Record<string, number> = { free: 0, pilot: 1, enterprise: 2 };
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -95,8 +96,12 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
       opacity: locked ? 0.55 : 1,
       cta: locked ? "members" : "open ↗",
       ctaColor: locked ? "var(--tx-3)" : "var(--accent-text)",
+      locked,
+      minutes: t.minutes,
+      url: federationUrl(t.path),
     };
-  });
+    // Sort: unlocked first, then shortest first (audit: tutorials need ordering).
+  }).sort((a, b) => (a.locked === b.locked ? a.minutes - b.minutes : a.locked ? 1 : -1));
 
   const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
@@ -255,9 +260,19 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
                     {tu.sub}
                   </span>
                 </span>
-                <span className="mono" style={{ fontSize: 10, color: tu.ctaColor, whiteSpace: "nowrap" }}>
-                  {tu.cta}
-                </span>
+                {tu.locked ? (
+                  <span className="mono" style={{ fontSize: 10, color: tu.ctaColor, whiteSpace: "nowrap" }}>
+                    {tu.cta}
+                  </span>
+                ) : (
+                  <button
+                    className="mono"
+                    onClick={() => void store.openExternal(tu.url)}
+                    style={{ fontSize: 10, color: tu.ctaColor, whiteSpace: "nowrap", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                  >
+                    {tu.cta}
+                  </button>
+                )}
               </div>
             ))}
           </div>

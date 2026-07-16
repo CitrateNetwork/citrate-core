@@ -214,8 +214,17 @@ export interface CommsDomain {
 }
 
 // ---- the full bridge surface ----------------------------------------
+/** Opening federation apps / docs / explorer links in the system browser. The
+ * URL is opened as-is (the destination RP runs its own OIDC login); a real
+ * signed-in handoff (shared-authority SSO) is a later work-order item (WO-6).
+ * Only https URLs are opened — never an arbitrary scheme. */
+export interface ShellDomain {
+  openExternal(url: string): Promise<void>;
+}
+
 export interface BridgeContract {
   readonly mode: "sim" | "tauri";
+  shell: ShellDomain;
   config: ConfigDomain;
   custody: CustodyDomain;
   auth: AuthDomain;

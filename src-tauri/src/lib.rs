@@ -18,6 +18,7 @@ mod node;
 mod oidc;
 mod rpc;
 mod seam;
+mod shell;
 mod supervisor;
 mod transfer;
 mod txdecode;
@@ -168,6 +169,8 @@ pub fn run() {
             // wallet send — a native SALT transfer bridged into a PENDING ceremony
             // (@rule8; signs nothing — the human approves via sign_and_broadcast).
             transfer::wallet_send,
+            // open an external federation link (https only) in the system browser.
+            shell::open_external,
             // seam domains — honest Unavailable until each later phase (A1.3)
             seam::wallet_activity,
             seam::memory_assert,

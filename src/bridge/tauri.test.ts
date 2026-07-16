@@ -158,6 +158,8 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       };
     // CORE wallet_send — a native transfer bridged into a PENDING ceremony;
     // returns the decoded view (the human approves via sign_and_broadcast).
+    case "open_external":
+      return undefined; // opener returns void; we assert the invoke args instead
     case "wallet_send": {
       const id = String(signMock.next++);
       const view = {
@@ -249,6 +251,12 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(b.claimable).toBeCloseTo(Number(BigInt(earningsMock.claimableWei)) / 1e18, 9);
     expect(b.staked).toBe(-1); // staking-pool view not grounded yet → keep local
     expect(b.address).toBe("0x9858effd232b4033e47d90003d41ec34ecaeda94");
+  });
+
+  it("shell.openExternal invokes open_external with the url", async () => {
+    const bridge = createTauriBridge();
+    await bridge.shell.openExternal("https://scan.citrate.ai/tx/0xabc");
+    expect(invokeMock).toHaveBeenCalledWith("open_external", { url: "https://scan.citrate.ai/tx/0xabc" });
   });
 
   it("wallet.send invokes wallet_send with {to, amountWei} and returns a pending CeremonyView", async () => {
