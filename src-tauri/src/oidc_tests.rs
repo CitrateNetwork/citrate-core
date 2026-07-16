@@ -1465,6 +1465,101 @@ fn adv10_listener_timeout_fails_closed_and_releases_port() {
     assert!(rebound, "the loopback port must be released after a timeout");
 }
 
+// ===========================================================================
+// CORE-D3.0 — in-app popup sign-in: user-cancel / abort path. The popup webview
+// itself needs a running Tauri app and is out-of-scope for a Rust unit test
+// (flagged in the sprint, same as a real browser is for A3); the AUTH LOGIC is
+// tested exactly as A3 does — driving the loopback flow directly. These tests
+// cover the NEW cancellation seam that the popup's window-close event drives:
+// a cancelled flow returns SignInCancelled, tears down the loopback listener, and
+// leaves NO partial session (Rule 1). The presentation swap changes nothing about
+// PKCE/state/nonce/exchange/validation, so the whole A3 suite above still applies
+// unchanged (it drives the SAME login via the non-cancellable `login_with`).
+// ===========================================================================
+
+#[test]
+fn d3_0_user_close_before_callback_cancels_cleanly() {
+    // Simulate the popup's window-close event firing BEFORE any callback arrives:
+    // the open_browser closure sets the cancel token (as the close handler would)
+    // and delivers NO callback. The awaiting flow must return SignInCancelled,
+    // with no refresh token vaulted and no session established.
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+
+    let cancel = super::CancelToken::new();
+    let r = mgr.login_with_cancel(&vault, &cancel, |_url| {
+        // The user closes the popup instead of authenticating: no callback is
+        // delivered; the window-close event cancels the flow.
+        cancel.cancel();
+        Ok(())
+    });
+
+    assert_eq!(
+        r.unwrap_err(),
+        AuthError::SignInCancelled,
+        "a user-closed popup must abort with the honest SignInCancelled error"
+    );
+    // No partial session: nothing was vaulted and status is signed-out (Rule 1).
+    assert!(!vault.list().unwrap().iter().any(|s| s.name == REFRESH_SLOT));
+    assert!(!mgr.status().signed_in);
+}
+
+#[test]
+fn d3_0_cancel_token_unset_completes_a_normal_login() {
+    // Positive control: with the SAME cancellable entry point but the token NEVER
+    // set, a normal login completes — proving cancellation is the ONLY behavioral
+    // difference from `login_with`, and the security flow is otherwise identical.
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _f, _p) = fresh_vault();
+
+    let cancel = super::CancelToken::new();
+    let st = mgr
+        .login_with_cancel(&vault, &cancel, |url| auth.drive_browser(url))
+        .expect("an uncancelled cancellable login must succeed");
+    assert!(st.signed_in);
+    assert!(vault.list().unwrap().iter().any(|s| s.name == REFRESH_SLOT));
+}
+
+#[test]
+fn d3_0_cancelled_wait_releases_the_loopback_port() {
+    // The cancel seam at the listener level: a pre-cancelled token makes
+    // wait_for_callback_cancellable return SignInCancelled promptly AND drop the
+    // listener, so the loopback port is released (no orphaned listener). Mirrors
+    // ADV-10's port-release proof, but for the user-abort exit path.
+    let l = LoopbackListener::bind().unwrap();
+    let port = l.port();
+    let cancel = super::CancelToken::new();
+    cancel.cancel();
+    let start = std::time::Instant::now();
+    let r = l.wait_for_callback_cancellable(std::time::Duration::from_secs(300), &cancel);
+    assert_eq!(r.unwrap_err(), AuthError::SignInCancelled);
+    // Prompt: it did not wait out the 300s timeout.
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    // The port is released: a fresh bind on the same port eventually succeeds.
+    let mut rebound = false;
+    for _ in 0..50 {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            rebound = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(rebound, "a cancelled sign-in must release the loopback port");
+}
+
+#[test]
+fn d3_0_sign_in_cancelled_error_is_secret_free_and_distinct() {
+    // Rule 1 honesty: SignInCancelled is a DISTINCT, secret-free error — never
+    // conflated with Timeout, and never carrying token material.
+    let s = AuthError::SignInCancelled.to_string();
+    assert!(!s.contains("rt_") && !s.contains("at_"));
+    assert_ne!(AuthError::SignInCancelled, AuthError::Timeout);
+    assert_ne!(AuthError::SignInCancelled, AuthError::Network);
+    assert_eq!(s, "auth: sign-in cancelled");
+}
+
 // --- small query-string editors used by the CSRF tests --------------------
 
 fn replace_query(u: &str, key: &str, val: &str) -> String {

@@ -40,6 +40,8 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -171,6 +173,11 @@ pub enum AuthError {
     IdTokenInvalid,
     /// The loopback listener timed out with no callback (ADV-10).
     Timeout,
+    /// The user closed the sign-in popup (or otherwise aborted the flow) before
+    /// the callback arrived (CORE-D3.0). An HONEST, distinct outcome (Rule 1):
+    /// the in-flight flow is cancelled cleanly, the loopback listener is torn
+    /// down, and NO partial session is created. Never a fabricated success.
+    SignInCancelled,
     /// No session (not signed in) — a refresh/userinfo was attempted signed-out.
     NotSignedIn,
     /// The custody vault is locked or unavailable (cannot store/read the token).
@@ -192,6 +199,7 @@ impl std::fmt::Display for AuthError {
             AuthError::TokenExchange => "auth: token exchange rejected",
             AuthError::IdTokenInvalid => "auth: id_token validation failed",
             AuthError::Timeout => "auth: sign-in timed out waiting for the browser",
+            AuthError::SignInCancelled => "auth: sign-in cancelled",
             AuthError::NotSignedIn => "auth: not signed in",
             AuthError::Custody => "auth: custody vault locked or unavailable",
             AuthError::Network => "auth: could not reach the authority",
@@ -256,6 +264,36 @@ fn random_token() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Cancellation (CORE-D3.0) — an honest user-abort signal
+// ---------------------------------------------------------------------------
+
+/// A cheap, clonable cancellation flag shared between the blocking sign-in flow
+/// and whatever surface can abort it (the in-app popup's window-close/destroyed
+/// event — CORE-D3.0). Setting it makes the in-flight `wait_for_callback` loop
+/// return `SignInCancelled` promptly and drop the loopback listener (no orphaned
+/// listener, no partial session). Presentation-only: it does NOT touch any token,
+/// PKCE, state/nonce, or validation path — those A3 invariants are unchanged.
+#[derive(Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    /// A fresh, un-cancelled token.
+    pub fn new() -> Self {
+        CancelToken(Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Signal cancellation. Idempotent; safe to call from a window-event thread.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether cancellation has been requested.
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Loopback listener (ADV-4/6/10)
 // ---------------------------------------------------------------------------
 
@@ -290,12 +328,41 @@ impl LoopbackListener {
     /// every exit path here, closing the socket). The listener is single-use: it
     /// accepts one connection, replies with a small close-the-tab page, and is
     /// consumed (ADV-5: no second code can be delivered to the same listener).
+    ///
+    /// This is the A3 entry point (used by the existing suite): it waits with NO
+    /// cancellation. `wait_for_callback_cancellable` adds the CORE-D3.0 user-abort
+    /// signal on top of the SAME accept loop.
+    /// `allow(dead_code)`: the production path uses the cancellable form; this
+    /// stays as the A3 suite's byte-for-byte entry point.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn wait_for_callback(self, timeout: Duration) -> Result<CallbackParams> {
+        // A never-cancelled token: byte-for-byte the original ADV-10 behavior.
+        self.wait_for_callback_cancellable(timeout, &CancelToken::new())
+    }
+
+    /// Same single-use accept loop as `wait_for_callback`, but ALSO polls a
+    /// `CancelToken` each tick (CORE-D3.0). If the user aborts the flow (closes the
+    /// popup), the loop returns `SignInCancelled` promptly and drops `self` — so
+    /// the loopback listener is torn down and no partial session is created. The
+    /// PKCE/state/nonce/exchange/validation path is untouched: this only decides
+    /// WHETHER we keep waiting for the callback, never how a received one is
+    /// handled. A timeout still fails closed exactly as before (ADV-10).
+    fn wait_for_callback_cancellable(
+        self,
+        timeout: Duration,
+        cancel: &CancelToken,
+    ) -> Result<CallbackParams> {
         self.listener
             .set_nonblocking(true)
             .map_err(|_| AuthError::Network)?;
         let deadline = std::time::Instant::now() + timeout;
         loop {
+            // Honest user-abort (Rule 1): checked BEFORE and between accepts so a
+            // popup close aborts even while idly waiting. `self` drops here → the
+            // loopback listener is closed and the port released.
+            if cancel.is_cancelled() {
+                return Err(AuthError::SignInCancelled);
+            }
             match self.listener.accept() {
                 Ok((stream, _peer)) => {
                     // Got the one connection; block on THIS stream (short timeout).
@@ -752,8 +819,35 @@ impl AuthManager {
     ///
     /// `open_browser` is injected so tests can drive the mock authority's
     /// `/authorize` (which 302s straight to the loopback) without a real browser;
-    /// production passes the tauri-plugin-opener launcher.
+    /// production passes the surface that navigates the in-app popup (CORE-D3.0).
+    ///
+    /// This is the A3 entry point (used by the full adversarial suite): it runs
+    /// with NO cancellation. The CORE-D3.0 popup path calls `login_with_cancel`,
+    /// which is IDENTICAL except it threads a `CancelToken` into the wait.
+    /// `allow(dead_code)`: the production command uses `login_with_cancel`; this
+    /// non-cancellable form stays as the A3 suite's byte-for-byte entry point.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn login_with<F>(&self, vault: &CustodyVault, open_browser: F) -> Result<AuthStatus>
+    where
+        F: FnOnce(&str) -> Result<()>,
+    {
+        // A never-cancelled token: byte-for-byte the original A3 login behavior.
+        self.login_with_cancel(vault, &CancelToken::new(), open_browser)
+    }
+
+    /// The cancellable form of `login_with` (CORE-D3.0). EVERY security step —
+    /// discovery + trust-anchor gate, loopback bind (127.0.0.1), PKCE S256, state,
+    /// nonce, code exchange, RS256 id_token validation, refresh-token custody — is
+    /// the SAME as `login_with`. The ONLY difference: the callback wait polls
+    /// `cancel`, so a user who closes the popup gets an honest `SignInCancelled`
+    /// with the listener torn down and no partial session (Rule 1). Cancellation
+    /// touches NO token/PKCE/state/nonce/validation logic.
+    pub fn login_with_cancel<F>(
+        &self,
+        vault: &CustodyVault,
+        cancel: &CancelToken,
+        open_browser: F,
+    ) -> Result<AuthStatus>
     where
         F: FnOnce(&str) -> Result<()>,
     {
@@ -782,11 +876,15 @@ impl AuthManager {
             &nonce,
         )?;
 
-        // 3. Open the browser (or, in tests, hit the mock authorization endpoint).
+        // 3. Present the authorize URL: in production, navigate the in-app popup
+        //    (CORE-D3.0); in tests, hit the mock authorization endpoint. The URL
+        //    carries ONLY the public PKCE challenge + state + nonce + client_id +
+        //    redirect_uri + scope — never a token or the verifier.
         open_browser(&auth_url)?;
 
-        // 4. Wait for exactly one callback; validate state (CSRF — ADV-1/6).
-        let cb = listener.wait_for_callback(CALLBACK_TIMEOUT)?;
+        // 4. Wait for exactly one callback; validate state (CSRF — ADV-1/6). The
+        //    wait is cancellable: a popup close returns SignInCancelled (Rule 1).
+        let cb = listener.wait_for_callback_cancellable(CALLBACK_TIMEOUT, cancel)?;
         if !constant_time_eq(cb.state.as_bytes(), state.as_bytes()) {
             return Err(AuthError::StateMismatch);
         }
@@ -1264,7 +1362,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 // test enumerates these and asserts none carries token bytes.
 // ---------------------------------------------------------------------------
 
-use tauri::State;
+use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 /// Managed Tauri state: the process-wide auth manager.
 pub struct AuthState(pub AuthManager);
@@ -1273,30 +1371,110 @@ fn err_str(e: AuthError) -> String {
     e.to_string()
 }
 
+/// The dedicated in-app sign-in popup window label (CORE-D3.0). A single,
+/// well-known label so a stale popup from a prior aborted attempt is reused/closed
+/// rather than leaking a second window.
+const AUTH_POPUP_LABEL: &str = "auth-popup";
+
+/// Build + show the branded in-app sign-in popup (CORE-D3.0) navigated to the
+/// authority authorize `url`, and wire its close/destroy event to `cancel` so a
+/// user who dismisses the popup aborts the in-flight flow honestly (Rule 1). The
+/// popup is a DEDICATED window (label `auth-popup`), not the main window: ~480×720,
+/// centered, focused, non-resizable, titled "Sign in · Citrate".
+///
+/// The `url` is the public authorize URL ONLY (client_id, redirect_uri, PKCE
+/// challenge, state, nonce, scope) — no token or verifier is ever placed in it.
+/// If the window cannot be created (headless / CI), returns an honest `Network`
+/// error rather than panicking.
+fn open_auth_popup(
+    app: &tauri::AppHandle,
+    url: &str,
+    cancel: &CancelToken,
+) -> Result<tauri::WebviewWindow> {
+    // Close any stale popup left by a prior aborted attempt (defensive; the flow
+    // always closes its own popup, but a crash could orphan one).
+    if let Some(existing) = app.get_webview_window(AUTH_POPUP_LABEL) {
+        let _ = existing.close();
+    }
+    let external = url.parse::<tauri::Url>().map_err(|_| AuthError::Network)?;
+    let window = WebviewWindowBuilder::new(app, AUTH_POPUP_LABEL, WebviewUrl::External(external))
+        .title("Sign in · Citrate")
+        .inner_size(480.0, 720.0)
+        .resizable(false)
+        .center()
+        .focused(true)
+        .build()
+        .map_err(|_| AuthError::Network)?;
+
+    // Wire the user-close abort: if the user closes/destroys the popup before the
+    // loopback callback arrives, signal cancellation so the awaiting login returns
+    // SignInCancelled and the loopback listener is torn down (no orphaned listener,
+    // no partial session). Firing this AFTER the flow has already completed is a
+    // harmless no-op (the token is only read while the flow is still waiting).
+    let cancel_on_close = cancel.clone();
+    window.on_window_event(move |event| {
+        if matches!(
+            event,
+            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+        ) {
+            cancel_on_close.cancel();
+        }
+    });
+    Ok(window)
+}
+
 /// `auth_status` — claim-derived flags ONLY (ADV-8). No token ever crosses here.
 #[tauri::command]
 pub fn auth_status(state: State<'_, AuthState>) -> std::result::Result<AuthStatus, String> {
     Ok(state.0.status())
 }
 
-/// `auth_login` — run the loopback-PKCE flow, opening the system browser via
-/// tauri-plugin-opener. Returns claim-derived status (never a token). Needs the
-/// custody vault (unlocked) to store the refresh token.
+/// `auth_login` — run the loopback-PKCE flow, presenting the authorize page in an
+/// IN-APP popup `WebviewWindow` (CORE-D3.0) instead of kicking the user out to the
+/// system browser. Returns claim-derived status (never a token). Needs the custody
+/// vault (unlocked) to store the refresh token.
+///
+/// PRESENTATION SWAP ONLY: the entire A3 security flow — discovery + trust anchor,
+/// loopback bind (127.0.0.1), PKCE S256, state, nonce, code exchange, RS256
+/// id_token validation, refresh-token custody — is byte-for-byte unchanged. The
+/// only change is HOW the user reaches the authorize page: the popup navigates to
+/// the SAME authorize URL, and the SAME loopback listener catches the `code`+
+/// `state` when the authority 30x-redirects the popup's top-level navigation to
+/// `http://127.0.0.1:<port>/auth/callback`.
+///
+/// Lifecycle: the popup opens when the flow starts and is CLOSED programmatically
+/// the moment the flow resolves — success, timeout, or error. If the USER closes
+/// the popup first, the popup's close event fires the `CancelToken`, the awaiting
+/// flow returns `SignInCancelled`, the loopback listener is torn down, and no
+/// partial session is created (Rule 1). No orphaned listener, no hang.
 #[tauri::command]
 pub fn auth_login(
     app: tauri::AppHandle,
     auth: State<'_, AuthState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<AuthStatus, String> {
-    use tauri_plugin_opener::OpenerExt;
-    let opener = app.opener();
-    auth.0
-        .login_with(&custody.0, |url| {
-            opener
-                .open_url(url.to_string(), None::<&str>)
-                .map_err(|_| AuthError::Network)
-        })
-        .map_err(err_str)
+    // A per-attempt cancel token shared with the popup's close event.
+    let cancel = CancelToken::new();
+    // The popup is created lazily INSIDE the open_browser closure — after the
+    // loopback listener is bound and the authorize URL is built — so we navigate
+    // straight to the real authorize URL (no blank flash). We hold the window
+    // handle so we can close it programmatically on every exit path.
+    let popup: Mutex<Option<tauri::WebviewWindow>> = Mutex::new(None);
+
+    let result = auth.0.login_with_cancel(&custody.0, &cancel, |url| {
+        let window = open_auth_popup(&app, url, &cancel)?;
+        *popup.lock().unwrap_or_else(|e| e.into_inner()) = Some(window);
+        Ok(())
+    });
+
+    // Programmatically close the popup on EVERY outcome (success / timeout / error /
+    // cancel). On a user-close the window is already gone — close() is a harmless
+    // no-op. This guarantees no popup is left on screen after the flow resolves.
+    if let Some(window) = popup.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        let _ = window.close();
+    }
+
+    result.map_err(err_str)
 }
 
 /// `auth_userinfo` — live `/userinfo` entitlement re-check. Claim-derived only.
