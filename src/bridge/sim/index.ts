@@ -277,9 +277,14 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async balances() {
         assertSimAllowed("wallet.balances");
         const st = s();
+        // `staked` = the SELF-stake only (the atomic chain fact the tauri bridge
+        // reads via LiquidStakingPool.balanceOf). The vaulted membership grant is
+        // an entitlement the store/UI layers on top (hasGrant ? 32000 : 0), so it
+        // is NOT included here — keeping the field's meaning identical in sim and
+        // tauri (self-stake), which the store folds into AppState.selfStake.
         return {
           liquid: st.liquid,
-          staked: (st.hasGrant ? 32000 : 0) + st.selfStake,
+          staked: st.selfStake,
           claimable: st.claimable,
           address: st.walletAddr,
         };
@@ -294,6 +299,13 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // fabricates a transfer. (The tauri path builds a REAL pending ceremony.)
         assertSimAllowed("wallet.send");
         throw new Unavailable("wallet", "send");
+      },
+      async stake() {
+        // No key/chain in web preview — a stake cannot settle here. Honest
+        // Unavailable (Rule 1); the tauri path builds a REAL pending deposit
+        // ceremony. Mirrors send().
+        assertSimAllowed("wallet.stake");
+        throw new Unavailable("wallet", "stake");
       },
     },
 

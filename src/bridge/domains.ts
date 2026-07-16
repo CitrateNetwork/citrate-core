@@ -106,6 +106,11 @@ export interface WalletDomain {
    * `signing.broadcast(view.id)` (B1.4 → a real 40204 tx). `amountWei` is a
    * decimal wei string. Mirrors `agent.claim` for the claimRewards() path. */
   send(to: string, amountWei: string): Promise<CeremonyView>;
+  /** CORE (@rule8) — submit a LiquidStakingPool `deposit()` stake as a PENDING
+   * ceremony and return the decoded view. Signs NOTHING; the human approves via
+   * `signing.broadcast(view.id)` (B1.4 → a real 40204 deposit tx). `amountWei` is
+   * a decimal wei string. Mirrors `send` for the transfer path. */
+  stake(amountWei: string): Promise<CeremonyView>;
 }
 
 export interface NodeDomain {

@@ -264,20 +264,22 @@ pub fn agent_earnings(
     read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())
 }
 
-/// Real wallet balances for the Wallet surface. Carries the two balances that are
-/// grounded reads on 40204 today: native `liquid` SALT (`eth_getBalance`) and the
-/// real `claimable` (`ContributionAccounting.claimable`). **`staked` is
-/// deliberately absent** — the staking-pool balance view is NOT grounded in this
-/// repo yet (it needs the node-agent's staking address book + view selector, the
-/// way `ContributionAccounting` is grounded). The UI keeps its grant-attributed
-/// staked value until that lands, rather than fabricating a pool read (Rule 1).
-/// Both amounts are wei strings; the bridge converts to SALT for display.
+/// Real wallet balances for the Wallet surface. Carries the three balances that
+/// are grounded reads on 40204 today: native `liquid` SALT (`eth_getBalance`), the
+/// real `claimable` (`ContributionAccounting.claimable`), and the real `staked`
+/// SELF-stake (`LiquidStakingPool.balanceOf` — the user's OWN pool shares in SALT;
+/// the membership-granted 32k is vault-held and NOT in this value, so the UI adds
+/// the vaulted grant separately). All amounts are wei strings; the bridge converts
+/// to SALT for display. Rule 1: every field is a live read, never a sim.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct WalletBalances {
     #[serde(rename = "liquidWei")]
     pub liquid_wei: String,
     #[serde(rename = "claimableWei")]
     pub claimable_wei: String,
+    /// Self-stake in wei of SALT, from `LiquidStakingPool.balanceOf(address)`.
+    #[serde(rename = "stakedWei")]
+    pub staked_wei: String,
     #[serde(rename = "address")]
     pub address: String,
 }
@@ -296,9 +298,15 @@ pub fn wallet_balances(
         .get_balance(&wallet.address)
         .map_err(|e| e.to_string())?;
     let snap = read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
+    // Real self-stake (LiquidStakingPool.balanceOf) — same all-or-nothing contract
+    // as liquid/claimable: an RPC hiccup fails the whole refresh, and the store
+    // keeps the last honest values rather than showing a fabricated one (Rule 1).
+    let staked =
+        crate::staking::read_self_stake(&rpc, &wallet.address).map_err(|e| e.to_string())?;
     Ok(WalletBalances {
         liquid_wei: liquid.to_string(),
         claimable_wei: snap.claimable_wei,
+        staked_wei: staked.to_string(),
         address: wallet.address,
     })
 }

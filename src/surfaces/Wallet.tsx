@@ -99,16 +99,33 @@ export function Wallet({ store, s }: SurfaceProps) {
     });
   };
 
-  // Stake / Withdraw are NOT wired to a real transaction yet — the LiquidStakingPool
-  // stake/withdraw view+selector are not grounded in-repo (node-agent address book).
-  // Be honest rather than fabricate a hash + mutate the balance (Rule 1/3).
+  // Add stake is a REAL LiquidStakingPool deposit(): build the pending ceremony +
+  // broadcast the real 40204 tx (store.walletStake → bridge.wallet.stake +
+  // signing.broadcast). No local balance mutation, no fabricated hash — the staked
+  // figure re-reads from chain after settle. Amount is SALT → wei (18 dp) via the
+  // same STRICT decimal path as Send (never sends more than typed).
   const onAddStake = () => {
-    const amt = parseFloat(stakeAmtEl.current ? stakeAmtEl.current.value : "");
-    if (!(amt > 0)) return store.toast("Enter an amount");
+    const amtRaw = stakeAmtEl.current ? stakeAmtEl.current.value.trim() : "";
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(amtRaw)) return store.toast("Enter a valid amount (e.g. 1.5)");
+    const amt = parseFloat(amtRaw);
+    if (!(amt > 0)) return store.toast("Enter an amount greater than zero");
     if (amt > s.liquid) return store.toast("Exceeds your liquid balance");
-    store.settleUnwired("Staking");
+    let wei: string;
+    try {
+      const [whole, frac = ""] = amtRaw.split(".");
+      wei = (BigInt(whole || "0") * 10n ** 18n + BigInt((frac + "0".repeat(18)).slice(0, 18))).toString();
+    } catch {
+      return store.toast("Enter a valid amount (e.g. 1.5)");
+    }
+    if (wei === "0") return store.toast("Enter an amount greater than zero");
+    void store.walletStake(wei).then(() => {
+      if (stakeAmtEl.current) stakeAmtEl.current.value = "";
+    });
   };
 
+  // Withdraw is NOT wired yet — LiquidStakingPool withdraw is a two-step,
+  // ~7-day-queued flow (requestWithdrawal(shares) → claimWithdrawal(id)) that
+  // takes shares, not SALT. It's a separate WP; honest until then (Rule 1/3).
   const onUnstake = () => {
     const amt = parseFloat(unstakeAmtEl.current ? unstakeAmtEl.current.value : "");
     if (!(amt > 0)) return store.toast("Enter an amount");

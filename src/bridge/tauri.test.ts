@@ -148,12 +148,14 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         walletAddress: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
         contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
       };
-    // CORE wallet balances — REAL native liquid (eth_getBalance) + claimable.
-    // Wei strings; the adapter converts to SALT numbers and sets staked:-1.
+    // CORE wallet balances — REAL native liquid (eth_getBalance) + claimable +
+    // self-stake (LiquidStakingPool.balanceOf). Wei strings; the adapter converts
+    // each to a SALT number (no -1 sentinel now that self-stake is grounded).
     case "wallet_balances":
       return {
         liquidWei: "1500000000000000000", // 1.5 SALT
         claimableWei: earningsMock.claimableWei,
+        stakedWei: "5000000000000000000", // 5 SALT self-staked
         address: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
       };
     // CORE wallet_send — a native transfer bridged into a PENDING ceremony;
@@ -168,6 +170,21 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         kind: "transaction",
         chainId: 40204,
         decoded: { action: "Transfer", cost: "1.5 SALT", destination: String((args as { to: string }).to) },
+        requiresRawAck: false,
+      };
+      signMock.map.set(id, view);
+      return view;
+    }
+    // CORE wallet_stake — a LiquidStakingPool deposit() bridged into a PENDING
+    // ceremony; returns the decoded view (approved via sign_and_broadcast).
+    case "wallet_stake": {
+      const id = String(signMock.next++);
+      const view = {
+        id,
+        origin: "local-user",
+        kind: "transaction",
+        chainId: 40204,
+        decoded: { action: "Call LiquidStakingPool with 4 bytes calldata", cost: "deposit", destination: "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e" },
         requiresRawAck: false,
       };
       signMock.map.set(id, view);
@@ -241,7 +258,7 @@ describe("tauri adapter — config round-trip proof (A1.4, frontend half)", () =
 });
 
 describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
-  it("invokes wallet_balances and converts wei→SALT; staked is -1 (not grounded)", async () => {
+  it("invokes wallet_balances and converts wei→SALT incl. real self-stake (balanceOf)", async () => {
     const bridge = createTauriBridge();
     // Uses the shared earningsMock default for claimable (do NOT mutate it — other
     // tests assert against the default). liquid is the mock's 1.5 SALT.
@@ -249,8 +266,18 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(invokeMock).toHaveBeenCalledWith("wallet_balances", undefined);
     expect(b.liquid).toBeCloseTo(1.5, 9);
     expect(b.claimable).toBeCloseTo(Number(BigInt(earningsMock.claimableWei)) / 1e18, 9);
-    expect(b.staked).toBe(-1); // staking-pool view not grounded yet → keep local
+    expect(b.staked).toBeCloseTo(5, 9); // real LiquidStakingPool.balanceOf (self-stake), no -1 sentinel
     expect(b.address).toBe("0x9858effd232b4033e47d90003d41ec34ecaeda94");
+  });
+
+  it("wallet.stake invokes wallet_stake with {amountWei} and returns a pending CeremonyView", async () => {
+    const bridge = createTauriBridge();
+    const view = await bridge.wallet.stake("3000000000000000000");
+    expect(invokeMock).toHaveBeenCalledWith("wallet_stake", { amountWei: "3000000000000000000" });
+    expect(view.id).toBeTruthy();
+    expect(view.origin).toBe("local-user");
+    expect(view.kind).toBe("transaction");
+    expect(view.requiresRawAck).toBe(false);
   });
 
   it("shell.openExternal invokes open_external with the url", async () => {

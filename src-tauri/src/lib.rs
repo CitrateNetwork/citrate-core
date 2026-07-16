@@ -19,6 +19,7 @@ mod oidc;
 mod rpc;
 mod seam;
 mod shell;
+mod staking;
 mod supervisor;
 mod transfer;
 mod txdecode;
@@ -169,6 +170,10 @@ pub fn run() {
             // wallet send — a native SALT transfer bridged into a PENDING ceremony
             // (@rule8; signs nothing — the human approves via sign_and_broadcast).
             transfer::wallet_send,
+            // wallet stake — a LiquidStakingPool deposit() bridged into a PENDING
+            // ceremony (@rule8; signs nothing — approved via sign_and_broadcast).
+            // The self-stake balance is read within wallet_balances (balanceOf).
+            staking::wallet_stake,
             // open an external federation link (https only) in the system browser.
             shell::open_external,
             // seam domains — honest Unavailable until each later phase (A1.3)

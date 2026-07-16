@@ -256,10 +256,11 @@ export class Store {
 
   /**
    * CORE — pull REAL wallet balances (native `liquid` SALT via eth_getBalance +
-   * the real `claimable` via ContributionAccounting) and fold them into AppState.
-   * `staked` is left as the grant-attributed value — the staking-pool balance
-   * view is not a grounded on-chain read yet (bridge returns -1). Failure leaves
-   * the last honest values untouched — no fabricated number (Rule 1).
+   * the real `claimable` via ContributionAccounting + the real SELF-stake via
+   * LiquidStakingPool.balanceOf) and fold them into AppState. `staked` from the
+   * bridge is the self-stake only; the displayed staked = (grant ? 32000 : 0) +
+   * selfStake, so we fold it into `selfStake`. Failure leaves the last honest
+   * values untouched — no fabricated number (Rule 1).
    */
   async refreshWallet(): Promise<void> {
     try {
@@ -272,7 +273,11 @@ export class Store {
         // fabricated caption (Rule 1).
         if (BRIDGE_MODE === "tauri") patch.earnSource = "chain";
       }
-      // b.staked < 0 ⇒ not a grounded read; keep the local grant-attributed value.
+      // b.staked >= 0 ⇒ a grounded self-stake read (balanceOf) — fold it. The UI
+      // adds the vaulted grant on top (hasGrant ? 32000 : 0). A negative value
+      // would mean "not grounded" — keep the local value (defensive; the real and
+      // sim bridges both return >= 0 today).
+      if (b.staked >= 0) patch.selfStake = b.staked;
       this.setState(patch);
     } catch {
       /* honest no-op */
@@ -1059,11 +1064,49 @@ export class Store {
   }
 
   /**
-   * Honest outcome for a value action whose REAL on-chain path is NOT wired yet
-   * (staking-pool stake/withdraw + bonded pinning need a grounded contract /
-   * daemon that doesn't exist in-repo). NEVER fabricates a hash or mutates a
-   * balance (Rule 1/3) — the old sim ceremony did both. Web-dev: settles only in
-   * the desktop app.
+   * CORE (@rule8) — a REAL LiquidStakingPool stake (`deposit()`). Builds the
+   * pending ceremony (bridge.wallet.stake → wallet_stake), then approves +
+   * broadcasts the real 40204 deposit tx (B1.4). NEVER mutates the local balance
+   * and NEVER fabricates a hash — the staked figure re-reads from chain after
+   * settle (refreshWallet → balanceOf). Mirrors walletSend. Web-dev cannot settle
+   * — honest message, no fake stake. `amountWei` is a decimal wei string.
+   */
+  async walletStake(amountWei: string): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Staking settles only in the desktop app — no key or chain in web preview.");
+      return;
+    }
+    let view: Awaited<ReturnType<typeof bridge.wallet.stake>>;
+    try {
+      view = await bridge.wallet.stake(amountWei);
+    } catch (err) {
+      this.toast("Stake unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    try {
+      // Approve the real pending ceremony → sign + broadcast the real deposit().
+      const result = await bridge.signing.broadcast(view.id, false);
+      this.addActivity("Stake", view.decoded.cost || "deposit", result.txHash);
+      this.toast("Stake broadcast — tx " + result.txHash.slice(0, 10) + "…; staked balance updates when it settles.");
+      await this.refreshWallet();
+      this.save();
+    } catch (err) {
+      // Honest failure — reject the pending ceremony so it isn't left dangling.
+      try {
+        await bridge.signing.reject(view.id);
+      } catch {
+        /* best-effort cleanup */
+      }
+      this.toast("Stake not settled — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /**
+   * Honest outcome for a value action whose REAL on-chain path is NOT wired yet.
+   * Today this is the WITHDRAW leg (LiquidStakingPool `requestWithdrawal` →
+   * `claimWithdrawal` is a two-step, ~7-day-queued flow that takes shares — a
+   * separate WP) and bonded pinning. NEVER fabricates a hash or mutates a balance
+   * (Rule 1/3). Web-dev: settles only in the desktop app.
    */
   settleUnwired(action: string): void {
     if (BRIDGE_MODE === "tauri") {

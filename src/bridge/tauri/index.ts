@@ -123,14 +123,15 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
     },
     wallet: {
       // CORE — REAL balances: native liquid SALT via eth_getBalance + the real
-      // claimable (ContributionAccounting) on 40204. `staked` is NOT a grounded
-      // on-chain read yet (the staking-pool view isn't grounded in-repo — see
-      // earnings.rs WalletBalances); we return -1 to signal "keep the local
-      // grant-attributed staked" rather than fabricate a pool read (Rule 1).
+      // claimable (ContributionAccounting) + the real self-stake
+      // (LiquidStakingPool.balanceOf) on 40204. `staked` here is the user's OWN
+      // pool position; the vaulted membership grant (32k) is tracked separately in
+      // AppState (hasGrant), so the UI adds it on top. Every field is a live read
+      // (Rule 1) — no `-1` sentinel now that the pool balance is grounded.
       async balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }> {
-        const b = await invoke<{ liquidWei: string; claimableWei: string; address: string }>("wallet_balances");
+        const b = await invoke<{ liquidWei: string; claimableWei: string; stakedWei: string; address: string }>("wallet_balances");
         const toSalt = (wei: string) => Number(BigInt(wei)) / 1e18;
-        return { liquid: toSalt(b.liquidWei), staked: -1, claimable: toSalt(b.claimableWei), address: b.address };
+        return { liquid: toSalt(b.liquidWei), staked: toSalt(b.stakedWei), claimable: toSalt(b.claimableWei), address: b.address };
       },
       async activity() {
         return unavailable("wallet", "activity");
@@ -141,6 +142,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // the Rust `amount_wei` arg. Mirrors agent.claim's request→broadcast split.
       async send(to: string, amountWei: string): Promise<CeremonyView> {
         return invoke<CeremonyView>("wallet_send", { to, amountWei });
+      },
+      // CORE (@rule8) — build a LiquidStakingPool deposit() stake as a PENDING
+      // ceremony and return its decoded view. Signs NOTHING; the human approves
+      // via signing.broadcast (B1.4 → real 40204 deposit tx). Mirrors send().
+      async stake(amountWei: string): Promise<CeremonyView> {
+        return invoke<CeremonyView>("wallet_stake", { amountWei });
       },
     },
     // ---- node: REAL citrate-node under the SidecarSupervisor (C1.1) ----

@@ -52,11 +52,13 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect((state as unknown as { autolock: number }).autolock).toBe(15);
   });
 
-  it("wallet.balances is computed from live host state (grant + self-stake)", async () => {
+  it("wallet.balances reports self-stake only (grant is layered by the store/UI)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);
     const b = await bridge.wallet.balances();
-    expect(b.staked).toBe(32000 + 2500);
+    // `staked` = the SELF-stake (the chain fact); the vaulted 32k grant is an
+    // entitlement the store adds via hasGrant, not part of this field.
+    expect(b.staked).toBe(2500);
     expect(b.liquid).toBe(12.5);
     expect(b.address).toBe("0xabc");
   });

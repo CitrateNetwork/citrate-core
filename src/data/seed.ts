@@ -6,12 +6,16 @@
 // spec so wiring replaces this module, not the UI.
 // =====================================================================
 
+// Canonical 40204 deployment addresses (contracts/addresses/40204.json). Kept
+// exact — a stale address here is what seeded a wrong LiquidStakingPool address
+// downstream. The AA paymaster address rerolls with the AA stack; pin it to the
+// current 40204.json value.
 export const CONTRACTS = {
-  liquidStakingPool: { name: 'LiquidStakingPool', addr: '0xfd27a3c9d14be081f7550dbb6ab5b3c2891e685e' },
-  entryPoint:        { name: 'EntryPoint v0.7',   addr: '0x077Fdc05e4c17ee0e9c2d6b3f28a67c92be954Ef' },
-  paymaster:         { name: 'CitratePaymaster',  addr: '0x884c11b7de08e2a4b91f9c33da4c8b0a63f60d28' },
-  memberSbt:         { name: 'CitrateMemberSBT',  addr: '0x9a3f6e21c88db04d7a15e9b02f764a80413cc771' },
-  stakeVault:        { name: 'MembershipStakeVault', addr: '0x5b21d90cf3a6488ba7e01c2d94f7e3ab1042e90a' },
+  liquidStakingPool: { name: 'LiquidStakingPool', addr: '0xfd272195b55cb4f5a240a5be75aabab0d1c5685e' },
+  entryPoint:        { name: 'EntryPoint v0.7',   addr: '0x077Fbc3338A9e6BAD90A3A041E6b7425689754Ef' },
+  paymaster:         { name: 'CitratePaymaster',  addr: '0x884c47518a21496d17d4dae62e96239b06177d28' },
+  memberSbt:         { name: 'CitrateMemberSBT',  addr: '0xb8a52197E5E3b03625E6817bC54D03F5820f04D3' },
+  stakeVault:        { name: 'MembershipStakeVault', addr: '0x127142194416A58280E638f286ECBcDc493d7A2C' },
 };
 
 export const PERSONAS = {
