@@ -174,6 +174,16 @@ pub fn run() {
             // ceremony (@rule8; signs nothing — approved via sign_and_broadcast).
             // The self-stake balance is read within wallet_balances (balanceOf).
             staking::wallet_stake,
+            // wallet withdraw (WP2, @rule8) — the two-step, ~7-day-queued withdraw
+            // of self-added stake. request_withdrawal burns stSALT shares (the
+            // SALT→shares conversion is done from LIVE shares()+balanceOf() reads,
+            // never fabricated); claim_withdrawal pays out a matured request. Both
+            // sign NOTHING — the human approves via sign_and_broadcast (B1.4).
+            // pending_withdrawals enumerates the wallet's real on-chain queue
+            // (getLogs WithdrawalRequested + withdrawals(id) + block_number).
+            staking::wallet_request_withdrawal,
+            staking::wallet_claim_withdrawal,
+            staking::wallet_pending_withdrawals,
             // open an external federation link (https only) in the system browser.
             shell::open_external,
             // seam domains — honest Unavailable until each later phase (A1.3)

@@ -63,6 +63,23 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(b.address).toBe("0xabc");
   });
 
+  // CORE WP2 — the sim withdraw path is HONEST: the web shim reaches no chain, so
+  // requestWithdrawal/claimWithdrawal throw Unavailable (never a fabricated settle)
+  // and pendingWithdrawals returns an empty queue (never fabricated rows — Rule 1).
+  it("wallet.requestWithdrawal + claimWithdrawal are honestly Unavailable in sim", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const { isUnavailable } = await import("./types");
+    await expect(bridge.wallet.requestWithdrawal("1000000000000000000")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    await expect(bridge.wallet.claimWithdrawal("1")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+
+  it("wallet.pendingWithdrawals returns an honest empty queue in sim (no chain)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    expect(await bridge.wallet.pendingWithdrawals()).toEqual([]);
+  });
+
   it("node.status mirrors the live sim node fields", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);

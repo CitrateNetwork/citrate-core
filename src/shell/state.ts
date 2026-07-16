@@ -10,6 +10,8 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
+import type { PendingWithdrawal } from "../bridge/domains";
+
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
 // tier gating order
@@ -189,6 +191,14 @@ export interface AppState {
   crashes: Crash[];
   liquid: number;
   selfStake: number;
+  /**
+   * CORE WP2 — the wallet's PENDING (unclaimed) LiquidStakingPool withdrawals,
+   * read from live chain state (getLogs WithdrawalRequested + withdrawals(id) +
+   * block_number) via refreshPendingWithdrawals(). NOT persisted — the source of
+   * truth is chain, re-read on Wallet mount + after a settle. A fresh wallet
+   * honestly reads [] (Rule 1 — never fabricated).
+   */
+  pendingWithdrawals: PendingWithdrawal[];
   hasGrant: boolean;
   hasSbt: boolean;
   earnVal: number;
@@ -371,6 +381,7 @@ export function freshState(pid: string): AppState {
     crashes: [],
     liquid: 0,
     selfStake: 0,
+    pendingWithdrawals: [],
     hasGrant: false,
     hasSbt: false,
     earnVal: 0,

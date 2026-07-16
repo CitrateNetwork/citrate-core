@@ -125,6 +125,34 @@ describe("HIPAA sign-out-by-default — no session/PII persisted", () => {
   });
 });
 
+// CORE WP2 — the withdraw store methods. In web-dev (BRIDGE_MODE="sim") they do
+// NOT settle (no key/chain): the write methods take the honest "desktop only"
+// branch (no throw, no fabricated balance change), and refreshPendingWithdrawals
+// folds the sim empty queue. This guards that the wiring exists + is honest.
+describe("store withdraw (WP2) — honest in web-dev sim", () => {
+  it("refreshPendingWithdrawals folds the (empty) sim queue without throwing", async () => {
+    store.setState({ pendingWithdrawals: [{ id: "stale", saltWei: "1", requestBlock: 0, claimableAtBlock: 0, claimable: true }] });
+    await store.refreshPendingWithdrawals();
+    // Sim bridge returns [] (no chain) — the fold replaces the stale list honestly.
+    expect(store.getSnapshot().pendingWithdrawals).toEqual([]);
+  });
+
+  it("walletRequestWithdrawal in web-dev does not fabricate a settlement (honest toast)", async () => {
+    const before = store.getSnapshot().selfStake;
+    await store.walletRequestWithdrawal("1000000000000000000");
+    // No balance mutation, no fabricated activity entry — just an honest message.
+    expect(store.getSnapshot().selfStake).toBe(before);
+    expect(store.getSnapshot().toast).toContain("desktop app");
+  });
+
+  it("walletClaimWithdrawal in web-dev does not fabricate a settlement (honest toast)", async () => {
+    const liquidBefore = store.getSnapshot().liquid;
+    await store.walletClaimWithdrawal("1");
+    expect(store.getSnapshot().liquid).toBe(liquidBefore);
+    expect(store.getSnapshot().toast).toContain("desktop app");
+  });
+});
+
 // CORE Phase 1 — the REAL node poller maps supervisor state (node.rs map_state)
 // onto the app's node lifecycle enum. This replaces the sim tick() node state in
 // a Tauri build so height/peers/sync are live 40204 truth, not fabricated.

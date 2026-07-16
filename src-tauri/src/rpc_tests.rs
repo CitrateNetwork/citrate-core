@@ -165,6 +165,67 @@ fn receipt_poll_times_out_when_never_mined() {
 }
 
 #[test]
+fn get_logs_is_well_formed_and_decodes_entries() {
+    // The node returns one WithdrawalRequested log: topic0 = event sig hash,
+    // topic1 = id (indexed), topic2 = staker (indexed), data = the two
+    // non-indexed uints, blockNumber = 0x64 (100).
+    let topic0 = "0x1111111111111111111111111111111111111111111111111111111111111111";
+    let topic1 = "0x0000000000000000000000000000000000000000000000000000000000000007"; // id 7
+    let topic2 = "0x0000000000000000000000009858effd232b4033e47d90003d41ec34ecaeda94";
+    let log = serde_json::json!({
+        "address": "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e",
+        "topics": [topic0, topic1, topic2],
+        "data": "0x00000000000000000000000000000000000000000000000000000000000000ff",
+        "blockNumber": "0x64",
+    });
+    let mock = MockTransport::new(vec![ok_result(Value::Array(vec![log]))]);
+    let client = RpcClient::with_transport(mock);
+
+    let filter = serde_json::json!({
+        "address": "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e",
+        "topics": [topic0, Value::Null, topic2],
+        "fromBlock": "earliest",
+        "toBlock": "latest",
+    });
+    let logs = client.get_logs(filter.clone()).expect("get_logs");
+    assert_eq!(logs.len(), 1, "one matching log");
+    assert_eq!(logs[0].topics.len(), 3, "topic0 + 2 indexed args");
+    assert_eq!(logs[0].topics[1], topic1, "topic1 = id (indexed)");
+    assert_eq!(logs[0].block_number, 100, "0x64 → 100");
+
+    let reqs = client.transport.requests();
+    assert_eq!(reqs[0]["method"], "eth_getLogs");
+    assert_eq!(reqs[0]["params"][0], filter, "the filter is passed verbatim");
+}
+
+#[test]
+fn get_logs_empty_is_an_honest_empty_list() {
+    // A fresh wallet with no WithdrawalRequested events → an empty array, decoded
+    // to an empty Vec (honest, not an error — Rule 1).
+    let mock = MockTransport::new(vec![ok_result(Value::Array(vec![]))]);
+    let client = RpcClient::with_transport(mock);
+    let logs = client.get_logs(serde_json::json!({})).expect("empty logs");
+    assert!(logs.is_empty(), "no logs → empty Vec, never a fabricated entry");
+}
+
+#[test]
+fn get_logs_malformed_blocknumber_is_a_field_error() {
+    // A log missing its blockNumber must error, never silently produce a
+    // block-0 entry (which would mislead the claimable-delay math).
+    let log = serde_json::json!({
+        "topics": ["0x00"],
+        "data": "0x",
+        // blockNumber omitted
+    });
+    let mock = MockTransport::new(vec![ok_result(Value::Array(vec![log]))]);
+    let client = RpcClient::with_transport(mock);
+    assert!(
+        matches!(client.get_logs(serde_json::json!({})), Err(RpcError::MissingField(_))),
+        "a log missing blockNumber is rejected, not silently zeroed"
+    );
+}
+
+#[test]
 fn missing_0x_prefix_quantity_is_a_field_error() {
     let mock = MockTransport::new(vec![ok_result(Value::String("2a".into()))]);
     let client = RpcClient::with_transport(mock);

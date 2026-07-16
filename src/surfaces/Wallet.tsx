@@ -38,10 +38,12 @@ export function Wallet({ store, s }: SurfaceProps) {
   const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
   const src = s.node === "off" ? "rpc.citrate.ai" : "local node";
 
-  // Fold the REAL liquid (eth_getBalance) + claimable balances on mount. In a
-  // Tauri build this reads live 40204; in web-dev the sim adapter echoes state.
+  // Fold the REAL liquid (eth_getBalance) + claimable balances on mount, plus the
+  // REAL pending-withdrawal queue (WP2). In a Tauri build these read live 40204;
+  // in web-dev the sim adapter echoes state / returns an empty queue.
   useEffect(() => {
     void store.refreshWallet();
+    void store.refreshPendingWithdrawals();
   }, [store]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
@@ -123,15 +125,36 @@ export function Wallet({ store, s }: SurfaceProps) {
     });
   };
 
-  // Withdraw is NOT wired yet — LiquidStakingPool withdraw is a two-step,
-  // ~7-day-queued flow (requestWithdrawal(shares) → claimWithdrawal(id)) that
-  // takes shares, not SALT. It's a separate WP; honest until then (Rule 1/3).
+  // Withdraw is a REAL LiquidStakingPool requestWithdrawal (WP2): the SALT amount
+  // is converted to shares IN RUST from live reads, then the pending ceremony is
+  // built + broadcast (store.walletRequestWithdrawal → bridge.wallet
+  // .requestWithdrawal + signing.broadcast). It burns shares into the ~7-day queue
+  // (claim later via the Pending panel). No local balance mutation, no fabricated
+  // hash. Amount is SALT → wei (18 dp) via the SAME STRICT decimal path as Send.
   const onUnstake = () => {
-    const amt = parseFloat(unstakeAmtEl.current ? unstakeAmtEl.current.value : "");
-    if (!(amt > 0)) return store.toast("Enter an amount");
+    const amtRaw = unstakeAmtEl.current ? unstakeAmtEl.current.value.trim() : "";
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(amtRaw)) return store.toast("Enter a valid amount (e.g. 1.5)");
+    const amt = parseFloat(amtRaw);
+    if (!(amt > 0)) return store.toast("Enter an amount greater than zero");
     if (amt > s.selfStake) return store.toast("Only self-added stake can be withdrawn — granted principal is vaulted");
-    store.settleUnwired("Withdrawal");
+    let wei: string;
+    try {
+      const [whole, frac = ""] = amtRaw.split(".");
+      wei = (BigInt(whole || "0") * 10n ** 18n + BigInt((frac + "0".repeat(18)).slice(0, 18))).toString();
+    } catch {
+      return store.toast("Enter a valid amount (e.g. 1.5)");
+    }
+    if (wei === "0") return store.toast("Enter an amount greater than zero");
+    void store.walletRequestWithdrawal(wei).then(() => {
+      if (unstakeAmtEl.current) unstakeAmtEl.current.value = "";
+    });
   };
+
+  // WP2 — the REAL pending-withdrawal queue (chain-sourced via
+  // store.refreshPendingWithdrawals). Each row is claimable only once the ~7-day
+  // (50,400-block) delay has elapsed on-chain; Claim → store.walletClaimWithdrawal.
+  const pending = s.pendingWithdrawals;
+  const onClaimWithdrawal = (id: string) => void store.walletClaimWithdrawal(id);
 
   const activityRows = s.activity.map((a, i) => ({
     kind: a.kind,
@@ -334,7 +357,44 @@ export function Wallet({ store, s }: SurfaceProps) {
                   Review &amp; sign
                 </button>
               </span>
+              <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+                Requesting burns your stSALT shares into a queue. The SALT unlocks after ~7 days (50,400 blocks), then you Claim it below. No instant settlement.
+              </p>
             </div>
+          </div>
+
+          {/* ------- Pending withdrawals (WP2, real on-chain queue) ------- */}
+          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 500 }}>Pending withdrawals</span>
+              <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
+                source · on-chain queue
+              </span>
+            </div>
+            {pending.length === 0 && (
+              <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
+                No pending withdrawals. A requested withdrawal appears here and becomes claimable after the ~7-day (50,400-block) delay.
+              </p>
+            )}
+            {pending.map((w) => {
+              const saltStr = fmt2(Number(BigInt(w.saltWei)) / 1e18);
+              const blocksLeft = Math.max(0, w.claimableAtBlock - s.height);
+              const daysLeft = (blocksLeft * 12) / 86400; // ~12s blocks
+              const statusTxt = w.claimable ? "claimable now" : "~" + fmtI(blocksLeft) + " blocks (~" + daysLeft.toFixed(1) + "d) left";
+              return (
+                <div key={w.id} style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr auto", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "center" }}>
+                  <span className="mono tabular" style={{ fontSize: 12.5 }}>
+                    {saltStr} SALT
+                  </span>
+                  <span className="mono" style={{ fontSize: 11, color: w.claimable ? "var(--accent-text)" : "var(--tx-3)" }}>
+                    {statusTxt}
+                  </span>
+                  <button className="btn btn-secondary btn-sm" disabled={!w.claimable} onClick={() => onClaimWithdrawal(w.id)}>
+                    Claim
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

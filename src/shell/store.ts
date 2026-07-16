@@ -173,6 +173,9 @@ export class Store {
       // Real wallet balances (native liquid + claimable) — folded once on launch;
       // the Wallet surface also refreshes on mount + after a settled ceremony.
       void this.refreshWallet();
+      // WP2 — the real pending-withdrawal queue (chain-sourced), folded on launch;
+      // the Wallet surface also refreshes on mount + after a settle.
+      void this.refreshPendingWithdrawals();
     }
   }
 
@@ -1102,11 +1105,104 @@ export class Store {
   }
 
   /**
+   * CORE WP2 — pull the wallet's REAL pending withdrawals from chain and fold
+   * them into AppState. `bridge.wallet.pendingWithdrawals()` (Tauri) reads the
+   * live on-chain queue (getLogs WithdrawalRequested + withdrawals(id) +
+   * block_number); the sim shim returns [] (no chain). A fresh wallet honestly
+   * reads []. Failure leaves the last honest list untouched — no fabricated rows.
+   */
+  async refreshPendingWithdrawals(): Promise<void> {
+    try {
+      const list = await bridge.wallet.pendingWithdrawals();
+      this.setState({ pendingWithdrawals: list });
+    } catch {
+      /* honest no-op: keep the last real list, never a fabricated one */
+    }
+  }
+
+  /**
+   * CORE WP2 (@rule8) — a REAL withdraw of self-added stake. Builds the pending
+   * `requestWithdrawal(shares)` ceremony (bridge.wallet.requestWithdrawal →
+   * wallet_request_withdrawal; the SALT→shares conversion is done in Rust from
+   * live reads), then approves + broadcasts the real 40204 tx (B1.4). It burns
+   * shares into the ~7-day queue; the SALT is claimable later via
+   * walletClaimWithdrawal. NEVER mutates a local balance or fabricates a hash —
+   * balances + the pending list re-read from chain after settle. Mirrors
+   * walletStake. Web-dev cannot settle — honest message. `amountWei` = SALT (wei).
+   */
+  async walletRequestWithdrawal(amountWei: string): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Withdraw settles only in the desktop app — no key or chain in web preview.");
+      return;
+    }
+    let view: Awaited<ReturnType<typeof bridge.wallet.requestWithdrawal>>;
+    try {
+      view = await bridge.wallet.requestWithdrawal(amountWei);
+    } catch (err) {
+      this.toast("Withdraw unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    try {
+      const result = await bridge.signing.broadcast(view.id, false);
+      this.addActivity("Withdraw request", view.decoded.cost || "requestWithdrawal", result.txHash);
+      this.toast("Withdrawal requested — SALT unlocks after ~7 days (50,400 blocks), then Claim. tx " + result.txHash.slice(0, 10) + "…");
+      await this.refreshWallet();
+      await this.refreshPendingWithdrawals();
+      this.save();
+    } catch (err) {
+      try {
+        await bridge.signing.reject(view.id);
+      } catch {
+        /* best-effort cleanup */
+      }
+      this.toast("Withdrawal not requested — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /**
+   * CORE WP2 (@rule8) — claim a MATURED withdrawal. Builds the pending
+   * `claimWithdrawal(id)` ceremony (bridge.wallet.claimWithdrawal →
+   * wallet_claim_withdrawal), then approves + broadcasts the real 40204 tx (B1.4).
+   * The ~7-day (50,400-block) delay is enforced ON-CHAIN — a too-early claim
+   * reverts (we never fabricate an early settlement). NEVER mutates a local
+   * balance or fabricates a hash — balances + pending list re-read from chain.
+   * Web-dev cannot settle — honest message. `id` = the decimal request id.
+   */
+  async walletClaimWithdrawal(id: string): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Claim settles only in the desktop app — no key or chain in web preview.");
+      return;
+    }
+    let view: Awaited<ReturnType<typeof bridge.wallet.claimWithdrawal>>;
+    try {
+      view = await bridge.wallet.claimWithdrawal(id);
+    } catch (err) {
+      this.toast("Claim unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    try {
+      const result = await bridge.signing.broadcast(view.id, false);
+      this.addActivity("Withdraw claim", view.decoded.cost || "claimWithdrawal", result.txHash);
+      this.toast("Claim broadcast — tx " + result.txHash.slice(0, 10) + "…; SALT lands when it settles.");
+      await this.refreshWallet();
+      await this.refreshPendingWithdrawals();
+      this.save();
+    } catch (err) {
+      try {
+        await bridge.signing.reject(view.id);
+      } catch {
+        /* best-effort cleanup */
+      }
+      this.toast("Claim not settled — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /**
    * Honest outcome for a value action whose REAL on-chain path is NOT wired yet.
-   * Today this is the WITHDRAW leg (LiquidStakingPool `requestWithdrawal` →
-   * `claimWithdrawal` is a two-step, ~7-day-queued flow that takes shares — a
-   * separate WP) and bonded pinning. NEVER fabricates a hash or mutates a balance
-   * (Rule 1/3). Web-dev: settles only in the desktop app.
+   * Today this is bonded pinning. (The WITHDRAW leg — LiquidStakingPool
+   * `requestWithdrawal` → `claimWithdrawal` — is now wired via
+   * walletRequestWithdrawal / walletClaimWithdrawal, WP2.) NEVER fabricates a hash
+   * or mutates a balance (Rule 1/3). Web-dev: settles only in the desktop app.
    */
   settleUnwired(action: string): void {
     if (BRIDGE_MODE === "tauri") {

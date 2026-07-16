@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import { GRAPH } from "../../data/seed";
@@ -306,6 +306,27 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // ceremony. Mirrors send().
         assertSimAllowed("wallet.stake");
         throw new Unavailable("wallet", "stake");
+      },
+      async requestWithdrawal() {
+        // No key/chain in web preview — a withdrawal request cannot settle here.
+        // Honest Unavailable (Rule 1); the tauri path builds a REAL pending
+        // requestWithdrawal ceremony. Mirrors stake().
+        assertSimAllowed("wallet.requestWithdrawal");
+        throw new Unavailable("wallet", "requestWithdrawal");
+      },
+      async claimWithdrawal() {
+        // No key/chain in web preview — a claim cannot settle here. Honest
+        // Unavailable (Rule 1); the tauri path builds a REAL claimWithdrawal
+        // ceremony.
+        assertSimAllowed("wallet.claimWithdrawal");
+        throw new Unavailable("wallet", "claimWithdrawal");
+      },
+      async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
+        // The web shim reaches no chain — there is no real pending queue to read.
+        // Return an honest empty list (Rule 1) rather than fabricate rows; the
+        // tauri path reads the real on-chain queue.
+        assertSimAllowed("wallet.pendingWithdrawals");
+        return [];
       },
     },
 

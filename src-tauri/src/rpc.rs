@@ -111,6 +111,23 @@ impl RpcTransport for HttpTransport {
     }
 }
 
+/// A single `eth_getLogs` log entry, decoded to the facts the withdraw
+/// enumeration needs (WP2). `topics` are the indexed event params (topic0 = the
+/// event signature hash, topic1/2 = indexed args, `0x…` hex words); `data` is
+/// the ABI-encoded non-indexed params (`0x…` hex); `block_number` is the block
+/// the log was emitted in (decoded from the `blockNumber` hex quantity). Rule 1:
+/// every field is a live-node fact, never fabricated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogEntry {
+    /// The log topics (`0x…` hex, 32-byte words): topic0 = event signature hash,
+    /// then the indexed args in declaration order.
+    pub topics: Vec<String>,
+    /// The ABI-encoded non-indexed event params (`0x…` hex).
+    pub data: String,
+    /// The block the log was emitted in (decoded from `blockNumber`).
+    pub block_number: u64,
+}
+
 /// A JSON-RPC client over an injectable transport. Holds a monotonic request id
 /// so each call is uniquely addressable in the response.
 pub struct RpcClient<T: RpcTransport> {
@@ -209,6 +226,49 @@ impl<T: RpcTransport> RpcClient<T> {
             .ok_or_else(|| RpcError::MissingField("eth_call: missing 0x prefix".into()))?;
         hex::decode(stripped)
             .map_err(|_| RpcError::MissingField(format!("eth_call: result not hex ({s})")))
+    }
+
+    /// `eth_getLogs([filter])` → the matching log entries (real values from the
+    /// live 40204 RPC; CORE WP2 withdraw enumeration). `filter` is the pre-built
+    /// filter object (caller-shaped so we stay transport-only), e.g.
+    /// `{address, topics:[topic0, null, staker_padded], fromBlock, toBlock}`. Each
+    /// entry is decoded to a [`LogEntry`] (topics + data + block number). A
+    /// malformed entry (missing/short field) errors rather than silently drops
+    /// (Rule 1 — no fabricated or partial withdrawal list).
+    pub fn get_logs(&self, filter: Value) -> Result<Vec<LogEntry>, RpcError> {
+        let result = self.request("eth_getLogs", json!([filter]))?;
+        let arr = result
+            .as_array()
+            .ok_or_else(|| RpcError::MissingField("eth_getLogs: result not an array".into()))?;
+        let mut logs = Vec::with_capacity(arr.len());
+        for entry in arr {
+            let topics = entry
+                .get("topics")
+                .and_then(Value::as_array)
+                .ok_or_else(|| RpcError::MissingField("log.topics".into()))?
+                .iter()
+                .map(|t| {
+                    t.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| RpcError::MissingField("log.topics[]: not a string".into()))
+                })
+                .collect::<Result<Vec<String>, RpcError>>()?;
+            let data = entry
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::MissingField("log.data".into()))?
+                .to_string();
+            let block_number = entry
+                .get("blockNumber")
+                .ok_or_else(|| RpcError::MissingField("log.blockNumber".into()))
+                .and_then(|v| parse_hex_quantity(v, "log.blockNumber"))?;
+            logs.push(LogEntry {
+                topics,
+                data,
+                block_number,
+            });
+        }
+        Ok(logs)
     }
 
     /// `eth_blockNumber` → the node's current head height (real value from the

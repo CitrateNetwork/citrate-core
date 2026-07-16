@@ -111,6 +111,32 @@ export interface WalletDomain {
    * `signing.broadcast(view.id)` (B1.4 → a real 40204 deposit tx). `amountWei` is
    * a decimal wei string. Mirrors `send` for the transfer path. */
   stake(amountWei: string): Promise<CeremonyView>;
+  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `requestWithdrawal(shares)`
+   * as a PENDING ceremony (burns stSALT shares into the ~7-day queue). The
+   * SALT→shares conversion is done in Rust from LIVE reads (shares()+balanceOf()),
+   * so `amountWei` is the SALT the user wants to withdraw. Signs NOTHING; approved
+   * via `signing.broadcast`. Mirrors `stake`. */
+  requestWithdrawal(amountWei: string): Promise<CeremonyView>;
+  /** CORE WP2 (@rule8) — submit a LiquidStakingPool `claimWithdrawal(id)` for a
+   * matured request as a PENDING ceremony. The ~7-day (50,400-block) delay is
+   * enforced on-chain; a too-early claim reverts. Signs NOTHING; approved via
+   * `signing.broadcast`. `id` is the decimal request id from `pendingWithdrawals`. */
+  claimWithdrawal(id: string): Promise<CeremonyView>;
+  /** CORE WP2 — the wallet's PENDING (unclaimed) withdrawals, read from live
+   * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
+   * A fresh wallet honestly returns []. Never fabricated (Rule 1). */
+  pendingWithdrawals(): Promise<PendingWithdrawal[]>;
+}
+
+/** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
+ * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
+ * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
+export interface PendingWithdrawal {
+  id: string;
+  saltWei: string;
+  requestBlock: number;
+  claimableAtBlock: number;
+  claimable: boolean;
 }
 
 export interface NodeDomain {

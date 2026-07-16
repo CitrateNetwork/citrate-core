@@ -190,6 +190,43 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       signMock.map.set(id, view);
       return view;
     }
+    // CORE WP2 wallet_request_withdrawal — a LiquidStakingPool requestWithdrawal
+    // (shares) bridged into a PENDING ceremony (approved via sign_and_broadcast).
+    // The SALT→shares conversion is done in Rust; this returns the decoded view.
+    case "wallet_request_withdrawal": {
+      const id = String(signMock.next++);
+      const view = {
+        id,
+        origin: "local-user",
+        kind: "transaction",
+        chainId: 40204,
+        decoded: { action: "Call LiquidStakingPool with 36 bytes calldata", cost: "requestWithdrawal", destination: "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e" },
+        requiresRawAck: false,
+      };
+      signMock.map.set(id, view);
+      return view;
+    }
+    // CORE WP2 wallet_claim_withdrawal — a claimWithdrawal(id) bridged into a
+    // PENDING ceremony (approved via sign_and_broadcast).
+    case "wallet_claim_withdrawal": {
+      const id = String(signMock.next++);
+      const view = {
+        id,
+        origin: "local-user",
+        kind: "transaction",
+        chainId: 40204,
+        decoded: { action: "Call LiquidStakingPool with 36 bytes calldata", cost: "claimWithdrawal", destination: "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e" },
+        requiresRawAck: false,
+      };
+      signMock.map.set(id, view);
+      return view;
+    }
+    // CORE WP2 wallet_pending_withdrawals — the wallet's real on-chain queue.
+    case "wallet_pending_withdrawals":
+      return [
+        { id: "1", saltWei: "10000000000000000000", requestBlock: 100, claimableAtBlock: 50500, claimable: true },
+        { id: "2", saltWei: "3000000000000000000", requestBlock: 100000, claimableAtBlock: 150400, claimable: false },
+      ];
     // CORE-C2-F-1 user_claim — bridges the REAL claimRewards() intent into a
     // PENDING ceremony (a legible tx Call, approvable via sign_and_broadcast).
     // Returns a CeremonyView; NEVER a signature or a local balance mutation.
@@ -293,6 +330,38 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(invokeMock).toHaveBeenCalledWith("wallet_send", { to, amountWei: "1500000000000000000" });
     expect(view.id).toBeTruthy();
     expect(view.decoded.destination).toBe(to); // signs nothing; human approves via broadcast
+  });
+
+  // CORE WP2 (@rule8) — the withdraw path. requestWithdrawal builds a pending
+  // ceremony from the SALT amount (shares conversion done in Rust); claimWithdrawal
+  // builds a pending ceremony for a matured id; pendingWithdrawals reads the real
+  // on-chain queue. None settle here — the human approves via sign_and_broadcast.
+  it("wallet.requestWithdrawal invokes wallet_request_withdrawal with {amountWei}", async () => {
+    const bridge = createTauriBridge();
+    const view = await bridge.wallet.requestWithdrawal("2500000000000000000");
+    expect(invokeMock).toHaveBeenCalledWith("wallet_request_withdrawal", { amountWei: "2500000000000000000" });
+    expect(view.id).toBeTruthy();
+    expect(view.decoded.destination).toBe("0xfd272195b55cb4f5a240a5be75aabab0d1c5685e");
+    expect(view.requiresRawAck).toBe(false);
+  });
+
+  it("wallet.claimWithdrawal invokes wallet_claim_withdrawal with {requestId}", async () => {
+    const bridge = createTauriBridge();
+    const view = await bridge.wallet.claimWithdrawal("7");
+    expect(invokeMock).toHaveBeenCalledWith("wallet_claim_withdrawal", { requestId: "7" });
+    expect(view.id).toBeTruthy();
+    expect(view.decoded.destination).toBe("0xfd272195b55cb4f5a240a5be75aabab0d1c5685e");
+  });
+
+  it("wallet.pendingWithdrawals invokes wallet_pending_withdrawals and returns the real queue", async () => {
+    const bridge = createTauriBridge();
+    const list = await bridge.wallet.pendingWithdrawals();
+    expect(invokeMock).toHaveBeenCalledWith("wallet_pending_withdrawals", undefined);
+    expect(list).toHaveLength(2);
+    expect(list[0].id).toBe("1");
+    expect(list[0].claimable).toBe(true);
+    expect(list[1].claimable).toBe(false);
+    expect(list[0].saltWei).toBe("10000000000000000000");
   });
 });
 

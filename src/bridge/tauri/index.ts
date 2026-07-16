@@ -26,6 +26,7 @@ import type {
   MemoryStatus,
   MemoryResult,
   MemoryNeighbor,
+  PendingWithdrawal,
 } from "../domains";
 import { Unavailable } from "../types";
 
@@ -148,6 +149,23 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // via signing.broadcast (B1.4 → real 40204 deposit tx). Mirrors send().
       async stake(amountWei: string): Promise<CeremonyView> {
         return invoke<CeremonyView>("wallet_stake", { amountWei });
+      },
+      // CORE WP2 (@rule8) — build a requestWithdrawal(shares) ceremony. The
+      // SALT→shares conversion is done in Rust from live reads; `amountWei` is the
+      // SALT to withdraw. Signs NOTHING; approved via signing.broadcast. Mirrors
+      // stake().
+      async requestWithdrawal(amountWei: string): Promise<CeremonyView> {
+        return invoke<CeremonyView>("wallet_request_withdrawal", { amountWei });
+      },
+      // CORE WP2 (@rule8) — build a claimWithdrawal(id) ceremony for a matured
+      // request. The 50,400-block delay is enforced on-chain. Signs NOTHING.
+      async claimWithdrawal(id: string): Promise<CeremonyView> {
+        return invoke<CeremonyView>("wallet_claim_withdrawal", { requestId: id });
+      },
+      // CORE WP2 — the wallet's real pending withdrawals from live chain state
+      // (getLogs + withdrawals(id) + block_number). A fresh wallet returns [].
+      async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
+        return invoke<PendingWithdrawal[]>("wallet_pending_withdrawals");
       },
     },
     // ---- node: REAL citrate-node under the SidecarSupervisor (C1.1) ----
