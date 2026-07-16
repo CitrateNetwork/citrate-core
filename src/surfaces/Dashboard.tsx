@@ -70,8 +70,10 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Today", value: s.node === "validating" || s.earnToday > 0 ? fmt2(s.earnToday) : "—", sub: s.earnToday > 0 ? "SALT earned" : "not validating", color: s.earnToday > 0 ? "var(--accent-text)" : "var(--tx-3)", tip: "ContributionAccounting", vsize: "21px" },
   ];
 
-  const chatBackendLabel = s.chatBackend === "gateway" && s.entitlement !== "lapsed" && effTier !== "free" ? "infer.citrate.ai · cgk_…7f2a" : "running on your machine";
-  const chatDotColor = chatBackendLabel.indexOf("machine") >= 0 ? "#ffbd10" : "#8ecc09";
+  // Chat runs on the built-in local demo agent today — neither the gateway nor a
+  // real local model is wired for inference yet (Settings → AI providers says so).
+  const chatBackendLabel = "local demo agent · preview";
+  const chatDotColor = "#ffbd10";
 
   const actRows = s.activity.map((a, i) => ({
     kind: a.kind,

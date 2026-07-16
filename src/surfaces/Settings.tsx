@@ -127,7 +127,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       cls: btnCls(s.aiDefault === id),
       go: () => {
         store.setState({ aiDefault: id });
-        store.toast("Harness routes to " + label + " by default");
+        store.toast(label + " set as the intended route — inference isn't wired yet; chat runs on the local demo agent");
         store.save();
       },
     }));
@@ -141,7 +141,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       idle: !editing,
       hasKey: !!key,
       noKey: !key,
-      keyLine: key ? key + " · OS keyring" : "no key",
+      keyLine: key ? key + " · stored locally (not yet used)" : "no key",
       keyColor: key ? "var(--ok)" : "var(--tx-3)",
       placeholder: ph,
       edit: () => store.setState({ aiEdit: id }),
@@ -152,7 +152,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         const upd: Partial<AppState> = { aiKeys: k };
         if (store.state.aiDefault === id) upd.aiDefault = "gateway";
         store.setState(upd);
-        store.toast(name + " key removed from the keyring");
+        store.toast(name + " key removed");
         store.save();
       },
       save: () => {
@@ -160,7 +160,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         if (v.length < 8) return store.toast("That does not look like a key");
         const masked = v.slice(0, 5) + "•••••••••••••" + v.slice(-4);
         store.setState((st) => ({ aiKeys: { ...st.aiKeys, [id]: masked }, aiEdit: null }));
-        store.toast(name + " key sealed in the OS keyring — shown never again");
+        store.toast(name + " key saved locally — not yet used for inference (provider routing is a scheduled build)");
         store.save();
       },
     };
@@ -381,6 +381,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {/* ---------- AI providers ---------- */}
         {s.sSec === "ai" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-2)", padding: "12px 14px", fontSize: 12, lineHeight: 1.55, color: "var(--tx-2)" }}>
+              Chat currently runs on a built-in <strong>local demo agent</strong>. Bring-your-own-key (OpenAI / Anthropic) and the Citrate gateway are <strong>not wired for inference yet</strong> — a key entered here is stored on this machine but is not yet used to call a model. Real provider / gateway inference (keys sealed in the OS keyring, calls made from the desktop app so the key never touches the browser) is a scheduled build.
+            </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Default model route</span>
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -391,7 +394,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 ))}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                the gateway path needs no key; provider keys route the harness directly from this machine
+                selects the intended route for when inference is wired; today all chat runs on the local demo agent
               </span>
             </div>
             <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
@@ -428,7 +431,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                         style={{ width: 260, height: 30, fontSize: 12 }}
                       />
                       <button className="btn btn-secondary btn-sm" onClick={ai.save}>
-                        Save to keyring
+                        Save key
                       </button>
                       <button className="btn btn-ghost btn-sm" onClick={ai.cancel}>
                         Cancel
@@ -454,7 +457,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               ))}
             </div>
             <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              Keys are sealed in the OS keyring and shown never again. The agent harness reads them at call time; nothing is proxied through Citrate unless you route through the gateway.
+              Keys entered here are stored locally on this machine and are not yet used for inference. When BYO-key lands, keys will be sealed in the OS keyring and the call will originate from the desktop app (never the browser), so your key is never exposed.
             </p>
           </div>
         )}
