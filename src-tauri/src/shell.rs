@@ -34,9 +34,9 @@ mod tests {
     fn only_https_is_accepted_by_the_guard() {
         // Mirror the command's guard (the command needs an AppHandle to run).
         let ok = |u: &str| u.trim().starts_with("https://");
-        assert!(ok("https://scan.citrate.ai/tx/0xabc"));
-        assert!(ok("  https://atlas.citrate.ai/tutorials/x  "));
-        assert!(!ok("http://scan.citrate.ai"), "plain http rejected");
+        assert!(ok("https://explorer.citrate.ai/tx/0xabc"));
+        assert!(ok("  https://docs.citrate.ai/tutorials/x  "));
+        assert!(!ok("http://explorer.citrate.ai"), "plain http rejected");
         assert!(!ok("file:///etc/passwd"), "file scheme rejected");
         assert!(!ok("javascript:alert(1)"), "javascript scheme rejected");
         assert!(!ok("citrate-core://x"), "custom scheme rejected");

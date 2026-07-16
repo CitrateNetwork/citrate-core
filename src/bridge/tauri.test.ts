@@ -255,8 +255,8 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
 
   it("shell.openExternal invokes open_external with the url", async () => {
     const bridge = createTauriBridge();
-    await bridge.shell.openExternal("https://scan.citrate.ai/tx/0xabc");
-    expect(invokeMock).toHaveBeenCalledWith("open_external", { url: "https://scan.citrate.ai/tx/0xabc" });
+    await bridge.shell.openExternal("https://explorer.citrate.ai/tx/0xabc");
+    expect(invokeMock).toHaveBeenCalledWith("open_external", { url: "https://explorer.citrate.ai/tx/0xabc" });
   });
 
   it("wallet.send invokes wallet_send with {to, amountWei} and returns a pending CeremonyView", async () => {

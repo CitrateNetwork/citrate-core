@@ -6,7 +6,7 @@ import { federationUrl, scanTxUrl, scanAddrUrl, ATLAS_BASE, SCAN_BASE } from "./
 
 describe("federationUrl", () => {
   it("prefixes a bare host with https", () => {
-    expect(federationUrl("scan.citrate.ai")).toBe("https://scan.citrate.ai");
+    expect(federationUrl("explorer.citrate.ai")).toBe("https://explorer.citrate.ai");
     expect(federationUrl("dataroom.citrate.ai")).toBe("https://dataroom.citrate.ai");
   });
   it("maps an atlas/ path onto the Atlas base", () => {
@@ -15,10 +15,10 @@ describe("federationUrl", () => {
     expect(federationUrl("atlas/docs/d1")).toBe(`${ATLAS_BASE}/docs/d1`);
   });
   it("passes an already-absolute https URL through unchanged", () => {
-    expect(federationUrl("https://scan.citrate.ai/tx/0xabc")).toBe("https://scan.citrate.ai/tx/0xabc");
+    expect(federationUrl("https://explorer.citrate.ai/tx/0xabc")).toBe("https://explorer.citrate.ai/tx/0xabc");
   });
   it("only ever produces https URLs (the shell rejects non-https)", () => {
-    for (const v of ["scan.citrate.ai", "atlas/docs/d1", "https://x.citrate.ai/y"]) {
+    for (const v of ["explorer.citrate.ai", "atlas/docs/d1", "https://x.citrate.ai/y"]) {
       expect(federationUrl(v).startsWith("https://")).toBe(true);
     }
   });

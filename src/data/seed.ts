@@ -66,7 +66,7 @@ export const CATALOG = {
     { id: 'd6', name: 'BA-7 integration runbook', tier: 'org', minTier: 'enterprise', orgScope: 'BA-7', desc: 'Org-scoped: supplier node enrollment.' },
   ],
   services: [
-    { id: 'citratescan', name: 'CitrateScan', desc: 'The explorer — the federation\u2019s quality bar.', url: 'scan.citrate.ai' },
+    { id: 'citratescan', name: 'CitrateScan', desc: 'The explorer — the federation\u2019s quality bar.', url: 'explorer.citrate.ai' },
     { id: 'dashboard-web', name: 'Network dashboard', desc: 'Public network vitals.', url: 'dashboard.citrate.ai' },
     { id: 'buyer-webapp', name: 'Marketplace', desc: 'x402 buyer surface — trading stays here, not in-app.', url: 'market.citrate.ai' },
     { id: 'memrizz', name: 'Memrizz', desc: 'Memory constellation, full canvas.', url: 'memrizz.citrate.ai' },
