@@ -170,6 +170,9 @@ export class Store {
     if (BRIDGE_MODE === "tauri") {
       void this.refreshNode();
       this.nodeTimer = setInterval(() => void this.refreshNode(), 2000);
+      // Real wallet balances (native liquid + claimable) — folded once on launch;
+      // the Wallet surface also refreshes on mount + after a settled ceremony.
+      void this.refreshWallet();
     }
   }
 
@@ -248,6 +251,31 @@ export class Store {
       this.setState(patch);
     } catch {
       /* honest no-op: a failed poll keeps the last real values, never a sim number */
+    }
+  }
+
+  /**
+   * CORE — pull REAL wallet balances (native `liquid` SALT via eth_getBalance +
+   * the real `claimable` via ContributionAccounting) and fold them into AppState.
+   * `staked` is left as the grant-attributed value — the staking-pool balance
+   * view is not a grounded on-chain read yet (bridge returns -1). Failure leaves
+   * the last honest values untouched — no fabricated number (Rule 1).
+   */
+  async refreshWallet(): Promise<void> {
+    try {
+      const b = await bridge.wallet.balances();
+      const patch: Partial<AppState> = { liquid: b.liquid };
+      if (b.claimable >= 0) {
+        patch.claimable = b.claimable;
+        // Only claim a "chain" data source for a REAL read (Tauri). In web-dev the
+        // sim bridge echoes AppState, so labeling it chain-sourced would be a
+        // fabricated caption (Rule 1).
+        if (BRIDGE_MODE === "tauri") patch.earnSource = "chain";
+      }
+      // b.staked < 0 ⇒ not a grounded read; keep the local grant-attributed value.
+      this.setState(patch);
+    } catch {
+      /* honest no-op */
     }
   }
 

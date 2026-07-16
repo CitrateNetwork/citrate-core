@@ -264,6 +264,45 @@ pub fn agent_earnings(
     read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())
 }
 
+/// Real wallet balances for the Wallet surface. Carries the two balances that are
+/// grounded reads on 40204 today: native `liquid` SALT (`eth_getBalance`) and the
+/// real `claimable` (`ContributionAccounting.claimable`). **`staked` is
+/// deliberately absent** — the staking-pool balance view is NOT grounded in this
+/// repo yet (it needs the node-agent's staking address book + view selector, the
+/// way `ContributionAccounting` is grounded). The UI keeps its grant-attributed
+/// staked value until that lands, rather than fabricating a pool read (Rule 1).
+/// Both amounts are wei strings; the bridge converts to SALT for display.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct WalletBalances {
+    #[serde(rename = "liquidWei")]
+    pub liquid_wei: String,
+    #[serde(rename = "claimableWei")]
+    pub claimable_wei: String,
+    #[serde(rename = "address")]
+    pub address: String,
+}
+
+/// `wallet_balances` command — the REAL liquid + claimable read (CORE wallet, Rule
+/// 1). Requires the vault UNLOCKED (to read the wallet's public address; the key is
+/// never touched). Any RPC/decode failure fails closed with a clear error — the UI
+/// keeps its last honest value rather than a fabricated one.
+#[tauri::command]
+pub fn wallet_balances(
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+) -> std::result::Result<WalletBalances, String> {
+    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let rpc = crate::rpc::RpcClient::citrate();
+    let liquid = rpc
+        .get_balance(&wallet.address)
+        .map_err(|e| e.to_string())?;
+    let snap = read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
+    Ok(WalletBalances {
+        liquid_wei: liquid.to_string(),
+        claimable_wei: snap.claimable_wei,
+        address: wallet.address,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     include!("earnings_tests.rs");

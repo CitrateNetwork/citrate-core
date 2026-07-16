@@ -116,8 +116,15 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
     },
     wallet: {
-      async balances() {
-        return unavailable("wallet", "balances");
+      // CORE — REAL balances: native liquid SALT via eth_getBalance + the real
+      // claimable (ContributionAccounting) on 40204. `staked` is NOT a grounded
+      // on-chain read yet (the staking-pool view isn't grounded in-repo — see
+      // earnings.rs WalletBalances); we return -1 to signal "keep the local
+      // grant-attributed staked" rather than fabricate a pool read (Rule 1).
+      async balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }> {
+        const b = await invoke<{ liquidWei: string; claimableWei: string; address: string }>("wallet_balances");
+        const toSalt = (wei: string) => Number(BigInt(wei)) / 1e18;
+        return { liquid: toSalt(b.liquidWei), staked: -1, claimable: toSalt(b.claimableWei), address: b.address };
       },
       async activity() {
         return unavailable("wallet", "activity");

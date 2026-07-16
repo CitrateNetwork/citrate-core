@@ -5,11 +5,12 @@
 // goes through store.requestSig(...) (the ceremony) — no signing invented
 // here. Data-source captions are verbatim.
 //
-// Data source — balances/stake/activity are prototype sim state (freshState);
-// the "source · rpc.citrate.ai / local node" caption names where the real
-// read lands. Wiring replaces the sim, not the UI (Rule 1).
+// Data source — `liquid` (native eth_getBalance) and `claimable`
+// (ContributionAccounting) are REAL 40204 reads via store.refreshWallet(); staked
+// (grant-attributed) and activity remain to be grounded (staking-pool view +
+// indexer). Wiring replaces the sim, not the UI (Rule 1).
 // =====================================================================
-import { useRef } from "react";
+import { useRef, useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { makeAddr, short, PERSONAS } from "../shell/state";
 
@@ -35,6 +36,12 @@ export function Wallet({ store, s }: SurfaceProps) {
   const P = PERSONAS[s.persona] || PERSONAS.p1;
   const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
   const src = s.node === "off" ? "rpc.citrate.ai" : "local node";
+
+  // Fold the REAL liquid (eth_getBalance) + claimable balances on mount. In a
+  // Tauri build this reads live 40204; in web-dev the sim adapter echoes state.
+  useEffect(() => {
+    void store.refreshWallet();
+  }, [store]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);

@@ -162,8 +162,9 @@ pub fn run() {
             // A claim is a SIGNED value-bearing write that routes through the
             // SignatureCeremony (agent bridge → B1.4), never signed here (@rule8).
             earnings::agent_earnings,
+            // wallet balances — REAL liquid (eth_getBalance) + claimable read.
+            earnings::wallet_balances,
             // seam domains — honest Unavailable until each later phase (A1.3)
-            seam::wallet_balances,
             seam::wallet_activity,
             seam::memory_assert,
             seam::chat_backend,

@@ -28,7 +28,9 @@ macro_rules! seam_cmd {
 // (see `oidc.rs`). The `auth` bridge domain is now genuinely wired.
 // NOTE: `node_*` seam stubs were replaced by the real citrate-node wiring in
 // CORE-C1.1 (see `node.rs`). The `node` bridge domain is now genuinely wired.
-seam_cmd!(wallet_balances, "wallet", "balances");
+// NOTE: `wallet_balances` was replaced by the REAL liquid (eth_getBalance) +
+// claimable read in `earnings.rs`. `wallet_activity` remains a seam stub (on-chain
+// tx history needs an indexer/explorer, not plain RPC — a later phase).
 seam_cmd!(wallet_activity, "wallet", "activity");
 seam_cmd!(memory_assert, "memory", "assert");
 // NOTE: `memory_recall` was replaced by the real citrate-memories mcp_serve
@@ -48,7 +50,9 @@ mod tests {
     /// value. This is the Rule-1 guarantee at the Rust boundary.
     #[test]
     fn seam_command_is_honestly_unavailable() {
-        let r = wallet_balances();
+        // wallet_activity is still a seam (on-chain history needs an indexer);
+        // wallet_balances is now REAL (earnings.rs) so it's no longer here.
+        let r = wallet_activity();
         assert!(r.is_err());
         let msg = r.unwrap_err();
         assert!(msg.starts_with("unavailable:"), "got: {msg}");

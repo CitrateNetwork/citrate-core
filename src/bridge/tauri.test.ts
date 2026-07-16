@@ -148,6 +148,14 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         walletAddress: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
         contract: "0xcdd2477387279c7d44a1053f44db5dac0fd8faef",
       };
+    // CORE wallet balances — REAL native liquid (eth_getBalance) + claimable.
+    // Wei strings; the adapter converts to SALT numbers and sets staked:-1.
+    case "wallet_balances":
+      return {
+        liquidWei: "1500000000000000000", // 1.5 SALT
+        claimableWei: earningsMock.claimableWei,
+        address: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
+      };
     // CORE-C2-F-1 user_claim — bridges the REAL claimRewards() intent into a
     // PENDING ceremony (a legible tx Call, approvable via sign_and_broadcast).
     // Returns a CeremonyView; NEVER a signature or a local balance mutation.
@@ -215,10 +223,24 @@ describe("tauri adapter — config round-trip proof (A1.4, frontend half)", () =
   });
 });
 
-describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", () => {
-  it("wallet.balances rejects with Unavailable, never fabricated data", async () => {
+describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
+  it("invokes wallet_balances and converts wei→SALT; staked is -1 (not grounded)", async () => {
     const bridge = createTauriBridge();
-    await expect(bridge.wallet.balances()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    // Uses the shared earningsMock default for claimable (do NOT mutate it — other
+    // tests assert against the default). liquid is the mock's 1.5 SALT.
+    const b = await bridge.wallet.balances();
+    expect(invokeMock).toHaveBeenCalledWith("wallet_balances", undefined);
+    expect(b.liquid).toBeCloseTo(1.5, 9);
+    expect(b.claimable).toBeCloseTo(Number(BigInt(earningsMock.claimableWei)) / 1e18, 9);
+    expect(b.staked).toBe(-1); // staking-pool view not grounded yet → keep local
+    expect(b.address).toBe("0x9858effd232b4033e47d90003d41ec34ecaeda94");
+  });
+});
+
+describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", () => {
+  it("wallet.activity rejects with Unavailable, never fabricated data", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.wallet.activity()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
   it("every still-unwired seam domain rejects with Unavailable", async () => {

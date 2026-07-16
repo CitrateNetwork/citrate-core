@@ -60,6 +60,24 @@ fn pending_nonce_request_is_well_formed_and_parsed() {
 }
 
 #[test]
+fn get_balance_is_well_formed_and_parses_a_u128_beyond_u64() {
+    // 2^64 wei — one past u64::MAX, so a u64 parse would OVERFLOW/fail; this
+    // proves the native-SALT balance read uses the wide u128 path (a 32,000-SALT
+    // grant is ~3.2e22 wei, far beyond u64). Rule 1: never truncate a balance.
+    let mock = MockTransport::new(vec![ok_result(Value::String("0x10000000000000000".into()))]);
+    let client = RpcClient::with_transport(mock);
+    let bal = client
+        .get_balance("0x9858effd232b4033e47d90003d41ec34ecaeda94")
+        .expect("balance");
+    assert_eq!(bal, 18_446_744_073_709_551_616u128, "0x1<<64 → 2^64 wei");
+
+    let reqs = client.transport.requests();
+    assert_eq!(reqs[0]["method"], "eth_getBalance");
+    assert_eq!(reqs[0]["params"][0], "0x9858effd232b4033e47d90003d41ec34ecaeda94");
+    assert_eq!(reqs[0]["params"][1], "latest", "balance at latest block");
+}
+
+#[test]
 fn gas_price_request_is_well_formed_and_parsed() {
     let mock = MockTransport::new(vec![ok_result(Value::String("0x77359400".into()))]); // 2e9
     let client = RpcClient::with_transport(mock);

@@ -226,6 +226,17 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_hex_quantity(&result, "net_peerCount")
     }
 
+    /// `eth_getBalance(address, "latest")` → the address's native SALT balance in
+    /// wei (real value from the live 40204 RPC; CORE wallet balances). SALT is the
+    /// chain's native currency (`chain.ts` nativeCurrency), so the wallet's liquid
+    /// balance is a plain `eth_getBalance`. Returned as `u128` — a SALT balance
+    /// (e.g. a 32,000-SALT grant = 3.2e22 wei) exceeds `u64`, so we parse the wide
+    /// quantity and never truncate (Rule 1).
+    pub fn get_balance(&self, address: &str) -> Result<u128, RpcError> {
+        let result = self.request("eth_getBalance", json!([address, "latest"]))?;
+        parse_hex_quantity_u128(&result, "eth_getBalance")
+    }
+
     /// `eth_sendRawTransaction(rawHex)` → the tx hash the node accepted. `raw`
     /// is the RLP-signed tx bytes; we submit the canonical `0x…` hex form.
     pub fn send_raw_transaction(&self, raw: &[u8]) -> Result<String, RpcError> {
@@ -289,6 +300,20 @@ fn parse_hex_quantity(v: &Value, field: &str) -> Result<u64, RpcError> {
         .strip_prefix("0x")
         .ok_or_else(|| RpcError::MissingField(format!("{field}: missing 0x prefix")))?;
     u64::from_str_radix(stripped, 16)
+        .map_err(|_| RpcError::MissingField(format!("{field}: not hex ({s})")))
+}
+
+/// Decode a JSON string hex quantity (`"0x…"`) to a `u128`. Native SALT balances
+/// (wei) exceed `u64`, so balance reads use the wide form. Same shape as
+/// [`parse_hex_quantity`] otherwise.
+fn parse_hex_quantity_u128(v: &Value, field: &str) -> Result<u128, RpcError> {
+    let s = v
+        .as_str()
+        .ok_or_else(|| RpcError::MissingField(format!("{field}: not a string")))?;
+    let stripped = s
+        .strip_prefix("0x")
+        .ok_or_else(|| RpcError::MissingField(format!("{field}: missing 0x prefix")))?;
+    u128::from_str_radix(stripped, 16)
         .map_err(|_| RpcError::MissingField(format!("{field}: not hex ({s})")))
 }
 
