@@ -27,6 +27,20 @@ pub struct AppConfig {
     pub telemetry: bool,
     #[serde(rename = "sigPolicy")]
     pub sig_policy: String,
+    /// CORE-D3.C — the core-membership base URL. The S3 onboarding checkout
+    /// opens `{core_membership_url}/checkout` in an in-app popup (the money +
+    /// entitlement grant happen server-side). Overridable to a preview/prod
+    /// domain. `#[serde(default)]` so a config.json persisted BEFORE this field
+    /// existed still deserializes (it takes the prod default) — otherwise a
+    /// pre-D3.C on-disk store would fail `config_read`.
+    #[serde(rename = "coreMembershipUrl", default = "default_core_membership_url")]
+    pub core_membership_url: String,
+}
+
+/// The prod core-membership base URL default (also the serde backfill for a
+/// pre-D3.C persisted config.json that lacks the field).
+fn default_core_membership_url() -> String {
+    "https://core-membership.vercel.app".into()
 }
 
 impl Default for AppConfig {
@@ -40,6 +54,7 @@ impl Default for AppConfig {
             channel: "stable".into(),
             telemetry: false,
             sig_policy: "hitl".into(),
+            core_membership_url: default_core_membership_url(),
         }
     }
 }
@@ -59,6 +74,8 @@ pub struct AppConfigPatch {
     pub telemetry: Option<bool>,
     #[serde(rename = "sigPolicy")]
     pub sig_policy: Option<String>,
+    #[serde(rename = "coreMembershipUrl")]
+    pub core_membership_url: Option<String>,
 }
 
 impl AppConfig {
@@ -88,7 +105,20 @@ impl AppConfig {
         if let Some(v) = p.sig_policy {
             self.sig_policy = v;
         }
+        if let Some(v) = p.core_membership_url {
+            self.core_membership_url = v;
+        }
         self
+    }
+
+    /// CORE-D3.C — the full S3 checkout URL (`{core_membership_url}/checkout`)
+    /// the popup navigates to. Trims a trailing slash on the base so we never
+    /// emit a doubled `//checkout`.
+    pub fn checkout_url(&self) -> String {
+        format!(
+            "{}/checkout",
+            self.core_membership_url.trim_end_matches('/')
+        )
     }
 }
 
@@ -165,6 +195,50 @@ mod tests {
         assert_eq!(d.channel, "stable");
         assert!(!d.telemetry);
         assert_eq!(d.sig_policy, "hitl");
+        // CORE-D3.C — the core-membership base URL default (prod).
+        assert_eq!(d.core_membership_url, "https://core-membership.vercel.app");
+    }
+
+    /// CORE-D3.C — the checkout URL is `{coreMembershipUrl}/checkout`, and an
+    /// override base (e.g. a preview domain, trailing slash tolerated) is
+    /// honored without doubling the slash.
+    #[test]
+    fn checkout_url_derives_from_base_and_is_overridable() {
+        assert_eq!(
+            AppConfig::default().checkout_url(),
+            "https://core-membership.vercel.app/checkout"
+        );
+        let preview = AppConfig::default().apply(AppConfigPatch {
+            core_membership_url: Some("https://core-membership-preview.vercel.app/".into()),
+            ..Default::default()
+        });
+        // Trailing slash on the base does not produce a doubled `//checkout`.
+        assert_eq!(
+            preview.checkout_url(),
+            "https://core-membership-preview.vercel.app/checkout"
+        );
+    }
+
+    /// CORE-D3.C — a config.json persisted BEFORE this field existed (no
+    /// `coreMembershipUrl` key) must still deserialize, backfilling the prod
+    /// default. Otherwise `config_read` would fail on an existing user's store.
+    #[test]
+    fn pre_d3c_config_backfills_core_membership_url() {
+        let legacy = serde_json::json!({
+            "net": "testnet",
+            "rpc": "local",
+            "dataDir": "~/.citrate/core",
+            "cpuCap": 50,
+            "autolock": 30,
+            "channel": "stable",
+            "telemetry": false,
+            "sigPolicy": "hitl"
+        });
+        let cfg: AppConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            cfg.core_membership_url,
+            "https://core-membership.vercel.app"
+        );
     }
 
     /// A sparse patch merges over defaults — the round-trip merge logic the
@@ -197,6 +271,7 @@ mod tests {
         assert!(json.get("dataDir").is_some());
         assert!(json.get("cpuCap").is_some());
         assert!(json.get("sigPolicy").is_some());
+        assert!(json.get("coreMembershipUrl").is_some());
         // round-trips back to an equal value
         let back: AppConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, cfg);

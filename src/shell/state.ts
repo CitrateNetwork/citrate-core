@@ -222,6 +222,12 @@ export interface AppState {
   telemetry: boolean;
   updState: "idle" | "checking" | "current";
   dataDir: string;
+  /**
+   * CORE-D3.C — the core-membership base URL (the S3 checkout opens
+   * `{coreMembershipUrl}/checkout`). Persisted config field; overridable to a
+   * preview/prod domain. Mirrors `AppConfig.coreMembershipUrl`.
+   */
+  coreMembershipUrl: string;
   walletAddr: string;
   socketPath: string;
   deviceId: string;
@@ -382,6 +388,7 @@ export function freshState(pid: string): AppState {
     telemetry: false,
     updState: "idle",
     dataDir: "~/.citrate/core",
+    coreMembershipUrl: "https://core-membership.vercel.app",
     walletAddr: makeAddr(P.name),
     socketPath: "~/.citrate/core/memory/" + first + ".sock",
     deviceId: "dev_" + makeAddr(P.name + "::device").slice(2, 12),
@@ -521,7 +528,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "persona", "tier", "org", "citrateRole", "entitlement", "stage", "s2", "s3", "s5", "s5n", "hasGrant", "hasSbt",
   "liquid", "selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "s5hash", "walletAddr", "socketPath",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5hash", "walletAddr", "socketPath",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   "pins", "jPages", "jSel", "connections", "aiKeys", "aiDefault", "sponsorUnits", "blocksProposed",
 ];

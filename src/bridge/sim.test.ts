@@ -127,6 +127,23 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     if (res.kind !== "nothing") throw new Error("expected nothing-to-claim");
     expect(res.claimableWei).toBe("0");
   });
+
+  // CORE-D3.C — the sim membership.checkout is a guarded no-op: it opens no real
+  // popup and settles nothing (the web-dev fake settle lives in the Store's
+  // onS3Pay sim branch, not here). It resolves so the sim S3 flow proceeds.
+  it("membership.checkout is a guarded no-op in sim (opens no real popup)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await expect(bridge.membership.checkout()).resolves.toBeUndefined();
+  });
+
+  it("membership.entitlement still reflects the live host entitlement/tier", async () => {
+    const { host } = fakeHost({ entitlement: "active", tier: "pilot" } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const e = await bridge.membership.entitlement();
+    expect(e.status).toBe("active");
+    expect(e.tier).toBe("pilot");
+  });
 });
 
 // CORE-A2 A2.5 — sim custody: simulates lock/unlock UI STATE ONLY. It holds no

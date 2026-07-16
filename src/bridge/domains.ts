@@ -188,6 +188,16 @@ export interface ChatDomain {
 
 export interface MembershipDomain {
   entitlement(): Promise<{ status: "active" | "expiring" | "grace" | "lapsed"; tier: string; expiresAt: string }>;
+  /**
+   * CORE-D3.C — open the REAL core-membership checkout in an in-app popup
+   * (`{coreMembershipUrl}/checkout`). Resolves once the popup is OPENED — it does
+   * NOT report payment success. The money + entitlement grant happen server-side
+   * (core-membership → droplet); the caller then polls `auth.userinfo()` until the
+   * entitlement goes active (the same "open a flow then poll userinfo" pattern as
+   * `kycStart`/`pollKyc`). The Tauri impl invokes `membership_checkout`; the sim
+   * impl is guarded out of packaged builds (web-dev keeps its fake settle).
+   */
+  checkout(): Promise<void>;
 }
 
 export interface CommissaryDomain {

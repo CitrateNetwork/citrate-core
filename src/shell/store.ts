@@ -16,6 +16,7 @@ import {
   Persona,
   PERSONAS,
   PERSIST_KEYS,
+  RANK,
   STORAGE_KEY,
   freshState,
   greeting,
@@ -44,6 +45,26 @@ export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   const ms = /^\d+$/.test(expiresAt) ? Number(expiresAt) * 1000 : Date.parse(expiresAt);
   if (!Number.isFinite(ms)) return true; // fail-closed on an unparseable value
   return ms < Date.now();
+}
+
+/**
+ * CORE-D3.C — has the S3 checkout entitlement actually landed?
+ *
+ * The onboarding "Pay" step advances ONLY when `/userinfo` shows the REAL grant
+ * (Rule 1 — the tauri path never fakes a settled membership). "Landed" means the
+ * folded claim shows a PAID tier (rank past `free`/public — the commercial.kyc
+ * grant) AND the entitlement reads `active`. A still-`free`/`public` tier, or a
+ * lapsed/grace entitlement, is NOT settled — the poll keeps waiting.
+ *
+ * This is the single decision point the poll uses, so it is unit-tested against
+ * the exact folded AppState the entitlement engine produces.
+ */
+export function isPaidEntitlementActive(st: { tier: string; entitlement: string }): boolean {
+  const rank = RANK[st.tier];
+  // Unknown tiers are treated as unpaid (fail-closed): only a KNOWN paid tier
+  // (rank > free) with an ACTIVE entitlement counts as the grant having landed.
+  if (rank === undefined || rank <= RANK.free) return false;
+  return st.entitlement === "active";
 }
 
 export class Store {
@@ -804,10 +825,59 @@ export class Store {
   }
   onS3Pay(): void {
     this.setState({ s3: "paying" });
+    // Tauri: open the REAL core-membership checkout popup, then POLL /userinfo
+    // for the entitlement grant. The money + grant happen ENTIRELY server-side
+    // (core-membership → droplet); this app only opens the URL and watches its
+    // OWN entitlement. S3 advances ONLY when /userinfo shows the REAL grant
+    // (a PAID tier + active entitlement) — NEVER a faked settle (Rule 1). This
+    // is the same "open a flow then poll userinfo" shape as onS2Start/pollKyc.
+    if (BRIDGE_MODE === "tauri") {
+      void bridge.membership.checkout().catch(() => {
+        // Popup open failed (headless / user cancel at OS level) — stay "paying";
+        // the poll below simply never settles. The user can retry (S3 re-enterable).
+      });
+      this.pollMembership();
+      return;
+    }
+    // Web-dev sim: keep the prototype's fake settle so onboarding still walks.
+    // (Guarded: the sim membership.checkout is a no-op; the tier flip is sim-only.)
     setTimeout(() => {
       this.setState({ s3: "settled", tier: "pilot" });
       this.save();
     }, 2500);
+  }
+
+  /**
+   * CORE-D3.C — poll the live /userinfo entitlement while S3 is "paying" (Tauri
+   * only), advancing to "settled" ONLY once the REAL grant lands (a paid tier +
+   * active entitlement — `isPaidEntitlementActive`). The money + grant are
+   * server-side; a user who closes the checkout popup without paying simply
+   * never flips the entitlement, so this never settles (no fabrication — Rule 1).
+   *
+   * Bounded (mirrors pollKyc's cadence) so a never-completing checkout does not
+   * poll forever: after the cap it leaves S3 re-enterable (still "paying" state
+   * the UI can offer a retry from) rather than fabricating a settlement.
+   */
+  private pollMembership(attempt = 0): void {
+    if (BRIDGE_MODE !== "tauri") return;
+    const MAX_ATTEMPTS = 60; // ~5 min at 5s cadence — matches the checkout window
+    const tick = () => {
+      if (this.state.s3 !== "paying") return; // resolved or navigated away
+      void this.authUserinfo().finally(() => {
+        // Re-read the folded entitlement engine state at the DECISION point. Only
+        // a REAL paid+active grant settles S3 (Rule 1 — never before /userinfo).
+        if (this.state.s3 !== "paying") return;
+        if (isPaidEntitlementActive(this.state)) {
+          this.setState({ s3: "settled" });
+          this.save();
+          return;
+        }
+        // Not yet granted — keep polling until the bounded cap.
+        if (attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
+        // At the cap we stop polling; S3 stays "paying" (re-enterable), never faked.
+      });
+    };
+    setTimeout(tick, 5000);
   }
   onS5Begin(): void {
     this.setState({ s5: "verifying", s5c: 0 });

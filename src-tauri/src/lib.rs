@@ -12,6 +12,7 @@ mod ceremony;
 mod config;
 mod custody;
 mod earnings;
+mod membership;
 mod memory;
 mod node;
 mod oidc;
@@ -98,6 +99,13 @@ pub fn run() {
             oidc::auth_refresh,
             oidc::auth_logout,
             oidc::kyc_start,
+            // membership — the D3.C checkout popup (@rule8 money seam). Opens the
+            // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
+            // in-app popup with the SAME isolation as the auth popup (a remote
+            // HTTPS page, NO capability/IPC). It NEVER signs or reports a settled
+            // membership — the money + grant are server-side; the store polls
+            // /userinfo and only advances S3 when the REAL entitlement lands.
+            membership::membership_checkout,
             // signing — the B1.2 SignatureCeremony (the ONE HITL signing path).
             // sign_request returns a CeremonyId + decoded intent (NO signature);
             // sign_approve returns the signature hex ONLY (never key/seed/entropy

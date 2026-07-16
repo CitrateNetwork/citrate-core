@@ -216,6 +216,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async entitlement() {
         return unavailable("membership", "entitlement");
       },
+      // CORE-D3.C — open the REAL core-membership checkout popup. Resolves once
+      // the popup is opened; the money + grant are server-side. The store then
+      // polls auth.userinfo() until the entitlement lands (no fabricated settle).
+      async checkout(): Promise<void> {
+        await invoke("membership_checkout");
+      },
     },
     commissary: {
       async catalog() {

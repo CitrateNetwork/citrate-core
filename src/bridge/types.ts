@@ -52,6 +52,13 @@ export interface AppConfig {
   channel: "stable" | "beta";
   telemetry: boolean;
   sigPolicy: "hitl" | "allow";
+  /**
+   * CORE-D3.C — the core-membership base URL. The S3 onboarding checkout opens
+   * `{coreMembershipUrl}/checkout` in an in-app popup (the money + entitlement
+   * grant happen server-side; the app only opens the URL and polls its own
+   * /userinfo). Overridable so we can point at a preview/prod domain.
+   */
+  coreMembershipUrl: string;
 }
 
 export const DEFAULT_APP_CONFIG: AppConfig = {
@@ -63,6 +70,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   channel: "stable",
   telemetry: false,
   sigPolicy: "hitl",
+  coreMembershipUrl: "https://core-membership.vercel.app",
 };
 
 export type KeyringStatus = "available" | "unavailable" | "unknown";

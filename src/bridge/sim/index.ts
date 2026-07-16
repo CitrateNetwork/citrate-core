@@ -140,6 +140,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           channel: st.channel,
           telemetry: st.telemetry,
           sigPolicy: st.sigPolicy,
+          coreMembershipUrl: st.coreMembershipUrl,
         };
       },
       async write(patch: Partial<AppConfig>): Promise<AppConfig> {
@@ -406,6 +407,12 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("membership.entitlement");
         const st = s();
         return { status: st.entitlement, tier: st.tier, expiresAt: "2027-07-11" };
+      },
+      // CORE-D3.C — SIM: no real popup + no real checkout. The web-dev onboarding
+      // keeps its OWN fake settle in the Store (onS3Pay's sim branch). This just
+      // resolves so the sim S3 flow proceeds; guarded out of packaged builds.
+      async checkout(): Promise<void> {
+        assertSimAllowed("membership.checkout");
       },
     },
 

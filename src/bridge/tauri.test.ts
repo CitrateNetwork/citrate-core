@@ -60,6 +60,10 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "auth_logout":
     case "kyc_start":
       return undefined;
+    // CORE-D3.C — membership_checkout opens the checkout popup and returns void.
+    // The money + grant are server-side; the store polls /userinfo for the grant.
+    case "membership_checkout":
+      return undefined;
     // CORE-B1.2 signing — the ceremony commands. request → decoded view (NO
     // signature); approve → a signature hex ONLY (never a key); reject → void.
     // This mock simulates the single-use ceremony map so the adapter's calls are
@@ -479,5 +483,23 @@ describe("tauri adapter — memory domain is wired to the real mcp_serve daemon 
   it("memory.assert (a signed WRITE) is still honestly Unavailable until the ceremony WP", async () => {
     const bridge = createTauriBridge();
     await expect(bridge.memory.assert("x")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+});
+
+// CORE-D3.C — the membership domain's `checkout()` invokes the real
+// `membership_checkout` command (opens the in-app core-membership popup). It
+// returns void — it does NOT report payment success; the money + grant are
+// server-side and the store polls /userinfo. `entitlement()` stays Unavailable.
+describe("tauri adapter — membership.checkout opens the real checkout popup (D3.C)", () => {
+  it("checkout invokes membership_checkout and resolves to void (no settlement reported)", async () => {
+    const bridge = createTauriBridge();
+    invokeMock.mockClear();
+    await expect(bridge.membership.checkout()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("membership_checkout", undefined);
+  });
+
+  it("membership.entitlement is still honestly Unavailable (only checkout is wired)", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.membership.entitlement()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 });
