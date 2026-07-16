@@ -380,6 +380,24 @@ export class Store {
   async kycStart(): Promise<void> {
     await bridge.auth.kycStart();
   }
+
+  /**
+   * Open the REAL core-membership checkout (Settings → Billing "Renew"). Uses the
+   * same wired path as onboarding S3 (bridge.membership.checkout → the checkout
+   * popup). Web-dev has no popup — honest message. Entitlement refresh then
+   * arrives via the normal /userinfo poll after settlement.
+   */
+  async renewMembership(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Renewal opens the checkout in the desktop app.");
+      return;
+    }
+    try {
+      await bridge.membership.checkout();
+    } catch (err) {
+      this.toast("Could not open checkout — " + String((err as Error).message ?? err));
+    }
+  }
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;

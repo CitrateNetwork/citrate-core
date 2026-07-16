@@ -101,20 +101,19 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       connected: on,
       btn: on ? "Disconnect" : "Connect",
       go: () => {
+        // OAuth connect/disconnect is NOT wired — there is no real token flow yet
+        // (a scheduled build). The old handler faked a 1.3s "OAuth" timer and
+        // claimed keyring token storage/revocation. Be honest rather than flip a
+        // fabricated "connected" flag (Rule 1).
         if (on) {
           const c = { ...store.state.connections };
           delete c[id];
           store.setState({ connections: c });
-          store.toast(name + " disconnected — token revoked and removed from the keyring");
+          store.save();
+          store.toast(name + " disconnected.");
         } else {
-          store.toast(name + " — OAuth opens in your system browser…");
-          setTimeout(() => {
-            store.setState((st) => ({ connections: { ...st.connections, [id]: true } }));
-            store.toast(name + " connected — mounted as an agent tool");
-            store.save();
-          }, 1300);
+          store.toast(name + " — OAuth connections aren't wired yet (a scheduled build); no token was issued.");
         }
-        store.save();
       },
     };
   });
@@ -191,31 +190,28 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   const gwKeyHeld = !!s.gwKey && !s.gwKeyFull;
   const gwKeyFull = s.gwKeyFull || "";
   const gwKeyMasked = s.gwKey || "";
+  // Gateway-key issuance is NOT wired — the real key is minted by the membership
+  // service against your live entitlement (core-membership, a scheduled build).
+  // The old flow fabricated a client-side `cgk_` string and claimed keyring/server
+  // storage. Be honest rather than hand out a fake key (Rule 1).
   const onIssueKey = () => {
-    const key = "cgk_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
-    store.setState({ gwKeyFull: key });
+    store.toast("Gateway key issuance isn't wired yet — the membership service mints it against your live entitlement (a scheduled build).");
   };
   const onCopyKey = () => store.copy(store.state.gwKeyFull || "", "Key copied — it will not be shown again");
   const onKeyStored = () => {
-    const full = store.state.gwKeyFull || "";
-    const masked = full.slice(0, 8) + "•••••••••••••" + full.slice(-4);
-    store.setState({ gwKey: masked, gwKeyFull: null });
-    store.toast("Stored in OS keyring");
+    store.setState({ gwKey: null, gwKeyFull: null });
+    store.toast("Gateway keys aren't wired yet — nothing was stored.");
     store.save();
   };
   const onRotateKey = () => {
-    store.setState({ gwKey: null, gwKeyFull: null });
-    store.toast("Old key revoked server-side — issue a new one");
-    store.save();
+    store.toast("Gateway key rotation isn't wired yet — no server key to rotate.");
   };
   const onRevokeKey = () => {
-    store.setState({ gwKey: null, gwKeyFull: null });
-    store.toast("Key revoked server-side");
-    store.save();
+    store.toast("Gateway key revocation isn't wired yet — no server key to revoke.");
   };
 
   // ---------- keys & security ----------
-  const onExportKey = () => store.toast("Export shows the strong-warning dialog, then reveals the encrypted keystore file");
+  const onExportKey = () => store.toast("Keystore export isn't wired yet — it will show a strong-warning dialog before revealing the encrypted keystore (a scheduled build).");
   const lockOpts = [15, 30, 60].map((m) => ({
     label: m + " min",
     cls: btnCls(s.autolock === m),
@@ -247,15 +243,14 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         : ["var(--warn-bg)", "var(--warn)", "var(--warn)"];
 
   // ---------- app ----------
-  const updText =
-    s.updState === "checking"
-      ? "checking " + s.channel + " channel…"
-      : s.updState === "current"
-        ? "0.1.0-proto is current on " + s.channel
-        : "last checked at launch";
+  // The updater isn't wired, so we never assert "current" (unverifiable). Show the
+  // real running version + that update checks aren't wired.
+  const updText = "citrate-core 0.1.0-proto · " + s.channel + " channel · update checks not wired";
+  // The auto-updater isn't wired (it's @rule8 — updater keys need security
+  // sign-off; work-order WO-2). The old handler faked a check that always
+  // resolved "current". Be honest rather than assert a signature-verified check.
   const onCheckUpdate = () => {
-    store.setState({ updState: "checking" });
-    setTimeout(() => store.setState({ updState: "current" }), 1700);
+    store.toast("Update checks aren't wired yet — the signed auto-updater ships with the notarized build (a scheduled build).");
   };
 
   const setSec = (id: string) => {
@@ -314,7 +309,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 </div>
               ))}
               <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Opens account-hub /account in your browser — shared OIDC session")}>
+                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Account hub isn't wired yet — it opens in your browser via the shared OIDC session (a scheduled build).")}>
                   Manage account ↗
                 </button>
                 <button
@@ -577,7 +572,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               )}
               {gwKeyShown && (
                 <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-1)", padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
-                  <span style={{ fontSize: 12, color: "var(--warn)", fontWeight: 500 }}>Shown once — it is being stored in your OS keyring now.</span>
+                  <span style={{ fontSize: 12, color: "var(--warn)", fontWeight: 500 }}>Stored locally — gateway keys aren't wired to the membership service yet.</span>
                   <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span className="mono" style={{ fontSize: 12, flex: 1, wordBreak: "break-all" }}>
                       {gwKeyFull}
@@ -607,7 +602,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     </button>
                   </span>
                   <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                    in OS keyring · old keys revoke server-side on rotation
+                    stored locally · gateway keys aren't wired to the membership service yet
                   </span>
                 </>
               )}
@@ -677,22 +672,22 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <span style={{ flex: 1 }}>
                   <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Smart wallet · passkey validator</span>
                   <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
-                    WebAuthn P-256 · enrolled with identity
+                    WebAuthn P-256 · address derived from identity · deploys lazily on first tx
                   </span>
                 </span>
-                <span className="mono" style={{ fontSize: 10, color: "var(--ok)" }}>
-                  ACTIVE
+                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+                  ADDRESS SET
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 10 }}>
                 <span style={{ flex: 1 }}>
                   <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Machine attestation</span>
                   <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
-                    {s.deviceId} · hardware-backed device key · proved at sign-in · binds session + license to this machine
+                    {s.deviceId} · hardware-backed device attestation isn't wired yet (a scheduled build)
                   </span>
                 </span>
-                <span className="mono" style={{ fontSize: 10, color: "var(--ok)" }}>
-                  ATTESTED
+                <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>
+                  NOT WIRED
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -781,10 +776,10 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 </span>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => store.toast("Renewal opens the Stripe customer portal in your browser")}>
+                <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
                   Renew ↗
                 </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Cancellation runs in the customer portal — grace and downgrade rules are spelled out first")}>
+                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Cancellation runs in the Stripe customer portal — the portal link isn't wired yet (a scheduled build).")}>
                   Cancel membership
                 </button>
               </div>
@@ -821,7 +816,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <span className="mono" style={{ fontSize: 11.5 }}>
                   2026-07-11 · Pilot membership · $48.00
                 </span>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Receipt PDF downloads from core-membership")}>
+                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Receipt PDFs aren't wired yet — they download from core-membership (a scheduled build).")}>
                   PDF ↗
                 </button>
               </div>
@@ -900,7 +895,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Diagnostics</span>
               <span>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Diagnostics bundle exported — logs, config, crash records; keys and tokens scrubbed")}>
+                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Diagnostics export isn't wired yet — it will bundle logs/config/crash records (keys + tokens scrubbed) in a scheduled build.")}>
                   Export diagnostics bundle
                 </button>
               </span>
