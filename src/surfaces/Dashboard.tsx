@@ -64,7 +64,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const vitals = [
     { label: "Height", value: heightValue, sub: heightSub, color: "var(--tx-1)", tip: "eth_blockNumber", vsize: "21px" },
     { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "net_peerCount", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "net_peerCount", vsize: "21px" },
-    { label: "Finality", value: Math.round(s.finAge) + "s", sub: "checkpoint age", color: "var(--tx-1)", tip: "BFT checkpoint every ~50 blocks", vsize: "21px" },
+    { label: "Finality", value: s.finAge < 0 ? "—" : Math.round(s.finAge) + "s", sub: s.finAge < 0 ? "no source yet" : "checkpoint age", color: "var(--tx-1)", tip: "BFT checkpoint every ~50 blocks", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "LiquidStakingPool shares", vsize: "21px" },
     { label: "Today", value: s.node === "validating" || s.earnToday > 0 ? fmt2(s.earnToday) : "—", sub: s.earnToday > 0 ? "SALT earned" : "not validating", color: s.earnToday > 0 ? "var(--accent-text)" : "var(--tx-3)", tip: "ContributionAccounting", vsize: "21px" },

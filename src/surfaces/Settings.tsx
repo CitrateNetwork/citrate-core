@@ -182,7 +182,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   const rpcHealthText =
     s.rpc === "local"
       ? s.node !== "off"
-        ? "127.0.0.1:8545 · healthy · " + Math.round(s.finAge) + "s behind checkpoint"
+        ? "127.0.0.1:8545 · healthy" + (s.finAge < 0 ? "" : " · " + Math.round(s.finAge) + "s behind checkpoint")
         : "127.0.0.1:8545 · node off — reads fall back to rpc.citrate.ai (shown in UI)"
       : "rpc.citrate.ai · healthy · TLS";
 

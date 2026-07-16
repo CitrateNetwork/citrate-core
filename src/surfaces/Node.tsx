@@ -71,11 +71,7 @@ export function Node({ store, s }: SurfaceProps) {
     store.setState({ node: staked >= 32000 ? "validating" : "synced" });
     store.save();
   };
-  const onNodeStop = () => {
-    store.setState({ node: "off", peers: 0, logs: [], syncPct: 0 });
-    store.toast("Node stopped — supervisor released");
-    store.save();
-  };
+  const onNodeStop = () => store.stopNode();
   const showSync = s.node === "syncing";
   const syncPctStr = (s.syncPct | 0) + "%";
   const syncBarW = (s.syncPct | 0) + "%";

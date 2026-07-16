@@ -83,6 +83,29 @@ export function deriveIdentityFromEmail(email: string): { name: string; initials
   return { name, initials };
 }
 
+/**
+ * Map the REAL node supervisor state (bridge.node.status → node.rs `map_state`:
+ * stopped/starting/running/restarting/failed) onto the app's node lifecycle
+ * enum. A `running` node is `syncing` until fully synced, then `validating` when
+ * its stake meets the threshold, else `synced`. This is the seam that replaces
+ * the sim `tick()` node state in a Tauri build.
+ */
+export function mapNodeState(state: string, syncPct: number, staked: number): AppState["node"] {
+  switch (state) {
+    case "starting":
+    case "restarting":
+      return "prov";
+    case "failed":
+      return "error";
+    case "running":
+      if (syncPct < 100) return "syncing";
+      return staked >= 32000 ? "validating" : "synced";
+    case "stopped":
+    default:
+      return "off";
+  }
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -91,6 +114,8 @@ export class Store {
   private mid = 0;
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
+  private nodeTimer: ReturnType<typeof setInterval> | null = null;
+  private nodeStarting = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
@@ -138,6 +163,14 @@ export class Store {
     // Tauri build this reads the real /userinfo-derived status (silent if signed
     // out); in web-dev it reads the sim persona. Honest no-op on failure.
     void this.refreshAuth();
+    // CORE (Phase 1) — in a Tauri build, poll the REAL node vitals (height/peers/
+    // syncPct/state) from the supervisor + local RPC every 2s and fold them into
+    // AppState, so the Node surface + Sidebar render live numbers instead of the
+    // sim tick(). No-op in web-dev (the sim tick drives those there).
+    if (BRIDGE_MODE === "tauri") {
+      void this.refreshNode();
+      this.nodeTimer = setInterval(() => void this.refreshNode(), 2000);
+    }
   }
 
   /**
@@ -184,6 +217,37 @@ export class Store {
       this.applyAuthStatus(st);
     } catch {
       /* honest no-op: the auth domain reported unavailable / not signed in */
+    }
+  }
+
+  /**
+   * CORE (Phase 1) — pull the REAL node vitals from the bridge and fold them into
+   * AppState. `bridge.node.status()` (Tauri) hits the supervisor + local node RPC
+   * (eth_blockNumber / net_peerCount) — height/peers are live 40204 truth, never
+   * fabricated. A user-initiated `paused` is respected (not overwritten). Failure
+   * leaves the last honest values untouched — no sim fallback (Rule 1).
+   */
+  async refreshNode(): Promise<void> {
+    if (this.state.node === "paused") return; // respect an explicit pause
+    try {
+      const st = await bridge.node.status();
+      const staked = (this.state.hasGrant ? 32000 : 0) + this.state.selfStake;
+      const patch: Partial<AppState> = {
+        height: st.height,
+        peers: st.peers,
+        syncPct: st.syncPct,
+        // There is NO real finality/checkpoint-age source from the node yet
+        // (WO-1 adds citrate_getDagStats). Mark it unavailable (< 0) rather than
+        // leaving the fabricated seed value — displays render "—" (Rule 1).
+        finAge: -1,
+      };
+      // While a start is in flight, a transient "stopped" poll (supervisor not
+      // yet registered during spawn) must NOT demote the optimistic "prov" back
+      // to "off" — that caused a prov→off→prov flicker. Still fold height/peers.
+      if (!this.nodeStarting) patch.node = mapNodeState(st.state, st.syncPct, staked);
+      this.setState(patch);
+    } catch {
+      /* honest no-op: a failed poll keeps the last real values, never a sim number */
     }
   }
 
@@ -291,6 +355,8 @@ export class Store {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.nodeTimer) clearInterval(this.nodeTimer);
+    this.nodeTimer = null;
   }
 
   // ---------- helpers ----------
@@ -406,54 +472,62 @@ export class Store {
   tick(): void {
     this.setState((s) => {
       const u: Partial<AppState> = {};
-      u.height = s.height + (Math.random() < 0.85 ? 1 : 2);
-      u.finAge = s.finAge + 0.6;
-      if (u.height - s.lastCp >= 50) {
-        u.lastCp = u.height;
-        u.finAge = 0;
-      }
       const running = s.node !== "off" && s.node !== "prov";
-      const target = running ? 24 : 0;
-      let peers = s.peers;
-      if (peers < target) peers += Math.ceil(Math.random() * 3);
-      else if (peers > target) peers -= Math.ceil(Math.random() * 4);
-      else if (running && Math.random() < 0.15) peers += Math.random() < 0.5 ? 1 : -1;
-      u.peers = Math.max(0, Math.min(32, peers));
-      if (s.node === "syncing") {
-        const np = Math.min(100, s.syncPct + 5 + Math.random() * 9);
-        u.syncPct = np;
-        if (np >= 100) {
-          u.node = ((s.hasGrant ? 32000 : 0) + s.selfStake) >= 32000 ? "validating" : "synced";
-          if (s.stage === "s6") u.s6ready = true;
+      // NODE VITALS SIMULATION — web-dev ONLY. In a Tauri build height/peers/
+      // syncPct/node-state come from the REAL node via `refreshNode`
+      // (bridge.node.status → node.rs → local RPC eth_blockNumber/net_peerCount),
+      // and cpu/ram/logs/peer-rows are honestly blank rather than fabricated
+      // (Rule 1). This whole block is the source of the implausible always-
+      // climbing height + steady ~24 peers a packaged build must never show.
+      if (BRIDGE_MODE === "sim") {
+        u.height = s.height + (Math.random() < 0.85 ? 1 : 2);
+        u.finAge = s.finAge + 0.6;
+        if (u.height - s.lastCp >= 50) {
+          u.lastCp = u.height;
+          u.finAge = 0;
         }
-      }
-      if (s.node === "validating" && Math.random() < 0.018) u.blocksProposed = s.blocksProposed + 1;
-      if (s.node === "validating") {
-        const dv = 0.004 + Math.random() * 0.005,
-          dp = 0.0009 + Math.random() * 0.0006,
-          dc = 0.0004 + Math.random() * 0.0004;
-        u.earnVal = s.earnVal + dv;
-        u.earnPin = s.earnPin + dp;
-        u.earnComp = s.earnComp + dc;
-        u.earnToday = s.earnToday + dv + dp + dc;
-        u.claimable = s.claimable + (dv + dp + dc) * 0.85;
-      }
-      if (running) {
-        u.hb = (s.hb + 0.6) % 30;
-        u.cpu = s.node === "paused" ? 2 + Math.random() * 2 : (s.node === "validating" ? 18 : 11) + Math.random() * 12;
-        u.ram = (s.node === "validating" ? 780 : 540) + Math.random() * 140;
-        if (Math.random() < 0.55) {
-          const T = NODE_LOG_TEMPLATES;
-          const line = T[(Math.random() * T.length) | 0]
-            .replace(/\{h\}/g, String(u.height))
-            .replace(/\{peers\}/g, String(u.peers))
-            .replace(/\{r\}/g, String((u.height! / 50) | 0));
-          const d = new Date();
-          const t =
-            String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
-          u.logs = s.logs.concat([{ t, line, id: this.mid++ }]).slice(-14);
+        const target = running ? 24 : 0;
+        let peers = s.peers;
+        if (peers < target) peers += Math.ceil(Math.random() * 3);
+        else if (peers > target) peers -= Math.ceil(Math.random() * 4);
+        else if (running && Math.random() < 0.15) peers += Math.random() < 0.5 ? 1 : -1;
+        u.peers = Math.max(0, Math.min(32, peers));
+        if (s.node === "syncing") {
+          const np = Math.min(100, s.syncPct + 5 + Math.random() * 9);
+          u.syncPct = np;
+          if (np >= 100) {
+            u.node = ((s.hasGrant ? 32000 : 0) + s.selfStake) >= 32000 ? "validating" : "synced";
+            if (s.stage === "s6") u.s6ready = true;
+          }
         }
-        if (!s.peerRows.length || (u.height! % 60 === 0)) u.peerRows = this.makePeers(u.peers!);
+        if (s.node === "validating" && Math.random() < 0.018) u.blocksProposed = s.blocksProposed + 1;
+        if (s.node === "validating") {
+          const dv = 0.004 + Math.random() * 0.005,
+            dp = 0.0009 + Math.random() * 0.0006,
+            dc = 0.0004 + Math.random() * 0.0004;
+          u.earnVal = s.earnVal + dv;
+          u.earnPin = s.earnPin + dp;
+          u.earnComp = s.earnComp + dc;
+          u.earnToday = s.earnToday + dv + dp + dc;
+          u.claimable = s.claimable + (dv + dp + dc) * 0.85;
+        }
+        if (running) {
+          u.hb = (s.hb + 0.6) % 30;
+          u.cpu = s.node === "paused" ? 2 + Math.random() * 2 : (s.node === "validating" ? 18 : 11) + Math.random() * 12;
+          u.ram = (s.node === "validating" ? 780 : 540) + Math.random() * 140;
+          if (Math.random() < 0.55) {
+            const T = NODE_LOG_TEMPLATES;
+            const line = T[(Math.random() * T.length) | 0]
+              .replace(/\{h\}/g, String(u.height))
+              .replace(/\{peers\}/g, String(u.peers))
+              .replace(/\{r\}/g, String((u.height! / 50) | 0));
+            const d = new Date();
+            const t =
+              String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
+            u.logs = s.logs.concat([{ t, line, id: this.mid++ }]).slice(-14);
+          }
+          if (!s.peerRows.length || (u.height! % 60 === 0)) u.peerRows = this.makePeers(u.peers!);
+        }
       }
       if (s.s5 === "settling") {
         u.s5n = Math.min(32000, s.s5n + 6800);
@@ -769,10 +843,52 @@ export class Store {
   // ---------- node lifecycle ----------
   startNode(): void {
     this.setState({ node: "prov", syncPct: 0, logs: [], peerRows: [] });
+    if (BRIDGE_MODE === "tauri") {
+      // Spawn the REAL supervised node (bridge.node.start → node.rs). The 2s
+      // poller (refreshNode) then folds live state/height/peers as it boots +
+      // syncs. `nodeStarting` guards the poller from demoting the optimistic
+      // "prov" to "off" during the spawn window. On failure (e.g. the node
+      // binary is not bundled) show an HONEST error, never a faked sync (Rule 1).
+      this.nodeStarting = true;
+      void bridge.node
+        .start()
+        .then(() => {
+          this.nodeStarting = false;
+          return this.refreshNode();
+        })
+        .catch((e) => {
+          this.nodeStarting = false;
+          this.setState({ node: "error" });
+          this.toast("Could not start the node: " + (e instanceof Error ? e.message : "supervisor unavailable"));
+        });
+      return;
+    }
     setTimeout(() => {
       this.setState({ node: "syncing", syncPct: 2, peerRows: this.makePeers(8) });
       this.save();
     }, 1500);
+  }
+
+  /** Stop the node. Tauri: release the real supervisor (bridge.node.stop). */
+  stopNode(): void {
+    this.setState({ node: "off", peers: 0, logs: [], syncPct: 0, peerRows: [] });
+    if (BRIDGE_MODE === "tauri") {
+      // Only claim the supervisor was released once the real stop RESOLVES — the
+      // optimistic "off" reflects intent, but the toast must not overstate.
+      void bridge.node
+        .stop()
+        .then(() => {
+          this.toast("Node stopped — supervisor released");
+          return this.refreshNode();
+        })
+        .catch(() => {
+          this.toast("Stop requested — the supervisor releases on the next poll");
+        });
+      this.save();
+      return;
+    }
+    this.toast("Node stopped — supervisor released");
+    this.save();
   }
 
   /**

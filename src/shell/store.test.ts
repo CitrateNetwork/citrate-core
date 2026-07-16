@@ -4,7 +4,7 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, store } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, store } from "./store";
 import { PERSIST_KEYS } from "./state";
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
@@ -122,5 +122,30 @@ describe("HIPAA sign-out-by-default — no session/PII persisted", () => {
     for (const k of ["signedIn", "authSub", "authEmail", "authName", "authInitials"] as const) {
       expect(PERSIST_KEYS).not.toContain(k);
     }
+  });
+});
+
+// CORE Phase 1 — the REAL node poller maps supervisor state (node.rs map_state)
+// onto the app's node lifecycle enum. This replaces the sim tick() node state in
+// a Tauri build so height/peers/sync are live 40204 truth, not fabricated.
+describe("mapNodeState — supervisor state → app node lifecycle", () => {
+  it("stopped/unknown → off", () => {
+    expect(mapNodeState("stopped", 0, 0)).toBe("off");
+    expect(mapNodeState("whatever", 100, 99999)).toBe("off");
+  });
+  it("starting/restarting → prov; failed → error", () => {
+    expect(mapNodeState("starting", 0, 0)).toBe("prov");
+    expect(mapNodeState("restarting", 0, 0)).toBe("prov");
+    expect(mapNodeState("failed", 0, 0)).toBe("error");
+  });
+  it("running while not fully synced → syncing", () => {
+    expect(mapNodeState("running", 42, 32000)).toBe("syncing");
+  });
+  it("running + synced + staked at/above threshold → validating", () => {
+    expect(mapNodeState("running", 100, 32000)).toBe("validating");
+  });
+  it("running + synced but under-staked → synced (not validating)", () => {
+    expect(mapNodeState("running", 100, 31999)).toBe("synced");
+    expect(mapNodeState("running", 100, 0)).toBe("synced");
   });
 });
