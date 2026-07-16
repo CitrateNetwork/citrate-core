@@ -51,7 +51,6 @@ export function Wallet({ store, s }: SurfaceProps) {
 
   const sponsTxt =
     s.sponsorUnits > 0 ? "gas sponsored — " + s.sponsorUnits + " of 5 daily units left" : "you pay gas — daily sponsorship budget exhausted";
-  const sponsColor = s.sponsorUnits > 0 ? "var(--ok)" : "var(--warn)";
   const sponsorLine = s.sponsorUnits + " of 5 units · resets 00:00 UTC · category standard";
   const sponsorBarW = (s.sponsorUnits / 5) * 100 + "%";
   const sponsorBarColor = s.sponsorUnits > 1 ? "var(--accent)" : "var(--warn)";
@@ -68,86 +67,52 @@ export function Wallet({ store, s }: SurfaceProps) {
 
   const onCopyAddr = () => store.copy(s.walletAddr, "Address copied");
 
+  // Send is a REAL native SALT transfer: build the pending ceremony + broadcast
+  // the real 40204 tx (store.walletSend → bridge.wallet.send + signing.broadcast).
+  // No local balance mutation, no fabricated hash — the balance re-reads from
+  // chain after settle. Amount is converted to wei (18 decimals) for the command.
   const onSendTx = () => {
     const to = sendToEl.current ? sendToEl.current.value.trim() : "";
-    const amt = parseFloat(sendAmtEl.current ? sendAmtEl.current.value : "");
-    if (!/^0x[0-9a-fA-F]{6,}$/.test(to)) return store.toast("Enter a destination address (0x…)");
-    if (!(amt > 0)) return store.toast("Enter an amount");
+    const amtRaw = sendAmtEl.current ? sendAmtEl.current.value.trim() : "";
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return store.toast("Enter a valid destination address (0x + 40 hex)");
+    // STRICT plain-decimal only — must match the BigInt wei path exactly. Rejects
+    // scientific ("1e3"), separators ("1,000"), multi-dot ("1.2.3"), "Infinity",
+    // etc. (which pass parseFloat but throw in BigInt → a silent no-op).
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(amtRaw)) return store.toast("Enter a valid amount (e.g. 1.5)");
+    const amt = parseFloat(amtRaw);
+    if (!(amt > 0)) return store.toast("Enter an amount greater than zero");
     if (amt > s.liquid) return store.toast("Exceeds your liquid balance");
-    store.requestSig({
-      origin: "user wallet action",
-      requester: "you · Wallet → Send",
-      title: "Send " + fmt2(amt) + " SALT",
-      rows: [
-        { k: "To", v: to },
-        { k: "Amount", v: fmt2(amt) + " SALT" },
-        { k: "Route", v: "ERC-4337 UserOp · EntryPoint 0x077F…54Ef" },
-      ],
-      cost: "est. gas 0.0012 SALT",
-      sponsor: sponsTxt,
-      sponsorColor: sponsColor,
-      apply: (h) => {
-        store.setState((st) => ({ liquid: st.liquid - amt, sponsorUnits: Math.max(0, st.sponsorUnits - 1) }));
-        store.addActivity("Send", "−" + fmt2(amt) + " SALT", h);
-        if (sendToEl.current) sendToEl.current.value = "";
-        if (sendAmtEl.current) sendAmtEl.current.value = "";
-        store.toast("Sent — witnessed on 40204");
-      },
+    // Decimal SALT → wei (18 dp) via BigInt (no float error). Excess precision is
+    // TRUNCATED (never rounded up) so we can never send more than typed.
+    let wei: string;
+    try {
+      const [whole, frac = ""] = amtRaw.split(".");
+      wei = (BigInt(whole || "0") * 10n ** 18n + BigInt((frac + "0".repeat(18)).slice(0, 18))).toString();
+    } catch {
+      return store.toast("Enter a valid amount (e.g. 1.5)");
+    }
+    if (wei === "0") return store.toast("Enter an amount greater than zero");
+    void store.walletSend(to, wei).then(() => {
+      if (sendToEl.current) sendToEl.current.value = "";
+      if (sendAmtEl.current) sendAmtEl.current.value = "";
     });
   };
 
+  // Stake / Withdraw are NOT wired to a real transaction yet — the LiquidStakingPool
+  // stake/withdraw view+selector are not grounded in-repo (node-agent address book).
+  // Be honest rather than fabricate a hash + mutate the balance (Rule 1/3).
   const onAddStake = () => {
     const amt = parseFloat(stakeAmtEl.current ? stakeAmtEl.current.value : "");
     if (!(amt > 0)) return store.toast("Enter an amount");
     if (amt > s.liquid) return store.toast("Exceeds your liquid balance");
-    store.requestSig({
-      origin: "user wallet action",
-      requester: "you · Wallet → Staking",
-      title: "Stake " + fmt2(amt) + " SALT",
-      rows: [
-        { k: "Action", v: "deposit(" + fmt2(amt) + ") → stSALT shares" },
-        { k: "Contract", v: "LiquidStakingPool 0xfd27…685e" },
-        { k: "Lockup", v: "withdrawals carry a 7-day lockup" },
-      ],
-      cost: "est. gas 0.0018 SALT",
-      sponsor: sponsTxt,
-      sponsorColor: sponsColor,
-      apply: (h) => {
-        store.setState((st) => ({ liquid: st.liquid - amt, selfStake: st.selfStake + amt, sponsorUnits: Math.max(0, st.sponsorUnits - 1) }));
-        store.addActivity("Add stake", "−" + fmt2(amt) + " SALT", h);
-        if (stakeAmtEl.current) stakeAmtEl.current.value = "";
-        store.toast("Staked — position updated from chain");
-      },
-    });
+    store.settleUnwired("Staking");
   };
 
   const onUnstake = () => {
     const amt = parseFloat(unstakeAmtEl.current ? unstakeAmtEl.current.value : "");
     if (!(amt > 0)) return store.toast("Enter an amount");
     if (amt > s.selfStake) return store.toast("Only self-added stake can be withdrawn — granted principal is vaulted");
-    const below = staked - amt < 32000;
-    store.requestSig({
-      origin: "user wallet action",
-      requester: "you · Wallet → Staking",
-      title: "Withdraw " + fmt2(amt) + " SALT",
-      rows: [
-        { k: "Action", v: "requestWithdraw(" + fmt2(amt) + ")" },
-        { k: "Contract", v: "LiquidStakingPool 0xfd27…685e" },
-        { k: "Unlocks", v: "2026-07-18 · 7-day lockup" },
-      ],
-      cost: "est. gas 0.0016 SALT",
-      sponsor: "you pay gas — daily sponsorship budget reached for withdrawals",
-      sponsorColor: "var(--warn)",
-      warning: below
-        ? "This drops your stake below 32,000 SALT — validator reward eligibility ends below the minimum."
-        : "Funds unlock 2026-07-18. The 7-day lockup starts when this transaction settles.",
-      apply: (h) => {
-        store.setState((st) => ({ selfStake: st.selfStake - amt }));
-        store.addActivity("Unstake · unlocks 2026-07-18", fmt2(amt) + " SALT", h);
-        if (unstakeAmtEl.current) unstakeAmtEl.current.value = "";
-        store.toast("Withdrawal queued — 7-day lockup running");
-      },
-    });
+    store.settleUnwired("Withdrawal");
   };
 
   const activityRows = s.activity.map((a, i) => ({

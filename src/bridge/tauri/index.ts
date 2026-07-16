@@ -129,6 +129,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async activity() {
         return unavailable("wallet", "activity");
       },
+      // CORE (@rule8) — build a native SALT transfer as a PENDING ceremony and
+      // return its decoded view. Signs NOTHING; the human approves via
+      // signing.broadcast (B1.4 → real 40204 tx). `amountWei` (camelCase) maps to
+      // the Rust `amount_wei` arg. Mirrors agent.claim's request→broadcast split.
+      async send(to: string, amountWei: string): Promise<CeremonyView> {
+        return invoke<CeremonyView>("wallet_send", { to, amountWei });
+      },
     },
     // ---- node: REAL citrate-node under the SidecarSupervisor (C1.1) ----
     // status returns the node's REAL sync state (height/peers from its local

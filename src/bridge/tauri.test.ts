@@ -156,6 +156,21 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         claimableWei: earningsMock.claimableWei,
         address: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
       };
+    // CORE wallet_send — a native transfer bridged into a PENDING ceremony;
+    // returns the decoded view (the human approves via sign_and_broadcast).
+    case "wallet_send": {
+      const id = String(signMock.next++);
+      const view = {
+        id,
+        origin: "local-user",
+        kind: "transaction",
+        chainId: 40204,
+        decoded: { action: "Transfer", cost: "1.5 SALT", destination: String((args as { to: string }).to) },
+        requiresRawAck: false,
+      };
+      signMock.map.set(id, view);
+      return view;
+    }
     // CORE-C2-F-1 user_claim — bridges the REAL claimRewards() intent into a
     // PENDING ceremony (a legible tx Call, approvable via sign_and_broadcast).
     // Returns a CeremonyView; NEVER a signature or a local balance mutation.
@@ -234,6 +249,15 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(b.claimable).toBeCloseTo(Number(BigInt(earningsMock.claimableWei)) / 1e18, 9);
     expect(b.staked).toBe(-1); // staking-pool view not grounded yet → keep local
     expect(b.address).toBe("0x9858effd232b4033e47d90003d41ec34ecaeda94");
+  });
+
+  it("wallet.send invokes wallet_send with {to, amountWei} and returns a pending CeremonyView", async () => {
+    const bridge = createTauriBridge();
+    const to = "0x1111111111111111111111111111111111111111";
+    const view = await bridge.wallet.send(to, "1500000000000000000");
+    expect(invokeMock).toHaveBeenCalledWith("wallet_send", { to, amountWei: "1500000000000000000" });
+    expect(view.id).toBeTruthy();
+    expect(view.decoded.destination).toBe(to); // signs nothing; human approves via broadcast
   });
 });
 

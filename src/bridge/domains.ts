@@ -101,6 +101,11 @@ export interface SigningDomain {
 export interface WalletDomain {
   balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
   activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number }[]>;
+  /** CORE (@rule8) — submit a native SALT transfer as a PENDING ceremony and
+   * return the decoded view. Signs NOTHING; the human approves via
+   * `signing.broadcast(view.id)` (B1.4 → a real 40204 tx). `amountWei` is a
+   * decimal wei string. Mirrors `agent.claim` for the claimRewards() path. */
+  send(to: string, amountWei: string): Promise<CeremonyView>;
 }
 
 export interface NodeDomain {

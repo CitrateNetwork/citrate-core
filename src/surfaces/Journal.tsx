@@ -198,29 +198,12 @@ export function Journal({ store, s }: SurfaceProps) {
 
   const jPinDisabled = !jSelPage || jSelPage.pinned || s.jEditing;
   const jPinLabel = jSelPage && jSelPage.pinned ? "Pinned" : "Pin securely";
+  // Pinning is NOT wired to a real pin daemon / bond tx yet — the old path
+  // fabricated a CID by string concat and faked a bond. Be honest (Rule 1/3)
+  // until the pinning daemon + grounded bond contract land.
   const onJPin = () => {
     if (!jSelPage || jSelPage.pinned) return;
-    store.requestSig({
-      origin: "user wallet action",
-      requester: "you · pin journal page",
-      title: "Pin “" + jSelPage.title + "” — encrypted",
-      rows: [
-        { k: "Snapshot", v: "encrypted client-side before it leaves this machine" },
-        { k: "Plan", v: "plan_pin(journal/" + jSelPage.id + ") · replication 3 · challenge every 12 h" },
-        { k: "Bond", v: "20 SALT · slashable on failed challenge" },
-      ],
-      cost: "20 SALT bond · locked while pinned",
-      sponsor: "you pay the bond",
-      sponsorColor: "var(--tx-3)",
-      apply: () => {
-        store.setState((st) => ({
-          jPages: st.jPages.map((p) => (p.id === jSelPage.id ? { ...p, pinned: true } : p)),
-          pins: [{ cid: "bafyjrnl" + jSelPage.id.slice(-4) + "…enc", bond: 20, cadH: 12, nextIn: 12 * 3600, last: "attested" }].concat(st.pins),
-        }));
-        store.toast("Pinned — encrypted snapshot replicating");
-        store.save();
-      },
-    });
+    store.settleUnwired("Pinning");
   };
 
   // backlinks: pages that reference [[This page's title]]

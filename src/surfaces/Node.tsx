@@ -138,37 +138,17 @@ export function Node({ store, s }: SurfaceProps) {
   const pinPassed = s.pins.length ? String(s.pins.length * 9 + 4) : "—";
   const nextPin = s.pins.length && !nodeOff ? Math.min.apply(null, s.pins.map((p) => p.nextIn)) : null;
   const pinNext = nextPin == null ? "—" : fmtDur(nextPin);
+  // Bonded pinning is NOT wired to a real transaction yet — there is no pinning
+  // daemon / PoSt sealer + grounded bond contract in-repo (the surface already
+  // flags the sealer seam separately). Be honest rather than fabricate a bond +
+  // debit the balance (Rule 1/3).
   const onPinNew = () => {
     const cid = pinCidEl.current ? pinCidEl.current.value.trim() : "";
     const bond = parseFloat(pinBondEl.current ? pinBondEl.current.value : "");
     if (!/^baf[a-z0-9]{6,}/i.test(cid)) return store.toast("Enter a CID (bafy…)");
     if (!(bond >= 20)) return store.toast("Minimum bond is 20 SALT");
     if (bond > s.liquid) return store.toast("Bond exceeds your liquid balance");
-    const cidShort = cid.length > 16 ? cid.slice(0, 11) + "…" + cid.slice(-4) : cid;
-    store.requestSig({
-      origin: "node-agent",
-      requester: "node-agent · PIN planner 127.0.0.1:19600",
-      title: "Bond " + fmt2(bond) + " SALT to pin " + cidShort,
-      rows: [
-        { k: "Action", v: "plan_pin(" + cidShort + ") → bond" },
-        { k: "Plan", v: "replication 3 · challenge every 6 h" },
-        { k: "Bond", v: fmt2(bond) + " SALT · slashable on failed challenge" },
-        { k: "Projected", v: "~" + fmt2(bond * 0.0075) + " SALT / month at current demand" },
-      ],
-      cost: "est. gas 0.0019 SALT",
-      sponsor: "gas sponsored — standard daily budget",
-      sponsorColor: "var(--ok)",
-      apply: (h) => {
-        store.setState((st) => ({
-          liquid: st.liquid - bond,
-          pins: [{ cid: cidShort, bond, cadH: 6, nextIn: 6 * 3600, last: "attested" }].concat(st.pins),
-        }));
-        store.addActivity("Pin bond", "−" + fmt2(bond) + " SALT", h);
-        if (pinCidEl.current) pinCidEl.current.value = "";
-        if (pinBondEl.current) pinBondEl.current.value = "";
-        store.toast("Bond posted — challenges begin next window");
-      },
-    });
+    store.settleUnwired("Pin bond");
   };
 
   return (

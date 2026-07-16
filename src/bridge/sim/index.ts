@@ -25,7 +25,7 @@ import type {
   DecodedAction,
 } from "../types";
 import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor } from "../domains";
-import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION } from "../types";
+import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import { GRAPH } from "../../data/seed";
 
@@ -278,6 +278,13 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async activity() {
         assertSimAllowed("wallet.activity");
         return s().activity;
+      },
+      async send() {
+        // No key/chain in web preview — a Send cannot settle here. Honest
+        // Unavailable (Rule 1); the store shows a "desktop only" message and never
+        // fabricates a transfer. (The tauri path builds a REAL pending ceremony.)
+        assertSimAllowed("wallet.send");
+        throw new Unavailable("wallet", "send");
       },
     },
 

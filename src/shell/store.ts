@@ -988,20 +988,63 @@ export class Store {
     }
   }
 
+  /**
+   * CORE (@rule8) — a REAL native SALT transfer. Builds the pending ceremony
+   * (bridge.wallet.send → wallet_send), then approves + broadcasts the real
+   * EIP-155 tx on 40204 (B1.4). NEVER mutates the local balance and NEVER
+   * fabricates a hash (unlike the old sim ceremony) — the balance re-reads from
+   * chain after settle (refreshWallet). Mirrors claimRewards(). Web-dev cannot
+   * settle — honest message, no fake transfer.
+   */
+  async walletSend(to: string, amountWei: string): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Send settles only in the desktop app — no key or chain in web preview.");
+      return;
+    }
+    let view: Awaited<ReturnType<typeof bridge.wallet.send>>;
+    try {
+      view = await bridge.wallet.send(to, amountWei);
+    } catch (err) {
+      this.toast("Send unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    try {
+      // Approve the real pending ceremony → sign + broadcast the real transfer.
+      const result = await bridge.signing.broadcast(view.id, false);
+      this.addActivity("Send", view.decoded.cost || "transfer", result.txHash);
+      this.toast("Send broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
+      await this.refreshWallet();
+      this.save();
+    } catch (err) {
+      // Honest failure — reject the pending ceremony so it isn't left dangling.
+      try {
+        await bridge.signing.reject(view.id);
+      } catch {
+        /* best-effort cleanup */
+      }
+      this.toast("Send not settled — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /**
+   * Honest outcome for a value action whose REAL on-chain path is NOT wired yet
+   * (staking-pool stake/withdraw + bonded pinning need a grounded contract /
+   * daemon that doesn't exist in-repo). NEVER fabricates a hash or mutates a
+   * balance (Rule 1/3) — the old sim ceremony did both. Web-dev: settles only in
+   * the desktop app.
+   */
+  settleUnwired(action: string): void {
+    if (BRIDGE_MODE === "tauri") {
+      this.toast(action + " isn't wired to a real 40204 transaction yet — no funds moved. (Grounded contract pending.)");
+    } else {
+      this.toast(action + " settles only in the desktop app — no key or chain in web preview.");
+    }
+  }
+
   openMicroApp(a: { name?: string; capabilities?: string[] }): void {
-    this.requestSig({
-      origin: "micro-app",
-      requester: (a.name || "micro-app") + " · catalog-declared capabilities",
-      title: "Open " + a.name + " in an isolated window",
-      rows: [{ k: "Surface", v: "isolated webview · capability-scoped bridge" }].concat(
-        (a.capabilities || []).map((c, i) => ({ k: "Capability " + (i + 1), v: c })),
-      ),
-      cost: "none — capabilities only; any transaction it proposes returns to this ceremony",
-      sponsor: "no chain transaction",
-      sponsorColor: "var(--tx-3)",
-      chainless: true,
-      apply: () => this.toast(a.name + " opened — denied capabilities are inert, not errors"),
-    });
+    // No isolated capability-scoped webview is spawned yet — the old path toasted
+    // "opened" but nothing happened. Honest until the micro-app runtime lands.
+    this.toast((a.name || "This micro-app") + " isn't wired to an isolated window yet — capability-scoped micro-apps land in a later build.");
   }
 
   // ---------- onboarding transitions ----------
