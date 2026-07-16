@@ -3,6 +3,7 @@ import { LoaderMark } from "../components/LoaderMark";
 import { Store } from "./store";
 import { AppState, ORIGIN_COLORS, PERSONAS, short } from "./state";
 import { COACH_STEPS } from "../data/seed";
+import { BRIDGE_MODE } from "../bridge/mode";
 
 // ============================ SIGNATURE CEREMONY ============================
 export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
@@ -205,9 +206,12 @@ export function Toast({ s }: { s: AppState }) {
 // ============================ DEMO PANEL ============================
 export function DemoPanel({ store, s }: { store: Store; s: AppState }) {
   const btnCls = (on: boolean) => "btn btn-sm " + (on ? "btn-secondary" : "btn-ghost");
+  // The prototype/demo controls (the floating "Prototype" tag + its panel) are a
+  // web-dev affordance only — hidden in the packaged app (BRIDGE_MODE === "tauri").
+  const showProto = BRIDGE_MODE === "sim";
   return (
     <>
-      {s.demoOpen && (
+      {showProto && s.demoOpen && (
         <div data-register="charter" style={{ position: "fixed", right: 18, bottom: 64, width: 320, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", zIndex: 70, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
             <span className="mono" style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "var(--tx-2)" }}>
@@ -312,13 +316,15 @@ export function DemoPanel({ store, s }: { store: Store; s: AppState }) {
           </div>
         </div>
       )}
-      <button
-        onClick={() => store.setState({ demoOpen: !s.demoOpen })}
-        data-register="charter"
-        style={{ position: "fixed", right: 18, bottom: 18, zIndex: 70, fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", padding: "8px 14px", borderRadius: 999, border: "1px solid var(--line-2)", background: "#ffffff", color: "var(--tx-2)", cursor: "pointer", boxShadow: "var(--shadow-2)" }}
-      >
-        Prototype
-      </button>
+      {showProto && (
+        <button
+          onClick={() => store.setState({ demoOpen: !s.demoOpen })}
+          data-register="charter"
+          style={{ position: "fixed", right: 18, bottom: 18, zIndex: 70, fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", padding: "8px 14px", borderRadius: 999, border: "1px solid var(--line-2)", background: "#ffffff", color: "var(--tx-2)", cursor: "pointer", boxShadow: "var(--shadow-2)" }}
+        >
+          Prototype
+        </button>
+      )}
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { wagmiConfig } from "./wagmi";
@@ -6,6 +6,8 @@ import { store, useStore } from "./shell/store";
 import { AppState } from "./shell/state";
 import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
+import { LoaderMark } from "./components/LoaderMark";
+import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar } from "./shell/Sidebar";
 import { SignatureCeremony, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal } from "./surfaces";
@@ -96,6 +98,72 @@ function Shell({ s }: { s: AppState }) {
   );
 }
 
+/**
+ * The launch auth gate (CORE-A3 security). In a Tauri build the app must NEVER
+ * render an authenticated surface (the Shell, or any post-sign-in onboarding
+ * stage) for a signed-out session — no session is persisted across launches
+ * (HIPAA sign-out-by-default), so every launch lands here until a real
+ * authority sign-in folds a live claim. This closes the hole where a persisted
+ * `stage: "done"` booted straight into the Shell showing the sim persona.
+ */
+function AuthGate() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const signIn = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await store.authLogin();
+      // On success `signedIn` flips true and Root re-renders past this gate.
+    } catch {
+      setErr("Sign-in was cancelled or could not be completed. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div
+      data-register="charter"
+      className="lattice-dots"
+      style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 24, background: "var(--srf-0)", padding: "48px 24px", textAlign: "center" }}
+    >
+      <div style={{ width: 140, height: 140 }}>
+        <LoaderMark size={140} />
+      </div>
+      <img src={marqueeBlack} alt="Citrate" style={{ height: 18 }} />
+      <div style={{ maxWidth: 460, display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 400, fontSize: 28, lineHeight: 1.12, letterSpacing: "-0.011em", color: "var(--tx-1)" }}>
+          Sign in to continue
+        </div>
+        <p style={{ fontSize: 14.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
+          Citrate Core signs out on every launch. Confirm it's you — your system browser opens auth.citrate.ai
+          (passkey, email, Google, or sign-in-with-Ethereum). Credentials never touch this app.
+        </p>
+      </div>
+      {!busy && (
+        <button className="btn btn-primary btn-lg" onClick={signIn}>
+          Continue in your browser
+        </button>
+      )}
+      {busy && (
+        <div className="surface" style={{ display: "flex", alignItems: "center", gap: 16, padding: "16px 20px" }}>
+          <div style={{ width: 40, height: 40, flexShrink: 0 }}>
+            <LoaderMark size={40} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, textAlign: "left" }}>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Waiting for your browser…</div>
+            <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>auth.citrate.ai · loopback PKCE</div>
+          </div>
+        </div>
+      )}
+      {err && <div style={{ fontSize: 12.5, color: "var(--danger)", maxWidth: 420 }}>{err}</div>}
+      <div className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
+        Chain 40204 · testnet-beta · session never stored on disk
+      </div>
+    </div>
+  );
+}
+
 function Root() {
   const s = useStore();
 
@@ -126,9 +194,24 @@ function Root() {
     };
   }, []);
 
+  // Tauri security gate: a signed-out session may only ever see the welcome
+  // (s0) or the sign-in step (s1) of onboarding — never the Shell or any
+  // post-sign-in stage (s2..s6/done). Anything past sign-in requires a live
+  // authority session. In web-dev (sim) there is no real auth, so no gate.
+  const needsAuth =
+    bridge.mode === "tauri" && !s.signedIn && s.stage !== "s0" && s.stage !== "s1";
+
+  const body = needsAuth ? (
+    <AuthGate />
+  ) : s.stage !== "done" ? (
+    <Onboarding store={store} s={s} />
+  ) : (
+    <Shell s={s} />
+  );
+
   return (
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--tx-1)", height: "100vh", overflow: "hidden", background: "var(--srf-0)" }} data-register="charter">
-      {s.stage !== "done" ? <Onboarding store={store} s={s} /> : <Shell s={s} />}
+      {body}
       <SignatureCeremony store={store} s={s} />
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />

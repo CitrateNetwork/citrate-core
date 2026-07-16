@@ -14,7 +14,12 @@ import { PINGS } from "../data/seed";
 
 export function Comms({ store, s }: SurfaceProps) {
   const pollStr = Math.ceil(s.pollIn) + "s";
-  const pingRows = PINGS.map((p) => ({
+  // A real signed-in user has NO seeded demo pings — the comms relay is an
+  // upstream seam (bridge.comms is not yet wired), so we show an honest empty
+  // state rather than prototype pings from demo actors (Rule 1). The seeded
+  // PINGS remain the web-dev/sim affordance only.
+  const source = s.signedIn ? [] : PINGS;
+  const pingRows = source.map((p) => ({
     key: p.id,
     initial: p.actor[0].toUpperCase(),
     actor: p.actor,
@@ -33,6 +38,12 @@ export function Comms({ store, s }: SurfaceProps) {
         </span>
       </div>
       <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+        {pingRows.length === 0 && (
+          <div style={{ padding: "22px 18px", fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
+            No pings yet. Mentions from your rooms will appear here once the comms relay is connected —
+            live push is an upstream milestone.
+          </div>
+        )}
         {pingRows.map((pg) => (
           <div key={pg.key} style={{ display: "flex", alignItems: "center", gap: 14, padding: "13px 18px", borderBottom: "1px solid var(--line-1)" }}>
             <span

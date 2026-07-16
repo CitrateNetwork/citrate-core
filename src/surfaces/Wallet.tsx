@@ -153,10 +153,12 @@ export function Wallet({ store, s }: SurfaceProps) {
   }));
   const txEmpty = activityRows.length === 0;
 
+  // Primary is the REAL claim wallet. The extra linked wallet + agent SBT are
+  // sim-persona cosmetics only — never shown to a real signed-in user (Rule 1).
   const linkedWallets = [{ addr: short(s.walletAddr), label: "smart wallet · primary" }].concat(
-    s.persona !== "p1" ? [{ addr: short(makeAddr(P.name + "x")), label: "linked · SIWE proof" }] : [],
+    !s.signedIn && s.persona !== "p1" ? [{ addr: short(makeAddr(P.name + "x")), label: "linked · SIWE proof" }] : [],
   );
-  const agents = s.persona === "p3" ? [{ name: "research-runner", id: "AgentSBT #221 · parent #4187" }] : [];
+  const agents = !s.signedIn && s.persona === "p3" ? [{ name: "research-runner", id: "AgentSBT #221 · parent #4187" }] : [];
   const agentsEmpty = agents.length === 0;
 
   const uc = { fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase" as const, color: "var(--tx-3)" };

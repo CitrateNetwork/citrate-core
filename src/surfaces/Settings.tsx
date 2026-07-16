@@ -14,7 +14,7 @@
 // not the UI.
 // =====================================================================
 import { Store } from "../shell/store";
-import { AppState, PERSONAS } from "../shell/state";
+import { AppState } from "../shell/state";
 import { LoaderMark } from "../components/LoaderMark";
 import { bridge, type AppConfig } from "../bridge";
 
@@ -70,17 +70,19 @@ const SECS: [string, string][] = [
 const btnCls = (active: boolean) => "btn btn-sm " + (active ? "btn-secondary" : "btn-ghost");
 
 export function Settings({ store, s }: { store: Store; s: AppState }) {
-  const P = PERSONAS[s.persona] || PERSONAS.p1;
+  // Account & RBAC render the REAL signed-in identity (live /userinfo claims)
+  // when signed in, falling back to the sim persona only in web-dev.
+  const id = store.identity();
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
 
   // ---------- account & RBAC ----------
   const expTxt =
     s.entitlement === "lapsed" ? "2026-06-28 · lapsed" : s.entitlement === "expiring" ? "2026-07-25 · 14 days" : "2027-07-11";
   const claimRows: { k: string; v: string; color: string }[] = [
-    { k: "sub", v: "usr_2af4c19e…" + P.initials.toLowerCase(), color: "var(--tx-1)" },
-    { k: "email", v: P.email, color: "var(--tx-1)" },
+    { k: "sub", v: id.sub, color: "var(--tx-1)" },
+    { k: "email", v: id.email, color: "var(--tx-1)" },
     { k: "tier", v: effTier + (effTier !== s.tier ? " (was " + s.tier + ")" : ""), color: "var(--tx-1)" },
-    { k: "role", v: s.citrateRole || P.role, color: "var(--tx-1)" },
+    { k: "role", v: id.role, color: "var(--tx-1)" },
     { k: "org", v: s.org || "—", color: s.org ? "var(--info)" : "var(--tx-3)" },
     {
       k: "expiresAt",

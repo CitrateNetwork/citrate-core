@@ -4,7 +4,8 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, store } from "./store";
+import { PERSIST_KEYS } from "./state";
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
   it("absent/empty expiry is NOT expired (authority may omit it)", () => {
@@ -58,5 +59,68 @@ describe("isPaidEntitlementActive — D3.C checkout settle decision", () => {
   it("an unknown tier fails closed (treated as unpaid)", () => {
     expect(isPaidEntitlementActive({ tier: "mystery", entitlement: "active" })).toBe(false);
     expect(isPaidEntitlementActive({ tier: "", entitlement: "active" })).toBe(false);
+  });
+});
+
+// CORE-A3 identity — the authority issues no display-name claim, so name +
+// initials are derived from the email local-part. Unit-tested independently of
+// the auth plumbing (applyAuthStatus uses this exact helper).
+describe("deriveIdentityFromEmail — display name/initials from an email", () => {
+  it("single-word local part → capitalized name + first two letters", () => {
+    expect(deriveIdentityFromEmail("larry@citrate.ai")).toEqual({ name: "Larry", initials: "LA" });
+  });
+  it("separators (. _ + -) split into title-cased words + first-letter initials", () => {
+    expect(deriveIdentityFromEmail("ada.lovelace@x.io")).toEqual({ name: "Ada Lovelace", initials: "AL" });
+    expect(deriveIdentityFromEmail("jean-luc_picard@x.io").name).toBe("Jean Luc Picard");
+    expect(deriveIdentityFromEmail("jean-luc_picard@x.io").initials).toBe("JL");
+  });
+});
+
+// CORE-A3 identity resolver — the single seam that stops prototype persona
+// identity (Dana Okafor et al.) from ever showing to a real signed-in account.
+describe("store.identity() — real signed-in user vs sim persona", () => {
+  it("falls back to the sim persona when NOT signed in", () => {
+    store.setState({ signedIn: false, authEmail: null, persona: "p1" });
+    const id = store.identity();
+    expect(id.real).toBe(false);
+    expect(id.name).toBe("Dana Okafor"); // PERSONAS.p1
+  });
+  it("returns the REAL user when signed in with an email claim", () => {
+    store.setState({
+      signedIn: true,
+      authEmail: "larry@citrate.ai",
+      authName: "Larry",
+      authInitials: "LA",
+      authSub: "4925a564",
+      walletAddr: "0xbb3a",
+      tier: "pilot",
+      citrateRole: "member",
+      org: null,
+    });
+    const id = store.identity();
+    expect(id.real).toBe(true);
+    expect(id.email).toBe("larry@citrate.ai");
+    expect(id.name).toBe("Larry");
+    expect(id.role).toBe("member");
+    expect(id.sub).toBe("4925a564");
+  });
+  it("signed in but /userinfo not yet folded (no email) → neutral REAL placeholder, NEVER the persona", () => {
+    store.setState({ signedIn: true, authEmail: null, authName: null, authInitials: null, persona: "p1" });
+    const id = store.identity();
+    expect(id.real).toBe(true);
+    expect(id.name).not.toBe("Dana Okafor"); // must not leak the sim persona
+    expect(id.name).toBe("Member");
+  });
+});
+
+// HIPAA sign-out-by-default — the signed-in session + account PII are NEVER
+// written to disk; every launch starts signed-out and re-derives identity only
+// from a live authority session. This test guards that invariant against a
+// regression that would re-add the fields to the persisted set.
+describe("HIPAA sign-out-by-default — no session/PII persisted", () => {
+  it("PERSIST_KEYS excludes every real-identity field", () => {
+    for (const k of ["signedIn", "authSub", "authEmail", "authName", "authInitials"] as const) {
+      expect(PERSIST_KEYS).not.toContain(k);
+    }
   });
 });

@@ -564,6 +564,84 @@ pub struct Claims {
     pub expires_at: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
+    /// The authority NESTS the entitlement under this claim key (matching
+    /// citrate-identity's `ENTITLEMENT_CLAIM = https://citrate.ai/entitlement`).
+    /// On the REAL /userinfo the tier/org/role/expiry live HERE, not as top-level
+    /// claims (the A3 mock used top-level — this is the mock-vs-live fix that made
+    /// the desktop app never see the granted membership). The accessors below
+    /// prefer this nested value and fall back to any top-level field.
+    #[serde(rename = "https://citrate.ai/entitlement", default)]
+    pub entitlement: Option<EntitlementClaim>,
+}
+
+/// The nested entitlement object the authority returns under `ENTITLEMENT_CLAIM`.
+/// `expiresAt` is epoch-ms (a JSON number) or absent; kept as a raw `Value` so the
+/// accessor can normalize it to the `Option<String>` the frontend's A3-03 reads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntitlementClaim {
+    #[serde(default)]
+    pub tier: Option<String>,
+    #[serde(default, rename = "orgId")]
+    pub org_id: Option<String>,
+    #[serde(default, rename = "citrateRole")]
+    pub citrate_role: Option<String>,
+    #[serde(default, rename = "expiresAt")]
+    pub expires_at: Option<serde_json::Value>,
+}
+
+/// Map the identity authority's ENTITLEMENT vocabulary onto the app's tier
+/// vocabulary (`RANK` = free/pilot/enterprise in `state.ts`). The authority grants
+/// the paid membership as `commercial.kyc` (citrate-identity `MEMBER_TIER`); the
+/// desktop app's gating only knows `free`/`pilot`/`enterprise`, so an unmapped
+/// `commercial.kyc` reads as an unknown tier and `isPaidEntitlementActive` fails
+/// closed — the app never advances past checkout even with a real, granted
+/// membership. This is the boundary that translates the two vocabularies. Unknown
+/// tiers pass through verbatim (the frontend then fails them closed — honest).
+fn normalize_tier(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "free" | "public" | "anonymous" => "free".to_string(),
+        // The $48/yr Pilot membership. The authority issues it as `commercial.kyc`
+        // (KYC-gated commercial member); the app models it as the `pilot` tier.
+        "commercial.kyc" | "commercial" | "member" | "pilot" => "pilot".to_string(),
+        "enterprise" | "enterprise.kyc" => "enterprise".to_string(),
+        other => other.to_string(),
+    }
+}
+
+impl Claims {
+    /// Effective tier: the NESTED entitlement claim wins; fall back to a top-level
+    /// `tier` (mock/back-compat). None ⇒ the frontend treats it as unpaid. The raw
+    /// authority vocabulary is normalized onto the app's tier vocabulary so the
+    /// granted `commercial.kyc` membership actually reads as a paid tier.
+    fn eff_tier(&self) -> Option<String> {
+        self.entitlement
+            .as_ref()
+            .and_then(|e| e.tier.clone())
+            .or_else(|| self.tier.clone())
+            .map(|t| normalize_tier(&t))
+    }
+    fn eff_org(&self) -> Option<String> {
+        self.entitlement
+            .as_ref()
+            .and_then(|e| e.org_id.clone())
+            .or_else(|| self.org_id.clone())
+    }
+    fn eff_role(&self) -> Option<String> {
+        self.entitlement
+            .as_ref()
+            .and_then(|e| e.citrate_role.clone())
+            .or_else(|| self.citrate_role.clone())
+    }
+    /// Effective expiry as a string (frontend `isExpiredClaim` accepts a digit
+    /// string or ISO). Nested `expiresAt` (JSON number/string) wins; else top-level.
+    fn eff_expires_at(&self) -> Option<String> {
+        let nested = self.entitlement.as_ref().and_then(|e| match &e.expires_at {
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+            _ => None,
+        });
+        nested.or_else(|| self.expires_at.clone())
+    }
 }
 
 /// An id_token `aud` claim: OIDC allows a single string OR an array of strings.
@@ -740,12 +818,15 @@ impl AuthStatus {
         AuthStatus {
             signed_in: true,
             sub: (!c.sub.is_empty()).then(|| c.sub.clone()),
-            tier: c.tier.clone(),
-            org: c.org_id.clone(),
-            role: c.citrate_role.clone(),
+            // Prefer the NESTED entitlement claim (real authority); fall back to
+            // top-level (mock/back-compat). This is what makes the granted
+            // membership tier actually reach the frontend gating.
+            tier: c.eff_tier(),
+            org: c.eff_org(),
+            role: c.eff_role(),
             kyc_status: c.kyc_status.clone(),
             wallet_addr: c.wallet_address.clone(),
-            expires_at: c.expires_at.clone(),
+            expires_at: c.eff_expires_at(),
             email: c.email.clone(),
         }
     }
@@ -1221,8 +1302,9 @@ impl AuthManager {
             sess.access_token.to_string()
         };
         let claims = self.userinfo_inner(&endpoints, &access)?;
+        let st = AuthStatus::from_claims(&claims);
         self.set_session_claims(claims.clone());
-        Ok(AuthStatus::from_claims(&claims))
+        Ok(st)
     }
 
     fn userinfo_inner(&self, endpoints: &Endpoints, access: &str) -> Result<Claims> {
@@ -1391,36 +1473,58 @@ fn open_auth_popup(
     url: &str,
     cancel: &CancelToken,
 ) -> Result<tauri::WebviewWindow> {
-    // Close any stale popup left by a prior aborted attempt (defensive; the flow
-    // always closes its own popup, but a crash could orphan one).
-    if let Some(existing) = app.get_webview_window(AUTH_POPUP_LABEL) {
-        let _ = existing.close();
-    }
     let external = url.parse::<tauri::Url>().map_err(|_| AuthError::Network)?;
-    let window = WebviewWindowBuilder::new(app, AUTH_POPUP_LABEL, WebviewUrl::External(external))
-        .title("Sign in · Citrate")
-        .inner_size(480.0, 720.0)
-        .resizable(false)
-        .center()
-        .focused(true)
-        .build()
-        .map_err(|_| AuthError::Network)?;
 
-    // Wire the user-close abort: if the user closes/destroys the popup before the
-    // loopback callback arrives, signal cancellation so the awaiting login returns
-    // SignInCancelled and the loopback listener is torn down (no orphaned listener,
-    // no partial session). Firing this AFTER the flow has already completed is a
-    // harmless no-op (the token is only read while the flow is still waiting).
+    // macOS requires WebviewWindow/NSWindow creation on the MAIN thread. `auth_login`
+    // is a sync #[tauri::command] that runs OFF the main thread (so the blocking
+    // loopback wait doesn't freeze the UI), so building the window directly here fails
+    // silently on macOS and the popup never appears. We MARSHAL the creation onto the
+    // main thread via `run_on_main_thread` and hand the handle back over a channel.
+    let app_main = app.clone();
     let cancel_on_close = cancel.clone();
-    window.on_window_event(move |event| {
-        if matches!(
-            event,
-            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-        ) {
-            cancel_on_close.cancel();
+    let (tx, rx) =
+        std::sync::mpsc::channel::<std::result::Result<tauri::WebviewWindow, tauri::Error>>();
+    app.run_on_main_thread(move || {
+        // Close any stale popup from a prior aborted attempt (also a main-thread op).
+        if let Some(existing) = app_main.get_webview_window(AUTH_POPUP_LABEL) {
+            let _ = existing.close();
         }
-    });
-    Ok(window)
+        let built =
+            WebviewWindowBuilder::new(&app_main, AUTH_POPUP_LABEL, WebviewUrl::External(external))
+                .title("Sign in · Citrate")
+                .inner_size(480.0, 720.0)
+                .resizable(false)
+                .center()
+                .focused(true)
+                .build();
+        if let Ok(ref window) = built {
+            // Wire the user-close abort (registered ON the main thread with the window):
+            // a user close before the callback signals cancellation so the awaiting
+            // login returns SignInCancelled, the loopback listener is torn down, and no
+            // partial session is created. Firing after completion is a harmless no-op.
+            let c = cancel_on_close.clone();
+            window.on_window_event(move |event| {
+                if matches!(
+                    event,
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                ) {
+                    c.cancel();
+                }
+            });
+        }
+        let _ = tx.send(built);
+    })
+    .map_err(|_| AuthError::Network)?;
+
+    match rx.recv() {
+        Ok(Ok(window)) => Ok(window),
+        Ok(Err(e)) => {
+            // Surface the real cause (previously swallowed to a blank Network error).
+            eprintln!("[auth] popup WebviewWindow build failed on main thread: {e}");
+            Err(AuthError::Network)
+        }
+        Err(_) => Err(AuthError::Network),
+    }
 }
 
 /// `auth_status` — claim-derived flags ONLY (ADV-8). No token ever crosses here.
@@ -1448,11 +1552,17 @@ pub fn auth_status(state: State<'_, AuthState>) -> std::result::Result<AuthStatu
 /// flow returns `SignInCancelled`, the loopback listener is torn down, and no
 /// partial session is created (Rule 1). No orphaned listener, no hang.
 #[tauri::command]
-pub fn auth_login(
+pub async fn auth_login(
     app: tauri::AppHandle,
     auth: State<'_, AuthState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<AuthStatus, String> {
+    // ASYNC so Tauri runs this OFF the main thread. The loopback-PKCE flow blocks
+    // (waits up to CALLBACK_TIMEOUT for the popup's redirect to hit the 127.0.0.1
+    // listener); on the main thread that would freeze the whole UI (the popup could
+    // not even render). Off the main thread, the blocking wait occupies a runtime
+    // worker while the main thread stays free to render the popup + service the
+    // `run_on_main_thread` window creation inside `open_auth_popup`.
     // A per-attempt cancel token shared with the popup's close event.
     let cancel = CancelToken::new();
     // The popup is created lazily INSIDE the open_browser closure — after the
@@ -1468,10 +1578,12 @@ pub fn auth_login(
     });
 
     // Programmatically close the popup on EVERY outcome (success / timeout / error /
-    // cancel). On a user-close the window is already gone — close() is a harmless
-    // no-op. This guarantees no popup is left on screen after the flow resolves.
+    // cancel), on the MAIN thread (macOS window ops). On a user-close the window is
+    // already gone — close() is a harmless no-op. No popup is left after the flow ends.
     if let Some(window) = popup.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        let _ = window.close();
+        let _ = app.run_on_main_thread(move || {
+            let _ = window.close();
+        });
     }
 
     result.map_err(err_str)

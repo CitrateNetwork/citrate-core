@@ -28,7 +28,7 @@ const nodeColors: Record<string, string> = {
 };
 
 export function Sidebar({ store, s }: { store: Store; s: AppState }) {
-  const P = store.persona();
+  const P = store.identity();
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   const tierText = effTier === "free" ? "public tier" : effTier === "enterprise" ? "enterprise · " + (s.org || "") : "pilot member";
   const tierColor = s.entitlement === "active" ? "rgba(205,231,214,.6)" : s.entitlement === "lapsed" ? "#dd7259" : "#ffbd10";

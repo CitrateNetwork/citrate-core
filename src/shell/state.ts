@@ -141,6 +141,21 @@ export interface AppState {
    * entitlement claim; in web-dev from the sim persona. Gates Settings RBAC.
    */
   citrateRole: string;
+  /**
+   * CORE-A3 identity — the REAL signed-in user, folded from the live /userinfo
+   * claims (`sub`, `email`, `wallet_address`). In a Tauri build these are the
+   * source of truth for every identity surface (Sidebar, Settings account/RBAC,
+   * greeting); the sim `persona` is ONLY a web-dev affordance and must never
+   * surface once a real user is signed in (Rule 1 — no prototype identity shown
+   * to a real account). `signedIn` gates the switch: true ⇒ render auth identity,
+   * false ⇒ fall back to the sim persona. `authName`/`authInitials` are derived
+   * from the email local-part (the authority issues no display-name claim).
+   */
+  signedIn: boolean;
+  authSub: string | null;
+  authEmail: string | null;
+  authName: string | null;
+  authInitials: string | null;
   entitlement: "active" | "expiring" | "grace" | "lapsed";
   stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "done";
   s1: "idle" | "waiting" | "attest" | "done";
@@ -316,6 +331,13 @@ export function freshState(pid: string): AppState {
     tier: P.fresh ? "free" : P.tier,
     org: P.org,
     citrateRole: P.role,
+    // Real identity is empty until a live sign-in folds /userinfo claims in
+    // (applyAuthStatus). Until then the sim persona is the display fallback.
+    signedIn: false,
+    authSub: null,
+    authEmail: null,
+    authName: null,
+    authInitials: null,
     entitlement: "active",
     stage: P.fresh ? "s0" : "done",
     s1: "idle",
@@ -526,6 +548,11 @@ export function freshState(pid: string): AppState {
 // keys persisted (verbatim from design save())
 export const PERSIST_KEYS: (keyof AppState)[] = [
   "persona", "tier", "org", "citrateRole", "entitlement", "stage", "s2", "s3", "s5", "s5n", "hasGrant", "hasSbt",
+  // NOTE: the real-identity fields (signedIn/authSub/authEmail/authName/
+  // authInitials) are DELIBERATELY NOT persisted — HIPAA sign-out-by-default.
+  // Every launch starts signed-out; identity is re-derived only from a live
+  // authority session (refreshAuth → auth.status), never from disk. No account
+  // PII is written to localStorage.
   "liquid", "selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
   "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5hash", "walletAddr", "socketPath",

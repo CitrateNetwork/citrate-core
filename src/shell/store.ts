@@ -67,6 +67,22 @@ export function isPaidEntitlementActive(st: { tier: string; entitlement: string 
   return st.entitlement === "active";
 }
 
+/**
+ * Derive a display name + initials from an email local-part. The authority
+ * issues NO display-name claim, so `larry@citrate.ai` → { name: "Larry",
+ * initials: "LA" } and `ada.lovelace@x.io` → { name: "Ada Lovelace", initials:
+ * "AL" }. Used by applyAuthStatus to render a real signed-in user's identity;
+ * exported so the derivation is unit-tested independently of the auth plumbing.
+ */
+export function deriveIdentityFromEmail(email: string): { name: string; initials: string } {
+  const local = email.split("@")[0];
+  const words = local.split(/[._+-]+/).filter(Boolean);
+  const name = words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") || email;
+  const fromWords = words.length > 1 ? words.map((w) => w.charAt(0)).join("") : local.slice(0, 2);
+  const initials = (fromWords || local.slice(0, 2)).slice(0, 2).toUpperCase();
+  return { name, initials };
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -174,6 +190,9 @@ export class Store {
   /** Fold a claim-derived AuthStatus into AppState (the entitlement engine). */
   private applyAuthStatus(st: {
     signedIn: boolean;
+    sub?: string | null;
+    email?: string | null;
+    walletAddr?: string | null;
     tier: string | null;
     org: string | null;
     role: string | null;
@@ -182,6 +201,18 @@ export class Store {
   }): void {
     if (!st.signedIn) return;
     const patch: Partial<AppState> = {};
+    // Fold the REAL identity so no prototype persona ever surfaces to a signed-in
+    // user (Rule 1). The authority issues no display-name claim, so derive a
+    // display name + initials from the email local part.
+    patch.signedIn = true;
+    patch.authSub = st.sub ?? null;
+    patch.authEmail = st.email ?? null;
+    if (st.email) {
+      const d = deriveIdentityFromEmail(st.email);
+      patch.authName = d.name;
+      patch.authInitials = d.initials;
+    }
+    if (st.walletAddr) patch.walletAddr = st.walletAddr;
     // A3-03: enforce the entitlement expiry at the DECISION point — a claim whose
     // `expiresAt` is in the past is downgraded to the free tier + lapsed, so no
     // gated surface stays unlocked on a stale claim. A valid future expiry keeps
@@ -192,9 +223,17 @@ export class Store {
     } else if (st.tier) {
       patch.tier = st.tier;
       patch.entitlement = "active";
+    } else {
+      // Signed in but the authority granted NO tier — fail closed to free so an
+      // ungranted session can never inherit a prior session's persisted paid
+      // tier (tier/entitlement are persisted keys).
+      patch.tier = "free";
+      patch.entitlement = "lapsed";
     }
     patch.org = st.org;
-    if (st.role) patch.citrateRole = st.role;
+    // The authority may omit the citrate_role claim for a plain member; a
+    // signed-in paid account is a "member" by default (never the persona's role).
+    patch.citrateRole = st.role || "member";
     // KYC claim → the S2 seam's five states (none/pending/verified/failed/review).
     if (st.kycStatus === "verified") patch.s2 = "verified";
     else if (st.kycStatus === "pending") patch.s2 = "pending";
@@ -207,6 +246,15 @@ export class Store {
   async authLogin(): Promise<void> {
     const st = await bridge.auth.login();
     this.applyAuthStatus(st);
+    // The login result may carry only id_token claims (no email/wallet). Fold
+    // the live /userinfo immediately so the real identity (email/wallet/tier)
+    // is complete on the first render — never a persona fallback for a signed-in
+    // user. Best-effort: keep the login-folded state if /userinfo is unavailable.
+    try {
+      await this.authUserinfo();
+    } catch {
+      /* honest no-op — the login-folded claim stands */
+    }
     this.save();
   }
 
@@ -219,7 +267,20 @@ export class Store {
   /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
   async authLogout(): Promise<void> {
     await bridge.auth.logout();
-    this.setState({ tier: "free", citrateRole: "member", org: null });
+    this.setState({
+      tier: "free",
+      // Coherent free/no-membership state — matches the expired-claim path
+      // (tier:free + entitlement:lapsed); leaving a prior "active" would render a
+      // false membership badge on a signed-out/free account (Rule 1).
+      entitlement: "lapsed",
+      citrateRole: "member",
+      org: null,
+      signedIn: false,
+      authSub: null,
+      authEmail: null,
+      authName: null,
+      authInitials: null,
+    });
     this.save();
   }
 
@@ -235,6 +296,57 @@ export class Store {
   // ---------- helpers ----------
   persona(): Persona {
     return PERSONAS[this.state.persona] || PERSONAS.p1;
+  }
+
+  /**
+   * The identity every surface renders — the REAL signed-in user when a live
+   * session exists, else the sim persona (web-dev only). This is the single
+   * seam that stops prototype identity (Dana Okafor et al.) from ever showing
+   * to a real, signed-in account. Name/initials derive from the email local
+   * part because the authority issues no display-name claim; the wallet, sub,
+   * email, tier, role and org come straight from the folded /userinfo claims.
+   */
+  identity(): {
+    name: string;
+    initials: string;
+    email: string;
+    sub: string;
+    wallet: string;
+    tier: string;
+    role: string;
+    org: string | null;
+    real: boolean;
+  } {
+    const s = this.state;
+    if (s.signedIn) {
+      // A signed-in user NEVER renders the sim persona (Rule 1) — even if
+      // /userinfo has not folded the email yet or failed. Fall back to a neutral
+      // real placeholder derived from the claims we do have, never Dana et al.
+      const email = s.authEmail || "";
+      return {
+        name: s.authName || email || "Member",
+        initials: s.authInitials || (email ? email.slice(0, 2).toUpperCase() : "M"),
+        email: email || "—",
+        sub: s.authSub || "—",
+        wallet: s.walletAddr,
+        tier: s.tier,
+        role: s.citrateRole || "member",
+        org: s.org,
+        real: true,
+      };
+    }
+    const P = this.persona();
+    return {
+      name: P.name,
+      initials: P.initials,
+      email: P.email,
+      sub: "usr_2af4c19e…" + P.initials.toLowerCase(),
+      wallet: s.walletAddr,
+      tier: s.tier,
+      role: s.citrateRole || P.role,
+      org: s.org,
+      real: false,
+    };
   }
 
   save(): void {
@@ -754,7 +866,7 @@ export class Store {
     this.save();
   }
   onExplore(): void {
-    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting(this.persona())] });
+    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().name })] });
     this.save();
   }
   onS1Start(): void {
@@ -893,7 +1005,7 @@ export class Store {
     this.setState({
       stage: "done",
       coach: s.coachDone ? -1 : 0,
-      chatMsgs: s.chatMsgs.length ? s.chatMsgs : [greeting(this.persona())],
+      chatMsgs: s.chatMsgs.length ? s.chatMsgs : [greeting({ ...this.persona(), name: this.identity().name })],
     });
     this.save();
   }

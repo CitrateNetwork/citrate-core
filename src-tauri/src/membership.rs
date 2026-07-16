@@ -53,22 +53,42 @@ fn open_checkout_popup<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     url: &str,
 ) -> std::result::Result<(), String> {
-    // Close any stale popup left by a prior attempt (defensive; the flow's own
-    // lifecycle closes it, but a crash could orphan one).
-    if let Some(existing) = app.get_webview_window(CHECKOUT_POPUP_LABEL) {
-        let _ = existing.close();
-    }
     let external = url
         .parse::<tauri::Url>()
         .map_err(|_| "membership: invalid checkout url".to_string())?;
-    WebviewWindowBuilder::new(app, CHECKOUT_POPUP_LABEL, WebviewUrl::External(external))
+
+    // macOS requires WebviewWindow/NSWindow creation on the MAIN thread; this sync
+    // command runs off it, so building the window directly fails silently and the
+    // popup never appears. MARSHAL the creation onto the main thread and hand back the
+    // outcome over a channel (same fix as the A3 auth popup).
+    let app_main = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
+    app.run_on_main_thread(move || {
+        // Close any stale popup from a prior attempt (also a main-thread op).
+        if let Some(existing) = app_main.get_webview_window(CHECKOUT_POPUP_LABEL) {
+            let _ = existing.close();
+        }
+        let built = WebviewWindowBuilder::new(
+            &app_main,
+            CHECKOUT_POPUP_LABEL,
+            WebviewUrl::External(external),
+        )
         .title("Citrate Membership")
         .inner_size(520.0, 760.0)
         .center()
         .focused(true)
-        .build()
-        .map_err(|_| "membership: could not open the checkout window".to_string())?;
-    Ok(())
+        .build();
+        let _ = tx.send(built.map(|_| ()).map_err(|e| {
+            eprintln!("[membership] checkout WebviewWindow build failed on main thread: {e}");
+            "membership: could not open the checkout window".to_string()
+        }));
+    })
+    .map_err(|_| "membership: could not schedule the checkout window".to_string())?;
+
+    match rx.recv() {
+        Ok(res) => res,
+        Err(_) => Err("membership: could not open the checkout window".to_string()),
+    }
 }
 
 /// `membership_checkout` — open the REAL core-membership checkout in an in-app
@@ -81,11 +101,13 @@ fn open_checkout_popup<R: tauri::Runtime>(
 /// capability/IPC (a remote page). A user who closes it without paying just
 /// leaves the entitlement unchanged — the poll never settles (no fabrication).
 #[tauri::command]
-pub fn membership_checkout<R: tauri::Runtime>(
+pub async fn membership_checkout<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> std::result::Result<(), String> {
-    // The base URL is the persisted config value (overridable to a preview/prod
-    // domain); the checkout URL is `{base}/checkout`.
+    // ASYNC so Tauri runs this OFF the main thread — `open_checkout_popup` marshals
+    // the window creation onto the main thread via `run_on_main_thread`; if this
+    // command itself ran on the main thread, that marshal would deadlock (the main
+    // thread waiting on itself).
     let cfg = crate::config::config_read(app.clone())?;
     let url = cfg.checkout_url();
     open_checkout_popup(&app, &url)
