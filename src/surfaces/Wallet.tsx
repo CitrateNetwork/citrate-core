@@ -14,6 +14,7 @@ import { useRef, useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { makeAddr, short, PERSONAS } from "../shell/state";
 import { scanTxUrl, scanAddrUrl } from "../data/links";
+import { SbtArt } from "../identity/SbtEmblem";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -448,11 +449,15 @@ export function Wallet({ store, s }: SurfaceProps) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {s.hasSbt ? (
             <div className="surface" style={{ padding: 18, display: "flex", gap: 18, alignItems: "center" }}>
-              <img src="assets/citrate_mark_green.svg" alt="" style={{ width: 44, height: 44, flexShrink: 0 }} />
+              {/* The deterministic identity emblem (seeded from the wallet
+                  address) — the same mark shown in the sidebar. No fabricated
+                  token number/date: the tokenId needs an on-chain read
+                  (SBT.tokenIdForSub), a small follow-up. */}
+              <SbtArt seed={s.walletAddr} size={44} title="Your membership identity emblem" />
               <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ display: "block", fontSize: 15, fontWeight: 500 }}>CitrateMemberSBT #4187</span>
+                <span style={{ display: "block", fontSize: 15, fontWeight: 500 }}>CitrateMemberSBT</span>
                 <span className="mono" style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 2 }}>
-                  non-transferable · minted 2026-07-11 · bound to your sub-hash
+                  non-transferable · bound to your sub-hash
                 </span>
               </span>
               <button

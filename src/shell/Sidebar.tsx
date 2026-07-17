@@ -2,6 +2,7 @@ import markWhite from "../assets/brand/citrate_mark_white.svg";
 import marqueeWhite from "../assets/brand/citrate_marquee_white.svg";
 import { Store } from "./store";
 import { AppState, nodeLabel } from "./state";
+import { SbtArt } from "../identity/SbtEmblem";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
@@ -92,9 +93,15 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ width: 28, height: 28, borderRadius: 999, background: "var(--citrate-green)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 11, flexShrink: 0 }}>
-            {P.initials}
-          </span>
+          {s.hasSbt && s.walletAddr ? (
+            // Members with a minted SBT show their deterministic identity emblem
+            // (seeded from the on-chain wallet address). Non-members keep initials.
+            <SbtArt seed={s.walletAddr} size={28} title="Your membership identity emblem" />
+          ) : (
+            <span style={{ width: 28, height: 28, borderRadius: 999, background: "var(--citrate-green)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 11, flexShrink: 0 }}>
+              {P.initials}
+            </span>
+          )}
           <span style={{ flex: 1, minWidth: 0 }}>
             <span style={{ display: "block", fontSize: 12.5, fontWeight: 500, color: "#f4f1ea", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{P.name}</span>
             <span className="mono" style={{ display: "block", fontSize: 9, letterSpacing: ".1em", textTransform: "uppercase", color: tierColor }}>
