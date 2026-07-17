@@ -217,9 +217,44 @@ export interface MemoryDomain {
   constellation(budget?: number): Promise<MemoryResult[]>;
 }
 
+/** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
+ * id, https baseURL, model, and a `configured` flag — NEVER the API key or the
+ * Authorization header (invariant 1). Mirrors the Rust `ProviderStatus`. */
+export interface AiProviderStatus {
+  id: string;
+  baseURL: string;
+  model: string;
+  configured: boolean;
+  isDefault: boolean;
+}
+
 export interface ChatDomain {
-  /** Which provider transport the harness routes to (gateway/local/demo). */
+  /** Which provider transport the harness routes to (real/demo). */
   backend(): Promise<{ kind: string; label: string }>;
+  /**
+   * CORE-AI1 (@rule8) — seal a provider's `{baseURL, model, apiKey}` in the OS
+   * keyring, binding the key to its https baseURL. Returns nothing — the key is
+   * NEVER returned (invariant 1). The Tauri impl invokes `ai_set_provider`; the
+   * sim impl is honestly Unavailable (the web preview has no OS keyring).
+   */
+  setProvider(providerId: string, baseURL: string, model: string, apiKey: string): Promise<void>;
+  /**
+   * CORE-AI1 (@rule8) — non-secret status for the preset provider ids: `{id,
+   * baseURL, model, configured, isDefault}`, NEVER the key. Drives the Settings
+   * rows + the store's real-vs-demo provider selection.
+   */
+  providerStatus(): Promise<AiProviderStatus[]>;
+  /** CORE-AI1 — delete a provider's sealed config (and clear the default if it
+   * pointed here). */
+  clearProvider(providerId: string): Promise<void>;
+  /**
+   * CORE-AI1 (@rule8) — REAL inference. The webview picks WHICH configured
+   * provider id; Rust reads the STORED baseURL for that id and POSTs the OpenAI
+   * `/v1/chat/completions` body with the sealed Bearer, returning the model
+   * completion. The webview can NEVER supply the URL (exfil-binding, invariant 3).
+   * The Tauri impl invokes `ai_chat`; the sim impl is honestly Unavailable.
+   */
+  infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
 }
 
 export interface MembershipDomain {

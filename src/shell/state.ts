@@ -265,7 +265,13 @@ export interface AppState {
   jInterim: string;
   jExportOpen: boolean;
   connections: Record<string, boolean>;
-  aiKeys: Record<string, string>;
+  /**
+   * CORE-AI1 (@rule8) — the DEFAULT AI provider route id (a non-secret id like
+   * "openai" / "gateway" / "custom"). The PROVIDER KEY is NOT here and NOT
+   * persisted: it lives sealed in the OS keyring (Rust), never in AppState or
+   * localStorage. `aiKeys` was REMOVED — the webview holds no key (invariant 2).
+   * Whether a route is actually usable is read live via bridge.chat.providerStatus.
+   */
   aiDefault: string;
   aiEdit: string | null;
   sponsorUnits: number;
@@ -434,7 +440,8 @@ export function freshState(pid: string): AppState {
     jInterim: "",
     jExportOpen: false,
     connections: {},
-    aiKeys: {},
+    // AI provider KEYS live in the OS keyring (Rust), never in AppState. Only the
+    // non-secret default route id is kept here (AI1, invariant 2).
     aiDefault: "gateway",
     aiEdit: null,
     sponsorUnits: 4,
@@ -508,7 +515,6 @@ export function freshState(pid: string): AppState {
     if (pid === "p3") {
       s.pins = s.pins.slice(0, 1);
       s.connections = { github: true, hf: true, notion: true };
-      s.aiKeys = { anthropic: "sk-an•••••••••••••x4Q2" };
     }
     if (pid === "p2") {
       s.sponsorUnits = 3;
@@ -568,7 +574,9 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
   "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5hash", "walletAddr", "socketPath",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
-  "pins", "jPages", "jSel", "connections", "aiKeys", "aiDefault", "sponsorUnits", "blocksProposed",
+  // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
+  // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
+  "pins", "jPages", "jSel", "connections", "aiDefault", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {

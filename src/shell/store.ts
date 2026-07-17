@@ -24,7 +24,7 @@ import {
   makeHash,
 } from "./state";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, ChatProvider, ToolCall } from "../agent/harness";
+import { createDemoProvider, createRealProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 
@@ -106,6 +106,23 @@ export function mapNodeState(state: string, syncPct: number, staked: number): Ap
   }
 }
 
+/**
+ * CORE-AI1 — the pure real-vs-demo provider SELECTION rule, extracted so it is
+ * unit-tested independently of the store singleton + bridge. A REAL provider is
+ * chosen ONLY when (a) we are in the Tauri build (an OS keyring exists) AND (b) the
+ * current default id is actually CONFIGURED (its key is sealed). Otherwise chat
+ * falls back to the honest built-in demo agent (Rule 1 — never a fabricated
+ * provider, never a real provider in the keyring-less web preview).
+ */
+export function pickChatProviderKind(
+  statuses: { id: string; configured: boolean }[],
+  aiDefault: string,
+  mode: "sim" | "tauri",
+): "real" | "demo" {
+  if (mode !== "tauri") return "demo";
+  return statuses.some((p) => p.id === aiDefault && p.configured) ? "real" : "demo";
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -163,6 +180,10 @@ export class Store {
     // Tauri build this reads the real /userinfo-derived status (silent if signed
     // out); in web-dev it reads the sim persona. Honest no-op on failure.
     void this.refreshAuth();
+    // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
+    // the default id is configured (key sealed in the OS keyring), else the honest
+    // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
+    void this.rebuildProvider();
     // CORE (Phase 1) — in a Tauri build, poll the REAL node vitals (height/peers/
     // syncPct/state) from the supervisor + local RPC every 2s and fold them into
     // AppState, so the Node surface + Sidebar render live numbers instead of the
@@ -195,6 +216,87 @@ export class Store {
     } catch {
       this.setState({ custodyLock: "unknown" });
     }
+  }
+
+  /**
+   * CORE-AI1 (@rule8) — (re)select the chat provider from the live AI config.
+   *
+   * Reads `bridge.chat.providerStatus()` (Tauri: the OS-keyring-sealed provider
+   * metadata, NEVER the key). If the current `aiDefault` id is CONFIGURED, chat
+   * runs through the REAL provider — `createRealProvider` calls the Rust `ai_chat`
+   * command, which reads the STORED baseURL for that id and POSTs from Rust (the
+   * key never touches the webview; the webview never supplies the URL). Otherwise
+   * chat falls back to the honest built-in demo agent (Rule 1 — never a fabricated
+   * "gateway" reply). Web-dev has no keyring, so this always resolves to the demo.
+   * Called on launch and after a provider config change (Settings), so the active
+   * provider tracks the config. Never throws — a failed status read keeps the demo.
+   */
+  async rebuildProvider(): Promise<void> {
+    try {
+      const statuses = await bridge.chat.providerStatus();
+      const def = this.state.aiDefault;
+      if (pickChatProviderKind(statuses, def, BRIDGE_MODE) === "real") {
+        this.provider = createRealProvider(def, () => this.snapshot(), (pid, msgs, ctx) =>
+          bridge.chat.infer(pid, msgs, ctx),
+        );
+        return;
+      }
+      // No configured default (or web-dev): the honest built-in demo agent.
+      this.provider = createDemoProvider(() => this.snapshot());
+    } catch {
+      // Honest no-op: providerStatus unavailable (web shim / failed read) — keep
+      // the built-in demo agent rather than a fabricated provider.
+      this.provider = createDemoProvider(() => this.snapshot());
+    }
+  }
+
+  /**
+   * CORE-AI1 (@rule8) — seal an AI provider's {baseURL, model, apiKey} in the OS
+   * keyring via the bridge (Rust binds the key to its https baseURL). The key is
+   * handed to Rust ONCE and never stored in AppState/localStorage (aiKeys is gone).
+   * On success the id becomes the default route and the provider is rebuilt so chat
+   * uses it immediately. Web-dev has no keyring — honest toast, no fake seal.
+   */
+  async aiSetProvider(providerId: string, baseURL: string, model: string, apiKey: string): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.toast("Provider keys seal in the OS keyring — desktop app only (no keyring in web preview).");
+      return;
+    }
+    try {
+      await bridge.chat.setProvider(providerId, baseURL, model, apiKey);
+      this.setState({ aiDefault: providerId, aiEdit: null });
+      await this.rebuildProvider();
+      this.toast("Provider key sealed in the OS keyring — chat now uses it.");
+      this.save();
+    } catch (err) {
+      this.toast("Could not save the provider — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /**
+   * CORE-AI1 (@rule8) — delete a provider's sealed config via the bridge, then
+   * rebuild the provider (falls back to the demo agent if the default was cleared).
+   */
+  async aiClearProvider(providerId: string): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") {
+      this.setState({ aiEdit: null });
+      return;
+    }
+    try {
+      await bridge.chat.clearProvider(providerId);
+      await this.rebuildProvider();
+      this.toast("Provider key removed from the keyring.");
+      this.save();
+    } catch (err) {
+      this.toast("Could not remove the provider — " + String((err as Error).message ?? err));
+    }
+  }
+
+  /** CORE-AI1 — set the default provider route + rebuild (no key involved). */
+  async aiSetDefault(providerId: string): Promise<void> {
+    this.setState({ aiDefault: providerId });
+    await this.rebuildProvider();
+    this.save();
   }
 
   /** Unlock the custody vault, then refresh lock state. */

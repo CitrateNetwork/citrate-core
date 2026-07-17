@@ -4,8 +4,8 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, store } from "./store";
-import { PERSIST_KEYS } from "./state";
+import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, pickChatProviderKind, store } from "./store";
+import { PERSIST_KEYS, freshState } from "./state";
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
   it("absent/empty expiry is NOT expired (authority may omit it)", () => {
@@ -122,6 +122,44 @@ describe("HIPAA sign-out-by-default — no session/PII persisted", () => {
     for (const k of ["signedIn", "authSub", "authEmail", "authName", "authInitials"] as const) {
       expect(PERSIST_KEYS).not.toContain(k);
     }
+  });
+});
+
+// CORE-AI1 (@rule8) — the real-vs-demo provider selection + the key-never-in-state
+// invariant. A REAL provider is chosen only in the Tauri build AND only when the
+// default id is actually configured (its key sealed in the keyring); otherwise the
+// honest built-in demo agent (Rule 1). The provider key lives in the OS keyring —
+// AppState/PERSIST_KEYS must NOT carry an `aiKeys` map (invariant 2).
+describe("AI1 — provider selection + key-never-in-state", () => {
+  it("pickChatProviderKind picks 'real' only in tauri AND when the default is configured", () => {
+    const configured = [
+      { id: "openai", configured: true },
+      { id: "gateway", configured: false },
+    ];
+    // Tauri + default is configured → real.
+    expect(pickChatProviderKind(configured, "openai", "tauri")).toBe("real");
+    // Tauri + default NOT configured → demo (honest fallback).
+    expect(pickChatProviderKind(configured, "gateway", "tauri")).toBe("demo");
+    // Web preview (sim) never selects a real provider (no keyring) → demo.
+    expect(pickChatProviderKind(configured, "openai", "sim")).toBe("demo");
+    // No providers configured at all → demo.
+    expect(pickChatProviderKind([], "openai", "tauri")).toBe("demo");
+  });
+
+  it("rebuildProvider falls back to the built-in demo agent in web-dev (no keyring)", async () => {
+    await store.rebuildProvider();
+    // Sim providerStatus returns [] → the honest demo agent, never a real provider.
+    expect(store.provider?.kind).toBe("demo");
+    expect(store.provider?.label).toBe("built-in demo agent");
+  });
+
+  it("AppState carries the aiDefault route id but NO aiKeys map (key lives in the keyring)", () => {
+    const st = freshState("p1") as Record<string, unknown>;
+    expect(st.aiDefault).toBeDefined();
+    expect("aiKeys" in st).toBe(false);
+    // And the persisted set never writes a provider key to localStorage.
+    expect(PERSIST_KEYS as readonly string[]).not.toContain("aiKeys");
+    expect(PERSIST_KEYS).toContain("aiDefault");
   });
 });
 

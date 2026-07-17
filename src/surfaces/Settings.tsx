@@ -13,10 +13,13 @@
 // captioned "live from /userinfo" per the design; wiring replaces the sim,
 // not the UI.
 // =====================================================================
+import { useEffect, useState } from "react";
 import { Store } from "../shell/store";
 import { AppState } from "../shell/state";
 import { LoaderMark } from "../components/LoaderMark";
 import { bridge, type AppConfig } from "../bridge";
+import type { AiProviderStatus } from "../bridge/domains";
+import { BRIDGE_MODE } from "../bridge/mode";
 
 // Node-configuration + App config write through the bridge (CORE-A1 A1.4). In
 // sim mode this delegates back to the Store (1:1 UI preserved); in a Tauri
@@ -31,10 +34,14 @@ function writeConfig(store: Store, patch: Partial<AppConfig>): void {
 
 const short = (h: string | null | undefined) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
 
-// Imperative element ref for the AI-provider / gateway key input, matching
-// the design's `this.aiInputEl`. Module-scoped because the store is not
-// edited by this surface; the ref lives only as long as an editor is open.
+// Imperative element refs for the AI-provider editor. The KEY input value is
+// handed to Rust once (sealed in the OS keyring) and never stored in AppState —
+// so the ref lives only as long as an editor is open (module-scoped, like the
+// design's `this.aiInputEl`). `aiBaseUrlEl`/`aiModelEl` back the generic
+// OpenAI-compatible preset's baseURL + model fields (AI1).
 let aiInputEl: HTMLInputElement | null = null;
+let aiBaseUrlEl: HTMLInputElement | null = null;
+let aiModelEl: HTMLInputElement | null = null;
 
 const CONN: [string, string, string][] = [
   ["gcal", "Google Calendar", "events · read + propose writes"],
@@ -48,12 +55,22 @@ const CONN: [string, string, string][] = [
   ["hf", "Hugging Face", "models · read + pull"],
 ];
 
-const AIP: [string, string, string][] = [
-  ["openai", "OpenAI", "sk-…"],
-  ["anthropic", "Anthropic", "sk-ant-…"],
-  ["gemini", "Google Gemini", "AIza…"],
-  ["xai", "xAI", "xai-…"],
-  ["custom", "Custom endpoint", "https://… · bearer"],
+// CORE-AI1 (@rule8) — the OpenAI-compatible provider presets. Each seals
+// {baseURL, model, apiKey} in the OS keyring (Rust binds the key to its https
+// baseURL); the key never touches the webview. `fixedBaseUrl` is null for the
+// generic "custom" preset (the user supplies any https OpenAI-compatible baseURL).
+interface AiPreset {
+  id: string;
+  name: string;
+  fixedBaseUrl: string | null;
+  defaultModel: string;
+  keyPlaceholder: string;
+  note: string;
+}
+const AI_PRESETS: AiPreset[] = [
+  { id: "openai", name: "OpenAI", fixedBaseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini", keyPlaceholder: "sk-…", note: "api.openai.com · sk- key" },
+  { id: "gateway", name: "Citrate gateway", fixedBaseUrl: "https://infer.citrate.ai/v1", defaultModel: "citrate-default", keyPlaceholder: "cgk_…", note: "infer.citrate.ai · cgk_ key" },
+  { id: "custom", name: "OpenAI-compatible endpoint", fixedBaseUrl: null, defaultModel: "", keyPlaceholder: "bearer key", note: "any https /v1 endpoint · bearer key" },
 ];
 
 const SECS: [string, string][] = [
@@ -74,6 +91,28 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   // when signed in, falling back to the sim persona only in web-dev.
   const id = store.identity();
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
+
+  // ---------- CORE-AI1 (@rule8) — live provider status (keyring-sealed) ----------
+  // The provider KEY is never in AppState — it lives sealed in the OS keyring. This
+  // reads only NON-SECRET status (id/baseURL/model/configured) via the bridge, so
+  // the rows render whether a provider is actually configured (Rule 1), never the
+  // key. Refetched on the AI section + whenever the edit target / default changes.
+  const [aiStatuses, setAiStatuses] = useState<AiProviderStatus[]>([]);
+  useEffect(() => {
+    if (s.sSec !== "ai") return;
+    let live = true;
+    bridge.chat
+      .providerStatus()
+      .then((st) => {
+        if (live) setAiStatuses(st);
+      })
+      .catch(() => {
+        if (live) setAiStatuses([]); // honest: no keyring (web) / failed read
+      });
+    return () => {
+      live = false;
+    };
+  }, [s.sSec, s.aiEdit, s.aiDefault]);
 
   // ---------- account & RBAC ----------
   const expTxt =
@@ -118,49 +157,49 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     };
   });
 
-  // ---------- AI providers ----------
-  const aiDefaults = ([["gateway", "Citrate gateway"]] as [string, string][])
-    .concat(AIP.filter(([id]) => s.aiKeys[id]).map(([id, n]) => [id, n] as [string, string]))
-    .map(([id, label]) => ({
-      label,
-      cls: btnCls(s.aiDefault === id),
-      go: () => {
-        store.setState({ aiDefault: id });
-        store.toast(label + " set as the intended route — inference isn't wired yet; chat runs on the local demo agent");
-        store.save();
-      },
-    }));
-  const aiRows = AIP.map(([id, name, ph]) => {
-    const key = s.aiKeys[id];
-    const editing = s.aiEdit === id;
+  // ---------- CORE-AI1 (@rule8) — AI providers (keyring-sealed BYO-key) ----------
+  const statusFor = (pid: string) => aiStatuses.find((p) => p.id === pid);
+  // The default route can be any CONFIGURED provider (live status), so a real
+  // provider is only offered once its key is actually sealed (Rule 1 — no route to
+  // an unconfigured provider). The demo agent is always available as the fallback.
+  const aiDefaults = AI_PRESETS.filter((p) => statusFor(p.id)?.configured).map((p) => ({
+    label: p.name,
+    cls: btnCls(s.aiDefault === p.id),
+    go: () => void store.aiSetDefault(p.id),
+  }));
+  const aiRows = AI_PRESETS.map((p) => {
+    const st = statusFor(p.id);
+    const configured = !!st?.configured;
+    const editing = s.aiEdit === p.id;
     return {
-      id,
-      name,
+      id: p.id,
+      name: p.name,
+      note: p.note,
+      fixedBaseUrl: p.fixedBaseUrl,
+      defaultModel: p.defaultModel,
+      configured,
       editing,
       idle: !editing,
-      hasKey: !!key,
-      noKey: !key,
-      keyLine: key ? key + " · stored locally (not yet used)" : "no key",
-      keyColor: key ? "var(--ok)" : "var(--tx-3)",
-      placeholder: ph,
-      edit: () => store.setState({ aiEdit: id }),
+      // The status line reflects the SEALED config (baseURL + model) — never a key.
+      keyLine: configured ? `${st!.baseURL} · ${st!.model} · key in OS keyring` : "no key sealed",
+      keyColor: configured ? "var(--ok)" : "var(--tx-3)",
+      placeholder: p.keyPlaceholder,
+      isDefault: s.aiDefault === p.id,
+      edit: () => store.setState({ aiEdit: p.id }),
       cancel: () => store.setState({ aiEdit: null }),
-      remove: () => {
-        const k = { ...store.state.aiKeys };
-        delete k[id];
-        const upd: Partial<AppState> = { aiKeys: k };
-        if (store.state.aiDefault === id) upd.aiDefault = "gateway";
-        store.setState(upd);
-        store.toast(name + " key removed");
-        store.save();
-      },
+      remove: () => void store.aiClearProvider(p.id),
       save: () => {
-        const v = aiInputEl ? aiInputEl.value.trim() : "";
-        if (v.length < 8) return store.toast("That does not look like a key");
-        const masked = v.slice(0, 5) + "•••••••••••••" + v.slice(-4);
-        store.setState((st) => ({ aiKeys: { ...st.aiKeys, [id]: masked }, aiEdit: null }));
-        store.toast(name + " key saved locally — not yet used for inference (provider routing is a scheduled build)");
-        store.save();
+        const key = aiInputEl ? aiInputEl.value.trim() : "";
+        if (key.length < 8) return store.toast("That does not look like a key");
+        // The baseURL is the preset's fixed https endpoint, or (for the generic
+        // "custom" preset) the user-supplied one — validated as https in Rust.
+        const baseURL = p.fixedBaseUrl ?? (aiBaseUrlEl ? aiBaseUrlEl.value.trim() : "");
+        if (!baseURL) return store.toast("Enter the provider's https /v1 base URL");
+        const model = aiModelEl && aiModelEl.value.trim() ? aiModelEl.value.trim() : p.defaultModel;
+        if (!model) return store.toast("Enter the model name");
+        // Hand the key to Rust ONCE (sealed in the OS keyring); never store it in
+        // AppState/localStorage. aiInputEl is cleared on the next render (edit ends).
+        void store.aiSetProvider(p.id, baseURL, model, key);
       },
     };
   });
@@ -373,28 +412,40 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
-        {/* ---------- AI providers ---------- */}
+        {/* ---------- AI providers (CORE-AI1, @rule8) ---------- */}
         {s.sSec === "ai" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-2)", padding: "12px 14px", fontSize: 12, lineHeight: 1.55, color: "var(--tx-2)" }}>
-              Chat currently runs on a built-in <strong>local demo agent</strong>. Bring-your-own-key (OpenAI / Anthropic) and the Citrate gateway are <strong>not wired for inference yet</strong> — a key entered here is stored on this machine but is not yet used to call a model. Real provider / gateway inference (keys sealed in the OS keyring, calls made from the desktop app so the key never touches the browser) is a scheduled build.
+            <div style={{ border: "1px solid var(--info)", background: "var(--info-bg, var(--warn-bg))", borderRadius: "var(--r-2)", padding: "12px 14px", fontSize: 12, lineHeight: 1.55, color: "var(--tx-2)" }}>
+              With no provider configured, chat runs on the built-in <strong>demo agent</strong>. Add an OpenAI-compatible key below and chat becomes <strong>real</strong>: the key is sealed in the <strong>OS keyring</strong> and the call to <span className="mono">/v1/chat/completions</span> is made from the desktop app, so the key never touches the browser. The endpoint is bound to the key at save time — the app can never send your key anywhere but the endpoint you configured.
+              {BRIDGE_MODE !== "tauri" && (
+                <>
+                  {" "}
+                  <em>Web preview has no OS keyring — provider keys can only be sealed in the desktop app.</em>
+                </>
+              )}
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Default model route</span>
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {aiDefaults.map((ad) => (
-                  <button key={ad.label} className={ad.cls} onClick={ad.go}>
-                    {ad.label}
-                  </button>
-                ))}
+                {aiDefaults.length === 0 ? (
+                  <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                    no provider configured — chat runs on the built-in demo agent
+                  </span>
+                ) : (
+                  aiDefaults.map((ad) => (
+                    <button key={ad.label} className={ad.cls} onClick={ad.go}>
+                      {ad.label}
+                    </button>
+                  ))
+                )}
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                selects the intended route for when inference is wired; today all chat runs on the local demo agent
+                the default route is used for chat once its key is sealed; an unconfigured route falls back to the demo agent
               </span>
             </div>
             <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
               <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line-1)" }}>
-                <span className="eyebrow">Provider keys · bring your own</span>
+                <span className="eyebrow">Provider keys · bring your own (sealed in the OS keyring)</span>
               </div>
               {aiRows.map((ai) => (
                 <div
@@ -402,13 +453,39 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                   style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 18px", borderBottom: "1px solid var(--line-1)", flexWrap: "wrap" }}
                 >
                   <span style={{ flex: 1, minWidth: 120 }}>
-                    <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{ai.name}</span>
+                    <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>
+                      {ai.name}
+                      {ai.isDefault && ai.configured && (
+                        <span className="mono" style={{ fontSize: 9.5, color: "var(--ok)", marginLeft: 8 }}>
+                          default
+                        </span>
+                      )}
+                    </span>
                     <span className="mono" style={{ display: "block", fontSize: 10.5, color: ai.keyColor, marginTop: 1 }}>
                       {ai.keyLine}
                     </span>
                   </span>
                   {ai.editing && (
                     <>
+                      {ai.fixedBaseUrl === null && (
+                        <input
+                          ref={(el) => {
+                            aiBaseUrlEl = el;
+                          }}
+                          className="input mono"
+                          placeholder="https://…/v1"
+                          style={{ width: 220, height: 30, fontSize: 12 }}
+                        />
+                      )}
+                      <input
+                        ref={(el) => {
+                          aiModelEl = el;
+                          if (el && ai.defaultModel) el.value = ai.defaultModel;
+                        }}
+                        className="input mono"
+                        placeholder="model (e.g. gpt-4o-mini)"
+                        style={{ width: 180, height: 30, fontSize: 12 }}
+                      />
                       <input
                         ref={(el) => {
                           aiInputEl = el;
@@ -422,8 +499,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                           }
                         }}
                         className="input mono"
+                        type="password"
                         placeholder={ai.placeholder}
-                        style={{ width: 260, height: 30, fontSize: 12 }}
+                        style={{ width: 220, height: 30, fontSize: 12 }}
                       />
                       <button className="btn btn-secondary btn-sm" onClick={ai.save}>
                         Save key
@@ -433,7 +511,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                       </button>
                     </>
                   )}
-                  {ai.idle && ai.hasKey && (
+                  {ai.idle && ai.configured && (
                     <>
                       <button className="btn btn-ghost btn-sm" onClick={ai.edit}>
                         Rotate
@@ -443,8 +521,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                       </button>
                     </>
                   )}
-                  {ai.idle && ai.noKey && (
-                    <button className="btn btn-ghost btn-sm" onClick={ai.edit}>
+                  {ai.idle && !ai.configured && (
+                    <button className="btn btn-ghost btn-sm" onClick={ai.edit} disabled={BRIDGE_MODE !== "tauri"}>
                       Add key
                     </button>
                   )}
@@ -452,7 +530,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               ))}
             </div>
             <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              Keys entered here are stored locally on this machine and are not yet used for inference. When BYO-key lands, keys will be sealed in the OS keyring and the call will originate from the desktop app (never the browser), so your key is never exposed.
+              The key is sealed in the OS keyring and never written to disk in the app or exposed to the browser. The call originates from the desktop app and always goes to the endpoint you bound the key to. Local on-device model inference requires the model runtime (WO-3) and is not available yet.
             </p>
           </div>
         )}

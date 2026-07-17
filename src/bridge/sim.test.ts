@@ -165,6 +165,38 @@ describe("sim adapter contract (delegates to the host Store)", () => {
   });
 });
 
+// CORE-AI1 (@rule8) — sim chat: the web preview has NO OS keyring and reaches no
+// provider, so real inference cannot happen (Rule 1). providerStatus reports
+// nothing configured; setProvider/clearProvider/infer throw Unavailable; the
+// backend is the honest built-in demo agent (never a gateway it does not call).
+describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)", () => {
+  it("providerStatus returns an empty list (no keyring on the web shim)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    expect(await bridge.chat.providerStatus()).toEqual([]);
+  });
+
+  it("setProvider / clearProvider / infer are honestly Unavailable in sim", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const { isUnavailable } = await import("./types");
+    await expect(bridge.chat.setProvider("openai", "https://api.openai.com/v1", "gpt-4o", "sk-x")).rejects.toSatisfy(
+      (e: unknown) => isUnavailable(e),
+    );
+    await expect(bridge.chat.clearProvider("openai")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+
+  it("backend is the honest built-in demo agent (Rule 1 — no gateway label)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const b = await bridge.chat.backend();
+    expect(b.kind).toBe("demo");
+    expect(b.label).toBe("built-in demo agent");
+    expect(b.label).not.toContain("infer.citrate.ai");
+  });
+});
+
 // CORE-A2 A2.5 — sim custody: simulates lock/unlock UI STATE ONLY. It holds no
 // real secret and stores nothing; the real vault lives in the Tauri/Rust path.
 describe("sim adapter — custody UI state only (no real secret, stores nothing)", () => {

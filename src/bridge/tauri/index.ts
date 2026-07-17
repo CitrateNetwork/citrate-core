@@ -27,6 +27,7 @@ import type {
   MemoryResult,
   MemoryNeighbor,
   PendingWithdrawal,
+  AiProviderStatus,
 } from "../domains";
 import { Unavailable } from "../types";
 
@@ -252,9 +253,28 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         return invoke<MemoryResult[]>("memory_constellation", { budget });
       },
     },
+    // ---- chat: REAL OpenAI-compatible inference, key sealed in Rust (AI1) ----
+    // @rule8: setProvider seals {baseURL,model,apiKey} in the OS keyring;
+    // providerStatus returns metadata ONLY (never the key); infer reads the STORED
+    // baseURL for the given id and POSTs /v1/chat/completions from Rust — the
+    // webview picks WHICH provider, never the URL (exfil-binding). backend stays
+    // Unavailable (the demo/real selection is done in the store, not here).
     chat: {
       async backend() {
         return unavailable("chat", "backend");
+      },
+      async setProvider(providerId: string, baseURL: string, model: string, apiKey: string): Promise<void> {
+        // camelCase JS keys map to the Rust snake_case args (base_url/api_key).
+        await invoke("ai_set_provider", { providerId, baseUrl: baseURL, model, apiKey });
+      },
+      async providerStatus(): Promise<AiProviderStatus[]> {
+        return invoke<AiProviderStatus[]>("ai_provider_status");
+      },
+      async clearProvider(providerId: string): Promise<void> {
+        await invoke("ai_clear_provider", { providerId });
+      },
+      async infer(providerId: string, messagesJson: string, contextJson: string): Promise<string> {
+        return invoke<string>("ai_chat", { providerId, messagesJson, contextJson });
       },
     },
     membership: {

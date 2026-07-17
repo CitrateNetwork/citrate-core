@@ -30,6 +30,14 @@ const signMock: { map: Map<string, { id: string; origin: string; kind: string; c
 // it to "0" to exercise the honest "nothing to claim" branch.
 const earningsMock = { claimableWei: "9410000000000000000" };
 
+// CORE-AI1: a mocked OS-keyring map of sealed provider configs. The KEY is stored
+// here (simulating the keyring), but NO command RESULT ever returns it — the whole
+// point of the @rule8 boundary.
+const aiMock: { map: Map<string, { baseURL: string; model: string; apiKey: string }>; default: string | null } = {
+  map: new Map(),
+  default: null,
+};
+
 const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   switch (cmd) {
     case "config_read":
@@ -242,6 +250,42 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       };
       signMock.map.set(id, view);
       return view;
+    }
+    // CORE-AI1 (@rule8) — the AI provider commands. set seals {baseURL,model,
+    // apiKey} in the OS keyring (returns void — NEVER the key); status returns
+    // metadata ONLY; clear deletes; chat returns the model completion string. This
+    // mock simulates a keyring map so the adapter's arg shapes are asserted and the
+    // key never appears in any RESULT.
+    case "ai_set_provider": {
+      const a = (args ?? {}) as { providerId: string; baseUrl: string; model: string; apiKey: string };
+      aiMock.map.set(a.providerId, { baseURL: a.baseUrl, model: a.model, apiKey: a.apiKey });
+      if (!aiMock.default) aiMock.default = a.providerId;
+      return undefined; // NEVER returns the key
+    }
+    case "ai_provider_status":
+      return ["openai", "gateway", "custom"].map((pid) => {
+        const cfg = aiMock.map.get(pid);
+        return {
+          id: pid,
+          baseURL: cfg?.baseURL ?? "",
+          model: cfg?.model ?? "",
+          configured: !!cfg,
+          isDefault: aiMock.default === pid,
+        };
+      });
+    case "ai_clear_provider": {
+      const pid = String((args as { providerId: string }).providerId);
+      aiMock.map.delete(pid);
+      if (aiMock.default === pid) aiMock.default = null;
+      return undefined;
+    }
+    case "ai_chat": {
+      const a = (args ?? {}) as { providerId: string; messagesJson: string; contextJson: string };
+      if (!aiMock.map.has(a.providerId)) throw "ai: no provider configured for that id";
+      // The completion echoes the endpoint it would use so a test can assert the
+      // STORED baseURL was chosen (the webview never passes a URL).
+      const cfg = aiMock.map.get(a.providerId)!;
+      return `real-completion from ${cfg.baseURL} model ${cfg.model}`;
     }
     default:
       throw `unavailable: ${cmd} is not wired in this build`;
@@ -651,5 +695,80 @@ describe("tauri adapter — membership.checkout opens the real checkout popup (D
   it("membership.entitlement is still honestly Unavailable (only checkout is wired)", async () => {
     const bridge = createTauriBridge();
     await expect(bridge.membership.entitlement()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+});
+
+// CORE-AI1 (@rule8) — the chat domain now invokes the real AI provider commands.
+// Frontend half of the exfiltration boundary: setProvider hands the key to Rust
+// ONCE (sealed in the OS keyring) and returns void — NO command result carries the
+// key or the Authorization header; providerStatus returns metadata ONLY; infer
+// returns the model completion (the STORED baseURL is used — the webview passes NO
+// url). The Rust half (keyring/http seams, exfil-binding negative control) is
+// `cargo test` (ai::tests).
+describe("tauri adapter — chat domain wires real AI inference, key never leaks (AI1)", () => {
+  beforeEach(() => {
+    aiMock.map.clear();
+    aiMock.default = null;
+    invokeMock.mockClear();
+  });
+
+  it("setProvider invokes ai_set_provider with {providerId,baseUrl,model,apiKey} and returns void", async () => {
+    const bridge = createTauriBridge();
+    await expect(
+      bridge.chat.setProvider("openai", "https://api.openai.com/v1", "gpt-4o-mini", "sk-live-KEY"),
+    ).resolves.toBeUndefined();
+    // The apiKey rides ONLY on the invoke ARGS (going INTO Rust) — never in a result.
+    expect(invokeMock).toHaveBeenCalledWith("ai_set_provider", {
+      providerId: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini",
+      apiKey: "sk-live-KEY",
+    });
+  });
+
+  it("providerStatus returns metadata ONLY — never the key or an Authorization field", async () => {
+    const bridge = createTauriBridge();
+    await bridge.chat.setProvider("openai", "https://api.openai.com/v1", "gpt-4o", "sk-super-secret");
+    const statuses = await bridge.chat.providerStatus();
+    expect(invokeMock).toHaveBeenCalledWith("ai_provider_status", undefined);
+    const openai = statuses.find((p) => p.id === "openai")!;
+    expect(openai.configured).toBe(true);
+    expect(openai.baseURL).toBe("https://api.openai.com/v1");
+    expect(openai.model).toBe("gpt-4o");
+    expect(openai.isDefault).toBe(true);
+    // CRITICAL: the whole status payload carries NO key material (invariant 1).
+    const json = JSON.stringify(statuses);
+    expect(json).not.toContain("sk-super-secret");
+    expect(json.toLowerCase()).not.toContain("apikey");
+    expect(json).not.toContain("Authorization");
+    // An unconfigured preset is honestly reported (never fabricated).
+    expect(statuses.find((p) => p.id === "gateway")!.configured).toBe(false);
+  });
+
+  it("infer invokes ai_chat with {providerId,messagesJson,contextJson} and returns the completion (no url arg)", async () => {
+    const bridge = createTauriBridge();
+    await bridge.chat.setProvider("gateway", "https://infer.citrate.ai/v1", "gemma", "cgk_key");
+    const messagesJson = JSON.stringify([{ role: "user", content: "hi" }]);
+    const contextJson = JSON.stringify({ height: 1 });
+    const out = await bridge.chat.infer("gateway", messagesJson, contextJson);
+    // The command args have NO url field — the webview cannot supply an endpoint
+    // (exfil-binding). The completion reflects the STORED baseURL.
+    expect(invokeMock).toHaveBeenCalledWith("ai_chat", { providerId: "gateway", messagesJson, contextJson });
+    const callArgs = invokeMock.mock.calls.find((c) => c[0] === "ai_chat")![1] as Record<string, unknown>;
+    expect(Object.keys(callArgs).sort()).toEqual(["contextJson", "messagesJson", "providerId"]);
+    expect(out).toContain("https://infer.citrate.ai/v1");
+  });
+
+  it("clearProvider invokes ai_clear_provider and an infer on the cleared id fails closed", async () => {
+    const bridge = createTauriBridge();
+    await bridge.chat.setProvider("openai", "https://api.openai.com/v1", "gpt-4o", "sk-abc12345");
+    await bridge.chat.clearProvider("openai");
+    expect(invokeMock).toHaveBeenCalledWith("ai_clear_provider", { providerId: "openai" });
+    await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toBeTruthy();
+  });
+
+  it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.chat.backend()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 });

@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import { GRAPH } from "../../data/seed";
@@ -443,11 +443,37 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
     },
 
+    // CORE-AI1 — the web preview has NO OS keyring and reaches no provider, so
+    // real inference cannot happen here (Rule 1). providerStatus honestly reports
+    // nothing configured; setProvider/clearProvider/infer throw Unavailable; the
+    // store then falls back to the built-in demo agent. Guarded out of packaged
+    // builds by assertSimAllowed.
     chat: {
       async backend() {
         assertSimAllowed("chat.backend");
-        const st = s();
-        return { kind: st.chatBackend, label: "infer.citrate.ai · local-proxy" };
+        // Honest (Rule 1): web-dev chat runs on the built-in demo agent, not a
+        // gateway — the label must not claim a remote proxy it does not call.
+        return { kind: "demo", label: "built-in demo agent" };
+      },
+      async setProvider() {
+        assertSimAllowed("chat.setProvider");
+        // No OS keyring on the web shim — a provider key cannot be sealed here.
+        throw new Unavailable("chat", "setProvider");
+      },
+      async providerStatus(): Promise<AiProviderStatus[]> {
+        assertSimAllowed("chat.providerStatus");
+        // The web shim has no keyring — nothing is configured (never fabricated).
+        return [];
+      },
+      async clearProvider() {
+        assertSimAllowed("chat.clearProvider");
+        throw new Unavailable("chat", "clearProvider");
+      },
+      async infer() {
+        assertSimAllowed("chat.infer");
+        // No key, no provider reachable from the web preview — honest Unavailable
+        // (the store uses the built-in demo agent instead of a fabricated reply).
+        throw new Unavailable("chat", "infer");
       },
     },
 

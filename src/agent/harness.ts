@@ -62,11 +62,13 @@ export const AGENT_SYSTEM_PROMPT = [
 
 // ---------------------------------------------------------------------
 // Demo provider — same contract, scripted reasoning over live sim state.
+// Rule 1: the label must not claim a gateway/local-proxy it never calls — this
+// is a BUILT-IN demo agent (scripted), and it says so.
 // ---------------------------------------------------------------------
 export function createDemoProvider(getContext: () => AgentContext): ChatProvider {
   return {
     kind: "demo",
-    label: "infer.citrate.ai · local-proxy",
+    label: "built-in demo agent",
     async send({ messages, callbacks }) {
       const userText = (messages[messages.length - 1]?.content || "").toLowerCase();
       callbacks.onStatus("thinking");
@@ -87,6 +89,50 @@ export function createDemoProvider(getContext: () => AgentContext): ChatProvider
         out += token;
         callbacks.onToken(token);
         await wait(14 + Math.random() * 26);
+      }
+      callbacks.onStatus("done");
+      return { role: "assistant", content: out };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------
+// Real provider — CORE-AI1 (@rule8). Calls the Rust `ai_chat` command (via the
+// injected `infer` fn, so this module keeps no bridge import → no store cycle),
+// which reads the SEALED {baseURL, model, apiKey} for `providerId` and POSTs the
+// OpenAI /v1/chat/completions body from Rust. The key NEVER touches the webview
+// and the webview NEVER supplies the URL (exfil-binding). This WP is plain chat +
+// live-context injection with NO tool loop; the REAL completion is revealed via a
+// token animation (honest — it is the real content, just streamed for display).
+// ---------------------------------------------------------------------
+export type InferFn = (providerId: string, messagesJson: string, contextJson: string) => Promise<string>;
+
+export function createRealProvider(providerId: string, getContext: () => AgentContext, infer: InferFn): ChatProvider {
+  return {
+    kind: "real",
+    label: "provider · " + providerId,
+    async send({ messages, callbacks }) {
+      callbacks.onStatus("thinking");
+      // The live app context is passed to Rust as an opaque JSON snapshot; Rust
+      // injects it as a system line so the model grounds its numbers (Rule 1).
+      const contextJson = JSON.stringify(getContext());
+      const messagesJson = JSON.stringify(messages.map((m) => ({ role: m.role, content: m.content })));
+      let content: string;
+      try {
+        content = await infer(providerId, messagesJson, contextJson);
+      } catch (e) {
+        callbacks.onStatus("error");
+        throw e;
+      }
+      // Reveal the REAL completion with a display-only token animation. There is no
+      // tool loop this WP and the content is never fabricated — it is exactly what
+      // the provider returned, streamed for the same UX as the demo agent.
+      callbacks.onStatus("streaming");
+      let out = "";
+      for (const token of tokenize(content)) {
+        out += token;
+        callbacks.onToken(token);
+        await wait(8 + Math.random() * 18);
       }
       callbacks.onStatus("done");
       return { role: "assistant", content: out };

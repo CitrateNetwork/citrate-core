@@ -8,6 +8,7 @@
 //! (CORE-S2).
 
 mod agent;
+mod ai;
 mod ceremony;
 mod config;
 mod custody;
@@ -77,6 +78,14 @@ pub fn run() {
             // daemon's JSON-RPC over the socket; the Storage constellation renders
             // the real graph (no fabricated nodes — Rule 1).
             app.manage(memory::build_memory_state(&app.handle().clone())?);
+            // CORE-AI1 — the AiManager: real OpenAI-compatible inference with the
+            // provider API key custodied in the OS keyring (service
+            // "ai.citrate.core"). @rule8 (key custody + secret network egress): NO
+            // command returns the key or the Authorization header (ai_provider_status
+            // returns only {id,baseURL,model,configured}); the key is BOUND to its
+            // https baseURL at set-time and ai_chat calls the STORED baseURL only —
+            // the webview picks WHICH provider id, never the URL (exfil-binding).
+            app.manage(ai::build_ai_state());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -184,6 +193,17 @@ pub fn run() {
             staking::wallet_request_withdrawal,
             staking::wallet_claim_withdrawal,
             staking::wallet_pending_withdrawals,
+            // ai — real OpenAI-compatible inference (AI1, @rule8). The provider key
+            // is sealed in the OS keyring, BOUND to its https baseURL at set-time;
+            // ai_provider_status returns only {id,baseURL,model,configured} (never
+            // the key); ai_chat reads the STORED baseURL for the given provider id
+            // and POSTs /v1/chat/completions with the sealed Bearer — the webview
+            // picks WHICH provider, never the URL (exfil-binding). Errors are coarse
+            // + secret-free.
+            ai::ai_set_provider,
+            ai::ai_provider_status,
+            ai::ai_clear_provider,
+            ai::ai_chat,
             // open an external federation link (https only) in the system browser.
             shell::open_external,
             // seam domains — honest Unavailable until each later phase (A1.3)
