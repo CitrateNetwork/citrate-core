@@ -135,8 +135,17 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
         const toSalt = (wei: string) => Number(BigInt(wei)) / 1e18;
         return { liquid: toSalt(b.liquidWei), staked: toSalt(b.stakedWei), claimable: toSalt(b.claimableWei), address: b.address };
       },
-      async activity() {
-        return unavailable("wallet", "activity");
+      // CORE item 4 — REAL indexed 40204 tx history from the CitrateScan `txlist`
+      // endpoint (public, no-auth read via the Rust `wallet_activity` command;
+      // data source: citrate-explorer /api/v1?module=account&action=txlist). Each
+      // row is a real indexed tx (hash/kind/amount/ts + status/direction); a fresh
+      // address / not-provisioned index honestly returns [] (never fabricated,
+      // Rule 1). We surface the Activity shape the state model renders.
+      async activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number }[]> {
+        const rows = await invoke<{ id: string; kind: string; amount: string; hash: string; ts: number; status: number | null; direction: string }[]>(
+          "wallet_activity",
+        );
+        return rows.map((r) => ({ id: r.id, kind: r.kind, amount: r.amount, hash: r.hash, ts: r.ts }));
       },
       // CORE (@rule8) — build a native SALT transfer as a PENDING ceremony and
       // return its decoded view. Signs NOTHING; the human approves via

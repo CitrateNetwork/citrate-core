@@ -235,6 +235,15 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         { id: "1", saltWei: "10000000000000000000", requestBlock: 100, claimableAtBlock: 50500, claimable: true },
         { id: "2", saltWei: "3000000000000000000", requestBlock: 100000, claimableAtBlock: 150400, claimable: false },
       ];
+    // CORE item 4 wallet_activity — the REAL indexed 40204 tx history from the
+    // CitrateScan `txlist` endpoint (public read). The Rust command returns rows
+    // with {id,kind,amount,hash,ts,status,direction}; the adapter maps them down to
+    // the Activity shape ({id,kind,amount,hash,ts}) the state model renders.
+    case "wallet_activity":
+      return [
+        { id: "0xaa", kind: "Received", amount: "+12.41 SALT", hash: "0xaa", ts: 1_700_000_500_000, status: 1, direction: "in" },
+        { id: "0xbb", kind: "Sent", amount: "−40.00 SALT", hash: "0xbb", ts: 1_700_000_000_000, status: 1, direction: "out" },
+      ];
     // CORE-C2-F-1 user_claim — bridges the REAL claimRewards() intent into a
     // PENDING ceremony (a legible tx Call, approvable via sign_and_broadcast).
     // Returns a CeremonyView; NEVER a signature or a local balance mutation.
@@ -409,12 +418,28 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
   });
 });
 
-describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", () => {
-  it("wallet.activity rejects with Unavailable, never fabricated data", async () => {
+// CORE item 4 — wallet.activity now invokes the REAL `wallet_activity` command
+// (the CitrateScan `txlist` read), no longer a seam stub. The adapter maps the
+// Rust rows down to the Activity shape the state model renders.
+describe("tauri adapter — wallet.activity invokes the real CitrateScan read (item 4)", () => {
+  it("invokes wallet_activity and returns the Activity-shaped indexed history", async () => {
     const bridge = createTauriBridge();
-    await expect(bridge.wallet.activity()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    const rows = await bridge.wallet.activity();
+    expect(invokeMock).toHaveBeenCalledWith("wallet_activity", undefined);
+    expect(rows).toHaveLength(2);
+    // Mapped to exactly the Activity shape (id/kind/amount/hash/ts) — the extra
+    // Rust fields (status/direction) are dropped at the boundary.
+    expect(Object.keys(rows[0]).sort()).toEqual(["amount", "hash", "id", "kind", "ts"]);
+    expect(rows[0].kind).toBe("Received");
+    expect(rows[0].amount).toBe("+12.41 SALT");
+    expect(rows[0].hash).toBe("0xaa");
+    expect(rows[0].ts).toBe(1_700_000_500_000);
+    // Newest-first order preserved from the indexer (desc timestamp).
+    expect(rows[1].hash).toBe("0xbb");
   });
+});
 
+describe("tauri adapter — unwired domains are honestly Unavailable (Rule 1)", () => {
   it("every still-unwired seam domain rejects with Unavailable", async () => {
     const bridge = createTauriBridge();
     // NOTE: `auth` (CORE-A3) and `node` (CORE-C1.1) are now genuinely wired and

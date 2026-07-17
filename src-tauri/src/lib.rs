@@ -7,6 +7,7 @@
 //! (D-13); signing routes through the Rust SignatureCeremony once it exists
 //! (CORE-S2).
 
+mod activity;
 mod agent;
 mod ai;
 mod ceremony;
@@ -206,8 +207,12 @@ pub fn run() {
             ai::ai_chat,
             // open an external federation link (https only) in the system browser.
             shell::open_external,
+            // wallet activity — REAL indexed 40204 tx history from the CitrateScan
+            // `txlist` endpoint (public, no-auth read; source: citrate-explorer
+            // /api/v1?module=account&action=txlist). Honest empty on a fresh /
+            // not-provisioned index; never fabricated (Rule 1). NOT @rule8.
+            activity::wallet_activity,
             // seam domains — honest Unavailable until each later phase (A1.3)
-            seam::wallet_activity,
             seam::memory_assert,
             seam::chat_backend,
             seam::membership_entitlement,

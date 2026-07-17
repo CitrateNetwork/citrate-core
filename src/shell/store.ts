@@ -10,6 +10,7 @@
 // =====================================================================
 import { useSyncExternalStore } from "react";
 import {
+  Activity,
   AppState,
   CerSpec,
   ChatMsg,
@@ -123,6 +124,24 @@ export function pickChatProviderKind(
   return statuses.some((p) => p.id === aiDefault && p.configured) ? "real" : "demo";
 }
 
+/**
+ * CORE item 4 — fold the REAL indexed tx history (`real`, from CitrateScan) into
+ * the current activity list (`current`, which may hold OPTIMISTIC just-sent rows
+ * from `addActivity`), DEDUPED by hash. The real indexed list is authoritative:
+ * any optimistic/local row whose hash now appears in `real` is dropped so a
+ * settled tx renders exactly once. Optimistic rows NOT yet indexed are kept, in
+ * front, so a just-sent tx stays visible until the indexer catches up. Rows are
+ * capped at 24 (the prototype cap). This is idempotent when `real === current`
+ * (the sim path echoes state.activity), so re-merging never duplicates.
+ */
+export function mergeActivity(real: Activity[], current: Activity[]): Activity[] {
+  const realHashes = new Set(real.map((a) => a.hash));
+  // Optimistic/local rows the indexer hasn't returned yet (dedupe by hash) — but
+  // never re-add a row that IS in the real list (that would double it).
+  const pendingLocal = current.filter((a) => !realHashes.has(a.hash));
+  return pendingLocal.concat(real).slice(0, 24);
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -197,6 +216,9 @@ export class Store {
       // WP2 — the real pending-withdrawal queue (chain-sourced), folded on launch;
       // the Wallet surface also refreshes on mount + after a settle.
       void this.refreshPendingWithdrawals();
+      // Item 4 — the real indexed tx history (CitrateScan txlist), folded on
+      // launch; the Wallet surface also refreshes on mount + after a settle.
+      void this.refreshActivity();
     }
   }
 
@@ -386,6 +408,28 @@ export class Store {
       this.setState(patch);
     } catch {
       /* honest no-op */
+    }
+  }
+
+  /**
+   * CORE item 4 — pull the wallet's REAL indexed 40204 tx history from CitrateScan
+   * and fold it into `state.activity`. `bridge.wallet.activity()` (Tauri) reads the
+   * public `txlist` endpoint (data source: citrate-explorer /api/v1); the sim shim
+   * echoes the prototype `s().activity`. A fresh address / not-provisioned index
+   * honestly reads [] — never fabricated (Rule 1). A failure leaves the last honest
+   * list untouched (no fabricated rows).
+   *
+   * Optimistic just-sent entries (addActivity) are DEDUPED by hash against the
+   * fetched list: any local row whose hash now appears in the real indexed list is
+   * dropped in favour of the canonical indexed entry, so a settled tx never shows
+   * twice.
+   */
+  async refreshActivity(): Promise<void> {
+    try {
+      const real = await bridge.wallet.activity();
+      this.setState((s) => ({ activity: mergeActivity(real, s.activity) }));
+    } catch {
+      /* honest no-op: keep the last real/optimistic list, never a fabricated one */
     }
   }
 
@@ -1124,6 +1168,7 @@ export class Store {
       this.addActivity("Claim rewards", "claimRewards()", result.txHash);
       this.toast("Claim broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
       await this.refreshEarnings();
+      await this.refreshActivity();
       this.save();
     } catch (err) {
       this.toast("Claim not settled — " + String((err as Error).message ?? err));
@@ -1156,6 +1201,7 @@ export class Store {
       this.addActivity("Send", view.decoded.cost || "transfer", result.txHash);
       this.toast("Send broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
       await this.refreshWallet();
+      await this.refreshActivity();
       this.save();
     } catch (err) {
       // Honest failure — reject the pending ceremony so it isn't left dangling.
@@ -1194,6 +1240,7 @@ export class Store {
       this.addActivity("Stake", view.decoded.cost || "deposit", result.txHash);
       this.toast("Stake broadcast — tx " + result.txHash.slice(0, 10) + "…; staked balance updates when it settles.");
       await this.refreshWallet();
+      await this.refreshActivity();
       this.save();
     } catch (err) {
       // Honest failure — reject the pending ceremony so it isn't left dangling.
@@ -1250,6 +1297,7 @@ export class Store {
       this.toast("Withdrawal requested — SALT unlocks after ~7 days (50,400 blocks), then Claim. tx " + result.txHash.slice(0, 10) + "…");
       await this.refreshWallet();
       await this.refreshPendingWithdrawals();
+      await this.refreshActivity();
       this.save();
     } catch (err) {
       try {
@@ -1288,6 +1336,7 @@ export class Store {
       this.toast("Claim broadcast — tx " + result.txHash.slice(0, 10) + "…; SALT lands when it settles.");
       await this.refreshWallet();
       await this.refreshPendingWithdrawals();
+      await this.refreshActivity();
       this.save();
     } catch (err) {
       try {

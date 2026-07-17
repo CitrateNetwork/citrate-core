@@ -80,6 +80,17 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(await bridge.wallet.pendingWithdrawals()).toEqual([]);
   });
 
+  // CORE item 4 — in sim the web shim reaches no indexer, so wallet.activity
+  // echoes the host's prototype `s().activity` (the seed), never a fabricated
+  // history. (In a Tauri build the adapter invokes the real CitrateScan read.)
+  it("wallet.activity echoes the host prototype activity in sim (no indexer)", async () => {
+    const { host, state } = fakeHost();
+    const bridge = createSimBridge(host);
+    const rows = await bridge.wallet.activity();
+    expect(rows).toEqual(state.activity);
+    expect(rows[0].hash).toBe("0xdead");
+  });
+
   it("node.status mirrors the live sim node fields", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);

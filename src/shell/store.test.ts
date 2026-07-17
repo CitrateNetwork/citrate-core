@@ -4,7 +4,7 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, pickChatProviderKind, store } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
@@ -188,6 +188,50 @@ describe("store withdraw (WP2) — honest in web-dev sim", () => {
     await store.walletClaimWithdrawal("1");
     expect(store.getSnapshot().liquid).toBe(liquidBefore);
     expect(store.getSnapshot().toast).toContain("desktop app");
+  });
+});
+
+// CORE item 4 — the wallet activity (tx history) fold. mergeActivity dedupes an
+// OPTIMISTIC just-sent row against the REAL indexed list (CitrateScan txlist) so a
+// settled tx renders exactly once; refreshActivity folds the real list into state.
+describe("mergeActivity — dedupe optimistic vs indexed (item 4)", () => {
+  const A = (id: string, hash: string, ts: number) => ({ id, kind: "Sent", amount: "−1.00 SALT", hash, ts });
+
+  it("drops an optimistic row once the real indexed list contains its hash", () => {
+    const optimistic = [A("local", "0xabc", 999)]; // just-sent, prepended by addActivity
+    const real = [A("0xabc", "0xabc", 100), A("0xdef", "0xdef", 90)]; // now indexed
+    const merged = mergeActivity(real, optimistic);
+    // The optimistic 0xabc collapses into the canonical indexed 0xabc (no dupe).
+    expect(merged.filter((r) => r.hash === "0xabc")).toHaveLength(1);
+    expect(merged.map((r) => r.hash)).toEqual(["0xabc", "0xdef"]);
+  });
+
+  it("keeps an optimistic row NOT yet indexed, in front", () => {
+    const optimistic = [A("local", "0xpending", 999)];
+    const real = [A("0xdef", "0xdef", 90)];
+    const merged = mergeActivity(real, optimistic);
+    expect(merged[0].hash).toBe("0xpending"); // still visible until indexed
+    expect(merged.map((r) => r.hash)).toEqual(["0xpending", "0xdef"]);
+  });
+
+  it("is idempotent when the real list equals the current list (sim echo path)", () => {
+    const list = [A("0xaa", "0xaa", 2), A("0xbb", "0xbb", 1)];
+    expect(mergeActivity(list, list)).toEqual(list);
+  });
+
+  it("caps the merged list at 24 rows", () => {
+    const real = Array.from({ length: 30 }, (_, i) => A(`0x${i}`, `0x${i}`, i));
+    expect(mergeActivity(real, [])).toHaveLength(24);
+  });
+});
+
+describe("store.refreshActivity — folds the real indexed history (item 4)", () => {
+  it("folds the sim activity list without throwing (web-dev echo)", async () => {
+    // The sim bridge echoes s().activity; seed a known row and confirm the fold
+    // preserves it (no fabricated rows, no throw).
+    store.setState({ activity: [{ id: "x1", kind: "Send", amount: "−1.00 SALT", hash: "0xfeed", ts: 5 }] });
+    await store.refreshActivity();
+    expect(store.getSnapshot().activity.some((a) => a.hash === "0xfeed")).toBe(true);
   });
 });
 

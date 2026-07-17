@@ -29,9 +29,9 @@ macro_rules! seam_cmd {
 // NOTE: `node_*` seam stubs were replaced by the real citrate-node wiring in
 // CORE-C1.1 (see `node.rs`). The `node` bridge domain is now genuinely wired.
 // NOTE: `wallet_balances` was replaced by the REAL liquid (eth_getBalance) +
-// claimable read in `earnings.rs`. `wallet_activity` remains a seam stub (on-chain
-// tx history needs an indexer/explorer, not plain RPC — a later phase).
-seam_cmd!(wallet_activity, "wallet", "activity");
+// claimable read in `earnings.rs`. `wallet_activity` was replaced by the REAL
+// CitrateScan `txlist` tx-history read in `activity.rs` (public, no-auth) — it is
+// no longer a seam stub.
 seam_cmd!(memory_assert, "memory", "assert");
 // NOTE: `memory_recall` was replaced by the real citrate-memories mcp_serve
 // wiring in CORE-C3 (see `memory.rs`). recall/search/neighbors are genuinely
@@ -47,16 +47,15 @@ mod tests {
     use super::*;
 
     /// An unwired seam domain returns an honest `unavailable:` error, never a
-    /// value. This is the Rule-1 guarantee at the Rust boundary.
+    /// value. This is the Rule-1 guarantee at the Rust boundary. (wallet_activity
+    /// is now REAL — activity.rs — so commissary stands in as the spot-check.)
     #[test]
     fn seam_command_is_honestly_unavailable() {
-        // wallet_activity is still a seam (on-chain history needs an indexer);
-        // wallet_balances is now REAL (earnings.rs) so it's no longer here.
-        let r = wallet_activity();
+        let r = commissary_catalog();
         assert!(r.is_err());
         let msg = r.unwrap_err();
         assert!(msg.starts_with("unavailable:"), "got: {msg}");
-        assert!(msg.contains("wallet"));
+        assert!(msg.contains("commissary"));
     }
 
     /// Every seam command is unavailable — spot-check a few more so a future
@@ -64,7 +63,7 @@ mod tests {
     #[test]
     fn all_seam_domains_report_unavailable() {
         for r in [
-            wallet_activity(),
+            memory_assert(),
             commissary_catalog(),
             membership_entitlement(),
             comms_connections(),

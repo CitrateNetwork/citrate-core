@@ -6,15 +6,17 @@
 // here. Data-source captions are verbatim.
 //
 // Data source — `liquid` (native eth_getBalance) and `claimable`
-// (ContributionAccounting) are REAL 40204 reads via store.refreshWallet(); staked
-// (grant-attributed) and activity remain to be grounded (staking-pool view +
-// indexer). Wiring replaces the sim, not the UI (Rule 1).
+// (ContributionAccounting) are REAL 40204 reads via store.refreshWallet();
+// `activity` is the REAL indexed tx history from the CitrateScan `txlist` endpoint
+// via store.refreshActivity() (item 4); staked (grant-attributed) remains to be
+// grounded (staking-pool view). Wiring replaces the sim, not the UI (Rule 1).
 // =====================================================================
 import { useRef, useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { makeAddr, short, PERSONAS } from "../shell/state";
 import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { SbtArt } from "../identity/SbtEmblem";
+import { BRIDGE_MODE } from "../bridge/mode";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const fmt2 = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -45,6 +47,10 @@ export function Wallet({ store, s }: SurfaceProps) {
   useEffect(() => {
     void store.refreshWallet();
     void store.refreshPendingWithdrawals();
+    // Item 4 — the REAL indexed 40204 tx history (CitrateScan txlist). In a Tauri
+    // build this replaces the sim seed with the member's real history; in web-dev
+    // the sim adapter echoes state.activity (unchanged).
+    void store.refreshActivity();
   }, [store]);
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
@@ -419,7 +425,9 @@ export function Wallet({ store, s }: SurfaceProps) {
           </div>
           {txEmpty && (
             <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-              No signed actions yet. This is a client-side ledger of your signatures — per-transaction chain detail links out to CitrateScan.
+              {BRIDGE_MODE === "tauri"
+                ? "No transactions yet. This is your real indexed 40204 history from CitrateScan — a fresh wallet shows nothing until it sends or receives (or the indexer is still syncing). Each row links out to CitrateScan."
+                : "No signed actions yet. This is a client-side ledger of your signatures — per-transaction chain detail links out to CitrateScan."}
             </p>
           )}
           {activityRows.map((tx, i) => (
