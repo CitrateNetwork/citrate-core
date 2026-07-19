@@ -12,10 +12,10 @@
 // current 40204.json value.
 export const CONTRACTS = {
   liquidStakingPool: { name: 'LiquidStakingPool', addr: '0xfd272195b55cb4f5a240a5be75aabab0d1c5685e' },
-  entryPoint:        { name: 'EntryPoint v0.7',   addr: '0x077Fbc3338A9e6BAD90A3A041E6b7425689754Ef' },
-  paymaster:         { name: 'CitratePaymaster',  addr: '0x884c47518a21496d17d4dae62e96239b06177d28' },
-  memberSbt:         { name: 'CitrateMemberSBT',  addr: '0xb8a52197E5E3b03625E6817bC54D03F5820f04D3' },
-  stakeVault:        { name: 'MembershipStakeVault', addr: '0x127142194416A58280E638f286ECBcDc493d7A2C' },
+  entryPoint:        { name: 'EntryPoint v0.7',   addr: '0xC698feAf0FF7FdB0D60E2F620C97cB729A694975' },
+  paymaster:         { name: 'CitratePaymaster',  addr: '0xF14F56e812cE93544e75E841Ac6316F2d7E561b0' },
+  memberSbt:         { name: 'CitrateMemberSBT',  addr: '0x7bE005aA8c45C1695b4C75468c6cA8B40238A7C4' },
+  stakeVault:        { name: 'MembershipStakeVault', addr: '0x0aceb7B474eCC4abe12696CE48628f0CABE0267e' },
 };
 
 export const PERSONAS = {
