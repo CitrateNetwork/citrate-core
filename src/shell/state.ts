@@ -253,6 +253,20 @@ export interface AppState {
   chatBackend: "gateway" | "local";
   storageMode: "lexical" | "dl" | "semantic";
   modelPct: number;
+  /**
+   * CORE-BC-3 — the local Gemma model lifecycle for the onboarding S6.5 step.
+   * `modelState` is the honest, bridge-derived status: it becomes "ready" ONLY
+   * after a real SHA-256 verify (never fabricated). `modelDownloadedBytes`/
+   * `modelTotalBytes` trace to REAL bytes on disk (Tauri) or the preview animation
+   * (web-dev). `modelSkipped` marks that the member chose to run chat on the
+   * gateway/demo instead — an honest opt-out, not a failure. NOT persisted config
+   * (runtime status, refreshed from the real bridge).
+   */
+  modelState: "notPresent" | "downloading" | "verifying" | "ready" | "error";
+  modelDownloadedBytes: number;
+  modelTotalBytes: number;
+  modelError: string | null;
+  modelSkipped: boolean;
   sel: string | null;
   panX: number;
   panY: number;
@@ -435,6 +449,11 @@ export function freshState(pid: string): AppState {
     chatBackend: "gateway",
     storageMode: "lexical",
     modelPct: 0,
+    modelState: "notPresent",
+    modelDownloadedBytes: 0,
+    modelTotalBytes: 5_335_289_824,
+    modelError: null,
+    modelSkipped: false,
     sel: null,
     panX: 0,
     panY: 0,

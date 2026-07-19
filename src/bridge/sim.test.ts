@@ -334,3 +334,48 @@ describe("sim adapter — signing ceremony state machine (dev shim)", () => {
     await expect(bridge.signing.reject(view.id)).rejects.toBeTruthy();
   });
 });
+
+// CORE-BC-3 — the sim model domain is an HONEST web-dev preview: it never claims a
+// real download/verify and `ready` is reached ONLY after the sim's own verify()
+// step (the no-Ready-without-verify shape). The whole path is unreachable in a
+// packaged Tauri build (assertSimAllowed guards every op).
+describe("sim adapter — model domain is an honest web-dev preview (BC-3)", () => {
+  it("starts notPresent and never fabricates a ready without a verify", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    expect((await bridge.model.status()).state).toBe("notPresent");
+    // download advances a preview progress; verify is required before ready.
+    for (let i = 0; i < 10; i++) await bridge.model.download();
+    const st = await bridge.model.status();
+    // After enough preview downloads it is verifying (complete) — NOT ready yet.
+    expect(["verifying", "downloading"]).toContain(st.state);
+    expect(st.state).not.toBe("ready");
+  });
+
+  it("ready is reached ONLY after a real verify step (no-Ready-without-verify)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    // Drive the preview download to completion.
+    for (let i = 0; i < 10; i++) await bridge.model.download();
+    expect((await bridge.model.status()).state).not.toBe("ready");
+    // Only verify earns ready.
+    await bridge.model.verify();
+    expect((await bridge.model.status()).state).toBe("ready");
+  });
+
+  it("verify with nothing downloaded is rejected (never a fabricated ready)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await expect(bridge.model.verify()).rejects.toBeTruthy();
+    expect((await bridge.model.status()).state).toBe("notPresent");
+  });
+
+  it("the preview total mirrors the real pinned model size (honest number)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await bridge.model.download();
+    const st = await bridge.model.status();
+    if (st.state !== "downloading") throw new Error("expected downloading");
+    expect(st.totalBytes).toBe(5_335_289_824);
+  });
+});

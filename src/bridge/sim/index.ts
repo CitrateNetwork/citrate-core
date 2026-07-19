@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import { GRAPH } from "../../data/seed";
@@ -124,6 +124,13 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
   // builds by `assertSimAllowed`.
   let simUnlocked = false;
   let simInitialized = true; // the prototype presents an already-provisioned vault
+
+  // BC-3 sim model animation state (web-dev PREVIEW ONLY — never real bytes/hash).
+  // A packaged Tauri build runs the real BC-3.1/3.2 commands instead; this path is
+  // unreachable there (assertSimAllowed guards every op).
+  let simModelPct = 0;
+  let simModelDownloaded = false;
+  let simModelVerified = false;
 
   return {
     // ---- shell: in web-dev, open the link in a new browser tab ----
@@ -341,6 +348,47 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       async stop() {
         assertSimAllowed("node.stop");
+      },
+    },
+
+    // ---- model: the local Gemma download + verify (BC-3), SIM PREVIEW ONLY ----
+    // HONEST (Rule 1): the web preview cannot download or verify a real 5 GB GGUF
+    // and reaches no llama-server. So this animates a CLEARLY-preview progress in
+    // web-dev only (guarded by assertSimAllowed — it can NEVER run in a packaged
+    // Tauri build, where the real BC-3.1/3.2 commands run). It never claims a real
+    // "verified" model: `ready` is reached only AFTER the sim's own verify() step,
+    // mirroring the real no-Ready-without-verify guard, and the whole path is
+    // unreachable in the packaged app.
+    model: {
+      async status(): Promise<ModelStatus> {
+        assertSimAllowed("model.status");
+        // The sim total mirrors the real pinned size (5,335,289,824 bytes) so the
+        // preview shows the honest number; simModelPct/simModelVerified are local
+        // web-dev animation state (never real bytes/hash).
+        const total = 5_335_289_824;
+        if (simModelVerified) return { state: "ready" };
+        if (simModelDownloaded) return { state: "verifying" };
+        if (simModelPct <= 0) return { state: "notPresent" };
+        return { state: "downloading", downloadedBytes: Math.round((simModelPct / 100) * total), totalBytes: total, pct: simModelPct };
+      },
+      async download(): Promise<void> {
+        assertSimAllowed("model.download");
+        // Web-dev animation ONLY: advance a fake progress toward complete. This is
+        // a design preview, never a real 5 GB pull (which only the Tauri app does).
+        simModelPct = Math.min(100, simModelPct + 25 + Math.random() * 20);
+        if (simModelPct >= 100) simModelDownloaded = true;
+      },
+      async verify(): Promise<void> {
+        assertSimAllowed("model.verify");
+        // Only a completed (sim) download can be verified; ready is reached ONLY
+        // after this verify step — the no-Ready-without-verify shape, in preview.
+        if (!simModelDownloaded) throw new Error("model: nothing downloaded to verify");
+        simModelVerified = true;
+      },
+      async serveStart(): Promise<void> {
+        assertSimAllowed("model.serveStart");
+        // No llama-server in the web preview — the real spawn is Tauri-only. This
+        // resolves so the sim flow proceeds; it never claims a running local model.
       },
     },
 

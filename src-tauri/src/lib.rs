@@ -17,10 +17,12 @@ mod earnings;
 mod grant_status;
 mod membership;
 mod memory;
+mod model;
 mod node;
 mod oidc;
 mod rpc;
 mod seam;
+mod serve;
 mod shell;
 mod staking;
 mod supervisor;
@@ -88,6 +90,20 @@ pub fn run() {
             // https baseURL at set-time and ai_chat calls the STORED baseURL only —
             // the webview picks WHICH provider id, never the URL (exfil-binding).
             app.manage(ai::build_ai_state());
+            // CORE-BC-3.1 — the ModelManager: the local Gemma GGUF download +
+            // SHA-256 verify. model_status is honest (Ready ONLY after a real
+            // verify — never mere presence, Rule 1); model_download is STREAMED +
+            // resumable (HTTP Range) with a GGUF-magic gate; model_verify streams
+            // the file through SHA-256 and quarantines any mismatch. No secrets.
+            app.manage(model::build_model_state(&app.handle().clone())?);
+            // CORE-BC-3.2 — the LlamaServerManager: the bundled `llama-server`
+            // sidecar under the SidecarSupervisor, serving the verified local model
+            // over an OpenAI-compatible loopback endpoint. model_serve_start fails
+            // CLOSED unless the model is verified-Ready AND the binary is bundled
+            // (WO-2 packaging gap surfaced honestly). ai.rs routes to the LOCAL
+            // provider when the model is ready + the server healthy, else the
+            // gateway (if a cgk_ key is configured), else the demo.
+            app.manage(serve::build_serve_state(&app.handle().clone())?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -213,6 +229,28 @@ pub fn run() {
             ai::ai_provider_status,
             ai::ai_clear_provider,
             ai::ai_chat,
+            // BC-3.2 — LOCAL inference against the bundled llama-server on the
+            // loopback endpoint (NO key). Fails closed on any non-loopback URL.
+            ai::ai_chat_local,
+            // model — BC-3.1 local Gemma download + verify. model_status is the
+            // honest file-derived state (Ready ONLY after a real SHA-256 verify —
+            // never mere presence, Rule 1); model_download is STREAMED + resumable
+            // (HTTP Range) with a GGUF-magic gate + pinned-length finalize;
+            // model_verify quarantines any checksum/size mismatch (never Ready).
+            // No secrets, no key material cross this surface.
+            model::model_status,
+            model::model_download,
+            model::model_verify,
+            // model-serve — BC-3.2 the bundled llama-server sidecar under the
+            // SidecarSupervisor. model_serve_start fails CLOSED unless the model is
+            // verified-Ready AND the binary is bundled; model_serve_status carries
+            // the loopback baseURL + a coarse health flag; model_inference_state
+            // returns the HONEST route (ready/local-fallback/downloading/
+            // gateway-only/no-model/demo). No secret crosses this surface.
+            serve::model_serve_start,
+            serve::model_serve_stop,
+            serve::model_serve_status,
+            serve::model_inference_state,
             // open an external federation link (https only) in the system browser.
             shell::open_external,
             // wallet activity — REAL indexed 40204 tx history from the CitrateScan

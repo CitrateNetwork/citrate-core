@@ -180,6 +180,7 @@ export class Store {
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
+  private modelTimer: ReturnType<typeof setInterval> | null = null;
   private nodeStarting = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
@@ -239,6 +240,9 @@ export class Store {
     if (BRIDGE_MODE === "tauri") {
       void this.refreshNode();
       this.nodeTimer = setInterval(() => void this.refreshNode(), 2000);
+      // BC-3 — fold the REAL local-model status on launch so the S6.5 step (and
+      // Settings) show a resumed download / an already-verified model honestly.
+      void this.refreshModel();
       // Real wallet balances (native liquid + claimable) — folded once on launch;
       // the Wallet surface also refreshes on mount + after a settled ceremony.
       void this.refreshWallet();
@@ -1132,6 +1136,91 @@ export class Store {
     }
     this.toast("Node stopped — supervisor released");
     this.save();
+  }
+
+  // ---------- CORE-BC-3: local model (download + verify + serve) ----------
+
+  /** Fold the REAL model status from the bridge into AppState. `ready` is EARNED
+   * only by a real verify (Rule 1) — the bridge never fabricates it. A failed
+   * poll keeps the last honest values. */
+  async refreshModel(): Promise<void> {
+    try {
+      const st = await bridge.model.status();
+      const patch: Partial<AppState> = { modelState: st.state, modelError: null };
+      if (st.state === "downloading") {
+        patch.modelDownloadedBytes = st.downloadedBytes;
+        patch.modelTotalBytes = st.totalBytes;
+      } else if (st.state === "error") {
+        patch.modelError = st.msg;
+      }
+      this.setState(patch);
+    } catch {
+      /* honest no-op: a failed poll keeps the last real status, never a sim number */
+    }
+  }
+
+  /** Start (or resume) the STREAMED model download, then poll `model.status()`
+   * like `startNode` polls the node. On completion it auto-verifies; `ready` is
+   * only ever reached from a real verify. An honest error surfaces on failure —
+   * chat then falls back to the gateway/demo (never a fake "verified"). */
+  startModelDownload(): void {
+    this.setState({ modelState: "downloading", modelError: null });
+    this.save();
+    // Poll the real status every 2s so the progress bar reflects real bytes.
+    if (!this.modelTimer) this.modelTimer = setInterval(() => void this.refreshModel(), 2000);
+    void bridge.model
+      .download()
+      .then(async () => {
+        // Download resolved: verify (streams the file through SHA-256). Only a
+        // matching hash reaches "ready".
+        await this.refreshModel();
+        await this.verifyModel();
+      })
+      .catch((e) => {
+        this.setState({ modelState: "error", modelError: e instanceof Error ? e.message : "download failed" });
+        this.toast("Model download failed — " + (e instanceof Error ? e.message : "unknown") + ". Chat will use the gateway.");
+        this.stopModelPoll();
+        this.save();
+      });
+  }
+
+  /** Stream-verify the downloaded model (SHA-256 == the pinned hash). On a match
+   * the model becomes `ready`; on a mismatch the file is quarantined and an
+   * honest error surfaces (never a fabricated "verified"). */
+  async verifyModel(): Promise<void> {
+    this.setState({ modelState: "verifying" });
+    try {
+      await bridge.model.verify();
+      await this.refreshModel(); // reads the EARNED `ready` from the bridge
+      if (this.state.modelState === "ready") {
+        this.toast("Local model verified — SHA-256 matched. Chat can run on-device.");
+        // Best-effort: spin up the llama-server sidecar so chat routes locally.
+        void bridge.model.serveStart().catch(() => {/* honest: gateway fallback until bundled */});
+      }
+      this.stopModelPoll();
+    } catch (e) {
+      this.setState({ modelState: "error", modelError: e instanceof Error ? e.message : "verify failed" });
+      this.toast("Model verify failed — " + (e instanceof Error ? e.message : "checksum mismatch") + ". Chat will use the gateway.");
+      this.stopModelPoll();
+    }
+    this.save();
+  }
+
+  /** Honestly SKIP the local model: chat routes to the gateway/demo. This is an
+   * opt-out, not a failure — no fabricated "ready". */
+  skipModel(): void {
+    this.stopModelPoll();
+    this.setState({ modelSkipped: true });
+    this.toast("Skipped local model — chat runs on the gateway (or demo). You can download it later in Settings.");
+    this.save();
+  }
+
+  /** Stop the model status poller (called on complete/skip/error). */
+  private stopModelPoll(): void {
+    if (this.modelTimer) {
+      clearInterval(this.modelTimer);
+      this.modelTimer = null;
+    }
   }
 
   /**

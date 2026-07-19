@@ -4,7 +4,8 @@
     "externalBin": [
       "binaries/citrate",
       "binaries/node-agent",
-      "binaries/mem-mcp"
+      "binaries/mem-mcp",
+      "binaries/llama-server"
     ]
   }
 }

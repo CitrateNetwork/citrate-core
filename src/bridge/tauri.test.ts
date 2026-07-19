@@ -38,6 +38,10 @@ const aiMock: { map: Map<string, { baseURL: string; model: string; apiKey: strin
   default: null,
 };
 
+// CORE-BC-3: the mocked model status the `model_status` command returns; a test
+// flips it to exercise the notPresent/downloading/ready branches.
+const modelMock: { status: unknown } = { status: { state: "notPresent" } };
+
 const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   switch (cmd) {
     case "config_read":
@@ -129,6 +133,16 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       return { state: "running", peers: 3, height: 420, syncPct: 100 };
     case "node_start":
     case "node_stop":
+      return undefined;
+    // CORE-BC-3 model — the local Gemma download + verify + llama-server sidecar.
+    // status returns the honest file-derived state (Ready only after a real
+    // verify); download/verify/serveStart return void. `modelMock` lets a test flip
+    // the status to exercise the downloading/ready branches.
+    case "model_status":
+      return modelMock.status;
+    case "model_download":
+    case "model_verify":
+    case "model_serve_start":
       return undefined;
     // CORE-C1.2 node-agent — under the SidecarSupervisor. status returns the
     // supervisor state + whether a bearer session exists (NEVER the token);
@@ -816,5 +830,46 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
   it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {
     const bridge = createTauriBridge();
     await expect(bridge.chat.backend()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+});
+
+// CORE-BC-3 — the model domain invokes the real BC-3.1/3.2 commands. status
+// returns the honest file-derived state (Ready ONLY after a real verify);
+// download/verify/serveStart invoke their commands and return void. No secret
+// ever crosses this boundary.
+describe("tauri adapter — model domain is wired to the real download+verify+serve (BC-3)", () => {
+  beforeEach(() => {
+    modelMock.status = { state: "notPresent" };
+    invokeMock.mockClear();
+  });
+
+  it("status invokes model_status and passes the honest file-derived state through", async () => {
+    modelMock.status = { state: "downloading", downloadedBytes: 100, totalBytes: 5_335_289_824, pct: 0.000002 };
+    const bridge = createTauriBridge();
+    const st = await bridge.model.status();
+    expect(invokeMock).toHaveBeenCalledWith("model_status", undefined);
+    expect(st.state).toBe("downloading");
+    if (st.state !== "downloading") throw new Error("narrow");
+    expect(st.totalBytes).toBe(5_335_289_824);
+    // No key/secret field is ever present.
+    expect(JSON.stringify(st)).not.toContain("key");
+  });
+
+  it("status reports Ready only when the Rust side has EARNED it (a real verify)", async () => {
+    // Presence-derived downloading is NOT ready; the ready state comes from Rust.
+    modelMock.status = { state: "ready" };
+    const bridge = createTauriBridge();
+    const st = await bridge.model.status();
+    expect(st.state).toBe("ready");
+  });
+
+  it("download/verify/serveStart invoke their commands and return void", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.model.download()).resolves.toBeUndefined();
+    await expect(bridge.model.verify()).resolves.toBeUndefined();
+    await expect(bridge.model.serveStart()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("model_download", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("model_verify", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("model_serve_start", undefined);
   });
 });

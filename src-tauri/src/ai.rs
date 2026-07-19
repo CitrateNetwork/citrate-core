@@ -72,6 +72,126 @@ not claim to. If asked to perform an action, explain that it happens through the
 app's own controls (which route every write through a human-approved signature \
 ceremony).";
 
+/// Build the LOCAL llama-server baseURL from a loopback port
+/// (`http://127.0.0.1:<port>/v1`). This is the SINGLE source of truth for the
+/// local endpoint (the same shape `serve.rs::base_url` produces); `chat_local`
+/// derives its URL from here so the webview never supplies a URL (F-1).
+pub fn local_base_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/v1")
+}
+
+/// F-1 (BLOCKING) — the rigorous loopback guard. A URL is a safe LOCAL endpoint
+/// IFF it parses, its scheme is exactly `http`, it carries NO userinfo
+/// (`username().is_empty() && password().is_none()`), and its host is EXACTLY one
+/// of the loopback aliases (`127.0.0.1`, `::1`, `localhost`). This closes the
+/// exfil class the old `starts_with("http://127.0.0.1:")` string check allowed:
+/// `http://127.0.0.1:8080@evil.com/v1` (userinfo → host `evil.com`),
+/// `http://127.0.0.1:@evil.com/v1`, and `http://127.0.0.1.evil.com/v1` (host is a
+/// subdomain of `evil.com`) all FAIL host_str() equality / userinfo emptiness,
+/// mirroring the rigor of [`validate_https_base_url`].
+fn loopback_url_is_safe(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "http" {
+        return false;
+    }
+    // No userinfo — the userinfo trick (`user:pass@host`) is how a "127.0.0.1"
+    // prefix can hide a foreign host after the `@`.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return false;
+    }
+    // Host must be EXACTLY a loopback alias (not merely a prefix/suffix of one).
+    // The `url` crate renders an IPv6 host in bracketed form (`[::1]`), so accept
+    // that spelling too.
+    matches!(
+        parsed.host_str(),
+        Some("127.0.0.1" | "::1" | "[::1]" | "localhost")
+    )
+}
+
+// ---------------------------------------------------------------------------
+// BC-3.2 — the honest inference-routing state. A PURE function over the real
+// facts (local model ready + server healthy, whether a download is in flight,
+// whether a gateway key is configured) → the single honest state the frontend
+// renders. LOCAL wins over gateway wins over demo (Rule 1: every fallback is
+// truthful, never a demo dressed as a real model).
+// ---------------------------------------------------------------------------
+
+/// The inputs the routing decision is made from (all honest, real facts).
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderInputs {
+    /// The local model is downloaded AND verified-`Ready` (BC-3.1).
+    pub model_ready: bool,
+    /// The local `llama-server` sidecar is Running/healthy (BC-3.2).
+    pub server_healthy: bool,
+    /// A model download is currently in progress.
+    pub downloading: bool,
+    /// A gateway provider key (cgk_) is configured (the remote fallback).
+    pub gateway_key_configured: bool,
+}
+
+/// The honest inference-routing state surfaced to the frontend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceState {
+    /// Local model ready + server healthy → chat runs LOCALLY.
+    Ready,
+    /// Local model ready but the server is not healthy → fall back to the gateway.
+    LocalFallback,
+    /// A download is in flight (no ready local server) → gateway meanwhile.
+    Downloading,
+    /// No local model, but a gateway key is configured → gateway-only.
+    GatewayOnly,
+    /// No local model, no gateway, and no download started → the onboarding step
+    /// surfaces this to prompt a download.
+    NoModel,
+    /// Nothing configured that can run a real model → the built-in demo agent.
+    Demo,
+}
+
+impl InferenceState {
+    /// The kebab-case wire string the frontend reads.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InferenceState::Ready => "ready",
+            InferenceState::LocalFallback => "local-fallback",
+            InferenceState::Downloading => "downloading",
+            InferenceState::GatewayOnly => "gateway-only",
+            InferenceState::NoModel => "no-model",
+            InferenceState::Demo => "demo",
+        }
+    }
+}
+
+/// Decide the honest inference state. Priority: LOCAL (ready + healthy) → gateway
+/// (local-fallback if the model is ready but the server is down, else
+/// gateway-only) → downloading (in flight) → demo (nothing else). This is the
+/// ONE place the real-vs-fallback route is decided (Rule 1 — no fabricated route).
+pub fn select_inference_state(i: ProviderInputs) -> InferenceState {
+    // 1) The best path: a ready local model with a healthy server → run locally.
+    if i.model_ready && i.server_healthy {
+        return InferenceState::Ready;
+    }
+    // 2) A ready model but no healthy server: honest local-fallback iff a gateway
+    //    key exists; otherwise it is still "ready-but-not-serving" — route to demo
+    //    only if there is no gateway (we never claim a local model that isn't
+    //    actually serving).
+    if i.model_ready && i.gateway_key_configured {
+        return InferenceState::LocalFallback;
+    }
+    // 3) No usable local model. If a download is in flight, say so (the UI shows
+    //    progress + routes to the gateway/demo meanwhile).
+    if i.downloading {
+        return InferenceState::Downloading;
+    }
+    // 4) No local model + a gateway key → gateway-only.
+    if i.gateway_key_configured {
+        return InferenceState::GatewayOnly;
+    }
+    // 5) Nothing configured → the honest built-in demo.
+    InferenceState::Demo
+}
+
 // ---------------------------------------------------------------------------
 // Errors — coarse + secret-free (invariant 5). No variant carries the key, the
 // Authorization header, or a full request/response body.
@@ -444,6 +564,37 @@ impl AiManager {
         let resp = self.http.post_json(&url, &cfg.api_key, &body)?;
         parse_completion(&resp)
     }
+
+    /// **BC-3.2 — LOCAL inference (F-1 hardened).** POST the OpenAI chat body to
+    /// the LOCAL `llama-server` on the loopback endpoint with NO api key (an empty
+    /// bearer — the local model needs none). The endpoint is DERIVED IN RUST from
+    /// the loopback `port` ([`local_base_url`], the same source `serve.rs` uses);
+    /// the webview supplies only `port` (a `u16`) — NEVER a URL. This eliminates
+    /// the attacker-controllable-URL class entirely (a `u16` cannot name a foreign
+    /// host), mirroring how the money-path commands never take a webview URL. A
+    /// defence-in-depth [`loopback_url_is_safe`] check re-validates the derived URL
+    /// so a future refactor cannot reintroduce a foreign host. No secret is
+    /// involved.
+    fn chat_local(
+        &self,
+        port: u16,
+        model: &str,
+        messages_json: &str,
+        context_json: &str,
+    ) -> Result<String> {
+        let base = local_base_url(port);
+        // Defence in depth: the Rust-derived URL must satisfy the rigorous loopback
+        // guard (exact loopback host, http scheme, no userinfo). A port can only
+        // ever produce a safe URL; this fails closed if that ever ceased to hold.
+        if !loopback_url_is_safe(&base) {
+            return Err(AiError::BadBaseUrl);
+        }
+        let url = format!("{base}/chat/completions");
+        let body = build_chat_body(model, messages_json, context_json)?;
+        // Empty bearer — the local server accepts unauthenticated loopback calls.
+        let resp = self.http.post_json(&url, "", &body)?;
+        parse_completion(&resp)
+    }
 }
 
 /// Build the OpenAI `/v1/chat/completions` request body: the tool-less real system
@@ -556,6 +707,28 @@ pub fn ai_chat(
     ai: tauri::State<'_, AiState>,
 ) -> std::result::Result<String, String> {
     ai.0.chat(&provider_id, &messages_json, &context_json)
+        .map_err(|e| e.to_string())
+}
+
+/// **Command — ai_chat_local (BC-3.2, F-1 hardened).** REAL LOCAL inference
+/// against the bundled `llama-server` (llama.cpp) on the loopback endpoint, with
+/// NO api key. The endpoint is derived IN RUST from the serve manager's loopback
+/// port ([`crate::serve::ServeState`]) — the webview supplies ONLY the messages +
+/// context, NEVER a URL or host. A compromised renderer therefore cannot redirect
+/// the "local" route to a remote host (no attacker-controllable URL exists on this
+/// path). Returns the model completion only.
+#[tauri::command]
+pub fn ai_chat_local(
+    messages_json: String,
+    context_json: String,
+    ai: tauri::State<'_, AiState>,
+    serve: tauri::State<'_, crate::serve::ServeState>,
+) -> std::result::Result<String, String> {
+    // The port + model name come from Rust-owned state, never the webview. (For a
+    // single-model llama-server the model field is a label; using the pinned model
+    // name keeps the webview from supplying anything on the local path.)
+    let port = serve.0.port();
+    ai.0.chat_local(port, crate::model::MODEL_FILE, &messages_json, &context_json)
         .map_err(|e| e.to_string())
 }
 

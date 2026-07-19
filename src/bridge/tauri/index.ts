@@ -29,6 +29,7 @@ import type {
   PendingWithdrawal,
   AiProviderStatus,
   GrantStatus,
+  ModelStatus,
 } from "../domains";
 import { Unavailable } from "../types";
 
@@ -193,6 +194,25 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async stop() {
         await invoke("node_stop");
+      },
+    },
+    // ---- model: the local Gemma download + verify + llama-server sidecar (BC-3) ----
+    // status/download/verify drive the real BC-3.1 Rust commands (streamed +
+    // resumable download, SHA-256 verify); serveStart spawns the BC-3.2
+    // llama-server sidecar (fails closed unless the model is verified-Ready + the
+    // binary is bundled). No secret ever crosses this boundary.
+    model: {
+      async status(): Promise<ModelStatus> {
+        return invoke<ModelStatus>("model_status");
+      },
+      async download(): Promise<void> {
+        await invoke("model_download");
+      },
+      async verify(): Promise<void> {
+        await invoke("model_verify");
+      },
+      async serveStart(): Promise<void> {
+        await invoke("model_serve_start");
       },
     },
     // ---- agent: the node-agent under the SidecarSupervisor (C1.2) ----

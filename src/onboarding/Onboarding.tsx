@@ -650,14 +650,116 @@ function S6({ store, s }: { store: Store; s: AppState }) {
                 synced · stake 32,000 SALT ≥ minimum · eligible for proposer election
               </div>
             </div>
-            <button className="btn btn-primary btn-lg" onClick={() => store.onEnter()}>
-              Enter your dashboard
-            </button>
           </div>
         )}
       </div>
       <div className="mono" style={dataSrc}>
         Data sources — local node RPC · node-agent supervision API 127.0.0.1:19600
+      </div>
+
+      {/* S6.5 — local model in-flow (BC-3). Appears once the node is up. */}
+      {(s.node === "validating" || s.node === "synced") && <ModelStep store={store} s={s} />}
+    </div>
+  );
+}
+
+// BC-3.3 — the S6.5 local-model step. An honest download + verify of the Gemma
+// GGUF (4.96 GB) with a REAL progress bar driven by `model.status()`, a verify,
+// and a SKIP that honestly routes chat to the gateway/demo. "Enter your dashboard"
+// is gated behind the model being READY (a real verify) OR an explicit SKIP — the
+// captions name the real source + the pinned SHA-256, and no "verified" is ever
+// fabricated (Rule 1). The `ready` state only appears from a real verify.
+export function ModelStep({ store, s }: { store: Store; s: AppState }) {
+  const pct =
+    s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 1000) / 10) : 0;
+  const gb = (bytes: number) => (bytes / 1e9).toFixed(2);
+  const canEnter = s.modelState === "ready" || s.modelSkipped;
+  const sha = "90ce9812…e0313e9f"; // the pinned SHA-256 (abbreviated for display)
+
+  return (
+    <div className="surface" style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, marginTop: 4 }} data-testid="model-step">
+      <div style={eyebrow}>S6.5 · Local model</div>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 500 }}>Download the local model (4.96 GB)</div>
+        <span className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
+          gemma · Q4_K_M · GGUF
+        </span>
+      </div>
+      <p style={body}>
+        Run chat on-device with a bundled llama-server, no data leaves this machine. The download is streamed and resumable, and
+        verified against a pinned SHA-256 before it is ever used. While it downloads — or if you skip — chat runs on the gateway.
+      </p>
+
+      {(s.modelState === "notPresent" || s.modelState === "error") && !s.modelSkipped && (
+        <div style={{ display: "flex", gap: 10 }}>
+          <button className="btn btn-primary btn-lg" onClick={() => store.startModelDownload()}>
+            {s.modelState === "error" ? "Retry download" : "Download local model"}
+          </button>
+          <button className="btn btn-ghost btn-lg" onClick={() => store.skipModel()}>
+            Skip — use the gateway
+          </button>
+        </div>
+      )}
+
+      {s.modelState === "error" && s.modelError && (
+        <div className="mono" style={{ fontSize: 11.5, color: "var(--danger)" }} data-testid="model-error">
+          {s.modelError}
+        </div>
+      )}
+
+      {s.modelState === "downloading" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="model-downloading">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Downloading</div>
+            <div className="mono tabular" style={{ fontSize: 13, color: "var(--accent-text)" }} data-testid="model-pct">
+              {pct}%
+            </div>
+          </div>
+          <div style={{ height: 6, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
+            <div style={{ height: "100%", background: "var(--accent)", width: pct + "%", transition: "width .5s var(--ease-standard)" }}></div>
+          </div>
+          <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }} data-testid="model-bytes">
+            {gb(s.modelDownloadedBytes)} / {gb(s.modelTotalBytes)} GB
+          </span>
+        </div>
+      )}
+
+      {s.modelState === "verifying" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }} data-testid="model-verifying">
+          <div style={{ width: 40, height: 40, flexShrink: 0 }}>
+            <LoaderMark size={40} />
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Verifying SHA-256</div>
+            <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+              streaming the file through SHA-256 · comparing to the pinned hash
+            </div>
+          </div>
+        </div>
+      )}
+
+      {s.modelState === "ready" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }} data-testid="model-ready">
+          <span className="cc-stamp" style={{ width: 26, height: 26, borderRadius: 999, background: "var(--ok-bg)", border: "1px solid var(--ok)", color: "var(--ok)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+            {checkBig(14)}
+          </span>
+          <div style={{ fontSize: 14, fontWeight: 500 }}>Local model verified — chat runs on-device</div>
+        </div>
+      )}
+
+      {s.modelSkipped && s.modelState !== "ready" && (
+        <div className="mono" style={{ fontSize: 11.5, color: "var(--tx-3)" }} data-testid="model-skipped">
+          Skipped — chat runs on the gateway. You can download the local model later in Settings.
+        </div>
+      )}
+
+      <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
+          huggingface.co/ggml-org/gemma-4-E4B-it-GGUF · sha256 {sha}
+        </div>
+        <button className="btn btn-primary" disabled={!canEnter} onClick={() => store.onEnter()} data-testid="model-enter">
+          Enter your dashboard
+        </button>
       </div>
     </div>
   );

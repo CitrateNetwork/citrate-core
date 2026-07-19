@@ -370,3 +370,177 @@ fn a_provider_id_that_is_not_configured_cannot_borrow_another_providers_key() {
     assert_eq!(url, "https://api.openai.com/v1/chat/completions");
     assert_eq!(bearer, "sk-openai-key"); // openai's key, to openai's URL — never crossed.
 }
+
+// ===========================================================================
+// BC-3.2 — LOCAL inference routing + the honest provider-selection state.
+// ===========================================================================
+
+/// Inference routes to the LOCAL llama-server baseURL (loopback) with an EMPTY
+/// bearer (no key). This is the "inference routes to the LOCAL baseURL when the
+/// model is Ready" proof. F-1: the endpoint is DERIVED IN RUST from the port
+/// (`http://127.0.0.1:<port>/v1`); the webview supplies NO URL — it cannot pass
+/// one, so there is no attacker-controllable URL on the local path.
+#[test]
+fn local_inference_posts_to_the_loopback_endpoint_with_no_key() {
+    let shared = SharedHttp::new(vec![Ok(completion_response("local model reply"))]);
+    let mgr = mgr_with(&shared);
+    let out = mgr
+        .chat_local(
+            18080,
+            "gemma-4-E4B-it",
+            &json!([{ "role": "user", "content": "hi" }]).to_string(),
+            &json!({ "height": 1 }).to_string(),
+        )
+        .expect("local chat");
+    assert_eq!(out, "local model reply");
+    let calls = shared.calls();
+    assert_eq!(calls.len(), 1);
+    let (url, bearer, body) = &calls[0];
+    // The LOCAL loopback endpoint is built by Rust from the port — parsed host is
+    // exactly 127.0.0.1, scheme http, no userinfo. /chat/completions appended.
+    assert_eq!(url, "http://127.0.0.1:18080/v1/chat/completions");
+    let parsed = url::Url::parse(url).unwrap();
+    assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+    assert_eq!(parsed.scheme(), "http");
+    assert!(parsed.username().is_empty() && parsed.password().is_none());
+    // NO api key — the local server is keyless (empty bearer).
+    assert_eq!(bearer, "");
+    assert_eq!(body["model"], "gemma-4-E4B-it");
+}
+
+/// F-1 (BLOCKING) — the LOCAL path takes NO webview-supplied URL. `chat_local`
+/// accepts only a `port` (a `u16`), so the whole class of "smuggle a remote host
+/// past a prefix check" is eliminated: a compromised renderer literally cannot
+/// name a host. This test documents that the derived URL, for EVERY port,
+/// resolves to a loopback host with no userinfo — the exfil vectors that defeated
+/// the old `starts_with("http://127.0.0.1:")` string check
+/// (`http://127.0.0.1:8080@evil.com/v1`, `http://127.0.0.1:@evil.com/v1`,
+/// `http://127.0.0.1.evil.com/v1`) can never be constructed from a bare port.
+#[test]
+fn local_inference_url_is_rust_derived_and_never_carries_a_foreign_host() {
+    // The three historical exfil vectors — proof they would NOT survive the
+    // rigorous host check the derived URL is built to satisfy. None has host
+    // 127.0.0.1 with empty userinfo; all must be refused by the guard.
+    let exfil_vectors = [
+        "http://127.0.0.1:8080@evil.com/v1", // userinfo trick — host is evil.com
+        "http://127.0.0.1:@evil.com/v1",     // empty-port userinfo trick
+        "http://127.0.0.1.evil.com/v1",      // suffix trick — host is 127.0.0.1.evil.com
+    ];
+    for v in exfil_vectors {
+        assert!(
+            !loopback_url_is_safe(v),
+            "the loopback guard MUST refuse the exfil vector: {v}"
+        );
+    }
+    // A Rust-derived URL from any port is always safe (loopback, http, no userinfo).
+    for port in [1u16, 18080, 65535] {
+        let derived = format!("http://127.0.0.1:{port}/v1");
+        assert!(
+            loopback_url_is_safe(&derived),
+            "the Rust-derived loopback URL must pass the guard: {derived}"
+        );
+    }
+    // The genuine loopback aliases are accepted; anything else is refused.
+    assert!(loopback_url_is_safe("http://127.0.0.1:18080/v1"));
+    assert!(loopback_url_is_safe("http://[::1]:18080/v1"));
+    assert!(loopback_url_is_safe("http://localhost:18080/v1"));
+    // https / remote / wrong-scheme all refused.
+    for bad in [
+        "https://127.0.0.1:18080/v1",
+        "http://10.0.0.1:18080/v1",
+        "http://evil.example.com/v1",
+        "ws://127.0.0.1:18080/v1",
+    ] {
+        assert!(!loopback_url_is_safe(bad), "must refuse: {bad}");
+    }
+}
+
+/// The LOCAL path fails closed on a non-loopback endpoint with NO egress. Because
+/// `chat_local` now takes a `port` (never a URL), the internal guard is the last
+/// line of defence against a future refactor reintroducing a foreign host — it is
+/// exercised directly via `loopback_url_is_safe` above. Here we prove that the
+/// end-to-end `chat_local` never egresses when its derived URL would be unsafe
+/// (it cannot be, from a port — so egress ALWAYS goes to loopback).
+#[test]
+fn local_inference_rejects_non_loopback_url_no_egress() {
+    let shared = SharedHttp::new(vec![Ok(completion_response("local model reply"))]);
+    let mgr = mgr_with(&shared);
+    // A port can only ever produce a loopback URL; the call succeeds AND the only
+    // egress is to 127.0.0.1 — never a remote (the webview has no way to name one).
+    let out = mgr
+        .chat_local(
+            18080,
+            "gemma",
+            &json!([]).to_string(),
+            &json!({}).to_string(),
+        )
+        .expect("local chat over a port always targets loopback");
+    assert_eq!(out, "local model reply");
+    let calls = shared.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].0.starts_with("http://127.0.0.1:"),
+        "egress is loopback-only; no foreign host is reachable from a port"
+    );
+    // And the guard itself refuses the classic exfil URL, no egress, if ever fed
+    // one directly (belt-and-suspenders for a future refactor).
+    assert!(!loopback_url_is_safe("http://127.0.0.1:8080@evil.com/v1"));
+}
+
+/// The provider-selection state machine: LOCAL (ready+healthy) wins; a ready
+/// model with a dead server falls back to the gateway; a download in flight is
+/// honestly Downloading; a gateway key alone is gateway-only; nothing → demo.
+#[test]
+fn inference_state_selection_is_honest_per_branch() {
+    // LOCAL wins.
+    assert_eq!(
+        select_inference_state(ProviderInputs {
+            model_ready: true,
+            server_healthy: true,
+            downloading: false,
+            gateway_key_configured: false,
+        }),
+        InferenceState::Ready
+    );
+    // Ready model, dead server, gateway present → local-fallback.
+    assert_eq!(
+        select_inference_state(ProviderInputs {
+            model_ready: true,
+            server_healthy: false,
+            downloading: false,
+            gateway_key_configured: true,
+        }),
+        InferenceState::LocalFallback
+    );
+    // No local model, downloading → downloading (over gateway-only).
+    assert_eq!(
+        select_inference_state(ProviderInputs {
+            model_ready: false,
+            server_healthy: false,
+            downloading: true,
+            gateway_key_configured: true,
+        }),
+        InferenceState::Downloading
+    );
+    // No local model, not downloading, gateway present → gateway-only.
+    assert_eq!(
+        select_inference_state(ProviderInputs {
+            model_ready: false,
+            server_healthy: false,
+            downloading: false,
+            gateway_key_configured: true,
+        }),
+        InferenceState::GatewayOnly
+    );
+    // Nothing usable → demo.
+    assert_eq!(
+        select_inference_state(ProviderInputs {
+            model_ready: false,
+            server_healthy: false,
+            downloading: false,
+            gateway_key_configured: false,
+        }),
+        InferenceState::Demo
+    );
+}
+
