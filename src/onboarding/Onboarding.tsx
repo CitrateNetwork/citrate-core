@@ -2,7 +2,7 @@ import markBlack from "../assets/brand/citrate_mark_black.svg";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
 import { Store } from "../shell/store";
-import { AppState } from "../shell/state";
+import { AppState, fmtSaltFromWei } from "../shell/state";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
@@ -460,7 +460,7 @@ function S4({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
-function S5({ store, s }: { store: Store; s: AppState }) {
+export function S5({ store, s }: { store: Store; s: AppState }) {
   const ckLabels = ["authenticated sub — token live", "kyc_status verified — live claim", "payment settled — webhook proof"];
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -538,14 +538,19 @@ function S5({ store, s }: { store: Store; s: AppState }) {
           <div className="surface cc-stamp" style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14, borderColor: "var(--accent)" }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
               <div className="tabular" style={{ fontFamily: "var(--font-display)", fontWeight: 380, fontSize: 44, lineHeight: 1, letterSpacing: "-0.022em" }}>
-                32,000
+                {fmtSaltFromWei(s.s5StakeWei)}
               </div>
               <div style={{ ...eyebrow, color: "var(--accent-text)" }}>SALT staked · settled</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
-              <SettleRow k="Staked position" v="32,000 SALT · vaulted principal" />
-              <SettleRow k="Membership SBT" v="CitrateMemberSBT #4187 · minted" />
-              <SettleRow k="Transaction" v={short(s.s5hash)} accent />
+              {/* F1 (Rule 1): every row traces to a real read. Staked position is the
+                  REAL attributedStake (wei→SALT); the SBT row shows only "minted"
+                  (confirmed by balanceOf==1 — the token id was never read); the
+                  honest on-chain anchor is the member/vault address, NOT a fabricated
+                  tx hash (this app does not broadcast the grant tx). */}
+              <SettleRow k="Staked position" v={`${fmtSaltFromWei(s.s5StakeWei)} SALT · vaulted principal`} />
+              <SettleRow k="Membership SBT" v="CitrateMemberSBT · minted" />
+              <SettleRow k="Member wallet" v={short(s.walletAddr)} accent />
             </div>
             <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
               Principal locked for the membership term and until mainnet release policy unlocks vaulted grants. Validator rewards from your node's work accrue to you.
@@ -560,7 +565,7 @@ function S5({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
       <div className="mono" style={dataSrc}>
-        Data sources — chain 40204 RPC · LiquidStakingPool 0xfd27…685e · CitratePaymaster 0x884c…d28
+        Data sources — MembershipStakeVault.attributedStake 0x0ace…267e · CitrateMemberSBT.balanceOf 0x7be0…a7c4 · /userinfo entitlement
       </div>
     </div>
   );

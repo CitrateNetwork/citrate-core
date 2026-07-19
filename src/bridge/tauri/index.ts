@@ -28,6 +28,7 @@ import type {
   MemoryNeighbor,
   PendingWithdrawal,
   AiProviderStatus,
+  GrantStatus,
 } from "../domains";
 import { Unavailable } from "../types";
 
@@ -295,6 +296,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // polls auth.userinfo() until the entitlement lands (no fabricated settle).
       async checkout(): Promise<void> {
         await invoke("membership_checkout");
+      },
+      // BC-1.3 (@rule8) — read the member's REAL on-chain grant status from 40204
+      // (MembershipStakeVault.attributedStake/attributedShares + CitrateMemberSBT
+      // .balanceOf). A PURE READ; signs nothing. S5 settles the grant leg ONLY from
+      // this real read (never a fabricated settlement — Rule 1).
+      async grantStatus(memberAddress: string): Promise<GrantStatus> {
+        return invoke<GrantStatus>("membership_grant_status", { memberAddress });
       },
     },
     commissary: {

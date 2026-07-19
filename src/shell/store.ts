@@ -69,6 +69,35 @@ export function isPaidEntitlementActive(st: { tier: string; entitlement: string 
 }
 
 /**
+ * BC-1.3 — the validator stake requirement in wei (== 32,000 SALT == 32000e18).
+ * A granted member's `MembershipStakeVault.attributedStake(member)` reads at least
+ * this. Kept as a BigInt so the comparison never loses precision (a 32k-SALT grant
+ * far exceeds JS's safe integer range).
+ */
+export const VALIDATOR_STAKE_REQUIREMENT_WEI = 32000n * 10n ** 18n;
+
+/**
+ * BC-1.3 — is the 32,000-SALT membership grant GENUINELY on-chain?
+ *
+ * The S5 grant leg settles ONLY when the vault attributes at least the validator
+ * stake requirement to the member AND the member holds the SBT (Rule 1 — read from
+ * `MembershipStakeVault.attributedStake` + `CitrateMemberSBT.balanceOf`, never a
+ * fabricated settlement). `attributedStakeWei` is a decimal wei string from the
+ * real read; parse it as a BigInt so a value beyond JS number range is exact. A
+ * malformed/absent value fails closed (not granted).
+ */
+export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean }): boolean {
+  if (!g.hasSbt) return false;
+  let stake: bigint;
+  try {
+    stake = BigInt(g.attributedStakeWei);
+  } catch {
+    return false; // fail-closed on an unparseable stake — never fabricate a grant
+  }
+  return stake >= VALIDATOR_STAKE_REQUIREMENT_WEI;
+}
+
+/**
  * Derive a display name + initials from an email local-part. The authority
  * issues NO display-name claim, so `larry@citrate.ai` → { name: "Larry",
  * initials: "LA" } and `ada.lovelace@x.io` → { name: "Ada Lovelace", initials:
@@ -744,12 +773,12 @@ export class Store {
         }
       }
       if (s.s5 === "settling") {
+        // BC-1.3: the counter is a PURE animation now — it NEVER settles S5 or sets
+        // hasGrant/hasSbt (Rule 1). Settlement comes ONLY from the real grant read:
+        // the TAURI path settles via pollGrant (the on-chain attributedStake + SBT +
+        // entitlement); the web-dev SIM path settles via pollGrantSim (the honest
+        // sim grantStatus derived from the persona/AppState) — never a blind timer.
         u.s5n = Math.min(32000, s.s5n + 6800);
-        if (u.s5n >= 32000 && s.s5n < 32000) {
-          u.s5 = "settled";
-          u.hasGrant = true;
-          u.hasSbt = true;
-        }
       }
       if (s.storageMode === "dl") {
         u.modelPct = Math.min(100, s.modelPct + 3 + Math.random() * 5);
@@ -1506,8 +1535,103 @@ export class Store {
     setTimeout(() => this.setState({ s5c: 2 }), 1600);
     setTimeout(() => this.setState({ s5c: 3 }), 2400);
     setTimeout(() => {
+      // Enter the honest "settling / waiting for the on-chain grant" state and
+      // start the bounded poll that settles S5 ONLY from the REAL chain read.
       this.setState({ s5: "settling", s5n: 0 });
+      if (BRIDGE_MODE === "tauri") this.pollGrant();
+      else this.pollGrantSim();
     }, 3300);
+  }
+
+  /**
+   * BC-1.3 — the web-dev SIM S5 settle. The sim has NO real 40204, so it derives an
+   * HONEST grant status from the persona/AppState via `bridge.membership.grantStatus`
+   * (granted only for a paid+active sim member) and settles S5 from THAT — not a
+   * blind timer (Rule 1's shape carried into the preview). Bounded like pollGrant.
+   */
+  private pollGrantSim(attempt = 0): void {
+    if (BRIDGE_MODE === "tauri") return;
+    const MAX_ATTEMPTS = 20;
+    const tick = () => {
+      if (this.state.s5 !== "settling") return;
+      void bridge.membership
+        .grantStatus(this.identity().wallet)
+        .then((grant) => {
+          if (this.state.s5 !== "settling") return;
+          if (isGrantOnChain(grant) && grant.hasSbt) {
+            // s5StakeWei carries the sim-derived attributedStake (honest for the
+            // preview — grantStatus derives it from the paid persona, not a real
+            // chain read; the card renders it, never a hardcoded 32,000).
+            this.setState({
+              s5: "settled",
+              s5n: 32000,
+              s5StakeWei: grant.attributedStakeWei,
+              hasGrant: true,
+              hasSbt: grant.hasSbt,
+            });
+            this.save();
+            return;
+          }
+          if (attempt + 1 < MAX_ATTEMPTS) this.pollGrantSim(attempt + 1);
+        })
+        .catch(() => {
+          if (this.state.s5 === "settling" && attempt + 1 < MAX_ATTEMPTS) this.pollGrantSim(attempt + 1);
+        });
+    };
+    setTimeout(tick, 700);
+  }
+
+  /**
+   * BC-1.3 — poll the REAL on-chain grant while S5 is "settling", advancing to
+   * "settled" ONLY when the 32,000-SALT grant is genuinely on-chain AND the SBT is
+   * minted AND the /userinfo entitlement is paid+active (Rule 1 — no fabricated
+   * settlement). `hasGrant`/`hasSbt` are set ONLY from the real read; a member whose
+   * grant has not landed simply stays in the honest "still settling" state (S5 is
+   * re-enterable) — the poll never fabricates a grant.
+   *
+   * Bounded (mirrors pollMembership's cadence) so a never-completing grant does not
+   * poll forever: after the cap it stops but leaves S5 "settling" (re-enterable),
+   * never faked. TAURI only — the web-dev SIM path keeps its own honest animation
+   * (the tick loop) that derives settlement from the sim grantStatus.
+   */
+  private pollGrant(attempt = 0): void {
+    if (BRIDGE_MODE !== "tauri") return;
+    const MAX_ATTEMPTS = 60; // ~5 min at 5s cadence
+    const tick = () => {
+      if (this.state.s5 !== "settling") return; // resolved or navigated away
+      const member = this.identity().wallet;
+      // Read the REAL on-chain grant (attributedStake + SBT) and re-check the live
+      // entitlement leg. Both must be real for S5 to settle (Rule 1).
+      void Promise.all([bridge.membership.grantStatus(member), this.authUserinfo()])
+        .then(([grant]) => {
+          if (this.state.s5 !== "settling") return;
+          const grantOnChain = isGrantOnChain(grant);
+          const entitlementActive = isPaidEntitlementActive(this.state);
+          if (grantOnChain && grant.hasSbt && entitlementActive) {
+            // hasGrant/hasSbt/s5StakeWei set ONLY from the real read; never before
+            // it. s5StakeWei is the REAL attributedStake the settled card renders
+            // (F1 — no hardcoded 32,000).
+            this.setState({
+              s5: "settled",
+              s5n: 32000,
+              s5StakeWei: grant.attributedStakeWei,
+              hasGrant: true,
+              hasSbt: grant.hasSbt,
+            });
+            this.save();
+            return;
+          }
+          // Not yet fully settled — keep polling until the bounded cap. Never set
+          // hasGrant/hasSbt without the real grant.
+          if (attempt + 1 < MAX_ATTEMPTS) this.pollGrant(attempt + 1);
+          // At the cap we stop; S5 stays "settling" (re-enterable), never faked.
+        })
+        .catch(() => {
+          // A transient RPC/read error — retry until the cap; never fabricate.
+          if (this.state.s5 === "settling" && attempt + 1 < MAX_ATTEMPTS) this.pollGrant(attempt + 1);
+        });
+    };
+    setTimeout(tick, 5000);
   }
   onEnter(): void {
     const s = this.state;

@@ -257,8 +257,32 @@ export interface ChatDomain {
   infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
 }
 
+/**
+ * BC-1.3 — the REAL on-chain membership grant status the S5 (grant + stake)
+ * ceremony settles from. Every field is a live 40204 read (Rule 1): the vault's
+ * `attributedStake`/`attributedShares(member)` (wei as decimal strings, since a
+ * 32,000-SALT grant exceeds JS number range) and `CitrateMemberSBT.balanceOf`
+ * (`hasSbt`). A fresh/never-granted member reads 0 / 0 / false.
+ */
+export interface GrantStatus {
+  attributedStakeWei: string;
+  attributedSharesWei: string;
+  hasSbt: boolean;
+}
+
 export interface MembershipDomain {
   entitlement(): Promise<{ status: "active" | "expiring" | "grace" | "lapsed"; tier: string; expiresAt: string }>;
+  /**
+   * BC-1.3 (@rule8) — read the member's REAL on-chain grant status from 40204
+   * (`MembershipStakeVault.attributedStake`/`attributedShares` + `CitrateMemberSBT
+   * .balanceOf`). `memberAddress` is the AA smart-wallet the grant targets (the
+   * OIDC `wallet_address` claim), NOT the custody EOA. A PURE READ — it signs
+   * nothing. S5 settles the grant leg ONLY from this real read; a never-granted
+   * member honestly reads 0 stake / no SBT (no fabricated settlement, Rule 1). The
+   * Tauri impl invokes `membership_grant_status`; the sim impl derives from the
+   * persona/AppState (granted only for a paid sim member — never a real chain read).
+   */
+  grantStatus(memberAddress: string): Promise<GrantStatus>;
   /**
    * CORE-D3.C — open the REAL core-membership checkout in an in-app popup
    * (`{coreMembershipUrl}/checkout`). Resolves once the popup is OPENED — it does

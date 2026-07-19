@@ -72,6 +72,15 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     // The money + grant are server-side; the store polls /userinfo for the grant.
     case "membership_checkout":
       return undefined;
+    // BC-1.3 — membership_grant_status: the REAL on-chain grant read. The mock
+    // returns a granted status keyed by the member address so the adapter's arg
+    // shape ({ memberAddress }) + decoded return are asserted.
+    case "membership_grant_status":
+      return {
+        attributedStakeWei: (32000n * 10n ** 18n).toString(),
+        attributedSharesWei: (32000n * 10n ** 18n).toString(),
+        hasSbt: true,
+      };
     // CORE-B1.2 signing — the ceremony commands. request → decoded view (NO
     // signature); approve → a signature hex ONLY (never a key); reject → void.
     // This mock simulates the single-use ceremony map so the adapter's calls are
@@ -720,6 +729,18 @@ describe("tauri adapter — membership.checkout opens the real checkout popup (D
   it("membership.entitlement is still honestly Unavailable (only checkout is wired)", async () => {
     const bridge = createTauriBridge();
     await expect(bridge.membership.entitlement()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+
+  // BC-1.3 (@rule8) — grantStatus invokes the real membership_grant_status command
+  // with the member address (the OIDC wallet_address claim) and decodes the REAL
+  // on-chain grant. A PURE READ — no signing. The store settles S5 ONLY from this.
+  it("grantStatus invokes membership_grant_status with { memberAddress } and decodes the real read", async () => {
+    const bridge = createTauriBridge();
+    invokeMock.mockClear();
+    const status = await bridge.membership.grantStatus("0xabc");
+    expect(invokeMock).toHaveBeenCalledWith("membership_grant_status", { memberAddress: "0xabc" });
+    expect(status.attributedStakeWei).toBe((32000n * 10n ** 18n).toString());
+    expect(status.hasSbt).toBe(true);
   });
 });
 

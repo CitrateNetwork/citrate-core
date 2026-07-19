@@ -66,6 +66,26 @@ export function makeHash(): string {
 export function short(h: string | null | undefined): string {
   return h ? h.slice(0, 6) + "…" + h.slice(-4) : "—";
 }
+
+/**
+ * BC-1.3 (F1) — format a decimal wei string (18-decimals SALT) to a whole-SALT,
+ * thousands-grouped display string (e.g. "32000000000000000000000" → "32,000").
+ * Truncates the fractional part (membership grants are whole-SALT). Returns "—"
+ * for a null/unparseable input so the settled card NEVER shows a fabricated or
+ * malformed number (Rule 1: display only what really read). BigInt so a 32k-SALT
+ * grant (far beyond JS safe-int range) is exact.
+ */
+export function fmtSaltFromWei(wei: string | null | undefined): string {
+  if (wei == null) return "—";
+  let n: bigint;
+  try {
+    n = BigInt(wei);
+  } catch {
+    return "—";
+  }
+  const salt = n / 10n ** 18n; // truncate to whole SALT
+  return salt.toLocaleString("en-US");
+}
 export function nodeLabel(n: string): string {
   return (
     { off: "off", prov: "provisioning", syncing: "syncing", synced: "synced", paused: "paused", validating: "validating", error: "error" } as Record<string, string>
@@ -166,7 +186,15 @@ export interface AppState {
   s5: "idle" | "verifying" | "settling" | "settled";
   s5c: number;
   s5n: number;
-  s5hash: string;
+  /**
+   * BC-1.3 (F1 — Rule 1 display honesty) — the REAL staked principal the settled
+   * S5 card renders, as a decimal wei string read from
+   * `MembershipStakeVault.attributedStake(member)` via the grant-status read (tauri)
+   * or the honest sim `grantStatus` (web-dev). Set ONLY when the grant genuinely
+   * lands (both poll paths), never fabricated. `null`/`"0"` until then. The card
+   * formats wei→SALT from this — it never shows a hardcoded "32,000".
+   */
+  s5StakeWei: string | null;
   kycOutcome: "verified" | "failed" | "review";
   route: string;
   wTab: string;
@@ -362,7 +390,7 @@ export function freshState(pid: string): AppState {
     s5: "idle",
     s5c: 0,
     s5n: 0,
-    s5hash: makeHash(),
+    s5StakeWei: null,
     kycOutcome: "verified",
     route: "dashboard",
     wTab: "overview",
@@ -572,7 +600,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5hash", "walletAddr", "socketPath",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "walletAddr", "socketPath",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.

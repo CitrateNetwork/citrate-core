@@ -11,7 +11,7 @@
 // packaged Tauri build — the sim path is unreachable there (Rule 1).
 // =====================================================================
 import type { AppState } from "../../shell/state";
-import { PERSONAS } from "../../shell/state";
+import { PERSONAS, RANK } from "../../shell/state";
 import type {
   AppConfig,
   KeyringStatus,
@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import { GRAPH } from "../../data/seed";
@@ -488,6 +488,23 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       // resolves so the sim S3 flow proceeds; guarded out of packaged builds.
       async checkout(): Promise<void> {
         assertSimAllowed("membership.checkout");
+      },
+      // BC-1.3 — SIM: there is NO real chain in the web preview, so this NEVER
+      // fabricates a real 40204 read. It derives an HONEST stand-in from the
+      // persona/AppState: a granted status (32,000-SALT attributedStake + SBT) ONLY
+      // when the sim persona is a PAID member (a paid tier with an active
+      // entitlement); an unpaid/lapsed persona reads 0 stake / no SBT (so the sim S5
+      // still settles from grantStatus, not a blind timer — the Rule-1 shape).
+      async grantStatus(): Promise<GrantStatus> {
+        assertSimAllowed("membership.grantStatus");
+        const st = s();
+        const rank = RANK[st.tier] ?? 0;
+        const paid = rank > RANK.free && st.entitlement === "active";
+        // 32,000 SALT in wei — the validator stake requirement a granted member meets.
+        const REQUIREMENT_WEI = (32000n * 10n ** 18n).toString();
+        return paid
+          ? { attributedStakeWei: REQUIREMENT_WEI, attributedSharesWei: REQUIREMENT_WEI, hasSbt: true }
+          : { attributedStakeWei: "0", attributedSharesWei: "0", hasSbt: false };
       },
     },
 

@@ -14,6 +14,7 @@ mod ceremony;
 mod config;
 mod custody;
 mod earnings;
+mod grant_status;
 mod membership;
 mod memory;
 mod node;
@@ -119,6 +120,13 @@ pub fn run() {
             // membership — the money + grant are server-side; the store polls
             // /userinfo and only advances S3 when the REAL entitlement lands.
             membership::membership_checkout,
+            // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
+            // the REAL on-chain grant: MembershipStakeVault.attributedStake +
+            // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
+            // eth_call on 40204. The S5 grant+stake ceremony settles ONLY from these
+            // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
+            // nothing and returns only decoded public chain data (@rule8 / Rule 3).
+            grant_status::membership_grant_status,
             // signing — the B1.2 SignatureCeremony (the ONE HITL signing path).
             // sign_request returns a CeremonyId + decoded intent (NO signature);
             // sign_approve returns the signature hex ONLY (never key/seed/entropy

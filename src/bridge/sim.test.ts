@@ -174,6 +174,34 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(e.status).toBe("active");
     expect(e.tier).toBe("pilot");
   });
+
+  // BC-1.3 — the sim grantStatus is an HONEST stand-in derived from the persona/
+  // AppState (NEVER a fabricated real 40204 read): granted (32,000-SALT stake + SBT)
+  // ONLY for a paid+active sim member; 0 stake / no SBT otherwise. This lets the sim
+  // S5 settle from grantStatus (the Rule-1 shape), not a blind timer.
+  it("membership.grantStatus reads granted for a paid+active sim member", async () => {
+    const { host } = fakeHost({ entitlement: "active", tier: "pilot" } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const g = await bridge.membership.grantStatus("0xabc");
+    expect(g.attributedStakeWei).toBe((32000n * 10n ** 18n).toString());
+    expect(g.hasSbt).toBe(true);
+  });
+
+  it("membership.grantStatus reads NOT-granted (0 / false) for an unpaid sim member", async () => {
+    const { host } = fakeHost({ entitlement: "active", tier: "free" } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const g = await bridge.membership.grantStatus("0xabc");
+    expect(g.attributedStakeWei).toBe("0");
+    expect(g.attributedSharesWei).toBe("0");
+    expect(g.hasSbt).toBe(false);
+  });
+
+  it("membership.grantStatus reads NOT-granted for a paid but LAPSED sim member", async () => {
+    const { host } = fakeHost({ entitlement: "lapsed", tier: "pilot" } as Partial<AppState>);
+    const bridge = createSimBridge(host);
+    const g = await bridge.membership.grantStatus("0xabc");
+    expect(g.hasSbt).toBe(false);
+  });
 });
 
 // CORE-AI1 (@rule8) — sim chat: the web preview has NO OS keyring and reaches no

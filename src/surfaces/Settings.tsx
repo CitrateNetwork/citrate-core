@@ -15,7 +15,7 @@
 // =====================================================================
 import { useEffect, useState } from "react";
 import { Store } from "../shell/store";
-import { AppState } from "../shell/state";
+import { AppState, fmtSaltFromWei } from "../shell/state";
 import { LoaderMark } from "../components/LoaderMark";
 import { bridge, type AppConfig } from "../bridge";
 import type { AiProviderStatus } from "../bridge/domains";
@@ -868,16 +868,21 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             {s.hasSbt && (
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
                 <span className="eyebrow">SALT grant record</span>
+                {/* F1 (Rule 1): every row traces to a real read. The staked amount is
+                    the REAL attributedStake (wei→SALT via fmtSaltFromWei; shows "—"
+                    when absent), NOT a hardcoded 32,000. The honest on-chain anchor is
+                    the member wallet, NOT a fabricated tx hash — this app does not
+                    broadcast the grant tx. */}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Grant · staked at issuance</span>
                   <span className="mono tabular" style={{ fontSize: 12.5 }}>
-                    32,000 SALT
+                    {fmtSaltFromWei(s.s5StakeWei)} SALT
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Transaction</span>
-                  <span className="mono" style={{ fontSize: 11.5, color: "var(--accent-text)", cursor: "pointer" }}>
-                    {short(s.s5hash)} ↗
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Member wallet</span>
+                  <span className="mono" style={{ fontSize: 11.5, color: "var(--accent-text)" }}>
+                    {short(s.walletAddr)}
                   </span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
