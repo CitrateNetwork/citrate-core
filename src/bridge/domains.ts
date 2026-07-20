@@ -325,6 +325,19 @@ export interface MembershipDomain {
    * impl is guarded out of packaged builds (web-dev keeps its fake settle).
    */
   checkout(): Promise<void>;
+  /**
+   * BC-5.3 (T1 identity READ) — read the member's AUTHORITATIVE wholly-on-chain
+   * SBT emblem for their OIDC `sub`. The post-reroll CitrateMemberSBT generates the
+   * art on-chain: `tokenURI` returns a `data:application/json;base64,...` whose
+   * `image` is a `data:image/svg+xml;base64,...`. This resolves the tokenId via
+   * `isSubBound`/`tokenIdForSub(keccak256(sub))`, reads `tokenURI`, and returns the
+   * decoded `image` data-URI — or `null` HONESTLY when the member has no SBT (the
+   * caller then shows the local `sbtArt.ts` emblem as a labelled offline fallback,
+   * never a fabricated on-chain mark — Rule 1). A PURE READ; signs nothing. The
+   * Tauri impl invokes `sbt_token_uri`; the sim impl returns null (no real chain in
+   * the web preview — the local fallback renders, honestly labelled).
+   */
+  sbtArt(sub: string): Promise<string | null>;
 }
 
 export interface CommissaryDomain {

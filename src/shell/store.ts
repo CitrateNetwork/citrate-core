@@ -492,6 +492,11 @@ export class Store {
       patch.authInitials = d.initials;
     }
     if (st.walletAddr) patch.walletAddr = st.walletAddr;
+    // BC-6.3: fold the REAL entitlement expiry verbatim (the Settings billing card
+    // renders THIS, an honest "—" when absent — never a hardcoded date). Folded in
+    // every branch below, including the expired one (it explains WHY the tier
+    // lapsed). `??` normalizes undefined → null.
+    patch.authExpiresAt = st.expiresAt ?? null;
     // A3-03: enforce the entitlement expiry at the DECISION point — a claim whose
     // `expiresAt` is in the past is downgraded to the free tier + lapsed, so no
     // gated surface stays unlocked on a stale claim. A valid future expiry keeps

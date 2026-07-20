@@ -43,6 +43,14 @@ url = "2"
 #   coordinate decoding.
 sha2 = "0.10"
 base64 = "0.22"
+# BC-5.3 — sha3 (Keccak-256) for the SBT sub→tokenId lookup: the member subHash is
+#   keccak256(sub) (dynamic per-member, so it CANNOT be a pinned selector like the
+#   rest of this lean tree). sha3 0.10 is ALREADY compiled into the tree as a normal
+#   dependency of citrate-wallet-core (Keccak-256 address derivation), so naming it
+#   here adds NO new compiled crate and NO new audit surface — it just makes the
+#   already-present hasher directly nameable. (The selector drift tests use the same
+#   crate via dev-deps; this promotes it to a runtime dep for the one dynamic hash.)
+sha3 = "0.10"
 # CORE-B1 — the wallet keystore crypto library (Option A / D-B1.1-1). Used ONLY
 #   for BIP39 create/import + BIP44 secp256k1 HD derivation (m/44'/60'/0'/0/i) +
 #   UnifiedKey signing/address derivation. We do NOT use its KeyManager /
@@ -92,8 +100,8 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
 #   uses (transitive), pinned here as a direct dev-dep so the test can name the
 #   recovery types. sha3 = the Keccak-256 used to derive the address from the
 #   recovered uncompressed pubkey (matches wallet-core's derive_address).
+#   (sha3 moved to [dependencies] for the BC-5.3 SBT subHash — still test-reachable.)
 k256 = { version = "0.13", features = ["ecdsa"] }
-sha3 = "0.10"
 # CORE-B1.4 test-only: reconstruct the EIP-155 signing-hash RLP payload in the
 # ceremony tx-broadcast test to ecrecover the broadcast signature back to the
 # wallet address. Same `rlp` 0.5 the wallet-core lean crypto path uses.

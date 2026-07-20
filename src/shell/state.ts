@@ -178,6 +178,14 @@ export interface AppState {
   authEmail: string | null;
   authName: string | null;
   authInitials: string | null;
+  /**
+   * BC-6.3 — the REAL entitlement expiry, folded verbatim from the /userinfo
+   * `expires_at` claim (bridge `AuthStatus.expiresAt`; an ISO datetime or unix
+   * seconds). Settings "Memberships & billing" renders THIS (an honest "—" when
+   * null/absent) — never a hardcoded date (Rule 1). `null` until a signed-in
+   * session folds a claim that carries an expiry.
+   */
+  authExpiresAt: string | null;
   entitlement: "active" | "expiring" | "grace" | "lapsed";
   stage: "s0" | "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "done";
   s1: "idle" | "waiting" | "attest" | "done";
@@ -396,6 +404,7 @@ export function freshState(pid: string): AppState {
     authEmail: null,
     authName: null,
     authInitials: null,
+    authExpiresAt: null,
     entitlement: "active",
     stage: P.fresh ? "s0" : "done",
     s1: "idle",
@@ -613,7 +622,7 @@ export function freshState(pid: string): AppState {
 export const PERSIST_KEYS: (keyof AppState)[] = [
   "persona", "tier", "org", "citrateRole", "entitlement", "stage", "s2", "s3", "s5", "s5n", "hasGrant", "hasSbt",
   // NOTE: the real-identity fields (signedIn/authSub/authEmail/authName/
-  // authInitials) are DELIBERATELY NOT persisted — HIPAA sign-out-by-default.
+  // authInitials/authExpiresAt) are DELIBERATELY NOT persisted — HIPAA sign-out-by-default.
   // Every launch starts signed-out; identity is re-derived only from a live
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.

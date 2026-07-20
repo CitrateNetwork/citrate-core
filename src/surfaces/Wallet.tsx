@@ -11,11 +11,11 @@
 // via store.refreshActivity() (item 4); staked (grant-attributed) remains to be
 // grounded (staking-pool view). Wiring replaces the sim, not the UI (Rule 1).
 // =====================================================================
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { makeAddr, short, PERSONAS } from "../shell/state";
 import { scanTxUrl, scanAddrUrl } from "../data/links";
-import { SbtArt } from "../identity/SbtEmblem";
+import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -40,6 +40,11 @@ export function Wallet({ store, s }: SurfaceProps) {
   const P = PERSONAS[s.persona] || PERSONAS.p1;
   const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
   const src = s.node === "off" ? "rpc.citrate.ai" : "local node";
+  // BC-5.3 — which SBT-art source is rendered, for an honest caption. The
+  // OnChainSbtEmblem reports "onchain" when the authoritative tokenURI art loaded,
+  // else "local" (the deterministic offline preview). Starts null (still resolving).
+  const memberSub = store.identity().sub;
+  const [sbtSource, setSbtSource] = useState<"onchain" | "local" | null>(null);
 
   // Fold the REAL liquid (eth_getBalance) + claimable balances on mount, plus the
   // REAL pending-withdrawal queue (WP2). In a Tauri build these read live 40204;
@@ -457,15 +462,22 @@ export function Wallet({ store, s }: SurfaceProps) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {s.hasSbt ? (
             <div className="surface" style={{ padding: 18, display: "flex", gap: 18, alignItems: "center" }}>
-              {/* The deterministic identity emblem (seeded from the wallet
-                  address) — the same mark shown in the sidebar. No fabricated
-                  token number/date: the tokenId needs an on-chain read
-                  (SBT.tokenIdForSub), a small follow-up. */}
-              <SbtArt seed={s.walletAddr} size={44} title="Your membership identity emblem" />
+              {/* BC-5.3 — the AUTHORITATIVE wholly-on-chain emblem (CitrateMemberSBT
+                  tokenURI, resolved from keccak256(sub)) when available; the local
+                  deterministic emblem (seeded from the wallet address) is the honest
+                  labelled offline fallback. The caption below names which is shown. */}
+              <OnChainSbtEmblem sub={memberSub} seed={s.walletAddr} size={44} title="Your membership identity emblem" onResolved={setSbtSource} />
               <span style={{ flex: 1, minWidth: 0 }}>
                 <span style={{ display: "block", fontSize: 15, fontWeight: 500 }}>CitrateMemberSBT</span>
                 <span className="mono" style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 2 }}>
                   non-transferable · bound to your sub-hash
+                </span>
+                <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>
+                  {sbtSource === "onchain"
+                    ? "emblem: on-chain art (tokenURI)"
+                    : sbtSource === "local"
+                      ? "emblem: local preview (on-chain art unavailable)"
+                      : "emblem: reading on-chain art…"}
                 </span>
               </span>
               <button

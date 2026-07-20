@@ -1,16 +1,19 @@
-// citrate-core — deterministic SBT identity art.
+// citrate-core — deterministic SBT identity art (the OFFLINE FALLBACK).
 //
-// The membership SBT (CitrateMemberSBT) is soulbound and 1:1 with the member's
-// wallet address. We render a DETERMINISTIC geometric emblem seeded from that
-// address, so every member has a stable, unique identity mark that any party can
-// reproduce from purely on-chain data (the owner address) — no network, no IPFS,
-// no fabricated token image (Rule 1).
+// BC-5.3 UPDATE: the post-reroll CitrateMemberSBT now generates the member emblem
+// WHOLLY ON-CHAIN (`tokenURI(uint256)` → `data:application/json;base64,…` with an
+// embedded `data:image/svg+xml;base64,…` from `MemberEmblem.render(owner)`). That
+// AUTHORITATIVE on-chain art is what an explorer renders and what the app shows
+// when reachable (see `SbtEmblem.tsx`'s `OnChainSbtEmblem` +
+// `bridge.membership.sbtArt`). This module is therefore the HONEST OFFLINE
+// FALLBACK, shown only when the on-chain read is unavailable (web preview / no SBT
+// / read error), always labelled as a "local preview" — never presented as the
+// on-chain mark (Rule 1).
 //
-// This is the CANONICAL art algorithm. The on-chain `tokenURI` pipeline (a
-// contract that exposes `setTokenURI` + a pinning endpoint) does not exist yet
-// (CitrateMemberSBT has no tokenURI/setTokenURI; no IPFS pinning service —
-// WO-4/WO-5, [chain]/[cm]/[dgx]). When it lands it must mirror THIS algorithm +
-// seed so the in-app icon matches what an explorer renders.
+// It renders a DETERMINISTIC geometric emblem seeded from the member's wallet
+// address (no network, no IPFS, no fabricated token image). It does NOT reproduce
+// the on-chain MemberEmblem art (a different algorithm); it is a distinct, stable
+// local stand-in whose caption names it as a preview.
 //
 // Pure + deterministic (no Date/Math.random) so the emblem is stable across
 // sessions and unit-testable.

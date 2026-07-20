@@ -21,6 +21,7 @@ mod model;
 mod node;
 mod oidc;
 mod rpc;
+mod sbt_art;
 mod seam;
 mod serve;
 mod shell;
@@ -143,6 +144,13 @@ pub fn run() {
             // real reads (Rule 1 — no fabricated settlement). A PURE READ: it signs
             // nothing and returns only decoded public chain data (@rule8 / Rule 3).
             grant_status::membership_grant_status,
+            // SBT emblem — BC-5.3 (T1 identity READ). Reads the AUTHORITATIVE
+            // wholly-on-chain member emblem: isSubBound(keccak256(sub)) ->
+            // tokenIdForSub -> tokenURI on CitrateMemberSBT (40204), decoded to the
+            // `data:image/svg+xml;base64,...` the UI renders — or None honestly when
+            // the member has no SBT (Rule 1 — no fabricated art). A PURE READ: it
+            // signs nothing and touches no key material (@rule8 / Rule 3).
+            sbt_art::sbt_token_uri,
             // signing — the B1.2 SignatureCeremony (the ONE HITL signing path).
             // sign_request returns a CeremonyId + decoded intent (NO signature);
             // sign_approve returns the signature hex ONLY (never key/seed/entropy

@@ -2,7 +2,7 @@ import markWhite from "../assets/brand/citrate_mark_white.svg";
 import marqueeWhite from "../assets/brand/citrate_marquee_white.svg";
 import { Store } from "./store";
 import { AppState, nodeLabel } from "./state";
-import { SbtArt } from "../identity/SbtEmblem";
+import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
@@ -94,9 +94,11 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {s.hasSbt && s.walletAddr ? (
-            // Members with a minted SBT show their deterministic identity emblem
-            // (seeded from the on-chain wallet address). Non-members keep initials.
-            <SbtArt seed={s.walletAddr} size={28} title="Your membership identity emblem" />
+            // Members with a minted SBT show their AUTHORITATIVE on-chain emblem
+            // (CitrateMemberSBT tokenURI, resolved from keccak256(sub)); the local
+            // deterministic emblem (seeded from the wallet address) is the honest
+            // offline fallback. Non-members keep initials.
+            <OnChainSbtEmblem sub={P.sub} seed={s.walletAddr} size={28} title="Your membership identity emblem" />
           ) : (
             <span style={{ width: 28, height: 28, borderRadius: 999, background: "var(--citrate-green)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 11, flexShrink: 0 }}>
               {P.initials}

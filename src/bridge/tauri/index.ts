@@ -324,6 +324,14 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async grantStatus(memberAddress: string): Promise<GrantStatus> {
         return invoke<GrantStatus>("membership_grant_status", { memberAddress });
       },
+      // BC-5.3 — read the AUTHORITATIVE wholly-on-chain SBT emblem (isSubBound ->
+      // tokenIdForSub(keccak256(sub)) -> tokenURI on CitrateMemberSBT/40204),
+      // returning the decoded `data:image/svg+xml;base64,...` image data-URI, or
+      // null honestly when the member has no SBT (Rule 1 — no fabricated art). A
+      // PURE READ; signs nothing.
+      async sbtArt(sub: string): Promise<string | null> {
+        return invoke<string | null>("sbt_token_uri", { sub });
+      },
     },
     commissary: {
       async catalog() {

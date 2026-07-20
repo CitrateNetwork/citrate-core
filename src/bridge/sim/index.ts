@@ -554,6 +554,14 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
           ? { attributedStakeWei: REQUIREMENT_WEI, attributedSharesWei: REQUIREMENT_WEI, hasSbt: true }
           : { attributedStakeWei: "0", attributedSharesWei: "0", hasSbt: false };
       },
+      // BC-5.3 — SIM: there is NO real chain in the web preview, so this NEVER
+      // fabricates an on-chain emblem. It returns null so the caller renders the
+      // LOCAL deterministic emblem (sbtArt.ts) as a labelled offline fallback — the
+      // honest "local preview, not the on-chain art" state (Rule 1).
+      async sbtArt(): Promise<string | null> {
+        assertSimAllowed("membership.sbtArt");
+        return null;
+      },
     },
 
     commissary: {

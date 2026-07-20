@@ -34,6 +34,32 @@ function writeConfig(store: Store, patch: Partial<AppConfig>): void {
 
 const short = (h: string | null | undefined) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
 
+// F1 (BC-5/6, Rule 1) — render the folded entitlement expiry HONESTLY. The
+// `/userinfo` `expires_at` claim may arrive as epoch-milliseconds, epoch-seconds,
+// or an ISO/date-ish string (state.authExpiresAt is the value verbatim). Rendered
+// raw, an epoch would show as a bare integer like "1783939200000". This normalises
+// at the RENDER layer only:
+//   - all-digit integer  → epoch (ms if >= 1e12, else seconds) → YYYY-MM-DD
+//   - ISO/date-ish string → normalised to YYYY-MM-DD when parseable, else verbatim
+//   - null/empty          → honest "—" (NEVER a fabricated date; Rule 1)
+// It never invents a date when the claim is absent — an unparseable non-empty value
+// is passed through verbatim rather than guessed.
+export function fmtExpiresAt(raw: string | null | undefined): string {
+  if (raw == null) return "—";
+  const v = raw.trim();
+  if (!v) return "—";
+  if (/^\d+$/.test(v)) {
+    const n = Number(v);
+    const ms = n >= 1e12 ? n : n * 1000;
+    const d = new Date(ms);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return v; // out-of-range integer — pass through rather than fabricate
+  }
+  const d = new Date(v);
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return v; // non-empty but unparseable — honest verbatim, no guessing
+}
+
 // Imperative element refs for the AI-provider editor. The KEY input value is
 // handed to Rust once (sealed in the OS keyring) and never stored in AppState —
 // so the ref lives only as long as an editor is open (module-scoped, like the
@@ -115,8 +141,13 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   }, [s.sSec, s.aiEdit, s.aiDefault]);
 
   // ---------- account & RBAC ----------
-  const expTxt =
-    s.entitlement === "lapsed" ? "2026-06-28 · lapsed" : s.entitlement === "expiring" ? "2026-07-25 · 14 days" : "2027-07-11";
+  // BC-6.3 (Rule 1): render the REAL entitlement expiry folded from the /userinfo
+  // `expires_at` claim (state.authExpiresAt) — an honest "—" when absent — NEVER a
+  // hardcoded date. The value is displayed verbatim (ISO datetime or unix seconds
+  // as the authority sent it); its colour reflects the (claim-derived) entitlement.
+  // F1: fold + normalise (epoch → date; ISO → YYYY-MM-DD; absent → "—") so a raw
+  // epoch integer never renders verbatim. fmtExpiresAt keeps the honest "—".
+  const expReal = fmtExpiresAt(s.authExpiresAt);
   const claimRows: { k: string; v: string; color: string }[] = [
     { k: "sub", v: id.sub, color: "var(--tx-1)" },
     { k: "email", v: id.email, color: "var(--tx-1)" },
@@ -125,8 +156,15 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
     { k: "org", v: s.org || "—", color: s.org ? "var(--info)" : "var(--tx-3)" },
     {
       k: "expiresAt",
-      v: expTxt,
-      color: s.entitlement === "active" ? "var(--tx-1)" : s.entitlement === "lapsed" ? "var(--danger)" : "var(--warn)",
+      v: expReal,
+      color:
+        expReal === "—"
+          ? "var(--tx-3)"
+          : s.entitlement === "active"
+            ? "var(--tx-1)"
+            : s.entitlement === "lapsed"
+              ? "var(--danger)"
+              : "var(--warn)",
     },
     { k: "kyc_status", v: s.hasSbt || s.s2 === "verified" ? "verified" : "none", color: "var(--tx-1)" },
   ];
@@ -272,7 +310,29 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       : effTier === "enterprise"
         ? "Enterprise seat · " + (s.org || "")
         : "Pilot membership · $48/year";
-  const memRenewLine = s.entitlement === "lapsed" ? "lapsed 2026-06-28" : "renews 2027-07-11 · Stripe customer portal";
+  // BC-6.3 (Rule 1): the renewal/expiry line uses the REAL folded expiry
+  // (state.authExpiresAt) — honest "expiry not set" when absent — never a hardcoded
+  // date. The Stripe customer portal isn't wired yet (core-membership CORE-S5.4), so
+  // we say "renew in checkout" (the real seam renewMembership opens) rather than
+  // claim a portal that doesn't exist.
+  // F1: normalise the same folded claim for the billing renewal line (epoch → date,
+  // ISO → YYYY-MM-DD); null stays null so "expiry not set"/"lapsed" copy is honest.
+  const memExpiryFmt = fmtExpiresAt(s.authExpiresAt);
+  const memExpiry = memExpiryFmt === "—" ? null : memExpiryFmt;
+  // A lapsed member still had a real membership: show the real expired date rather
+  // than collapsing to "no active membership" (which is only honest for a genuinely
+  // free user who never held a paid tier). effTier collapses lapsed→free for gating,
+  // so detect the lapsed case on the entitlement BEFORE the free-tier copy.
+  const memRenewLine =
+    s.entitlement === "lapsed"
+      ? memExpiry
+        ? "lapsed · expired " + memExpiry
+        : "lapsed"
+      : effTier === "free"
+        ? "no active membership"
+        : memExpiry
+          ? "expires " + memExpiry
+          : "expiry not set";
   const memBadge = s.entitlement === "active" ? "active" : s.entitlement;
   const mb =
     s.entitlement === "active"
