@@ -83,7 +83,7 @@ const EXPECTED_IMAGE_DATA_URI: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0
 fn sbt_address_is_the_canonical_reroll_value() {
     assert_eq!(
         CITRATE_MEMBER_SBT,
-        "0x7be005aa8c45c1695b4c75468c6ca8b40238a7c4"
+        "0x149e85a3c845d10556537dcf824d148acb904578"
     );
 }
 

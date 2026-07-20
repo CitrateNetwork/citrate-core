@@ -14,7 +14,7 @@ export const CONTRACTS = {
   liquidStakingPool: { name: 'LiquidStakingPool', addr: '0xfd272195b55cb4f5a240a5be75aabab0d1c5685e' },
   entryPoint:        { name: 'EntryPoint v0.7',   addr: '0xC698feAf0FF7FdB0D60E2F620C97cB729A694975' },
   paymaster:         { name: 'CitratePaymaster',  addr: '0xF14F56e812cE93544e75E841Ac6316F2d7E561b0' },
-  memberSbt:         { name: 'CitrateMemberSBT',  addr: '0x7bE005aA8c45C1695b4C75468c6cA8B40238A7C4' },
+  memberSbt:         { name: 'CitrateMemberSBT',  addr: '0x149E85A3C845d10556537DcF824D148aCB904578' },
   stakeVault:        { name: 'MembershipStakeVault', addr: '0x0aceb7B474eCC4abe12696CE48628f0CABE0267e' },
 };
 
