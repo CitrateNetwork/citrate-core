@@ -3,7 +3,9 @@
    Colors, type, spacing, radii, shadows, motion
    ============================================================= */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+/* BC-7.1: fonts are self-hosted via @fontsource, imported in index.css BEFORE this
+   file. The prior Google Fonts CDN import (fonts.googleapis.com) was removed so the
+   packaged Tauri app never fetches fonts at runtime (offline-correct, no CDN dependency). */
 
 :root {
   /* ---------- BRAND ---------- */
@@ -70,8 +72,8 @@
   --border-strong:        var(--ink);          /* government-document rules */
 
   /* ---------- TYPE FAMILIES ---------- */
-  --font-display: "Space Grotesk", "Geist", system-ui, -apple-system, sans-serif;
-  --font-sans:    "Geist", "Söhne", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk", "Geist Sans", system-ui, -apple-system, sans-serif;
+  --font-sans:    "Geist Sans", "Söhne", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono:    "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* ---------- TYPE SCALE (modular, 1.200 minor third) ---------- */
