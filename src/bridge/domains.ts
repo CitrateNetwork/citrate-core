@@ -139,10 +139,30 @@ export interface PendingWithdrawal {
   claimable: boolean;
 }
 
+/**
+ * Q-A.2/Q-B.2 — one captured line from the supervised node's stdout/stderr. In
+ * Tauri this is a REAL line streamed from the node process (e.g.
+ * `citrate_network::sync: Validated and imported 32/32 blocks …`); `ts` is unix
+ * ms and `stream` is "out"|"err". Mirrors the Rust `LogLine` (serde camelCase).
+ */
+export interface NodeLogLine {
+  ts: number;
+  stream: "out" | "err";
+  line: string;
+}
+
 export interface NodeDomain {
   status(): Promise<{ state: string; peers: number; height: number; syncPct: number }>;
   start(): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Q-A.2/Q-B.2 — the REAL recent node log lines (streamed stdout+stderr from the
+   * supervisor's bounded ring). In Tauri these are live node output; a stopped
+   * node honestly returns [] (never a fabricated template — Rule 1). In sim/web
+   * this returns the labelled preview template (clearly a design preview, guarded
+   * out of packaged builds), so the web preview reads as a preview, not live.
+   */
+  logs(): Promise<NodeLogLine[]>;
 }
 
 /**

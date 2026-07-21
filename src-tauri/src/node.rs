@@ -56,7 +56,7 @@ use zeroize::Zeroizing;
 use crate::custody::{Keyring, OsKeyring};
 use crate::rpc::{HttpTransport, RpcClient};
 use crate::supervisor::{
-    BackoffPolicy, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
+    BackoffPolicy, LogLine, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
 };
 
 /// OS keyring account for the node's 32-byte storage-at-rest master key. Lives
@@ -305,6 +305,21 @@ impl NodeManager {
         }
     }
 
+    /// Q-A.2/Q-B.2 — the REAL recent node log lines, streamed from the
+    /// supervised child's stdout+stderr into the supervisor's bounded ring. Newest
+    /// lines are last; the ring is capped (`LOG_RING_CAPACITY`), so this returns at
+    /// most that many. When the node is not running (no supervisor) it honestly
+    /// returns an EMPTY list — never a fabricated template (Rule 1). This is what
+    /// fills the Node LOG panel in a packaged build (it was permanently empty
+    /// because stdout was inherited-and-dropped in the GUI process).
+    pub fn logs(&self) -> Vec<LogLine> {
+        let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(sup) => sup.logs(),
+            None => Vec::new(),
+        }
+    }
+
     /// Poll the node's local RPC for `(height, peers)`. Returns `None` on any
     /// transport error (RPC not up yet / node still booting) so the caller
     /// reports 0/0 honestly rather than a stale or fabricated value.
@@ -381,6 +396,15 @@ pub fn node_start(state: State<'_, NodeState>) -> std::result::Result<(), String
 pub fn node_stop(state: State<'_, NodeState>) -> std::result::Result<(), String> {
     state.0.stop();
     Ok(())
+}
+
+/// Q-A.2/Q-B.2 — return the REAL recent node log lines (streamed stdout+stderr
+/// from the supervised child's bounded ring). Honest empty when the node is not
+/// running. The webview folds these into the Node LOG panel so a packaged build
+/// shows live node output, never a fabricated template (Rule 1).
+#[tauri::command]
+pub fn node_logs(state: State<'_, NodeState>) -> std::result::Result<Vec<LogLine>, String> {
+    Ok(state.0.logs())
 }
 
 #[cfg(test)]

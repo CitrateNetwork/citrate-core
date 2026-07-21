@@ -46,6 +46,15 @@ fn touch_bin() -> PathBuf {
     resolve_bin(&["/usr/bin/touch", "/bin/touch"])
 }
 
+/// `/bin/sh`, used as a test CHILD binary to print known lines to stdout+stderr.
+/// NOTE: this spawns a shell as the SUPERVISED PROCESS (a legitimate child), NOT
+/// via the supervisor's arg path — the injection guarantee is about args being
+/// literal argv, which the metachar test proves; here we deliberately want a
+/// child that writes to both streams so the log-capture ring can be asserted.
+fn sh_bin() -> PathBuf {
+    resolve_bin(&["/bin/sh", "/usr/bin/sh"])
+}
+
 /// A unique temp dir for a test (crash records + injection artifacts). Cleaned
 /// up on drop.
 struct TmpDir(PathBuf);
@@ -901,5 +910,225 @@ fn stop_during_backoff_cancels_pending_restart() {
     assert_eq!(
         crashes_after, crashes_before,
         "a restart happened after stop-during-backoff (crash records grew {crashes_before}->{crashes_after})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Q-A.2 / Q-B.2 (RED-FIRST): the supervisor must CAPTURE the child's stdout AND
+// stderr into a bounded ring buffer, in order, so the Node LOG panel can show
+// REAL node output in a packaged build (today it is empty because stdout was
+// `Stdio::inherit()`, dropped in a GUI). These fail against the pre-fix code
+// (no ring, stdout inherited) and pass once piped capture + reader threads land.
+// ---------------------------------------------------------------------------
+
+/// Poll the log ring until `pred` holds or the timeout elapses; return the final
+/// snapshot. Bounded (no wall-clock race) — the reader threads push lines as the
+/// child writes them.
+fn wait_for_logs(
+    sup: &Supervisor,
+    pred: impl Fn(&[LogLine]) -> bool,
+    timeout: Duration,
+) -> Vec<LogLine> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let logs = sup.logs();
+        if pred(&logs) || std::time::Instant::now() >= deadline {
+            return logs;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The supervisor captures BOTH stdout and stderr lines into the ring, tagged by
+/// stream, preserving each line's text. This is the core Q-A.2 behavior: a real
+/// node's `citrate_network::sync: …` progress lines (stdout/stderr) reach the UI.
+#[test]
+fn captures_child_stdout_and_stderr_into_ring() {
+    let tmp = TmpDir::new("logs-capture");
+    let crash_file = tmp.path("crashes.jsonl");
+    // A child that prints one known line to stdout and one to stderr, then stays
+    // alive (so the supervisor observes a clean Running child, not a crash-loop).
+    let script = "echo OUT_HELLO; echo ERR_OOPS 1>&2; sleep 60".to_string();
+    let spec = SidecarSpec::new("printer", sh_bin(), vec!["-c".into(), script]);
+    let cfg = SupervisorConfig::new(spec, &crash_file);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    let logs = wait_for_logs(
+        &sup,
+        |l| {
+            l.iter().any(|x| x.line == "OUT_HELLO" && x.stream == "out")
+                && l.iter().any(|x| x.line == "ERR_OOPS" && x.stream == "err")
+        },
+        Duration::from_secs(5),
+    );
+    assert!(
+        logs.iter().any(|x| x.line == "OUT_HELLO" && x.stream == "out"),
+        "stdout line not captured into the ring (stdout still inherited?): {logs:?}"
+    );
+    assert!(
+        logs.iter().any(|x| x.line == "ERR_OOPS" && x.stream == "err"),
+        "stderr line not captured into the ring: {logs:?}"
+    );
+    // Every captured line carries a timestamp from the clock (non-zero here).
+    assert!(logs.iter().all(|x| x.ts > 0), "log line missing a timestamp");
+
+    sup.stop();
+}
+
+/// NEGATIVE CONTROL (the capture is load-bearing): a child that writes NOTHING to
+/// stdout/stderr yields an EMPTY ring — proving the ring is filled by REAL child
+/// output, not fabricated. If the ring were seeded/faked, this would be non-empty.
+#[test]
+fn silent_child_yields_empty_ring() {
+    let tmp = TmpDir::new("logs-silent");
+    let crash_file = tmp.path("crashes.jsonl");
+    // `sleep` writes nothing to either stream while it runs.
+    let spec = SidecarSpec::new("silent", sleep_bin(), vec!["60".into()]);
+    let cfg = SupervisorConfig::new(spec, &crash_file);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    // Let it run well past boot; a silent child must leave the ring empty.
+    let _ = sup.wait_until(|s| matches!(s, SupervisorState::Running), Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(300));
+    let logs = sup.logs();
+    assert!(
+        logs.is_empty(),
+        "a silent child produced log lines — the ring is fabricated, not real capture: {logs:?}"
+    );
+
+    sup.stop();
+}
+
+/// The ring is BOUNDED (drop-oldest): a child that prints MORE than the capacity
+/// leaves exactly the newest `LOG_RING_CAPACITY` lines — the oldest are evicted,
+/// so a chatty node cannot grow memory without bound (the anti-bloat invariant).
+#[test]
+fn ring_is_bounded_and_drops_oldest() {
+    let tmp = TmpDir::new("logs-bound");
+    let crash_file = tmp.path("crashes.jsonl");
+    let over = LOG_RING_CAPACITY + 50;
+    // Print `over` numbered lines to stdout, then stay alive.
+    let script = format!("for i in $(seq 1 {over}); do echo LINE_$i; done; sleep 60");
+    let spec = SidecarSpec::new("chatty", sh_bin(), vec!["-c".into(), script]);
+    let cfg = SupervisorConfig::new(spec, &crash_file);
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    // Wait until the LAST printed line has been captured (all output flushed).
+    let last = format!("LINE_{over}");
+    let logs = wait_for_logs(
+        &sup,
+        |l| l.iter().any(|x| x.line == last),
+        Duration::from_secs(8),
+    );
+    assert!(
+        logs.iter().any(|x| x.line == last),
+        "the final line was never captured (buffer stalled?): last seen {:?}",
+        logs.last()
+    );
+    // Bounded at capacity — never the full `over` lines.
+    assert!(
+        logs.len() <= LOG_RING_CAPACITY,
+        "ring exceeded its cap ({} > {LOG_RING_CAPACITY}) — the drop-oldest bound is off",
+        logs.len()
+    );
+    // The oldest lines were evicted: LINE_1 must be gone, the newest present.
+    assert!(
+        !logs.iter().any(|x| x.line == "LINE_1"),
+        "oldest line (LINE_1) still present — drop-oldest not applied"
+    );
+
+    sup.stop();
+}
+
+/// The ring SURVIVES a restart: a child killed out from under the supervisor is
+/// respawned; both the pre-crash and post-restart lines are retained (the ring
+/// is not cleared on respawn), so the LOG panel keeps a continuous tail.
+#[test]
+fn ring_survives_restart() {
+    let tmp = TmpDir::new("logs-restart");
+    let crash_file = tmp.path("crashes.jsonl");
+    // Each run prints a UNIQUE marker so we can tell the runs apart. The marker
+    // includes the pid so run-1 and run-2 differ.
+    let script = "echo RUN_MARKER_$$; sleep 60".to_string();
+    let spec = SidecarSpec::new("restarter", sh_bin(), vec!["-c".into(), script]);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(20),
+        multiplier: 2,
+        max_delay: Duration::from_millis(50),
+        max_retries: 5,
+    };
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    // Wait for the first run's marker.
+    let logs1 = wait_for_logs(
+        &sup,
+        |l| l.iter().any(|x| x.line.starts_with("RUN_MARKER_")),
+        Duration::from_secs(5),
+    );
+    let first_marker = logs1
+        .iter()
+        .find(|x| x.line.starts_with("RUN_MARKER_"))
+        .map(|x| x.line.clone())
+        .expect("first run marker captured");
+
+    // Kill the child → the supervisor restarts it (a fresh run, new pid marker).
+    let st = sup.wait_until(|s| matches!(s, SupervisorState::Running), Duration::from_secs(5));
+    let pid = st.pid.expect("running pid");
+    signal_pid(pid, libc::SIGKILL);
+
+    // Wait for a SECOND distinct marker (the restart).
+    let logs2 = wait_for_logs(
+        &sup,
+        |l| {
+            l.iter()
+                .filter(|x| x.line.starts_with("RUN_MARKER_"))
+                .any(|x| x.line != first_marker)
+        },
+        Duration::from_secs(6),
+    );
+    // Both markers are still present — the ring was NOT cleared across restart.
+    assert!(
+        logs2.iter().any(|x| x.line == first_marker),
+        "pre-crash log line was cleared on restart — the ring should survive: {logs2:?}"
+    );
+    assert!(
+        logs2
+            .iter()
+            .filter(|x| x.line.starts_with("RUN_MARKER_"))
+            .any(|x| x.line != first_marker),
+        "no post-restart log line captured — the ring did not re-attach after respawn"
+    );
+
+    sup.stop();
+}
+
+/// The bounded stderr TAIL for a crash record is still populated from the ring's
+/// `err` lines after the stdout/stderr pipes moved to the reader threads. This
+/// guards the existing crash-record behavior against the piped-capture change:
+/// a crashing child's stderr must still land in the crash record.
+#[test]
+fn crash_record_stderr_tail_comes_from_ring() {
+    let tmp = TmpDir::new("logs-crashtail");
+    let crash_file = tmp.path("crashes.jsonl");
+    // A child that writes a known stderr line then exits non-zero immediately.
+    let script = "echo BOOM_ON_STDERR 1>&2; exit 7".to_string();
+    let spec = SidecarSpec::new("boomer", sh_bin(), vec!["-c".into(), script]);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 2,
+        max_delay: Duration::from_millis(30),
+        max_retries: 1,
+    };
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    // It crash-loops to Failed within the small cap; a crash record is written.
+    let _ = sup.wait_until(|s| matches!(s, SupervisorState::Failed), Duration::from_secs(8));
+    let records = read_crash_records(&crash_file);
+    assert!(!records.is_empty(), "no crash record written");
+    assert!(
+        records.iter().any(|r| r.stderr_tail.contains("BOOM_ON_STDERR")),
+        "crash-record stderr tail did not capture the child's stderr from the ring: {records:?}"
     );
 }

@@ -24,10 +24,10 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
-import { GRAPH } from "../../data/seed";
+import { GRAPH, NODE_LOG_TEMPLATES } from "../../data/seed";
 
 // The sim MemoryDomain maps the prototype seed GRAPH into the SAME contract the
 // real C3 daemon returns. The seed uses tenant "chain-facts"; the REAL ingest
@@ -348,6 +348,30 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       async stop() {
         assertSimAllowed("node.stop");
+      },
+      // Q-A.2/Q-B.2 — SIM/web PREVIEW ONLY. There is NO real node process in the
+      // web preview, so this cannot stream real stdout/stderr. It returns a small
+      // window of the design-preview template lines (clearly a preview, never
+      // dressed as live output) filled with the current sim height/peers, so the
+      // Node LOG panel still renders in web-dev. Guarded by assertSimAllowed — it
+      // can NEVER run in a packaged Tauri build, where the real node_logs runs
+      // (Rule 1). An off/prov node has no stream → honest empty.
+      async logs(): Promise<NodeLogLine[]> {
+        assertSimAllowed("node.logs");
+        const st = s();
+        const running = st.node !== "off" && st.node !== "prov";
+        if (!running) return [];
+        const now = Date.now();
+        return NODE_LOG_TEMPLATES.slice(0, 8).map((tpl, i) => ({
+          ts: now - (8 - i) * 600,
+          stream: "out" as const,
+          line:
+            "[sim preview] " +
+            tpl
+              .replace(/\{h\}/g, String(st.height))
+              .replace(/\{peers\}/g, String(st.peers))
+              .replace(/\{r\}/g, String((st.height / 50) | 0)),
+        }));
       },
     },
 

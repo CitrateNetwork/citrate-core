@@ -14,6 +14,7 @@ import {
   AppState,
   CerSpec,
   ChatMsg,
+  LogLine,
   Persona,
   PERSONAS,
   PERSIST_KEYS,
@@ -111,6 +112,29 @@ export function deriveIdentityFromEmail(email: string): { name: string; initials
   const fromWords = words.length > 1 ? words.map((w) => w.charAt(0)).join("") : local.slice(0, 2);
   const initials = (fromWords || local.slice(0, 2)).slice(0, 2).toUpperCase();
   return { name, initials };
+}
+
+/**
+ * Q-A.2/Q-B.2 — convert the REAL streamed node log lines (bridge `NodeLogLine`:
+ * `{ ts, stream, line }`) into the app's `LogLine` shape (`{ t, line, id }`) the
+ * Node LOG panel renders. `ts` (unix ms) → a HH:MM:SS stamp; the id is the ring
+ * index (stable within a snapshot). The tail is capped at 14 (the panel's window)
+ * so a 500-line ring does not flood the DOM; the NEWEST lines are kept. This is
+ * what replaces the fabricated NODE_LOG_TEMPLATES path in a packaged build —
+ * these are REAL node stdout/stderr lines (Rule 1), never a template.
+ */
+export function foldNodeLogs(lines: { ts: number; stream: "out" | "err"; line: string }[]): LogLine[] {
+  const tail = lines.slice(-14);
+  return tail.map((l, i) => {
+    const d = new Date(l.ts);
+    const t =
+      String(d.getHours()).padStart(2, "0") +
+      ":" +
+      String(d.getMinutes()).padStart(2, "0") +
+      ":" +
+      String(d.getSeconds()).padStart(2, "0");
+    return { t, line: l.line, id: i };
+  });
 }
 
 /**
@@ -389,6 +413,13 @@ export class Store {
    * (eth_blockNumber / net_peerCount) — height/peers are live 40204 truth, never
    * fabricated. A user-initiated `paused` is respected (not overwritten). Failure
    * leaves the last honest values untouched — no sim fallback (Rule 1).
+   *
+   * Q-A.2/Q-B.2 — ALSO folds the REAL streamed node log lines (`bridge.node.logs`
+   * → the Rust `node_logs` ring of stdout+stderr) into `s.logs`, so the Node LOG
+   * panel shows live node output in a packaged build. This is the REAL stream —
+   * the fabricated NODE_LOG_TEMPLATES path is web-dev/sim ONLY (it lives inside
+   * the `BRIDGE_MODE === "sim"` branch of `tick()` and never runs here). A stopped
+   * node returns [] honestly; a failed logs read leaves the last real tail.
    */
   async refreshNode(): Promise<void> {
     if (this.state.node === "paused") return; // respect an explicit pause
@@ -408,6 +439,15 @@ export class Store {
       // yet registered during spawn) must NOT demote the optimistic "prov" back
       // to "off" — that caused a prov→off→prov flicker. Still fold height/peers.
       if (!this.nodeStarting) patch.node = mapNodeState(st.state, st.syncPct, staked);
+      // Q-A.2/Q-B.2 — fold the REAL streamed node log tail. Best-effort: a failed
+      // logs read must not clobber the vitals fold above, so it is caught
+      // separately (the last real tail stands). NEVER a fabricated template here.
+      try {
+        const rawLogs = await bridge.node.logs();
+        patch.logs = foldNodeLogs(rawLogs);
+      } catch {
+        /* honest no-op: keep the last real log tail, never a fabricated one */
+      }
       this.setState(patch);
     } catch {
       /* honest no-op: a failed poll keeps the last real values, never a sim number */

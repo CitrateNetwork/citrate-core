@@ -30,6 +30,7 @@ import type {
   AiProviderStatus,
   GrantStatus,
   ModelStatus,
+  NodeLogLine,
 } from "../domains";
 import { Unavailable } from "../types";
 
@@ -194,6 +195,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async stop() {
         await invoke("node_stop");
+      },
+      // Q-A.2/Q-B.2 — the REAL recent node log lines, streamed from the
+      // supervised node's stdout+stderr ring (Rust `node_logs`). Live node
+      // output in the packaged app; a stopped node returns [] honestly. No
+      // fabricated template ever crosses this boundary (Rule 1).
+      async logs() {
+        return invoke<NodeLogLine[]>("node_logs");
       },
     },
     // ---- model: the local Gemma download + verify + llama-server sidecar (BC-3) ----

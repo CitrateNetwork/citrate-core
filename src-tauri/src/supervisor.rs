@@ -42,6 +42,7 @@
 // those later wirings + the tests until the NodeDomain adapter lands.
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -227,8 +228,10 @@ impl SidecarSpec {
     /// Build the `std::process::Command` for this spec. **This is the single
     /// spawn-construction site**, and it is shell-free by construction:
     /// `Command::new(path)` + `.args(vec)` never invokes a shell, so argv is
-    /// delivered literally. stderr is piped so the supervisor can capture a tail
-    /// for the crash record; stdout is inherited; stdin is null.
+    /// delivered literally. BOTH stdout and stderr are piped so the supervisor's
+    /// reader threads can stream every line into the bounded log ring (Q-A.2:
+    /// the node logs to these streams and the UI must show REAL output — a GUI
+    /// child's inherited stdout is otherwise dropped). stdin is null.
     fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.args(&self.args);
@@ -239,7 +242,7 @@ impl SidecarSpec {
             cmd.current_dir(dir);
         }
         cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::inherit());
+        cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd
     }
@@ -284,6 +287,65 @@ pub struct CrashRecord {
     /// Which consecutive-restart attempt this crash triggered (1-indexed). 0
     /// means the FIRST run crashed (before any restart).
     pub restart_attempt: u32,
+}
+
+/// One captured line from the supervised child's stdout or stderr. The node
+/// logs progress to these streams (e.g. `citrate_network::sync: Validated and
+/// imported 32/32 blocks (height 1540-1571)`); the supervisor pipes both streams
+/// and keeps a bounded ring of the most recent lines so the UI can show REAL
+/// node output in a packaged build (Q-A.2/Q-B.2), never a fabricated template.
+/// serde camelCase so `stream`/`line`/`ts` map straight onto the bridge shape.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogLine {
+    /// Wall-clock capture time, unix ms (from the injected clock).
+    pub ts: u64,
+    /// Which stream the line came from: `"out"` (stdout) or `"err"` (stderr).
+    pub stream: String,
+    /// The line text (one child stdout/stderr line, trailing newline stripped).
+    pub line: String,
+}
+
+/// Max lines retained in the per-process log ring buffer (drop-oldest). Bounds
+/// memory: a chatty node cannot grow the buffer without bound — the oldest line
+/// is evicted once the cap is reached (mirrors the bounded crash-record tail).
+pub const LOG_RING_CAPACITY: usize = 500;
+
+/// A bounded, drop-oldest ring of the most recent captured [`LogLine`]s. Held on
+/// the supervisor's shared state so a reader thread pushes and a poll (the
+/// `node_logs` command) snapshots it. Bounded at [`LOG_RING_CAPACITY`] so it can
+/// never grow without bound (the anti-bloat invariant, like the stderr tail).
+#[derive(Debug, Default)]
+pub struct LogRing {
+    lines: Mutex<VecDeque<LogLine>>,
+}
+
+impl LogRing {
+    fn new() -> Self {
+        LogRing {
+            lines: Mutex::new(VecDeque::with_capacity(LOG_RING_CAPACITY)),
+        }
+    }
+
+    /// Push one line, evicting the oldest if the ring is at capacity.
+    fn push(&self, line: LogLine) {
+        let mut q = self.lines.lock().unwrap_or_else(|e| e.into_inner());
+        if q.len() >= LOG_RING_CAPACITY {
+            q.pop_front();
+        }
+        q.push_back(line);
+    }
+
+    /// Snapshot the current lines oldest→newest (a clone, so the caller never
+    /// holds the lock). The `node_logs` command returns this.
+    pub fn snapshot(&self) -> Vec<LogLine> {
+        self.lines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
 }
 
 /// A snapshot of supervision status. Designed for the NodeDomain adapter:
@@ -383,6 +445,10 @@ struct Shared {
     /// (The monitor OWNS the `Child` and does all signalling; the controller
     /// never signals a child by pid — it sends control messages instead.)
     clock: Arc<dyn Clock>,
+    /// The bounded ring of the most recent captured stdout/stderr lines. Reader
+    /// threads push; the `logs()` accessor snapshots it. SURVIVES restarts (it
+    /// is not cleared on respawn) so a crash+restart keeps the tail visible.
+    logs: LogRing,
 }
 
 impl Shared {
@@ -432,6 +498,7 @@ impl Supervisor {
                 last_crash: None,
             }),
             clock: config.clock.clone(),
+            logs: LogRing::new(),
         });
         let (tx, rx) = std::sync::mpsc::channel();
         let monitor_shared = shared.clone();
@@ -451,6 +518,14 @@ impl Supervisor {
     /// runtime while the monitor thread runs (takes the lock briefly, clones).
     pub fn status(&self) -> SupervisorStatus {
         self.shared.snapshot()
+    }
+
+    /// A snapshot of the recent captured stdout/stderr lines (oldest→newest,
+    /// bounded at [`LOG_RING_CAPACITY`]). Safe to poll from the Tauri runtime;
+    /// the `node_logs` command folds this into the Node LOG panel so a packaged
+    /// build shows REAL node output (Q-A.2/Q-B.2), never a fabricated template.
+    pub fn logs(&self) -> Vec<LogLine> {
+        self.shared.logs.snapshot()
     }
 
     /// The sidecar name.
@@ -543,6 +618,73 @@ fn spawn_child(spec: &SidecarSpec) -> std::io::Result<Child> {
     spec.to_command().spawn()
 }
 
+/// Take the child's piped stdout + stderr and spawn one DETACHED reader thread
+/// per stream that reads lines and pushes each into the shared log ring. The
+/// threads are detached (not joined on teardown) so they can NEVER stall
+/// shutdown (F-2 liveness): a reader blocked on a read simply unblocks with EOF
+/// when the pipe closes as the child dies (SIGKILL escalation guarantees that),
+/// then exits on its own. They hold only an `Arc<Shared>` (no supervisor lock is
+/// held across a blocking read), so a lingering reader leaks nothing and blocks
+/// nothing. Best-effort: if the OS refuses a reader thread the stream is simply
+/// not captured (a missing log line is never a supervision failure).
+fn spawn_log_readers(child: &mut Child, name: &str, shared: &Arc<Shared>) {
+    use std::io::{BufRead, BufReader};
+    if let Some(out) = child.stdout.take() {
+        let shared = shared.clone();
+        let _ = std::thread::Builder::new()
+            .name(format!("supervisor:log-out:{name}"))
+            .spawn(move || {
+                let reader = BufReader::new(out);
+                for line in reader.lines().map_while(std::result::Result::ok) {
+                    shared.logs.push(LogLine {
+                        ts: shared.clock.now_unix_ms(),
+                        stream: "out".to_string(),
+                        line,
+                    });
+                }
+            });
+    }
+    if let Some(err) = child.stderr.take() {
+        let shared = shared.clone();
+        let _ = std::thread::Builder::new()
+            .name(format!("supervisor:log-err:{name}"))
+            .spawn(move || {
+                let reader = BufReader::new(err);
+                for line in reader.lines().map_while(std::result::Result::ok) {
+                    shared.logs.push(LogLine {
+                        ts: shared.clock.now_unix_ms(),
+                        stream: "err".to_string(),
+                        line,
+                    });
+                }
+            });
+    }
+}
+
+/// The BOUNDED stderr tail for a crash record, derived from the recent `err`
+/// lines the reader thread captured into the ring (the reader thread now owns
+/// the stderr pipe, so we no longer re-read `child.stderr`). Keeps only the
+/// trailing [`STDERR_TAIL_BYTES`] so a chatty child cannot bloat the record —
+/// the same anti-bloat bound as before, just sourced from the ring.
+fn stderr_tail_from_ring(shared: &Arc<Shared>) -> String {
+    let joined = shared
+        .logs
+        .snapshot()
+        .into_iter()
+        .filter(|l| l.stream == "err")
+        .map(|l| l.line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bytes = joined.as_bytes();
+    let start = bytes.len().saturating_sub(STDERR_TAIL_BYTES);
+    // start is a byte index into a joined `\n`-delimited string; clamp to a char
+    // boundary so the slice is valid UTF-8 (join output is UTF-8 by construction).
+    let start = (start..bytes.len())
+        .find(|&i| joined.is_char_boundary(i))
+        .unwrap_or(joined.len());
+    joined[start..].to_string()
+}
+
 /// Render a child exit status compactly for the crash record.
 fn render_exit(status: &std::process::ExitStatus) -> String {
     if let Some(code) = status.code() {
@@ -558,19 +700,26 @@ fn render_exit(status: &std::process::ExitStatus) -> String {
     "unknown exit".to_string()
 }
 
-/// Drain a child's piped stderr into a bounded tail (last [`STDERR_TAIL_BYTES`]).
-/// Reads to EOF (the child has exited by the time we call this), then keeps only
-/// the trailing window so a chatty child cannot bloat the record.
-fn read_stderr_tail(child: &mut Child) -> String {
-    use std::io::Read;
-    let mut buf = Vec::new();
-    if let Some(mut err) = child.stderr.take() {
-        // Bounded read: cap total bytes we retain. We read fully (stderr is a
-        // pipe that the exited child has closed) but only keep the tail.
-        let _ = err.read_to_end(&mut buf);
+/// Give the DETACHED stderr reader thread a brief window to drain the now-closed
+/// pipe to EOF before we snapshot the ring for a crash record's tail. Adaptive +
+/// bounded: it returns AS SOON AS an `err` line is present (the common case,
+/// since a line-buffered pipe flushes on newline before the child exits), else
+/// polls up to a small cap. Kept tiny so it does not slow the crash/restart hot
+/// path (the fork-bomb-bound negative control churns many restarts in <400ms).
+fn drain_grace(shared: &Arc<Shared>) {
+    let deadline = std::time::Instant::now() + Duration::from_millis(20);
+    loop {
+        if shared
+            .logs
+            .snapshot()
+            .iter()
+            .any(|l| l.stream == "err")
+            || std::time::Instant::now() >= deadline
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(2));
     }
-    let start = buf.len().saturating_sub(STDERR_TAIL_BYTES);
-    String::from_utf8_lossy(&buf[start..]).to_string()
 }
 
 /// Append one crash record as a JSON line to the crash-record file. Best-effort:
@@ -718,6 +867,12 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
             }
         };
 
+        // Stream stdout + stderr into the shared log ring via detached reader
+        // threads (Q-A.2). Done BEFORE publishing Running so no early line is
+        // missed. The threads own the pipes; the crash tail is later derived
+        // from the ring's `err` lines (not a re-read of child.stderr).
+        spawn_log_readers(&mut child, &spec.name, &shared);
+
         // Publish Running + the live pid.
         {
             let mut s = shared.status.lock().unwrap_or_else(|e| e.into_inner());
@@ -764,9 +919,14 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
                 return;
             }
             RunOutcome::Crashed { status } => {
-                // Unexpected exit → crash record + backoff + restart.
-                let stderr_tail = read_stderr_tail(&mut child);
+                // Unexpected exit → crash record + backoff + restart. Reap first,
+                // then give the detached stderr reader a brief window to drain the
+                // now-closed pipe to EOF so the ring holds the final lines, then
+                // derive the bounded tail from the ring's `err` lines (the reader
+                // owns the pipe now — we no longer re-read child.stderr).
                 let _ = child.wait(); // reap (already exited)
+                drain_grace(&shared);
+                let stderr_tail = stderr_tail_from_ring(&shared);
                 let record = CrashRecord {
                     name: spec.name.clone(),
                     at_unix_ms: clock.now_unix_ms(),

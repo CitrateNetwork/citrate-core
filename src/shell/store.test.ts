@@ -4,8 +4,9 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, store } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
+import { bridge } from "../bridge";
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
   it("absent/empty expiry is NOT expired (authority may omit it)", () => {
@@ -257,5 +258,60 @@ describe("mapNodeState — supervisor state → app node lifecycle", () => {
   it("running + synced but under-staked → synced (not validating)", () => {
     expect(mapNodeState("running", 100, 31999)).toBe("synced");
     expect(mapNodeState("running", 100, 0)).toBe("synced");
+  });
+});
+
+// Q-A.2/Q-B.2 — REAL streamed node logs. The store folds the bridge's node.logs()
+// (Rust node_logs ring of stdout+stderr) into s.logs so the Node LOG panel shows
+// live node output in a packaged build. `foldNodeLogs` is the pure converter; the
+// sim bridge path must read as a LABELLED preview, never as live node output.
+describe("foldNodeLogs — real streamed node lines → LogLine (Q-A.2)", () => {
+  it("converts real ts/stream/line into the panel's { t, line, id } shape", () => {
+    const raw = [
+      { ts: Date.parse("2026-07-19T13:04:05.000Z"), stream: "out" as const, line: "citrate_network::sync: imported 32/32 blocks (height 1540-1571)" },
+      { ts: Date.parse("2026-07-19T13:04:06.000Z"), stream: "err" as const, line: "warn: peer dropped" },
+    ];
+    const out = foldNodeLogs(raw);
+    expect(out).toHaveLength(2);
+    // The line text is preserved verbatim (REAL node output, not a template).
+    expect(out[0].line).toBe("citrate_network::sync: imported 32/32 blocks (height 1540-1571)");
+    expect(out[1].line).toBe("warn: peer dropped");
+    // Each carries a HH:MM:SS stamp and a stable id.
+    expect(out[0].t).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect(out.map((l) => l.id)).toEqual([0, 1]);
+  });
+
+  it("caps the tail at 14 lines, keeping the NEWEST (no DOM flood from a 500-ring)", () => {
+    const raw = Array.from({ length: 40 }, (_, i) => ({ ts: 1_000_000 + i, stream: "out" as const, line: `LINE_${i}` }));
+    const out = foldNodeLogs(raw);
+    expect(out).toHaveLength(14);
+    // Newest kept: last line is LINE_39, oldest kept is LINE_26 (40 - 14).
+    expect(out[out.length - 1].line).toBe("LINE_39");
+    expect(out[0].line).toBe("LINE_26");
+  });
+
+  it("an empty stream (node off / no output yet) folds to no lines", () => {
+    expect(foldNodeLogs([])).toEqual([]);
+  });
+});
+
+// Rule 1: in sim/web the node log stream must be a LABELLED preview, never dressed
+// as real live output — so a packaged build (which runs the real node_logs instead)
+// is the only place live lines appear. BRIDGE_MODE is "sim" in the test env.
+describe("bridge.node.logs (sim) — labelled preview, never live output (Q-B.2)", () => {
+  it("a running sim node yields lines that are clearly a preview, not real node output", async () => {
+    store.setState({ node: "syncing", height: 1571, peers: 12 });
+    const lines = await bridge.node.logs();
+    expect(lines.length).toBeGreaterThan(0);
+    // Every sim line is labelled so it can never be mistaken for live node output.
+    expect(lines.every((l) => l.line.startsWith("[sim preview]"))).toBe(true);
+    // And the fold keeps that label intact (the panel would render the preview tag).
+    const folded = foldNodeLogs(lines);
+    expect(folded.every((l) => l.line.startsWith("[sim preview]"))).toBe(true);
+  });
+
+  it("an off node has no stream → honest empty (no fabricated tail)", async () => {
+    store.setState({ node: "off" });
+    expect(await bridge.node.logs()).toEqual([]);
   });
 });

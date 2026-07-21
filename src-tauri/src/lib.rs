@@ -168,6 +168,12 @@ pub fn run() {
             node::node_status,
             node::node_start,
             node::node_stop,
+            // node logs — Q-A.2/Q-B.2 REAL streamed stdout+stderr from the
+            // supervised node's bounded ring buffer. Fills the Node LOG panel in
+            // a packaged build (was permanently empty: stdout was inherited then
+            // dropped in the GUI process). Honest empty when the node is off; no
+            // fabricated template ever crosses this boundary (Rule 1).
+            node::node_logs,
             // node-agent — the node-agent under the SidecarSupervisor (C1.2).
             // agent_status returns the supervisor state + whether a bearer
             // session exists (NEVER the token); agent_start spawns the daemon
