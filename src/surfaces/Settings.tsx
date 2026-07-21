@@ -4,22 +4,50 @@
 // Account & RBAC, Connections, AI providers, Node configuration,
 // API endpoints & keys, Keys & security, Memberships & billing, App.
 //
-// Honesty rule (Rule 1 / I-3): EVERY control reflects real AppState and
-// mutates it via store.setState — no dead controls, no "declared but not
-// wired" pattern. State that is genuinely deferred to the wired build is
-// stated as such in copy (verbatim from the design) rather than faked.
+// Honesty rule (Rule 1 / I-3 · Q-A.1): EVERY control is ONE of —
+//   (a) a REAL working action (config toggles, AI-provider keyring flow,
+//       custody Lock, Sign out, billing renew, Manage account ↗, the live RPC
+//       probe), OR
+//   (b) an honestly DISABLED + annotated control (visibly non-interactive, a
+//       truthful one-line "not available in this build" — never a fake success,
+//       never an apology-on-click), OR
+//   (c) removed.
+// There are NO fabricated success toasts, NO "…isn't wired yet (a scheduled
+// build)" apology toasts, and NO hardcoded status asserting an unverified fact.
+// A control with no backend is a disabled state, not a button that toasts an
+// excuse. Every status traces to a real read (a probe, a folded /userinfo
+// claim, s.walletAddr) or an honest disabled/"—" placeholder.
 //
 // Data source — prototype/sim AppState (see state.ts). Account claims are
 // captioned "live from /userinfo" per the design; wiring replaces the sim,
 // not the UI.
 // =====================================================================
 import { useEffect, useState } from "react";
+import { createPublicClient, http } from "viem";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
-import { LoaderMark } from "../components/LoaderMark";
+import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
 import type { AiProviderStatus } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+
+// Q-A.1 — an honestly DISABLED + annotated control. It is visibly
+// non-interactive (the native `disabled` attribute + muted styling) and carries
+// a single truthful "not available in this build" note instead of a fake
+// success or an apology-on-click. This is the honest replacement for every
+// control that previously existed only to toast an excuse (Rule 1).
+function DisabledControl({ label, note }: { label: string; note: string }) {
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
+      <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
+        {label}
+      </button>
+      <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+        {note}
+      </span>
+    </span>
+  );
+}
 
 // Node-configuration + App config write through the bridge (CORE-A1 A1.4). In
 // sim mode this delegates back to the Store (1:1 UI preserved); in a Tauri
@@ -170,30 +198,14 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   ];
 
   // ---------- connections ----------
-  const connRows = CONN.map(([id, name, scope]) => {
-    const on = !!s.connections[id];
-    return {
-      name,
-      scope: scope + " · MCP tool",
-      connected: on,
-      btn: on ? "Disconnect" : "Connect",
-      go: () => {
-        // OAuth connect/disconnect is NOT wired — there is no real token flow yet
-        // (a scheduled build). The old handler faked a 1.3s "OAuth" timer and
-        // claimed keyring token storage/revocation. Be honest rather than flip a
-        // fabricated "connected" flag (Rule 1).
-        if (on) {
-          const c = { ...store.state.connections };
-          delete c[id];
-          store.setState({ connections: c });
-          store.save();
-          store.toast(name + " disconnected.");
-        } else {
-          store.toast(name + " — OAuth connections aren't wired yet (a scheduled build); no token was issued.");
-        }
-      },
-    };
-  });
+  // Q-A.1 (Rule 1) — there is NO real OAuth token flow in this build: no browser
+  // handshake, no keyring token storage, no revocation. Connect/Disconnect are
+  // therefore honestly DISABLED (a truthful "connections unavailable in this
+  // build" note), not buttons that fake a "connected" flag or toast an excuse.
+  const connRows = CONN.map(([, name, scope]) => ({
+    name,
+    scope: scope + " · MCP tool",
+  }));
 
   // ---------- CORE-AI1 (@rule8) — AI providers (keyring-sealed BYO-key) ----------
   const statusFor = (pid: string) => aiStatuses.find((p) => p.id === pid);
@@ -253,42 +265,47 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   }));
 
   // ---------- API endpoints & keys ----------
-  const rpcUp = s.rpc === "public" || s.node !== "off";
-  const rpcHealthColor = rpcUp ? "var(--ok)" : "var(--warn)";
+  // Q-A.1 (Rule 1) — the RPC health pill traces to a REAL probe, never an
+  // unconditional "healthy". We call eth_blockNumber against the SELECTED RPC
+  // (local 127.0.0.1:8545 or public rpc.citrate.ai) using the viem client the
+  // frontend already ships (src/chain.ts). Until the probe resolves the honest
+  // baseline is "checking…" (never a fabricated health assertion). The result is
+  // reachable (block N) / unreachable — a truthful color + text from real data.
+  type RpcProbe = { phase: "checking" | "up" | "down"; block: number | null; host: string };
+  const rpcHost = s.rpc === "local" ? "127.0.0.1:8545" : "rpc.citrate.ai";
+  const [rpcProbe, setRpcProbe] = useState<RpcProbe>({ phase: "checking", block: null, host: rpcHost });
+  useEffect(() => {
+    if (s.sSec !== "api") return;
+    let live = true;
+    setRpcProbe({ phase: "checking", block: null, host: rpcHost });
+    const url = s.rpc === "local" ? "http://127.0.0.1:8545" : "https://rpc.citrate.ai";
+    const client = createPublicClient({ chain: citrate, transport: http(url) });
+    client
+      .getBlockNumber()
+      .then((bn) => {
+        if (live) setRpcProbe({ phase: "up", block: Number(bn), host: rpcHost });
+      })
+      .catch(() => {
+        if (live) setRpcProbe({ phase: "down", block: null, host: rpcHost });
+      });
+    return () => {
+      live = false;
+    };
+  }, [s.sSec, s.rpc, rpcHost]);
+  const rpcHealthColor = rpcProbe.phase === "up" ? "var(--ok)" : rpcProbe.phase === "down" ? "var(--danger)" : "var(--tx-3)";
   const rpcHealthText =
-    s.rpc === "local"
-      ? s.node !== "off"
-        ? "127.0.0.1:8545 · healthy" + (s.finAge < 0 ? "" : " · " + Math.round(s.finAge) + "s behind checkpoint")
-        : "127.0.0.1:8545 · node off — reads fall back to rpc.citrate.ai (shown in UI)"
-      : "rpc.citrate.ai · healthy · TLS";
+    rpcProbe.phase === "checking"
+      ? rpcHost + " · checking…"
+      : rpcProbe.phase === "up"
+        ? rpcHost + " · reachable · block " + rpcProbe.block
+        : rpcHost + " · unreachable";
 
-  const noGwKey = !s.gwKey && !s.gwKeyFull;
-  const gwKeyShown = !!s.gwKeyFull;
-  const gwKeyHeld = !!s.gwKey && !s.gwKeyFull;
-  const gwKeyFull = s.gwKeyFull || "";
-  const gwKeyMasked = s.gwKey || "";
-  // Gateway-key issuance is NOT wired — the real key is minted by the membership
-  // service against your live entitlement (core-membership, a scheduled build).
-  // The old flow fabricated a client-side `cgk_` string and claimed keyring/server
-  // storage. Be honest rather than hand out a fake key (Rule 1).
-  const onIssueKey = () => {
-    store.toast("Gateway key issuance isn't wired yet — the membership service mints it against your live entitlement (a scheduled build).");
-  };
-  const onCopyKey = () => store.copy(store.state.gwKeyFull || "", "Key copied — it will not be shown again");
-  const onKeyStored = () => {
-    store.setState({ gwKey: null, gwKeyFull: null });
-    store.toast("Gateway keys aren't wired yet — nothing was stored.");
-    store.save();
-  };
-  const onRotateKey = () => {
-    store.toast("Gateway key rotation isn't wired yet — no server key to rotate.");
-  };
-  const onRevokeKey = () => {
-    store.toast("Gateway key revocation isn't wired yet — no server key to revoke.");
-  };
+  // Q-A.1 (Rule 1) — gateway-key issuance/rotation/revocation has NO backend in
+  // this build (the real key is minted server-side by core-membership against a
+  // live entitlement). The whole cluster is now an honest DISABLED state, not a
+  // set of buttons that toast an excuse or hand out a fabricated `cgk_` string.
 
   // ---------- keys & security ----------
-  const onExportKey = () => store.toast("Keystore export isn't wired yet — it will show a strong-warning dialog before revealing the encrypted keystore (a scheduled build).");
   const lockOpts = [15, 30, 60].map((m) => ({
     label: m + " min",
     cls: btnCls(s.autolock === m),
@@ -342,15 +359,10 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         : ["var(--warn-bg)", "var(--warn)", "var(--warn)"];
 
   // ---------- app ----------
-  // The updater isn't wired, so we never assert "current" (unverifiable). Show the
-  // real running version + that update checks aren't wired.
-  const updText = "citrate-core 0.1.0-proto · " + s.channel + " channel · update checks not wired";
-  // The auto-updater isn't wired (it's @rule8 — updater keys need security
-  // sign-off; work-order WO-2). The old handler faked a check that always
-  // resolved "current". Be honest rather than assert a signature-verified check.
-  const onCheckUpdate = () => {
-    store.toast("Update checks aren't wired yet — the signed auto-updater ships with the notarized build (a scheduled build).");
-  };
+  // The updater has no backend in this build, so we never assert "current"
+  // (unverifiable). Show the real running version + channel; the Check-for-updates
+  // control is an honest DISABLED state below (not a fake "current" toast).
+  const updText = "citrate-core 0.1.0-proto · " + s.channel + " channel";
 
   const setSec = (id: string) => {
     store.setState({ sSec: id });
@@ -408,7 +420,10 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 </div>
               ))}
               <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Account hub isn't wired yet — it opens in your browser via the shared OIDC session (a scheduled build).")}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => void store.openExternal("https://auth.citrate.ai/account")}
+                >
                   Manage account ↗
                 </button>
                 <button
@@ -432,7 +447,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line-1)", display: "flex", flexDirection: "column", gap: 3 }}>
                 <span className="eyebrow">Connections · mount as MCP tools for your agent</span>
                 <span style={{ fontSize: 12, color: "var(--tx-3)" }}>
-                  OAuth runs in your system browser. Tokens land in the OS keyring — never in config files.
+                  OAuth connections are not available in this build — no token flow runs, so nothing is stored in the OS keyring yet.
                 </span>
               </div>
               {connRows.map((cn) => (
@@ -443,25 +458,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                       {cn.scope}
                     </span>
                   </span>
-                  {cn.connected && (
-                    <span
-                      className="mono"
-                      style={{
-                        fontSize: 9.5,
-                        letterSpacing: ".1em",
-                        textTransform: "uppercase",
-                        padding: "2px 8px",
-                        borderRadius: 999,
-                        background: "var(--ok-bg)",
-                        border: "1px solid var(--ok)",
-                        color: "var(--ok)",
-                      }}
-                    >
-                      connected
-                    </span>
-                  )}
-                  <button className="btn btn-ghost btn-sm" onClick={cn.go}>
-                    {cn.btn}
+                  <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
+                    Connect
                   </button>
                 </div>
               ))}
@@ -632,13 +630,11 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 >
                   {s.dataDir}
                 </span>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Move stops the node, relocates the encrypted store, verifies, then restarts — guided flow in the wired build")}>
-                  Move…
-                </button>
+                <DisabledControl label="Move…" note="not available in this build" />
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span className="lbl">Bootnodes</span>
+              <span className="lbl">Bootnodes · default set</span>
               <span
                 className="mono"
                 style={{ fontSize: 11, background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", lineHeight: 1.6 }}
@@ -696,54 +692,23 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Gateway key · inference</span>
-              {noGwKey && (
-                <>
-                  <p style={{ fontSize: 12.5, color: "var(--tx-2)", margin: 0 }}>
-                    No key issued. The membership service issues it against your live entitlement, with tier-bounded quotas.
-                  </p>
-                  <span>
-                    <button className="btn btn-secondary btn-sm" onClick={onIssueKey}>
-                      Issue key
-                    </button>
-                  </span>
-                </>
-              )}
-              {gwKeyShown && (
-                <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-1)", padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
-                  <span style={{ fontSize: 12, color: "var(--warn)", fontWeight: 500 }}>Stored locally — gateway keys aren't wired to the membership service yet.</span>
-                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span className="mono" style={{ fontSize: 12, flex: 1, wordBreak: "break-all" }}>
-                      {gwKeyFull}
-                    </span>
-                    <button className="btn btn-ghost btn-sm" onClick={onCopyKey}>
-                      Copy
-                    </button>
-                  </span>
-                  <span>
-                    <button className="btn btn-secondary btn-sm" onClick={onKeyStored}>
-                      Done — stored
-                    </button>
-                  </span>
-                </div>
-              )}
-              {gwKeyHeld && (
-                <>
-                  <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span className="mono" style={{ fontSize: 12, flex: 1 }}>
-                      {gwKeyMasked}
-                    </span>
-                    <button className="btn btn-ghost btn-sm" onClick={onRotateKey}>
-                      Rotate
-                    </button>
-                    <button className="btn btn-danger btn-sm" onClick={onRevokeKey}>
-                      Revoke
-                    </button>
-                  </span>
-                  <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                    stored locally · gateway keys aren't wired to the membership service yet
-                  </span>
-                </>
-              )}
+              {/* Q-A.1 (Rule 1) — no backend mints, rotates, or revokes a gateway
+                  key in this build. Honest DISABLED state, not a fabricated `cgk_`
+                  string or an apology-on-click. */}
+              <p style={{ fontSize: 12.5, color: "var(--tx-2)", margin: 0 }}>
+                Gateway keys are minted server-side by the membership service against a live entitlement. That path is not available in this build.
+              </p>
+              <span style={{ display: "flex", gap: 10 }}>
+                <button className="btn btn-secondary btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
+                  Issue key
+                </button>
+                <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
+                  Rotate
+                </button>
+                <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
+                  Revoke
+                </button>
+              </span>
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
               <span className="eyebrow">Memory socket</span>
@@ -795,8 +760,19 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => {
-                      void store.custodyUnlock("");
-                      store.toast("Unlock prompts for your passphrase in the wired build");
+                      // Q-A.1 (Rule 1) — a minimal passphrase prompt so Unlock is a
+                      // REAL action, not a button that silently calls unlock("") and
+                      // fails. Empty/cancelled input is a no-op (no fake success). A
+                      // wrong passphrase surfaces the real vault error honestly.
+                      const pass = typeof window !== "undefined" ? window.prompt("Enter your vault passphrase to unlock") : null;
+                      if (!pass) return;
+                      void store
+                        .custodyUnlock(pass)
+                        .then(() => {
+                          if (store.state.custodyLock === "unlocked") store.toast("Vault unlocked");
+                          else store.toast("Vault stayed locked — passphrase not accepted");
+                        })
+                        .catch((err) => store.toast("Unlock failed — " + String((err as Error).message ?? err)));
                     }}
                   >
                     Unlock…
@@ -813,19 +789,22 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     WebAuthn P-256 · address derived from identity · deploys lazily on first tx
                   </span>
                 </span>
-                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
-                  ADDRESS SET
+                {/* Q-A.1 (Rule 1) — show the REAL derived smart-wallet address
+                    (s.walletAddr, truncated) or an honest "—", never a fabricated
+                    "ADDRESS SET" pill that asserts a set address unconditionally. */}
+                <span className="mono" style={{ fontSize: 11, color: s.walletAddr ? "var(--accent-text)" : "var(--tx-3)" }}>
+                  {short(s.walletAddr)}
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 10 }}>
                 <span style={{ flex: 1 }}>
                   <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>Machine attestation</span>
                   <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
-                    {s.deviceId} · hardware-backed device attestation isn't wired yet (a scheduled build)
+                    {s.deviceId} · hardware-backed device attestation is not available in this build
                   </span>
                 </span>
                 <span className="mono" style={{ fontSize: 10, color: "var(--warn)" }}>
-                  NOT WIRED
+                  NOT AVAILABLE
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -835,9 +814,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                     Argon2id + AES-GCM keystore · OS keyring sealed
                   </span>
                 </span>
-                <button className="btn btn-ghost btn-sm" onClick={onExportKey}>
-                  Export…
-                </button>
+                {/* Q-A.1 (Rule 1) — keystore export has no backend flow yet; honest
+                    DISABLED state, not a button that toasts an excuse. */}
+                <DisabledControl label="Export…" note="not available in this build" />
               </div>
               <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
                 Export reveals your encrypted keystore file. Anyone with the file and your passphrase controls the key. No support agent will ever ask for it.
@@ -872,13 +851,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                   className={btnCls(s.sigPolicy === "allow")}
                   onClick={() => {
                     writeConfig(store, { sigPolicy: "allow" });
-                    store.toast("Allowlist rules are user-authored per origin + contract — editor ships in the wired build");
                     store.save();
                   }}
                 >
-                  Allowlist rules…
+                  Allowlisted intents skip the ceremony
                 </button>
               </span>
+              {/* The policy toggle above is a REAL config write. The per-origin
+                  allowlist RULE EDITOR has no backend yet — honest DISABLED state
+                  (Q-A.1), not a toast excuse. */}
+              {s.sigPolicy === "allow" && <DisabledControl label="Edit allowlist rules…" note="rule editor not available in this build" />}
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
                 {polNote}
               </span>
@@ -917,9 +899,10 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 <button className="btn btn-secondary btn-sm" onClick={() => void store.renewMembership()}>
                   Renew ↗
                 </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Cancellation runs in the Stripe customer portal — the portal link isn't wired yet (a scheduled build).")}>
-                  Cancel membership
-                </button>
+                {/* Q-A.1 (Rule 1) — the Stripe customer-portal link has no backend
+                    in this build; honest DISABLED state, not a toast excuse. Renew
+                    (left) is the REAL wired checkout path. */}
+                <DisabledControl label="Cancel membership" note="Stripe portal not available in this build" />
               </div>
               <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
                 On lapse: paid features lock after the 72-hour offline grace window. Your node, local wallet, and local memory never lock — your keys and chain access are yours. Stake attribution ends until renewal; vaulted principal stays vaulted.
@@ -955,13 +938,14 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             )}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
               <span className="eyebrow">Receipts</span>
+              {/* Q-A.1 (Rule 1) — there is no real receipt read in this build, so we
+                  show an honest "No receipts yet" rather than a fabricated
+                  2026-07-11 · $48.00 line, and the PDF download is a disabled state. */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span className="mono" style={{ fontSize: 11.5 }}>
-                  2026-07-11 · Pilot membership · $48.00
+                <span className="mono" style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
+                  No receipts yet
                 </span>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Receipt PDFs aren't wired yet — they download from core-membership (a scheduled build).")}>
-                  PDF ↗
-                </button>
+                <DisabledControl label="PDF ↗" note="receipt downloads not available in this build" />
               </div>
             </div>
           </div>
@@ -992,21 +976,20 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                   beta
                 </button>
               </span>
+              {/* Q-A.1 (Rule 1) — no updater backend in this build. Check-now is an
+                  honest DISABLED state (never a fake "current" toast), and the
+                  footer no longer asserts an offline signature check that does not
+                  run. The running version + channel below are real. */}
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <button className="btn btn-ghost btn-sm" onClick={onCheckUpdate} disabled={s.updState === "checking"}>
+                <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
                   Check now
                 </button>
-                {s.updState === "checking" && (
-                  <span style={{ width: 22, height: 22, display: "inline-block" }}>
-                    <LoaderMark size={22} />
-                  </span>
-                )}
                 <span className="mono" style={{ fontSize: 11, color: "var(--tx-2)" }}>
                   {updText}
                 </span>
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                updater signature verified offline before anything applies · citrate-core 0.1.0-proto
+                automatic update checks are not available in this build · citrate-core 0.1.0-proto
               </span>
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1037,13 +1020,13 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Diagnostics</span>
+              {/* Q-A.1 (Rule 1) — no diagnostics-bundle backend in this build; honest
+                  DISABLED state. The deep-link-scheme claim is dropped (unverified). */}
               <span>
-                <button className="btn btn-ghost btn-sm" onClick={() => store.toast("Diagnostics export isn't wired yet — it will bundle logs/config/crash records (keys + tokens scrubbed) in a scheduled build.")}>
-                  Export diagnostics bundle
-                </button>
+                <DisabledControl label="Export diagnostics bundle" note="diagnostics export not available in this build" />
               </span>
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                logs + config + crash records · scrubbed of keys and tokens · citrate-core:// scheme registered for deep links
+                would bundle logs + config + crash records · scrubbed of keys and tokens
               </span>
             </div>
           </div>
