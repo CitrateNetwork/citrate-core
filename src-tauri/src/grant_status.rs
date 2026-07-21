@@ -40,11 +40,11 @@ use crate::staking::decode_uint256_word;
 /// The `MembershipStakeVault` on 40204 (canonical address book:
 /// `contracts/addresses/40204.json`). Lowercase `0x`-hex; the `eth_call` target for
 /// `attributedStake`, `attributedShares`, and `VALIDATOR_STAKE_REQUIREMENT`.
-pub const MEMBERSHIP_STAKE_VAULT: &str = "0x0aceb7b474ecc4abe12696ce48628f0cabe0267e";
+pub const MEMBERSHIP_STAKE_VAULT: &str = "0x61e324cfd6b7cb106ac0ad1df163bdfef2b74268";
 
 /// The `CitrateMemberSBT` on 40204 (canonical address book). Lowercase `0x`-hex;
 /// the `eth_call` target for the SBT `balanceOf(member)` membership read.
-pub const CITRATE_MEMBER_SBT: &str = "0x149e85a3c845d10556537dcf824d148acb904578";
+pub const CITRATE_MEMBER_SBT: &str = "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1";
 
 /// 4-byte selector for `attributedStake(address)` —
 /// `keccak256("attributedStake(address)")[..4]`. PINNED here + proven by the

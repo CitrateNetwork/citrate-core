@@ -80,7 +80,7 @@ const REQUIREMENT_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
 fn membership_stake_vault_is_the_canonical_40204_value() {
     assert_eq!(
         MEMBERSHIP_STAKE_VAULT,
-        "0x0aceb7b474ecc4abe12696ce48628f0cabe0267e"
+        "0x61e324cfd6b7cb106ac0ad1df163bdfef2b74268"
     );
 }
 
@@ -89,7 +89,7 @@ fn membership_stake_vault_is_the_canonical_40204_value() {
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
         CITRATE_MEMBER_SBT,
-        "0x149e85a3c845d10556537dcf824d148acb904578"
+        "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1"
     );
 }
 
