@@ -328,7 +328,7 @@ export function Journal({ store, s }: SurfaceProps) {
         </div>
         <div style={{ flex: 1 }}></div>
         <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
-          Local and off-chain — encrypted at rest in your data dir. Agents and the harness write here only with your approval; pinned pages snapshot encrypted to the PIN daemon.
+          Local and off-chain — stored locally on this device (browser localStorage). Agents and the harness write here only with your approval. Encrypted data-dir persistence and PIN-daemon snapshots are not wired yet.
         </p>
       </div>
 

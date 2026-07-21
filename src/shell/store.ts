@@ -658,7 +658,16 @@ export class Store {
       patch.authName = d.name;
       patch.authInitials = d.initials;
     }
-    if (st.walletAddr) patch.walletAddr = st.walletAddr;
+    // Q-A.4b item 10 — fold the REAL wallet only from a genuine wallet_address
+    // claim, and RECORD that provenance. A signed-in user with no wallet claim
+    // keeps walletFromClaim=false, so the S4 onboarding card shows "—"/pending
+    // rather than the fabricated persona `makeAddr` hash (Rule 1).
+    if (st.walletAddr) {
+      patch.walletAddr = st.walletAddr;
+      patch.walletFromClaim = true;
+    } else {
+      patch.walletFromClaim = false;
+    }
     // BC-6.3: fold the REAL entitlement expiry verbatim (the Settings billing card
     // renders THIS, an honest "—" when absent — never a hardcoded date). Folded in
     // every branch below, including the expired one (it explains WHY the tier
@@ -731,6 +740,7 @@ export class Store {
       authEmail: null,
       authName: null,
       authInitials: null,
+      walletFromClaim: false,
     });
     this.save();
   }

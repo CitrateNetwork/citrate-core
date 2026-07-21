@@ -209,6 +209,16 @@ export interface AppState {
   authName: string | null;
   authInitials: string | null;
   /**
+   * Q-A.4b item 10 — did `walletAddr` come from a REAL `wallet_address` claim
+   * (folded by applyAuthStatus), or is it the deterministic persona `makeAddr`
+   * seed? For a SIGNED-IN user this must be true before any identity surface (S4
+   * onboarding) renders the address — otherwise the persona hash is a fabricated
+   * wallet and the UI shows "—"/pending instead (Rule 1). Not persisted (identity
+   * is re-derived from a live session only). Irrelevant in the web-dev/persona
+   * path (signedIn=false), where the labelled persona address is the honest preview.
+   */
+  walletFromClaim: boolean;
+  /**
    * BC-6.3 — the REAL entitlement expiry, folded verbatim from the /userinfo
    * `expires_at` claim (bridge `AuthStatus.expiresAt`; an ISO datetime or unix
    * seconds). Settings "Memberships & billing" renders THIS (an honest "—" when
@@ -452,6 +462,7 @@ export function freshState(pid: string): AppState {
     authEmail: null,
     authName: null,
     authInitials: null,
+    walletFromClaim: false,
     authExpiresAt: null,
     entitlement: "active",
     stage: P.fresh ? "s0" : "done",

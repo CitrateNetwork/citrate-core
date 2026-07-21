@@ -1,6 +1,19 @@
 import { useRef, useEffect } from "react";
 import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
+import { BRIDGE_MODE } from "../bridge/mode";
+
+// Q-A.4b — in the PACKAGED (tauri) build there is no real read for these vitals
+// yet, so they must render an honest state instead of a fabricated number/row:
+//   - blocksProposed: no validator registration exists yet (Q-C) → honest label;
+//   - cpu / ram: no trivial process read wired → "—" (never the sim number);
+//   - peer ROWS: no per-peer detail until citrate_getDagStats (Q-B.3) → show the
+//     REAL peer COUNT + an honest empty state, never fabricated peer rows;
+//   - syncPct: a binary 0/100 stub (node.rs) → present "syncing…"/"synced", never
+//     a precise fake percent.
+// The web-dev/sim path keeps the labelled prototype vitals (they animate honestly
+// as a preview and are never shown to a packaged member).
+const TAURI = BRIDGE_MODE === "tauri";
 
 // ---- formatting helpers (verbatim from design) ----
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -58,35 +71,38 @@ export function Node({ store, s }: SurfaceProps) {
 
   // ----- operations -----
   const noStart = s.node !== "off";
-  const noPause = !(s.node === "validating" || s.node === "synced" || s.node === "syncing");
-  const noResume = s.node !== "paused";
   const noStop = s.node === "off" || s.node === "prov";
   const onNodeStart = () => store.startNode();
-  const onNodePause = () => {
-    store.setState({ node: "paused" });
-    store.toast("Paused — heartbeat continues; no jobs in flight");
-    store.save();
-  };
-  const onNodeResume = () => {
-    store.setState({ node: staked >= 32000 ? "validating" : "synced" });
-    store.save();
-  };
+  // Q-A.4b item 4 — Pause/Resume were COSMETIC (setState only; no supervisor
+  // pause call exists in the bridge). They painted a "paused" label without
+  // pausing the real node, so they are removed in favour of the real Stop
+  // (bridge.node.stop). If a real supervisor pause lands (Q-C), re-add them wired.
   const onNodeStop = () => store.stopNode();
   const showSync = s.node === "syncing";
-  const syncPctStr = (s.syncPct | 0) + "%";
-  const syncBarW = (s.syncPct | 0) + "%";
+  // Q-A.4b item 2 — syncPct is a binary 0/100 stub in the packaged build (node.rs;
+  // a real percent needs eth_syncing/getDagStats, Q-B.3). Don't imply a precise
+  // fake percent: show "syncing…" while syncing. The web-dev sim animates a real
+  // (prototype) percent, so keep the numeric bar there.
+  const syncPctStr = TAURI ? "syncing…" : (s.syncPct | 0) + "%";
+  const syncBarW = TAURI ? "100%" : (s.syncPct | 0) + "%";
   const logsEmpty = s.node === "off";
   const logLines = s.logs;
-  const peersEmpty = s.node === "off" || s.peerRows.length === 0;
-  const peerRows = s.node === "off" ? [] : s.peerRows;
-  const cpuStr = s.node === "off" ? "—" : (s.cpu | 0) + " %";
-  const ramStr = s.node === "off" ? "—" : (s.ram | 0) + " MB";
-  const diskStr = s.node === "off" ? "—" : "3.1 GB";
+  // Q-A.4b item 3 — per-peer rows are DEAD in tauri (no getDagStats yet). Never
+  // fabricate peer rows in the packaged build: render the REAL peer count + an
+  // honest "peer detail coming" empty state instead. Sim keeps its preview rows.
+  const peerRows = TAURI || s.node === "off" ? [] : s.peerRows;
+  const peersEmpty = s.node === "off" || peerRows.length === 0;
+  // Q-A.4b item 1 — cpu/ram have no real process read wired in the packaged build,
+  // and blocksProposed has no validator registration yet (Q-C). Show honest states
+  // in tauri, never the fabricated sim number.
+  const cpuStr = TAURI ? "—" : s.node === "off" ? "—" : (s.cpu | 0) + " %";
+  const ramStr = TAURI ? "—" : s.node === "off" ? "—" : (s.ram | 0) + " MB";
+  const diskStr = TAURI ? "—" : s.node === "off" ? "—" : "3.1 GB";
   const crashEmpty = s.crashes.length === 0;
   const crashRows = s.crashes;
-  const blocksProposedStr = s.node === "off" ? "—" : fmtI(s.blocksProposed);
+  const blocksProposedStr = TAURI ? "not a registered validator" : s.node === "off" ? "—" : fmtI(s.blocksProposed);
   const electionStr =
-    s.node === "validating" && staked >= 32000 ? ((staked / 8200000) * 100).toFixed(2) + "% stake share / round" : "—";
+    !TAURI && s.node === "validating" && staked >= 32000 ? ((staked / 8200000) * 100).toFixed(2) + "% stake share / round" : "—";
   const restartsStr = String(s.crashes.length);
 
   // ----- earning -----
@@ -195,12 +211,6 @@ export function Node({ store, s }: SurfaceProps) {
             <button className="btn btn-primary" onClick={onNodeStart} disabled={noStart}>
               Start
             </button>
-            <button className="btn btn-ghost" onClick={onNodePause} disabled={noPause}>
-              Pause
-            </button>
-            <button className="btn btn-ghost" onClick={onNodeResume} disabled={noResume}>
-              Resume
-            </button>
             <button className="btn btn-danger" onClick={onNodeStop} disabled={noStop}>
               Stop
             </button>
@@ -249,9 +259,24 @@ export function Node({ store, s }: SurfaceProps) {
             {/* right column */}
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: "11px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Peers</div>
+                <div style={{ padding: "11px 16px", borderBottom: "1px solid var(--line-1)", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Peers</span>
+                  {/* The peer COUNT is a REAL read (net_peerCount). Per-peer detail
+                      (id/direction/latency) needs citrate_getDagStats (Q-B.3), so
+                      in the packaged build we show the count + an honest empty
+                      state rather than fabricated peer rows (Rule 1). */}
+                  <span className="mono tabular" style={{ marginLeft: "auto", fontSize: 12, color: "var(--tx-2)" }}>
+                    {s.node === "off" ? "—" : s.peers + " connected"}
+                  </span>
+                </div>
                 {peersEmpty && (
-                  <p style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: "12px 16px" }}>—</p>
+                  <p style={{ fontSize: 11.5, color: "var(--tx-3)", margin: 0, padding: "12px 16px" }}>
+                    {s.node === "off"
+                      ? "—"
+                      : TAURI
+                        ? "Peer detail coming — per-peer id/latency needs citrate_getDagStats. The connected count above is a real read."
+                        : "—"}
+                  </p>
                 )}
                 {peerRows.map((p, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid var(--line-1)" }}>

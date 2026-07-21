@@ -13,7 +13,7 @@
 // =====================================================================
 import { useRef, useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
-import { makeAddr, short, PERSONAS } from "../shell/state";
+import { makeAddr, short, PERSONAS, fmtSaltFromWei } from "../shell/state";
 import { scanTxUrl, scanAddrUrl } from "../data/links";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -38,7 +38,21 @@ const WTABS: [string, string][] = [
 
 export function Wallet({ store, s }: SurfaceProps) {
   const P = PERSONAS[s.persona] || PERSONAS.p1;
-  const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
+  // Q-A.4b item 7 — the vaulted membership grant is the REAL attributed stake
+  // (MembershipStakeVault.attributedStake → s5StakeWei), NOT a hardcoded 32,000.
+  // fmtSaltFromWei formats wei→whole SALT (or "—" when the read is absent). The
+  // numeric grant (for the staked total) parses the same wei; a granted member
+  // with no folded read contributes 0 rather than a fabricated 32,000 (Rule 1).
+  const grantSaltStr = s.hasGrant ? fmtSaltFromWei(s.s5StakeWei) : "—";
+  const grantSaltNum = (() => {
+    if (!s.hasGrant || !s.s5StakeWei) return 0;
+    try {
+      return Number(BigInt(s.s5StakeWei) / 10n ** 18n);
+    } catch {
+      return 0;
+    }
+  })();
+  const staked = grantSaltNum + s.selfStake;
   const src = s.node === "off" ? "rpc.citrate.ai" : "local node";
   // BC-5.3 — which SBT-art source is rendered, for an honest caption. The
   // OnChainSbtEmblem reports "onchain" when the authoritative tokenURI art loaded,
@@ -64,8 +78,17 @@ export function Wallet({ store, s }: SurfaceProps) {
   const stakeAmtEl = useRef<HTMLInputElement | null>(null);
   const unstakeAmtEl = useRef<HTMLInputElement | null>(null);
 
+  // Q-A.4b item 5 — the Paymaster/sponsorship bar is a FABRICATED `sponsorUnits`
+  // with no chain source (40204 has no paymaster read). In the packaged build the
+  // whole Paymaster card is HIDDEN and the Send hint drops the invented "X of 5
+  // units" (an honest neutral line stands in). The web-dev sim keeps it as a
+  // labelled preview only (never shown to a packaged member).
   const sponsTxt =
-    s.sponsorUnits > 0 ? "gas sponsored — " + s.sponsorUnits + " of 5 daily units left" : "you pay gas — daily sponsorship budget exhausted";
+    BRIDGE_MODE === "tauri"
+      ? "gas sponsorship — read pending (no paymaster view on 40204 yet)"
+      : s.sponsorUnits > 0
+        ? "gas sponsored — " + s.sponsorUnits + " of 5 daily units left"
+        : "you pay gas — daily sponsorship budget exhausted";
   const sponsorLine = s.sponsorUnits + " of 5 units · resets 00:00 UTC · category standard";
   const sponsorBarW = (s.sponsorUnits / 5) * 100 + "%";
   const sponsorBarColor = s.sponsorUnits > 1 ? "var(--accent)" : "var(--warn)";
@@ -74,10 +97,15 @@ export function Wallet({ store, s }: SurfaceProps) {
   const stakedStr = staked ? fmtI(staked) : "0";
   const wsaltStr = "0.00";
   const stakedSub = s.hasGrant
-    ? "32,000 grant vaulted" + (s.selfStake ? " + " + fmtI(s.selfStake) + " self" : "")
+    ? grantSaltStr + " grant vaulted" + (s.selfStake ? " + " + fmtI(s.selfStake) + " self" : "")
     : "no grant — join to stake";
-  const rewardsStr = fmt2(s.earnVal + s.earnPin + s.earnComp);
-  const grantStr = s.hasGrant ? "32,000 SALT" : "—";
+  // Q-A.4b item 6 — the per-source "rewards accrued" (earnVal+earnPin+earnComp) is
+  // SIM-seeded with NO real per-source chain read. In the packaged build there is
+  // no grounded accrued figure, so show "—" rather than a fabricated number (the
+  // single REAL claimable figure lives on the Node Earning tab). The web-dev sim
+  // keeps the labelled prototype estimate.
+  const rewardsStr = BRIDGE_MODE === "tauri" ? "—" : fmt2(s.earnVal + s.earnPin + s.earnComp);
+  const grantStr = s.hasGrant ? grantSaltStr + " SALT" : "—";
   const selfStakeStr = fmtI(s.selfStake) + " SALT";
 
   const onCopyAddr = () => store.copy(s.walletAddr, "Address copied");
@@ -262,17 +290,19 @@ export function Wallet({ store, s }: SurfaceProps) {
             </div>
           </div>
 
-          <div className="surface" style={{ padding: "12px 18px", display: "flex", alignItems: "center", gap: 16 }}>
-            <span className="eyebrow" style={{ whiteSpace: "nowrap" }}>
-              Paymaster
-            </span>
-            <div style={{ flex: 1, height: 5, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
-              <div style={{ height: "100%", background: sponsorBarColor, width: sponsorBarW, transition: "width var(--dur-base) var(--ease-standard)" }}></div>
+          {BRIDGE_MODE !== "tauri" && (
+            <div className="surface" style={{ padding: "12px 18px", display: "flex", alignItems: "center", gap: 16 }}>
+              <span className="eyebrow" style={{ whiteSpace: "nowrap" }}>
+                Paymaster
+              </span>
+              <div style={{ flex: 1, height: 5, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
+                <div style={{ height: "100%", background: sponsorBarColor, width: sponsorBarW, transition: "width var(--dur-base) var(--ease-standard)" }}></div>
+              </div>
+              <span className="mono tabular" style={{ fontSize: 11, color: "var(--tx-2)", whiteSpace: "nowrap" }}>
+                {sponsorLine} · preview
+              </span>
             </div>
-            <span className="mono tabular" style={{ fontSize: 11, color: "var(--tx-2)", whiteSpace: "nowrap" }}>
-              {sponsorLine}
-            </span>
-          </div>
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>

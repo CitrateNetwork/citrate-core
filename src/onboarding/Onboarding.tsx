@@ -343,7 +343,7 @@ function S2({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
-function S3({ store, s }: { store: Store; s: AppState }) {
+export function S3({ store, s }: { store: Store; s: AppState }) {
   const items = [
     "Tier features across the app — chat on the gateway, docs at member tier, gated downloads",
     "32,000 SALT staked to your validator — the grant covers your stake for validation work",
@@ -412,8 +412,12 @@ function S3({ store, s }: { store: Store; s: AppState }) {
           </span>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 15, fontWeight: 500 }}>Payment settled</div>
+            {/* Q-A.4b item 9 — the fabricated static order id (ord_2026_84117) is
+                dropped: the entitlement/userinfo claim exposes no real order id, so
+                showing one would be an invented identifier (Rule 1). The settlement
+                is confirmed by the webhook-driven entitlement, not a UI id. */}
             <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              order ord_2026_84117 · idempotent · audit-logged
+              settlement confirmed by webhook · idempotent · audit-logged
             </div>
           </div>
           <button className="btn btn-primary" onClick={() => { store.setState({ stage: "s4" }); store.save(); }}>
@@ -425,7 +429,14 @@ function S3({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
-function S4({ store, s }: { store: Store; s: AppState }) {
+export function S4({ store, s }: { store: Store; s: AppState }) {
+  // Q-A.4b item 10 — for a SIGNED-IN user the wallet address must come from a REAL
+  // `wallet_address` claim (walletFromClaim). Without it, `s.walletAddr` is the
+  // deterministic persona `makeAddr` seed — a fabricated wallet for a real account
+  // — so we show "—"/pending instead. In the web-dev/persona path (signedIn=false)
+  // the labelled persona address is the honest preview and renders as before.
+  const walletKnown = !s.signedIn || s.walletFromClaim;
+  const walletDisplay = walletKnown ? s.walletAddr : "— · pending wallet_address claim";
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S4 · Wallet ready</div>
@@ -437,10 +448,12 @@ function S4({ store, s }: { store: Store; s: AppState }) {
       <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
         <div className="lbl">Smart wallet · ERC-4337</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{s.walletAddr}</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => store.copy(s.walletAddr, "Address copied")}>
-            Copy
-          </button>
+          <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>{walletDisplay}</span>
+          {walletKnown && (
+            <button className="btn btn-ghost btn-sm" onClick={() => store.copy(s.walletAddr, "Address copied")}>
+              Copy
+            </button>
+          )}
         </div>
         <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
           <Row k="Signer" v={<span style={{ fontSize: 13 }}>Passkey validator (WebAuthn P-256) — enrolled with your identity</span>} />
