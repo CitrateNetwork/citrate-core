@@ -265,7 +265,7 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "wallet_activity":
       return [
         { id: "0xaa", kind: "Received", amount: "+12.41 SALT", hash: "0xaa", ts: 1_700_000_500_000, status: 1, direction: "in" },
-        { id: "0xbb", kind: "Sent", amount: "−40.00 SALT", hash: "0xbb", ts: 1_700_000_000_000, status: 1, direction: "out" },
+        { id: "0xbb", kind: "Sent", amount: "−40.00 SALT", hash: "0xbb", ts: 1_700_000_000_000, status: 0, direction: "out" },
       ];
     // CORE-C2-F-1 user_claim — bridges the REAL claimRewards() intent into a
     // PENDING ceremony (a legible tx Call, approvable via sign_and_broadcast).
@@ -450,15 +450,20 @@ describe("tauri adapter — wallet.activity invokes the real CitrateScan read (i
     const rows = await bridge.wallet.activity();
     expect(invokeMock).toHaveBeenCalledWith("wallet_activity", undefined);
     expect(rows).toHaveLength(2);
-    // Mapped to exactly the Activity shape (id/kind/amount/hash/ts) — the extra
-    // Rust fields (status/direction) are dropped at the boundary.
-    expect(Object.keys(rows[0]).sort()).toEqual(["amount", "hash", "id", "kind", "ts"]);
+    // Q-E.2 (C-5) — the receipt `status` (and `direction`) are now PASSED THROUGH
+    // the boundary so a reverted tx can render a failed marker (it used to strip
+    // both, making a failed tx look identical to a success).
+    expect(Object.keys(rows[0]).sort()).toEqual(["amount", "direction", "hash", "id", "kind", "status", "ts"]);
     expect(rows[0].kind).toBe("Received");
     expect(rows[0].amount).toBe("+12.41 SALT");
     expect(rows[0].hash).toBe("0xaa");
     expect(rows[0].ts).toBe(1_700_000_500_000);
+    expect(rows[0].status).toBe(1);
+    expect(rows[0].direction).toBe("in");
     // Newest-first order preserved from the indexer (desc timestamp).
     expect(rows[1].hash).toBe("0xbb");
+    // A reverted tx carries status=0 through the boundary (the failed marker).
+    expect(rows[1].status).toBe(0);
   });
 });
 

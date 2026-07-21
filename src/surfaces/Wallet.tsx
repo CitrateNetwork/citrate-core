@@ -168,15 +168,22 @@ export function Wallet({ store, s }: SurfaceProps) {
   const pending = s.pendingWithdrawals;
   const onClaimWithdrawal = (id: string) => void store.walletClaimWithdrawal(id);
 
-  const activityRows = s.activity.map((a, i) => ({
-    kind: a.kind,
-    hash: a.hash,
-    hashShort: short(a.hash),
-    time: rel(a.ts),
-    amount: a.amount,
-    amtColor: a.amount && a.amount.indexOf("−") === 0 ? "var(--tx-1)" : "var(--accent-text)",
-    rowClass: i === 0 && s.justSigned ? "cc-row-stroke" : "",
-  }));
+  // Q-E.2 (C-5) — the REAL receipt status per row (from the indexer, passed through
+  // the bridge): 0 = reverted/failed, 1 = success, null/undefined = pending. A
+  // failed tx used to render identically to a success; now it carries a marker.
+  const activityRows = s.activity.map((a, i) => {
+    const txState: "failed" | "pending" | "ok" = a.status === 0 ? "failed" : a.status == null ? "pending" : "ok";
+    return {
+      kind: a.kind,
+      hash: a.hash,
+      hashShort: short(a.hash),
+      time: rel(a.ts),
+      amount: a.amount,
+      txState,
+      amtColor: txState === "failed" ? "var(--warn)" : a.amount && a.amount.indexOf("−") === 0 ? "var(--tx-1)" : "var(--accent-text)",
+      rowClass: i === 0 && s.justSigned ? "cc-row-stroke" : "",
+    };
+  });
   const txEmpty = activityRows.length === 0;
 
   // Primary is the REAL claim wallet. The extra linked wallet + agent SBT are
@@ -437,7 +444,22 @@ export function Wallet({ store, s }: SurfaceProps) {
           )}
           {activityRows.map((tx, i) => (
             <div key={i} className={tx.rowClass} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr .8fr .8fr", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", alignItems: "center" }}>
-              <span style={{ fontSize: 12.5, fontWeight: 500 }}>{tx.kind}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 500 }}>{tx.kind}</span>
+                {/* Q-E.2 — a failed (reverted) or pending tx is marked so it can no
+                    longer be mistaken for a settled success. A confirmed success
+                    carries no badge (the default, uncluttered row). */}
+                {tx.txState === "failed" && (
+                  <span data-tx-status="failed" title="This transaction reverted on-chain" className="mono" style={{ fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "1px 6px", borderRadius: 999, border: "1px solid var(--warn)", color: "var(--warn)", background: "var(--warn-bg)" }}>
+                    failed
+                  </span>
+                )}
+                {tx.txState === "pending" && (
+                  <span data-tx-status="pending" title="Awaiting confirmation" className="mono" style={{ fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "1px 6px", borderRadius: 999, border: "1px solid var(--line-2)", color: "var(--tx-3)" }}>
+                    pending
+                  </span>
+                )}
+              </span>
               <button
                 className="mono"
                 onClick={() => void store.openExternal(scanTxUrl(tx.hash))}

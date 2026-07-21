@@ -94,6 +94,36 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
     return view;
   };
 
+  // Q-E.1 — mint a DECODED wallet-action ceremony so the human-in-the-loop review
+  // modal renders truthfully in web-dev (the same request→approve split the tauri
+  // path uses). The view carries a legible action / destination / cost; approving
+  // it routes through `signing.broadcast`, which HONESTLY throws "desktop only"
+  // (the web shim holds no key + reaches no chain — no fabricated settlement,
+  // Rule 1). We surface a REAL pending ceremony, not a fake settled tx.
+  const simWalletCeremony = (decoded: DecodedAction): CeremonyView => {
+    const id = String(simCeremonyId++);
+    const view: CeremonyView = {
+      id,
+      origin: "local-user",
+      kind: "transaction",
+      chainId: 40204,
+      decoded,
+      requiresRawAck: false,
+    };
+    simCeremonies.set(id, view);
+    return view;
+  };
+  const weiToSalt = (wei: string): string => {
+    try {
+      const w = BigInt(wei);
+      const whole = w / 10n ** 18n;
+      const frac = (w % 10n ** 18n).toString().padStart(18, "0").slice(0, 4).replace(/0+$/, "");
+      return frac ? `${whole}.${frac} SALT` : `${whole} SALT`;
+    } catch {
+      return `${wei} wei`;
+    }
+  };
+
   const simDecode = (intent: SignatureIntent): { decoded: DecodedAction; rawAck: boolean } => {
     // Mirror the Rust decode intent-by-intent so the dev UI shows the same shape.
     if (intent.kind === "personal_sign") {
@@ -300,33 +330,25 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("wallet.activity");
         return s().activity;
       },
-      async send() {
-        // No key/chain in web preview — a Send cannot settle here. Honest
-        // Unavailable (Rule 1); the store shows a "desktop only" message and never
-        // fabricates a transfer. (The tauri path builds a REAL pending ceremony.)
+      // Q-E.1 — build a DECODED pending review view so the human-in-the-loop modal
+      // renders truthfully in web-dev (mirroring the tauri request→approve split).
+      // Signs NOTHING; approving routes through signing.broadcast, which HONESTLY
+      // throws "desktop only" (no key, no chain — no fabricated transfer, Rule 1).
+      async send(to: string, amountWei: string): Promise<CeremonyView> {
         assertSimAllowed("wallet.send");
-        throw new Unavailable("wallet", "send");
+        return simWalletCeremony({ action: `Send ${weiToSalt(amountWei)}`, cost: "gas settles in the desktop app", destination: to });
       },
-      async stake() {
-        // No key/chain in web preview — a stake cannot settle here. Honest
-        // Unavailable (Rule 1); the tauri path builds a REAL pending deposit
-        // ceremony. Mirrors send().
+      async stake(amountWei: string): Promise<CeremonyView> {
         assertSimAllowed("wallet.stake");
-        throw new Unavailable("wallet", "stake");
+        return simWalletCeremony({ action: `Stake ${weiToSalt(amountWei)} (LiquidStakingPool deposit)`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
-      async requestWithdrawal() {
-        // No key/chain in web preview — a withdrawal request cannot settle here.
-        // Honest Unavailable (Rule 1); the tauri path builds a REAL pending
-        // requestWithdrawal ceremony. Mirrors stake().
+      async requestWithdrawal(amountWei: string): Promise<CeremonyView> {
         assertSimAllowed("wallet.requestWithdrawal");
-        throw new Unavailable("wallet", "requestWithdrawal");
+        return simWalletCeremony({ action: `Request withdrawal of ${weiToSalt(amountWei)}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
-      async claimWithdrawal() {
-        // No key/chain in web preview — a claim cannot settle here. Honest
-        // Unavailable (Rule 1); the tauri path builds a REAL claimWithdrawal
-        // ceremony.
+      async claimWithdrawal(id: string): Promise<CeremonyView> {
         assertSimAllowed("wallet.claimWithdrawal");
-        throw new Unavailable("wallet", "claimWithdrawal");
+        return simWalletCeremony({ action: `Claim matured withdrawal #${id}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
       async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
         // The web shim reaches no chain — there is no real pending queue to read.

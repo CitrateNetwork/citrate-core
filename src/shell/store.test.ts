@@ -3,10 +3,11 @@
 // downgrades to free/lapsed at the DECISION point, not just in the UI. This is
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
 import { bridge } from "../bridge";
+import type { CeremonyView } from "../bridge/types";
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
   it("absent/empty expiry is NOT expired (authority may omit it)", () => {
@@ -176,19 +177,31 @@ describe("store withdraw (WP2) — honest in web-dev sim", () => {
     expect(store.getSnapshot().pendingWithdrawals).toEqual([]);
   });
 
-  it("walletRequestWithdrawal in web-dev does not fabricate a settlement (honest toast)", async () => {
+  it("walletRequestWithdrawal in web-dev opens a review and fabricates NO settlement", async () => {
+    store.setState({ walletReview: null });
     const before = store.getSnapshot().selfStake;
     await store.walletRequestWithdrawal("1000000000000000000");
-    // No balance mutation, no fabricated activity entry — just an honest message.
+    // Q-E.1 — no balance mutation, no fabricated activity entry: the action STOPS
+    // at the human-in-the-loop review (approving in web-dev is honest "desktop only").
+    expect(store.getSnapshot().selfStake).toBe(before);
+    expect(store.getSnapshot().walletReview).not.toBeNull();
+    // The honest "desktop app" message surfaces on APPROVE (sim broadcast throws).
+    await store.approveWalletReview();
     expect(store.getSnapshot().selfStake).toBe(before);
     expect(store.getSnapshot().toast).toContain("desktop app");
+    expect(store.getSnapshot().walletReview).toBeNull();
   });
 
-  it("walletClaimWithdrawal in web-dev does not fabricate a settlement (honest toast)", async () => {
+  it("walletClaimWithdrawal in web-dev opens a review and fabricates NO settlement", async () => {
+    store.setState({ walletReview: null });
     const liquidBefore = store.getSnapshot().liquid;
     await store.walletClaimWithdrawal("1");
     expect(store.getSnapshot().liquid).toBe(liquidBefore);
+    expect(store.getSnapshot().walletReview).not.toBeNull();
+    await store.approveWalletReview();
+    expect(store.getSnapshot().liquid).toBe(liquidBefore);
     expect(store.getSnapshot().toast).toContain("desktop app");
+    expect(store.getSnapshot().walletReview).toBeNull();
   });
 });
 
@@ -313,5 +326,104 @@ describe("bridge.node.logs (sim) — labelled preview, never live output (Q-B.2)
   it("an off node has no stream → honest empty (no fabricated tail)", async () => {
     store.setState({ node: "off" });
     expect(await bridge.node.logs()).toEqual([]);
+  });
+});
+
+// Q-E.1 (@rule8, P0) — the human-in-the-loop wallet review gate. The money
+// actions MUST NOT broadcast on their own: each builds the pending ceremony,
+// surfaces the DECODED view for a human to Approve/Reject, and ONLY an explicit
+// approval calls signing.broadcast. This is the safety hole the sprint closes:
+// the "Review & sign" button used to sign what the CODE built with no person in
+// the loop. These tests pin "no broadcast without an explicit human approve".
+describe("Q-E.1 wallet review gate — money actions never self-broadcast", () => {
+  const view: CeremonyView = {
+    id: "wcer-1",
+    origin: "local-user",
+    kind: "transaction",
+    chainId: 40204,
+    decoded: { action: "Send 1.00 SALT", cost: "est. gas 0.0019 SALT", destination: "0x" + "ab".repeat(20) },
+    requiresRawAck: false,
+  };
+  const rawView: CeremonyView = { ...view, id: "wcer-raw", requiresRawAck: true, decoded: { action: "Unrecognized", cost: "", destination: "" } };
+
+  let broadcastSpy: ReturnType<typeof vi.spyOn>;
+  let rejectSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    store.setState({ walletReview: null, liquid: 100, selfStake: 100 });
+    // Every money action funnels its build call to a view we control.
+    vi.spyOn(bridge.wallet, "send").mockResolvedValue(view);
+    vi.spyOn(bridge.wallet, "stake").mockResolvedValue(view);
+    vi.spyOn(bridge.wallet, "requestWithdrawal").mockResolvedValue(view);
+    vi.spyOn(bridge.wallet, "claimWithdrawal").mockResolvedValue(view);
+    broadcastSpy = vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xhash", blockNumber: 1 });
+    rejectSpy = vi.spyOn(bridge.signing, "reject").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshActivity").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshPendingWithdrawals").mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ walletReview: null });
+  });
+
+  // NEGATIVE CONTROL: this MUST fail on the pre-fix code, which broadcasts
+  // immediately. Each action sets the pending review and calls broadcast ZERO times.
+  it("walletSend builds the pending review and does NOT broadcast", async () => {
+    await store.walletSend("0x" + "ab".repeat(20), "1000000000000000000");
+    expect(store.state.walletReview).not.toBeNull();
+    expect(store.state.walletReview?.view.id).toBe("wcer-1");
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it("walletStake builds the pending review and does NOT broadcast", async () => {
+    await store.walletStake("1000000000000000000");
+    expect(store.state.walletReview?.view.id).toBe("wcer-1");
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it("walletRequestWithdrawal builds the pending review and does NOT broadcast", async () => {
+    await store.walletRequestWithdrawal("1000000000000000000");
+    expect(store.state.walletReview?.view.id).toBe("wcer-1");
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it("walletClaimWithdrawal builds the pending review and does NOT broadcast", async () => {
+    await store.walletClaimWithdrawal("7");
+    expect(store.state.walletReview?.view.id).toBe("wcer-1");
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  // APPROVE → broadcast IS called with the pending view id + the raw-ack passed.
+  it("approveWalletReview broadcasts the pending view id, then clears the review", async () => {
+    await store.walletSend("0x" + "ab".repeat(20), "1000000000000000000");
+    expect(broadcastSpy).not.toHaveBeenCalled();
+    await store.approveWalletReview(false);
+    expect(broadcastSpy).toHaveBeenCalledTimes(1);
+    expect(broadcastSpy).toHaveBeenCalledWith("wcer-1", false);
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  // REJECT → broadcast NOT called; the pending ceremony is released; review cleared.
+  it("rejectWalletReview broadcasts nothing, releases the ceremony, clears the review", async () => {
+    await store.walletStake("1000000000000000000");
+    await store.rejectWalletReview();
+    expect(broadcastSpy).not.toHaveBeenCalled();
+    expect(rejectSpy).toHaveBeenCalledWith("wcer-1");
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  // Undecodable calldata gates Approve behind an explicit raw-mode ack.
+  it("undecodable calldata (requiresRawAck) blocks broadcast until an explicit ack", async () => {
+    vi.spyOn(bridge.wallet, "send").mockResolvedValue(rawView);
+    await store.walletSend("0x" + "ab".repeat(20), "1000000000000000000");
+    expect(store.state.walletReview?.view.requiresRawAck).toBe(true);
+    // Approving WITHOUT the raw ack must NOT broadcast (fail closed).
+    await store.approveWalletReview(false);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+    expect(store.state.walletReview).not.toBeNull();
+    // With the explicit raw ack, it broadcasts (rawAck=true passed through).
+    await store.approveWalletReview(true);
+    expect(broadcastSpy).toHaveBeenCalledWith("wcer-raw", true);
   });
 });

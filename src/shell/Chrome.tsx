@@ -153,6 +153,118 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
+// ================= WALLET REVIEW MODAL (Q-E.1, @rule8, P0) =================
+// The human-in-the-loop gate for wallet money actions. A money action builds the
+// pending ceremony and STOPS; this modal renders the DECODED CeremonyView (what
+// will be signed — action / destination / cost) with explicit Approve + Reject.
+// Approve is NEVER default-focused (T2 ceremony-spoofing invariant); undecodable
+// calldata (requiresRawAck) hides the decoded fields behind an explicit raw-mode
+// ack that must be ticked before Approve enables. On Approve → store broadcasts;
+// on Reject → nothing is signed. In web-dev the modal still shows (truthful flow)
+// but approving honestly reports "settles only in the desktop app".
+export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
+  const r = s.walletReview;
+  if (!r) return null;
+  const v = r.view;
+  const raw = v.requiresRawAck;
+  const approveEnabled = !raw || r.rawAck;
+
+  const rows: [string, string][] = [
+    ["Action", v.decoded.action || "—"],
+    ["To", v.decoded.destination || "—"],
+    ["Cost", v.decoded.cost || (BRIDGE_MODE === "tauri" ? "network gas" : "gas settles in the desktop app")],
+    ["Chain", String(v.chainId)],
+    ["Origin", v.origin],
+  ];
+
+  return (
+    <div data-register="charter" style={{ position: "fixed", inset: 0, background: "rgba(14,15,12,.44)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 62, padding: 24 }}>
+      <div className="cc-fade-up" role="dialog" aria-modal="true" aria-label="Wallet action review" style={{ width: "100%", maxWidth: 480, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderBottom: "2px solid var(--line-strong)" }}>
+          <img src={markBlack} alt="" style={{ width: 18, height: 18 }} />
+          <span className="mono" style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "var(--tx-2)" }}>
+            Review &amp; approve
+          </span>
+          <span style={{ flex: 1 }}></span>
+          <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid var(--tx-2)", color: "var(--tx-2)" }}>
+            {r.label}
+          </span>
+        </div>
+
+        <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 440, fontSize: 20, lineHeight: 1.2 }}>You are about to sign</div>
+            <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
+              nothing has been signed yet — approve to continue
+            </div>
+          </div>
+
+          {raw ? (
+            // Undecodable calldata — Rule 1: DO NOT dress it as legible. Show the raw
+            // warning + require an explicit ack before Approve enables.
+            <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-1)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+              <span style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--warn)" }}>
+                This action&apos;s calldata could not be decoded. You would be signing raw bytes — the app cannot show you what they do. Only proceed if you trust the source.
+              </span>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
+                <input type="checkbox" checked={r.rawAck} onChange={(e) => store.setWalletReviewRawAck(e.target.checked)} />
+                <span>I understand this is raw, undecodable calldata.</span>
+              </label>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)", wordBreak: "break-all" }}>
+                origin {v.origin} · chain {v.chainId}
+              </div>
+            </div>
+          ) : (
+            <div style={{ border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", overflow: "hidden" }}>
+              {rows.map(([k, val], i) => (
+                <div key={i} style={{ display: "flex", gap: 14, padding: "9px 14px", borderBottom: i < rows.length - 1 ? "1px solid var(--line-1)" : "none", background: "var(--srf-1)" }}>
+                  <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)", width: 92, flexShrink: 0, paddingTop: 2 }}>
+                    {k}
+                  </span>
+                  <span className="mono" style={{ fontSize: 12, color: "var(--tx-1)", wordBreak: "break-all" }}>
+                    {val}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {BRIDGE_MODE !== "tauri" && (
+            <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-1)", padding: "10px 14px" }}>
+              <span style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)" }}>
+                Web preview: this settles only in the desktop app (no key or chain here). Approving will not move funds.
+              </span>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", paddingTop: 2 }}>
+            {/* Reject is the DEFAULT-focused button (T2 — Approve must never be the
+                default action for a money signature). */}
+            <button
+              className="btn btn-ghost"
+              ref={(el) => {
+                if (el && s.walletReview) {
+                  try {
+                    el.focus();
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }}
+              onClick={() => void store.rejectWalletReview()}
+            >
+              Reject
+            </button>
+            <button className="btn btn-primary" disabled={!approveEnabled} onClick={() => void store.approveWalletReview()}>
+              Approve
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============================ COACH ============================
 export function Coach({ store, s }: { store: Store; s: AppState }) {
   const steps = COACH_STEPS;

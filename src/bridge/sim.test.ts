@@ -63,15 +63,28 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(b.address).toBe("0xabc");
   });
 
-  // CORE WP2 — the sim withdraw path is HONEST: the web shim reaches no chain, so
-  // requestWithdrawal/claimWithdrawal throw Unavailable (never a fabricated settle)
-  // and pendingWithdrawals returns an empty queue (never fabricated rows — Rule 1).
-  it("wallet.requestWithdrawal + claimWithdrawal are honestly Unavailable in sim", async () => {
+  // Q-E.1 — the sim money actions now build a DECODED pending ceremony (so the
+  // human-in-the-loop review modal renders truthfully in web-dev, mirroring the
+  // tauri request→approve split). They sign NOTHING; it is signing.broadcast that
+  // HONESTLY refuses to settle in the web shim (no key, no chain — Rule 1). The
+  // pending queue stays empty (never fabricated rows).
+  it("wallet.send/stake/requestWithdrawal/claimWithdrawal build a decoded review view in sim (no fabricated settle)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);
-    const { isUnavailable } = await import("./types");
-    await expect(bridge.wallet.requestWithdrawal("1000000000000000000")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
-    await expect(bridge.wallet.claimWithdrawal("1")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    const send = await bridge.wallet.send("0x" + "ab".repeat(20), "1000000000000000000");
+    const stake = await bridge.wallet.stake("2000000000000000000");
+    const wreq = await bridge.wallet.requestWithdrawal("1000000000000000000");
+    const wclaim = await bridge.wallet.claimWithdrawal("1");
+    for (const v of [send, stake, wreq, wclaim]) {
+      expect(v.kind).toBe("transaction");
+      expect(v.chainId).toBe(40204);
+      // A legible decoded action a human can review — NOT undecodable raw bytes.
+      expect(v.requiresRawAck).toBe(false);
+      expect(v.decoded.action.length).toBeGreaterThan(0);
+    }
+    expect(send.decoded.action).toContain("Send");
+    // Approving in the web shim CANNOT settle — signing.broadcast throws honestly.
+    await expect(bridge.signing.broadcast(send.id, false)).rejects.toThrow(/desktop|web shim|no key/i);
   });
 
   it("wallet.pendingWithdrawals returns an honest empty queue in sim (no chain)", async () => {

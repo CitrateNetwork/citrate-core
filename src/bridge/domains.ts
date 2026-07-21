@@ -100,7 +100,10 @@ export interface SigningDomain {
 
 export interface WalletDomain {
   balances(): Promise<{ liquid: number; staked: number; claimable: number; address: string }>;
-  activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number }[]>;
+  /** Q-E.2 (C-5) — the indexed tx history. `status` (1 ok / 0 reverted / null
+   * pending) + `direction` are passed through from the indexer so a failed tx can
+   * be marked (they used to be stripped, making a revert look like a success). */
+  activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number; status?: number | null; direction?: string }[]>;
   /** CORE (@rule8) — submit a native SALT transfer as a PENDING ceremony and
    * return the decoded view. Signs NOTHING; the human approves via
    * `signing.broadcast(view.id)` (B1.4 → a real 40204 tx). `amountWei` is a

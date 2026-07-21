@@ -24,11 +24,22 @@ import {
   greeting,
   loadState,
   makeHash,
+  WalletReview,
 } from "./state";
+import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createRealProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
+
+/** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
+const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
+  send: "Send",
+  stake: "Stake",
+  "withdraw-request": "Withdrawal request",
+  "withdraw-claim": "Withdrawal claim",
+  claim: "Claim",
+};
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
 
@@ -1318,24 +1329,10 @@ export class Store {
       this.toast("No claimable earnings — nothing to claim.");
       return;
     }
-    // A REAL pending ceremony exists (id: res.view.id). In web-dev the sim signer
-    // cannot settle it — be honest rather than fabricate a claim.
-    if (BRIDGE_MODE !== "tauri") {
-      this.toast("Claim prepared — claims settle only in the desktop app (no key/chain in web preview).");
-      return;
-    }
-    // Tauri: approve the real ceremony → sign + broadcast the real claimRewards()
-    // tx (B1.4). No local balance mutation; the tab re-reads claimable from chain.
-    try {
-      const result = await bridge.signing.broadcast(res.view.id, false);
-      this.addActivity("Claim rewards", "claimRewards()", result.txHash);
-      this.toast("Claim broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
-      await this.refreshEarnings();
-      await this.refreshActivity();
-      this.save();
-    } catch (err) {
-      this.toast("Claim not settled — " + String((err as Error).message ?? err));
-    }
+    // Q-E.1 (@rule8, P0) — a REAL pending ceremony exists (res.view). STOP: surface
+    // the decoded claimRewards() intent for human approval; nothing broadcasts
+    // until a person clicks Approve (no more self-broadcast from code).
+    this.openWalletReview("claim", "Claim rewards", res.view);
   }
 
   /**
@@ -1347,10 +1344,6 @@ export class Store {
    * settle — honest message, no fake transfer.
    */
   async walletSend(to: string, amountWei: string): Promise<void> {
-    if (BRIDGE_MODE !== "tauri") {
-      this.toast("Send settles only in the desktop app — no key or chain in web preview.");
-      return;
-    }
     let view: Awaited<ReturnType<typeof bridge.wallet.send>>;
     try {
       view = await bridge.wallet.send(to, amountWei);
@@ -1358,23 +1351,10 @@ export class Store {
       this.toast("Send unavailable — " + String((err as Error).message ?? err));
       return;
     }
-    try {
-      // Approve the real pending ceremony → sign + broadcast the real transfer.
-      const result = await bridge.signing.broadcast(view.id, false);
-      this.addActivity("Send", view.decoded.cost || "transfer", result.txHash);
-      this.toast("Send broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
-      await this.refreshWallet();
-      await this.refreshActivity();
-      this.save();
-    } catch (err) {
-      // Honest failure — reject the pending ceremony so it isn't left dangling.
-      try {
-        await bridge.signing.reject(view.id);
-      } catch {
-        /* best-effort cleanup */
-      }
-      this.toast("Send not settled — " + String((err as Error).message ?? err));
-    }
+    // Q-E.1 (@rule8, P0) — STOP here. Build the pending review; a HUMAN must see
+    // the decoded intent and click Approve before anything broadcasts. No signing
+    // happens from code.
+    this.openWalletReview("send", "Send SALT", view);
   }
 
   /**
@@ -1386,10 +1366,6 @@ export class Store {
    * — honest message, no fake stake. `amountWei` is a decimal wei string.
    */
   async walletStake(amountWei: string): Promise<void> {
-    if (BRIDGE_MODE !== "tauri") {
-      this.toast("Staking settles only in the desktop app — no key or chain in web preview.");
-      return;
-    }
     let view: Awaited<ReturnType<typeof bridge.wallet.stake>>;
     try {
       view = await bridge.wallet.stake(amountWei);
@@ -1397,23 +1373,8 @@ export class Store {
       this.toast("Stake unavailable — " + String((err as Error).message ?? err));
       return;
     }
-    try {
-      // Approve the real pending ceremony → sign + broadcast the real deposit().
-      const result = await bridge.signing.broadcast(view.id, false);
-      this.addActivity("Stake", view.decoded.cost || "deposit", result.txHash);
-      this.toast("Stake broadcast — tx " + result.txHash.slice(0, 10) + "…; staked balance updates when it settles.");
-      await this.refreshWallet();
-      await this.refreshActivity();
-      this.save();
-    } catch (err) {
-      // Honest failure — reject the pending ceremony so it isn't left dangling.
-      try {
-        await bridge.signing.reject(view.id);
-      } catch {
-        /* best-effort cleanup */
-      }
-      this.toast("Stake not settled — " + String((err as Error).message ?? err));
-    }
+    // Q-E.1 (@rule8, P0) — STOP: surface the decoded deposit for human approval.
+    this.openWalletReview("stake", "Add stake", view);
   }
 
   /**
@@ -1443,10 +1404,6 @@ export class Store {
    * walletStake. Web-dev cannot settle — honest message. `amountWei` = SALT (wei).
    */
   async walletRequestWithdrawal(amountWei: string): Promise<void> {
-    if (BRIDGE_MODE !== "tauri") {
-      this.toast("Withdraw settles only in the desktop app — no key or chain in web preview.");
-      return;
-    }
     let view: Awaited<ReturnType<typeof bridge.wallet.requestWithdrawal>>;
     try {
       view = await bridge.wallet.requestWithdrawal(amountWei);
@@ -1454,22 +1411,8 @@ export class Store {
       this.toast("Withdraw unavailable — " + String((err as Error).message ?? err));
       return;
     }
-    try {
-      const result = await bridge.signing.broadcast(view.id, false);
-      this.addActivity("Withdraw request", view.decoded.cost || "requestWithdrawal", result.txHash);
-      this.toast("Withdrawal requested — SALT unlocks after ~7 days (50,400 blocks), then Claim. tx " + result.txHash.slice(0, 10) + "…");
-      await this.refreshWallet();
-      await this.refreshPendingWithdrawals();
-      await this.refreshActivity();
-      this.save();
-    } catch (err) {
-      try {
-        await bridge.signing.reject(view.id);
-      } catch {
-        /* best-effort cleanup */
-      }
-      this.toast("Withdrawal not requested — " + String((err as Error).message ?? err));
-    }
+    // Q-E.1 (@rule8, P0) — STOP: surface the decoded withdrawal for human approval.
+    this.openWalletReview("withdraw-request", "Request withdrawal", view);
   }
 
   /**
@@ -1482,10 +1425,6 @@ export class Store {
    * Web-dev cannot settle — honest message. `id` = the decimal request id.
    */
   async walletClaimWithdrawal(id: string): Promise<void> {
-    if (BRIDGE_MODE !== "tauri") {
-      this.toast("Claim settles only in the desktop app — no key or chain in web preview.");
-      return;
-    }
     let view: Awaited<ReturnType<typeof bridge.wallet.claimWithdrawal>>;
     try {
       view = await bridge.wallet.claimWithdrawal(id);
@@ -1493,22 +1432,101 @@ export class Store {
       this.toast("Claim unavailable — " + String((err as Error).message ?? err));
       return;
     }
+    // Q-E.1 (@rule8, P0) — STOP: surface the decoded claim for human approval.
+    this.openWalletReview("withdraw-claim", "Claim withdrawal", view);
+  }
+
+  // ---------- Q-E.1 (@rule8, P0) — wallet review gate ----------
+  /**
+   * Set the pending wallet-review state from a freshly-built ceremony view and
+   * STOP. This is the human-in-the-loop gate: nothing broadcasts until a person
+   * sees the decoded intent (WalletReviewModal) and clicks Approve. NEVER signs
+   * or broadcasts here. Undecodable calldata (view.requiresRawAck) starts with
+   * rawAck=false so Approve is blocked until the explicit raw-mode ack.
+   */
+  openWalletReview(kind: WalletReview["kind"], label: string, view: CeremonyView, spendSummary?: string): void {
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false } });
+  }
+
+  /** Toggle the raw-mode ack for an undecodable-calldata review (gates Approve). */
+  setWalletReviewRawAck(rawAck: boolean): void {
+    const r = this.state.walletReview;
+    if (!r) return;
+    this.setState({ walletReview: { ...r, rawAck } });
+  }
+
+  /**
+   * Approve the pending wallet review → broadcast the deferred ceremony. This is
+   * the ONE place a wallet money action reaches signing.broadcast, and only after
+   * an explicit human click. Fails closed when undecodable calldata has not been
+   * raw-acked (never broadcasts blind). On success: refresh balances/activity; on
+   * failure: honest toast + release the pending ceremony. `rawAck` may be passed
+   * explicitly (tests / the modal checkbox) or read from the review state.
+   */
+  async approveWalletReview(rawAck?: boolean): Promise<void> {
+    const r = this.state.walletReview;
+    if (!r) return;
+    const ack = rawAck ?? r.rawAck;
+    // Fail closed: undecodable calldata requires the explicit raw-mode ack before
+    // ANY broadcast (T2 — no signing blind). Keep the review open.
+    if (r.view.requiresRawAck && !ack) {
+      this.toast("Undecodable calldata — tick “I understand this is raw” to approve.");
+      return;
+    }
+    // In web-dev there is no key/chain; signing.broadcast throws honestly. Keep the
+    // review open so the flow is truthful (no fabricated settlement, Rule 1).
+    if (BRIDGE_MODE !== "tauri") {
+      try {
+        await bridge.signing.broadcast(r.view.id, ack);
+      } catch (err) {
+        this.toast(WALLET_ACTION_LABELS[r.kind] + " settles only in the desktop app — " + String((err as Error).message ?? err));
+      }
+      // Release the pending sim ceremony and clear the review (nothing settled).
+      try {
+        await bridge.signing.reject(r.view.id);
+      } catch {
+        /* best-effort — sim broadcast already consumed it */
+      }
+      this.setState({ walletReview: null });
+      return;
+    }
+    // Tauri: sign + broadcast the real 40204 tx, then re-read balances from chain.
     try {
-      const result = await bridge.signing.broadcast(view.id, false);
-      this.addActivity("Withdraw claim", view.decoded.cost || "claimWithdrawal", result.txHash);
-      this.toast("Claim broadcast — tx " + result.txHash.slice(0, 10) + "…; SALT lands when it settles.");
-      await this.refreshWallet();
-      await this.refreshPendingWithdrawals();
+      const result = await bridge.signing.broadcast(r.view.id, ack);
+      this.addActivity(r.label, r.view.decoded.cost || r.view.decoded.action, result.txHash);
+      this.toast(r.label + " broadcast — tx " + result.txHash.slice(0, 10) + "…; balance updates when it settles.");
+      this.setState({ walletReview: null });
+      if (r.kind === "claim") await this.refreshEarnings();
+      else await this.refreshWallet();
+      if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
       await this.refreshActivity();
       this.save();
     } catch (err) {
+      // Honest failure — release the pending ceremony so it isn't left dangling.
       try {
-        await bridge.signing.reject(view.id);
+        await bridge.signing.reject(r.view.id);
       } catch {
         /* best-effort cleanup */
       }
-      this.toast("Claim not settled — " + String((err as Error).message ?? err));
+      this.setState({ walletReview: null });
+      this.toast(r.label + " not settled — " + String((err as Error).message ?? err));
     }
+  }
+
+  /**
+   * Reject the pending wallet review → broadcast NOTHING, release the ceremony,
+   * clear the review. The human declined; no signature is produced.
+   */
+  async rejectWalletReview(): Promise<void> {
+    const r = this.state.walletReview;
+    if (!r) return;
+    this.setState({ walletReview: null });
+    try {
+      await bridge.signing.reject(r.view.id);
+    } catch {
+      /* best-effort — the ceremony may already be gone */
+    }
+    this.toast(r.label + " declined — nothing was signed.");
   }
 
   /**

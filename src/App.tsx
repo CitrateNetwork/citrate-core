@@ -9,7 +9,7 @@ import { Onboarding } from "./onboarding/Onboarding";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar } from "./shell/Sidebar";
-import { SignatureCeremony, Coach, Toast, DemoPanel } from "./shell/Chrome";
+import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal } from "./surfaces";
 
 const queryClient = new QueryClient();
@@ -213,6 +213,7 @@ function Root() {
     <div style={{ fontFamily: "var(--font-sans)", color: "var(--tx-1)", height: "100vh", overflow: "hidden", background: "var(--srf-0)" }} data-register="charter">
       {body}
       <SignatureCeremony store={store} s={s} />
+      <WalletReviewModal store={store} s={s} />
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />
       <Toast s={s} />

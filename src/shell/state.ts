@@ -11,6 +11,7 @@
 // =====================================================================
 
 import type { PendingWithdrawal } from "../bridge/domains";
+import type { CeremonyView } from "../bridge/types";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
@@ -106,6 +107,16 @@ export interface Activity {
   amount: string;
   hash: string;
   ts: number;
+  /**
+   * Q-E.2 (C-5) — the REAL receipt status passed through from the indexer:
+   * `1` succeeded, `0` reverted/failed, `null`/absent = pending or unknown.
+   * Optimistic local rows (addActivity) omit it (undefined → "pending"). Lets the
+   * Activity table mark a failed tx instead of rendering it identically to a
+   * success (the bug this closes). Never fabricated (Rule 1).
+   */
+  status?: number | null;
+  /** Q-E.2 — the classified direction ("in"/"out"/"self") from the indexer. */
+  direction?: string;
 }
 export interface LogLine {
   t: string;
@@ -151,6 +162,25 @@ export interface CerSpec {
   warning?: string;
   chainless?: boolean;
   apply?: (hash: string) => void;
+}
+
+/**
+ * Q-E.1 (@rule8, P0) — the PENDING wallet-review state. A money action
+ * (send/stake/withdraw-request/withdraw-claim/claim) builds its ceremony via the
+ * bridge and STOPS here: it holds the decoded `CeremonyView` (what will be
+ * signed — action / destination / cost, or an undecodable raw-mode warning) for
+ * a HUMAN to Approve or Reject. Only an explicit approve calls signing.broadcast
+ * (the human-in-the-loop gate). `label` names the action for the modal header;
+ * `spendSummary` is an optional plain-language line the caller can pass (the
+ * amount the user typed) alongside the decoded view. Never carries key material.
+ */
+export interface WalletReview {
+  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim";
+  label: string;
+  view: CeremonyView;
+  spendSummary?: string;
+  /** True once the user has ticked the raw-mode ack (undecodable calldata). */
+  rawAck: boolean;
 }
 
 export interface AppState {
@@ -256,6 +286,8 @@ export interface AppState {
   cerPhase: "review" | "busy" | "done";
   cerStep: number;
   cerHash: string;
+  /** Q-E.1 (@rule8, P0) — the pending wallet money-action review (null = none). */
+  walletReview: WalletReview | null;
   chatMsgs: ChatMsg[];
   chatStatus: "ready" | "thinking" | "streaming" | "tool";
   chatBackend: "gateway" | "local";
@@ -453,6 +485,7 @@ export function freshState(pid: string): AppState {
     cerPhase: "review",
     cerStep: 0,
     cerHash: "",
+    walletReview: null,
     chatMsgs: [],
     chatStatus: "ready",
     chatBackend: "gateway",

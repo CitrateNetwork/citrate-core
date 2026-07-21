@@ -144,11 +144,16 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // row is a real indexed tx (hash/kind/amount/ts + status/direction); a fresh
       // address / not-provisioned index honestly returns [] (never fabricated,
       // Rule 1). We surface the Activity shape the state model renders.
-      async activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number }[]> {
+      async activity(): Promise<{ id: string; kind: string; amount: string; hash: string; ts: number; status: number | null; direction: string }[]> {
         const rows = await invoke<{ id: string; kind: string; amount: string; hash: string; ts: number; status: number | null; direction: string }[]>(
           "wallet_activity",
         );
-        return rows.map((r) => ({ id: r.id, kind: r.kind, amount: r.amount, hash: r.hash, ts: r.ts }));
+        // Q-E.2 (C-5) — pass the receipt `status` (1 ok / 0 reverted / null pending)
+        // and classified `direction` THROUGH the boundary. They used to be stripped
+        // here, so a reverted tx rendered identically to a success; the Activity
+        // table now marks a failed/pending tx from these real fields (Rule 1 — no
+        // fabricated status, absent → honest "pending").
+        return rows.map((r) => ({ id: r.id, kind: r.kind, amount: r.amount, hash: r.hash, ts: r.ts, status: r.status, direction: r.direction }));
       },
       // CORE (@rule8) — build a native SALT transfer as a PENDING ceremony and
       // return its decoded view. Signs NOTHING; the human approves via
