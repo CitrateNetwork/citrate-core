@@ -8,7 +8,7 @@
 //   * a provider-error surfaces honestly (onStatus("error") + throw), never a
 //     fabricated reply.
 import { describe, it, expect, vi } from "vitest";
-import { createDemoProvider, createRealProvider, type AgentContext, type ChatStatus, type ToolCall } from "./harness";
+import { createDemoProvider, createRealProvider, createLocalProvider, type AgentContext, type ChatStatus, type ToolCall } from "./harness";
 
 const ctx: AgentContext = {
   height: 131234,
@@ -91,5 +91,107 @@ describe("createRealProvider — real inference via injected infer (AI1)", () =>
     expect(cc.statuses).toContain("error");
     // No fabricated content was streamed.
     expect(cc.streamed).toBe("");
+  });
+});
+
+// Q-A.4a item 6 — the local provider activates the already-shipped Rust ai_chat_local.
+describe("createLocalProvider — REAL local inference via injected inferLocal (BC-3.2)", () => {
+  it("is labeled a LOCAL model, calls inferLocal with ONLY messages+context (no provider/url), and reveals the REAL completion", async () => {
+    const inferLocal = vi.fn(async () => "Local model: your node is at height 131234.");
+    const provider = createLocalProvider(() => ctx, inferLocal);
+    expect(provider.kind).toBe("local");
+    expect(provider.label).toContain("local");
+    expect(provider.label).not.toContain("built-in demo");
+
+    const cc = collectCallbacks();
+    const result = await provider.send({ messages: [{ role: "user", content: "how is my node?" }], callbacks: cc.callbacks });
+
+    expect(inferLocal).toHaveBeenCalledTimes(1);
+    // The LOCAL path takes ONLY (messagesJson, contextJson) — NO provider id, NO url
+    // (Rust owns the loopback endpoint; the webview can't redirect it).
+    const args = inferLocal.mock.calls[0];
+    expect(args.length).toBe(2);
+    expect(JSON.parse(args[0])).toEqual([{ role: "user", content: "how is my node?" }]);
+    expect(JSON.parse(args[1]).height).toBe(131234);
+
+    // Streamed content is EXACTLY the real local completion — never fabricated.
+    expect(result.content).toBe("Local model: your node is at height 131234.");
+    expect(cc.streamed).toBe("Local model: your node is at height 131234.");
+    expect(cc.statuses[cc.statuses.length - 1]).toBe("done");
+  });
+
+  it("surfaces a local-server error honestly (onStatus error + throw), never a fabricated reply", async () => {
+    const inferLocal = vi.fn(async () => {
+      throw new Error("local server not healthy");
+    });
+    const provider = createLocalProvider(() => ctx, inferLocal);
+    const cc = collectCallbacks();
+    await expect(provider.send({ messages: [{ role: "user", content: "hi" }], callbacks: cc.callbacks })).rejects.toThrow(/local/);
+    expect(cc.statuses).toContain("error");
+    expect(cc.streamed).toBe("");
+  });
+});
+
+// Q-A.4a item 7 — the demo provider's fabricated memory_recall / docs_link replies
+// are GONE. In demo mode the agent must NOT invent recalled memory facts nor claim
+// it "linked" docs (a no-op). These are the RED-then-GREEN tripwires (Rule 1).
+describe("createDemoProvider — no fabricated recall/docs claims (Rule 1)", () => {
+  // Drive the demo provider through one prompt and return the fully streamed text.
+  async function ask(prompt: string): Promise<{ text: string; toolNames: string[] }> {
+    const provider = createDemoProvider(() => ctx);
+    let streamed = "";
+    const toolNames: string[] = [];
+    await provider.send({
+      messages: [{ role: "user", content: prompt }],
+      callbacks: {
+        onStatus: () => {},
+        onToken: (t: string) => {
+          streamed += t;
+        },
+        onToolCall: async (c: ToolCall) => {
+          toolNames.push(c.name);
+          return "ok";
+        },
+      },
+    });
+    return { text: streamed, toolNames };
+  }
+
+  it("a 'what do you know about me' prompt does NOT invent recalled facts and admits it can't read the graph in demo mode", async () => {
+    const { text, toolNames } = await ask("what do you know about me? recall my memory");
+    // The old fabricated recall named specific facts that don't exist here.
+    expect(text).not.toContain("validator key ceremony completed at onboarding");
+    expect(text).not.toContain("gateway key is bound to this device");
+    expect(text).not.toMatch(/from your memory graph:/i);
+    // It says so honestly instead.
+    expect(text.toLowerCase()).toContain("can't read your memory graph in demo mode");
+    // And it fires NO memory_recall tool (there is nothing to recall from).
+    expect(toolNames).not.toContain("memory_recall");
+  });
+
+  it("a 'how do i' docs prompt does NOT falsely claim it linked guides", async () => {
+    const { text, toolNames } = await ask("how do i run a validator? show me the guide");
+    expect(text).not.toMatch(/I linked the closest Atlas guides/i);
+    expect(text.toLowerCase()).toContain("docs linking isn't available in demo mode");
+    expect(toolNames).not.toContain("docs_link");
+  });
+
+  it("a 'remember this' prompt does NOT claim a durable write occurred on approval (demo writes nothing)", async () => {
+    const provider = createDemoProvider(() => ctx);
+    let streamed = "";
+    await provider.send({
+      messages: [{ role: "user", content: "remember that I prefer testnet" }],
+      callbacks: {
+        onStatus: () => {},
+        onToken: (t: string) => {
+          streamed += t;
+        },
+        // The ceremony "approved" — but the demo agent still must not claim the
+        // fact "now lives" in the graph (it isn't connected to the daemon).
+        onToolCall: async () => "approved",
+      },
+    });
+    expect(streamed).not.toMatch(/it now lives in your personal tenant/i);
+    expect(streamed.toLowerCase()).toContain("nothing was durably stored");
   });
 });

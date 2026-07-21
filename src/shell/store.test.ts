@@ -148,6 +148,26 @@ describe("AI1 — provider selection + key-never-in-state", () => {
     expect(pickChatProviderKind([], "openai", "tauri")).toBe("demo");
   });
 
+  // Q-A.4a item 6 — the LOCAL route is PREFERRED over gateway/demo, but ONLY when
+  // the real Rust inference state is "ready" (model verified + llama-server healthy).
+  // Any other inference state falls through — the route is HONEST, never a fabricated
+  // local reply against a down server (Rule 1).
+  it("pickChatProviderKind prefers 'local' when the inference state is 'ready' (server healthy)", () => {
+    const configured = [{ id: "gateway", configured: true }];
+    // ready → local, even though a gateway key is configured (local wins).
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "ready")).toBe("local");
+    // NEGATIVE CONTROL: server NOT healthy (any non-"ready" state) → NOT local.
+    // local-fallback means the model is ready but the server is down → gateway.
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "local-fallback")).toBe("real");
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "gateway-only")).toBe("real");
+    // downloading with a gateway key → gateway (not local, not demo).
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "downloading")).toBe("real");
+    // "ready" is honored ONLY in tauri — the web preview has no local server.
+    expect(pickChatProviderKind(configured, "gateway", "sim", "ready")).toBe("demo");
+    // no local, no gateway key, demo inference state → demo.
+    expect(pickChatProviderKind([], "gateway", "tauri", "demo")).toBe("demo");
+  });
+
   it("rebuildProvider falls back to the built-in demo agent in web-dev (no keyring)", async () => {
     await store.rebuildProvider();
     // Sim providerStatus returns [] → the honest demo agent, never a real provider.
@@ -162,6 +182,41 @@ describe("AI1 — provider selection + key-never-in-state", () => {
     // And the persisted set never writes a provider key to localStorage.
     expect(PERSIST_KEYS as readonly string[]).not.toContain("aiKeys");
     expect(PERSIST_KEYS).toContain("aiDefault");
+  });
+});
+
+// Q-A.4a items 2/3/4 — the memory-daemon store methods. In web-dev (sim) the
+// memory bridge reports a running daemon over the sim socket; the real Tauri path
+// reads memory_status(). These guard that the wiring is REAL (folds the daemon's
+// socket path + semantic flag) and honest (an unreachable daemon → offline, no
+// fabricated path).
+describe("store memory daemon (Q-A.4a) — real status read, honest offline", () => {
+  it("refreshMemoryStatus folds the daemon-reported socket path + semantic flag (never a client constant)", async () => {
+    store.setState({ memSocketPath: null, memSemantic: true, memDaemon: "idle" });
+    const state = await store.refreshMemoryStatus();
+    // The sim daemon reports running with a socket path and semantic:false.
+    expect(state).toBe("running");
+    expect(store.getSnapshot().memDaemon).toBe("running");
+    // The socket path is the daemon-reported one, folded into state (not null).
+    expect(store.getSnapshot().memSocketPath).toBeTruthy();
+    // semantic is the REAL daemon flag (false in sim) — never fabricated true.
+    expect(store.getSnapshot().memSemantic).toBe(false);
+  });
+
+  it("startMemoryDaemon starts + re-reads status, then loads the real constellation", async () => {
+    store.setState({ memGraph: undefined, memGraphState: "idle" });
+    await store.startMemoryDaemon();
+    // Sim start resolves; status reads running → the constellation loads (real hits).
+    expect(store.getSnapshot().memDaemon).toBe("running");
+    expect(store.getSnapshot().memGraphState).toBe("ready");
+    expect(store.getSnapshot().memGraph?.nodes.length).toBeGreaterThan(0);
+  });
+
+  it("refreshConstellation with a query routes through the REAL daemon search (bridge.memory.search)", async () => {
+    // A query that matches the sim chain-state hits narrows the graph via the real
+    // search RPC (not only the client-side filter) — the graph is re-laid.
+    await store.refreshConstellation("chain");
+    expect(store.getSnapshot().memGraphState).toBe("ready");
   });
 });
 

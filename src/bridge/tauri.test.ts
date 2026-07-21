@@ -319,6 +319,17 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       const cfg = aiMock.map.get(a.providerId)!;
       return `real-completion from ${cfg.baseURL} model ${cfg.model}`;
     }
+    case "ai_chat_local": {
+      // BC-3.2 — REAL LOCAL inference: the webview supplies ONLY messages + context.
+      // Rust derives the loopback endpoint from the serve manager (no url arg here).
+      return "local-completion from the bundled llama-server";
+    }
+    case "model_inference_state": {
+      // BC-3.2 — the honest routing state, computed in Rust. The mock echoes the
+      // gatewayConfigured flag so a test can assert it was passed through.
+      const a = (args ?? {}) as { gatewayConfigured: boolean };
+      return a.gatewayConfigured ? "gateway-only" : "demo";
+    }
     default:
       throw `unavailable: ${cmd} is not wired in this build`;
   }
@@ -835,6 +846,32 @@ describe("tauri adapter — chat domain wires real AI inference, key never leaks
   it("chat.backend stays honestly Unavailable (demo/real selection lives in the store)", async () => {
     const bridge = createTauriBridge();
     await expect(bridge.chat.backend()).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+  });
+
+  // Q-A.4a item 6 — the DEAD local-model wire is now live: bridge.chat.inferLocal
+  // exists and invokes the REAL Rust `ai_chat_local` command with ONLY {messagesJson,
+  // contextJson} (NO providerId, NO url — Rust owns the loopback endpoint, exfil-bound).
+  it("chat.inferLocal exists and invokes ai_chat_local with ONLY {messagesJson,contextJson} (no url/provider)", async () => {
+    const bridge = createTauriBridge();
+    expect(typeof bridge.chat.inferLocal).toBe("function");
+    const messagesJson = JSON.stringify([{ role: "user", content: "hi" }]);
+    const contextJson = JSON.stringify({ height: 1 });
+    const out = await bridge.chat.inferLocal(messagesJson, contextJson);
+    expect(invokeMock).toHaveBeenCalledWith("ai_chat_local", { messagesJson, contextJson });
+    const callArgs = invokeMock.mock.calls.find((c) => c[0] === "ai_chat_local")![1] as Record<string, unknown>;
+    // Exfil-binding: NO providerId and NO url on the local path.
+    expect(Object.keys(callArgs).sort()).toEqual(["contextJson", "messagesJson"]);
+    expect(out).toContain("llama-server");
+  });
+
+  // Q-A.4a item 6 — the honest routing state passes the gateway-key presence to
+  // Rust (model_inference_state), which decides local/gateway/demo. The webview
+  // never fabricates "ready"; only Rust returns it (from real serve health).
+  it("chat.inferenceState invokes model_inference_state with {gatewayConfigured}", async () => {
+    const bridge = createTauriBridge();
+    expect(await bridge.chat.inferenceState(true)).toBe("gateway-only");
+    expect(invokeMock).toHaveBeenCalledWith("model_inference_state", { gatewayConfigured: true });
+    expect(await bridge.chat.inferenceState(false)).toBe("demo");
   });
 });
 

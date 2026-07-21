@@ -373,6 +373,22 @@ export interface AppState {
    */
   memGraph?: MemGraph;
   memGraphState: "idle" | "loading" | "ready" | "unavailable";
+  /**
+   * Q-A.4a runtime memory-daemon status (NOT persisted, never fabricated). Read
+   * from the REAL `memory_status()` on Storage mount / after a Start. `memDaemon`
+   * is the honest supervisor state ("idle" before the first read, "running" when
+   * the daemon reports it, "offline" when unreachable/not started, "error" on a
+   * start failure — e.g. the mem-mcp binary is not bundled yet → BinaryNotFound).
+   * `memSocketPath` is the REAL socket path the daemon reports (null until known —
+   * NEVER the old client-invented `~/.citrate/core/memory/<persona>.sock`
+   * constant). `memSemantic` mirrors the daemon's `semantic` flag: the bge
+   * embedding model is bundled WITH the daemon, so semantic search is available
+   * ONLY when the daemon reports `semantic: true` (never a fabricated download).
+   */
+  memDaemon: "idle" | "running" | "offline" | "error";
+  memDaemonError: string | null;
+  memSocketPath: string | null;
+  memSemantic: boolean;
 }
 
 /** One tenant's real node count + its parsed nodes, from the memory daemon. */
@@ -538,6 +554,10 @@ export function freshState(pid: string): AppState {
     graphQ: "",
     dataReady: true,
     memGraphState: "idle",
+    memDaemon: "idle",
+    memDaemonError: null,
+    memSocketPath: null,
+    memSemantic: false,
   };
   const today = new Date().toISOString().slice(0, 10);
   if (P.fresh) {

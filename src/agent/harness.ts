@@ -140,6 +140,47 @@ export function createRealProvider(providerId: string, getContext: () => AgentCo
   };
 }
 
+// ---------------------------------------------------------------------
+// Local provider — BC-3.2. Calls the Rust `ai_chat_local` command (via the
+// injected `inferLocal` fn) which POSTs to the bundled `llama-server` on the
+// Rust-owned loopback endpoint — NO api key, NO caller-supplied URL. This is
+// only ever selected when the inference state is `ready` (model verified + server
+// healthy); otherwise the store routes to gateway/demo, so the local reply is
+// never fabricated (Rule 1). Plain chat + live-context injection, no tool loop;
+// the REAL completion is revealed via a display-only token animation.
+// ---------------------------------------------------------------------
+export type InferLocalFn = (messagesJson: string, contextJson: string) => Promise<string>;
+
+export function createLocalProvider(getContext: () => AgentContext, inferLocal: InferLocalFn): ChatProvider {
+  return {
+    kind: "local",
+    label: "local model · llama-server",
+    async send({ messages, callbacks }) {
+      callbacks.onStatus("thinking");
+      const contextJson = JSON.stringify(getContext());
+      const messagesJson = JSON.stringify(messages.map((m) => ({ role: m.role, content: m.content })));
+      let content: string;
+      try {
+        content = await inferLocal(messagesJson, contextJson);
+      } catch (e) {
+        callbacks.onStatus("error");
+        throw e;
+      }
+      // Reveal the REAL local completion with a display-only token animation. No
+      // tool loop this WP; the content is exactly what the local model returned.
+      callbacks.onStatus("streaming");
+      let out = "";
+      for (const token of tokenize(content)) {
+        out += token;
+        callbacks.onToken(token);
+        await wait(8 + Math.random() * 18);
+      }
+      callbacks.onStatus("done");
+      return { role: "assistant", content: out };
+    },
+  };
+}
+
 interface Plan {
   toolCalls: ToolCall[];
   compose: (c: AgentContext, calls: ToolCall[]) => string;
@@ -191,23 +232,32 @@ function routeIntent(t: string): Plan {
     return {
       toolCalls: [tc("memory_assert", { fact })],
       compose: (_c, calls) =>
+        // Rule 1: the demo agent can't reach the memory daemon, so an approval
+        // does NOT durably store anything — don't claim it "now lives" in the
+        // graph. The real write path lands when mem-mcp is bundled + running.
         calls[0].result === "approved"
-          ? "Written to your memory graph — you approved the assertion, so it now lives in your personal tenant, witnessed and recallable."
-          : "Understood — you declined the write, so nothing was stored. Your memory graph only takes facts you approve.",
+          ? "You approved the write in the ceremony — but the demo agent isn't connected to your memory daemon, so nothing was durably stored. When the memory daemon is running and chat uses a real provider, an approved assertion will actually land in your personal tenant."
+          : "You declined, so nothing was written. (In demo mode the write wouldn't persist anyway — the demo agent isn't connected to your memory daemon.)",
     };
   }
   if (has("memory", "recall", "what do you know")) {
     return {
-      toolCalls: [tc("memory_recall", { query: t })],
+      // Rule 1: the demo agent has no connection to your memory daemon, so it
+      // must NOT invent recalled facts. It says so honestly and points at the
+      // real surface. (Real recall arrives when the mem-mcp daemon is bundled +
+      // running and chat routes to a real provider with the memory tool loop.)
+      toolCalls: [],
       compose: () =>
-        "From your memory graph: your validator key ceremony completed at onboarding, your gateway key is bound to this device, and the chain-facts tenant carries the 40204 contract catalog. Ask me to recall anything specific, or open Storage to walk the constellation.",
+        "I can't read your memory graph in demo mode — the demo agent isn't connected to your memory daemon, so I won't invent what it holds. Open Storage to walk the real constellation, and configure a provider (or run the local model) to let me recall from it directly.",
     };
   }
   if (has("doc", "how do i", "guide", "tutorial", "learn")) {
     return {
-      toolCalls: [tc("docs_link", { topic: t })],
+      // Rule 1: "docs_link" was a no-op that falsely claimed "I linked the closest
+      // guides." The demo agent links nothing — say so honestly.
+      toolCalls: [],
       compose: () =>
-        "I linked the closest Atlas guides for your tier in the tutorials rail. The validator operations handbook is the right starting point — it covers sync, heartbeat, and what slashing protection expects from an operator.",
+        "Docs linking isn't available in demo mode — I can't add anything to the tutorials rail from here. The Atlas guides open from the tutorials rail on the Dashboard; the validator operations handbook is a good starting point for sync, heartbeat, and slashing protection.",
     };
   }
   if (has("go to", "open ", "take me", "navigate")) {

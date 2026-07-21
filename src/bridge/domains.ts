@@ -310,6 +310,27 @@ export interface ChatDomain {
    * The Tauri impl invokes `ai_chat`; the sim impl is honestly Unavailable.
    */
   infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
+  /**
+   * BC-3.2 — REAL LOCAL inference against the bundled `llama-server` (llama.cpp)
+   * on the loopback endpoint, with NO api key. The endpoint is derived IN RUST
+   * from the serve manager's loopback port — the webview supplies ONLY the
+   * messages + context, NEVER a URL or host (exfil-binding). The Tauri impl
+   * invokes `ai_chat_local`; the sim impl is honestly Unavailable (the web
+   * preview has no llama-server). Local routing only happens when
+   * `inferenceState()` reports the server is healthy — otherwise the store falls
+   * through to gateway/demo (never a fabricated local reply, Rule 1).
+   */
+  inferLocal(messagesJson: string, contextJson: string): Promise<string>;
+  /**
+   * BC-3.2 — the HONEST inference-routing state (kebab): `ready` (local model +
+   * healthy server → chat runs LOCALLY), `local-fallback`/`gateway-only` (route
+   * to the gateway), `downloading`, `no-model`, or `demo`. Computed IN RUST from
+   * the real model status + serve health + `gatewayConfigured` (a cgk_ key is
+   * sealed). Drives the store's local-vs-gateway-vs-demo selection so the route
+   * is honest — the frontend never claims a local model that isn't serving. The
+   * Tauri impl invokes `model_inference_state`; the sim impl returns `demo`.
+   */
+  inferenceState(gatewayConfigured: boolean): Promise<string>;
 }
 
 /**

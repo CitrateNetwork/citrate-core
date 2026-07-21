@@ -17,8 +17,7 @@
 // =====================================================================
 import { useEffect, useRef } from "react";
 import { SurfaceProps } from "./shared";
-import { bridge } from "../bridge";
-import type { MemGraph, MemGraphNode } from "../shell/state";
+import type { MemGraph } from "../shell/state";
 
 // tenant → node colour (matches --z-green / --z-cyan; verbatim from design).
 // The REAL chain tenant is "chain-state" (the daemon's name); "chain-facts" is
@@ -33,47 +32,6 @@ const prefersReducedMotion = (): boolean => {
     return false;
   }
 };
-
-/**
- * Deterministic layout for the REAL store nodes: personal nodes on the left,
- * chain-state on the right, each ringed by tenant so the same store always
- * lays out identically (no RNG — the layout is a pure function of the node ids
- * and their order, so re-fetching does not jitter the constellation).
- */
-function layoutGraph(tenants: { tenant: string; totalInTenant: number }[], rawNodes: { id: string; label: string; tenant: string; kind: string }[]): MemGraph {
-  const centers: Record<string, { cx: number; cy: number }> = {
-    personal: { cx: 430, cy: 280 },
-    "chain-state": { cx: 830, cy: 280 },
-    "chain-facts": { cx: 830, cy: 280 },
-  };
-  const perTenant: Record<string, number> = {};
-  const nodes: MemGraphNode[] = rawNodes.map((n, i) => {
-    const c = centers[n.tenant] ?? { cx: 630, cy: 280 };
-    const k = (perTenant[n.tenant] = (perTenant[n.tenant] ?? 0) + 1) - 1;
-    // Ring placement: golden-angle-ish deterministic spiral for a calm spread.
-    const ang = k * 2.399963; // golden angle in radians
-    const rad = 34 + k * 15;
-    return {
-      id: n.id,
-      label: n.label,
-      tenant: n.tenant,
-      kind: n.kind,
-      detail: `${n.kind} · tenant ${n.tenant}`,
-      x: c.cx + Math.cos(ang) * rad,
-      y: c.cy + Math.sin(ang) * rad,
-      z: 0.85 + ((i % 5) * 0.12),
-    };
-  });
-  // Links: connect each node to the previous node in its tenant (a stable spine)
-  // — the real per-edge blast-radius is a memory.neighbors fetch on selection.
-  const byTenant: Record<string, string[]> = {};
-  nodes.forEach((n) => (byTenant[n.tenant] = byTenant[n.tenant] ?? []).push(n.id));
-  const links: [string, string][] = [];
-  Object.values(byTenant).forEach((ids) => {
-    for (let i = 1; i < ids.length; i++) links.push([ids[i - 1], ids[i]]);
-  });
-  return { nodes, links, tenants };
-}
 
 /**
  * The 2.5D memory constellation. Ported faithfully from the design's
@@ -157,45 +115,49 @@ function Constellation({ store, s, graph }: SurfaceProps & { graph: MemGraph }) 
 }
 
 /** An honest offline/empty panel — shown when the memory daemon is not running
- * or its socket is unreachable. NEVER a sim graph (Rule 1). */
-function ConstellationOffline({ state }: { state: "loading" | "unavailable" | "idle" }) {
+ * or its socket is unreachable. NEVER a sim graph (Rule 1). Includes a real Start
+ * control that calls `bridge.memory.start()` via the store; on a fresh dev machine
+ * the mem-mcp binary isn't bundled yet, so Start HONESTLY errors (BinaryNotFound)
+ * — that error is shown, not hidden behind a fabricated "connected" state. */
+function ConstellationOffline({ store, s, state }: SurfaceProps & { state: "loading" | "unavailable" | "idle" }) {
+  const starting = s.memDaemon === "idle" && state !== "loading";
   const msg =
     state === "loading"
       ? "Connecting to your memory graph…"
-      : "Memory daemon offline — start it to load your graph.";
+      : s.memDaemon === "error"
+        ? "Memory daemon could not start."
+        : "Memory daemon offline — start it to load your graph.";
   return (
-    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6 }}>
+    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8 }}>
       <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>{msg}</span>
+      {state !== "loading" && (
+        <button className="btn btn-ghost btn-sm" onClick={() => void store.startMemoryDaemon()}>
+          {starting ? "Starting…" : "Start memory daemon"}
+        </button>
+      )}
+      {s.memDaemon === "error" && s.memDaemonError && (
+        <span className="mono" style={{ fontSize: 10, color: "var(--warn, var(--tx-3))", maxWidth: 420, textAlign: "center" }}>
+          {s.memDaemonError}
+        </span>
+      )}
       <span className="mono" style={{ fontSize: 10, color: "var(--tx-4, var(--tx-3))" }}>no fabricated nodes are shown</span>
     </div>
   );
 }
 
 export function Storage({ store, s }: SurfaceProps) {
-  // CORE-C3: fetch the REAL constellation from the mcp_serve daemon on mount.
-  // A transport failure (daemon not running) is honest: memGraphState becomes
-  // "unavailable" and the surface shows an offline state — never seed data.
+  // Q-A.4a: on mount, read the REAL daemon status (socket path + semantic flag +
+  // supervisor state) THEN fetch the constellation. A transport failure (daemon not
+  // running) is honest: memGraphState "unavailable" + memDaemon "offline" and the
+  // surface shows an offline state with a Start control — never seed data (Rule 1).
   useEffect(() => {
     let cancelled = false;
-    store.setState({ memGraphState: "loading" });
-    bridge.memory
-      .constellation()
-      .then((tenants) => {
-        if (cancelled) return;
-        const rawNodes = tenants.flatMap((t) =>
-          t.hits.map((h) => ({ id: h.id, label: h.title, tenant: t.tenant, kind: h.kind }))
-        );
-        const graph = layoutGraph(
-          tenants.map((t) => ({ tenant: t.tenant, totalInTenant: t.totalInTenant })),
-          rawNodes
-        );
-        store.setState({ memGraph: graph, memGraphState: "ready" });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // Honest: the daemon is not running / unreachable. Show offline, not seed.
-        store.setState({ memGraph: undefined, memGraphState: "unavailable" });
-      });
+    void (async () => {
+      const state = await store.refreshMemoryStatus();
+      if (cancelled) return;
+      if (state === "running") await store.refreshConstellation();
+      else store.setState({ memGraph: undefined, memGraphState: "unavailable" });
+    })();
     return () => {
       cancelled = true;
     };
@@ -208,20 +170,29 @@ export function Storage({ store, s }: SurfaceProps) {
   const selNode = ready && s.sel ? graph!.nodes.find((n) => n.id === s.sel) : null;
   const selColor = selNode ? (selNode.tenant === "personal" ? "#8ecc09" : "#4cc3d5") : "#8ecc09";
 
-  const modelBarW = (s.modelPct | 0) + "%";
-  const modelPctStr = (((s.modelPct / 100) * 440) | 0) + " MB";
+  // Q-A.4a item 1: semantic availability is a REAL read from memory_status()
+  // (s.memSemantic). The bge embedding model is BUNDLED with the mem-mcp daemon —
+  // there is NO UI download and NO "sha256 verified" claim on a file never fetched.
+  const semanticReady = s.memSemantic;
   // Tenant totals are the REAL daemon-reported counts (never a fabricated number).
   const tenantTotal = (pred: (t: string) => boolean) =>
     (graph?.tenants ?? []).filter((t) => pred(t.tenant)).reduce((a, t) => a + t.totalInTenant, 0);
   const personalCount = tenantTotal((t) => t === "personal");
   const chainCount = tenantTotal(isChain);
 
-  const onSemantic = () => {
-    store.setState({ storageMode: "dl", modelPct: 0 });
-    store.save();
+  // Q-A.4a item 2: the REAL socket path from the daemon (null until known). No
+  // client-invented `~/.citrate/core/memory/<persona>.sock` constant.
+  const realSocket = s.memSocketPath;
+  // `mcp_connect` is not a bundled shim; agents connect to the Unix socket
+  // directly, so the honest config snippet points at the socket path, not a
+  // command that doesn't exist.
+  const onCopySnippet = () => {
+    if (!realSocket) return;
+    store.copy(
+      JSON.stringify({ mcpServers: { "citrate-memory": { transport: "unix", socket: realSocket } } }),
+      "Agent config copied",
+    );
   };
-  const onCopySnippet = () =>
-    store.copy('{"mcpServers":{"citrate-memory":{"command":"mcp_connect","args":["' + s.socketPath + '"]}}}', "Agent config copied");
 
   const gq = (s.graphQ || "").toLowerCase();
   const gMatches = ready && gq.length >= 2 ? graph!.nodes.filter((n) => (n.label + " " + n.detail).toLowerCase().indexOf(gq) >= 0) : [];
@@ -260,7 +231,7 @@ export function Storage({ store, s }: SurfaceProps) {
           {ready ? (
             <Constellation store={store} s={s} graph={graph!} />
           ) : (
-            <ConstellationOffline state={s.memGraphState === "ready" ? "loading" : (s.memGraphState as "loading" | "unavailable" | "idle")} />
+            <ConstellationOffline store={store} s={s} state={s.memGraphState === "ready" ? "loading" : (s.memGraphState as "loading" | "unavailable" | "idle")} />
           )}
           {selNode && (
             <div
@@ -297,8 +268,21 @@ export function Storage({ store, s }: SurfaceProps) {
               className="input"
               placeholder="recall, neighbors, contracts…"
               onInput={(e) => store.setState({ graphQ: (e.target as HTMLInputElement).value })}
+              onKeyDown={(e) => {
+                // Q-A.4a item 4: route Enter to the REAL daemon search
+                // (bridge.memory.search) when the daemon is running — the graph is
+                // re-laid from the daemon's hits, not only the client-side dim.
+                if (e.key === "Enter" && s.memDaemon === "running") {
+                  void store.refreshConstellation((e.target as HTMLInputElement).value);
+                }
+              }}
               style={{ height: 32, fontSize: 13 }}
             />
+            {s.memDaemon === "running" && (
+              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+                press Enter to search the memory daemon
+              </span>
+            )}
             {qMatches.length > 0 && (
               <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {qMatches.map((qm) => (
@@ -315,40 +299,25 @@ export function Storage({ store, s }: SurfaceProps) {
             )}
           </div>
 
-          {/* search mode + model download */}
+          {/* search mode — Q-A.4a item 1: semantic availability is a REAL read from
+              memory_status().semantic. The bge embedding model is BUNDLED with the
+              mem-mcp daemon, so there is NO UI download, NO progress bar, and NO
+              "sha256 verified" claim on a file that was never fetched (Rule 1). */}
           <div className="surface" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
             <span className="eyebrow">Search mode</span>
-            {s.storageMode === "lexical" && (
+            <span style={{ fontSize: 13 }}>Lexical — ready now</span>
+            {semanticReady ? (
               <>
-                <span style={{ fontSize: 13 }}>Lexical — ready now</span>
-                <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
-                  Semantic search needs the embedding model (~440 MB), downloaded once with checksum verification.
-                </p>
-                <span>
-                  <button className="btn btn-ghost btn-sm" onClick={onSemantic}>
-                    Enable semantic search
-                  </button>
-                </span>
-              </>
-            )}
-            {s.storageMode === "dl" && (
-              <>
-                <span style={{ fontSize: 13 }}>Downloading model…</span>
-                <div style={{ height: 5, background: "var(--srf-inset)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--line-1)" }}>
-                  <div style={{ height: "100%", background: "var(--accent)", width: modelBarW, transition: "width .4s linear" }}></div>
-                </div>
-                <span className="mono tabular" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                  {modelPctStr} of 440 MB · sha256 verified on completion
-                </span>
-              </>
-            )}
-            {s.storageMode === "semantic" && (
-              <>
-                <span style={{ fontSize: 13, color: "var(--ok)" }}>Semantic — ready</span>
+                <span style={{ fontSize: 13, color: "var(--ok)" }}>Semantic — available</span>
                 <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                  bge-base · first query loads the model (~2s)
+                  bge-base · bundled with the memory daemon · first query loads the model (~2s)
                 </span>
               </>
+            ) : (
+              <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+                Semantic search ships with the memory daemon's bundled embedding model — not yet
+                available{s.memDaemon === "running" ? " on this build (the daemon reports lexical only)" : " (start the memory daemon to enable it)"}.
+              </p>
             )}
           </div>
 
@@ -372,20 +341,39 @@ export function Storage({ store, s }: SurfaceProps) {
             </p>
           </div>
 
-          {/* MCP endpoint */}
+          {/* MCP endpoint — Q-A.4a item 2: the REAL socket path from the daemon
+              (memory_status().socketPath). No client-invented constant; if the
+              daemon isn't running there IS no socket, so we say so honestly and the
+              Copy button is disabled (an agent config without a real socket would
+              never connect). */}
           <div className="surface" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
             <span className="eyebrow">MCP endpoint · connect your agents</span>
-            <span className="mono" style={{ fontSize: 11, background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", wordBreak: "break-all" }}>
-              {s.socketPath}
-            </span>
-            <span>
-              <button className="btn btn-ghost btn-sm" onClick={onCopySnippet}>
-                Copy agent config
-              </button>
-            </span>
-            <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
-              Write scope defaults to your own capability grant. Foreign processes on the socket are refused by the OS.
-            </p>
+            {realSocket ? (
+              <>
+                <span className="mono" style={{ fontSize: 11, background: "var(--srf-inset)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", wordBreak: "break-all" }}>
+                  {realSocket}
+                </span>
+                <span>
+                  <button className="btn btn-ghost btn-sm" onClick={onCopySnippet}>
+                    Copy agent config
+                  </button>
+                </span>
+                <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+                  Agents connect to this Unix socket directly. Write scope defaults to your own capability grant. Foreign processes on the socket are refused by the OS.
+                </p>
+              </>
+            ) : (
+              <>
+                <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                  start the memory daemon to get your socket path
+                </span>
+                <span>
+                  <button className="btn btn-ghost btn-sm" onClick={() => void store.startMemoryDaemon()}>
+                    Start memory daemon
+                  </button>
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>

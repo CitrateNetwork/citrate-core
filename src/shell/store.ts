@@ -28,9 +28,10 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createRealProvider, ChatProvider, ToolCall } from "../agent/harness";
+import { createDemoProvider, createRealProvider, createLocalProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { layoutGraph } from "./memGraph";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
@@ -172,20 +173,36 @@ export function mapNodeState(state: string, syncPct: number, staked: number): Ap
 }
 
 /**
- * CORE-AI1 — the pure real-vs-demo provider SELECTION rule, extracted so it is
- * unit-tested independently of the store singleton + bridge. A REAL provider is
- * chosen ONLY when (a) we are in the Tauri build (an OS keyring exists) AND (b) the
- * current default id is actually CONFIGURED (its key is sealed). Otherwise chat
- * falls back to the honest built-in demo agent (Rule 1 — never a fabricated
- * provider, never a real provider in the keyring-less web preview).
+ * CORE-AI1 / BC-3.2 — the pure LOCAL → GATEWAY → DEMO provider SELECTION rule,
+ * extracted so it is unit-tested independently of the store singleton + bridge.
+ *
+ * Priority (Rule 1 — the route is HONEST, it never claims a provider it can't call):
+ *  1. **local** — ONLY in the Tauri build AND the Rust inference state is `ready`
+ *     (the local model is verified AND `llama-server` is HEALTHY). If the local
+ *     server isn't healthy the Rust state is NOT `ready`, so we fall through — we
+ *     never fabricate a local reply against a down server.
+ *  2. **real** (gateway) — the current default id is actually CONFIGURED (its key
+ *     is sealed in the OS keyring).
+ *  3. **demo** — the honest built-in agent (web preview has no keyring/local model,
+ *     so it always lands here).
+ *
+ * `inferenceState` is the kebab string from `model_inference_state` (Rust); only
+ * `"ready"` means the local server is actually serving.
  */
 export function pickChatProviderKind(
   statuses: { id: string; configured: boolean }[],
   aiDefault: string,
   mode: "sim" | "tauri",
-): "real" | "demo" {
+  inferenceState?: string,
+): "local" | "real" | "demo" {
   if (mode !== "tauri") return "demo";
-  return statuses.some((p) => p.id === aiDefault && p.configured) ? "real" : "demo";
+  // 1) LOCAL: only when the real Rust state says the model is ready AND the
+  //    llama-server is healthy — any other state falls through (honest).
+  if (inferenceState === "ready") return "local";
+  // 2) GATEWAY (real): the default provider id has a sealed key.
+  if (statuses.some((p) => p.id === aiDefault && p.configured)) return "real";
+  // 3) DEMO: the honest built-in agent.
+  return "demo";
 }
 
 /**
@@ -309,6 +326,84 @@ export class Store {
   }
 
   /**
+   * Q-A.4a item 2 — read the REAL memory-daemon status (`memory_status()`) and
+   * fold the REAL socket path + `semantic` flag + supervisor state into AppState.
+   * Never fabricated: the old client-invented socket-path constant is replaced by
+   * the daemon-reported path; `semantic` drives the Storage "semantic available"
+   * state ONLY when the daemon reports it. A transport failure (daemon not running)
+   * is HONEST → memDaemon "offline", memSocketPath null, memSemantic false. Never
+   * throws. Returns the read state so callers can gate a constellation refresh.
+   */
+  async refreshMemoryStatus(): Promise<"running" | "offline"> {
+    try {
+      const st = await bridge.memory.status();
+      const running = st.state === "running";
+      this.setState({
+        memDaemon: running ? "running" : "offline",
+        memDaemonError: null,
+        memSocketPath: st.socketPath || null,
+        memSemantic: !!st.semantic,
+      });
+      return running ? "running" : "offline";
+    } catch {
+      // Honest: the daemon is not running / unreachable — no fabricated path/flag.
+      this.setState({ memDaemon: "offline", memSocketPath: null, memSemantic: false });
+      return "offline";
+    }
+  }
+
+  /**
+   * Q-A.4a item 3 — START the memory daemon. Nothing else calls
+   * `bridge.memory.start()`, so the graph is otherwise permanently offline. On a
+   * fresh dev machine the mem-mcp binary isn't bundled yet (WO-2), so this
+   * HONESTLY errors `BinaryNotFound` — that's a real error, not a fabrication, and
+   * it is surfaced (memDaemon "error" + the coarse message). On success it re-reads
+   * the status and re-runs the constellation fetch so the graph loads.
+   */
+  async startMemoryDaemon(): Promise<void> {
+    this.setState({ memDaemon: "idle", memDaemonError: null });
+    try {
+      await bridge.memory.start();
+    } catch (err) {
+      // Honest failure (e.g. BinaryNotFound — the binary isn't bundled yet).
+      this.setState({ memDaemon: "error", memDaemonError: String((err as Error).message ?? err) });
+      return;
+    }
+    const state = await this.refreshMemoryStatus();
+    if (state === "running") await this.refreshConstellation();
+  }
+
+  /**
+   * Q-A.4a item 4/5 — fetch the REAL constellation (personal + chain-state tenants)
+   * from the mem-mcp daemon and fold the laid-out graph into AppState. A transport
+   * failure is HONEST (`memGraphState: "unavailable"`), never seed data (Rule 1).
+   * `q` (optional) routes through the REAL `bridge.memory.search(tenant, q)` RPC
+   * so the graph reflects a real daemon-side search, not only the client filter.
+   */
+  async refreshConstellation(q?: string): Promise<void> {
+    this.setState({ memGraphState: "loading" });
+    try {
+      const tenants =
+        q && q.trim().length >= 2
+          ? await Promise.all(
+              ["personal", "chain-state"].map((t) => bridge.memory.search(t, q.trim())),
+            )
+          : await bridge.memory.constellation();
+      const rawNodes = tenants.flatMap((t) =>
+        t.hits.map((h) => ({ id: h.id, label: h.title, tenant: t.tenant, kind: h.kind })),
+      );
+      const graph = layoutGraph(
+        tenants.map((t) => ({ tenant: t.tenant, totalInTenant: t.totalInTenant })),
+        rawNodes,
+      );
+      this.setState({ memGraph: graph, memGraphState: "ready" });
+    } catch {
+      // Honest: the daemon is not running / unreachable. Show offline, not seed.
+      this.setState({ memGraph: undefined, memGraphState: "unavailable" });
+    }
+  }
+
+  /**
    * CORE-AI1 (@rule8) — (re)select the chat provider from the live AI config.
    *
    * Reads `bridge.chat.providerStatus()` (Tauri: the OS-keyring-sealed provider
@@ -325,13 +420,34 @@ export class Store {
     try {
       const statuses = await bridge.chat.providerStatus();
       const def = this.state.aiDefault;
-      if (pickChatProviderKind(statuses, def, BRIDGE_MODE) === "real") {
+      // BC-3.2 — is a gateway key configured? (used both for the local-fallback
+      // routing computed in Rust AND for the gateway leg of the selection here.)
+      const gatewayConfigured = statuses.some((p) => p.id === def && p.configured);
+      // BC-3.2 — the HONEST local-vs-gateway routing state, computed in Rust from
+      // the real model status + serve health. Only "ready" means the local server
+      // is actually serving. A failed read (web shim) resolves to "demo" — never a
+      // fabricated "ready" (Rule 1).
+      let inferenceState = "demo";
+      try {
+        inferenceState = await bridge.chat.inferenceState(gatewayConfigured);
+      } catch {
+        inferenceState = "demo";
+      }
+      const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
+      if (kind === "local") {
+        // REAL local inference against the healthy llama-server (Rust-owned URL).
+        this.provider = createLocalProvider(() => this.snapshot(), (msgs, ctx) =>
+          bridge.chat.inferLocal(msgs, ctx),
+        );
+        return;
+      }
+      if (kind === "real") {
         this.provider = createRealProvider(def, () => this.snapshot(), (pid, msgs, ctx) =>
           bridge.chat.infer(pid, msgs, ctx),
         );
         return;
       }
-      // No configured default (or web-dev): the honest built-in demo agent.
+      // No local server + no configured default (or web-dev): the honest demo agent.
       this.provider = createDemoProvider(() => this.snapshot());
     } catch {
       // Honest no-op: providerStatus unavailable (web shim / failed read) — keep
@@ -840,10 +956,11 @@ export class Store {
         // sim grantStatus derived from the persona/AppState) — never a blind timer.
         u.s5n = Math.min(32000, s.s5n + 6800);
       }
-      if (s.storageMode === "dl") {
-        u.modelPct = Math.min(100, s.modelPct + 3 + Math.random() * 5);
-        if (u.modelPct >= 100) u.storageMode = "semantic";
-      }
+      // Q-A.4a item 1: the fabricated semantic-search "download" tick is GONE.
+      // The bge embedding model is bundled WITH the mem-mcp daemon (not a UI
+      // download), so semantic availability is a REAL read from memory_status()
+      // (state.memSemantic), never a Math.random() progress bar claiming a
+      // "sha256 verified" file that was never fetched (Rule 1).
       u.pollIn = s.pollIn <= 0.6 ? 20 : s.pollIn - 0.6;
       if (running && s.pins.length) {
         u.pins = s.pins.map((p) => {
@@ -976,17 +1093,21 @@ export class Store {
     let status = "ok";
     let result = "ok";
     if (call.name === "memory_assert") {
+      // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
+      // isn't bundled yet), so an approval here does NOT durably write anything. Show
+      // the real approval ceremony, but the copy must not imply a durable write
+      // occurred — it is a preview of the write the real agent would queue.
       const r = await this.requestSig({
         origin: "chat agent",
         requester: "dashboard agent · tool memory_assert",
-        title: "Write to your memory graph",
+        title: "Approve a memory write (demo — not durable)",
         chainless: true,
         rows: [
           { k: "Assertion", v: "“" + (args.fact || "") + "”" },
           { k: "Tenant", v: "personal · your capability grant" },
-          { k: "Store", v: this.state.socketPath },
+          { k: "Store", v: this.state.memSocketPath ?? "memory daemon offline — nothing is written" },
         ],
-        cost: "none — local memory write",
+        cost: "none — demo mode does not write to the memory graph",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
       });

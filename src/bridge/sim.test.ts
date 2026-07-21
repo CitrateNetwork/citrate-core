@@ -239,6 +239,17 @@ describe("sim adapter — chat AI provider domain is honestly unavailable (AI1)"
     await expect(bridge.chat.infer("openai", "[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
   });
 
+  it("inferLocal is honestly Unavailable and inferenceState is 'demo' in sim (no llama-server, no local model)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const { isUnavailable } = await import("./types");
+    // Q-A.4a item 6 — the web preview has no local server, so a local reply is
+    // never fabricated: inferLocal throws, and the honest route is "demo".
+    await expect(bridge.chat.inferLocal("[]", "{}")).rejects.toSatisfy((e: unknown) => isUnavailable(e));
+    expect(await bridge.chat.inferenceState(true)).toBe("demo");
+    expect(await bridge.chat.inferenceState(false)).toBe("demo");
+  });
+
   it("backend is the honest built-in demo agent (Rule 1 — no gateway label)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);

@@ -319,6 +319,17 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async infer(providerId: string, messagesJson: string, contextJson: string): Promise<string> {
         return invoke<string>("ai_chat", { providerId, messagesJson, contextJson });
       },
+      // BC-3.2 — REAL LOCAL inference. The webview supplies ONLY messages +
+      // context; Rust derives the loopback endpoint from the serve manager's
+      // port (the webview can never supply a URL/host — exfil-binding).
+      async inferLocal(messagesJson: string, contextJson: string): Promise<string> {
+        return invoke<string>("ai_chat_local", { messagesJson, contextJson });
+      },
+      // BC-3.2 — the honest inference-routing state, computed in Rust from the
+      // real model status + serve health + the gateway-key presence.
+      async inferenceState(gatewayConfigured: boolean): Promise<string> {
+        return invoke<string>("model_inference_state", { gatewayConfigured });
+      },
     },
     membership: {
       async entitlement() {
