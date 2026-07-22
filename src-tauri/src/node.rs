@@ -82,6 +82,27 @@ const NODE_LOCAL_RPC_URL: &str = "http://127.0.0.1:8545";
 /// node-side `at_rest_encryption_from_env` (citrate-chain node/src/main.rs).
 const NODE_STORAGE_KEY_ENV: &str = "CITRATE_STORAGE_KEY";
 
+/// CONSENSUS-CRITICAL launch env the fleet producer runs (DGX_NODE_SYNC_WEDGE_RESPONSE
+/// 2026-07-22). VALIDATOR-S1 / §R' epoch-reward + validator-registry snapshot are OFF
+/// by default (`citrate-chain node/src/main.rs:2506`: activates only on
+/// `CITRATE_VALIDATOR_REGISTRY` + `_ACTIVATION_HEIGHT`). Without these the app node
+/// computes a DIFFERENT state root than the fleet once §R' bites (first divergence at
+/// block 2,580, after activation-2000) and the receive-path root check rejects the
+/// block — the observed sync wedge. These MUST match the fleet producer's systemd env
+/// (`rpc-1` 142.93.58.145) exactly.
+const NODE_BLOCK_V2_ENV: &str = "CITRATE_BLOCK_V2";
+const NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV: &str = "CITRATE_VALIDATOR_ACTIVATION_HEIGHT";
+const NODE_VALIDATOR_REGISTRY_ENV: &str = "CITRATE_VALIDATOR_REGISTRY";
+/// v2 execute-on-receive is DEFAULT ON since the 2026-07-21 SRP reroll; set explicitly
+/// for parity with the fleet + clarity.
+const NODE_BLOCK_V2_VALUE: &str = "1";
+/// The fleet's validator activation height (fleet systemd env).
+const NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE: &str = "2000";
+/// The live ValidatorRegistry on chain 40204 — canonical
+/// `citrate-chain/contracts/addresses/40204.json` (`ValidatorRegistry`), the same
+/// address the fleet producer runs.
+const NODE_VALIDATOR_REGISTRY_VALUE: &str = "0x915DdE02831ebacFc57f329f60944492ebb0A095";
+
 /// Node-side errors surfaced to the bridge as strings.
 #[derive(Debug)]
 pub enum NodeError {
@@ -232,10 +253,21 @@ impl NodeManager {
                 self.data_dir.to_string_lossy().to_string(),
             ],
         );
-        spec.env = vec![(
-            NODE_STORAGE_KEY_ENV.to_string(),
-            storage_key_hex.to_string(),
-        )];
+        spec.env = vec![
+            (NODE_STORAGE_KEY_ENV.to_string(), storage_key_hex.to_string()),
+            // CONSENSUS-CRITICAL: reproduce the fleet producer's validator/§R' state
+            // path or the node forks the state root and wedges (see the const docs +
+            // DGX_NODE_SYNC_WEDGE_RESPONSE_2026-07-22).
+            (NODE_BLOCK_V2_ENV.to_string(), NODE_BLOCK_V2_VALUE.to_string()),
+            (
+                NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.to_string(),
+                NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE.to_string(),
+            ),
+            (
+                NODE_VALIDATOR_REGISTRY_ENV.to_string(),
+                NODE_VALIDATOR_REGISTRY_VALUE.to_string(),
+            ),
+        ];
         spec
     }
 

@@ -31,6 +31,13 @@ DATA_DIR="$(mktemp -d -t citrate-c1_1-sync-XXXXXX)"
 STORAGE_KEY="$(head -c 32 /dev/urandom | xxd -p -c 32)"
 export CITRATE_STORAGE_KEY="${STORAGE_KEY}"
 
+# CONSENSUS-CRITICAL: the fleet producer's validator/§R' env. Without these the node
+# forks the state root and wedges at block 2,580 (DGX_NODE_SYNC_WEDGE_RESPONSE
+# 2026-07-22). Kept in lockstep with NodeManager::build_spec (node.rs).
+export CITRATE_BLOCK_V2=1
+export CITRATE_VALIDATOR_ACTIVATION_HEIGHT=2000
+export CITRATE_VALIDATOR_REGISTRY=0x915DdE02831ebacFc57f329f60944492ebb0A095
+
 echo "== C1.1 live bounded-sync proof =="
 echo "  binary:    ${BIN}"
 echo "  data dir:  ${DATA_DIR}  (encrypted-at-rest)"
