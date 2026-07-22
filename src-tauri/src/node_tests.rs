@@ -154,6 +154,37 @@ fn storage_key_is_minted_into_keyring_on_start() {
     mgr.stop();
 }
 
+/// Sync-wedge tripwire (DGX_NODE_SYNC_WEDGE_RESPONSE 2026-07-22): the node spawn MUST
+/// carry the fleet producer's consensus env — `CITRATE_BLOCK_V2`,
+/// `CITRATE_VALIDATOR_ACTIVATION_HEIGHT=2000`, and the live `CITRATE_VALIDATOR_REGISTRY`
+/// — alongside the storage key. Dropping any of them disables the validator/§R' state
+/// path, forks the state root, and wedges the node at block 2,580. This locks them in.
+#[test]
+fn spawn_env_carries_the_fleet_consensus_vars() {
+    let (mgr, _fake, _data) = stub_manager("consensus-env");
+    let spec = mgr.build_spec("00");
+    let get = |k: &str| {
+        spec.env
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.as_str())
+    };
+    assert_eq!(get(NODE_STORAGE_KEY_ENV), Some("00"), "storage key still passed");
+    assert_eq!(get(NODE_BLOCK_V2_ENV), Some("1"), "v2 execute-on-receive explicit");
+    assert_eq!(
+        get(NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV),
+        Some("2000"),
+        "validator activation height must match the fleet",
+    );
+    assert_eq!(
+        get(NODE_VALIDATOR_REGISTRY_ENV),
+        Some("0x915DdE02831ebacFc57f329f60944492ebb0A095"),
+        "ValidatorRegistry must be the live 40204 address the fleet runs",
+    );
+    // Still joins the public testnet with the encrypted data dir.
+    assert!(spec.args.iter().any(|a| a == "testnet"), "joins the public testnet");
+}
+
 /// A second `start` reuses the SAME keyring key (does not re-mint), so an
 /// existing encrypted data dir stays openable across restarts.
 #[test]
