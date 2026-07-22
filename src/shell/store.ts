@@ -1758,12 +1758,12 @@ export class Store {
   }
   onS3Pay(): void {
     this.setState({ s3: "paying" });
-    // Tauri: open the REAL core-membership checkout popup, then POLL /userinfo
-    // for the entitlement grant. The money + grant happen ENTIRELY server-side
-    // (core-membership → droplet); this app only opens the URL and watches its
-    // OWN entitlement. S3 advances ONLY when /userinfo shows the REAL grant
-    // (a PAID tier + active entitlement) — NEVER a faked settle (Rule 1). This
-    // is the same "open a flow then poll userinfo" shape as onS2Start/pollKyc.
+    // Tauri: open the REAL core-membership checkout popup, then POLL the on-chain
+    // membership grant. The money + grant happen ENTIRELY server-side
+    // (core-membership → treasury-signer droplet); this app only opens the URL and
+    // watches the chain. S3 advances ONLY when the REAL on-chain grant lands (SBT +
+    // >=32k stake) — NOT the KYC entitlement (which a verified member holds before
+    // paying), and NEVER a faked settle (Rule 1). See pollMembership for why.
     if (BRIDGE_MODE === "tauri") {
       void bridge.membership.checkout().catch(() => {
         // Popup open failed (headless / user cancel at OS level) — stay "paying";
@@ -1781,34 +1781,50 @@ export class Store {
   }
 
   /**
-   * CORE-D3.C — poll the live /userinfo entitlement while S3 is "paying" (Tauri
-   * only), advancing to "settled" ONLY once the REAL grant lands (a paid tier +
-   * active entitlement — `isPaidEntitlementActive`). The money + grant are
-   * server-side; a user who closes the checkout popup without paying simply
-   * never flips the entitlement, so this never settles (no fabrication — Rule 1).
+   * CORE-D3.C — poll while S3 is "paying" (Tauri only), advancing to "settled"
+   * ONLY once the REAL on-chain membership grant lands: `MembershipStakeVault`
+   * attributes >= 32,000 SALT to the member AND the member holds the SBT
+   * (`isGrantOnChain` + `hasSbt`, read permissionlessly from chain 40204).
    *
-   * Bounded (mirrors pollKyc's cadence) so a never-completing checkout does not
-   * poll forever: after the cap it leaves S3 re-enterable (still "paying" state
-   * the UI can offer a retry from) rather than fabricating a settlement.
+   * WHY the on-chain grant and NOT the entitlement claim: a KYC-verified principal
+   * is auto-granted the `commercial.kyc` tier by the authority (→ the app's `pilot`
+   * tier) BEFORE paying for a membership, so `isPaidEntitlementActive` is already
+   * true pre-payment and would let a verified user walk past S3 unpaid. The on-chain
+   * SBT + stake is the honest "this membership was purchased AND provisioned" marker
+   * — it lands only after the member pays and the treasury-signer executes the grant,
+   * so S3 can never settle before payment (Rule 1 — no fabricated settle). The live
+   * /userinfo is still folded (for the tier/entitlement DISPLAY), but it is not the
+   * settle decision.
+   *
+   * Bounded (mirrors pollGrant's cadence) so a never-completing checkout does not
+   * poll forever: after the cap it leaves S3 re-enterable (still "paying") rather
+   * than fabricating a settlement.
    */
   private pollMembership(attempt = 0): void {
     if (BRIDGE_MODE !== "tauri") return;
     const MAX_ATTEMPTS = 60; // ~5 min at 5s cadence — matches the checkout window
     const tick = () => {
       if (this.state.s3 !== "paying") return; // resolved or navigated away
-      void this.authUserinfo().finally(() => {
-        // Re-read the folded entitlement engine state at the DECISION point. Only
-        // a REAL paid+active grant settles S3 (Rule 1 — never before /userinfo).
-        if (this.state.s3 !== "paying") return;
-        if (isPaidEntitlementActive(this.state)) {
-          this.setState({ s3: "settled" });
-          this.save();
-          return;
-        }
-        // Not yet granted — keep polling until the bounded cap.
-        if (attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
-        // At the cap we stop polling; S3 stays "paying" (re-enterable), never faked.
-      });
+      const member = this.identity().wallet;
+      // Read the REAL on-chain grant; fold /userinfo for display (never the decision).
+      void Promise.all([bridge.membership.grantStatus(member), this.authUserinfo()])
+        .then(([grant]) => {
+          if (this.state.s3 !== "paying") return;
+          // ONLY the genuine on-chain grant settles S3 — never the pre-payment
+          // KYC entitlement (Rule 1).
+          if (isGrantOnChain(grant) && grant.hasSbt) {
+            this.setState({ s3: "settled" });
+            this.save();
+            return;
+          }
+          // Not yet granted — keep polling until the bounded cap.
+          if (attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
+          // At the cap we stop polling; S3 stays "paying" (re-enterable), never faked.
+        })
+        .catch(() => {
+          // Transient RPC/read error — retry until the cap; never fabricate a settle.
+          if (this.state.s3 === "paying" && attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
+        });
     };
     setTimeout(tick, 5000);
   }

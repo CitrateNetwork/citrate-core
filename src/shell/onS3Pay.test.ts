@@ -1,57 +1,57 @@
 // CORE-D3.C — onS3Pay wiring, the Rule-1 property under test.
 //
 // In the TAURI path, onS3Pay opens the REAL core-membership checkout popup
-// (bridge.membership.checkout) then POLLS /userinfo (bridge.auth.userinfo) until
-// the entitlement grant lands (a PAID tier + active entitlement). It must:
+// (bridge.membership.checkout) then POLLS the on-chain membership grant
+// (bridge.membership.grantStatus) until it lands. It must:
 //   1. open the checkout popup (invoke the real bridge method),
 //   2. set s3="paying",
-//   3. NOT settle while /userinfo shows public/none (the Rule-1 property — never
-//      fake a settled membership; the tauri path advances ONLY on the real grant),
-//   4. settle (s3="settled") + fold the entitlement ONLY once /userinfo flips to a
-//      paid+active tier.
+//   3. NOT settle while the on-chain grant is absent — EVEN IF the KYC entitlement
+//      is already a paid+active tier (the bug this fix closes: a verified member
+//      holds `commercial.kyc`→`pilot` BEFORE paying, so an entitlement-only gate
+//      let them walk past S3 unpaid),
+//   4. settle (s3="settled") ONLY once the REAL on-chain grant (SBT + >=32k stake)
+//      is present.
 // The SIM path keeps the prototype's fake settle so web-dev onboarding still walks.
 //
 // We mock the bridge + BRIDGE_MODE so the Store's tauri branch runs headless, and
 // drive the 5s poll cadence with fake timers.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// The evolving /userinfo the mocked bridge returns. Tests flip `current` to model
-// the server-side grant landing.
+// The evolving on-chain grant the mocked bridge returns. Tests flip `current` to
+// model the server-side grant landing on chain.
+const NOT_GRANTED = { attributedStakeWei: "0", hasSbt: false };
+const GRANTED = { attributedStakeWei: (32000n * 10n ** 18n).toString(), hasSbt: true };
+const grantState = { current: NOT_GRANTED as { attributedStakeWei: string; hasSbt: boolean } };
+
+// A /userinfo that is ALREADY a paid+active tier (a KYC-verified member) — present
+// from the first poll to prove S3 does NOT settle on the entitlement alone.
 const userinfoState = {
   current: {
     signedIn: true,
     sub: "usr_x",
-    tier: "public",
+    tier: "pilot", // paid tier ACTIVE pre-grant (the commercial.kyc→pilot baseline)
     org: null,
     role: "member",
     kycStatus: "verified",
     walletAddr: "0xabc",
     expiresAt: "2999-01-01",
     email: "d@example.com",
-  } as {
-    signedIn: boolean;
-    tier: string | null;
-    org: string | null;
-    role: string | null;
-    kycStatus: string | null;
-    walletAddr: string | null;
-    expiresAt: string | null;
-    email: string | null;
-    sub: string;
   },
 };
 
 const checkoutMock = vi.fn(async () => {});
+const grantStatusMock = vi.fn(async () => grantState.current);
 const userinfoMock = vi.fn(async () => userinfoState.current);
 const statusMock = vi.fn(async () => ({ signedIn: false }));
 
-// Mock the bridge module the Store imports. bindSimHost is a no-op here; the
-// membership/auth/custody methods are the only ones onS3Pay + start touch.
 vi.mock("../bridge", () => ({
   bindSimHost: () => {},
   bridge: {
     mode: "tauri",
-    membership: { checkout: () => checkoutMock() },
+    membership: {
+      checkout: () => checkoutMock(),
+      grantStatus: (addr: string) => grantStatusMock(addr),
+    },
     auth: {
       status: () => statusMock(),
       userinfo: () => userinfoMock(),
@@ -73,14 +73,16 @@ async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
 }
 
-describe("onS3Pay (tauri) — opens checkout, polls userinfo, settles ONLY on the real grant", () => {
+describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles ONLY on the real grant", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     checkoutMock.mockClear();
+    grantStatusMock.mockClear();
     userinfoMock.mockClear();
-    userinfoState.current = { ...userinfoState.current, tier: "public", expiresAt: "2999-01-01" };
+    grantState.current = NOT_GRANTED;
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -90,53 +92,43 @@ describe("onS3Pay (tauri) — opens checkout, polls userinfo, settles ONLY on th
     const store = new Store();
     store.onS3Pay();
     expect(store.state.s3).toBe("paying");
-    // The REAL checkout popup command was invoked (not a fake settle).
     await flush();
     expect(checkoutMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT settle while /userinfo shows a public/none tier (the Rule-1 property)", async () => {
-    userinfoState.current = { ...userinfoState.current, tier: "public" } as never;
+  it("REGRESSION: a paid+active KYC entitlement with NO on-chain grant does NOT settle (no advancing past S3 unpaid)", async () => {
+    // /userinfo is already tier:pilot + active (a KYC-verified member) but the
+    // on-chain grant has NOT landed — S3 must stay "paying".
     const store = new Store();
     store.onS3Pay();
-    expect(store.state.s3).toBe("paying");
-
-    // Drive several poll ticks with the entitlement STILL not granted.
     for (let i = 0; i < 3; i++) {
       await vi.advanceTimersByTimeAsync(5000);
       await flush();
     }
-    // userinfo WAS polled, but s3 NEVER advanced — no fabricated settlement.
-    expect(userinfoMock).toHaveBeenCalled();
+    // The grant WAS polled, the entitlement IS active, yet s3 never advanced.
+    expect(grantStatusMock).toHaveBeenCalled();
     expect(store.state.s3).toBe("paying");
-    expect(store.state.tier).not.toBe("pilot");
   });
 
-  it("settles ONLY once /userinfo flips to a paid+active tier (the real grant landed)", async () => {
-    userinfoState.current = { ...userinfoState.current, tier: "public" } as never;
+  it("settles ONLY once the on-chain grant (SBT + >=32k stake) lands", async () => {
     const store = new Store();
     store.onS3Pay();
 
-    // Two ticks: still public → still paying.
+    // Tick with no grant → still paying.
     await vi.advanceTimersByTimeAsync(5000);
     await flush();
     expect(store.state.s3).toBe("paying");
 
-    // The server-side grant lands: /userinfo now returns a paid tier.
-    userinfoState.current = { ...userinfoState.current, tier: "pilot" } as never;
+    // The server-side grant lands on chain.
+    grantState.current = GRANTED;
     await vi.advanceTimersByTimeAsync(5000);
     await flush();
 
-    // NOW it settles — and the folded entitlement engine shows the paid tier active.
     expect(store.state.s3).toBe("settled");
-    expect(store.state.tier).toBe("pilot");
-    expect(store.state.entitlement).toBe("active");
   });
 
-  it("a still-lapsed paid tier does NOT settle (fold-in must be active)", async () => {
-    // A paid tier whose expiry is in the PAST folds to free/lapsed (A3-03), so it
-    // must NOT settle — the grant is not genuinely active.
-    userinfoState.current = { ...userinfoState.current, tier: "pilot", expiresAt: "2000-01-01" } as never;
+  it("a grant with the SBT but BELOW the stake threshold does NOT settle (fail-closed)", async () => {
+    grantState.current = { attributedStakeWei: (31999n * 10n ** 18n).toString(), hasSbt: true };
     const store = new Store();
     store.onS3Pay();
     for (let i = 0; i < 3; i++) {
