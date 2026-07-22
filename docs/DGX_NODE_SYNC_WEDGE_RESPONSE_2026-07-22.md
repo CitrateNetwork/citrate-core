@@ -84,9 +84,10 @@ CITRATE_BLOCK_V2=1
 CITRATE_VALIDATOR_ACTIVATION_HEIGHT=2000
 CITRATE_VALIDATOR_REGISTRY=0x915DdE02831ebacFc57f329f60944492ebb0A095
 
-# 3) Boot peers (fleet bootstrap_nodes — the embedded `--network testnet` preset on
-#    f9c1551 resolves 0 bootstrap nodes on a bare launch, so supply these explicitly
-#    via node.toml `bootstrap_nodes` or your NodeManager peer config):
+# (Peers are NOT your blocker — you cold-synced 2,580 blocks, which is impossible
+#  without working peers, and f9c1551's embedded testnet-beta.toml already carries
+#  all 4 fleet boot peers. Listed here only as reference / for a from-scratch node.
+#  The load-bearing fix is the two VALIDATOR_* env vars above.)
 noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303
 noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303
 noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303
@@ -95,6 +96,13 @@ noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.cit
 chain_id = 40204
 genesis (v1 hash) = 0xd1a1941ede584b26d6e41c7d4b5e1134813ad59f3b066fce0dfca84380276fe4
 ```
+
+> **The single fix:** set `CITRATE_VALIDATOR_REGISTRY` +
+> `CITRATE_VALIDATOR_ACTIVATION_HEIGHT` (and `CITRATE_BLOCK_V2=1` explicitly) in the
+> node spawn. Everything else — peers, genesis, v2, the S1/S2/S3 code — is already
+> correct on `f9c1551`. This is corroborated by the citrate-chain SRP notes, which
+> independently flagged the same `NodeManager` gap (spawn sets only
+> `--network testnet --data-dir` + `CITRATE_STORAGE_KEY`, no validator env).
 
 ## How to verify (app side)
 
@@ -122,15 +130,15 @@ genesis (v1 hash) = 0xd1a1941ede584b26d6e41c7d4b5e1134813ad59f3b066fce0dfca84380
 ## Remediation (durable — prevents the whole class)
 
 The real footgun is that VALIDATOR-S1 consensus params come **only** from env
-(`CITRATE_VALIDATOR_REGISTRY` / `_ACTIVATION_HEIGHT` default to `None`/`0`) and the
-`--network testnet` preset on `f9c1551` embeds **0 boot peers** — so a fresh node
-launched "the obvious way" silently runs *different consensus rules than the fleet*
-and forks. This is a **citrate-chain** change DGX will carry:
+(`CITRATE_VALIDATOR_REGISTRY` / `_ACTIVATION_HEIGHT` default to `None`/`0`) — so a
+fresh node launched "the obvious way" (as the app does) silently runs *different
+consensus rules than the fleet* and forks, with no error. This is a **citrate-chain**
+change DGX will carry:
 
-1. **Make `--network testnet` self-sufficient:** bake the fleet's activation height,
-   registry address, and boot peers into the embedded testnet preset so a bare
-   `citrate --network testnet` reproduces the fleet with **zero** env — which is what
-   the app already assumes.
+1. **Make `--network testnet` self-sufficient:** bake the fleet's activation height
+   and registry address into the embedded testnet preset (peers are already there) so
+   a bare `citrate --network testnet` reproduces the fleet with **zero** env — which
+   is what the app already assumes.
 2. **Fail loud, not silent:** when `--network testnet` is selected but the resolved
    validator registry/activation is empty, **hard-error at boot** instead of running
    a divergent v1-style chain. A node that would fork should refuse to start.
