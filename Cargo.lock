@@ -623,6 +623,7 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "bip39",
+ "citrate-core-kit",
  "citrate-wallet-core",
  "hex",
  "jsonwebtoken",
@@ -638,6 +639,34 @@ dependencies = [
  "sha3",
  "tauri",
  "tauri-build",
+ "tauri-plugin-opener",
+ "tauri-plugin-store",
+ "ureq",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "citrate-core-kit"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "base64 0.22.1",
+ "bip39",
+ "citrate-wallet-core",
+ "hex",
+ "jsonwebtoken",
+ "k256",
+ "keyring",
+ "libc",
+ "rand 0.8.7",
+ "rlp",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sha3",
+ "tauri",
  "tauri-plugin-opener",
  "tauri-plugin-store",
  "ureq",

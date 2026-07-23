@@ -618,7 +618,7 @@ fn duplicate_bridge_of_same_request_reuses_one_ceremony() {
     // And the second bridge did NOT consume a second gas estimate (it reused the
     // existing ceremony), so exactly one estimateGas hit the RPC.
     let estimate_calls = rpc
-        .transport
+        .transport()
         .requests
         .borrow()
         .iter()

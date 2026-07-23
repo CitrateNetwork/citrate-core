@@ -221,20 +221,24 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     // "sidecar/agent/other-path signs" attack (ADV-1/ADV-7) we forbid. Also:
     // widening EITHER signer back to `pub` would let an out-of-crate sidecar call
     // it; `pub(crate)` (asserted below) closes that.
+    // WP-S1.2 (kit extraction): this scan now covers the KIT modules. The app
+    // modules that used to be scanned here (seam.rs, agent.rs, node.rs, lib.rs)
+    // moved to a SEPARATE crate (citrate-core), and the gated signers are
+    // `pub(crate)` to THIS crate — so app code CANNOT invoke `wallet::sign_*` at
+    // all: the compiler rejects it, a strictly stronger guarantee than this grep.
+    // The node-agent bridge (agent.rs) additionally keeps its own ADV-7 source
+    // scan in citrate-core's `agent_tests.rs`
+    // (`adv7_agent_module_never_calls_the_gated_signer`), and the lib.rs command-
+    // registry scan moved to citrate-core's `lib.rs` test module. Coverage is
+    // preserved and hardened, not dropped.
     let sources: &[(&str, &str)] = &[
         ("wallet.rs", include_str!("wallet.rs")),
         ("custody.rs", include_str!("custody.rs")),
         ("oidc.rs", include_str!("oidc.rs")),
-        ("seam.rs", include_str!("seam.rs")),
         ("config.rs", include_str!("config.rs")),
         ("rpc.rs", include_str!("rpc.rs")),
         ("txdecode.rs", include_str!("txdecode.rs")),
-        // CORE-C1.2: the node-agent bridge must ALSO never reach the gated signer
-        // directly — the "a sidecar signs directly" attack (ADV-7). The agent
-        // module reaches signatures ONLY through the ceremony approve path.
-        ("agent.rs", include_str!("agent.rs")),
-        ("node.rs", include_str!("node.rs")),
-        ("lib.rs", include_str!("lib.rs")),
+        ("supervisor.rs", include_str!("supervisor.rs")),
     ];
     // Assemble each needle from parts so this test's own prose cannot self-match.
     // BOTH signer invocation forms are forbidden outside ceremony.rs.
@@ -303,29 +307,14 @@ fn strip_test_module(src: &str) -> String {
 
 #[test]
 fn adv2_no_signing_command_returns_secret_material() {
-    // Registry enumeration against the real lib.rs. The three B1.2 commands are
-    // registered; none returns key material (they return CeremonyView / Signature
-    // / () — Signature is a SIGNATURE, not a key). The wallet secret-path fns are
-    // NEVER registered (the B1.1 boundary, re-asserted here for B1.2).
-    let src = include_str!("lib.rs");
-    for cmd in ["ceremony::sign_request", "ceremony::sign_approve", "ceremony::sign_reject"] {
-        assert!(src.contains(cmd), "signing command not registered: {cmd}");
-    }
-    // NEGATIVE CONTROL (stated): registering any wallet secret-reading fn (or a
-    // hypothetical `sign_direct` command that returns a key) would fail this.
-    for forbidden in [
-        "wallet::create,",
-        "wallet::import,",
-        "wallet::sign_message,",
-        "wallet::address,",
-        "wallet::read_entropy,",
-        "wallet::derive_key_from_entropy,",
-    ] {
-        assert!(
-            !src.contains(forbidden),
-            "no wallet secret-path fn may be an invoke command: {forbidden}"
-        );
-    }
+    // NOTE (WP-S1.2): the registry-enumeration assertions (the three B1.2 signing
+    // commands ARE registered; no wallet secret-path fn IS registered) moved to
+    // citrate-core's lib.rs test module (`signing_commands_are_registered` +
+    // `no_wallet_secret_path_fn_is_an_invoke_command`) — the generate_handler!
+    // registry lives in the app crate after the kit extraction. This test keeps
+    // the COMPILE-BARRIER / secret-free-return-type assertions below, which are
+    // properties of the kit's own ceremony types.
+    //
     // COMPILE BARRIER (I-2): the ceremony command return types are all Serialize
     // and carry no secret. `Signature` holds only hex of the (non-secret) sig +
     // the kind; there is no key/seed/entropy field. Prove it round-trips as
@@ -1251,13 +1240,11 @@ fn b1_5_f2_from_mismatch_error_is_secret_free() {
     assert!(s.contains("dead") && s.contains("9858"), "both addresses surfaced for the human");
 }
 
-#[test]
-fn b1_4_sign_and_broadcast_command_registered() {
-    // The B1.4 command is wired into the invoke handler (the ONE path to a real
-    // broadcast tx). NEGATIVE CONTROL: dropping it from generate_handler! fails this.
-    let src = include_str!("lib.rs");
-    assert!(src.contains("ceremony::sign_and_broadcast"), "sign_and_broadcast must be registered");
-}
+// NOTE (WP-S1.2): `b1_4_sign_and_broadcast_command_registered` moved to
+// citrate-core's lib.rs test module as part of `signing_commands_are_registered`
+// — the generate_handler! registry lives in the app crate after the kit
+// extraction, so a registry check there can see it (here it could only see the
+// kit's own lib.rs). No coverage lost.
 
 #[test]
 fn b1_4_broadcast_result_is_serialize_and_secret_free() {

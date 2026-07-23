@@ -203,7 +203,7 @@ fn read_grant_status_granted_member_reads_real_stake_and_sbt() {
     assert!(status.has_sbt, "SBT balanceOf==1 → member holds the SBT");
 
     // The three eth_calls targeted the right contracts in order.
-    let reqs = rpc.transport.requests();
+    let reqs = rpc.transport().requests();
     assert_eq!(reqs.len(), 3, "exactly three eth_calls");
     assert_eq!(
         reqs[0]["params"][0]["to"].as_str().unwrap().to_ascii_lowercase(),
@@ -236,7 +236,7 @@ fn read_grant_status_rejects_a_malformed_address_before_any_rpc() {
     let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
     assert!(read_grant_status(&rpc, "0xnope").is_err());
     assert!(
-        rpc.transport.requests().is_empty(),
+        rpc.transport().requests().is_empty(),
         "fail closed BEFORE any node call on a bad address"
     );
 }

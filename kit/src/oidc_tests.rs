@@ -1355,21 +1355,10 @@ fn adv8_no_auth_invoke_command_returns_a_token() {
         assert!(!body.contains(f), "AuthStatus must not expose a token field ({f})");
     }
 
-    // The auth commands are registered in lib.rs.
-    let lib = include_str!("lib.rs");
-    for cmd in [
-        "auth_status",
-        "auth_login",
-        "auth_userinfo",
-        "auth_refresh",
-        "auth_logout",
-        "kyc_start",
-    ] {
-        assert!(
-            lib.contains(&format!("oidc::{cmd}")),
-            "auth command {cmd} must be registered"
-        );
-    }
+    // NOTE (WP-S1.2): the "auth commands are registered in lib.rs" assertion
+    // moved to citrate-core's lib.rs test module (`auth_commands_are_registered`)
+    // — after the kit extraction the real generate_handler! registry lives in the
+    // app crate, not the kit. This test keeps the oidc.rs SOURCE assertions below.
     // Their #[tauri::command] signatures return AuthStatus or ().
     for sig in [
         "pub fn auth_status(state: State<'_, AuthState>) -> std::result::Result<AuthStatus, String>",

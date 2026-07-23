@@ -201,35 +201,12 @@ fn sign_message_ecrecovers_to_wallet_address() {
     );
 }
 
-// =========================================================================
-// B1.1-ADV-2 — no invoke command returns key/seed/entropy/mnemonic bytes
-// =========================================================================
-
-#[test]
-fn adv2_no_invoke_command_returns_secret_material() {
-    // Structural: the wallet secret-touching fns (create/import/address/
-    // sign_message) are plain pub fns, NEVER in the generate_handler![...] list.
-    // Enumerate the real registry source and assert no wallet::* secret command
-    // is registered. NEGATIVE CONTROL: registering `wallet::sign_message` (or any
-    // fn that returns mnemonic/entropy/sig-over-secret) in lib.rs's handler list
-    // would make this fail — that is the boundary we forbid.
-    let src = include_str!("lib.rs");
-    for forbidden in [
-        "wallet::create",
-        "wallet::import",
-        "wallet::sign_message",
-        "wallet::address",
-    ] {
-        let needle = format!("{forbidden},");
-        assert!(
-            !src.contains(&needle),
-            "no wallet secret-path fn may be an invoke command: {forbidden}"
-        );
-    }
-    // And the in-process getter contract holds: WalletCreate is not Serialize, so
-    // it cannot be returned across the invoke bridge (compile-time boundary).
-    // (Asserted by construction — no #[derive(Serialize)] on WalletCreate.)
-}
+// B1.1-ADV-2 — "no wallet secret-path fn is an invoke command" — MOVED in the
+// WP-S1.2 kit extraction to citrate-core's `lib.rs` test module. The scan reads
+// the `generate_handler![...]` registry via `include_str!("lib.rs")`, and after
+// the extraction the real registry lives in the app crate's lib.rs, not the
+// kit's. The assertion is unchanged; only its home moved to the crate that owns
+// the source it scans. See `no_wallet_secret_path_fn_is_an_invoke_command`.
 
 // =========================================================================
 // B1.1-ADV-3 — create/import/derive/sign while LOCKED → fail closed

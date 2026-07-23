@@ -153,6 +153,15 @@ impl<T: RpcTransport> RpcClient<T> {
         }
     }
 
+    /// Read-only access to the underlying transport. Added in the WP-S1.2 kit
+    /// extraction so tests in a *consuming* crate (citrate-core / citrate-quorum)
+    /// can inspect a mock transport's recorded requests now that the `transport`
+    /// field is crate-private to citrate-core-kit. Production code uses only the
+    /// request methods; this is test-support introspection, not a new capability.
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
     /// Build a well-formed JSON-RPC 2.0 request body for `method`/`params`.
     /// Public so tests can assert the exact request shape (raw hex, method).
     pub fn build_request(&self, method: &str, params: Value) -> Value {
