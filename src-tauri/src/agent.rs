@@ -882,7 +882,6 @@ pub struct AgentState(pub AgentManager);
 fn resolve_agent_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
-    use tauri::Manager;
     if let Ok(p) = std::env::var("CITRATE_NODE_AGENT_BIN") {
         let path = PathBuf::from(p);
         if path.exists() {
@@ -893,12 +892,8 @@ fn resolve_agent_bin<R: tauri::Runtime>(
             path.display()
         ));
     }
-    let resource = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("node-agent");
-    Ok(resource)
+    // Bundled externalBin: installed next to the main executable (Contents/MacOS).
+    crate::supervisor::resolve_external_bin(app, "node-agent")
 }
 
 /// Build the managed agent state from a live app handle: the bundled binary, the

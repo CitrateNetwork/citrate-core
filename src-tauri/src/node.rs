@@ -384,13 +384,8 @@ fn resolve_node_bin<R: Runtime>(app: &AppHandle<R>) -> std::result::Result<PathB
             path.display()
         ));
     }
-    // Bundled resource: Tauri resolves externalBin into the resource dir.
-    let resource = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("citrate");
-    Ok(resource)
+    // Bundled externalBin: installed next to the main executable (Contents/MacOS).
+    crate::supervisor::resolve_external_bin(app, "citrate")
 }
 
 /// Build the managed node state from a live app handle: the real OS keyring, the
