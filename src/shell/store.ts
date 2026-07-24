@@ -1293,7 +1293,13 @@ export class Store {
         .catch((e) => {
           this.nodeStarting = false;
           this.setState({ node: "error" });
-          this.toast("Could not start the node: " + (e instanceof Error ? e.message : "supervisor unavailable"));
+          // Surface the REAL failure. Tauri rejects a Rust `Err(String)` as a
+          // plain string (not an Error), so an `instanceof Error` gate would
+          // swallow the actual cause (e.g. "No space left on device", RocksDB
+          // LOCK held) behind a generic line — a Rule-1 lie about why it failed.
+          const reason =
+            e instanceof Error ? e.message : typeof e === "string" && e.trim() ? e : "supervisor unavailable";
+          this.toast("Could not start the node: " + reason);
         });
       return;
     }

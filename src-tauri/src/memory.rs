@@ -699,7 +699,6 @@ pub struct MemoryState(pub MemoryManager);
 fn resolve_mem_mcp_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
-    use tauri::Manager;
     if let Ok(p) = std::env::var("CITRATE_MEM_MCP_BIN") {
         let path = PathBuf::from(p);
         if path.exists() {
@@ -710,12 +709,8 @@ fn resolve_mem_mcp_bin<R: tauri::Runtime>(
             path.display()
         ));
     }
-    let resource = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("mem-mcp");
-    Ok(resource)
+    // Bundled externalBin: installed next to the main executable (Contents/MacOS).
+    crate::supervisor::resolve_external_bin(app, "mem-mcp")
 }
 
 /// Build the managed memory state from a live app handle: the real OS keyring,
