@@ -51,6 +51,54 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
+// externalBin resolution — the ONE correct place to find a bundled sidecar.
+// ---------------------------------------------------------------------------
+
+/// Resolve a bundled Tauri `externalBin` sidecar by its bundled name.
+///
+/// Tauri v2 installs `externalBin` **next to the app's main executable**
+/// (`Contents/MacOS/<name>` on macOS), NOT into the resource dir. The earlier
+/// resolvers joined the name onto `resource_dir()` (`Contents/Resources/`),
+/// which does not exist in a packaged bundle, so `start()` failed its
+/// `bin.exists()` guard with `BinaryNotFound` — masked in the UI as
+/// "supervisor unavailable". This only ever bit the packaged DMG; dev uses the
+/// `CITRATE_*_BIN` env override and never reaches here.
+///
+/// Prefer the executable's directory; fall back to the resource dir for
+/// robustness across Tauri layouts; return an honest error that lists every
+/// path tried (Rule 1 — never hide why it failed).
+pub fn resolve_external_bin<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+) -> std::result::Result<PathBuf, String> {
+    use tauri::Manager;
+    let mut tried: Vec<String> = Vec::new();
+    // 1) Next to the current executable (Contents/MacOS/<name>) — the real
+    //    externalBin home in a packaged app.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join(name);
+            if cand.exists() {
+                return Ok(cand);
+            }
+            tried.push(cand.display().to_string());
+        }
+    }
+    // 2) Resource dir fallback (Contents/Resources/<name>).
+    if let Ok(res) = app.path().resource_dir() {
+        let cand = res.join(name);
+        if cand.exists() {
+            return Ok(cand);
+        }
+        tried.push(cand.display().to_string());
+    }
+    Err(format!(
+        "bundled sidecar '{name}' not found (tried: {})",
+        tried.join(", ")
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Clock seam — injected so backoff/crash timestamps are deterministic in tests
 // (no reliance on wall-clock races; the B1.1-F-4 lesson).
 // ---------------------------------------------------------------------------
