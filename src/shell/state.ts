@@ -12,6 +12,7 @@
 
 import type { PendingWithdrawal } from "../bridge/domains";
 import type { CeremonyView } from "../bridge/types";
+import { BRIDGE_MODE } from "../bridge/mode";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
@@ -426,13 +427,16 @@ export interface MemGraph {
 }
 
 function greeting(P: Persona): ChatMsg {
+  // Personalize ONLY with a real (or web-dev persona) first name. An empty name
+  // — the packaged app before sign-in — greets neutrally, never a mock name.
+  const first = P.name.split(" ")[0];
+  const hello = first ? "Welcome back, " + first + ". " : "Welcome. ";
   return {
     id: "g0",
     who: "Agent",
     text:
-      "Welcome back, " +
-      P.name.split(" ")[0] +
-      ". I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, earnings, or the network.",
+      hello +
+      "I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, earnings, or the network.",
     chips: [],
     streaming: false,
   };
@@ -677,7 +681,9 @@ export function freshState(pid: string): AppState {
       s.selfStake = 8000;
       s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Add stake|−8,000.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     }
-    s.chatMsgs = [greeting(P)];
+    // Packaged app (tauri): never seed the sim persona's name into the greeting.
+    // Real identity folds in on sign-in; until then greet neutrally (Rule 1).
+    s.chatMsgs = [greeting(BRIDGE_MODE === "tauri" ? { ...P, name: "" } : P)];
   }
   return s;
 }

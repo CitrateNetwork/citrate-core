@@ -1,4 +1,3 @@
-import markWhite from "../assets/brand/citrate_mark_white.svg";
 import marqueeWhite from "../assets/brand/citrate_marquee_white.svg";
 import { Store } from "./store";
 import { AppState, nodeLabel } from "./state";
@@ -40,8 +39,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
   return (
     <aside style={{ background: "var(--deep-evergreen)", color: "#cde7d6", display: "flex", flexDirection: "column", padding: "18px 12px 12px", minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 8px 20px" }}>
-        <img src={markWhite} alt="" style={{ width: 26, height: 26 }} />
-        <img src={marqueeWhite} alt="Citrate" style={{ height: 13 }} />
+        <img src={marqueeWhite} alt="Citrate" style={{ height: 24 }} />
         <span className="mono" style={{ marginLeft: "auto", fontSize: 9, letterSpacing: ".1em", color: "rgba(205,231,214,.45)" }}>
           CORE
         </span>

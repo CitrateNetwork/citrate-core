@@ -830,6 +830,23 @@ export class Store {
         real: true,
       };
     }
+    // Not signed in. The sim persona (Dana Okafor et al.) is a WEB-DEV preview
+    // affordance ONLY (state.ts) and must NEVER render in the packaged app. In a
+    // Tauri build a not-signed-in view (e.g. "Explore free" before auth) shows a
+    // neutral, obviously-not-real Guest — never the named mock (Rule 1).
+    if (BRIDGE_MODE === "tauri") {
+      return {
+        name: "Guest",
+        initials: "G",
+        email: "—",
+        sub: "—",
+        wallet: s.walletAddr,
+        tier: s.tier,
+        role: s.citrateRole || "member",
+        org: s.org,
+        real: false,
+      };
+    }
     const P = this.persona();
     return {
       name: P.name,
@@ -1693,7 +1710,7 @@ export class Store {
     this.save();
   }
   onExplore(): void {
-    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().name })] });
+    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
     this.save();
   }
   onS1Start(): void {
@@ -1943,7 +1960,7 @@ export class Store {
     this.setState({
       stage: "done",
       coach: s.coachDone ? -1 : 0,
-      chatMsgs: s.chatMsgs.length ? s.chatMsgs : [greeting({ ...this.persona(), name: this.identity().name })],
+      chatMsgs: s.chatMsgs.length ? s.chatMsgs : [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })],
     });
     this.save();
   }

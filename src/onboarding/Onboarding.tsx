@@ -81,7 +81,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
               Explore free
             </button>
           </div>
-          <div style={eyebrow}>Chain 40204 · testnet-beta · Wyoming DAO LLC</div>
+          <div style={eyebrow}>Chain 40204 · testnet-beta</div>
         </div>
       </div>
     );
