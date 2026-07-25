@@ -181,6 +181,14 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
         Some("0x915DdE02831ebacFc57f329f60944492ebb0A095"),
         "ValidatorRegistry must be the live 40204 address the fleet runs",
     );
+    // SYNC-S1 D3: the app opts the follower into DAG pruning so a long-running
+    // desktop node does not OOM near 150k blocks. Pruning is a no-op on the node
+    // unless this env is set, so it MUST be present in the spawn env.
+    assert_eq!(
+        get(NODE_DAG_PRUNE_RETAIN_ENV),
+        Some("10000"),
+        "DAG-prune retain window must be wired (bounds follower memory past 150k blocks)",
+    );
     // Still joins the public testnet with the encrypted data dir.
     assert!(spec.args.iter().any(|a| a == "testnet"), "joins the public testnet");
 }

@@ -102,6 +102,17 @@ const NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE: &str = "2000";
 /// `citrate-chain/contracts/addresses/40204.json` (`ValidatorRegistry`), the same
 /// address the fleet producer runs.
 const NODE_VALIDATOR_REGISTRY_VALUE: &str = "0x915DdE02831ebacFc57f329f60944492ebb0A095";
+/// SYNC-S1 D3 (`citrate-chain node/src/dag_prune.rs`): bound the in-memory DAG
+/// store. D1 removed the Θ(N²) blue-ancestry retention that OOM-killed followers
+/// in the 9k–15k range (our node froze at 14840); D3 caps the remaining O(N)
+/// growth (~16 KB/block → a desktop follower runs out near 150k blocks). Pruning
+/// is opt-in and a no-op unless this env is set, so the app owns it — a long-lived
+/// desktop follower must set it or it re-hits the memory wall. The value is a
+/// retain window in blocks; the node clamps to a 1_000 floor (10× MAX_REORG_DEPTH),
+/// and `block_serve` reads the CHAIN store, so pruning the DAG store never affects
+/// what this node can serve to peers. 10_000 = 100× the deepest revertible reorg.
+const NODE_DAG_PRUNE_RETAIN_ENV: &str = "CITRATE_DAG_PRUNE_RETAIN";
+const NODE_DAG_PRUNE_RETAIN_VALUE: &str = "10000";
 
 /// Node-side errors surfaced to the bridge as strings.
 #[derive(Debug)]
@@ -266,6 +277,12 @@ impl NodeManager {
             (
                 NODE_VALIDATOR_REGISTRY_ENV.to_string(),
                 NODE_VALIDATOR_REGISTRY_VALUE.to_string(),
+            ),
+            // SYNC-S1 D3: bound the DAG store so a long-running desktop follower
+            // does not OOM near 150k blocks (opt-in on the node; the app opts in).
+            (
+                NODE_DAG_PRUNE_RETAIN_ENV.to_string(),
+                NODE_DAG_PRUNE_RETAIN_VALUE.to_string(),
             ),
         ];
         spec
