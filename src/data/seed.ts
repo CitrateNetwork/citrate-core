@@ -13,7 +13,7 @@
 export const CONTRACTS = {
   liquidStakingPool: { name: 'LiquidStakingPool', addr: '0xfd272195b55cb4f5a240a5be75aabab0d1c5685e' },
   entryPoint:        { name: 'EntryPoint v0.7',   addr: '0xC698feAf0FF7FdB0D60E2F620C97cB729A694975' },
-  paymaster:         { name: 'CitratePaymaster',  addr: '0xF14F56e812cE93544e75E841Ac6316F2d7E561b0' },
+  paymaster:         { name: 'CitratePaymaster',  addr: '0x0cd122ace90084afb26d5101074af15aaccc1c0e' },
   memberSbt:         { name: 'CitrateMemberSBT',  addr: '0x4CE39F891c0A519Fa0E0De97A1DD3e3f856e0cF1' },
   stakeVault:        { name: 'MembershipStakeVault', addr: '0x61E324cFd6B7Cb106AC0AD1dF163bdFef2b74268' },
 };
