@@ -279,12 +279,9 @@ function S2({ store, s }: { store: Store; s: AppState }) {
         documents never touch this machine.
       </p>
       {s.s2 === "none" && (
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div>
           <button className="btn btn-primary btn-lg" onClick={() => store.onS2Start()}>
             Start verification
-          </button>
-          <button className="btn btn-ghost btn-lg" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
-            Skip for now — finish later
           </button>
         </div>
       )}
@@ -337,13 +334,19 @@ function S2({ store, s }: { store: Store; s: AppState }) {
           <div style={{ fontSize: 14, fontWeight: 500, color: "var(--warn)" }}>Manual review</div>
           <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
             Your verification needs a human look — usually within one business day. You'll get an email, and your tier upgrades to <span className="mono">commercial.kyc</span> on
-            its own when the claim changes. You don't have to wait: continue to membership now and finish verification at your convenience.
+            its own when the claim changes. You don't have to wait — continue below and finish verification at your convenience.
           </p>
-          <div>
-            <button className="btn btn-primary btn-sm" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
-              Continue to membership
-            </button>
-          </div>
+        </div>
+      )}
+      {s.s2 !== "verified" && (
+        <div style={{ borderTop: "1px solid var(--line-2)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+          <button className="btn btn-primary btn-lg" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
+            Skip for now — continue to membership
+          </button>
+          <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0 }}>
+            Membership needs only your payment. You keep the <span className="mono">commercial</span> tier now and can finish KYC any time to upgrade to
+            {" "}<span className="mono">commercial.kyc</span>.
+          </p>
         </div>
       )}
       <div className="mono" style={dataSrc}>
