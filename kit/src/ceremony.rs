@@ -157,12 +157,18 @@ pub struct CeremonyView {
     pub requires_raw_ack: bool,
 }
 
-/// A signature result crossing the bridge. Hex-encoded `r||s` (64 bytes → 128
-/// hex chars, no `0x`). This is the ONLY thing `approve` returns — never key,
-/// seed, or entropy material. A signature over a message is not secret.
+/// A signature result crossing the bridge. Hex, no `0x`. This is the ONLY thing
+/// `approve` returns — never key, seed, or entropy material. A signature over a
+/// message is not secret.
+///
+/// The length depends on the kind, and a caller must not assume one:
+/// `personal_sign` is `r||s||v` (65 bytes → 130 hex chars, EIP-191 recoverable);
+/// `typed_data` and `transaction` are `r||s` (64 bytes → 128 hex chars) from the
+/// message path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signature {
-    /// Hex of the raw ECDSA signature bytes (r||s).
+    /// Hex of the raw ECDSA signature bytes — `r||s||v` for `personal_sign`,
+    /// `r||s` otherwise. **Serialized as `sigHex`**, not `sig_hex`.
     #[serde(rename = "sigHex")]
     pub sig_hex: String,
     /// The kind that was signed (echo, for the caller to route the result).
