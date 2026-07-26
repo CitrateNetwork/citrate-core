@@ -52,6 +52,14 @@ describe("isPaidEntitlementActive — D3.C checkout settle decision", () => {
     expect(isPaidEntitlementActive({ tier: "enterprise", entitlement: "active" })).toBe(true);
   });
 
+  it("the authority's own tiers count as paid too (ADR-2026-07-25: commercial without KYC settles S5)", () => {
+    // These fold in verbatim from /userinfo; without them in RANK the grant poll
+    // never settles for a payment-as-sybil member (the "stuck on step 5" bug).
+    expect(isPaidEntitlementActive({ tier: "commercial", entitlement: "active" })).toBe(true);
+    expect(isPaidEntitlementActive({ tier: "commercial.kyc", entitlement: "active" })).toBe(true);
+    expect(isPaidEntitlementActive({ tier: "public", entitlement: "active" })).toBe(false); // public == free
+  });
+
   it("a paid tier that is NOT active (lapsed/grace/expiring) has NOT settled", () => {
     expect(isPaidEntitlementActive({ tier: "pilot", entitlement: "lapsed" })).toBe(false);
     expect(isPaidEntitlementActive({ tier: "pilot", entitlement: "grace" })).toBe(false);

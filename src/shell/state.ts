@@ -17,7 +17,23 @@ import { BRIDGE_MODE } from "../bridge/mode";
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
 // tier gating order
-export const RANK: Record<string, number> = { free: 0, pilot: 1, enterprise: 2 };
+// Tier ranking for paid-feature gating (isPaidEntitlementActive). Includes BOTH
+// the app's internal tiers (free/pilot/enterprise) AND the authority's tier
+// vocabulary that /userinfo folds in verbatim (public/commercial/commercial.kyc/
+// academic/confidential). ADR-2026-07-25 (payment-as-sybil) grants `commercial`
+// to a paid-but-unverified member — it MUST rank above free or the S5 grant poll
+// never settles for them (the reported "stuck on step 5"). commercial.kyc is the
+// KYC-verified upgrade; confidential is the top enterprise-equivalent.
+export const RANK: Record<string, number> = {
+  free: 0,
+  public: 0,
+  pilot: 1,
+  commercial: 1,
+  "commercial.kyc": 1,
+  academic: 1,
+  enterprise: 2,
+  confidential: 2,
+};
 
 export const ORIGIN_COLORS: Record<string, string> = {
   "user wallet action": "#5a8205",
