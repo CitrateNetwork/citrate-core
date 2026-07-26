@@ -188,6 +188,12 @@ pub struct NodeManager {
     rpc_url: String,
     /// The live supervisor, present only while the node is running.
     sup: Mutex<Option<Supervisor>>,
+    /// W1.5 — the coinbase (reward/staker) address the node mines to, when known.
+    /// This is the member's own embedded-wallet address (key-safe: the node derives
+    /// its ed25519 proposer key from this *public* address and never holds the
+    /// wallet's private key). `None` until the wallet is unlocked/available, in
+    /// which case the node spawns as a plain follower (no `--mine`).
+    coinbase: Mutex<Option<String>>,
 }
 
 impl NodeManager {
@@ -208,7 +214,25 @@ impl NodeManager {
             crash_record_path,
             rpc_url: rpc_url.into(),
             sup: Mutex::new(None),
+            coinbase: Mutex::new(None),
         }
+    }
+
+    /// W1.5 — set the coinbase (the member's wallet address) the node mines to.
+    /// The next spawn (start / supervised restart) arms the block producer with
+    /// `--mine --coinbase <addr>`. Idempotent: the last value set wins. Setting it
+    /// while the node is already running takes effect on the next restart — callers
+    /// that want it live now should stop+start.
+    pub fn set_coinbase(&self, addr: String) {
+        *self.coinbase.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
+    }
+
+    /// The currently-configured coinbase address, if any.
+    pub fn coinbase(&self) -> Option<String> {
+        self.coinbase
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Load the 32-byte storage key from the OS keyring, minting it on first use
@@ -254,16 +278,23 @@ impl NodeManager {
     /// and the storage key in the env (NOT argv — argv would leak the key to a
     /// `ps` listing). `--network testnet` joins the public testnet.
     fn build_spec(&self, storage_key_hex: &str) -> SidecarSpec {
-        let mut spec = SidecarSpec::new(
-            "citrate-node",
-            self.bin.clone(),
-            vec![
-                "--network".to_string(),
-                "testnet".to_string(),
-                "--data-dir".to_string(),
-                self.data_dir.to_string_lossy().to_string(),
-            ],
-        );
+        let mut args = vec![
+            "--network".to_string(),
+            "testnet".to_string(),
+            "--data-dir".to_string(),
+            self.data_dir.to_string_lossy().to_string(),
+        ];
+        // W1.5 — arm the block producer when the member's coinbase is known. The
+        // node self-gates on active-set eligibility ("proposer not in the active
+        // set at minStake"), so this is safe to always pass once the wallet is
+        // available: it produces nothing until WO-1 admits the pubkey, then lights
+        // up with no app change. A follower with no coinbase omits both flags.
+        if let Some(coinbase) = self.coinbase() {
+            args.push("--mine".to_string());
+            args.push("--coinbase".to_string());
+            args.push(coinbase);
+        }
+        let mut spec = SidecarSpec::new("citrate-node", self.bin.clone(), args);
         spec.env = vec![
             (NODE_STORAGE_KEY_ENV.to_string(), storage_key_hex.to_string()),
             // CONSENSUS-CRITICAL: reproduce the fleet producer's validator/§R' state
@@ -432,8 +463,42 @@ pub fn node_status(state: State<'_, NodeState>) -> std::result::Result<NodeStatu
 }
 
 #[tauri::command]
-pub fn node_start(state: State<'_, NodeState>) -> std::result::Result<(), String> {
+pub fn node_start(
+    state: State<'_, NodeState>,
+    custody: State<'_, crate::custody::CustodyState>,
+) -> std::result::Result<(), String> {
+    // W1.5 — arm the producer with the member's own wallet as coinbase when the
+    // vault is unlocked. Best-effort: a locked or absent wallet just starts a
+    // plain follower; the coinbase can be set later and the node restarted.
+    if let Ok(info) = crate::wallet::address(&custody.0) {
+        state.0.set_coinbase(info.address);
+    }
     state.0.start().map_err(|e| e.to_string())
+}
+
+/// W1.1 — the node's on-chain proposer identity: the `coinbase` (the member's
+/// wallet address the node mines to) and the ed25519 `proposer_pubkey`
+/// deterministically derived from it. The pubkey is the value registered in
+/// `ValidatorRegistry` and the key for `validatorInfo`/reward reads — the app
+/// derives it locally, byte-for-byte with the node's own signing key (see
+/// `validator.rs`). Requires an unlocked vault; honest error if locked/no wallet.
+#[derive(serde::Serialize)]
+pub struct ProposerIdentity {
+    pub coinbase: String,
+    #[serde(rename = "proposerPubkey")]
+    pub proposer_pubkey: String,
+}
+
+#[tauri::command]
+pub fn node_proposer_identity(
+    custody: State<'_, crate::custody::CustodyState>,
+) -> std::result::Result<ProposerIdentity, String> {
+    let info = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let proposer_pubkey = crate::validator::proposer_pubkey_hex(&info.address)?;
+    Ok(ProposerIdentity {
+        coinbase: info.address,
+        proposer_pubkey,
+    })
 }
 
 #[tauri::command]

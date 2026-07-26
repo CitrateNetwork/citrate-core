@@ -624,6 +624,7 @@ dependencies = [
  "base64 0.22.1",
  "bip39",
  "citrate-wallet-core",
+ "ed25519-dalek",
  "hex",
  "jsonwebtoken",
  "k256",

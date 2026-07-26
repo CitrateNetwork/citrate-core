@@ -193,6 +193,60 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     assert!(spec.args.iter().any(|a| a == "testnet"), "joins the public testnet");
 }
 
+/// W1.5 — when a coinbase (the member's wallet address) is set, the node spawns
+/// with `--mine --coinbase <addr>` so the block-production path is ENABLED. The
+/// node still self-gates on active-set eligibility (it won't produce until WO-1
+/// admits the pubkey), but the producer is armed: the moment the member is in the
+/// active set it proposes with NO app rebuild.
+#[test]
+fn spawn_args_carry_coinbase_and_mine_when_set() {
+    let (mgr, _fake, _data) = stub_manager("coinbase-set");
+    mgr.set_coinbase("0xd12c00c377eb4615a7ae934df509c903a29ecb6c".to_string());
+    let spec = mgr.build_spec("00");
+    assert!(spec.args.iter().any(|a| a == "--mine"), "mining enabled");
+    let ci = spec
+        .args
+        .iter()
+        .position(|a| a == "--coinbase")
+        .expect("--coinbase flag present");
+    assert_eq!(
+        spec.args.get(ci + 1).map(String::as_str),
+        Some("0xd12c00c377eb4615a7ae934df509c903a29ecb6c"),
+        "coinbase is the member's wallet address (the earner/staker)",
+    );
+}
+
+/// Without a coinbase (a fresh follower, or pre-wallet boot), the node spawns
+/// WITHOUT `--mine`/`--coinbase`: it syncs as a follower and never attempts
+/// production. Enabling mining is gated on the wallet address being known.
+#[test]
+fn spawn_args_omit_mining_when_no_coinbase() {
+    let (mgr, _fake, _data) = stub_manager("coinbase-unset");
+    let spec = mgr.build_spec("00");
+    assert!(
+        !spec.args.iter().any(|a| a == "--mine"),
+        "no mining without a coinbase",
+    );
+    assert!(
+        !spec.args.iter().any(|a| a == "--coinbase"),
+        "no coinbase flag without a coinbase",
+    );
+}
+
+/// `set_coinbase` is idempotent-ish: the last set value is what the next spawn
+/// uses (the member's stable wallet address), so a restart re-arms the producer.
+#[test]
+fn set_coinbase_is_reflected_in_the_next_spawn() {
+    let (mgr, _fake, _data) = stub_manager("coinbase-restart");
+    mgr.set_coinbase("0x0000000000000000000000000000000000000001".to_string());
+    let spec = mgr.build_spec("00");
+    let ci = spec.args.iter().position(|a| a == "--coinbase").unwrap();
+    assert_eq!(
+        spec.args.get(ci + 1).map(String::as_str),
+        Some("0x0000000000000000000000000000000000000001"),
+    );
+}
+
 /// A second `start` reuses the SAME keyring key (does not re-mint), so an
 /// existing encrypted data dir stays openable across restarts.
 #[test]
