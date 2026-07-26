@@ -643,6 +643,20 @@ impl MemoryManager {
         Ok(parse_result(tenant, &text))
     }
 
+    /// `memory.assert` — author a claim into a tenant (W3.2 docs preload). The
+    /// daemon EMBEDS the content at write time (BGE); an unembedded node is
+    /// invisible to every semantic query forever, so callers must only ingest when
+    /// the embedder is available (see `docs_ingest`). This authors under the
+    /// daemon's mem author identity — NOT the user's custody key — so it is a local
+    /// mem-dag write, not a Rule-3 ceremony signature. Returns the daemon's raw
+    /// tool-text (which carries the new node id) or an honest transport error.
+    pub fn assert(&self, tenant: &str, content: &str, kind: &str) -> Result<String> {
+        self.transport.call_tool(
+            "memory.assert",
+            json!({ "repo": tenant, "content": content, "kind": kind }),
+        )
+    }
+
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
     pub fn search(&self, tenant: &str, query: &str, budget: usize) -> Result<MemoryResult> {
         let text = self.transport.call_tool(
