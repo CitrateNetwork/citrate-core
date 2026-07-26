@@ -39,6 +39,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        // W2.1 — in-app auto-updates (signed GitHub Releases feed; pubkey pinned in
+        // tauri.conf.json). The JS API drives check/download/install via this plugin.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // W2.4 — relaunch into the freshly-installed version.
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the

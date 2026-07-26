@@ -1,0 +1,122 @@
+# created: 2026-07-26 | branch: feat/w2-in-app-auto-updates
+# author: Claude (Opus 4.8), directed by @SaulBuilds
+# status: active
+#
+# W2.3 + W2.5 — signed release pipeline. On a version tag (v*), builds the
+# macOS ARM app, signs (Developer ID) + notarizes + staples, produces the
+# SIGNED updater artifacts (.app.tar.gz + .sig via createUpdaterArtifacts), and
+# publishes them + a `latest.json` feed to a GitHub Release. The in-app updater
+# (tauri-plugin-updater, pubkey pinned in tauri.conf.json) reads that feed, so
+# every subsequent patch reaches the beta testers with no manual DMG reinstall.
+#
+# ── Owner prerequisites (one-time) ────────────────────────────────────────────
+# Repo secrets required (Settings → Secrets and variables → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.citrate-updater/citrate-core.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  "" (the key was generated password-less)
+#   APPLE_CERTIFICATE                   base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD          the .p12 export password
+#   APPLE_SIGNING_IDENTITY              Developer ID Application: Larry Klosowski (DDHUG44QC7)
+#   KEYCHAIN_PASSWORD                   any throwaway string (temp keychain in CI)
+#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarization creds (app-specific pwd)
+#   CITRATE_CHAIN_READ_TOKEN            fine-grained PAT, Contents:read on citrate-chain
+# Runtime deps (the ~4.3 GB model + sidecars are NOT in git): upload them once to a
+# GitHub prerelease tagged `runtime-deps` (see RELEASE.md); this workflow pulls them.
+# The pinned updater PUBLIC key lives in tauri.conf.json; only the PRIVATE key is a secret.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to build (e.g. v0.2.0)"
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-macos-arm:
+    name: build · sign · notarize · publish (macOS arm64)
+    runs-on: macos-14
+    permissions:
+      contents: write # create/update the GitHub Release + upload assets
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to private federation repos (citrate-chain)
+        run: |
+          git config --global \
+            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # ── Stage the runtime artifacts the bundle needs but git does not carry:
+      #    the three sidecars (target-triple suffixed), the llama runtime dylibs,
+      #    and the Gemma model. Pulled from the `runtime-deps` prerelease so a
+      #    build is reproducible and does not rebuild 4 cross-repo binaries here.
+      - name: Stage runtime deps (sidecars · llama · model)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries src-tauri/llama src-tauri/models
+          # Sidecars (Apple Silicon target triple).
+          gh release download runtime-deps \
+            -p 'citrate-aarch64-apple-darwin' \
+            -p 'mem-mcp-aarch64-apple-darwin' \
+            -p 'node-agent-aarch64-apple-darwin' \
+            -p 'llama-server-aarch64-apple-darwin' \
+            -D src-tauri/binaries --clobber
+          chmod +x src-tauri/binaries/*
+          # llama runtime dylibs (packed as a tarball asset) + the model.
+          gh release download runtime-deps -p 'llama-runtime-arm64.tar.gz' -D /tmp --clobber
+          tar -xzf /tmp/llama-runtime-arm64.tar.gz -C src-tauri/llama
+          gh release download runtime-deps -p 'gemma-4-E4B-it-Q4_0.gguf' -D src-tauri/models --clobber
+          echo "staged:" && ls -la src-tauri/binaries src-tauri/llama src-tauri/models
+
+      - name: Build · sign · notarize · publish updater artifacts
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Updater artifact signing (Ed25519; pubkey pinned in tauri.conf.json).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple Developer ID signing + notarization.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        with:
+          # The overlay merges the externalBin sidecars onto the base config
+          # (which carries the updater plugin + createUpdaterArtifacts).
+          args: --target aarch64-apple-darwin --config src-tauri/tauri.bundle-node.conf.json
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "Citrate Core ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: "See CHANGELOG. Installs update in-app via the signed release feed."
+          releaseDraft: false
+          prerelease: true
+          # Generate + upload latest.json (the feed the app polls). Default true;
+          # explicit here because it is the whole point of W2.
+          includeUpdaterJson: true

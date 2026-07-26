@@ -10,6 +10,7 @@ import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar } from "./shell/Sidebar";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
+import { UpdateBanner } from "./shell/UpdateBanner";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal } from "./surfaces";
 
 const queryClient = new QueryClient();
@@ -217,6 +218,8 @@ function Root() {
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />
       <Toast s={s} />
+      {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}
+      <UpdateBanner />
     </div>
   );
 }
