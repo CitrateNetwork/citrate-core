@@ -274,13 +274,17 @@ function S2({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S2 · Verify</div>
       <div style={h1}>Verify your identity</div>
       <p style={body}>
-        Membership requires verified KYC. Verification runs in your browser with our in-house provider; this app only observes the claim change. Your documents never
-        touch this machine.
+        Verification is optional — you can finish it any time. Your membership only needs your payment; identity verification unlocks certain features and upgrades you
+        to the <span className="mono">commercial.kyc</span> tier. It runs in your browser with our in-house provider; this app only observes the claim change, and your
+        documents never touch this machine.
       </p>
       {s.s2 === "none" && (
-        <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <button className="btn btn-primary btn-lg" onClick={() => store.onS2Start()}>
             Start verification
+          </button>
+          <button className="btn btn-ghost btn-lg" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
+            Skip for now — finish later
           </button>
         </div>
       )}
@@ -329,11 +333,17 @@ function S2({ store, s }: { store: Store; s: AppState }) {
         </div>
       )}
       {s.s2 === "review" && (
-        <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-2)", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ border: "1px solid var(--warn)", background: "var(--warn-bg)", borderRadius: "var(--r-2)", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 500, color: "var(--warn)" }}>Manual review</div>
           <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
-            Your verification needs a human look — usually within one business day. You'll get an email; this stage resumes on its own when the claim changes.
+            Your verification needs a human look — usually within one business day. You'll get an email, and your tier upgrades to <span className="mono">commercial.kyc</span> on
+            its own when the claim changes. You don't have to wait: continue to membership now and finish verification at your convenience.
           </p>
+          <div>
+            <button className="btn btn-primary btn-sm" onClick={() => { store.setState({ stage: "s3" }); store.save(); }}>
+              Continue to membership
+            </button>
+          </div>
         </div>
       )}
       <div className="mono" style={dataSrc}>
@@ -474,7 +484,9 @@ export function S4({ store, s }: { store: Store; s: AppState }) {
 }
 
 export function S5({ store, s }: { store: Store; s: AppState }) {
-  const ckLabels = ["authenticated sub — token live", "kyc_status verified — live claim", "payment settled — webhook proof"];
+  // Grant gate (ADR-2026-07-25): sub + settled payment. KYC is not a required
+  // proof here — it picks the entitlement tier (commercial vs commercial.kyc).
+  const ckLabels = ["authenticated sub — token live", "payment settled — webhook proof", "entitlement raised — tier set by KYC state"];
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S5 · Grant + stake ceremony</div>
