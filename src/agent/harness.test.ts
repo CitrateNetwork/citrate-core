@@ -8,7 +8,7 @@
 //   * a provider-error surfaces honestly (onStatus("error") + throw), never a
 //     fabricated reply.
 import { describe, it, expect, vi } from "vitest";
-import { createDemoProvider, createRealProvider, createLocalProvider, type AgentContext, type ChatStatus, type ToolCall } from "./harness";
+import { createDemoProvider, createRealProvider, createLocalProvider, createAgentProvider, AGENT_MAX_TURNS, type AgentContext, type ChatStatus, type ToolCall } from "./harness";
 
 const ctx: AgentContext = {
   height: 131234,
@@ -193,5 +193,99 @@ describe("createDemoProvider — no fabricated recall/docs claims (Rule 1)", () 
     });
     expect(streamed).not.toMatch(/it now lives in your personal tenant/i);
     expect(streamed.toLowerCase()).toContain("nothing was durably stored");
+  });
+});
+
+// W3.3 — the agentic tool loop: the model decides tool calls; the frontend
+// executes them via onToolCall, feeds results back, and streams the final answer.
+describe("createAgentProvider — real tool loop (W3.3)", () => {
+  function toolCallMsg(name: string, args: object): string {
+    return JSON.stringify({
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", type: "function", function: { name, arguments: JSON.stringify(args) } }],
+    });
+  }
+  function contentMsg(content: string): string {
+    return JSON.stringify({ role: "assistant", content });
+  }
+
+  it("executes a tool call, feeds the result back, then streams the final answer", async () => {
+    // Turn 1: model asks for memory_search. Turn 2: model answers.
+    const inferTools = vi
+      .fn()
+      .mockResolvedValueOnce(toolCallMsg("memory_search", { query: "staking" }))
+      .mockResolvedValueOnce(contentMsg("Staking locks 32,000 SALT (from the docs)."));
+    const toolCalls: ToolCall[] = [];
+    const statuses: ChatStatus[] = [];
+    let streamed = "";
+    const provider = createAgentProvider("gateway", () => ctx, inferTools);
+    expect(provider.kind).toBe("agent");
+
+    const result = await provider.send({
+      messages: [{ role: "user", content: "how does staking work?" }],
+      callbacks: {
+        onStatus: (s) => statuses.push(s),
+        onToken: (t) => {
+          streamed += t;
+        },
+        onToolCall: async (c) => {
+          toolCalls.push(c);
+          return "[1] Staking › lock 32000 SALT";
+        },
+      },
+    });
+
+    // The tool was executed with the model's chosen name + args.
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0].name).toBe("memory_search");
+    expect(JSON.parse(toolCalls[0].arguments).query).toBe("staking");
+
+    // Two model turns; the SECOND request carried the tool result back.
+    expect(inferTools).toHaveBeenCalledTimes(2);
+    const secondConvo = JSON.parse(inferTools.mock.calls[1][1]);
+    const toolMsg = secondConvo.find((m: { role: string }) => m.role === "tool");
+    expect(toolMsg.tool_call_id).toBe("c1");
+    expect(toolMsg.content).toContain("32000 SALT");
+    // The tools spec + context were passed on every turn.
+    expect(JSON.parse(inferTools.mock.calls[0][2]).length).toBeGreaterThan(0);
+    expect(JSON.parse(inferTools.mock.calls[0][3]).nodeState).toBe("validating");
+
+    // The final answer is the REAL streamed content, ending in done.
+    expect(result.content).toBe("Staking locks 32,000 SALT (from the docs).");
+    expect(streamed).toBe("Staking locks 32,000 SALT (from the docs).");
+    expect(statuses).toContain("tool");
+    expect(statuses[statuses.length - 1]).toBe("done");
+  });
+
+  it("is bounded: a model that never stops calling tools fails honestly, not forever", async () => {
+    const inferTools = vi.fn(async () => toolCallMsg("memory_search", { query: "x" }));
+    const provider = createAgentProvider("gateway", () => ctx, inferTools);
+    const statuses: ChatStatus[] = [];
+    await expect(
+      provider.send({
+        messages: [{ role: "user", content: "loop" }],
+        callbacks: { onStatus: (s) => statuses.push(s), onToken: () => {}, onToolCall: async () => "again" },
+      }),
+    ).rejects.toThrow(/tool-turn limit/);
+    expect(inferTools).toHaveBeenCalledTimes(AGENT_MAX_TURNS);
+    expect(statuses).toContain("error");
+  });
+
+  it("surfaces a provider error honestly (no fabricated reply)", async () => {
+    const inferTools = vi.fn(async () => {
+      throw new Error("ai: gateway error");
+    });
+    const provider = createAgentProvider("gateway", () => ctx, inferTools);
+    const statuses: ChatStatus[] = [];
+    let streamed = "";
+    await expect(
+      provider.send({
+        messages: [{ role: "user", content: "hi" }],
+        callbacks: { onStatus: (s) => statuses.push(s), onToken: (t) => (streamed += t), onToolCall: async () => "x" },
+      }),
+    ).rejects.toThrow(/gateway/);
+    expect(statuses).toContain("error");
+    expect(streamed).toBe("");
   });
 });

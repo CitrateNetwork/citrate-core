@@ -311,6 +311,19 @@ export interface ChatDomain {
    */
   infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
   /**
+   * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
+   * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
+   * the frontend runs the tool loop. Rust reads the STORED baseURL + sealed key
+   * (invariants 1 + 3). The Tauri impl invokes `ai_chat_tools`; the sim impl is
+   * honestly Unavailable.
+   */
+  inferTools(
+    providerId: string,
+    messagesJson: string,
+    toolsJson: string,
+    contextJson: string,
+  ): Promise<string>;
+  /**
    * BC-3.2 — REAL LOCAL inference against the bundled `llama-server` (llama.cpp)
    * on the loopback endpoint, with NO api key. The endpoint is derived IN RUST
    * from the serve manager's loopback port — the webview supplies ONLY the

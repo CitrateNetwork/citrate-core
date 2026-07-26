@@ -253,6 +253,9 @@ pub fn run() {
             ai::ai_provider_status,
             ai::ai_clear_provider,
             ai::ai_chat,
+            // W3.3 — one agentic turn: gateway completion WITH tools; returns the
+            // assistant message (content and/or tool_calls). The webview loops.
+            ai::ai_chat_tools,
             // BC-3.2 — LOCAL inference against the bundled llama-server on the
             // loopback endpoint (NO key). Fails closed on any non-loopback URL.
             ai::ai_chat_local,

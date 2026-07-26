@@ -569,6 +569,12 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // (the store uses the built-in demo agent instead of a fabricated reply).
         throw new Unavailable("chat", "infer");
       },
+      async inferTools() {
+        assertSimAllowed("chat.inferTools");
+        // No gateway in the web preview — honest Unavailable (the store uses the
+        // built-in demo agent, never a fabricated agentic reply).
+        throw new Unavailable("chat", "inferTools");
+      },
       async inferLocal() {
         assertSimAllowed("chat.inferLocal");
         // No llama-server in the web preview — honest Unavailable (the store falls
