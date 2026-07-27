@@ -26,6 +26,7 @@ import type {
   MemoryStatus,
   MemoryResult,
   MemoryNeighbor,
+  DocsIngestReport,
   PendingWithdrawal,
   AiProviderStatus,
   GrantStatus,
@@ -294,6 +295,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async constellation(budget?: number) {
         return invoke<MemoryResult[]>("memory_constellation", { budget });
+      },
+      // W3.2 — idempotent first-run docs preload (gated in Rust).
+      async ingestDocs() {
+        return invoke<DocsIngestReport>("memory_ingest_docs");
       },
     },
     // ---- chat: REAL OpenAI-compatible inference, key sealed in Rust (AI1) ----

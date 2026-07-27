@@ -384,7 +384,21 @@ export class Store {
       return;
     }
     const state = await this.refreshMemoryStatus();
-    if (state === "running") await this.refreshConstellation();
+    if (state === "running") {
+      await this.refreshConstellation();
+      // W3.2 — first-run docs preload into the citrate-docs tenant. Idempotent +
+      // gated in Rust (skips once seeded, when lexical-only, or when the corpus is
+      // empty), so calling on every start is safe. Fire-and-forget; if it actually
+      // ingested, refresh the constellation so the docs tenant shows up.
+      void bridge.memory
+        .ingestDocs()
+        .then((r) => {
+          if (!r.skipped && r.chunks > 0) void this.refreshConstellation();
+        })
+        .catch(() => {
+          /* honest no-op: ingest unavailable (web preview / daemon race) */
+        });
+    }
   }
 
   /**

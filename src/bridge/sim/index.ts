@@ -535,6 +535,12 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("memory.constellation");
         return [simTenantResult("personal"), simTenantResult("chain-state")];
       },
+      // W3.2 — no mem daemon in the web preview: honest no-op (nothing ingested),
+      // never a fabricated count.
+      async ingestDocs() {
+        assertSimAllowed("memory.ingestDocs");
+        return { docs: 0, chunks: 0, skipped: "not-running" };
+      },
     },
 
     // CORE-AI1 — the web preview has NO OS keyring and reaches no provider, so

@@ -260,6 +260,13 @@ export interface MemoryStatus {
   socketPath: string;
   semantic: boolean;
 }
+/** W3.2 — result of the first-run docs preload (or why it was skipped). */
+export interface DocsIngestReport {
+  docs: number;
+  chunks: number;
+  /** "not-semantic" | "not-running" | "already-seeded" | "empty-corpus" when nothing ran. */
+  skipped?: string;
+}
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
@@ -270,6 +277,9 @@ export interface MemoryDomain {
   neighbors(tenant: string, idPrefix: string, budget?: number): Promise<MemoryNeighbor[]>;
   /** Recall the personal + chain-state tenants for the Storage constellation. */
   constellation(budget?: number): Promise<MemoryResult[]>;
+  /** W3.2 — idempotent first-run preload of the bundled Citrate docs into the
+   *  citrate-docs tenant. Gated in Rust (semantic + running + empty tenant). */
+  ingestDocs(): Promise<DocsIngestReport>;
 }
 
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the

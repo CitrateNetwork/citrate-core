@@ -213,6 +213,9 @@ pub fn run() {
             memory::memory_recall,
             memory::memory_search,
             memory::memory_neighbors,
+            // W3.2 — first-run docs preload into the citrate-docs tenant (gated +
+            // idempotent; no-op until the corpus is curated + BGE is wired).
+            memory::memory_ingest_docs,
             memory::memory_constellation,
             // seam domains — honest Unavailable until each later phase (A1.3).
             // memory_assert stays a seam stub: the assert WRITE path routes

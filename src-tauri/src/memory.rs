@@ -684,6 +684,40 @@ impl MemoryManager {
         )
     }
 
+    /// W3.2 — first-run docs preload into the `citrate-docs` tenant. GATED + honest:
+    ///  - skips unless the BGE embedder is wired (`semantic`) — else it would author
+    ///    invisible (unembedded) nodes (Rule 1);
+    ///  - skips if the daemon is not running;
+    ///  - skips if the tenant is already seeded (idempotent — first run only);
+    ///  - skips if the corpus is empty (ships empty until curated, Rule 7).
+    /// Otherwise chunks each doc and authors it. The report says what happened.
+    pub fn ingest_docs_corpus(
+        &self,
+        docs: &[(String, String)],
+    ) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
+        use crate::docs_ingest::{ingest_docs, IngestReport, DOCS_TENANT, MAX_CHUNK_CHARS};
+        if self.model_dir.is_none() {
+            return Ok(IngestReport::skipped("not-semantic"));
+        }
+        if !self.is_running() {
+            return Ok(IngestReport::skipped("not-running"));
+        }
+        if docs.is_empty() {
+            return Ok(IngestReport::skipped("empty-corpus"));
+        }
+        // Idempotent: a non-empty tenant means we already seeded it on a prior run.
+        match self.recall(DOCS_TENANT, 1) {
+            Ok(r) if r.total_in_tenant > 0 => return Ok(IngestReport::skipped("already-seeded")),
+            Ok(_) => {}
+            Err(e) => return Err(format!("docs-tenant probe failed: {e}")),
+        }
+        ingest_docs(docs, MAX_CHUNK_CHARS, |c| {
+            self.assert(DOCS_TENANT, &c.content, "reference")
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+    }
+
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
     pub fn search(&self, tenant: &str, query: &str, budget: usize) -> Result<MemoryResult> {
         let text = self.transport.call_tool(
@@ -776,6 +810,22 @@ fn resolve_bge_model_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option
     has_all(&d).then_some(d)
 }
 
+/// Resolve the bundled Citrate docs corpus dir (`docs-corpus/`, markdown files).
+/// `CITRATE_DOCS_CORPUS_DIR` override first (dev), else the Tauri resource dir.
+/// `None` when absent — the corpus ships EMPTY until curated (Rule 7), so a missing
+/// dir is the honest "nothing to ingest yet" state, not an error.
+fn resolve_docs_corpus_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    use tauri::Manager;
+    if let Ok(p) = std::env::var("CITRATE_DOCS_CORPUS_DIR") {
+        let d = PathBuf::from(p);
+        if d.is_dir() {
+            return Some(d);
+        }
+    }
+    let d = app.path().resource_dir().ok()?.join("docs-corpus");
+    d.is_dir().then_some(d)
+}
+
 /// Build the managed memory state from a live app handle: the real OS keyring,
 /// the bundled daemon binary, a per-user encrypted store dir + socket inside the
 /// app data dir, a crash-record path, and the production Unix-socket transport.
@@ -814,6 +864,22 @@ use tauri::State;
 #[tauri::command]
 pub fn memory_status(state: State<'_, MemoryState>) -> std::result::Result<MemoryStatus, String> {
     Ok(state.0.status())
+}
+
+/// W3.2 — first-run docs preload. Reads the bundled `docs-corpus/` and authors it
+/// into the `citrate-docs` tenant. Idempotent + gated (see `ingest_docs_corpus`):
+/// safe to call on every launch — it skips once seeded, when lexical-only, or when
+/// the corpus is empty. The report says what happened (never fabricates a count).
+#[tauri::command]
+pub fn memory_ingest_docs<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, MemoryState>,
+) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
+    let docs = match resolve_docs_corpus_dir(&app) {
+        Some(dir) => crate::docs_ingest::read_corpus_dir(&dir)?,
+        None => Vec::new(),
+    };
+    state.0.ingest_docs_corpus(&docs)
 }
 
 #[tauri::command]
