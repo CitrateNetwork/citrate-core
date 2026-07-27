@@ -1,0 +1,82 @@
+---
+created: 2026-07-26
+branch: feat/w2-in-app-auto-updates
+author: Claude (Opus 4.8), directed by @SaulBuilds
+status: active
+---
+
+# Releasing Citrate Core (in-app auto-update pipeline — W2)
+
+Every tagged release is built, Developer-ID signed, notarized, stapled, and its
+**signed updater artifacts** (`*.app.tar.gz` + `*.sig`) plus a `latest.json` feed
+are published to a GitHub Release. The shipped app runs `tauri-plugin-updater`,
+which polls that feed, verifies the Ed25519 signature against the **public** key
+pinned in `src-tauri/tauri.conf.json`, downloads, and installs on restart. Testers
+never reinstall a DMG for a patch.
+
+## One-time setup
+
+### 1. Updater signing key
+Generated with `tauri signer generate` (Ed25519). The keypair lives **outside the
+repo** at `~/.citrate-updater/citrate-core.key{,.pub}`. The **public** key is
+already pinned in `tauri.conf.json` (`plugins.updater.pubkey`). Add the **private**
+key to repo secrets — never commit it.
+
+@rule8: this key is the trust root for auto-update. Whoever holds it can push an
+update the app will trust. Store it in the org secret manager; the CI secret is the
+only copy CI needs. Losing it means shipping a new pinned pubkey (a hard cutover
+for already-installed apps), so back it up.
+
+### 2. GitHub Actions secrets
+| Secret | Value |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.citrate-updater/citrate-core.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty string (key was generated password-less) |
+| `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Larry Klosowski (DDHUG44QC7)` |
+| `KEYCHAIN_PASSWORD` | any throwaway string (CI builds a temp keychain) |
+| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | notarization (use an app-specific password) |
+| `CITRATE_CHAIN_READ_TOKEN` | fine-grained PAT, Contents:read on `citrate-chain` |
+
+### 3. Runtime deps prerelease (`runtime-deps`)
+The ~4.3 GB Gemma model, the llama runtime dylibs, and the three sidecars
+(`citrate`, `mem-mcp`, `node-agent`) are **not in git**. Upload them once to a
+GitHub prerelease tagged `runtime-deps`; the release workflow pulls them each build:
+
+```bash
+gh release create runtime-deps --prerelease --title "Runtime deps (bundle inputs)" \
+  src-tauri/binaries/citrate-aarch64-apple-darwin \
+  src-tauri/binaries/mem-mcp-aarch64-apple-darwin \
+  src-tauri/binaries/node-agent-aarch64-apple-darwin \
+  src-tauri/binaries/llama-server-aarch64-apple-darwin \
+  src-tauri/models/gemma-4-E4B-it-Q4_0.gguf
+# llama dylibs as one tarball:
+tar -czf /tmp/llama-runtime-arm64.tar.gz -C src-tauri/llama .
+gh release upload runtime-deps /tmp/llama-runtime-arm64.tar.gz
+```
+Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
+
+## Cutting a release
+1. Bump `version` in `src-tauri/tauri.conf.json` **and** `src-tauri/Cargo.toml`
+   (must match; the updater compares this to the feed's version).
+2. Tag and push:
+   ```bash
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
+   (or run the `release` workflow manually with the tag input).
+3. The workflow builds, signs, notarizes, and publishes the release + `latest.json`.
+4. Verify: an older installed build shows the **Update available** card within its
+   check interval (or on next launch), downloads with real byte progress, and
+   restarts into the new version.
+
+## Marking a patch critical
+Put `[critical]` (or a leading `critical:`) in the release body/notes. The app then
+**auto-downloads** that update (still an explicit **Restart now** — the app is never
+force-quit under the user).
+
+## First-run caveat (honest)
+This pipeline has not yet had a first live tagged run. The Apple signing +
+notarization legs and the `runtime-deps` staging must be proven by the first `v*`
+tag with the secrets in place. The app-side updater (plugin, config, key, UX) is
+built and unit-tested; producing a signed feed is what the first tag validates.

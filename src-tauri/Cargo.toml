@@ -19,6 +19,14 @@ citrate-core-kit = { path = "../kit" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-store = "2"
+# W2.1 — in-app remote auto-updates. Fetches a signed release feed (GitHub Releases
+# latest.json), verifies the Ed25519 updater signature against the pinned pubkey in
+# tauri.conf.json, downloads + applies on restart. @rule8: the private updater key
+# lives ONLY in CI secrets, never the repo.
+tauri-plugin-updater = "2"
+# W2.4 — relaunch the app after an update is staged (updater installs, process
+# plugin restarts into the new version).
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

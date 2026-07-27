@@ -156,23 +156,29 @@ describe("onS5Begin (tauri) — settles S5 ONLY on the REAL on-chain grant", () 
     expect(store.state.hasSbt).toBe(true);
   });
 
-  it("does NOT settle if the grant is on-chain but the entitlement is NOT paid+active", async () => {
+  it("settles on the ON-CHAIN grant even when the entitlement tier read lags (the 'stuck on step 5' fix)", async () => {
     const store = new Store();
-    // Entitlement leg fails: a free tier (grantStatus derives NOT paid → but even if
-    // the chain grant were present, the entitlement leg must gate settlement).
+    // The entitlement /userinfo leg can LAG the on-chain grant (session-token
+    // snapshot / roster propagation): here it still reports a non-paid tier while
+    // the grant has already landed on chain. Gating settlement on this stranded
+    // members whose grant was already real — so the on-chain grant is now the
+    // definitive settle signal, and the tier keeps refining separately.
     userinfoState.current = { ...userinfoState.current, tier: "public" } as never;
     await signInPaid(store);
-    // Chain grant IS present.
+    // The grant IS definitively on-chain: attributed stake >= requirement + SBT.
     grantState.current = { attributedStakeWei: REQUIREMENT_WEI, attributedSharesWei: REQUIREMENT_WEI, hasSbt: true };
 
     store.onS5Begin();
     await vi.advanceTimersByTimeAsync(3400);
     await flush();
-    for (let i = 0; i < 4; i++) {
-      await vi.advanceTimersByTimeAsync(5000);
-      await flush();
-    }
-    // The entitlement leg is not paid+active → S5 stays settling (never fabricated).
-    expect(store.state.s5).toBe("settling");
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+
+    // The on-chain grant (SBT + attributed stake) is definitive proof — S5 settles
+    // without waiting on the lagging entitlement read. hasGrant/hasSbt come ONLY
+    // from the real chain read (Rule 1), never fabricated.
+    expect(store.state.s5).toBe("settled");
+    expect(store.state.hasGrant).toBe(true);
+    expect(store.state.hasSbt).toBe(true);
   });
 });
