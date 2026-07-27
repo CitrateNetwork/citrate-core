@@ -6,7 +6,8 @@
       "binaries/citrate",
       "binaries/node-agent",
       "binaries/mem-mcp",
-      "binaries/llama-server"
+      "binaries/llama-server",
+      "binaries/ipfs"
     ],
     "resources": [
       "llama/*",

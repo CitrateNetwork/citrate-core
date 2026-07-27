@@ -1349,6 +1349,12 @@ export class Store {
       // "prov" to "off" during the spawn window. On failure (e.g. the node
       // binary is not bundled) show an HONEST error, never a faked sync (Rule 1).
       this.nodeStarting = true;
+      // Start the bundled IPFS daemon alongside the node (fire-and-forget; the node
+      // reaches it on :5001 for artifact/model ops — block production does not need
+      // it, so a failure here never blocks the node).
+      void bridge.node.startIpfs().catch(() => {
+        /* honest no-op: IPFS unavailable (dev/web) — the node still produces */
+      });
       void bridge.node
         .start()
         .then(() => {

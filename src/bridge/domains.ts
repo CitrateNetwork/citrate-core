@@ -166,6 +166,12 @@ export interface NodeDomain {
    */
   registerValidator(): Promise<CeremonyView>;
   /**
+   * Start the bundled IPFS (kubo) daemon that the node uses for artifact/model
+   * pin/add on 127.0.0.1:5001. Idempotent; started alongside the node. Tauri →
+   * `ipfs_start`; the sim shim is a no-op (no daemon in the web preview).
+   */
+  startIpfs(): Promise<void>;
+  /**
    * Q-A.2/Q-B.2 — the REAL recent node log lines (streamed stdout+stderr from the
    * supervisor's bounded ring). In Tauri these are live node output; a stopped
    * node honestly returns [] (never a fabricated template — Rule 1). In sim/web
