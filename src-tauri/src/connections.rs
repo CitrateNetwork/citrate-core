@@ -236,6 +236,566 @@ pub fn token_exchange_params(
     params
 }
 
+// ===========================================================================
+// W4.2 — runtime flow: dev-credential loader, fixed-port loopback listener,
+// token exchange, vault custody, and the Tauri command surface.
+//
+// The HTTP seam (`oidc::HttpClient` + `UreqClient`, ureq/rustls) and the custody
+// vault (`CustodyVault::put`/`custody_get`/`clear_slot`) are REUSED, not
+// re-implemented — this flow mirrors `oidc.rs` (Rule 9 in spirit). NO command
+// returns a token or the client secret across the invoke boundary (I-2 barrier):
+// `connection_start` returns a claim-free `ConnectionStatus`; the token is sealed
+// in the vault and read back only by in-process code.
+// ===========================================================================
+
+use crate::custody::CustodyVault;
+use crate::oidc::HttpClient;
+use serde::{Deserialize, Serialize};
+use tauri::State;
+use std::collections::HashMap;
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zeroize::Zeroize as _;
+
+/// How long the loopback listener waits for the provider callback before failing
+/// closed (the member gets time to consent in the system browser).
+const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Cap on the callback request bytes we read (first request line only).
+const MAX_CALLBACK_BYTES: usize = 8 * 1024;
+
+/// The three MCP services, for status enumeration.
+const ALL_SERVICES: [Service; 3] = [Service::GitHub, Service::GoogleDrive, Service::Notion];
+
+/// Errors surfaced by the connection flow. Mapped to a `String` at the command
+/// boundary; never carries a token, code, or secret.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnError {
+    /// No client id/secret configured for this service (dev file missing/absent).
+    NotConfigured,
+    /// `127.0.0.1:8975` is already bound (another sign-in in flight, or a stale one).
+    PortInUse,
+    /// A socket / browser-open failure.
+    Network,
+    /// No callback arrived within `CALLBACK_TIMEOUT`.
+    Timeout,
+    /// The callback `state` did not match the one we minted (CSRF — fail closed).
+    StateMismatch,
+    /// The provider rejected the code exchange, or the token response was unparsable.
+    TokenExchange,
+    /// The custody vault is locked/unavailable, or a put/get failed.
+    Vault,
+    /// The service id from the UI is not one of github/gdrive/notion.
+    UnknownService,
+}
+
+impl std::fmt::Display for ConnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ConnError::NotConfigured => "no OAuth credentials configured for this service",
+            ConnError::PortInUse => "the sign-in callback port (127.0.0.1:8975) is already in use",
+            ConnError::Network => "network or browser-open failure",
+            ConnError::Timeout => "timed out waiting for the browser callback",
+            ConnError::StateMismatch => "callback state mismatch (sign-in aborted)",
+            ConnError::TokenExchange => "the provider rejected the authorization code",
+            ConnError::Vault => "the secure vault is locked or unavailable",
+            ConnError::UnknownService => "unknown service",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Constant-time byte compare for the `state` CSRF check (no early-return timing
+/// leak on length-equal inputs).
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Absolute unix seconds, saturating to 0 before the epoch.
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The custody vault slot a service's token record lives under. Not `\0`-prefixed
+/// and outside the backend-reserved `oidc-`/`wallet-` prefixes, so it is a valid
+/// user slot.
+fn slot(service: Service) -> String {
+    format!("connection-{}", service.id())
+}
+
+/// The `oauth.dev.json` env-key prefix for a service (the file uses provider
+/// names, not the internal ids: GitHub→GITHUB, GoogleDrive→GOOGLE, Notion→NOTION).
+fn env_prefix(service: Service) -> &'static str {
+    match service {
+        Service::GitHub => "GITHUB",
+        Service::GoogleDrive => "GOOGLE",
+        Service::Notion => "NOTION",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dev-credential loader
+// ---------------------------------------------------------------------------
+
+/// A provider's OAuth client credentials. The secret is `Zeroizing` so it wipes on
+/// drop and never lands in a `{:?}`.
+struct ClientCreds {
+    client_id: String,
+    client_secret: Zeroizing<String>,
+}
+
+/// The dev credential file path: `CITRATE_OAUTH_DEV_FILE` if set (tests/CI), else
+/// `oauth.dev.json` relative to the working dir (dev). NOT bundled in a release —
+/// the ship path seals these in the OS keyring (Settings → Connections), a
+/// subsequent WP; until then, a release build has no file here and reports
+/// `NotConfigured` honestly (Rule 1).
+fn dev_credentials_path() -> PathBuf {
+    if let Ok(p) = std::env::var("CITRATE_OAUTH_DEV_FILE") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from("oauth.dev.json")
+}
+
+/// Parse the dotenv-style `KEY=VALUE` credential file (blank lines + `#` comments
+/// skipped). Despite the `.json` suffix the file is line-oriented `KEY=VALUE`.
+fn parse_dev_credentials(contents: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
+// Fixed-port loopback listener (mirrors oidc::LoopbackListener, port 8975)
+// ---------------------------------------------------------------------------
+
+/// A single-use loopback listener on the FIXED port (`OAUTH_LOOPBACK_PORT`) — the
+/// providers registered `redirect_uri` targets this exact port (directly for
+/// GitHub/Google; via the hosted bounce for Notion). Bound to `127.0.0.1` only
+/// (never a wildcard). One accepted connection, then consumed.
+struct ConnectionListener {
+    listener: TcpListener,
+    port: u16,
+}
+
+impl ConnectionListener {
+    /// Bind the production fixed port. `PortInUse` if a prior sign-in never released
+    /// it (fail closed rather than silently pick another port the provider hasn't
+    /// registered).
+    fn bind() -> std::result::Result<Self, ConnError> {
+        Self::bind_on(OAUTH_LOOPBACK_PORT)
+    }
+
+    /// Bind `127.0.0.1:<port>`. `port = 0` (tests) lets the OS pick a free port.
+    fn bind_on(port: u16) -> std::result::Result<Self, ConnError> {
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let listener = TcpListener::bind(addr).map_err(|_| ConnError::PortInUse)?;
+        let port = listener.local_addr().map_err(|_| ConnError::Network)?.port();
+        Ok(ConnectionListener { listener, port })
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Accept exactly one callback and return the parsed `(code, state)`, or fail
+    /// closed on timeout. Non-blocking poll against a wall-clock deadline so a
+    /// timeout drops `self` (and the socket) deterministically. Single-use.
+    fn wait_for_callback(self, timeout: Duration) -> std::result::Result<CallbackParams, ConnError> {
+        self.listener
+            .set_nonblocking(true)
+            .map_err(|_| ConnError::Network)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.listener.accept() {
+                Ok((stream, _peer)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .map_err(|_| ConnError::Network)?;
+                    return Self::serve_callback(stream);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(ConnError::Timeout);
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => return Err(ConnError::Network),
+            }
+        }
+    }
+
+    /// Parse the request, then write a minimal close-the-tab page. A foreign or
+    /// malformed request (no `code`/`state`) fails closed.
+    fn serve_callback(mut stream: TcpStream) -> std::result::Result<CallbackParams, ConnError> {
+        let params = Self::read_request(&mut stream);
+        let body = "<!doctype html><meta charset=utf-8><title>Citrate Core</title>\
+                    <body style=\"font-family:system-ui;padding:3rem;text-align:center\">\
+                    <p>Connection authorized. You can close this tab and return to \
+                    Citrate Core.</p>";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        let _ = stream.flush();
+        params
+    }
+
+    /// Read the first request line and extract `code` + `state` from its target.
+    fn read_request(stream: &mut TcpStream) -> std::result::Result<CallbackParams, ConnError> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|_| ConnError::Network)?;
+        let mut reader = BufReader::new(stream.try_clone().map_err(|_| ConnError::Network)?)
+            .take(MAX_CALLBACK_BYTES as u64);
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|_| ConnError::Network)?;
+        let target = line
+            .split_whitespace()
+            .nth(1)
+            .ok_or(ConnError::StateMismatch)?;
+        parse_callback_target(target)
+    }
+}
+
+/// The `(code, state)` parsed off the loopback callback. `code` is a bearer secret
+/// until exchanged, so `Debug` redacts both.
+#[derive(Clone, PartialEq, Eq)]
+struct CallbackParams {
+    code: String,
+    state: String,
+}
+
+impl std::fmt::Debug for CallbackParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackParams")
+            .field("code", &"<redacted>")
+            .field("state", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Parse `code` + `state` from a callback target (`/oauth/callback?code=..&state=..`).
+/// A missing/empty `code` or `state` (foreign or error callback) fails closed; we
+/// do not reveal which was missing.
+fn parse_callback_target(target: &str) -> std::result::Result<CallbackParams, ConnError> {
+    let parsed = url::Url::parse("http://127.0.0.1/")
+        .and_then(|base| base.join(target))
+        .map_err(|_| ConnError::StateMismatch)?;
+    let mut code = None;
+    let mut state = None;
+    for (k, v) in parsed.query_pairs() {
+        match k.as_ref() {
+            "code" => code = Some(v.into_owned()),
+            "state" => state = Some(v.into_owned()),
+            _ => {}
+        }
+    }
+    match (code, state) {
+        (Some(code), Some(state)) if !code.is_empty() && !state.is_empty() => {
+            Ok(CallbackParams { code, state })
+        }
+        _ => Err(ConnError::StateMismatch),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token exchange response + stored record + public status
+// ---------------------------------------------------------------------------
+
+/// The provider token response. Only `access_token` is required; the rest vary by
+/// provider (Google → refresh_token + expires_in; GitHub → scope; Notion →
+/// neither, plus workspace fields we ignore). Unknown fields are dropped by serde.
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    #[serde(default)]
+    token_type: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
+}
+
+/// The record sealed in the vault. Serialized to JSON, encrypted by custody; the
+/// plaintext buffer is zeroized immediately after the put.
+#[derive(Serialize)]
+struct StoredConnection<'a> {
+    access_token: &'a str,
+    refresh_token: Option<&'a str>,
+    token_type: Option<&'a str>,
+    scope: Option<&'a str>,
+    /// Absolute unix-seconds expiry, if the provider gave one.
+    expires_at: Option<u64>,
+    connected_at: u64,
+}
+
+/// The non-secret metadata read back for status — deserializes the SAME record but
+/// ignores the token fields (they never need to leave the vault for a status read).
+#[derive(Deserialize)]
+struct ConnMeta {
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    connected_at: Option<u64>,
+}
+
+/// The claim-free connection status crossing the invoke boundary — NO token.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionStatus {
+    /// Internal service id: `github` / `gdrive` / `notion`.
+    pub service: String,
+    pub connected: bool,
+    pub scope: Option<String>,
+    pub connected_at: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// The connection manager + its Tauri state
+// ---------------------------------------------------------------------------
+
+/// Process-wide MCP-connection manager: the HTTP client (ureq in prod, a test seam
+/// in tests) + the credential-file path.
+pub struct ConnectionManager {
+    http: Box<dyn HttpClient>,
+    creds_path: PathBuf,
+}
+
+impl ConnectionManager {
+    pub fn new(http: Box<dyn HttpClient>, creds_path: PathBuf) -> Self {
+        ConnectionManager { http, creds_path }
+    }
+
+    /// Load a service's client credentials from the dev file. Missing file or key →
+    /// `NotConfigured` (honest: the flow cannot start without real creds).
+    fn creds(&self, service: Service) -> std::result::Result<ClientCreds, ConnError> {
+        let contents =
+            std::fs::read_to_string(&self.creds_path).map_err(|_| ConnError::NotConfigured)?;
+        let map = parse_dev_credentials(&contents);
+        let prefix = env_prefix(service);
+        let id = map
+            .get(&format!("{prefix}_CLIENT_ID"))
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .ok_or(ConnError::NotConfigured)?;
+        let secret = map
+            .get(&format!("{prefix}_CLIENT_SECRET"))
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .ok_or(ConnError::NotConfigured)?;
+        Ok(ClientCreds {
+            client_id: id,
+            client_secret: Zeroizing::new(secret),
+        })
+    }
+
+    /// Run the full connect flow: bind the fixed loopback, mint PKCE + state, open
+    /// the authorize URL in the system browser (via `open`), await one callback,
+    /// verify `state` (constant-time), then exchange + seal the token. Blocking
+    /// (the caller runs it off the main thread).
+    pub fn connect(
+        &self,
+        service: Service,
+        vault: &CustodyVault,
+        open: impl Fn(&str) -> std::result::Result<(), ConnError>,
+    ) -> std::result::Result<ConnectionStatus, ConnError> {
+        // Fail fast before opening a browser / binding a socket if unconfigured.
+        let creds = self.creds(service)?;
+        let listener = ConnectionListener::bind()?;
+        let state = random_state();
+        let pkce = Pkce::new();
+        let auth_url = authorize_url(service, &creds.client_id, &state, &pkce.challenge);
+        open(&auth_url)?;
+        let cb = listener.wait_for_callback(CALLBACK_TIMEOUT)?;
+        if !ct_eq(cb.state.as_bytes(), state.as_bytes()) {
+            return Err(ConnError::StateMismatch);
+        }
+        self.exchange_and_store(service, &creds, vault, &cb.code, &pkce.verifier)
+    }
+
+    /// Exchange the authorization `code` (with the PKCE verifier) and seal the
+    /// resulting token in the vault. Factored out so it is unit-tested over an
+    /// injected HTTP seam + a headless vault, without a live provider or socket.
+    fn exchange_and_store(
+        &self,
+        service: Service,
+        creds: &ClientCreds,
+        vault: &CustodyVault,
+        code: &str,
+        verifier: &str,
+    ) -> std::result::Result<ConnectionStatus, ConnError> {
+        let params = token_exchange_params(
+            service,
+            &creds.client_id,
+            creds.client_secret.as_str(),
+            code,
+            verifier,
+        );
+        let form: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let body = self
+            .http
+            .post_form(service.token_endpoint(), &form)
+            .map_err(|_| ConnError::TokenExchange)?;
+        let tok: TokenResponse =
+            serde_json::from_str(&body).map_err(|_| ConnError::TokenExchange)?;
+
+        let connected_at = now_unix();
+        let expires_at = tok.expires_in.map(|e| connected_at.saturating_add(e));
+        let record = StoredConnection {
+            access_token: &tok.access_token,
+            refresh_token: tok.refresh_token.as_deref(),
+            token_type: tok.token_type.as_deref(),
+            scope: tok.scope.as_deref(),
+            expires_at,
+            connected_at,
+        };
+        let mut bytes = serde_json::to_vec(&record).map_err(|_| ConnError::TokenExchange)?;
+        let put = vault.put(&slot(service), &mut bytes);
+        bytes.zeroize();
+        put.map_err(|_| ConnError::Vault)?;
+
+        Ok(ConnectionStatus {
+            service: service.id().to_string(),
+            connected: true,
+            scope: tok.scope,
+            connected_at: Some(connected_at),
+        })
+    }
+
+    /// The connection status of all three services. A present, readable vault slot
+    /// is `connected`; an absent slot OR a locked vault reads as not-connected
+    /// (a status read never forces an unlock and never surfaces the token).
+    pub fn status(&self, vault: &CustodyVault) -> Vec<ConnectionStatus> {
+        ALL_SERVICES
+            .iter()
+            .map(|&svc| match vault.custody_get(&slot(svc)) {
+                Ok(bytes) => {
+                    let meta: ConnMeta = serde_json::from_slice(&bytes).unwrap_or(ConnMeta {
+                        scope: None,
+                        connected_at: None,
+                    });
+                    ConnectionStatus {
+                        service: svc.id().to_string(),
+                        connected: true,
+                        scope: meta.scope,
+                        connected_at: meta.connected_at,
+                    }
+                }
+                Err(_) => ConnectionStatus {
+                    service: svc.id().to_string(),
+                    connected: false,
+                    scope: None,
+                    connected_at: None,
+                },
+            })
+            .collect()
+    }
+
+    /// Forget a service's token (clear the vault slot). Idempotent-ish: a missing
+    /// slot is not an error worth surfacing differently.
+    pub fn disconnect(
+        &self,
+        service: Service,
+        vault: &CustodyVault,
+    ) -> std::result::Result<(), ConnError> {
+        vault
+            .clear_slot(&slot(service))
+            .map_err(|_| ConnError::Vault)
+    }
+}
+
+/// Managed Tauri state: the process-wide connection manager.
+pub struct ConnectionState(pub ConnectionManager);
+
+/// Build the connection state for a Tauri build: production ureq client + the dev
+/// credential path.
+pub fn build_connection_state() -> ConnectionState {
+    ConnectionState(ConnectionManager::new(
+        Box::new(crate::oidc::UreqClient),
+        dev_credentials_path(),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Tauri command surface (I-2: none returns a token or secret)
+// ---------------------------------------------------------------------------
+
+/// `connection_start` — run the loopback-PKCE flow for one MCP service, opening the
+/// provider's authorize page in the SYSTEM browser (third-party OAuth forbids
+/// embedded webviews). ASYNC so Tauri runs it off the main thread while the
+/// loopback blocks. Returns a claim-free `ConnectionStatus`; the token is sealed in
+/// the vault, never returned.
+#[tauri::command]
+pub async fn connection_start(
+    app: tauri::AppHandle,
+    state: State<'_, ConnectionState>,
+    custody: State<'_, crate::custody::CustodyState>,
+    service: String,
+) -> std::result::Result<ConnectionStatus, String> {
+    let svc = Service::from_id(&service).ok_or_else(|| ConnError::UnknownService.to_string())?;
+    let app_for_open = app.clone();
+    let open = move |url: &str| -> std::result::Result<(), ConnError> {
+        use tauri_plugin_opener::OpenerExt;
+        app_for_open
+            .opener()
+            .open_url(url.to_string(), None::<&str>)
+            .map_err(|_| ConnError::Network)
+    };
+    state
+        .0
+        .connect(svc, &custody.0, open)
+        .map_err(|e| e.to_string())
+}
+
+/// `connection_status` — the connect/disconnect state of all three services. No
+/// token crosses the boundary.
+#[tauri::command]
+pub fn connection_status(
+    state: State<'_, ConnectionState>,
+    custody: State<'_, crate::custody::CustodyState>,
+) -> std::result::Result<Vec<ConnectionStatus>, String> {
+    Ok(state.0.status(&custody.0))
+}
+
+/// `connection_disconnect` — forget a service's sealed token.
+#[tauri::command]
+pub fn connection_disconnect(
+    state: State<'_, ConnectionState>,
+    custody: State<'_, crate::custody::CustodyState>,
+    service: String,
+) -> std::result::Result<(), String> {
+    let svc = Service::from_id(&service).ok_or_else(|| ConnError::UnknownService.to_string())?;
+    state
+        .0
+        .disconnect(svc, &custody.0)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +911,255 @@ mod tests {
         // an empty secret (public client) is dropped rather than sent blank
         let pub_client = token_exchange_params(Service::GoogleDrive, "id", "", "c", "v");
         assert!(pub_client.iter().all(|(k, _)| *k != "client_secret"));
+    }
+
+    // =======================================================================
+    // W4.2 runtime flow — loader, listener, exchange+custody. The vault runs
+    // headless over an in-memory keyring; the token exchange runs over an
+    // injected HTTP seam (a trait impl, the same pattern oidc_tests/ai_tests
+    // use — Rule 1: a TEST seam, never a live socket presented as real). The
+    // listener test uses a REAL loopback socket.
+    // =======================================================================
+
+    use crate::custody::{CustodyError, CustodyVault, Keyring};
+    use std::collections::HashMap as StdHashMap;
+    use std::net::{Ipv4Addr, TcpStream};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Duration;
+
+    const PASS: &[u8] = b"correct horse battery staple";
+
+    #[derive(Default)]
+    struct FakeKeyring {
+        store: StdMutex<StdHashMap<String, Vec<u8>>>,
+    }
+    impl Keyring for FakeKeyring {
+        fn get(&self, a: &str) -> std::result::Result<Option<Vec<u8>>, CustodyError> {
+            Ok(self.store.lock().unwrap().get(a).cloned())
+        }
+        fn set(&self, a: &str, s: &[u8]) -> std::result::Result<(), CustodyError> {
+            self.store.lock().unwrap().insert(a.to_string(), s.to_vec());
+            Ok(())
+        }
+        fn delete(&self, a: &str) -> std::result::Result<(), CustodyError> {
+            self.store.lock().unwrap().remove(a);
+            Ok(())
+        }
+    }
+
+    /// A fresh, unlocked custody vault at a unique temp path.
+    fn fresh_vault() -> CustodyVault {
+        let mut p = std::env::temp_dir();
+        let uniq = format!("citrate-core-conn-test-{}-{}.enc", std::process::id(), {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            N.fetch_add(1, Ordering::Relaxed)
+        });
+        p.push(uniq);
+        let _ = std::fs::remove_file(&p);
+        let vault = CustodyVault::new(Box::new(FakeKeyring::default()), p, 30);
+        vault.init(&mut PASS.to_vec()).unwrap();
+        vault.unlock(&mut PASS.to_vec()).unwrap();
+        vault
+    }
+
+    /// An injected HTTP seam: records the last request and returns a scripted token
+    /// body. Shared via `Arc` so the test can inspect what was sent.
+    struct FakeHttp {
+        last_url: StdMutex<Option<String>>,
+        last_form: StdMutex<Vec<(String, String)>>,
+        response: String,
+    }
+    struct SharedHttp(Arc<FakeHttp>);
+    impl crate::oidc::HttpClient for SharedHttp {
+        fn get(
+            &self,
+            _url: &str,
+            _bearer: Option<&str>,
+        ) -> std::result::Result<String, crate::oidc::AuthError> {
+            Ok(String::new())
+        }
+        fn post_form(
+            &self,
+            url: &str,
+            form: &[(&str, &str)],
+        ) -> std::result::Result<String, crate::oidc::AuthError> {
+            *self.0.last_url.lock().unwrap() = Some(url.to_string());
+            *self.0.last_form.lock().unwrap() =
+                form.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            Ok(self.0.response.clone())
+        }
+    }
+
+    #[test]
+    fn parse_dev_credentials_skips_comments_blanks_and_trims() {
+        let raw = "# a comment\n\nGITHUB_CLIENT_ID = abc \n  \nNOTION_CLIENT_SECRET=sek\n";
+        let m = parse_dev_credentials(raw);
+        assert_eq!(m.get("GITHUB_CLIENT_ID").map(String::as_str), Some("abc"));
+        assert_eq!(m.get("NOTION_CLIENT_SECRET").map(String::as_str), Some("sek"));
+        assert!(!m.contains_key("# a comment"));
+    }
+
+    #[test]
+    fn env_prefix_maps_service_to_file_key() {
+        assert_eq!(env_prefix(Service::GitHub), "GITHUB");
+        assert_eq!(env_prefix(Service::GoogleDrive), "GOOGLE");
+        assert_eq!(env_prefix(Service::Notion), "NOTION");
+    }
+
+    #[test]
+    fn creds_reads_id_and_secret_from_file_and_missing_is_not_configured() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("citrate-conn-creds-{}.json", std::process::id()));
+        std::fs::write(&p, "NOTION_CLIENT_ID=nid\nNOTION_CLIENT_SECRET=nsec\n").unwrap();
+        let mgr = ConnectionManager::new(Box::new(SharedHttp(Arc::new(FakeHttp {
+            last_url: StdMutex::new(None),
+            last_form: StdMutex::new(Vec::new()),
+            response: String::new(),
+        }))), p.clone());
+        let c = mgr.creds(Service::Notion).unwrap();
+        assert_eq!(c.client_id, "nid");
+        assert_eq!(c.client_secret.as_str(), "nsec");
+        // GitHub keys are absent → NotConfigured (honest). Match rather than
+        // unwrap_err so ClientCreds need not derive Debug (it holds a secret).
+        assert!(matches!(
+            mgr.creds(Service::GitHub),
+            Err(ConnError::NotConfigured)
+        ));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn ct_eq_is_length_and_content_sensitive() {
+        assert!(ct_eq(b"abcdef", b"abcdef"));
+        assert!(!ct_eq(b"abcdef", b"abcdeg"));
+        assert!(!ct_eq(b"abc", b"abcd"));
+    }
+
+    #[test]
+    fn slot_is_namespaced_and_not_backend_reserved() {
+        assert_eq!(slot(Service::Notion), "connection-notion");
+        assert!(!crate::custody::is_backend_reserved_slot(&slot(Service::Notion)));
+        assert!(!slot(Service::GitHub).starts_with('\0'));
+    }
+
+    #[test]
+    fn parse_callback_target_extracts_code_and_state() {
+        let p = parse_callback_target("/oauth/callback?code=the-code&state=st8").unwrap();
+        assert_eq!(p.code, "the-code");
+        assert_eq!(p.state, "st8");
+    }
+
+    #[test]
+    fn parse_callback_target_missing_param_fails_closed() {
+        // A denial (error=access_denied, no code) or foreign hit → StateMismatch.
+        assert_eq!(
+            parse_callback_target("/oauth/callback?error=access_denied&state=s").unwrap_err(),
+            ConnError::StateMismatch
+        );
+        assert_eq!(
+            parse_callback_target("/oauth/callback?code=c").unwrap_err(),
+            ConnError::StateMismatch
+        );
+    }
+
+    #[test]
+    fn listener_round_trip_parses_callback_over_a_real_socket() {
+        let listener = ConnectionListener::bind_on(0).unwrap();
+        let port = listener.port();
+        let h = std::thread::spawn(move || {
+            let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            s.write_all(
+                b"GET /oauth/callback?code=abc123&state=xyz789 HTTP/1.1\r\nHost: x\r\n\r\n",
+            )
+            .unwrap();
+        });
+        let cb = listener.wait_for_callback(Duration::from_secs(5)).unwrap();
+        h.join().unwrap();
+        assert_eq!(cb.code, "abc123");
+        assert_eq!(cb.state, "xyz789");
+    }
+
+    #[test]
+    fn listener_times_out_when_no_callback_arrives() {
+        let listener = ConnectionListener::bind_on(0).unwrap();
+        assert_eq!(
+            listener.wait_for_callback(Duration::from_millis(80)).unwrap_err(),
+            ConnError::Timeout
+        );
+    }
+
+    #[test]
+    fn exchange_and_store_seals_token_sends_hosted_redirect_and_hides_it_from_status() {
+        let fake = Arc::new(FakeHttp {
+            last_url: StdMutex::new(None),
+            last_form: StdMutex::new(Vec::new()),
+            // A Notion-shaped response: access_token + workspace fields we ignore.
+            response: r#"{"access_token":"ntn_tok_secret","token_type":"bearer","bot_id":"b","workspace_id":"w"}"#.to_string(),
+        });
+        let mgr = ConnectionManager::new(Box::new(SharedHttp(fake.clone())), PathBuf::from("unused"));
+        let vault = fresh_vault();
+        let creds = ClientCreds {
+            client_id: "n_id".to_string(),
+            client_secret: Zeroizing::new("n_secret".to_string()),
+        };
+        let status = mgr
+            .exchange_and_store(Service::Notion, &creds, &vault, "the-code", "the-verifier")
+            .unwrap();
+
+        // The status carries NO token, only connect facts.
+        assert_eq!(status.service, "notion");
+        assert!(status.connected);
+        assert!(status.connected_at.is_some());
+
+        // The exchange sent the HOSTED https redirect_uri (Notion), the code, the
+        // PKCE verifier, and the client creds.
+        let form = fake.last_form.lock().unwrap().clone();
+        let get = |k: &str| form.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!(get("redirect_uri").as_deref(), Some(HOSTED_REDIRECT_URI));
+        assert_eq!(get("code").as_deref(), Some("the-code"));
+        assert_eq!(get("code_verifier").as_deref(), Some("the-verifier"));
+        assert_eq!(get("client_id").as_deref(), Some("n_id"));
+        assert_eq!(get("client_secret").as_deref(), Some("n_secret"));
+        assert_eq!(
+            fake.last_url.lock().unwrap().as_deref(),
+            Some("https://api.notion.com/v1/oauth/token")
+        );
+
+        // The token IS sealed in the vault (readable only in-process).
+        let sealed = vault.custody_get(&slot(Service::Notion)).unwrap();
+        assert!(String::from_utf8_lossy(&sealed).contains("ntn_tok_secret"));
+    }
+
+    #[test]
+    fn status_reflects_stored_then_disconnected() {
+        let fake = Arc::new(FakeHttp {
+            last_url: StdMutex::new(None),
+            last_form: StdMutex::new(Vec::new()),
+            response: r#"{"access_token":"t","scope":"repo"}"#.to_string(),
+        });
+        let mgr = ConnectionManager::new(Box::new(SharedHttp(fake)), PathBuf::from("unused"));
+        let vault = fresh_vault();
+        let creds = ClientCreds {
+            client_id: "g".to_string(),
+            client_secret: Zeroizing::new("s".to_string()),
+        };
+        // Nothing connected yet.
+        let before = mgr.status(&vault);
+        assert!(before.iter().all(|s| !s.connected));
+
+        mgr.exchange_and_store(Service::GitHub, &creds, &vault, "c", "v").unwrap();
+        let after = mgr.status(&vault);
+        let gh = after.iter().find(|s| s.service == "github").unwrap();
+        assert!(gh.connected);
+        assert_eq!(gh.scope.as_deref(), Some("repo"));
+        // The other two remain disconnected.
+        assert!(after.iter().filter(|s| s.service != "github").all(|s| !s.connected));
+
+        // Disconnect forgets it.
+        mgr.disconnect(Service::GitHub, &vault).unwrap();
+        let gone = mgr.status(&vault);
+        assert!(gone.iter().find(|s| s.service == "github").unwrap().connected == false);
     }
 }

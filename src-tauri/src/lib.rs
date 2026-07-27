@@ -113,6 +113,10 @@ pub fn run() {
             // provider when the model is ready + the server healthy, else the
             // gateway (if a cgk_ key is configured), else the demo.
             app.manage(serve::build_serve_state(&app.handle().clone())?);
+            // W4 — MCP connections (Google Drive / Notion / GitHub OAuth). The
+            // loopback-PKCE flow + fixed-port callback + vaulted token custody. No
+            // command returns a token; secrets are sealed in the custody vault.
+            app.manage(connections::build_connection_state());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -138,6 +142,13 @@ pub fn run() {
             oidc::auth_refresh,
             oidc::auth_logout,
             oidc::kyc_start,
+            // W4 — MCP connections (OAuth). connection_start runs the loopback-PKCE
+            // flow in the system browser and seals the token in the vault;
+            // connection_status/disconnect read/forget it. NO command returns a
+            // token or client secret (I-2 barrier; see connections::tests).
+            connections::connection_start,
+            connections::connection_status,
+            connections::connection_disconnect,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
