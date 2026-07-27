@@ -203,6 +203,15 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async stop() {
         await invoke("node_stop");
       },
+      // W1.3 — register the node as a validator (registerValidator{value:32k})
+      // as a pending ceremony; returns the decoded view for human approval.
+      async registerValidator() {
+        return invoke<CeremonyView>("node_register_validator");
+      },
+      // Start the bundled kubo daemon (idempotent) — the node reaches it on :5001.
+      async startIpfs() {
+        await invoke("ipfs_start");
+      },
       // Q-A.2/Q-B.2 — the REAL recent node log lines, streamed from the
       // supervised node's stdout+stderr ring (Rust `node_logs`). Live node
       // output in the packaged app; a stopped node returns [] honestly. No

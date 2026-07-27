@@ -235,6 +235,34 @@ impl NodeManager {
             .clone()
     }
 
+    /// W1.1 (WP-11) — the node's ed25519 proposer pubkey, read from the secret
+    /// `proposer.key` the node minted in its data dir. Honest error until the node
+    /// has started once (the key is minted on first run). This is the registered
+    /// consensus identity, NOT derivable from the coinbase.
+    pub fn proposer_pubkey(&self) -> std::result::Result<String, String> {
+        crate::validator::read_proposer_pubkey(&self.data_dir)
+    }
+
+    /// W1.3 — sign the validator registration with the node's `proposer.key`,
+    /// returning `(proposer_pubkey, ed25519_sig)`. The seed never leaves the
+    /// validator module (read + zeroized there). Honest error before the node has
+    /// minted its key.
+    pub fn sign_registration(
+        &self,
+        chain_id: u64,
+        registry: &[u8; 20],
+        staker: &[u8; 20],
+        nonce: u64,
+    ) -> std::result::Result<([u8; 32], [u8; 64]), String> {
+        crate::validator::sign_registration_from_data_dir(
+            &self.data_dir,
+            chain_id,
+            registry,
+            staker,
+            nonce,
+        )
+    }
+
     /// Load the 32-byte storage key from the OS keyring, minting it on first use
     /// (@rule8). Returned as a hex `Zeroizing<String>` ready to hand to the child
     /// via env; the raw bytes are zeroized on drop. An unreachable keyring is a
@@ -476,12 +504,13 @@ pub fn node_start(
     state.0.start().map_err(|e| e.to_string())
 }
 
-/// W1.1 — the node's on-chain proposer identity: the `coinbase` (the member's
-/// wallet address the node mines to) and the ed25519 `proposer_pubkey`
-/// deterministically derived from it. The pubkey is the value registered in
-/// `ValidatorRegistry` and the key for `validatorInfo`/reward reads — the app
-/// derives it locally, byte-for-byte with the node's own signing key (see
-/// `validator.rs`). Requires an unlocked vault; honest error if locked/no wallet.
+/// W1.1 (WP-11) — the node's on-chain proposer identity: the `coinbase` (the
+/// member's wallet address the node mines to) and the ed25519 `proposer_pubkey`
+/// READ from the node's minted `proposer.key`. The pubkey is a persisted secret's
+/// public half — the value registered in `ValidatorRegistry` and the key for
+/// `validatorInfo`/reward reads — NOT derivable from the coinbase (WP-11). The
+/// coinbase needs an unlocked vault; the pubkey needs the node to have started once
+/// (mint-on-first-run) — either leg errors honestly.
 #[derive(serde::Serialize)]
 pub struct ProposerIdentity {
     pub coinbase: String,
@@ -491,14 +520,77 @@ pub struct ProposerIdentity {
 
 #[tauri::command]
 pub fn node_proposer_identity(
+    state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<ProposerIdentity, String> {
     let info = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
-    let proposer_pubkey = crate::validator::proposer_pubkey_hex(&info.address)?;
+    let proposer_pubkey = state.0.proposer_pubkey()?;
     Ok(ProposerIdentity {
         coinbase: info.address,
         proposer_pubkey,
     })
+}
+
+/// W1.3 — the validator bond (SALT wei) the member sends as `msg.value` on
+/// `registerValidator`. Matches the membership grant + `ValidatorRegistry.minStake`
+/// (32,000 SALT). If minStake ever rises above this the register reverts (BadStake)
+/// and the app surfaces the honest revert rather than a fabricated success.
+const VALIDATOR_STAKE_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
+/// Explicit gas for `registerValidator` (ed25519-verify precompile + storage
+/// writes + possible eviction). A calldata tx MUST carry explicit gas or the
+/// ceremony rejects it as undecodable.
+const REGISTER_GAS: u64 = 600_000;
+
+/// Build the `{from,to,value,data,gas,chainId}` JSON the ceremony's `Transaction`
+/// intent consumes (same shape as `staking::encode_stake_json`).
+fn encode_register_json(from: &str, registry: &str, value_wei: u128, calldata: &[u8]) -> String {
+    serde_json::json!({
+        "from": from,
+        "to": registry,
+        "value": format!("0x{value_wei:x}"),
+        "data": format!("0x{}", hex::encode(calldata)),
+        "gas": format!("0x{REGISTER_GAS:x}"),
+        "chainId": format!("0x{:x}", 40204u64),
+    })
+    .to_string()
+}
+
+/// W1.3 — register the member's node as a block-producing validator. Reads the
+/// live `registrationNonce`, signs the register digest with the node's
+/// `proposer.key`, and submits `registerValidator{value:32k}(pubkey, sig)` as a
+/// PENDING ceremony (Rule 3 — the human approves; `sign_and_broadcast` signs the
+/// EIP-155 tx from the member EOA + broadcasts). `staker = msg.sender = the EOA`,
+/// so the member owns the validator + its rewards. Requires the vault UNLOCKED and
+/// the node to have minted its key (started once); either leg errors honestly.
+#[tauri::command]
+pub fn node_register_validator(
+    state: State<'_, NodeState>,
+    custody: State<'_, crate::custody::CustodyState>,
+    ceremony: State<'_, crate::ceremony::CeremonyState>,
+) -> std::result::Result<crate::ceremony::CeremonyView, String> {
+    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let staker = crate::validator::parse_address_20(&wallet.address)?;
+    let registry = crate::validator::parse_address_20(NODE_VALIDATOR_REGISTRY_VALUE)?;
+    // Live replay-guard nonce for the digest (real read, never fabricated).
+    let rpc = crate::rpc::RpcClient::citrate();
+    let nonce =
+        crate::validator::read_registration_nonce(&rpc, NODE_VALIDATOR_REGISTRY_VALUE, &staker)?;
+    // Sign the registration with the node's proposer key (seed stays in validator.rs).
+    let (pubkey, sig) = state.0.sign_registration(40204, &registry, &staker, nonce)?;
+    let calldata = crate::validator::register_validator_calldata(&pubkey, &sig);
+    let raw = encode_register_json(
+        &wallet.address,
+        NODE_VALIDATOR_REGISTRY_VALUE,
+        VALIDATOR_STAKE_WEI,
+        &calldata,
+    );
+    let intent = crate::ceremony::SignatureIntent {
+        origin: "local-user".to_string(),
+        kind: crate::ceremony::IntentKind::Transaction,
+        chain_id: 40204,
+        raw,
+    };
+    Ok(ceremony.0.request(intent))
 }
 
 #[tauri::command]

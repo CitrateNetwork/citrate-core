@@ -22,6 +22,7 @@ mod connections;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
+mod ipfs;
 mod membership;
 mod memory;
 mod model;
@@ -117,6 +118,11 @@ pub fn run() {
             // loopback-PKCE flow + fixed-port callback + vaulted token custody. No
             // command returns a token; secrets are sealed in the custody vault.
             app.manage(connections::build_connection_state());
+            // IPFS — the bundled kubo daemon under the SidecarSupervisor. The
+            // `citrate` node reaches it on 127.0.0.1:5001 for artifact + model
+            // pin/add/ls (block production does NOT need it). Repo lives in the app
+            // data dir; started on demand via ipfs_start (alongside the node).
+            app.manage(ipfs::build_ipfs_state(&app.handle().clone())?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -190,6 +196,9 @@ pub fn run() {
             // W1.1 — the node's proposer identity (coinbase + derived ed25519
             // proposer pubkey) for the validator status surface + registration.
             node::node_proposer_identity,
+            // W1.3 — register the member's node as a block-producing validator
+            // (registerValidator{value:32k} via the ceremony; staker = the EOA).
+            node::node_register_validator,
             // node logs — Q-A.2/Q-B.2 REAL streamed stdout+stderr from the
             // supervised node's bounded ring buffer. Fills the Node LOG panel in
             // a packaged build (was permanently empty: stdout was inherited then
@@ -293,6 +302,10 @@ pub fn run() {
             serve::model_serve_stop,
             serve::model_serve_status,
             serve::model_inference_state,
+            // IPFS — the bundled kubo daemon (artifact/model pin/add on 127.0.0.1:5001).
+            ipfs::ipfs_start,
+            ipfs::ipfs_stop,
+            ipfs::ipfs_status,
             // open an external federation link (https only) in the system browser.
             shell::open_external,
             // wallet activity — REAL indexed 40204 tx history from the CitrateScan

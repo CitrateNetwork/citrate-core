@@ -26,6 +26,12 @@ dist-ssr
 # Rust workspace target (workspace root is repo root)
 target/
 
+# W4 (OAuth): dev-only OAuth client IDs/secrets for Google/Notion/GitHub MCP
+# connections. Real credentials — NEVER committed. Ship path seals these in the
+# OS keyring via Settings → Connections; this file is a dev-testing convenience
+# read by src-tauri at startup. See docs/OAUTH_SETUP_RUNBOOK.md.
+src-tauri/oauth.dev.json
+
 # CORE-C1.1 (D-C1-1): the bundled citrate-node sidecar binary is large and is
 # NOT committed. Tauri's externalBin resolves `binaries/citrate-<target-triple>`
 # at bundle time; per-platform CI cross-build of these is an S7 item. Keep the

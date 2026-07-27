@@ -1349,6 +1349,12 @@ export class Store {
       // "prov" to "off" during the spawn window. On failure (e.g. the node
       // binary is not bundled) show an HONEST error, never a faked sync (Rule 1).
       this.nodeStarting = true;
+      // Start the bundled IPFS daemon alongside the node (fire-and-forget; the node
+      // reaches it on :5001 for artifact/model ops — block production does not need
+      // it, so a failure here never blocks the node).
+      void bridge.node.startIpfs().catch(() => {
+        /* honest no-op: IPFS unavailable (dev/web) — the node still produces */
+      });
       void bridge.node
         .start()
         .then(() => {
@@ -1577,6 +1583,28 @@ export class Store {
     }
     // Q-E.1 (@rule8, P0) — STOP: surface the decoded deposit for human approval.
     this.openWalletReview("stake", "Add stake", view);
+  }
+
+  /**
+   * W1.3 (@rule8) — activate the member's node as a block-producing validator.
+   * Builds the pending `registerValidator{value:32k}` ceremony
+   * (bridge.node.registerValidator → node_register_validator: reads the live nonce,
+   * signs the register digest with the node's `proposer.key`, staker = the member
+   * EOA), then STOPS and surfaces the decoded tx for human approval. On approval it
+   * broadcasts (B1.4): the 32k bond leaves the wallet into ValidatorRegistry, the
+   * node enters the active set, and it begins producing + earning the subsidy.
+   * Only meaningful once the node is synced + its proposer.key is minted; a
+   * not-ready node (or web-dev) errors honestly — never a fabricated activation.
+   */
+  async activateValidator(): Promise<void> {
+    let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
+    try {
+      view = await bridge.node.registerValidator();
+    } catch (err) {
+      this.toast("Validator activation unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    this.openWalletReview("stake", "Activate validator · bond 32,000 SALT", view, "32,000 SALT validator bond");
   }
 
   /**

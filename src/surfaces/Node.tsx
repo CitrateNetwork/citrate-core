@@ -295,6 +295,24 @@ export function Node({ store, s }: SurfaceProps) {
 
               <div className="surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
                 <span className="eyebrow">Validator</span>
+                {/* W1.3 — once the node is synced (proposer.key minted), the member
+                    can bond the 32k and become a block producer. staker = the EOA;
+                    the tx is approved through the ceremony. Shown only in the
+                    packaged app when synced-but-not-yet-validating. */}
+                {TAURI && s.node === "synced" && (
+                  <>
+                    <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
+                      Your node is synced. Activate it as a validator to bond your 32,000 SALT and start producing blocks + earning.
+                    </p>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      style={{ alignSelf: "flex-start" }}
+                      onClick={() => void store.activateValidator()}
+                    >
+                      Activate validator · bond 32,000 SALT
+                    </button>
+                  </>
+                )}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Blocks proposed</span>
                   <span className="mono tabular" style={{ fontSize: 12 }}>{blocksProposedStr}</span>
