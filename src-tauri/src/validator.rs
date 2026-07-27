@@ -48,6 +48,107 @@ pub fn read_proposer_pubkey(data_dir: &std::path::Path) -> Result<String, String
     Ok(format!("0x{}", hex::encode(pubkey)))
 }
 
+// ---------------------------------------------------------------------------
+// W1.3 — validator registration (register the node as a block producer).
+//
+// The member's smart wallet calls `registerValidator{value: 32k SALT}(pubkey, sig)`.
+// `staker = msg.sender` (the wallet) becomes the validator owner; `bondedStake =
+// msg.value` is the 32k bond. `sig` is the ed25519 proposer key signing the
+// EIP-712-style register digest — proof of proposer-key control, binding the
+// pubkey to the staker. All three builders mirror citrate-chain
+// `core/consensus/src/crypto.rs` + `ValidatorRegistry.sol` byte-for-byte (golden
+// vectors below); a drift there fails these tests rather than the on-chain revert.
+// ---------------------------------------------------------------------------
+
+use sha3::{Digest as _, Keccak256};
+
+/// `registerValidator(bytes32,bytes)` selector (`keccak256(sig)[..4]`).
+pub const REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0x10, 0xf5, 0x3b, 0xa1];
+/// `registrationNonce(address)` selector — the eth_call that reads the staker's
+/// current nonce for the digest.
+pub const REGISTRATION_NONCE_SELECTOR: [u8; 4] = [0x7c, 0x36, 0x0a, 0x1d];
+/// The EIP-712-ish type string the contract's `REGISTER_TYPEHASH` hashes.
+const REGISTER_TYPE: &[u8] =
+    b"Register(uint256 chainId,address registry,address staker,bytes32 proposerPubkey,uint256 nonce)";
+
+fn keccak256(bytes: &[u8]) -> [u8; 32] {
+    let mut h = Keccak256::new();
+    h.update(bytes);
+    h.finalize().into()
+}
+
+/// A `u64` as a 32-byte big-endian ABI word.
+fn word_u64(n: u64) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[24..].copy_from_slice(&n.to_be_bytes());
+    w
+}
+
+/// A 20-byte address right-aligned in a 32-byte ABI word.
+fn word_addr(addr: &[u8; 20]) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[12..].copy_from_slice(addr);
+    w
+}
+
+/// The registration digest the ed25519 proposer key signs — exactly what
+/// `ValidatorRegistry.registerValidator` reconstructs:
+/// `keccak256(abi.encode(REGISTER_TYPEHASH, chainId, registry, staker, pubkey, nonce))`.
+pub fn registration_digest(
+    chain_id: u64,
+    registry: &[u8; 20],
+    staker: &[u8; 20],
+    proposer_pubkey: &[u8; 32],
+    nonce: u64,
+) -> [u8; 32] {
+    let mut enc = Vec::with_capacity(6 * 32);
+    enc.extend_from_slice(&keccak256(REGISTER_TYPE));
+    enc.extend_from_slice(&word_u64(chain_id));
+    enc.extend_from_slice(&word_addr(registry));
+    enc.extend_from_slice(&word_addr(staker));
+    enc.extend_from_slice(proposer_pubkey);
+    enc.extend_from_slice(&word_u64(nonce));
+    keccak256(&enc)
+}
+
+/// Sign the registration digest with the node's proposer key (its 32-byte
+/// `proposer.key` seed). The contract verifies `abi.encodePacked(digest)` = the
+/// 32-byte digest, so we sign exactly those 32 bytes (canonical → `verify_strict`).
+/// Returns the 64-byte ed25519 signature.
+pub fn sign_registration(
+    proposer_seed: &[u8; 32],
+    chain_id: u64,
+    registry: &[u8; 20],
+    staker: &[u8; 20],
+    nonce: u64,
+) -> [u8; 64] {
+    use ed25519_dalek::Signer as _;
+    let signing_key = SigningKey::from_bytes(proposer_seed);
+    let proposer_pubkey = signing_key.verifying_key().to_bytes();
+    let digest = registration_digest(chain_id, registry, staker, &proposer_pubkey, nonce);
+    signing_key.sign(&digest).to_bytes()
+}
+
+/// ABI-encode the `registerValidator(bytes32 proposerPubkey, bytes ed25519Sig)`
+/// calldata (selector + head + tail). The 64-byte sig is already 32-aligned.
+pub fn register_validator_calldata(proposer_pubkey: &[u8; 32], ed25519_sig: &[u8; 64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 32 * 3 + 64);
+    out.extend_from_slice(&REGISTER_VALIDATOR_SELECTOR);
+    out.extend_from_slice(proposer_pubkey); // head word 1: bytes32
+    out.extend_from_slice(&word_u64(0x40)); // head word 2: offset to the bytes arg
+    out.extend_from_slice(&word_u64(64)); // tail: byte length
+    out.extend_from_slice(ed25519_sig); // tail: the 64 sig bytes (32-aligned)
+    out
+}
+
+/// ABI-encode the `registrationNonce(address staker)` eth_call input.
+pub fn registration_nonce_calldata(staker: &[u8; 20]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 32);
+    out.extend_from_slice(&REGISTRATION_NONCE_SELECTOR);
+    out.extend_from_slice(&word_addr(staker));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +214,68 @@ mod tests {
         std::fs::write(dir.join(PROPOSER_KEY_FILE), [0u8; 16]).unwrap(); // too short
         assert!(read_proposer_pubkey(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- W1.3 registration (golden vectors from the canonical crate + contract) ----
+
+    fn addr20(hex_str: &str) -> [u8; 20] {
+        let raw = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+        let b = hex::decode(raw).unwrap();
+        let mut a = [0u8; 20];
+        a.copy_from_slice(&b);
+        a
+    }
+    const REGISTRY: &str = "0x61d44d8a14443646b756905410be951e6ece95a6";
+    const STAKER: &str = "0x00000000000000000000000000000000000000aa";
+
+    #[test]
+    fn selectors_match_the_contract_signatures() {
+        assert_eq!(REGISTER_VALIDATOR_SELECTOR, keccak256(b"registerValidator(bytes32,bytes)")[..4]);
+        assert_eq!(REGISTRATION_NONCE_SELECTOR, keccak256(b"registrationNonce(address)")[..4]);
+    }
+
+    #[test]
+    fn registration_digest_matches_canonical_golden() {
+        let pubkey = proposer_pubkey_from_seed(&[0x01; 32]);
+        let digest = registration_digest(40204, &addr20(REGISTRY), &addr20(STAKER), &pubkey, 0);
+        assert_eq!(
+            hex::encode(digest),
+            "dede65b456a15ed489052ce3bc2ee40421c8a8e9f9de087d931898921d7525d9"
+        );
+    }
+
+    #[test]
+    fn sign_registration_matches_canonical_golden() {
+        // ed25519 is deterministic (RFC 8032) → the sig is a stable golden. This is
+        // the proof-of-proposer-key-control the contract's _ed25519Verify checks.
+        let sig = sign_registration(&[0x01; 32], 40204, &addr20(REGISTRY), &addr20(STAKER), 0);
+        assert_eq!(
+            hex::encode(sig),
+            "67b6447494e64f7afc3a324771f52ef6b77f5a1b8b32b703656692c7a655e07590726236c5a47555cd8fa6e8cc1564c5f1e376a4c5531eed85f63c24c7ec3c00"
+        );
+    }
+
+    #[test]
+    fn register_validator_calldata_is_abi_encoded_bytes32_bytes() {
+        let pubkey = proposer_pubkey_from_seed(&[0x01; 32]);
+        let sig = sign_registration(&[0x01; 32], 40204, &addr20(REGISTRY), &addr20(STAKER), 0);
+        let cd = register_validator_calldata(&pubkey, &sig);
+        assert_eq!(&cd[..4], &REGISTER_VALIDATOR_SELECTOR, "selector");
+        assert_eq!(&cd[4..36], &pubkey, "bytes32 pubkey head");
+        // offset to the dynamic bytes = 0x40 (two head words)
+        assert_eq!(cd[67], 0x40);
+        // byte length = 64
+        assert_eq!(cd[99], 64);
+        assert_eq!(&cd[100..164], &sig, "the 64 sig bytes");
+        assert_eq!(cd.len(), 164, "4 + 32 + 32 + 32 + 64");
+    }
+
+    #[test]
+    fn registration_nonce_calldata_is_selector_plus_padded_address() {
+        let cd = registration_nonce_calldata(&addr20(STAKER));
+        assert_eq!(&cd[..4], &REGISTRATION_NONCE_SELECTOR);
+        assert_eq!(cd.len(), 36);
+        assert_eq!(&cd[16..36], &addr20(STAKER), "address right-aligned in the word");
+        assert_eq!(&cd[4..16], &[0u8; 12], "left-padded with zeros");
     }
 }
