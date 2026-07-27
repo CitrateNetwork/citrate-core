@@ -32,6 +32,7 @@ import type {
   GrantStatus,
   ModelStatus,
   NodeLogLine,
+  ConnectionInfo,
 } from "../domains";
 import { Unavailable } from "../types";
 
@@ -380,6 +381,21 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
     comms: {
       async connections() {
         return unavailable("comms", "connections");
+      },
+    },
+
+    // ---- connections: REAL W4 MCP OAuth (loopback-PKCE) ----
+    // start runs the flow in the system browser + seals the token in the vault;
+    // status/disconnect read/forget it. NO command returns a token (I-2).
+    connections: {
+      async status(): Promise<ConnectionInfo[]> {
+        return invoke<ConnectionInfo[]>("connection_status");
+      },
+      async start(service: string): Promise<ConnectionInfo> {
+        return invoke<ConnectionInfo>("connection_start", { service });
+      },
+      async disconnect(service: string): Promise<void> {
+        await invoke("connection_disconnect", { service });
       },
     },
   };

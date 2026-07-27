@@ -42,6 +42,14 @@ const aiMock: { map: Map<string, { baseURL: string; model: string; apiKey: strin
 // flips it to exercise the notPresent/downloading/ready branches.
 const modelMock: { status: unknown } = { status: { state: "notPresent" } };
 
+// W4 — the mocked vault-sealed connection state. A test flips `connected` by
+// invoking connection_start; the RESULT never carries a token (I-2 boundary).
+const connMock: Record<string, { connected: boolean; scope: string | null; connectedAt: number | null }> = {
+  github: { connected: false, scope: null, connectedAt: null },
+  gdrive: { connected: false, scope: null, connectedAt: null },
+  notion: { connected: false, scope: null, connectedAt: null },
+};
+
 const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   switch (cmd) {
     case "config_read":
@@ -329,6 +337,20 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
       // gatewayConfigured flag so a test can assert it was passed through.
       const a = (args ?? {}) as { gatewayConfigured: boolean };
       return a.gatewayConfigured ? "gateway-only" : "demo";
+    }
+    // W4 — MCP connections (OAuth). status returns all three; start marks the
+    // service connected + returns its status; disconnect clears it. No token.
+    case "connection_status":
+      return Object.entries(connMock).map(([service, v]) => ({ service, ...v }));
+    case "connection_start": {
+      const service = String((args ?? {}).service);
+      connMock[service] = { connected: true, scope: service === "github" ? "repo" : null, connectedAt: 1_770_000_000 };
+      return { service, ...connMock[service] };
+    }
+    case "connection_disconnect": {
+      const service = String((args ?? {}).service);
+      connMock[service] = { connected: false, scope: null, connectedAt: null };
+      return undefined;
     }
     default:
       throw `unavailable: ${cmd} is not wired in this build`;
@@ -913,5 +935,35 @@ describe("tauri adapter — model domain is wired to the real download+verify+se
     expect(invokeMock).toHaveBeenCalledWith("model_download", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_verify", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_serve_start", undefined);
+  });
+});
+
+// W4 — the connections domain runs the real OAuth loopback flow through the Rust
+// commands; the token is sealed in the vault and NEVER returned to the frontend.
+describe("tauri adapter — connections domain runs real OAuth, token never leaks (W4)", () => {
+  it("status invokes connection_status and returns all three services", async () => {
+    const bridge = createTauriBridge();
+    const st = await bridge.connections.status();
+    expect(invokeMock).toHaveBeenCalledWith("connection_status", undefined);
+    expect(st.map((c) => c.service).sort()).toEqual(["gdrive", "github", "notion"]);
+  });
+
+  it("start passes { service } and returns a connected status with NO token field", async () => {
+    const bridge = createTauriBridge();
+    const info = await bridge.connections.start("github");
+    expect(invokeMock).toHaveBeenCalledWith("connection_start", { service: "github" });
+    expect(info.connected).toBe(true);
+    expect(info.scope).toBe("repo");
+    // The whole result carries only connect facts — never a token/secret.
+    expect(JSON.stringify(info)).not.toMatch(/token|secret|access/i);
+  });
+
+  it("disconnect invokes connection_disconnect with { service } and forgets it", async () => {
+    const bridge = createTauriBridge();
+    await bridge.connections.start("notion");
+    await bridge.connections.disconnect("notion");
+    expect(invokeMock).toHaveBeenCalledWith("connection_disconnect", { service: "notion" });
+    const after = await bridge.connections.status();
+    expect(after.find((c) => c.service === "notion")?.connected).toBe(false);
   });
 });

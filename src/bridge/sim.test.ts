@@ -403,3 +403,27 @@ describe("sim adapter — model domain is an honest web-dev preview (BC-3)", () 
     expect(st.totalBytes).toBe(5_335_289_824);
   });
 });
+
+// W4 — connections are desktop-only: the sim preview is HONESTLY disconnected
+// (no fabricated "connected") and cannot run the OAuth flow.
+describe("sim adapter — connections are desktop-only, honestly disconnected (W4)", () => {
+  it("status returns all three services disconnected (not fabricated)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const st = await bridge.connections.status();
+    expect(st.map((c) => c.service).sort()).toEqual(["gdrive", "github", "notion"]);
+    expect(st.every((c) => c.connected === false)).toBe(true);
+  });
+
+  it("start throws Unavailable — the OAuth loopback cannot run in the web preview", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await expect(bridge.connections.start("notion")).rejects.toThrow(/desktop|unavailable|connections/i);
+  });
+
+  it("disconnect is a harmless no-op in the preview (nothing stored)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await expect(bridge.connections.disconnect("github")).resolves.toBeUndefined();
+  });
+});

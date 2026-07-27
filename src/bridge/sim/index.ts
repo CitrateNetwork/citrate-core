@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import { GRAPH, NODE_LOG_TEMPLATES } from "../../data/seed";
@@ -644,6 +644,25 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async connections() {
         assertSimAllowed("comms.connections");
         return s().connections;
+      },
+    },
+
+    // ---- connections: SIM is honestly disconnected (no backend, no token flow).
+    // status returns all-disconnected (true, not fabricated); start is desktop-only.
+    connections: {
+      async status(): Promise<ConnectionInfo[]> {
+        return ["github", "gdrive", "notion"].map((service) => ({
+          service,
+          connected: false,
+          scope: null,
+          connectedAt: null,
+        }));
+      },
+      async start(): Promise<ConnectionInfo> {
+        throw new Unavailable("connections", "start");
+      },
+      async disconnect(): Promise<void> {
+        // Nothing is stored in the preview — a no-op is the honest result.
       },
     },
   };

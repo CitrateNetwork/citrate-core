@@ -28,7 +28,7 @@ import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
-import type { AiProviderStatus } from "../bridge/domains";
+import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
@@ -202,10 +202,69 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   // handshake, no keyring token storage, no revocation. Connect/Disconnect are
   // therefore honestly DISABLED (a truthful "connections unavailable in this
   // build" note), not buttons that fake a "connected" flag or toast an excuse.
-  const connRows = CONN.map(([, name, scope]) => ({
+  // W4 — the three MCP services with a REAL OAuth backend (loopback-PKCE +
+  // vaulted token). The rest of CONN stay honest "later" placeholders.
+  const WIRED_CONN = new Set(["github", "gdrive", "notion"]);
+  const connRows = CONN.map(([id, name, scope]) => ({
+    id,
     name,
     scope: scope + " · MCP tool",
+    wired: WIRED_CONN.has(id),
   }));
+
+  // Live connection status (null = not yet loaded). `connBusy` holds the id of the
+  // service whose flow is in flight; `connErr` surfaces a failure honestly.
+  const [conns, setConns] = useState<ConnectionInfo[] | null>(null);
+  const [connBusy, setConnBusy] = useState<string | null>(null);
+  const [connErr, setConnErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (s.sSec !== "connections") return;
+    let live = true;
+    bridge.connections
+      .status()
+      .then((c) => {
+        if (live) setConns(c);
+      })
+      .catch(() => {
+        if (live) setConns([]); // honest: status read failed
+      });
+    return () => {
+      live = false;
+    };
+  }, [s.sSec]);
+  const connFor = (id: string): ConnectionInfo | null =>
+    conns?.find((c) => c.service === id) ?? null;
+  const refreshConns = async () => {
+    try {
+      setConns(await bridge.connections.status());
+    } catch {
+      /* leave prior state; a failed refresh is not fatal */
+    }
+  };
+  const doConnect = async (id: string) => {
+    setConnErr(null);
+    setConnBusy(id);
+    try {
+      await bridge.connections.start(id);
+      await refreshConns();
+    } catch (e) {
+      setConnErr(`${id}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setConnBusy(null);
+    }
+  };
+  const doDisconnect = async (id: string) => {
+    setConnErr(null);
+    setConnBusy(id);
+    try {
+      await bridge.connections.disconnect(id);
+      await refreshConns();
+    } catch (e) {
+      setConnErr(`${id}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setConnBusy(null);
+    }
+  };
 
   // ---------- CORE-AI1 (@rule8) — AI providers (keyring-sealed BYO-key) ----------
   const statusFor = (pid: string) => aiStatuses.find((p) => p.id === pid);
@@ -447,22 +506,51 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line-1)", display: "flex", flexDirection: "column", gap: 3 }}>
                 <span className="eyebrow">Connections · mount as MCP tools for your agent</span>
                 <span style={{ fontSize: 12, color: "var(--tx-3)" }}>
-                  OAuth connections are not available in this build — no token flow runs, so nothing is stored in the OS keyring yet.
+                  {BRIDGE_MODE === "tauri"
+                    ? "Connect a service and its OAuth sign-in opens in your system browser; on success the token is sealed in the OS keyring — never in the app bundle or the browser."
+                    : "Connections are desktop-only — this preview shows every service as disconnected and cannot run the OAuth flow."}
                 </span>
               </div>
-              {connRows.map((cn) => (
-                <div key={cn.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 18px", borderBottom: "1px solid var(--line-1)" }}>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{cn.name}</span>
-                    <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 1 }}>
-                      {cn.scope}
-                    </span>
-                  </span>
-                  <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
-                    Connect
-                  </button>
+              {connErr && (
+                <div style={{ padding: "10px 18px", borderBottom: "1px solid var(--line-1)", fontSize: 11.5, color: "var(--err, var(--warn))" }}>
+                  {connErr}
                 </div>
-              ))}
+              )}
+              {connRows.map((cn) => {
+                const st = cn.wired ? connFor(cn.id) : null;
+                const busy = connBusy === cn.id;
+                const connected = !!st?.connected;
+                return (
+                  <div key={cn.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 18px", borderBottom: "1px solid var(--line-1)" }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>
+                        {cn.name}
+                        {connected && (
+                          <span className="mono" style={{ fontSize: 9.5, color: "var(--ok)", marginLeft: 8 }}>
+                            ● connected
+                          </span>
+                        )}
+                      </span>
+                      <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 1 }}>
+                        {cn.wired ? cn.scope : cn.scope + " · not yet available"}
+                      </span>
+                    </span>
+                    {!cn.wired ? (
+                      <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
+                        Connect
+                      </button>
+                    ) : connected ? (
+                      <button className="btn btn-ghost btn-sm" onClick={() => doDisconnect(cn.id)} disabled={busy}>
+                        {busy ? "…" : "Disconnect"}
+                      </button>
+                    ) : (
+                      <button className="btn btn-secondary btn-sm" onClick={() => doConnect(cn.id)} disabled={busy || BRIDGE_MODE !== "tauri"}>
+                        {busy ? "Waiting for browser…" : "Connect"}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
               Agent access to a connection is capability-scoped, and every write it proposes — an event, an issue, a page — queues for your approval like any other tool write.
