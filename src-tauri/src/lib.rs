@@ -18,6 +18,7 @@ pub use citrate_core_kit::{ceremony, config, custody, oidc, rpc, supervisor, txd
 mod activity;
 mod agent;
 mod ai;
+mod docs_ingest;
 mod earnings;
 mod grant_status;
 mod membership;
@@ -212,6 +213,9 @@ pub fn run() {
             memory::memory_recall,
             memory::memory_search,
             memory::memory_neighbors,
+            // W3.2 — first-run docs preload into the citrate-docs tenant (gated +
+            // idempotent; no-op until the corpus is curated + BGE is wired).
+            memory::memory_ingest_docs,
             memory::memory_constellation,
             // seam domains — honest Unavailable until each later phase (A1.3).
             // memory_assert stays a seam stub: the assert WRITE path routes
@@ -252,6 +256,9 @@ pub fn run() {
             ai::ai_provider_status,
             ai::ai_clear_provider,
             ai::ai_chat,
+            // W3.3 — one agentic turn: gateway completion WITH tools; returns the
+            // assistant message (content and/or tool_calls). The webview loops.
+            ai::ai_chat_tools,
             // BC-3.2 — LOCAL inference against the bundled llama-server on the
             // loopback endpoint (NO key). Fails closed on any non-loopback URL.
             ai::ai_chat_local,

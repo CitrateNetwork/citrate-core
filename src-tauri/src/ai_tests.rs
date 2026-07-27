@@ -544,3 +544,110 @@ fn inference_state_selection_is_honest_per_branch() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// W3.3 — agentic tool loop (ai_chat_tools / build_chat_body_with_tools)
+// ---------------------------------------------------------------------------
+
+/// A chat-completions response whose assistant turn is a tool call (no content).
+fn tool_call_response(id: &str, name: &str, args_json: &str) -> String {
+    json!({
+        "id": "chatcmpl-t",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": args_json }
+                }]
+            }
+        }]
+    })
+    .to_string()
+}
+
+const TOOLS_SPEC: &str = r#"[{"type":"function","function":{"name":"memory_search","description":"search mem","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}}]"#;
+
+#[test]
+fn chat_tools_posts_tools_and_returns_the_tool_call_message() {
+    let shared = SharedHttp::new(vec![Ok(tool_call_response(
+        "call_1",
+        "memory_search",
+        "{\"query\":\"staking\"}",
+    ))]);
+    let mgr = mgr_with(&shared);
+    mgr.set_provider("gateway", GATEWAY_BASE, "citrate-1", "cgk_live_KEY")
+        .expect("seal");
+
+    let messages = json!([{ "role": "user", "content": "how does staking work?" }]).to_string();
+    let context = json!({ "tier": "commercial" }).to_string();
+    let out = mgr
+        .chat_tools("gateway", &messages, TOOLS_SPEC, &context)
+        .expect("chat_tools");
+
+    // The returned assistant message preserves tool_calls for the frontend loop.
+    let msg: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(msg["role"], "assistant");
+    assert_eq!(msg["tool_calls"][0]["function"]["name"], "memory_search");
+
+    // The request body carried the tools spec + the tool-aware system prompt.
+    let (url, bearer, body) = shared.calls().pop().unwrap();
+    assert_eq!(url, "https://infer.citrate.ai/v1/chat/completions");
+    assert_eq!(bearer, "cgk_live_KEY");
+    assert!(body["tools"].is_array(), "tools spec attached");
+    let sys = body["messages"][0]["content"].as_str().unwrap();
+    assert!(sys.contains("tools"), "tool-aware system prompt used");
+}
+
+#[test]
+fn chat_tools_returns_plain_content_when_the_model_is_done() {
+    let shared = SharedHttp::new(vec![Ok(completion_response("Staking locks 32k SALT."))]);
+    let mgr = mgr_with(&shared);
+    mgr.set_provider("gateway", GATEWAY_BASE, "citrate-1", "cgk_KEY")
+        .expect("seal");
+    let out = mgr
+        .chat_tools("gateway", &json!([]).to_string(), TOOLS_SPEC, &json!({}).to_string())
+        .expect("chat_tools");
+    let msg: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(msg["content"], "Staking locks 32k SALT.");
+    assert!(msg.get("tool_calls").is_none(), "no tool calls on a final answer");
+}
+
+#[test]
+fn build_chat_body_with_tools_forwards_the_tool_protocol_shapes() {
+    // An assistant turn with tool_calls, then a tool result carrying tool_call_id.
+    let messages = json!([
+        { "role": "user", "content": "recall my staking" },
+        { "role": "assistant", "content": null, "tool_calls": [
+            { "id": "c1", "type": "function", "function": { "name": "memory_recall", "arguments": "{}" } }
+        ]},
+        { "role": "tool", "tool_call_id": "c1", "content": "32000 SALT staked" }
+    ])
+    .to_string();
+    let body = build_chat_body_with_tools("m", &messages, TOOLS_SPEC, "{}").unwrap();
+    let msgs = body["messages"].as_array().unwrap();
+    // system prompt + context + 3 forwarded turns.
+    let asst = msgs.iter().find(|m| m["role"] == "assistant").unwrap();
+    assert_eq!(asst["tool_calls"][0]["id"], "c1", "assistant tool_calls forwarded");
+    let tool = msgs.iter().find(|m| m["role"] == "tool").unwrap();
+    assert_eq!(tool["tool_call_id"], "c1", "tool result carries its call id");
+    assert_eq!(tool["content"], "32000 SALT staked");
+}
+
+#[test]
+fn parse_chat_message_rejects_an_empty_assistant_shape() {
+    // No content AND no tool_calls → BadResponse (never a fabricated blank turn).
+    let empty = json!({ "choices": [{ "message": { "role": "assistant" } }] }).to_string();
+    assert!(matches!(parse_chat_message(&empty), Err(AiError::BadResponse)));
+}
+
+#[test]
+fn build_chat_body_with_tools_rejects_a_non_array_tools_spec() {
+    assert!(matches!(
+        build_chat_body_with_tools("m", "[]", "{\"not\":\"an array\"}", "{}"),
+        Err(AiError::BadResponse)
+    ));
+}
+

@@ -453,6 +453,12 @@ pub struct MemoryManager {
     transport: Box<dyn MemoryTransport>,
     /// The live supervisor, present only while the daemon is running.
     sup: Mutex<Option<Supervisor>>,
+    /// W3.2/BGE — the bundled BGE model dir (`config.json` + `tokenizer.json` +
+    /// `model.safetensors`). When present, the daemon is spawned with
+    /// `CITRATE_BGE_MODEL_DIR` (load offline, pinned) + `CITRATE_MEM_EMBED=bge`
+    /// (bootstrap a fresh store to BGE for real semantic recall). `None` → the
+    /// daemon has no embedder available and stays lexical (honest).
+    model_dir: Option<PathBuf>,
 }
 
 /// The bridge status shape surfaced to the MemoryDomain seam. PUBLIC facts only —
@@ -502,7 +508,15 @@ impl MemoryManager {
             crash_record_path,
             transport,
             sup: Mutex::new(None),
+            model_dir: None,
         }
+    }
+
+    /// Set the bundled BGE model dir (enables real semantic embedding). Builder
+    /// style so `new`'s signature (and every test) stays stable.
+    pub fn with_model_dir(mut self, model_dir: Option<PathBuf>) -> Self {
+        self.model_dir = model_dir;
+        self
     }
 
     /// The socket path (surfaced to the UI + agent config snippet).
@@ -560,6 +574,18 @@ impl MemoryManager {
             ],
         );
         spec.env = vec![(MEM_STORE_KEY_ENV.to_string(), store_key_hex.to_string())];
+        // BGE — when the bundled model dir is present, tell the daemon to load the
+        // embedder offline from it (CITRATE_BGE_MODEL_DIR) and to bootstrap a fresh
+        // store to BGE (CITRATE_MEM_EMBED=bge) so semantic recall is real, not
+        // lexical. Absent the model, neither is set and the daemon stays lexical
+        // (honest — `semantic` in the status reflects this).
+        if let Some(dir) = &self.model_dir {
+            spec.env.push((
+                "CITRATE_BGE_MODEL_DIR".to_string(),
+                dir.to_string_lossy().to_string(),
+            ));
+            spec.env.push(("CITRATE_MEM_EMBED".to_string(), "bge".to_string()));
+        }
         spec
     }
 
@@ -618,8 +644,9 @@ impl MemoryManager {
         MemoryStatus {
             state: state.to_string(),
             socket_path: self.socket_path.to_string_lossy().to_string(),
-            // The bge model is an S7 bundle item; honestly report it absent.
-            semantic: false,
+            // Semantic recall is real IFF the BGE model is bundled + wired into the
+            // spawn (CITRATE_BGE_MODEL_DIR). Absent it, the daemon stays lexical.
+            semantic: self.model_dir.is_some(),
         }
     }
 
@@ -641,6 +668,54 @@ impl MemoryManager {
             .transport
             .call_tool("memory.recall", json!({ "repo": tenant, "budget": budget }))?;
         Ok(parse_result(tenant, &text))
+    }
+
+    /// `memory.assert` — author a claim into a tenant (W3.2 docs preload). The
+    /// daemon EMBEDS the content at write time (BGE); an unembedded node is
+    /// invisible to every semantic query forever, so callers must only ingest when
+    /// the embedder is available (see `docs_ingest`). This authors under the
+    /// daemon's mem author identity — NOT the user's custody key — so it is a local
+    /// mem-dag write, not a Rule-3 ceremony signature. Returns the daemon's raw
+    /// tool-text (which carries the new node id) or an honest transport error.
+    pub fn assert(&self, tenant: &str, content: &str, kind: &str) -> Result<String> {
+        self.transport.call_tool(
+            "memory.assert",
+            json!({ "repo": tenant, "content": content, "kind": kind }),
+        )
+    }
+
+    /// W3.2 — first-run docs preload into the `citrate-docs` tenant. GATED + honest:
+    ///  - skips unless the BGE embedder is wired (`semantic`) — else it would author
+    ///    invisible (unembedded) nodes (Rule 1);
+    ///  - skips if the daemon is not running;
+    ///  - skips if the tenant is already seeded (idempotent — first run only);
+    ///  - skips if the corpus is empty (ships empty until curated, Rule 7).
+    /// Otherwise chunks each doc and authors it. The report says what happened.
+    pub fn ingest_docs_corpus(
+        &self,
+        docs: &[(String, String)],
+    ) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
+        use crate::docs_ingest::{ingest_docs, IngestReport, DOCS_TENANT, MAX_CHUNK_CHARS};
+        if self.model_dir.is_none() {
+            return Ok(IngestReport::skipped("not-semantic"));
+        }
+        if !self.is_running() {
+            return Ok(IngestReport::skipped("not-running"));
+        }
+        if docs.is_empty() {
+            return Ok(IngestReport::skipped("empty-corpus"));
+        }
+        // Idempotent: a non-empty tenant means we already seeded it on a prior run.
+        match self.recall(DOCS_TENANT, 1) {
+            Ok(r) if r.total_in_tenant > 0 => return Ok(IngestReport::skipped("already-seeded")),
+            Ok(_) => {}
+            Err(e) => return Err(format!("docs-tenant probe failed: {e}")),
+        }
+        ingest_docs(docs, MAX_CHUNK_CHARS, |c| {
+            self.assert(DOCS_TENANT, &c.content, "reference")
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     }
 
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
@@ -713,6 +788,44 @@ fn resolve_mem_mcp_bin<R: tauri::Runtime>(
     crate::supervisor::resolve_external_bin(app, "mem-mcp")
 }
 
+/// Resolve the bundled BGE model dir (`models/bge-base-en-v1.5` with `config.json`
+/// + `tokenizer.json` + `model.safetensors`). `CITRATE_BGE_MODEL_DIR` override
+/// first (dev/tests), else the Tauri resource dir. Returns `None` (not an error)
+/// when the model is not present — the daemon then stays lexical, and the status
+/// honestly reports `semantic: false` rather than pretending semantic recall works.
+fn resolve_bge_model_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    use tauri::Manager;
+    let has_all = |d: &PathBuf| {
+        d.join("config.json").is_file()
+            && d.join("tokenizer.json").is_file()
+            && d.join("model.safetensors").is_file()
+    };
+    if let Ok(p) = std::env::var("CITRATE_BGE_MODEL_DIR") {
+        let d = PathBuf::from(p);
+        if has_all(&d) {
+            return Some(d);
+        }
+    }
+    let d = app.path().resource_dir().ok()?.join("models/bge-base-en-v1.5");
+    has_all(&d).then_some(d)
+}
+
+/// Resolve the bundled Citrate docs corpus dir (`docs-corpus/`, markdown files).
+/// `CITRATE_DOCS_CORPUS_DIR` override first (dev), else the Tauri resource dir.
+/// `None` when absent — the corpus ships EMPTY until curated (Rule 7), so a missing
+/// dir is the honest "nothing to ingest yet" state, not an error.
+fn resolve_docs_corpus_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    use tauri::Manager;
+    if let Ok(p) = std::env::var("CITRATE_DOCS_CORPUS_DIR") {
+        let d = PathBuf::from(p);
+        if d.is_dir() {
+            return Some(d);
+        }
+    }
+    let d = app.path().resource_dir().ok()?.join("docs-corpus");
+    d.is_dir().then_some(d)
+}
+
 /// Build the managed memory state from a live app handle: the real OS keyring,
 /// the bundled daemon binary, a per-user encrypted store dir + socket inside the
 /// app data dir, a crash-record path, and the production Unix-socket transport.
@@ -727,14 +840,18 @@ pub fn build_memory_state<R: tauri::Runtime>(
     let crash_record_path = mem_dir.join("crash-records.jsonl");
     let bin = resolve_mem_mcp_bin(app)?;
     let transport = Box::new(UnixSocketTransport::new(socket_path.clone()));
-    Ok(MemoryState(MemoryManager::new(
-        Box::new(crate::custody::OsKeyring),
-        bin,
-        store_path,
-        socket_path,
-        crash_record_path,
-        transport,
-    )))
+    let model_dir = resolve_bge_model_dir(app);
+    Ok(MemoryState(
+        MemoryManager::new(
+            Box::new(crate::custody::OsKeyring),
+            bin,
+            store_path,
+            socket_path,
+            crash_record_path,
+            transport,
+        )
+        .with_model_dir(model_dir),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -747,6 +864,22 @@ use tauri::State;
 #[tauri::command]
 pub fn memory_status(state: State<'_, MemoryState>) -> std::result::Result<MemoryStatus, String> {
     Ok(state.0.status())
+}
+
+/// W3.2 — first-run docs preload. Reads the bundled `docs-corpus/` and authors it
+/// into the `citrate-docs` tenant. Idempotent + gated (see `ingest_docs_corpus`):
+/// safe to call on every launch — it skips once seeded, when lexical-only, or when
+/// the corpus is empty. The report says what happened (never fabricates a count).
+#[tauri::command]
+pub fn memory_ingest_docs<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, MemoryState>,
+) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
+    let docs = match resolve_docs_corpus_dir(&app) {
+        Some(dir) => crate::docs_ingest::read_corpus_dir(&dir)?,
+        None => Vec::new(),
+    };
+    state.0.ingest_docs_corpus(&docs)
 }
 
 #[tauri::command]

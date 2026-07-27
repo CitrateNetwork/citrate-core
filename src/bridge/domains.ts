@@ -260,6 +260,13 @@ export interface MemoryStatus {
   socketPath: string;
   semantic: boolean;
 }
+/** W3.2 — result of the first-run docs preload (or why it was skipped). */
+export interface DocsIngestReport {
+  docs: number;
+  chunks: number;
+  /** "not-semantic" | "not-running" | "already-seeded" | "empty-corpus" when nothing ran. */
+  skipped?: string;
+}
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
@@ -270,6 +277,9 @@ export interface MemoryDomain {
   neighbors(tenant: string, idPrefix: string, budget?: number): Promise<MemoryNeighbor[]>;
   /** Recall the personal + chain-state tenants for the Storage constellation. */
   constellation(budget?: number): Promise<MemoryResult[]>;
+  /** W3.2 — idempotent first-run preload of the bundled Citrate docs into the
+   *  citrate-docs tenant. Gated in Rust (semantic + running + empty tenant). */
+  ingestDocs(): Promise<DocsIngestReport>;
 }
 
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
@@ -310,6 +320,19 @@ export interface ChatDomain {
    * The Tauri impl invokes `ai_chat`; the sim impl is honestly Unavailable.
    */
   infer(providerId: string, messagesJson: string, contextJson: string): Promise<string>;
+  /**
+   * W3.3 — one AGENTIC turn: like `infer`, but the request carries a `tools` spec
+   * and the result is the assistant MESSAGE JSON (content and/or `tool_calls`) so
+   * the frontend runs the tool loop. Rust reads the STORED baseURL + sealed key
+   * (invariants 1 + 3). The Tauri impl invokes `ai_chat_tools`; the sim impl is
+   * honestly Unavailable.
+   */
+  inferTools(
+    providerId: string,
+    messagesJson: string,
+    toolsJson: string,
+    contextJson: string,
+  ): Promise<string>;
   /**
    * BC-3.2 — REAL LOCAL inference against the bundled `llama-server` (llama.cpp)
    * on the loopback endpoint, with NO api key. The endpoint is derived IN RUST

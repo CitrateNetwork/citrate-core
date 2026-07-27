@@ -72,6 +72,26 @@ not claim to. If asked to perform an action, explain that it happens through the
 app's own controls (which route every write through a human-approved signature \
 ceremony).";
 
+/// W3.3 — the system prompt for the AGENTIC (tool-calling) chat path. Unlike
+/// `AGENT_SYSTEM_PROMPT_REAL`, this session HAS tools: the model may read the
+/// member's memory graph (incl. preloaded Citrate docs), read live chain state,
+/// navigate the app, and PROPOSE (never execute) memory writes. General-purpose:
+/// it answers both Citrate-specific and general questions.
+const AGENT_SYSTEM_PROMPT_TOOLS: &str = "You are the Citrate member agent inside \
+citrate-core, a desktop full-node app for the Citrate network (chain 40204, native \
+token SALT). You are a knowledgeable, general-purpose assistant: answer both \
+Citrate-specific questions AND general questions on any topic, plainly and \
+concisely. Use your tools instead of guessing: memory_search / memory_recall read \
+the member's memory graph, which includes preloaded Citrate documentation (the \
+'citrate-docs' tenant) — prefer them for any Citrate protocol, how-to, or docs \
+question, and cite what you find; if a search returns nothing, say so and do not \
+fabricate Citrate facts. The member's live node/wallet/earnings snapshot is given \
+as context — ground their numbers in it and never invent figures. app_navigate \
+moves the member to a surface when it helps. memory_assert PROPOSES remembering a \
+fact: it is a write, so it is never executed by you — it queues for the member's \
+approval in the signature ceremony; tell them you proposed it, do not claim it is \
+saved. For general-knowledge questions you may answer directly.";
+
 /// Build the LOCAL llama-server baseURL from a loopback port
 /// (`http://127.0.0.1:<port>/v1`). This is the SINGLE source of truth for the
 /// local endpoint (the same shape `serve.rs::base_url` produces); `chat_local`
@@ -565,6 +585,25 @@ impl AiManager {
         parse_completion(&resp)
     }
 
+    /// W3.3 — one turn of the agentic loop: POST the tool-enabled body to the
+    /// stored endpoint and return the assistant MESSAGE (content and/or tool_calls)
+    /// as JSON. The frontend runs the loop (executes tool calls, appends results,
+    /// calls again), so a single Rust op stays stateless + key-sealed. INVARIANT 3
+    /// holds: the URL is derived from the stored config, never the caller.
+    fn chat_tools(
+        &self,
+        provider_id: &str,
+        messages_json: &str,
+        tools_json: &str,
+        context_json: &str,
+    ) -> Result<String> {
+        let cfg = self.read_config(provider_id)?;
+        let url = format!("{}/chat/completions", cfg.base_url);
+        let body = build_chat_body_with_tools(&cfg.model, messages_json, tools_json, context_json)?;
+        let resp = self.http.post_json(&url, &cfg.api_key, &body)?;
+        parse_chat_message(&resp)
+    }
+
     /// **BC-3.2 — LOCAL inference (F-1 hardened).** POST the OpenAI chat body to
     /// the LOCAL `llama-server` on the loopback endpoint with NO api key (an empty
     /// bearer — the local model needs none). The endpoint is DERIVED IN RUST from
@@ -630,6 +669,87 @@ fn build_chat_body(model: &str, messages_json: &str, context_json: &str) -> Resu
         "messages": messages,
         "stream": false,
     }))
+}
+
+/// W3.3 — build the agentic chat body: like `build_chat_body` but (1) uses the
+/// tool-aware system prompt, (2) forwards the full multi-turn tool protocol
+/// (assistant messages carrying `tool_calls`, and `tool`-role results carrying
+/// `tool_call_id`), and (3) attaches the `tools` spec so the model can call them.
+/// `tools_json` is the OpenAI `tools` array (validated to be an array).
+fn build_chat_body_with_tools(
+    model: &str,
+    messages_json: &str,
+    tools_json: &str,
+    context_json: &str,
+) -> Result<Value> {
+    let history: Value = serde_json::from_str(messages_json).map_err(|_| AiError::BadResponse)?;
+    let history = history.as_array().ok_or(AiError::BadResponse)?;
+    let tools: Value = serde_json::from_str(tools_json).map_err(|_| AiError::BadResponse)?;
+    if !tools.is_array() {
+        return Err(AiError::BadResponse);
+    }
+
+    let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 2);
+    messages.push(json!({ "role": "system", "content": AGENT_SYSTEM_PROMPT_TOOLS }));
+    messages.push(json!({
+        "role": "system",
+        "content": format!("Live app context (JSON snapshot of the member's node/wallet/membership): {context_json}"),
+    }));
+    for m in history {
+        let Some(role) = m.get("role").and_then(Value::as_str) else {
+            continue;
+        };
+        // Forward the shapes the tool protocol needs, defensively:
+        //  - assistant with tool_calls (content may be null),
+        //  - tool result with tool_call_id + content,
+        //  - plain {role, content}.
+        let mut msg = serde_json::Map::new();
+        msg.insert("role".into(), json!(role));
+        if let Some(content) = m.get("content").and_then(Value::as_str) {
+            msg.insert("content".into(), json!(content));
+        }
+        if role == "assistant" {
+            if let Some(tc) = m.get("tool_calls").filter(|v| v.is_array()) {
+                msg.insert("tool_calls".into(), tc.clone());
+            }
+        }
+        if role == "tool" {
+            if let Some(id) = m.get("tool_call_id").and_then(Value::as_str) {
+                msg.insert("tool_call_id".into(), json!(id));
+            }
+        }
+        // Skip a message that carries neither content nor tool_calls (nothing to send).
+        if msg.contains_key("content") || msg.contains_key("tool_calls") {
+            messages.push(Value::Object(msg));
+        }
+    }
+    Ok(json!({
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "stream": false,
+    }))
+}
+
+/// Parse the assistant MESSAGE object (`choices[0].message`) from a chat-completions
+/// response, preserving `tool_calls` so the frontend loop can act on them. Returned
+/// as a JSON string (the message object). Missing message → coarse `BadResponse`.
+fn parse_chat_message(resp: &str) -> Result<String> {
+    let v: Value = serde_json::from_str(resp).map_err(|_| AiError::BadResponse)?;
+    let msg = v
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|c| c.first())
+        .and_then(|c0| c0.get("message"))
+        .ok_or(AiError::BadResponse)?;
+    // A valid assistant turn has content and/or tool_calls; reject an empty shape
+    // rather than return a fabricated blank (Rule 1).
+    if msg.get("content").and_then(Value::as_str).is_none()
+        && !msg.get("tool_calls").map(Value::is_array).unwrap_or(false)
+    {
+        return Err(AiError::BadResponse);
+    }
+    Ok(msg.to_string())
 }
 
 /// Parse the OpenAI chat-completions response: `choices[0].message.content` → the
@@ -707,6 +827,24 @@ pub fn ai_chat(
     ai: tauri::State<'_, AiState>,
 ) -> std::result::Result<String, String> {
     ai.0.chat(&provider_id, &messages_json, &context_json)
+        .map_err(|e| e.to_string())
+}
+
+/// **Command — ai_chat_tools (W3.3, @rule8).** One turn of the AGENTIC loop: read
+/// the SEALED config for `provider_id`, POST the tool-enabled OpenAI body to the
+/// STORED baseURL with the sealed key, and return the assistant MESSAGE (content
+/// and/or `tool_calls`) as JSON. The webview runs the loop — executing tool calls
+/// through its own gated handlers and appending results — but can NEVER supply the
+/// URL or the key (invariants 1 + 3). Errors are coarse + secret-free.
+#[tauri::command]
+pub fn ai_chat_tools(
+    provider_id: String,
+    messages_json: String,
+    tools_json: String,
+    context_json: String,
+    ai: tauri::State<'_, AiState>,
+) -> std::result::Result<String, String> {
+    ai.0.chat_tools(&provider_id, &messages_json, &tools_json, &context_json)
         .map_err(|e| e.to_string())
 }
 

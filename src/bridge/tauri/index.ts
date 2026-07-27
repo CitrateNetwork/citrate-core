@@ -26,6 +26,7 @@ import type {
   MemoryStatus,
   MemoryResult,
   MemoryNeighbor,
+  DocsIngestReport,
   PendingWithdrawal,
   AiProviderStatus,
   GrantStatus,
@@ -295,6 +296,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async constellation(budget?: number) {
         return invoke<MemoryResult[]>("memory_constellation", { budget });
       },
+      // W3.2 — idempotent first-run docs preload (gated in Rust).
+      async ingestDocs() {
+        return invoke<DocsIngestReport>("memory_ingest_docs");
+      },
     },
     // ---- chat: REAL OpenAI-compatible inference, key sealed in Rust (AI1) ----
     // @rule8: setProvider seals {baseURL,model,apiKey} in the OS keyring;
@@ -318,6 +323,16 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async infer(providerId: string, messagesJson: string, contextJson: string): Promise<string> {
         return invoke<string>("ai_chat", { providerId, messagesJson, contextJson });
+      },
+      // W3.3 — one agentic turn (tools attached; returns the assistant message
+      // JSON with any tool_calls). The webview runs the loop; Rust holds the key.
+      async inferTools(
+        providerId: string,
+        messagesJson: string,
+        toolsJson: string,
+        contextJson: string,
+      ): Promise<string> {
+        return invoke<string>("ai_chat_tools", { providerId, messagesJson, toolsJson, contextJson });
       },
       // BC-3.2 — REAL LOCAL inference. The webview supplies ONLY messages +
       // context; Rust derives the loopback endpoint from the serve manager's

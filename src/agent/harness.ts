@@ -181,6 +181,189 @@ export function createLocalProvider(getContext: () => AgentContext, inferLocal: 
   };
 }
 
+// ---------------------------------------------------------------------
+// Agentic provider — W3.3. The REAL tool loop: the model (via the sealed
+// gateway, `ai_chat_tools`) decides tool calls; the frontend executes them
+// through the store's gated handlers (`onToolCall`), appends the results, and
+// calls again until the model returns a final answer. Bounded turns so a
+// misbehaving model can't loop forever. The completion is streamed for display
+// (honest — it's the real content). Memory writes queue for ceremony approval
+// via the memory_assert handler (Rule 3); reads (memory_search/recall) return
+// real graph hits or honest emptiness (Rule 1 — never fabricated knowledge).
+// ---------------------------------------------------------------------
+
+/// OpenAI function-tool schemas the agent may call. Every one maps to a handler
+/// in the store's `handleTool`. Reads (search/recall) are safe; app_navigate is a
+/// UI move; memory_assert + journal_append are WRITES that queue for approval.
+export const AGENT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "memory_search",
+      description:
+        "Semantic search over the member's memory graph, including preloaded Citrate documentation (the 'citrate-docs' tenant). Use for any Citrate protocol/how-to/docs question. Returns real hits or an empty result.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "what to search for" },
+          tenant: {
+            type: "string",
+            description: "graph to search: 'citrate-docs' (documentation) or 'personal' (the member's own notes). Defaults to citrate-docs.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_recall",
+      description: "Recall the most recent nodes from a memory tenant (no query). Use to see what a tenant holds.",
+      parameters: {
+        type: "object",
+        properties: { tenant: { type: "string", description: "'citrate-docs' or 'personal'" } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "app_navigate",
+      description: "Move the member to an app surface when it helps them act.",
+      parameters: {
+        type: "object",
+        properties: {
+          route: {
+            type: "string",
+            enum: ["dashboard", "wallet", "node", "storage", "comms", "commissary", "settings"],
+          },
+        },
+        required: ["route"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory_assert",
+      description:
+        "Propose remembering a fact in the member's personal memory. This is a WRITE: it is NOT executed — it queues for the member's approval in the signature ceremony. Tell them you proposed it.",
+      parameters: {
+        type: "object",
+        properties: { fact: { type: "string", description: "the fact to remember" } },
+        required: ["fact"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "journal_append",
+      description: "Propose appending an entry to the member's local daily journal. A WRITE — queues for approval.",
+      parameters: {
+        type: "object",
+        properties: { entry: { type: "string" } },
+        required: ["entry"],
+      },
+    },
+  },
+] as const;
+
+/// Max model↔tool round-trips before we stop (a misbehaving model can't loop
+/// forever). Generous enough for multi-step reasoning (search → navigate → answer).
+export const AGENT_MAX_TURNS = 6;
+
+export type InferToolsFn = (
+  providerId: string,
+  messagesJson: string,
+  toolsJson: string,
+  contextJson: string,
+) => Promise<string>;
+
+/// A conversation entry in the tool protocol: plain {role, content}, an assistant
+/// turn carrying tool_calls, or a tool result carrying its call id.
+type ConvoMsg = {
+  role: string;
+  content?: string | null;
+  tool_calls?: unknown[];
+  tool_call_id?: string;
+};
+
+export function createAgentProvider(
+  providerId: string,
+  getContext: () => AgentContext,
+  inferTools: InferToolsFn,
+): ChatProvider {
+  return {
+    kind: "agent",
+    label: "provider · " + providerId + " · agentic",
+    async send({ messages, callbacks }) {
+      callbacks.onStatus("thinking");
+      const contextJson = JSON.stringify(getContext());
+      const convo: ConvoMsg[] = messages.map((m) => ({ role: m.role, content: m.content }));
+
+      for (let turn = 0; turn < AGENT_MAX_TURNS; turn++) {
+        let raw: string;
+        try {
+          raw = await inferTools(providerId, JSON.stringify(convo), JSON.stringify(AGENT_TOOLS), contextJson);
+        } catch (e) {
+          callbacks.onStatus("error");
+          throw e;
+        }
+        let msg: ConvoMsg;
+        try {
+          msg = JSON.parse(raw) as ConvoMsg;
+        } catch {
+          callbacks.onStatus("error");
+          throw new Error("agent: could not parse the model message");
+        }
+        const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+
+        // No tool calls → this is the final answer. Stream the REAL content.
+        if (toolCalls.length === 0) {
+          const content = typeof msg.content === "string" ? msg.content : "";
+          callbacks.onStatus("streaming");
+          let out = "";
+          for (const token of tokenize(content)) {
+            out += token;
+            callbacks.onToken(token);
+            await wait(8 + Math.random() * 18);
+          }
+          callbacks.onStatus("done");
+          return { role: "assistant", content: out };
+        }
+
+        // Execute each tool call through the store's gated handlers, then feed the
+        // results back to the model as tool-role messages and loop.
+        convo.push({ role: "assistant", content: msg.content ?? null, tool_calls: toolCalls });
+        for (const tcRaw of toolCalls) {
+          const tc = tcRaw as { id?: string; function?: { name?: string; arguments?: string } };
+          const call: ToolCall = {
+            id: tc.id || "call_" + Math.random().toString(36).slice(2, 10),
+            name: tc.function?.name || "",
+            arguments: tc.function?.arguments || "{}",
+          };
+          callbacks.onStatus("tool");
+          let result: string;
+          try {
+            result = await callbacks.onToolCall(call);
+          } catch (e) {
+            // A tool failure is fed back to the model (it can recover or explain),
+            // never silently swallowed.
+            result = "tool error: " + (e instanceof Error ? e.message : String(e));
+          }
+          convo.push({ role: "tool", tool_call_id: call.id, content: result });
+        }
+      }
+
+      // Exhausted the turn budget without a final answer — honest error, no fake.
+      callbacks.onStatus("error");
+      throw new Error("agent: reached the tool-turn limit without a final answer");
+    },
+  };
+}
+
 interface Plan {
   toolCalls: ToolCall[];
   compose: (c: AgentContext, calls: ToolCall[]) => string;

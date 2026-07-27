@@ -28,7 +28,8 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createRealProvider, createLocalProvider, ChatProvider, ToolCall } from "../agent/harness";
+import { createDemoProvider, createLocalProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
+import type { MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -108,6 +109,19 @@ export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean 
     return false; // fail-closed on an unparseable stake — never fabricate a grant
   }
   return stake >= VALIDATOR_STAKE_REQUIREMENT_WEI;
+}
+
+/**
+ * W3.3 — render mem hits as plain text the agent feeds back to the model. Honest
+ * emptiness when a tenant has no match (Rule 1 — the model is told there's nothing
+ * rather than being left to invent Citrate facts). The hit `title` carries the
+ * authored content (the `Title › Section` breadcrumb + body from docs_ingest).
+ */
+export function formatMemoryHits(res: MemoryResult): string {
+  if (!res.hits.length) {
+    return `No results in the ${res.tenant} memory (${res.totalInTenant} nodes total). Do not fabricate; tell the member nothing was found.`;
+  }
+  return res.hits.map((h, i) => `[${i + 1}] ${h.title}`).join("\n\n");
 }
 
 /**
@@ -370,7 +384,21 @@ export class Store {
       return;
     }
     const state = await this.refreshMemoryStatus();
-    if (state === "running") await this.refreshConstellation();
+    if (state === "running") {
+      await this.refreshConstellation();
+      // W3.2 — first-run docs preload into the citrate-docs tenant. Idempotent +
+      // gated in Rust (skips once seeded, when lexical-only, or when the corpus is
+      // empty), so calling on every start is safe. Fire-and-forget; if it actually
+      // ingested, refresh the constellation so the docs tenant shows up.
+      void bridge.memory
+        .ingestDocs()
+        .then((r) => {
+          if (!r.skipped && r.chunks > 0) void this.refreshConstellation();
+        })
+        .catch(() => {
+          /* honest no-op: ingest unavailable (web preview / daemon race) */
+        });
+    }
   }
 
   /**
@@ -442,8 +470,10 @@ export class Store {
         return;
       }
       if (kind === "real") {
-        this.provider = createRealProvider(def, () => this.snapshot(), (pid, msgs, ctx) =>
-          bridge.chat.infer(pid, msgs, ctx),
+        // W3.3 — the gateway runs the AGENTIC tool loop (memory recall/search +
+        // navigate + approval-gated writes). Tool calls execute through handleTool.
+        this.provider = createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) =>
+          bridge.chat.inferTools(pid, msgs, tools, ctx),
         );
         return;
       }
@@ -1178,7 +1208,25 @@ export class Store {
       result = "ok";
     } else if (call.name === "chain_read") {
       result = JSON.stringify(this.snapshot());
-    } else if (call.name === "memory_recall" || call.name === "docs_link") {
+    } else if (call.name === "memory_search") {
+      // W3.3 — REAL semantic search over the mem graph (docs or personal). Returns
+      // real hits or honest emptiness (Rule 1 — never a fabricated Citrate fact).
+      const tenant = args.tenant === "personal" ? "personal" : "citrate-docs";
+      try {
+        const res = await bridge.memory.search(tenant, args.query || "", 6);
+        result = formatMemoryHits(res);
+      } catch (e) {
+        result = "memory search unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "memory_recall") {
+      const tenant = args.tenant === "personal" ? "personal" : "citrate-docs";
+      try {
+        const res = await bridge.memory.recall(tenant, 6);
+        result = formatMemoryHits(res);
+      } catch (e) {
+        result = "memory recall unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "docs_link") {
       result = "ok";
     }
     const label =
