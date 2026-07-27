@@ -190,6 +190,9 @@ pub fn run() {
             // W1.1 — the node's proposer identity (coinbase + derived ed25519
             // proposer pubkey) for the validator status surface + registration.
             node::node_proposer_identity,
+            // W1.3 — register the member's node as a block-producing validator
+            // (registerValidator{value:32k} via the ceremony; staker = the EOA).
+            node::node_register_validator,
             // node logs — Q-A.2/Q-B.2 REAL streamed stdout+stderr from the
             // supervised node's bounded ring buffer. Fills the Node LOG panel in
             // a packaged build (was permanently empty: stdout was inherited then

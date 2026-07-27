@@ -149,6 +149,65 @@ pub fn registration_nonce_calldata(staker: &[u8; 20]) -> Vec<u8> {
     out
 }
 
+/// Parse a `0x`-prefixed 20-byte address into raw bytes (registry / staker).
+pub fn parse_address_20(addr: &str) -> Result<[u8; 20], String> {
+    let raw = addr.strip_prefix("0x").unwrap_or(addr);
+    let bytes = hex::decode(raw).map_err(|e| format!("bad address hex: {e}"))?;
+    if bytes.len() != 20 {
+        return Err(format!("address must be 20 bytes, got {}", bytes.len()));
+    }
+    let mut a = [0u8; 20];
+    a.copy_from_slice(&bytes);
+    Ok(a)
+}
+
+/// Read `ValidatorRegistry.registrationNonce(staker)` via a live eth_call — the
+/// replay-guard nonce the register digest must carry. Real read or honest error
+/// (Rule 1). The nonce is small; the top 24 bytes of the word are ignored.
+pub fn read_registration_nonce<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    registry: &str,
+    staker: &[u8; 20],
+) -> Result<u64, String> {
+    let call = serde_json::json!({
+        "to": registry,
+        "data": format!("0x{}", hex::encode(registration_nonce_calldata(staker))),
+    });
+    let ret = rpc.eth_call(call).map_err(|e| e.to_string())?;
+    if ret.len() < 32 {
+        return Err(format!("registrationNonce returned {} bytes, expected 32", ret.len()));
+    }
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&ret[24..32]);
+    Ok(u64::from_be_bytes(b))
+}
+
+/// Read the node's `proposer.key`, sign the registration digest with it, and return
+/// `(proposer_pubkey, ed25519_sig)` — the two values `registerValidator` needs. The
+/// 32-byte seed is read, used, and zeroized here; it never leaves this function.
+pub fn sign_registration_from_data_dir(
+    data_dir: &std::path::Path,
+    chain_id: u64,
+    registry: &[u8; 20],
+    staker: &[u8; 20],
+    nonce: u64,
+) -> Result<([u8; 32], [u8; 64]), String> {
+    let path = data_dir.join(PROPOSER_KEY_FILE);
+    let mut bytes = std::fs::read(&path)
+        .map_err(|e| format!("proposer key not available yet ({}): {e}", path.display()))?;
+    if bytes.len() != 32 {
+        bytes.zeroize();
+        return Err(format!("proposer.key is {} bytes, expected 32", bytes.len()));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&bytes);
+    bytes.zeroize();
+    let pubkey = proposer_pubkey_from_seed(&seed);
+    let sig = sign_registration(&seed, chain_id, registry, staker, nonce);
+    seed.zeroize();
+    Ok((pubkey, sig))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +336,45 @@ mod tests {
         assert_eq!(cd.len(), 36);
         assert_eq!(&cd[16..36], &addr20(STAKER), "address right-aligned in the word");
         assert_eq!(&cd[4..16], &[0u8; 12], "left-padded with zeros");
+    }
+
+    #[test]
+    fn parse_address_20_validates_length_and_hex() {
+        assert!(parse_address_20(REGISTRY).is_ok());
+        assert!(parse_address_20("0x1234").is_err());
+        assert!(parse_address_20("0xZZ44d8a14443646b756905410be951e6ece95a6").is_err());
+    }
+
+    #[test]
+    fn sign_registration_from_data_dir_reads_the_seed_and_matches_golden() {
+        let dir = std::env::temp_dir().join(format!("citrate-reg-sign-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(PROPOSER_KEY_FILE), [0x01u8; 32]).unwrap();
+        let (pubkey, sig) =
+            sign_registration_from_data_dir(&dir, 40204, &addr20(REGISTRY), &addr20(STAKER), 0).unwrap();
+        assert_eq!(
+            hex::encode(pubkey),
+            "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        );
+        assert_eq!(
+            hex::encode(sig),
+            "67b6447494e64f7afc3a324771f52ef6b77f5a1b8b32b703656692c7a655e07590726236c5a47555cd8fa6e8cc1564c5f1e376a4c5531eed85f63c24c7ec3c00"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_registration_nonce_decodes_the_uint256_word() {
+        use crate::rpc::{RpcClient, RpcError, RpcTransport};
+        struct M(u64);
+        impl RpcTransport for M {
+            fn call(&self, _body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+                let mut word = [0u8; 32];
+                word[24..].copy_from_slice(&self.0.to_be_bytes());
+                Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(word))}))
+            }
+        }
+        let rpc = RpcClient::with_transport(M(7));
+        assert_eq!(read_registration_nonce(&rpc, REGISTRY, &addr20(STAKER)).unwrap(), 7);
     }
 }
