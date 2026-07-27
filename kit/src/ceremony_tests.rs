@@ -134,27 +134,23 @@ fn integration_request_decode_approve_ecrecovers_and_is_single_use() {
 
     // approve → a signature.
     let sig = c.approve(&v, &view.id, false).expect("approve a pending decodable ceremony");
-    assert_eq!(sig.sig_hex.len(), 128, "r||s = 64 bytes = 128 hex chars");
+    // 65 bytes: r||s||v. This asserted 128 hex chars (64 bytes, r||s) until
+    // `personal_sign` became a real EIP-191 signature — the old form carried no
+    // recovery id, so nothing outside this process could tell who signed. The
+    // recovery below is the property that changed; the length is just its shadow.
+    assert_eq!(sig.sig_hex.len(), 130, "r||s||v = 65 bytes = 130 hex chars");
     assert_eq!(c.pending_count(), 0, "the ceremony is consumed on approve (single-use)");
 
-    // ecrecover: the produced signature recovers to the canonical wallet address.
-    // Reproduce the recovery id the way wallet_tests does (UnifiedKey::sign drops
-    // it; k256 Signer<Signature> prehashes SHA-256).
-    let vault_sig = hex::decode(&sig.sig_hex).expect("hex");
-    let unified = citrate_wallet_core::secp256k1_from_mnemonic(CANONICAL_MNEMONIC, 0).expect("derive");
-    let sk: SigningKey = match unified {
-        citrate_wallet_core::UnifiedKey::Secp256k1(k) => k,
-        _ => panic!("expected secp256k1"),
-    };
-    use sha2::{Digest as Sha2Digest, Sha256};
-    let prehash = Sha256::digest(msg.as_bytes());
-    let (rec_sig, recid): (K256Sig, RecoveryId) =
-        sk.sign_prehash_recoverable(&prehash).expect("recoverable sign");
-    assert_eq!(
-        vault_sig,
-        rec_sig.to_bytes().to_vec(),
-        "the ceremony's signature is the canonical key's signature over the message"
-    );
+    // ecrecover, exactly as an external verifier would: EIP-191 prehash, the
+    // recovery id carried IN the signature (v - 27), no knowledge of our key.
+    // Previously this test had to re-derive the key from the canonical mnemonic
+    // and re-sign to obtain a recovery id, because the ceremony's signature did
+    // not carry one — which meant it proved the signature matched a key we
+    // already held, not that a stranger could identify the signer.
+    let raw = hex::decode(&sig.sig_hex).expect("hex");
+    let prehash = crate::wallet::eip191_prehash(msg.as_bytes());
+    let recid = RecoveryId::from_byte(raw[64] - 27).expect("v is 27/28");
+    let rec_sig = K256Sig::from_slice(&raw[..64]).expect("r||s");
     let recovered =
         k256::ecdsa::VerifyingKey::recover_from_prehash(&prehash, &rec_sig, recid).expect("recover");
     assert_eq!(
@@ -221,26 +217,34 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     // "sidecar/agent/other-path signs" attack (ADV-1/ADV-7) we forbid. Also:
     // widening EITHER signer back to `pub` would let an out-of-crate sidecar call
     // it; `pub(crate)` (asserted below) closes that.
+    // WP-S1.2 (kit extraction): this scan now covers the KIT modules. The app
+    // modules that used to be scanned here (seam.rs, agent.rs, node.rs, lib.rs)
+    // moved to a SEPARATE crate (citrate-core), and the gated signers are
+    // `pub(crate)` to THIS crate — so app code CANNOT invoke `wallet::sign_*` at
+    // all: the compiler rejects it, a strictly stronger guarantee than this grep.
+    // The node-agent bridge (agent.rs) additionally keeps its own ADV-7 source
+    // scan in citrate-core's `agent_tests.rs`
+    // (`adv7_agent_module_never_calls_the_gated_signer`), and the lib.rs command-
+    // registry scan moved to citrate-core's `lib.rs` test module. Coverage is
+    // preserved and hardened, not dropped.
     let sources: &[(&str, &str)] = &[
         ("wallet.rs", include_str!("wallet.rs")),
         ("custody.rs", include_str!("custody.rs")),
         ("oidc.rs", include_str!("oidc.rs")),
-        ("seam.rs", include_str!("seam.rs")),
         ("config.rs", include_str!("config.rs")),
         ("rpc.rs", include_str!("rpc.rs")),
         ("txdecode.rs", include_str!("txdecode.rs")),
-        // CORE-C1.2: the node-agent bridge must ALSO never reach the gated signer
-        // directly — the "a sidecar signs directly" attack (ADV-7). The agent
-        // module reaches signatures ONLY through the ceremony approve path.
-        ("agent.rs", include_str!("agent.rs")),
-        ("node.rs", include_str!("node.rs")),
-        ("lib.rs", include_str!("lib.rs")),
+        ("supervisor.rs", include_str!("supervisor.rs")),
     ];
     // Assemble each needle from parts so this test's own prose cannot self-match.
     // BOTH signer invocation forms are forbidden outside ceremony.rs.
     let calls = [
         "sign_".to_string() + "message(",
         "sign_".to_string() + "transaction(",
+        // The EIP-191 personal_sign signer is gated identically. Added when it
+        // landed: a third signer that nobody scanned for would be the obvious way
+        // to reintroduce exactly the bypass this test exists to forbid.
+        "sign_".to_string() + "personal(",
     ];
     for (name, src) in sources {
         // Strip the test module (wallet.rs's B1.1/B1.4 tests legitimately call the
@@ -284,6 +288,11 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
             && !wallet_src.contains("pub fn sign_transaction"),
         "the transaction signer must be pub(crate) (crate-private), never pub"
     );
+    assert!(
+        wallet_src.contains("pub(crate) fn sign_personal")
+            && !wallet_src.contains("pub fn sign_personal"),
+        "the personal_sign signer must be pub(crate) (crate-private), never pub"
+    );
 }
 
 /// Return `src` with any top-level `#[cfg(test)] mod tests { ... }` block removed
@@ -303,29 +312,14 @@ fn strip_test_module(src: &str) -> String {
 
 #[test]
 fn adv2_no_signing_command_returns_secret_material() {
-    // Registry enumeration against the real lib.rs. The three B1.2 commands are
-    // registered; none returns key material (they return CeremonyView / Signature
-    // / () — Signature is a SIGNATURE, not a key). The wallet secret-path fns are
-    // NEVER registered (the B1.1 boundary, re-asserted here for B1.2).
-    let src = include_str!("lib.rs");
-    for cmd in ["ceremony::sign_request", "ceremony::sign_approve", "ceremony::sign_reject"] {
-        assert!(src.contains(cmd), "signing command not registered: {cmd}");
-    }
-    // NEGATIVE CONTROL (stated): registering any wallet secret-reading fn (or a
-    // hypothetical `sign_direct` command that returns a key) would fail this.
-    for forbidden in [
-        "wallet::create,",
-        "wallet::import,",
-        "wallet::sign_message,",
-        "wallet::address,",
-        "wallet::read_entropy,",
-        "wallet::derive_key_from_entropy,",
-    ] {
-        assert!(
-            !src.contains(forbidden),
-            "no wallet secret-path fn may be an invoke command: {forbidden}"
-        );
-    }
+    // NOTE (WP-S1.2): the registry-enumeration assertions (the three B1.2 signing
+    // commands ARE registered; no wallet secret-path fn IS registered) moved to
+    // citrate-core's lib.rs test module (`signing_commands_are_registered` +
+    // `no_wallet_secret_path_fn_is_an_invoke_command`) — the generate_handler!
+    // registry lives in the app crate after the kit extraction. This test keeps
+    // the COMPILE-BARRIER / secret-free-return-type assertions below, which are
+    // properties of the kit's own ceremony types.
+    //
     // COMPILE BARRIER (I-2): the ceremony command return types are all Serialize
     // and carry no secret. `Signature` holds only hex of the (non-secret) sig +
     // the kind; there is no key/seed/entropy field. Prove it round-trips as
@@ -575,7 +569,7 @@ fn adv10_one_approval_one_signature_consumed() {
 
     // First approve → signature.
     let sig1 = c.approve(&v, &view.id, false).expect("first approve signs");
-    assert_eq!(sig1.sig_hex.len(), 128);
+    assert_eq!(sig1.sig_hex.len(), 130, "r||s||v — personal_sign is EIP-191 now");
 
     // Replay the SAME id → error, NO second signature.
     // NEGATIVE CONTROL (stated): if `approve` looked up the ceremony without
@@ -1251,13 +1245,11 @@ fn b1_5_f2_from_mismatch_error_is_secret_free() {
     assert!(s.contains("dead") && s.contains("9858"), "both addresses surfaced for the human");
 }
 
-#[test]
-fn b1_4_sign_and_broadcast_command_registered() {
-    // The B1.4 command is wired into the invoke handler (the ONE path to a real
-    // broadcast tx). NEGATIVE CONTROL: dropping it from generate_handler! fails this.
-    let src = include_str!("lib.rs");
-    assert!(src.contains("ceremony::sign_and_broadcast"), "sign_and_broadcast must be registered");
-}
+// NOTE (WP-S1.2): `b1_4_sign_and_broadcast_command_registered` moved to
+// citrate-core's lib.rs test module as part of `signing_commands_are_registered`
+// — the generate_handler! registry lives in the app crate after the kit
+// extraction, so a registry check there can see it (here it could only see the
+// kit's own lib.rs). No coverage lost.
 
 #[test]
 fn b1_4_broadcast_result_is_serialize_and_secret_free() {

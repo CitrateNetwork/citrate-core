@@ -157,7 +157,7 @@ fn read_self_stake_reads_pool_balance_over_mock_rpc() {
     assert_eq!(got, staked, "the real balanceOf value, not a sim");
 
     // The eth_call targeted the POOL with the balanceOf calldata for the staker.
-    let body = &rpc.transport.requests()[0];
+    let body = &rpc.transport().requests()[0];
     let params = &body["params"][0];
     assert_eq!(
         params["to"].as_str().unwrap().to_ascii_lowercase(),
@@ -177,7 +177,7 @@ fn read_self_stake_rejects_a_malformed_address_before_any_rpc() {
     let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
     assert!(read_self_stake(&rpc, "0xnope").is_err());
     assert!(
-        rpc.transport.requests().is_empty(),
+        rpc.transport().requests().is_empty(),
         "fail closed BEFORE calling the node with a bad address"
     );
 }
@@ -526,7 +526,7 @@ fn read_pending_withdrawals_lists_unclaimed_and_gates_claimable() {
     assert!(!p2.claimable, "id-2 not yet matured → not claimable");
 
     // The getLogs filter targeted the pool + WithdrawalRequested topic0 + staker.
-    let body = &rpc.transport.requests()[0];
+    let body = &rpc.transport().requests()[0];
     assert_eq!(body["method"], "eth_getLogs");
     let filter = &body["params"][0];
     assert_eq!(filter["address"], LIQUID_STAKING_POOL);
@@ -554,7 +554,7 @@ fn read_pending_withdrawals_rejects_bad_address_before_any_rpc() {
     let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
     assert!(read_pending_withdrawals(&rpc, "0xnope").is_err());
     assert!(
-        rpc.transport.requests().is_empty(),
+        rpc.transport().requests().is_empty(),
         "fail closed BEFORE any node call on a bad address"
     );
 }
@@ -565,7 +565,7 @@ fn read_self_shares_reads_pool_shares_over_mock_rpc() {
     let rpc = RpcClient::with_transport(MockRpc::new(vec![ok(JsonValue::String(uint256_hex(shares)))]));
     let got = read_self_shares(&rpc, STAKER_ADDR).expect("shares read");
     assert_eq!(got, shares, "the real shares() value, not a sim");
-    let body = &rpc.transport.requests()[0];
+    let body = &rpc.transport().requests()[0];
     let data = body["params"][0]["data"].as_str().unwrap();
     assert!(data.starts_with("0xce7c2ac2"), "shares(address) selector: {data}");
 }

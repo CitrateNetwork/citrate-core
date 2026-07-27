@@ -60,7 +60,8 @@
 #![allow(dead_code)]
 
 use citrate_wallet_core::{
-    secp256k1_from_mnemonic, sign_eip155_legacy_tx, LegacyTxFields, SignedTx, UnifiedKey,
+    secp256k1_from_mnemonic, sign_eip155_legacy_tx, sign_recoverable, LegacyTxFields, SignedTx,
+    UnifiedKey,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -393,6 +394,75 @@ pub(crate) fn sign_transaction(
     Ok(signed)
     // `entropy` + `key` (its inner k256::SigningKey) zeroize on drop here; the
     // wallet-core signer already zeroized the intermediate signing hash.
+}
+
+/// The EIP-191 `personal_sign` prehash: `keccak256("\x19Ethereum Signed Message:\n"
+/// ‖ len ‖ message)`.
+///
+/// Pure and public so a caller can compute what it is about to ask a human to
+/// approve, and so the prefix itself is testable against the fixed vectors every
+/// Ethereum implementation agrees on.
+pub fn eip191_prehash(message: &[u8]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut h = Keccak256::new();
+    h.update(b"\x19Ethereum Signed Message:\n");
+    h.update(message.len().to_string().as_bytes());
+    h.update(message);
+    let out = h.finalize();
+    let mut prehash = [0u8; 32];
+    prehash.copy_from_slice(&out);
+    prehash
+}
+
+/// **In-process only.** Sign `message` as a real Ethereum `personal_sign`:
+/// EIP-191 prefix, keccak256, recoverable secp256k1, `r ‖ s ‖ v` with `v` in
+/// {27, 28}. Requires the vault UNLOCKED (fails closed if locked).
+///
+/// ## Why this exists, and why it is not a refactor
+///
+/// `sign_message` signs the raw bytes with k256's `Signer`, which prehashes with
+/// **SHA-256** and returns a **64-byte non-recoverable** signature. That is not
+/// `personal_sign` — nothing outside this process can recover the signer from it,
+/// and any verifier that follows EIP-191 will reject it. `IntentKind::PersonalSign`
+/// nevertheless used it, because B1.2 could not reach a recoverable signer under
+/// the lean `crypto` build; the module header called that a deferral and named the
+/// fix as *"add a recoverable message signer"*. This is that.
+///
+/// The concrete thing it unblocks: citrate-quorum's Rooms surface authenticates to
+/// the citrate-comms relay with SIWE, which the relay verifies by RECOVERING the
+/// signer from an EIP-191 signature. Without this, a human's room seat could not be
+/// their wallet — the app had to fall back to a separate relay-only identity, and
+/// say so on the roster.
+///
+/// **@rule8 gating (identical to the other two signers):** `pub(crate)`, and the
+/// ONLY sanctioned caller is [`crate::ceremony::SignatureCeremony`]'s approval
+/// path. `ceremony_tests::adv1_adv7_signer_only_reachable_via_approve` scans for
+/// any other call site. CLAUDE.md rule 3: all signing goes through the ceremony.
+pub(crate) fn sign_personal(vault: &CustodyVault, message: &[u8]) -> Result<[u8; 65]> {
+    let entropy = read_entropy(vault)?;
+    let key = derive_key_from_entropy(&entropy)?;
+    // Same fail-closed rule as `sign_transaction`: the B1.1 derivation always
+    // yields a Secp256k1 key for m/44'/60'/0'/0/0, so anything else is a
+    // derivation bug and must not be signed with the wrong curve.
+    let sk = match &key {
+        UnifiedKey::Secp256k1(sk) => sk,
+        _ => return Err(WalletError::Derivation),
+    };
+    let mut prehash = eip191_prehash(message);
+    let (r, s, rec) = sign_recoverable(sk, &prehash).map_err(|_| WalletError::Derivation)?;
+    // The prehash is a pre-image commitment to a private-key signature; the tx
+    // signer zeroizes its equivalent buffer, so this one does too (WAL-04).
+    prehash.zeroize();
+
+    let mut out = [0u8; 65];
+    out[..32].copy_from_slice(&r);
+    out[32..64].copy_from_slice(&s);
+    // `v` is 27/28 for personal_sign — the +27 offset every EIP-191 verifier
+    // expects. A bare 0/1 recovery id here is the classic "signature verifies
+    // nowhere" bug, so it is asserted in the tests.
+    out[64] = rec + 27;
+    Ok(out)
+    // `entropy` + `key` zeroize on drop here.
 }
 
 #[cfg(test)]

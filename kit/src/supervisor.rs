@@ -57,7 +57,7 @@ use std::time::Duration;
 /// Resolve a bundled Tauri `externalBin` sidecar by its bundled name.
 ///
 /// Tauri v2 installs `externalBin` **next to the app's main executable**
-/// (`Contents/MacOS/<name>` on macOS), NOT into the resource dir. The earlier
+/// (`Contents/MacOS/<name>` on macOS), NOT into the resource dir. The per-domain
 /// resolvers joined the name onto `resource_dir()` (`Contents/Resources/`),
 /// which does not exist in a packaged bundle, so `start()` failed its
 /// `bin.exists()` guard with `BinaryNotFound` — masked in the UI as

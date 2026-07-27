@@ -56,13 +56,17 @@
 //! under the lean `crypto` feature. It is NOT: in `citrate-wallet-core` the whole
 //! `chain` module is `#[cfg(feature = "native")]`, and citrate-core pins the lean
 //! `default-features = false, features = ["crypto"]` build (Cargo.toml B1.1-F-1)
-//! specifically to keep the zk/execution stack out of the key path. So B1.2 signs
+//! specifically to keep the zk/execution stack out of the key path. So B1.2 signed
 //! via the message path (`wallet::sign_message`, r||s) for ALL three intent kinds;
-//! the recoverable tx-signing form is deferred to B1.4 (which will either enable a
-//! `chain` seam under the lean build or add a recoverable message signer). A
-//! `transaction` intent still decodes + surfaces for approval and produces a
-//! message-form signature over its raw bytes — it is NOT a broadcastable tx yet
-//! (B1.4), consistent with "no real broadcast to 40204 in B1.2".
+//! the recoverable tx-signing form was deferred to B1.4 (which would either enable
+//! a `chain` seam under the lean build or add a recoverable message signer).
+//!
+//! **Both deferrals are now closed.** B1.4 added `wallet::sign_transaction` (real
+//! EIP-155, recoverable) behind `approve_and_broadcast`, and `personal_sign` now
+//! goes through `wallet::sign_personal` — EIP-191 prefix, keccak256, recoverable,
+//! `v` in {27,28} — which is what the name always claimed. `typed_data` still takes
+//! the message path: EIP-712 needs its own domain-separated hashing, and
+//! approximating it silently would be the same defect this change is fixing.
 
 // This module is consumed by the B1.2 command surface in `lib.rs` (wired) and by
 // the B1.3 wagmi connector later. Some constructors/fields are part of the stable
@@ -153,12 +157,18 @@ pub struct CeremonyView {
     pub requires_raw_ack: bool,
 }
 
-/// A signature result crossing the bridge. Hex-encoded `r||s` (64 bytes → 128
-/// hex chars, no `0x`). This is the ONLY thing `approve` returns — never key,
-/// seed, or entropy material. A signature over a message is not secret.
+/// A signature result crossing the bridge. Hex, no `0x`. This is the ONLY thing
+/// `approve` returns — never key, seed, or entropy material. A signature over a
+/// message is not secret.
+///
+/// The length depends on the kind, and a caller must not assume one:
+/// `personal_sign` is `r||s||v` (65 bytes → 130 hex chars, EIP-191 recoverable);
+/// `typed_data` and `transaction` are `r||s` (64 bytes → 128 hex chars) from the
+/// message path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signature {
-    /// Hex of the raw ECDSA signature bytes (r||s).
+    /// Hex of the raw ECDSA signature bytes — `r||s||v` for `personal_sign`,
+    /// `r||s` otherwise. **Serialized as `sigHex`**, not `sig_hex`.
     #[serde(rename = "sigHex")]
     pub sig_hex: String,
     /// The kind that was signed (echo, for the caller to route the result).
@@ -407,7 +417,22 @@ impl SignatureCeremony {
         // when locked (B1.2-ADV-3). The ceremony is ALREADY consumed, so even if
         // signing errors, this id cannot be re-approved (fail closed, single-use).
         let bytes = payload_bytes(&pending.intent.raw).ok_or(CeremonyError::SignFailed)?;
-        let sig = wallet::sign_message(vault, &bytes)?;
+        let sig = match pending.intent.kind {
+            // `personal_sign` means EIP-191: keccak256 over the prefixed message,
+            // recoverable secp256k1, `v` in {27,28}. B1.2 signed these through
+            // `sign_message` (SHA-256 prehash, 64 bytes, NOT recoverable) because
+            // this crate could not reach a recoverable signer under the lean
+            // `crypto` build — the module header above called that a deferral and
+            // named the fix. A verifier following EIP-191 rejects the old form, and
+            // nothing can recover the signer from it, so this was not a signature
+            // anyone outside this process could use.
+            IntentKind::PersonalSign => wallet::sign_personal(vault, &bytes)?.to_vec(),
+            // TypedData and Transaction keep the message path. EIP-712 needs its own
+            // domain-separated hashing, which is a separate piece of work and is NOT
+            // silently approximated here; `sign_and_broadcast` is what produces a
+            // real, recoverable transaction signature.
+            IntentKind::TypedData | IntentKind::Transaction => wallet::sign_message(vault, &bytes)?,
+        };
         Ok(Signature {
             sig_hex: hex::encode(sig),
             kind: pending.intent.kind,
