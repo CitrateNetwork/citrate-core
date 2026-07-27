@@ -176,7 +176,7 @@ fn read_claimable_calls_eth_call_and_decodes() {
     assert_eq!(snap.contract, CONTRIBUTION_ACCOUNTING);
 
     // The request was an eth_call to the contract with the right calldata + tag.
-    let reqs = rpc.transport.requests();
+    let reqs = rpc.transport().requests();
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0]["method"], "eth_call");
     let call = &reqs[0]["params"][0];
@@ -215,7 +215,7 @@ fn read_claimable_rejects_bad_address() {
     let r = read_claimable(&rpc, "not-an-address");
     assert!(matches!(r, Err(EarningsError::BadAddress(_))), "got: {r:?}");
     // No RPC call was attempted (fail closed before the read).
-    assert_eq!(rpc.transport.requests().len(), 0);
+    assert_eq!(rpc.transport().requests().len(), 0);
 }
 
 // ===========================================================================

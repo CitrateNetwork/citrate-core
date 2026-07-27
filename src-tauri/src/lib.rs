@@ -7,30 +7,30 @@
 //! (D-13); signing routes through the Rust SignatureCeremony once it exists
 //! (CORE-S2).
 
+// WP-S1.2: the safety-critical spine (ceremony, custody, oidc, supervisor,
+// wallet, rpc, txdecode, config) now lives in `citrate-core-kit`, shared with
+// citrate-quorum so there is ONE signing path in the federation, not a fork.
+// Re-exported here so every in-crate reference (`crate::custody::…`,
+// `crate::ceremony::…`, and the `generate_handler!` command paths below) keeps
+// resolving unchanged — the extraction is invisible above this line.
+pub use citrate_core_kit::{ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet};
+
 mod activity;
 mod agent;
 mod ai;
-mod ceremony;
-mod config;
-mod custody;
 mod earnings;
 mod grant_status;
 mod membership;
 mod memory;
 mod model;
 mod node;
-mod oidc;
-mod rpc;
 mod sbt_art;
 mod seam;
 mod serve;
 mod shell;
 mod staking;
-mod supervisor;
 mod transfer;
-mod txdecode;
 mod validator;
-mod wallet;
 
 use tauri::Manager;
 
@@ -342,5 +342,75 @@ mod tests {
             !src.contains(&needle),
             "the in-process secret getter must not be an invoke command (ADV-8 boundary)"
         );
+    }
+
+    /// B1.1-ADV-2, relocated here in the WP-S1.2 kit extraction (was in the
+    /// kit's `wallet_tests.rs`, which after the split could only see the kit's
+    /// lib.rs — the real `generate_handler!` registry lives in THIS file). The
+    /// wallet secret-touching fns (create / import / address / sign_message) are
+    /// plain library fns and must NEVER be registered as invoke commands.
+    /// NEGATIVE CONTROL: registering any of those fns as a handler entry (a
+    /// `wallet::<fn>` line ending in a comma, in the generate_handler! list)
+    /// fails this test. Needles are assembled from parts so this test's own
+    /// prose cannot self-match `include_str!("lib.rs")` — do not write a literal
+    /// `wallet` + `::` + fn-name + comma anywhere in this file's prose.
+    #[test]
+    fn no_wallet_secret_path_fn_is_an_invoke_command() {
+        let src = include_str!("lib.rs");
+        let w = "wallet::".to_string();
+        for suffix in [
+            "create",
+            "import",
+            "sign_message",
+            "address",
+            "read_entropy",
+            "derive_key_from_entropy",
+        ] {
+            let needle = format!("{w}{suffix},");
+            assert!(
+                !src.contains(&needle),
+                "no wallet secret-path fn may be an invoke command: wallet::{suffix}"
+            );
+        }
+    }
+
+    /// Command-registration checks relocated here in the WP-S1.2 kit extraction:
+    /// the `generate_handler!` registry lives in THIS crate's lib.rs, so the
+    /// "these commands are wired" assertions (formerly in the kit's oidc/ceremony
+    /// tests, which after the split could only see the kit lib.rs) belong here.
+    /// The kit-side tests retain their kit-SOURCE structural assertions
+    /// (AuthStatus carries no token field, return types, Signature is secret-free).
+    #[test]
+    fn auth_commands_are_registered() {
+        let src = include_str!("lib.rs");
+        for cmd in [
+            "auth_status",
+            "auth_login",
+            "auth_userinfo",
+            "auth_refresh",
+            "auth_logout",
+            "kyc_start",
+        ] {
+            assert!(
+                src.contains(&format!("oidc::{cmd}")),
+                "auth command must be registered: oidc::{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn signing_commands_are_registered() {
+        let src = include_str!("lib.rs");
+        for cmd in [
+            "sign_request",
+            "sign_approve",
+            "sign_and_broadcast",
+            "sign_reject",
+        ] {
+            assert!(
+                src.contains(&format!("ceremony::{cmd}")),
+                "signing command must be registered: ceremony::{cmd}"
+            );
+        }
     }
 }
