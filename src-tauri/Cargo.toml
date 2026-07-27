@@ -75,9 +75,16 @@ bip39 = { version = "1.2", features = ["std", "zeroize"] }
 # stack (citrate-execution -> ark-groth16 -> tracing-subscriber / RUSTSEC-2025-0055) OUT of
 # the key path. B1.4: re-pinned 3dce61c -> 47a6f92 (the B1.4.0 lean EIP-155 tx-signing
 # commit + its canonical-RLP r/s trim fix, #69 follow-ups) so the ceremony can sign a real
-# 40204 legacy tx via `sign_eip155_legacy_tx`. Still lean: features=["crypto"], no
+# 40204 legacy tx via `sign_eip155_legacy_tx`. Still lean: features= ["crypto"], no
 # reqwest/tokio/citrate-consensus. Rule 12 [[drift]] landed first in citrate-federation.
 citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "47a6f92", default-features = false, features = ["crypto"] }
+# W1.1 — proposer identity. The node's block-signing (proposer) key is a deterministic
+# ed25519 key seeded from Sha3_256(domain ‖ coinbase32); the app must derive the SAME
+# public value to read validatorInfo(pubkey) and drive registration. We reimplement the
+# ~6-line derivation in validator.rs (leaner than pulling all of citrate-consensus) and
+# pin it byte-for-byte with a golden-vector drift tripwire against
+# citrate-chain core/consensus/src/crypto.rs::derive_block_signing_key.
+ed25519-dalek = "2"
 # hex: encode the (non-secret) public key for display in WalletInfo.
 hex = "0.4"
 

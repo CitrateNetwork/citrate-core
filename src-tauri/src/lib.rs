@@ -30,6 +30,7 @@ mod serve;
 mod shell;
 mod staking;
 mod transfer;
+mod validator;
 
 use tauri::Manager;
 
@@ -168,6 +169,9 @@ pub fn run() {
             node::node_status,
             node::node_start,
             node::node_stop,
+            // W1.1 — the node's proposer identity (coinbase + derived ed25519
+            // proposer pubkey) for the validator status surface + registration.
+            node::node_proposer_identity,
             // node logs — Q-A.2/Q-B.2 REAL streamed stdout+stderr from the
             // supervised node's bounded ring buffer. Fills the Node LOG panel in
             // a packaged build (was permanently empty: stdout was inherited then

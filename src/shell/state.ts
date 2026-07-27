@@ -12,11 +12,28 @@
 
 import type { PendingWithdrawal } from "../bridge/domains";
 import type { CeremonyView } from "../bridge/types";
+import { BRIDGE_MODE } from "../bridge/mode";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
 
 // tier gating order
-export const RANK: Record<string, number> = { free: 0, pilot: 1, enterprise: 2 };
+// Tier ranking for paid-feature gating (isPaidEntitlementActive). Includes BOTH
+// the app's internal tiers (free/pilot/enterprise) AND the authority's tier
+// vocabulary that /userinfo folds in verbatim (public/commercial/commercial.kyc/
+// academic/confidential). ADR-2026-07-25 (payment-as-sybil) grants `commercial`
+// to a paid-but-unverified member — it MUST rank above free or the S5 grant poll
+// never settles for them (the reported "stuck on step 5"). commercial.kyc is the
+// KYC-verified upgrade; confidential is the top enterprise-equivalent.
+export const RANK: Record<string, number> = {
+  free: 0,
+  public: 0,
+  pilot: 1,
+  commercial: 1,
+  "commercial.kyc": 1,
+  academic: 1,
+  enterprise: 2,
+  confidential: 2,
+};
 
 export const ORIGIN_COLORS: Record<string, string> = {
   "user wallet action": "#5a8205",
@@ -426,13 +443,16 @@ export interface MemGraph {
 }
 
 function greeting(P: Persona): ChatMsg {
+  // Personalize ONLY with a real (or web-dev persona) first name. An empty name
+  // — the packaged app before sign-in — greets neutrally, never a mock name.
+  const first = P.name.split(" ")[0];
+  const hello = first ? "Welcome back, " + first + ". " : "Welcome. ";
   return {
     id: "g0",
     who: "Agent",
     text:
-      "Welcome back, " +
-      P.name.split(" ")[0] +
-      ". I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, earnings, or the network.",
+      hello +
+      "I read your node, wallet, and memory graph — and anything I want to write comes back to you for approval. Ask me about your staking position, earnings, or the network.",
     chips: [],
     streaming: false,
   };
@@ -677,7 +697,9 @@ export function freshState(pid: string): AppState {
       s.selfStake = 8000;
       s.activity = seedActivity(["Claim rewards|+22.05 SALT", "Add stake|−8,000.00 SALT", "Grant + stake ceremony|32,000 SALT"]);
     }
-    s.chatMsgs = [greeting(P)];
+    // Packaged app (tauri): never seed the sim persona's name into the greeting.
+    // Real identity folds in on sign-in; until then greet neutrally (Rule 1).
+    s.chatMsgs = [greeting(BRIDGE_MODE === "tauri" ? { ...P, name: "" } : P)];
   }
   return s;
 }

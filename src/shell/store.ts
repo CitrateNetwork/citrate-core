@@ -830,6 +830,23 @@ export class Store {
         real: true,
       };
     }
+    // Not signed in. The sim persona (Dana Okafor et al.) is a WEB-DEV preview
+    // affordance ONLY (state.ts) and must NEVER render in the packaged app. In a
+    // Tauri build a not-signed-in view (e.g. "Explore free" before auth) shows a
+    // neutral, obviously-not-real Guest — never the named mock (Rule 1).
+    if (BRIDGE_MODE === "tauri") {
+      return {
+        name: "Guest",
+        initials: "G",
+        email: "—",
+        sub: "—",
+        wallet: s.walletAddr,
+        tier: s.tier,
+        role: s.citrateRole || "member",
+        org: s.org,
+        real: false,
+      };
+    }
     const P = this.persona();
     return {
       name: P.name,
@@ -1693,7 +1710,7 @@ export class Store {
     this.save();
   }
   onExplore(): void {
-    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().name })] });
+    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
     this.save();
   }
   onS1Start(): void {
@@ -1911,8 +1928,15 @@ export class Store {
         .then(([grant]) => {
           if (this.state.s5 !== "settling") return;
           const grantOnChain = isGrantOnChain(grant);
-          const entitlementActive = isPaidEntitlementActive(this.state);
-          if (grantOnChain && grant.hasSbt && entitlementActive) {
+          // "Stuck on step 5" fix: the ON-CHAIN grant — a minted membership SBT plus
+          // attributed stake in the vault — is the DEFINITIVE, real proof the grant
+          // landed (Rule 1: both are live chain reads). Settle S5 on that. The paid
+          // ENTITLEMENT tier is an OFF-CHAIN refinement read from /userinfo that can
+          // lag the on-chain grant (session-token snapshot / roster propagation);
+          // gating the settle on it stranded members whose grant was already on
+          // chain. We keep calling authUserinfo() each tick so the tier still
+          // refines to commercial/commercial.kyc — it just no longer BLOCKS S5.
+          if (grantOnChain && grant.hasSbt) {
             // hasGrant/hasSbt/s5StakeWei set ONLY from the real read; never before
             // it. s5StakeWei is the REAL attributedStake the settled card renders
             // (F1 — no hardcoded 32,000).
@@ -1943,7 +1967,7 @@ export class Store {
     this.setState({
       stage: "done",
       coach: s.coachDone ? -1 : 0,
-      chatMsgs: s.chatMsgs.length ? s.chatMsgs : [greeting({ ...this.persona(), name: this.identity().name })],
+      chatMsgs: s.chatMsgs.length ? s.chatMsgs : [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })],
     });
     this.save();
   }
