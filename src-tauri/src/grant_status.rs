@@ -44,7 +44,7 @@ pub const MEMBERSHIP_STAKE_VAULT: &str = "0x61e324cfd6b7cb106ac0ad1df163bdfef2b7
 
 /// The `CitrateMemberSBT` on 40204 (canonical address book). Lowercase `0x`-hex;
 /// the `eth_call` target for the SBT `balanceOf(member)` membership read.
-pub const CITRATE_MEMBER_SBT: &str = "0x3e0c2b1cd29a615e4ea2e263c8e7df3aef243e42";
+pub const CITRATE_MEMBER_SBT: &str = "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1";
 
 /// 4-byte selector for `attributedStake(address)` —
 /// `keccak256("attributedStake(address)")[..4]`. PINNED here + proven by the
