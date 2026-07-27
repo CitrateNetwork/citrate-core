@@ -458,3 +458,81 @@ fn wallet_info_is_non_secret_serializable() {
     assert!(j.contains("0xabc"));
     assert!(j.contains("publicKeyHex"));
 }
+
+// ─────────────── EIP-191 personal_sign (the recoverable message path) ───────────────
+
+/// The prefix and length encoding, against the vector every Ethereum
+/// implementation agrees on.
+///
+/// `"hello world"` is 11 bytes, so the preimage is
+/// `\x19Ethereum Signed Message:\n11hello world`. Hard-coding the expected digest
+/// is the point: if the prefix, the decimal length, or the hash function ever
+/// drifts, a signature still gets produced and verifies nowhere.
+#[test]
+fn eip191_prehash_matches_the_canonical_vector() {
+    let got = eip191_prehash(b"hello world");
+    assert_eq!(
+        hex::encode(got),
+        "d9eba16ed0ecae432b71fe008c98cc872bb4cc214d3220a36f365326cf807d68",
+        "EIP-191 prehash of \"hello world\" drifted"
+    );
+    // The empty message still gets the prefix and a "0" length — a common
+    // off-by-one place to skip the length entirely.
+    let empty = eip191_prehash(b"");
+    assert_ne!(hex::encode(empty), hex::encode(got));
+}
+
+/// The signature must RECOVER to the vault's own address. This is the whole
+/// property the old `sign_message` path lacked: 64 bytes with a SHA-256 prehash
+/// recovers to nobody, so no verifier — including the citrate-comms relay's SIWE
+/// check — could ever accept it.
+#[test]
+fn personal_sign_recovers_to_the_wallet_address() {
+    let (v, _p) = init_and_unlock();
+    let info = import(&v, CANONICAL_MNEMONIC).expect("import");
+    let msg = b"Sign in to citrate-comms";
+    let sig = sign_personal(&v, msg).expect("sign");
+
+    assert_eq!(sig.len(), 65, "personal_sign must be r||s||v");
+    assert!(
+        sig[64] == 27 || sig[64] == 28,
+        "v must be 27/28 for personal_sign, got {}",
+        sig[64]
+    );
+
+    // Recover, the way any EIP-191 verifier does.
+    let prehash = eip191_prehash(msg);
+    let rec_id = k256::ecdsa::RecoveryId::from_byte(sig[64] - 27).expect("recovery id");
+    let signature = k256::ecdsa::Signature::from_slice(&sig[..64]).expect("sig");
+    let vk = k256::ecdsa::VerifyingKey::recover_from_prehash(&prehash, &signature, rec_id)
+        .expect("recover");
+    assert_eq!(
+        address_of_verifying_key(&vk).to_lowercase(),
+        info.address.to_lowercase(),
+        "the signature must recover to this vault's own address"
+    );
+}
+
+/// A locked vault signs nothing — the same fail-closed rule the other two signers
+/// hold (B1.2-ADV-3).
+#[test]
+fn personal_sign_fails_closed_on_a_locked_vault() {
+    let (v, _p) = init_and_unlock();
+    import(&v, CANONICAL_MNEMONIC).expect("import");
+    v.lock();
+    assert!(
+        sign_personal(&v, b"anything").is_err(),
+        "a locked vault must not produce a personal_sign signature"
+    );
+}
+
+/// Two different messages must not produce the same signature — a sanity check
+/// that the message actually reaches the digest rather than a constant.
+#[test]
+fn personal_sign_commits_to_the_message() {
+    let (v, _p) = init_and_unlock();
+    import(&v, CANONICAL_MNEMONIC).expect("import");
+    let a = sign_personal(&v, b"transfer 1 SALT").expect("a");
+    let b = sign_personal(&v, b"transfer 1000 SALT").expect("b");
+    assert_ne!(a, b, "the signature must depend on the message");
+}

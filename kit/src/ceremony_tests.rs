@@ -134,27 +134,23 @@ fn integration_request_decode_approve_ecrecovers_and_is_single_use() {
 
     // approve → a signature.
     let sig = c.approve(&v, &view.id, false).expect("approve a pending decodable ceremony");
-    assert_eq!(sig.sig_hex.len(), 128, "r||s = 64 bytes = 128 hex chars");
+    // 65 bytes: r||s||v. This asserted 128 hex chars (64 bytes, r||s) until
+    // `personal_sign` became a real EIP-191 signature — the old form carried no
+    // recovery id, so nothing outside this process could tell who signed. The
+    // recovery below is the property that changed; the length is just its shadow.
+    assert_eq!(sig.sig_hex.len(), 130, "r||s||v = 65 bytes = 130 hex chars");
     assert_eq!(c.pending_count(), 0, "the ceremony is consumed on approve (single-use)");
 
-    // ecrecover: the produced signature recovers to the canonical wallet address.
-    // Reproduce the recovery id the way wallet_tests does (UnifiedKey::sign drops
-    // it; k256 Signer<Signature> prehashes SHA-256).
-    let vault_sig = hex::decode(&sig.sig_hex).expect("hex");
-    let unified = citrate_wallet_core::secp256k1_from_mnemonic(CANONICAL_MNEMONIC, 0).expect("derive");
-    let sk: SigningKey = match unified {
-        citrate_wallet_core::UnifiedKey::Secp256k1(k) => k,
-        _ => panic!("expected secp256k1"),
-    };
-    use sha2::{Digest as Sha2Digest, Sha256};
-    let prehash = Sha256::digest(msg.as_bytes());
-    let (rec_sig, recid): (K256Sig, RecoveryId) =
-        sk.sign_prehash_recoverable(&prehash).expect("recoverable sign");
-    assert_eq!(
-        vault_sig,
-        rec_sig.to_bytes().to_vec(),
-        "the ceremony's signature is the canonical key's signature over the message"
-    );
+    // ecrecover, exactly as an external verifier would: EIP-191 prehash, the
+    // recovery id carried IN the signature (v - 27), no knowledge of our key.
+    // Previously this test had to re-derive the key from the canonical mnemonic
+    // and re-sign to obtain a recovery id, because the ceremony's signature did
+    // not carry one — which meant it proved the signature matched a key we
+    // already held, not that a stranger could identify the signer.
+    let raw = hex::decode(&sig.sig_hex).expect("hex");
+    let prehash = crate::wallet::eip191_prehash(msg.as_bytes());
+    let recid = RecoveryId::from_byte(raw[64] - 27).expect("v is 27/28");
+    let rec_sig = K256Sig::from_slice(&raw[..64]).expect("r||s");
     let recovered =
         k256::ecdsa::VerifyingKey::recover_from_prehash(&prehash, &rec_sig, recid).expect("recover");
     assert_eq!(
@@ -245,6 +241,10 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     let calls = [
         "sign_".to_string() + "message(",
         "sign_".to_string() + "transaction(",
+        // The EIP-191 personal_sign signer is gated identically. Added when it
+        // landed: a third signer that nobody scanned for would be the obvious way
+        // to reintroduce exactly the bypass this test exists to forbid.
+        "sign_".to_string() + "personal(",
     ];
     for (name, src) in sources {
         // Strip the test module (wallet.rs's B1.1/B1.4 tests legitimately call the
@@ -287,6 +287,11 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
         wallet_src.contains("pub(crate) fn sign_transaction")
             && !wallet_src.contains("pub fn sign_transaction"),
         "the transaction signer must be pub(crate) (crate-private), never pub"
+    );
+    assert!(
+        wallet_src.contains("pub(crate) fn sign_personal")
+            && !wallet_src.contains("pub fn sign_personal"),
+        "the personal_sign signer must be pub(crate) (crate-private), never pub"
     );
 }
 
@@ -564,7 +569,7 @@ fn adv10_one_approval_one_signature_consumed() {
 
     // First approve → signature.
     let sig1 = c.approve(&v, &view.id, false).expect("first approve signs");
-    assert_eq!(sig1.sig_hex.len(), 128);
+    assert_eq!(sig1.sig_hex.len(), 130, "r||s||v — personal_sign is EIP-191 now");
 
     // Replay the SAME id → error, NO second signature.
     // NEGATIVE CONTROL (stated): if `approve` looked up the ceremony without
