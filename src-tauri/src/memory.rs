@@ -453,6 +453,12 @@ pub struct MemoryManager {
     transport: Box<dyn MemoryTransport>,
     /// The live supervisor, present only while the daemon is running.
     sup: Mutex<Option<Supervisor>>,
+    /// W3.2/BGE — the bundled BGE model dir (`config.json` + `tokenizer.json` +
+    /// `model.safetensors`). When present, the daemon is spawned with
+    /// `CITRATE_BGE_MODEL_DIR` (load offline, pinned) + `CITRATE_MEM_EMBED=bge`
+    /// (bootstrap a fresh store to BGE for real semantic recall). `None` → the
+    /// daemon has no embedder available and stays lexical (honest).
+    model_dir: Option<PathBuf>,
 }
 
 /// The bridge status shape surfaced to the MemoryDomain seam. PUBLIC facts only —
@@ -502,7 +508,15 @@ impl MemoryManager {
             crash_record_path,
             transport,
             sup: Mutex::new(None),
+            model_dir: None,
         }
+    }
+
+    /// Set the bundled BGE model dir (enables real semantic embedding). Builder
+    /// style so `new`'s signature (and every test) stays stable.
+    pub fn with_model_dir(mut self, model_dir: Option<PathBuf>) -> Self {
+        self.model_dir = model_dir;
+        self
     }
 
     /// The socket path (surfaced to the UI + agent config snippet).
@@ -560,6 +574,18 @@ impl MemoryManager {
             ],
         );
         spec.env = vec![(MEM_STORE_KEY_ENV.to_string(), store_key_hex.to_string())];
+        // BGE — when the bundled model dir is present, tell the daemon to load the
+        // embedder offline from it (CITRATE_BGE_MODEL_DIR) and to bootstrap a fresh
+        // store to BGE (CITRATE_MEM_EMBED=bge) so semantic recall is real, not
+        // lexical. Absent the model, neither is set and the daemon stays lexical
+        // (honest — `semantic` in the status reflects this).
+        if let Some(dir) = &self.model_dir {
+            spec.env.push((
+                "CITRATE_BGE_MODEL_DIR".to_string(),
+                dir.to_string_lossy().to_string(),
+            ));
+            spec.env.push(("CITRATE_MEM_EMBED".to_string(), "bge".to_string()));
+        }
         spec
     }
 
@@ -618,8 +644,9 @@ impl MemoryManager {
         MemoryStatus {
             state: state.to_string(),
             socket_path: self.socket_path.to_string_lossy().to_string(),
-            // The bge model is an S7 bundle item; honestly report it absent.
-            semantic: false,
+            // Semantic recall is real IFF the BGE model is bundled + wired into the
+            // spawn (CITRATE_BGE_MODEL_DIR). Absent it, the daemon stays lexical.
+            semantic: self.model_dir.is_some(),
         }
     }
 
@@ -727,6 +754,28 @@ fn resolve_mem_mcp_bin<R: tauri::Runtime>(
     crate::supervisor::resolve_external_bin(app, "mem-mcp")
 }
 
+/// Resolve the bundled BGE model dir (`models/bge-base-en-v1.5` with `config.json`
+/// + `tokenizer.json` + `model.safetensors`). `CITRATE_BGE_MODEL_DIR` override
+/// first (dev/tests), else the Tauri resource dir. Returns `None` (not an error)
+/// when the model is not present — the daemon then stays lexical, and the status
+/// honestly reports `semantic: false` rather than pretending semantic recall works.
+fn resolve_bge_model_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    use tauri::Manager;
+    let has_all = |d: &PathBuf| {
+        d.join("config.json").is_file()
+            && d.join("tokenizer.json").is_file()
+            && d.join("model.safetensors").is_file()
+    };
+    if let Ok(p) = std::env::var("CITRATE_BGE_MODEL_DIR") {
+        let d = PathBuf::from(p);
+        if has_all(&d) {
+            return Some(d);
+        }
+    }
+    let d = app.path().resource_dir().ok()?.join("models/bge-base-en-v1.5");
+    has_all(&d).then_some(d)
+}
+
 /// Build the managed memory state from a live app handle: the real OS keyring,
 /// the bundled daemon binary, a per-user encrypted store dir + socket inside the
 /// app data dir, a crash-record path, and the production Unix-socket transport.
@@ -741,14 +790,18 @@ pub fn build_memory_state<R: tauri::Runtime>(
     let crash_record_path = mem_dir.join("crash-records.jsonl");
     let bin = resolve_mem_mcp_bin(app)?;
     let transport = Box::new(UnixSocketTransport::new(socket_path.clone()));
-    Ok(MemoryState(MemoryManager::new(
-        Box::new(crate::custody::OsKeyring),
-        bin,
-        store_path,
-        socket_path,
-        crash_record_path,
-        transport,
-    )))
+    let model_dir = resolve_bge_model_dir(app);
+    Ok(MemoryState(
+        MemoryManager::new(
+            Box::new(crate::custody::OsKeyring),
+            bin,
+            store_path,
+            socket_path,
+            crash_record_path,
+            transport,
+        )
+        .with_model_dir(model_dir),
+    ))
 }
 
 // ---------------------------------------------------------------------------

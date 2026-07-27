@@ -238,6 +238,34 @@ fn store_key_is_never_on_argv() {
     assert_eq!(env_val, *key, "the key is handed via env, not argv");
 }
 
+/// BGE — when a model dir is set, the daemon spawn carries `CITRATE_BGE_MODEL_DIR`
+/// (load offline from the bundled weights) + `CITRATE_MEM_EMBED=bge` (bootstrap a
+/// fresh store to BGE for real semantic recall), and `status().semantic` is true.
+#[test]
+fn spawn_carries_bge_env_when_model_dir_is_set() {
+    let (mgr, _fake, _dir) = stub_manager("bge-env");
+    let model_dir = std::path::PathBuf::from("/opt/citrate/models/bge-base-en-v1.5");
+    let mgr = mgr.with_model_dir(Some(model_dir.clone()));
+    let key = mgr.store_key_hex().unwrap();
+    let spec = mgr.build_spec(&key);
+    let get = |k: &str| spec.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    assert_eq!(get("CITRATE_BGE_MODEL_DIR"), Some(model_dir.to_string_lossy().as_ref()));
+    assert_eq!(get("CITRATE_MEM_EMBED"), Some("bge"), "fresh store bootstraps to BGE");
+    assert!(mgr.status().semantic, "semantic is true when the model is wired");
+}
+
+/// Without a model dir (no BGE bundled), the daemon spawns WITHOUT the BGE env and
+/// stays lexical — `semantic` is honestly false (never a fabricated capability).
+#[test]
+fn spawn_omits_bge_env_and_semantic_is_false_without_a_model() {
+    let (mgr, _fake, _dir) = stub_manager("no-bge");
+    let key = mgr.store_key_hex().unwrap();
+    let spec = mgr.build_spec(&key);
+    assert!(!spec.env.iter().any(|(k, _)| k == "CITRATE_BGE_MODEL_DIR"));
+    assert!(!spec.env.iter().any(|(k, _)| k == "CITRATE_MEM_EMBED"));
+    assert!(!mgr.status().semantic, "lexical-only is reported honestly");
+}
+
 // ---------------------------------------------------------------------------
 // WP1 — ciphertext at rest (tripwire)
 // ---------------------------------------------------------------------------

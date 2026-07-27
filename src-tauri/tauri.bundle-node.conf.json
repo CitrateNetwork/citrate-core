@@ -8,7 +8,11 @@
       "binaries/mem-mcp",
       "binaries/llama-server"
     ],
-    "resources": ["llama/*", "models/gemma-4-E4B-it-Q4_0.gguf"],
+    "resources": [
+      "llama/*",
+      "models/gemma-4-E4B-it-Q4_0.gguf",
+      "models/bge-base-en-v1.5/*"
+    ],
     "macOS": {
       "signingIdentity": "Developer ID Application: Larry Klosowski (DDHUG44QC7)",
       "hardenedRuntime": true
