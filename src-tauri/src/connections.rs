@@ -7,20 +7,35 @@
 //! listener (RFC 8252, fixed port), the live HTTP exchange, and the keyring token
 //! custody build on top of this (subsequent WPs), mirroring `oidc.rs`.
 //!
-//! Redirect is a FIXED loopback (not oidc.rs's random `:0`) because GitHub + Notion
-//! match `redirect_uri` exactly — one registered URL across all three (see the
-//! runbook + ADR-3). NO `#[tauri::command]` here returns a token or the client
-//! secret (I-2 barrier); those live sealed in the OS keyring.
+//! Redirect is a FIXED loopback (not oidc.rs's random `:0`) so the single-use
+//! listener always binds the same port. GitHub + Google accept that `http://`
+//! loopback `redirect_uri` directly; NOTION rejects a plaintext-http redirect and
+//! is registered against the hosted `https://auth.citrate.ai/oauth/callback`
+//! bounce, which 302s the browser back to the same loopback (see the runbook +
+//! ADR-3). So `redirect_uri` is PER-SERVICE ({@link Service::redirect_uri}) while
+//! the loopback the listener binds is common. NO `#[tauri::command]` here returns a
+//! token or the client secret (I-2 barrier); those live sealed in the OS keyring.
 
 use base64::Engine as _;
 use rand::RngCore as _;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-/// The one callback URL registered for every service (ADR-3 / runbook).
+/// The loopback callback the single-use listener binds — and the `redirect_uri`
+/// registered for the providers that accept a plaintext-http loopback (GitHub,
+/// Google's Desktop-app client type). See {@link Service::redirect_uri}.
 pub const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8975/oauth/callback";
 
-/// The fixed loopback port the single-use callback listener binds.
+/// The hosted https `redirect_uri` for providers that reject an http loopback
+/// (Notion). Registered against the stateless bounce on the Citrate OIDC authority
+/// (citrate-identity `src/oauth-bounce.ts`), which 302s the browser straight back
+/// to {@link OAUTH_REDIRECT_URI}. This URL is the OAuth `redirect_uri` PARAMETER
+/// (sent in both the authorize request and the token exchange, and matched by the
+/// provider); the browser still ultimately lands on the loopback the listener owns.
+pub const HOSTED_REDIRECT_URI: &str = "https://auth.citrate.ai/oauth/callback";
+
+/// The fixed loopback port the single-use callback listener binds (common to all
+/// services — Notion reaches it via the hosted bounce, the others land directly).
 pub const OAUTH_LOOPBACK_PORT: u16 = 8975;
 
 /// PKCE code-challenge method — S256 ONLY (never `plain`).
@@ -67,6 +82,18 @@ impl Service {
             Service::GitHub => "https://github.com/login/oauth/access_token",
             Service::GoogleDrive => "https://oauth2.googleapis.com/token",
             Service::Notion => "https://api.notion.com/v1/oauth/token",
+        }
+    }
+
+    /// The OAuth `redirect_uri` PARAMETER for this service — what the provider has
+    /// registered and validates on both the authorize request and the token
+    /// exchange. GitHub + Google accept the http loopback directly; Notion rejects a
+    /// plaintext-http redirect, so it is registered against (and must be sent) the
+    /// hosted https bounce, which returns the browser to the same loopback listener.
+    pub fn redirect_uri(self) -> &'static str {
+        match self {
+            Service::GitHub | Service::GoogleDrive => OAUTH_REDIRECT_URI,
+            Service::Notion => HOSTED_REDIRECT_URI,
         }
     }
 
@@ -155,7 +182,7 @@ fn pct(value: &str) -> String {
 pub fn authorize_url(service: Service, client_id: &str, state: &str, challenge: &str) -> String {
     let mut q: Vec<(String, String)> = vec![
         ("client_id".into(), client_id.into()),
-        ("redirect_uri".into(), OAUTH_REDIRECT_URI.into()),
+        ("redirect_uri".into(), service.redirect_uri().into()),
         ("response_type".into(), "code".into()),
         ("state".into(), state.into()),
         ("code_challenge".into(), challenge.into()),
@@ -198,14 +225,13 @@ pub fn token_exchange_params(
     let mut params = vec![
         ("grant_type", "authorization_code".to_string()),
         ("code", code.to_string()),
-        ("redirect_uri", OAUTH_REDIRECT_URI.to_string()),
+        ("redirect_uri", service.redirect_uri().to_string()),
         ("client_id", client_id.to_string()),
         ("client_secret", client_secret.to_string()),
         ("code_verifier", verifier.to_string()),
     ];
     // GitHub's token endpoint ignores grant_type; harmless to send. Keep the body
     // uniform across providers.
-    let _ = service;
     params.retain(|(_, v)| !v.is_empty());
     params
 }
@@ -271,6 +297,45 @@ mod tests {
         assert!(url.starts_with("https://api.notion.com/v1/oauth/authorize?"));
         assert!(url.contains("owner=user"));
         assert!(!url.contains("scope="), "Notion sets capabilities on the integration, not a scope param");
+    }
+
+    #[test]
+    fn redirect_uri_is_loopback_for_github_and_google_but_hosted_for_notion() {
+        // GitHub + Google accept the plaintext-http loopback redirect directly.
+        assert_eq!(Service::GitHub.redirect_uri(), OAUTH_REDIRECT_URI);
+        assert_eq!(Service::GoogleDrive.redirect_uri(), OAUTH_REDIRECT_URI);
+        assert_eq!(Service::GitHub.redirect_uri(), "http://127.0.0.1:8975/oauth/callback");
+        // Notion rejects the http loopback → the hosted https bounce is registered.
+        assert_eq!(Service::Notion.redirect_uri(), HOSTED_REDIRECT_URI);
+        assert_eq!(Service::Notion.redirect_uri(), "https://auth.citrate.ai/oauth/callback");
+    }
+
+    #[test]
+    fn notion_authorize_uses_the_hosted_https_redirect_not_the_loopback() {
+        let url = authorize_url(Service::Notion, "n_id", "s", "c");
+        // The redirect_uri PARAMETER Notion validates must be the hosted https URL,
+        // percent-encoded — NOT the loopback (which Notion would reject).
+        assert!(
+            url.contains("redirect_uri=https%3A%2F%2Fauth.citrate.ai%2Foauth%2Fcallback"),
+            "Notion authorize must carry the hosted https redirect_uri: {url}"
+        );
+        assert!(
+            !url.contains("127.0.0.1"),
+            "Notion authorize must NOT send the http loopback as redirect_uri: {url}"
+        );
+    }
+
+    #[test]
+    fn token_exchange_redirect_uri_matches_the_authorize_redirect_per_service() {
+        // OAuth requires the token-exchange redirect_uri to match the authorize one.
+        // Notion → hosted https; GitHub/Google → loopback.
+        let notion = token_exchange_params(Service::Notion, "id", "sec", "c", "v");
+        let get = |p: &[(&'static str, String)], k: &str| {
+            p.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone())
+        };
+        assert_eq!(get(&notion, "redirect_uri").as_deref(), Some(HOSTED_REDIRECT_URI));
+        let gh = token_exchange_params(Service::GitHub, "id", "sec", "c", "v");
+        assert_eq!(get(&gh, "redirect_uri").as_deref(), Some(OAUTH_REDIRECT_URI));
     }
 
     #[test]
