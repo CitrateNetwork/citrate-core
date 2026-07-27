@@ -235,6 +235,14 @@ impl NodeManager {
             .clone()
     }
 
+    /// W1.1 (WP-11) — the node's ed25519 proposer pubkey, read from the secret
+    /// `proposer.key` the node minted in its data dir. Honest error until the node
+    /// has started once (the key is minted on first run). This is the registered
+    /// consensus identity, NOT derivable from the coinbase.
+    pub fn proposer_pubkey(&self) -> std::result::Result<String, String> {
+        crate::validator::read_proposer_pubkey(&self.data_dir)
+    }
+
     /// Load the 32-byte storage key from the OS keyring, minting it on first use
     /// (@rule8). Returned as a hex `Zeroizing<String>` ready to hand to the child
     /// via env; the raw bytes are zeroized on drop. An unreachable keyring is a
@@ -476,12 +484,13 @@ pub fn node_start(
     state.0.start().map_err(|e| e.to_string())
 }
 
-/// W1.1 — the node's on-chain proposer identity: the `coinbase` (the member's
-/// wallet address the node mines to) and the ed25519 `proposer_pubkey`
-/// deterministically derived from it. The pubkey is the value registered in
-/// `ValidatorRegistry` and the key for `validatorInfo`/reward reads — the app
-/// derives it locally, byte-for-byte with the node's own signing key (see
-/// `validator.rs`). Requires an unlocked vault; honest error if locked/no wallet.
+/// W1.1 (WP-11) — the node's on-chain proposer identity: the `coinbase` (the
+/// member's wallet address the node mines to) and the ed25519 `proposer_pubkey`
+/// READ from the node's minted `proposer.key`. The pubkey is a persisted secret's
+/// public half — the value registered in `ValidatorRegistry` and the key for
+/// `validatorInfo`/reward reads — NOT derivable from the coinbase (WP-11). The
+/// coinbase needs an unlocked vault; the pubkey needs the node to have started once
+/// (mint-on-first-run) — either leg errors honestly.
 #[derive(serde::Serialize)]
 pub struct ProposerIdentity {
     pub coinbase: String,
@@ -491,10 +500,11 @@ pub struct ProposerIdentity {
 
 #[tauri::command]
 pub fn node_proposer_identity(
+    state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<ProposerIdentity, String> {
     let info = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
-    let proposer_pubkey = crate::validator::proposer_pubkey_hex(&info.address)?;
+    let proposer_pubkey = state.0.proposer_pubkey()?;
     Ok(ProposerIdentity {
         coinbase: info.address,
         proposer_pubkey,
