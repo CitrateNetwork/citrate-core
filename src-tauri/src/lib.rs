@@ -18,6 +18,7 @@ pub use citrate_core_kit::{ceremony, config, custody, oidc, rpc, supervisor, txd
 mod activity;
 mod agent;
 mod ai;
+mod connections;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
