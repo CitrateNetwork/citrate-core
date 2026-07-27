@@ -1580,6 +1580,28 @@ export class Store {
   }
 
   /**
+   * W1.3 (@rule8) — activate the member's node as a block-producing validator.
+   * Builds the pending `registerValidator{value:32k}` ceremony
+   * (bridge.node.registerValidator → node_register_validator: reads the live nonce,
+   * signs the register digest with the node's `proposer.key`, staker = the member
+   * EOA), then STOPS and surfaces the decoded tx for human approval. On approval it
+   * broadcasts (B1.4): the 32k bond leaves the wallet into ValidatorRegistry, the
+   * node enters the active set, and it begins producing + earning the subsidy.
+   * Only meaningful once the node is synced + its proposer.key is minted; a
+   * not-ready node (or web-dev) errors honestly — never a fabricated activation.
+   */
+  async activateValidator(): Promise<void> {
+    let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
+    try {
+      view = await bridge.node.registerValidator();
+    } catch (err) {
+      this.toast("Validator activation unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    this.openWalletReview("stake", "Activate validator · bond 32,000 SALT", view, "32,000 SALT validator bond");
+  }
+
+  /**
    * CORE WP2 — pull the wallet's REAL pending withdrawals from chain and fold
    * them into AppState. `bridge.wallet.pendingWithdrawals()` (Tauri) reads the
    * live on-chain queue (getLogs WithdrawalRequested + withdrawals(id) +

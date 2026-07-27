@@ -159,6 +159,13 @@ export interface NodeDomain {
   start(): Promise<void>;
   stop(): Promise<void>;
   /**
+   * W1.3 — register the member's node as a block-producing validator. Builds the
+   * `registerValidator{value:32k}(pubkey, sig)` tx as a PENDING ceremony and
+   * returns the decoded view for human approval (staker = the member EOA). Tauri →
+   * `node_register_validator`; the sim shim is honestly Unavailable (no node/key).
+   */
+  registerValidator(): Promise<CeremonyView>;
+  /**
    * Q-A.2/Q-B.2 — the REAL recent node log lines (streamed stdout+stderr from the
    * supervisor's bounded ring). In Tauri these are live node output; a stopped
    * node honestly returns [] (never a fabricated template — Rule 1). In sim/web

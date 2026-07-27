@@ -371,6 +371,12 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async stop() {
         assertSimAllowed("node.stop");
       },
+      // W1.3 — no real node/proposer key in the web preview → honest Unavailable
+      // (never a fabricated registration ceremony).
+      async registerValidator() {
+        assertSimAllowed("node.registerValidator");
+        throw new Unavailable("node", "registerValidator");
+      },
       // Q-A.2/Q-B.2 — SIM/web PREVIEW ONLY. There is NO real node process in the
       // web preview, so this cannot stream real stdout/stderr. It returns a small
       // window of the design-preview template lines (clearly a preview, never
