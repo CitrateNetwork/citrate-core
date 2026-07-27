@@ -178,7 +178,7 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     );
     assert_eq!(
         get(NODE_VALIDATOR_REGISTRY_ENV),
-        Some("0x915DdE02831ebacFc57f329f60944492ebb0A095"),
+        Some("0x61d44d8a14443646b756905410be951e6ece95a6"),
         "ValidatorRegistry must be the live 40204 address the fleet runs",
     );
     // SYNC-S1 D3: the app opts the follower into DAG pruning so a long-running

@@ -101,7 +101,7 @@ const NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE: &str = "2000";
 /// The live ValidatorRegistry on chain 40204 — canonical
 /// `citrate-chain/contracts/addresses/40204.json` (`ValidatorRegistry`), the same
 /// address the fleet producer runs.
-const NODE_VALIDATOR_REGISTRY_VALUE: &str = "0x915DdE02831ebacFc57f329f60944492ebb0A095";
+const NODE_VALIDATOR_REGISTRY_VALUE: &str = "0x61d44d8a14443646b756905410be951e6ece95a6";
 /// SYNC-S1 D3 (`citrate-chain node/src/dag_prune.rs`): bound the in-memory DAG
 /// store. D1 removed the Θ(N²) blue-ancestry retention that OOM-killed followers
 /// in the 9k–15k range (our node froze at 14840); D3 caps the remaining O(N)

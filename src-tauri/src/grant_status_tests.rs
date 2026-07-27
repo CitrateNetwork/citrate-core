@@ -89,7 +89,7 @@ fn membership_stake_vault_is_the_canonical_40204_value() {
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
         CITRATE_MEMBER_SBT,
-        "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1"
+        "0x3e0c2b1cd29a615e4ea2e263c8e7df3aef243e42"
     );
 }
 
