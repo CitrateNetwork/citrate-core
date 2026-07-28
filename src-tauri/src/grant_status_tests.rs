@@ -79,7 +79,7 @@ const REQUIREMENT_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
 #[test]
 fn membership_stake_vault_is_the_canonical_40204_value() {
     assert_eq!(
-        MEMBERSHIP_STAKE_VAULT,
+        membership_stake_vault(),
         "0x61e324cfd6b7cb106ac0ad1df163bdfef2b74268"
     );
 }
@@ -88,7 +88,7 @@ fn membership_stake_vault_is_the_canonical_40204_value() {
 #[test]
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
-        CITRATE_MEMBER_SBT,
+        citrate_member_sbt(),
         "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1"
     );
 }
@@ -157,7 +157,7 @@ fn attributed_stake_call_targets_the_vault_with_the_member_in_calldata() {
     let call = attributed_stake_call(MEMBER_ADDR);
     assert_eq!(
         call["to"].as_str().unwrap().to_ascii_lowercase(),
-        MEMBERSHIP_STAKE_VAULT,
+        membership_stake_vault(),
         "the attributedStake read targets the vault"
     );
     let data = call["data"].as_str().unwrap();
@@ -172,7 +172,7 @@ fn sbt_balance_of_call_targets_the_sbt_contract() {
     let call = sbt_balance_of_call(MEMBER_ADDR);
     assert_eq!(
         call["to"].as_str().unwrap().to_ascii_lowercase(),
-        CITRATE_MEMBER_SBT,
+        citrate_member_sbt(),
         "the balanceOf read targets the CitrateMemberSBT"
     );
     let data = call["data"].as_str().unwrap();
@@ -210,11 +210,11 @@ fn read_grant_status_granted_member_reads_real_stake_and_sbt() {
     assert_eq!(reqs.len(), 4, "stake, shares, sbt, pubkeyOfStaker");
     assert_eq!(
         reqs[0]["params"][0]["to"].as_str().unwrap().to_ascii_lowercase(),
-        MEMBERSHIP_STAKE_VAULT
+        membership_stake_vault()
     );
     assert_eq!(
         reqs[2]["params"][0]["to"].as_str().unwrap().to_ascii_lowercase(),
-        CITRATE_MEMBER_SBT
+        citrate_member_sbt()
     );
 }
 

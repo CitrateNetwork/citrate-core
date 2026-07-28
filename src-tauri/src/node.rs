@@ -101,7 +101,11 @@ const NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE: &str = "2000";
 /// The live ValidatorRegistry on chain 40204 — canonical
 /// `citrate-chain/contracts/addresses/40204.json` (`ValidatorRegistry`), the same
 /// address the fleet producer runs.
-const NODE_VALIDATOR_REGISTRY_VALUE: &str = "0x61d44d8a14443646b756905410be951e6ece95a6";
+/// From the generated 40204 book (`crate::addresses`) — the SAME source
+/// `grant_status` reads, so the node env and the app's reads cannot disagree.
+fn node_validator_registry_value() -> &'static str {
+    crate::addresses::validator_registry()
+}
 /// SYNC-S1 D3 (`citrate-chain node/src/dag_prune.rs`): bound the in-memory DAG
 /// store. D1 removed the Θ(N²) blue-ancestry retention that OOM-killed followers
 /// in the 9k–15k range (our node froze at 14840); D3 caps the remaining O(N)
@@ -343,7 +347,7 @@ impl NodeManager {
             ),
             (
                 NODE_VALIDATOR_REGISTRY_ENV.to_string(),
-                NODE_VALIDATOR_REGISTRY_VALUE.to_string(),
+                node_validator_registry_value().to_string(),
             ),
             // SYNC-S1 D3: bound the DAG store so a long-running desktop follower
             // does not OOM near 150k blocks (opt-in on the node; the app opts in).
@@ -567,7 +571,7 @@ pub fn node_validator_earnings(
     pubkey.copy_from_slice(&bytes);
     let rpc = crate::rpc::RpcClient::citrate();
     let (total, claimable) =
-        crate::validator::read_validator_rewards(&rpc, NODE_VALIDATOR_REGISTRY_VALUE, &pubkey)?;
+        crate::validator::read_validator_rewards(&rpc, node_validator_registry_value(), &pubkey)?;
     Ok(ValidatorEarnings {
         total_wei: total.to_string(),
         claimable_wei: claimable.to_string(),
@@ -614,7 +618,7 @@ pub fn node_register_validator(
 ) -> std::result::Result<crate::ceremony::CeremonyView, String> {
     let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
     let staker = crate::validator::parse_address_20(&wallet.address)?;
-    let registry = crate::validator::parse_address_20(NODE_VALIDATOR_REGISTRY_VALUE)?;
+    let registry = crate::validator::parse_address_20(node_validator_registry_value())?;
     let rpc = crate::rpc::RpcClient::citrate();
     // Honesty guard (Rule 1): registerValidator{value:32k} is a SELF-BOND from the
     // member EOA — the contract hard-requires `msg.value >= minStake`. If the
@@ -635,13 +639,13 @@ pub fn node_register_validator(
     }
     // Live replay-guard nonce for the digest (real read, never fabricated).
     let nonce =
-        crate::validator::read_registration_nonce(&rpc, NODE_VALIDATOR_REGISTRY_VALUE, &staker)?;
+        crate::validator::read_registration_nonce(&rpc, node_validator_registry_value(), &staker)?;
     // Sign the registration with the node's proposer key (seed stays in validator.rs).
     let (pubkey, sig) = state.0.sign_registration(40204, &registry, &staker, nonce)?;
     let calldata = crate::validator::register_validator_calldata(&pubkey, &sig);
     let raw = encode_register_json(
         &wallet.address,
-        NODE_VALIDATOR_REGISTRY_VALUE,
+        node_validator_registry_value(),
         VALIDATOR_STAKE_WEI,
         &calldata,
     );

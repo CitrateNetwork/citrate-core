@@ -17,6 +17,7 @@ pub use citrate_core_kit::{
     ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
 };
 
+mod addresses;
 mod activity;
 mod agent;
 mod ai;

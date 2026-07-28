@@ -40,12 +40,19 @@ use crate::staking::decode_uint256_word;
 /// The `MembershipStakeVault` on 40204 (canonical address book:
 /// `contracts/addresses/40204.json`). Lowercase `0x`-hex; the `eth_call` target for
 /// `attributedStake`, `attributedShares`, and `VALIDATOR_STAKE_REQUIREMENT`.
-pub const MEMBERSHIP_STAKE_VAULT: &str = "0x61e324cfd6b7cb106ac0ad1df163bdfef2b74268";
+/// From the generated 40204 book — see `crate::addresses`. Was hardcoded here AND
+/// in `node.rs`; a reroll moved it and the stale pin cost a day (2026-07-28).
+pub fn membership_stake_vault() -> &'static str {
+    crate::addresses::membership_stake_vault()
+}
 
 /// The `CitrateMemberSBT` on 40204 (canonical address book). Lowercase `0x`-hex;
 /// the `eth_call` target for the SBT `balanceOf(member)` membership read.
 /// RE-PINNED 2026-07-27 to the WP-11 reroll book (was `0x4ce39f89…0cf1`).
-pub const CITRATE_MEMBER_SBT: &str = "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1";
+/// From the generated 40204 book — see `crate::addresses`.
+pub fn citrate_member_sbt() -> &'static str {
+    crate::addresses::citrate_member_sbt()
+}
 
 /// 4-byte selector for `attributedStake(address)` —
 /// `keccak256("attributedStake(address)")[..4]`. PINNED here + proven by the
@@ -67,7 +74,10 @@ const VALIDATOR_STAKE_REQUIREMENT_SELECTOR: [u8; 4] = [0xa3, 0xea, 0xc0, 0x15];
 /// The ValidatorRegistry. Under the bond-fund model (ADR 2026-07-27) the member's
 /// 32k lives HERE, not in the vault — see the note on [`read_grant_status`]. Same
 /// address the node is configured with (`node::NODE_VALIDATOR_REGISTRY_VALUE`).
-pub const CITRATE_VALIDATOR_REGISTRY: &str = "0x61d44d8a14443646b756905410be951e6ece95a6";
+/// From the generated 40204 book — see `crate::addresses`.
+pub fn citrate_validator_registry() -> &'static str {
+    crate::addresses::validator_registry()
+}
 
 /// 4-byte selector for `pubkeyOfStaker(address)` —
 /// `keccak256("pubkeyOfStaker(address)")[..4]`. PINNED + drift-tested (Rule 11).
@@ -194,7 +204,7 @@ fn encode_address_calldata(selector: [u8; 4], addr: &str) -> Vec<u8> {
 fn attributed_stake_call(addr: &str) -> serde_json::Value {
     let calldata = encode_address_calldata(attributed_stake_selector(), addr);
     serde_json::json!({
-        "to": MEMBERSHIP_STAKE_VAULT,
+        "to": membership_stake_vault(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -203,7 +213,7 @@ fn attributed_stake_call(addr: &str) -> serde_json::Value {
 fn attributed_shares_call(addr: &str) -> serde_json::Value {
     let calldata = encode_address_calldata(attributed_shares_selector(), addr);
     serde_json::json!({
-        "to": MEMBERSHIP_STAKE_VAULT,
+        "to": membership_stake_vault(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -212,7 +222,7 @@ fn attributed_shares_call(addr: &str) -> serde_json::Value {
 fn pubkey_of_staker_call(addr: &str) -> serde_json::Value {
     let calldata = encode_address_calldata(pubkey_of_staker_selector(), addr);
     serde_json::json!({
-        "to": CITRATE_VALIDATOR_REGISTRY,
+        "to": citrate_validator_registry(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -224,7 +234,7 @@ fn stake_of_call(pubkey_word: &[u8; 32]) -> serde_json::Value {
     calldata.extend_from_slice(&stake_of_selector());
     calldata.extend_from_slice(pubkey_word);
     serde_json::json!({
-        "to": CITRATE_VALIDATOR_REGISTRY,
+        "to": citrate_validator_registry(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -244,7 +254,7 @@ fn decode_word32(ret: &[u8]) -> Option<[u8; 32]> {
 fn sbt_balance_of_call(addr: &str) -> serde_json::Value {
     let calldata = encode_address_calldata(sbt_balance_of_selector(), addr);
     serde_json::json!({
-        "to": CITRATE_MEMBER_SBT,
+        "to": citrate_member_sbt(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
