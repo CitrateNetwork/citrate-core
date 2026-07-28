@@ -187,6 +187,18 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
         return invoke<PendingWithdrawal[]>("wallet_pending_withdrawals");
       },
+      // Bind this device's custody EOA to the Citrate identity. Signs NOTHING
+      // here — the human approves the personal_sign ceremony, and only then is
+      // the proof submitted to the authority.
+      async linkRequest(): Promise<CeremonyView> {
+        return invoke<CeremonyView>("wallet_link_request");
+      },
+      async linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean }> {
+        return invoke<{ address: string; linked: boolean }>("wallet_link_approve", { id, rawAck });
+      },
+      async linkReject(id: string): Promise<void> {
+        return invoke<void>("wallet_link_reject", { id });
+      },
     },
     // ---- node: REAL citrate-node under the SidecarSupervisor (C1.1) ----
     // status returns the node's REAL sync state (height/peers from its local

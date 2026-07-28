@@ -192,7 +192,7 @@ export interface CerSpec {
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim";
+  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
@@ -363,6 +363,15 @@ export interface AppState {
    */
   coreMembershipUrl: string;
   walletAddr: string;
+  /**
+   * This device's CUSTODY EOA (from `wallet.balances().address`) — the address
+   * that actually signs, as opposed to `walletAddr`, which is the authority's
+   * `wallet_address` CLAIM. They differ until the member links this wallet, and
+   * that difference is exactly what strands a validator bond: the money path pays
+   * the claim, the self-bond is sent from the custody EOA. Empty until a real
+   * balances() read lands (never fabricated).
+   */
+  custodyAddr: string;
   socketPath: string;
   deviceId: string;
   s1c: number;
@@ -565,6 +574,7 @@ export function freshState(pid: string): AppState {
     dataDir: "~/.citrate/core",
     coreMembershipUrl: "https://core-membership.vercel.app",
     walletAddr: makeAddr(P.name),
+    custodyAddr: "",
     socketPath: "~/.citrate/core/memory/" + first + ".sock",
     deviceId: "dev_" + makeAddr(P.name + "::device").slice(2, 12),
     s1c: 0,

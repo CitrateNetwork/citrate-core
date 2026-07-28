@@ -490,3 +490,104 @@ describe("Q-E.1 wallet review gate — money actions never self-broadcast", () =
     expect(broadcastSpy).toHaveBeenCalledWith("wcer-raw", true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Wallet link → the `wallet_address` binding.
+//
+// The authority mints `wallet_address` for every member; until a wallet is linked
+// that claim is the counterfactual smart-wallet address, which no key can spend
+// from. The membership money path pays THAT address while the validator self-bond
+// is sent from this device's custody EOA — so an unlinked member's 32,000 SALT
+// bond lands somewhere unreachable. These pin the gate and, above all, that a
+// link NEVER reaches `signing.broadcast` (it is a signature, not a transaction).
+// ---------------------------------------------------------------------------
+describe("wallet link — binding this device's wallet to the identity", () => {
+  const linkView: CeremonyView = {
+    id: "wlink-1",
+    origin: "https://auth.citrate.ai",
+    kind: "personal_sign",
+    chainId: 40204,
+    decoded: {
+      action: 'Sign message: "auth.citrate.ai wants to link a wallet…"',
+      cost: "no funds moved",
+      destination: "https://auth.citrate.ai",
+    },
+    requiresRawAck: false,
+  };
+
+  let broadcastSpy: ReturnType<typeof vi.spyOn>;
+  let linkApproveSpy: ReturnType<typeof vi.spyOn>;
+  let linkRejectSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    store.setState({ walletReview: null, walletAddr: "", custodyAddr: "" });
+    vi.spyOn(bridge.wallet, "linkRequest").mockResolvedValue(linkView);
+    linkApproveSpy = vi
+      .spyOn(bridge.wallet, "linkApprove")
+      .mockResolvedValue({ address: "0x" + "cd".repeat(20), linked: true });
+    linkRejectSpy = vi.spyOn(bridge.wallet, "linkReject").mockResolvedValue(undefined);
+    broadcastSpy = vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xhash", blockNumber: 1 });
+    vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined as never);
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ walletReview: null });
+  });
+
+  it("walletIsLinked is false until BOTH addresses are known — never an optimistic yes", () => {
+    store.setState({ walletAddr: "", custodyAddr: "" });
+    expect(store.walletIsLinked()).toBe(false);
+    store.setState({ walletAddr: "0x" + "ab".repeat(20), custodyAddr: "" });
+    expect(store.walletIsLinked()).toBe(false);
+    store.setState({ walletAddr: "", custodyAddr: "0x" + "ab".repeat(20) });
+    expect(store.walletIsLinked()).toBe(false);
+  });
+
+  it("differing claim and custody addresses read as NOT linked (the stranding case)", () => {
+    store.setState({ walletAddr: "0x" + "ab".repeat(20), custodyAddr: "0x" + "cd".repeat(20) });
+    expect(store.walletIsLinked()).toBe(false);
+  });
+
+  it("the same address in different casing reads as linked", () => {
+    store.setState({ walletAddr: "0x" + "AB".repeat(20), custodyAddr: "0x" + "ab".repeat(20) });
+    expect(store.walletIsLinked()).toBe(true);
+  });
+
+  it("linkWallet builds the pending review and signs NOTHING", async () => {
+    await store.linkWallet();
+    expect(store.state.walletReview).not.toBeNull();
+    expect(store.state.walletReview?.kind).toBe("wallet-link");
+    expect(store.state.walletReview?.view.id).toBe("wlink-1");
+    expect(linkApproveSpy).not.toHaveBeenCalled();
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  // THE LOAD-BEARING ONE. A link is a personal_sign whose proof is POSTed to the
+  // authority — routing it to signing.broadcast would try to send a transaction.
+  it("approving a link submits the proof and NEVER broadcasts a transaction", async () => {
+    await store.linkWallet();
+    await store.approveWalletReview();
+    expect(linkApproveSpy).toHaveBeenCalledWith("wlink-1", false);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
+  });
+
+  it("a failed submit leaves nothing linked and releases the ceremony", async () => {
+    linkApproveSpy.mockRejectedValue(new Error("authority rejected the link: replayed nonce"));
+    await store.linkWallet();
+    await store.approveWalletReview();
+    expect(linkRejectSpy).toHaveBeenCalledWith("wlink-1");
+    expect(store.state.walletReview).toBeNull();
+    expect(store.walletIsLinked()).toBe(false);
+  });
+
+  it("declining a link releases the one-time nonce via the link path, not signing.reject", async () => {
+    const signingReject = vi.spyOn(bridge.signing, "reject").mockResolvedValue(undefined);
+    await store.linkWallet();
+    await store.rejectWalletReview();
+    expect(linkRejectSpy).toHaveBeenCalledWith("wlink-1");
+    expect(signingReject).not.toHaveBeenCalled();
+    expect(linkApproveSpy).not.toHaveBeenCalled();
+  });
+});

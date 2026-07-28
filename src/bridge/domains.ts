@@ -129,6 +129,29 @@ export interface WalletDomain {
    * chain state (getLogs WithdrawalRequested + withdrawals(id) + block_number).
    * A fresh wallet honestly returns []. Never fabricated (Rule 1). */
   pendingWithdrawals(): Promise<PendingWithdrawal[]>;
+  /**
+   * Bind THIS device's custody EOA to the member's Citrate identity, as a PENDING
+   * ceremony. Signs NOTHING — the human approves via `wallet.linkApprove`.
+   *
+   * WHY IT MATTERS: until a wallet is linked, the authority's `wallet_address`
+   * claim is the counterfactual smart-wallet address, which no private key can
+   * spend from. The membership money path pays THAT address, while the validator
+   * self-bond is sent from this custody EOA — so an unlinked member is funded
+   * somewhere they cannot reach. Linking makes the two the same address.
+   *
+   * The proof is an EIP-191 signature over a one-time challenge from the
+   * authority; the message is shown verbatim in the approval UI.
+   */
+  linkRequest(): Promise<CeremonyView>;
+  /**
+   * Approve a pending link ceremony: signs the challenge and submits the proof to
+   * the authority. Returns the now-bound address. NEVER returns the signature —
+   * it is consumed in-process (I-2). This is NOT `signing.broadcast`: no
+   * transaction is sent and no funds move.
+   */
+  linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean }>;
+  /** Decline a pending link: release the ceremony + drop the one-time nonce. */
+  linkReject(id: string): Promise<void>;
 }
 
 /** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all

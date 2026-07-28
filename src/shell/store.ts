@@ -41,6 +41,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   "withdraw-request": "Withdrawal request",
   "withdraw-claim": "Withdrawal claim",
   claim: "Claim",
+  "wallet-link": "Wallet link",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -623,6 +624,10 @@ export class Store {
     try {
       const b = await bridge.wallet.balances();
       const patch: Partial<AppState> = { liquid: b.liquid };
+      // The address that actually signs. Folded so the UI can tell whether this
+      // device's wallet is the one the authority serves as `wallet_address` —
+      // if they differ, a validator bond would be paid somewhere unspendable.
+      if (b.address) patch.custodyAddr = b.address;
       if (b.claimable >= 0) {
         patch.claimable = b.claimable;
         // Only claim a "chain" data source for a REAL read (Tauri). In web-dev the
@@ -1608,6 +1613,42 @@ export class Store {
   }
 
   /**
+   * Bind THIS device's custody wallet to the member's Citrate identity.
+   *
+   * WHY IT COMES FIRST. The authority mints a `wallet_address` claim for every
+   * member; until a wallet is linked that claim is the counterfactual smart-wallet
+   * address, which no private key can spend from. The membership money path pays
+   * THAT address, while the validator self-bond is sent from this device's custody
+   * EOA — so activating before linking means the 32,000 SALT bond lands somewhere
+   * the member cannot reach. Linking makes the two the same address.
+   *
+   * Signs nothing here: this builds the pending personal_sign ceremony and STOPS,
+   * exactly like every other wallet action. The human sees the authority's
+   * challenge message verbatim and approves it. No funds move.
+   */
+  async linkWallet(): Promise<void> {
+    let view: Awaited<ReturnType<typeof bridge.wallet.linkRequest>>;
+    try {
+      view = await bridge.wallet.linkRequest();
+    } catch (err) {
+      this.toast("Wallet link unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    this.openWalletReview("wallet-link", "Link this wallet to your Citrate identity", view, "no funds move");
+  }
+
+  /**
+   * True when the authority already serves THIS device's custody wallet as the
+   * member's `wallet_address`. Only meaningful once both reads have landed — an
+   * unknown either side reads false (never an optimistic yes).
+   */
+  walletIsLinked(): boolean {
+    const claim = (this.state.walletAddr || "").toLowerCase();
+    const custody = (this.state.custodyAddr || "").toLowerCase();
+    return claim !== "" && custody !== "" && claim === custody;
+  }
+
+  /**
    * CORE WP2 — pull the wallet's REAL pending withdrawals from chain and fold
    * them into AppState. `bridge.wallet.pendingWithdrawals()` (Tauri) reads the
    * live on-chain queue (getLogs WithdrawalRequested + withdrawals(id) +
@@ -1703,6 +1744,32 @@ export class Store {
       this.toast("Undecodable calldata — tick “I understand this is raw” to approve.");
       return;
     }
+    // A wallet LINK is not a transaction: it is a personal_sign whose proof is
+    // POSTed to the authority. It must never reach signing.broadcast, which would
+    // try to send a tx. Route it to the dedicated command, which signs, submits,
+    // and returns only the bound address (the signature stays in-process).
+    if (r.kind === "wallet-link") {
+      try {
+        const res = await bridge.wallet.linkApprove(r.view.id, ack);
+        this.setState({ walletReview: null });
+        this.addActivity(r.label, "no funds moved", "");
+        this.toast("Wallet linked — the authority now pays " + res.address.slice(0, 10) + "….");
+        // Re-read the claim so the UI reflects the new binding rather than
+        // asserting it: walletIsLinked() must be earned by a real read.
+        await this.authUserinfo();
+        await this.refreshWallet();
+        this.save();
+      } catch (err) {
+        try {
+          await bridge.wallet.linkReject(r.view.id);
+        } catch {
+          /* best-effort cleanup */
+        }
+        this.setState({ walletReview: null });
+        this.toast("Wallet not linked — " + String((err as Error).message ?? err));
+      }
+      return;
+    }
     // In web-dev there is no key/chain; signing.broadcast throws honestly. Keep the
     // review open so the flow is truthful (no fabricated settlement, Rule 1).
     if (BRIDGE_MODE !== "tauri") {
@@ -1752,7 +1819,10 @@ export class Store {
     if (!r) return;
     this.setState({ walletReview: null });
     try {
-      await bridge.signing.reject(r.view.id);
+      // The link path has its own reject: it also drops the one-time challenge
+      // nonce, so a declined link cannot be resumed with a stale nonce.
+      if (r.kind === "wallet-link") await bridge.wallet.linkReject(r.view.id);
+      else await bridge.signing.reject(r.view.id);
     } catch {
       /* best-effort — the ceremony may already be gone */
     }
