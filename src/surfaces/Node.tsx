@@ -301,16 +301,44 @@ export function Node({ store, s }: SurfaceProps) {
                     packaged app when synced-but-not-yet-validating. */}
                 {TAURI && s.node === "synced" && (
                   <>
-                    <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
-                      Your node is synced. Activate it as a validator to bond your 32,000 SALT and start producing blocks + earning.
-                    </p>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      style={{ alignSelf: "flex-start" }}
-                      onClick={() => void store.activateValidator()}
-                    >
-                      Activate validator · bond 32,000 SALT
-                    </button>
+                    {/* The bond is paid to the address the AUTHORITY serves as
+                        `wallet_address`, but the self-bond is sent from THIS
+                        device's custody wallet. Until they are the same address,
+                        activating funds somewhere the member cannot spend from —
+                        so linking is a prerequisite, not a suggestion. */}
+                    {!store.walletIsLinked() ? (
+                      <>
+                        <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
+                          Your node is synced. Before activating, link this device&rsquo;s wallet to your Citrate
+                          identity — your membership bond is paid to the wallet your identity names, and it must be
+                          this one or the funds land somewhere this device cannot spend from.
+                        </p>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          style={{ alignSelf: "flex-start" }}
+                          onClick={() => void store.linkWallet()}
+                        >
+                          Link this wallet · no funds move
+                        </button>
+                        <span style={{ fontSize: 11.5, color: "var(--tx-2)" }}>
+                          You&rsquo;ll approve a signature that proves you control this wallet. Nothing is spent.
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <p style={{ fontSize: 12, color: "var(--tx-2)", margin: "0 0 2px", lineHeight: 1.5 }}>
+                          Your node is synced and this wallet is linked to your identity. Activate it as a validator to
+                          bond your 32,000 SALT and start producing blocks + earning.
+                        </p>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          style={{ alignSelf: "flex-start" }}
+                          onClick={() => void store.activateValidator()}
+                        >
+                          Activate validator · bond 32,000 SALT
+                        </button>
+                      </>
+                    )}
                   </>
                 )}
                 <div style={{ display: "flex", justifyContent: "space-between" }}>

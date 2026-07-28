@@ -350,6 +350,20 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("wallet.claimWithdrawal");
         return simWalletCeremony({ action: `Claim matured withdrawal #${id}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
+      async linkRequest(): Promise<CeremonyView> {
+        // There is no custody key and no authority session in web-dev, so there
+        // is nothing to prove control of. Refuse honestly rather than mint a
+        // ceremony that could never produce a real proof (Rule 1).
+        assertSimAllowed("wallet.linkRequest");
+        throw new Error("Wallet linking runs in the desktop app (it signs with the custody key).");
+      },
+      async linkApprove(): Promise<{ address: string; linked: boolean }> {
+        assertSimAllowed("wallet.linkApprove");
+        throw new Error("Wallet linking runs in the desktop app (it signs with the custody key).");
+      },
+      async linkReject(): Promise<void> {
+        assertSimAllowed("wallet.linkReject");
+      },
       async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
         // The web shim reaches no chain — there is no real pending queue to read.
         // Return an honest empty list (Rule 1) rather than fabricate rows; the
