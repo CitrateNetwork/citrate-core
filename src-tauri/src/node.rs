@@ -539,6 +539,42 @@ pub fn node_proposer_identity(
     })
 }
 
+/// The node's REAL validator earnings — `(total, claimable)` SALT wei from
+/// `ValidatorRegistry.rewardsOf(proposerPubkey)` on 40204. The block subsidy accrues
+/// HERE, keyed by the proposer pubkey, which is the correct source (W1.4 fix,
+/// replacing the wrong `ContributionAccounting.claimable` read). A not-yet-registered
+/// validator returns `(0, 0)` honestly — never a fabricated number (Rule 1).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatorEarnings {
+    pub total_wei: String,
+    pub claimable_wei: String,
+    #[serde(rename = "proposerPubkey")]
+    pub proposer_pubkey: String,
+}
+
+#[tauri::command]
+pub fn node_validator_earnings(
+    state: State<'_, NodeState>,
+) -> std::result::Result<ValidatorEarnings, String> {
+    let pubkey_hex = state.0.proposer_pubkey()?;
+    let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
+    let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!("proposer pubkey is {} bytes, expected 32", bytes.len()));
+    }
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&bytes);
+    let rpc = crate::rpc::RpcClient::citrate();
+    let (total, claimable) =
+        crate::validator::read_validator_rewards(&rpc, NODE_VALIDATOR_REGISTRY_VALUE, &pubkey)?;
+    Ok(ValidatorEarnings {
+        total_wei: total.to_string(),
+        claimable_wei: claimable.to_string(),
+        proposer_pubkey: pubkey_hex,
+    })
+}
+
 /// W1.3 — the validator bond (SALT wei) the member sends as `msg.value` on
 /// `registerValidator`. Matches the membership grant + `ValidatorRegistry.minStake`
 /// (32,000 SALT). If minStake ever rises above this the register reverts (BadStake)
@@ -579,8 +615,25 @@ pub fn node_register_validator(
     let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
     let staker = crate::validator::parse_address_20(&wallet.address)?;
     let registry = crate::validator::parse_address_20(NODE_VALIDATOR_REGISTRY_VALUE)?;
-    // Live replay-guard nonce for the digest (real read, never fabricated).
     let rpc = crate::rpc::RpcClient::citrate();
+    // Honesty guard (Rule 1): registerValidator{value:32k} is a SELF-BOND from the
+    // member EOA — the contract hard-requires `msg.value >= minStake`. If the
+    // membership grant hasn't funded the EOA yet (the ADR-2026-07-27 bond-fund leg),
+    // the EOA has < 32k and the broadcast would revert "insufficient funds". Fail
+    // here with a clear reason instead of minting a doomed ceremony that looks like
+    // activation succeeded.
+    let balance = rpc.get_balance(&wallet.address).map_err(|e| e.to_string())?;
+    if balance < VALIDATOR_STAKE_WEI {
+        let salt = |w: u128| w / 1_000_000_000_000_000_000u128;
+        return Err(format!(
+            "validator bond not funded: your wallet ({}) holds {} SALT but registration \
+             needs {} (the 32k bond, self-bonded from your wallet). The membership grant \
+             funds this automatically; if it hasn't arrived, the treasury bond-fund step \
+             is still pending — activation can't proceed until then.",
+            wallet.address, salt(balance), salt(VALIDATOR_STAKE_WEI)
+        ));
+    }
+    // Live replay-guard nonce for the digest (real read, never fabricated).
     let nonce =
         crate::validator::read_registration_nonce(&rpc, NODE_VALIDATOR_REGISTRY_VALUE, &staker)?;
     // Sign the registration with the node's proposer key (seed stays in validator.rs).
