@@ -1547,7 +1547,48 @@ export class Store {
    * we re-read `claimable` from chain. In web-dev (sim) there is no key and no chain,
    * so a claim CANNOT settle — we say so honestly and never fake a balance change.
    */
+  /**
+   * KYC gates getting SALT **out**, not taking part.
+   *
+   * THE MODEL (ADR-2026-07-25 + the 2026-07-28 handoff plan). Participation is
+   * un-gated: a paid member is provisioned and can run the node, produce blocks and
+   * accrue earnings with no KYC at all. Verification is the qualifier for VALUE
+   * LEAVING — claiming rewards and withdrawing stake.
+   *
+   * Re-checks LIVE (`/userinfo`) rather than trusting the cached claim: a stale
+   * local `s2` must never authorize a payout, and an unreachable authority REFUSES
+   * rather than falling through on the stale value.
+   *
+   * HONEST LIMIT — READ THIS BEFORE CALLING IT ENFORCEMENT. This is an app-side
+   * product default, NOT a gate. The member holds their own key and can call
+   * `claimRewards` / `requestWithdrawal` directly against the 40204 contracts,
+   * bypassing this entirely. It is beta-acceptable for a known member set; it is
+   * not a compliance control. The contract-side gate (a KYC attestation the pool
+   * and registry honour) is a separate deliverable.
+   */
+  async assertPayoutKyc(action: string): Promise<boolean> {
+    try {
+      await this.authUserinfo();
+    } catch {
+      // Could not confirm — fail closed. Never authorize a payout on a claim we
+      // could not re-read.
+      this.toast(action + " needs a verified identity, and we could not reach the authority to confirm. Try again in a moment.");
+      return false;
+    }
+    if (this.state.s2 === "verified") return true;
+    const detail =
+      this.state.s2 === "pending" || this.state.s2 === "review"
+        ? "Your verification is still in review."
+        : this.state.s2 === "failed"
+          ? "Your last verification did not pass."
+          : "Verify your identity to withdraw.";
+    this.toast(action + " requires identity verification. " + detail + " Your earnings keep accruing in the meantime.");
+    return false;
+  }
+
   async claimRewards(): Promise<void> {
+    // Payout gate: KYC is required to take SALT out (participation is not gated).
+    if (!(await this.assertPayoutKyc("Claiming earnings"))) return;
     let res: Awaited<ReturnType<typeof bridge.agent.claim>>;
     try {
       res = await bridge.agent.claim();
@@ -1692,6 +1733,8 @@ export class Store {
    * walletStake. Web-dev cannot settle — honest message. `amountWei` = SALT (wei).
    */
   async walletRequestWithdrawal(amountWei: string): Promise<void> {
+    // Payout gate: withdrawing STAKE takes SALT out, so it needs KYC too.
+    if (!(await this.assertPayoutKyc("Withdrawing stake"))) return;
     let view: Awaited<ReturnType<typeof bridge.wallet.requestWithdrawal>>;
     try {
       view = await bridge.wallet.requestWithdrawal(amountWei);
@@ -1713,6 +1756,9 @@ export class Store {
    * Web-dev cannot settle — honest message. `id` = the decimal request id.
    */
   async walletClaimWithdrawal(id: string): Promise<void> {
+    // The matured leg still moves SALT to the member — gate it as well, so a
+    // request made while verified cannot be collected after a revocation.
+    if (!(await this.assertPayoutKyc("Claiming a matured withdrawal"))) return;
     let view: Awaited<ReturnType<typeof bridge.wallet.claimWithdrawal>>;
     try {
       view = await bridge.wallet.claimWithdrawal(id);

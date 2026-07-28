@@ -52,21 +52,23 @@ use serde::{Deserialize, Serialize};
 
 /// The Gemma GGUF file name (also the app-data filename + the final rename
 /// target). The `.part` in-progress file is `<MODEL_FILE>.part`.
-pub const MODEL_FILE: &str = "gemma-4-E4B-it-Q4_K_M.gguf";
+pub const MODEL_FILE: &str = "gemma-4-E4B-it-Q4_0.gguf";
 
-/// The exact byte length of the model (5,335,289,824 bytes ≈ 4.96 GiB / 5.34 GB).
+/// The exact byte length of the model (4,590,807,392 bytes ≈ 4.28 GiB / 4.59 GB).
 /// The streamed download refuses to finalize until exactly this many bytes have
 /// arrived, and `verify` re-checks the on-disk length against it.
-pub const MODEL_SIZE_BYTES: u64 = 5_335_289_824;
+pub const MODEL_SIZE_BYTES: u64 = 4_590_807_392;
 
 /// The pinned SHA-256 of the model file. `verify` streams the file through
 /// SHA-256 and compares to THIS; any mismatch quarantines the file (never Ready).
-pub const MODEL_SHA256: &str = "90ce98129eb3e8cc57e62433d500c97c624b1e3af1fcc85dd3b55ad7e0313e9f";
+/// (Re-pinned 2026-07-23: the repo's Q4_K_M was replaced by Q4_0; this is the live
+/// `ggml-org/gemma-4-E4B-it-GGUF` Q4_0 sha256 — also the bundled/seeded model.)
+pub const MODEL_SHA256: &str = "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2";
 
 /// The default source URL (the grounded HF resolve path). Overridable via the
 /// `CITRATE_MODEL_URL` env (a config seam — a Citrate CDN mirror can override it).
 pub const DEFAULT_MODEL_URL: &str =
-    "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf";
+    "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf";
 
 /// The env var that overrides [`DEFAULT_MODEL_URL`] (the config seam).
 pub const MODEL_URL_ENV: &str = "CITRATE_MODEL_URL";
@@ -78,7 +80,7 @@ pub const GGUF_MAGIC: [u8; 4] = *b"GGUF";
 /// The status side-file (JSON) that records whether the model has been VERIFIED.
 /// `Ready` is derived from this file's `verified == true`, so a bare on-disk file
 /// is never Ready without a real verify (the no-Ready-without-verify guard).
-const STATUS_FILE: &str = "gemma-4-E4B-it-Q4_K_M.gguf.status.json";
+const STATUS_FILE: &str = "gemma-4-E4B-it-Q4_0.gguf.status.json";
 
 /// Resolve the model source URL: the `override` (from `CITRATE_MODEL_URL`) if
 /// present, else [`DEFAULT_MODEL_URL`]. Taken as an explicit arg (not read inline)
@@ -542,12 +544,49 @@ pub fn build_model_state<R: tauri::Runtime>(
     let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let dir = data_root.join("models");
     let url = resolve_model_url(std::env::var(MODEL_URL_ENV).ok());
-    Ok(ModelState(ModelManager::new(
-        dir,
+    let mgr = ModelManager::new(
+        dir.clone(),
         Box::new(UreqModelTransport::new(url)),
         MODEL_SHA256.to_string(),
         MODEL_SIZE_BYTES,
-    )))
+    );
+    // First-run SEED: if the model isn't already verified-Ready and a copy is BUNDLED
+    // in the app resources (`resources/models/<MODEL_FILE>`), seed it locally instead
+    // of a network download — so a fresh install has chat out-of-the-box (offline).
+    if !mgr.is_ready() {
+        if let Ok(res) = app.path().resource_dir() {
+            let bundled = res.join("models").join(MODEL_FILE);
+            if bundled.exists() {
+                seed_from_bundle(dir, bundled);
+            }
+        }
+    }
+    Ok(ModelState(mgr))
+}
+
+/// Seed the app-data model from a BUNDLED copy on a background thread: copy the
+/// resource GGUF into `dir/<MODEL_FILE>` (if absent), then run the REAL `verify()`
+/// (size + SHA-256) so `Ready` is still EARNED, never fabricated (Rule 1). Off the
+/// main thread because a ~4.6 GB copy + hash must not block app startup. On any
+/// error the model simply stays not-Ready and the normal download path still works.
+fn seed_from_bundle(dir: PathBuf, bundled: PathBuf) {
+    std::thread::spawn(move || {
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let final_path = dir.join(MODEL_FILE);
+        if !final_path.exists() && std::fs::copy(&bundled, &final_path).is_err() {
+            return;
+        }
+        // Earn Ready via the real verify (transport unused by `verify()`).
+        let mgr = ModelManager::new(
+            dir,
+            Box::new(UreqModelTransport::new(String::new())),
+            MODEL_SHA256.to_string(),
+            MODEL_SIZE_BYTES,
+        );
+        let _ = mgr.verify();
+    });
 }
 
 // ---------------------------------------------------------------------------

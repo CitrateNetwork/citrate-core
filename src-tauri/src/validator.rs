@@ -182,6 +182,41 @@ pub fn read_registration_nonce<T: crate::rpc::RpcTransport>(
     Ok(u64::from_be_bytes(b))
 }
 
+/// `rewardsOf(bytes32)` selector (`keccak256("rewardsOf(bytes32)")[..4]`).
+const REWARDS_OF_SELECTOR: [u8; 4] = [0x18, 0x7e, 0x9c, 0x41];
+
+/// Low 16 bytes of a 32-byte ABI word as a `u128` (SALT wei exceeds u64).
+fn u128_from_word(word: &[u8]) -> u128 {
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&word[16..32]);
+    u128::from_be_bytes(b)
+}
+
+/// Read the node's REAL validator earnings from `ValidatorRegistry.rewardsOf(pubkey)`
+/// via a live eth_call — `(total, claimableNow)` in wei of SALT. This is the CORRECT
+/// earnings source for a block-producing validator (the block subsidy accrues here,
+/// keyed by the proposer pubkey), replacing the wrong `ContributionAccounting.claimable`
+/// read (W1.4). Real read or honest error (Rule 1); an unregistered pubkey returns
+/// `(0, 0)`.
+pub fn read_validator_rewards<T: crate::rpc::RpcTransport>(
+    rpc: &crate::rpc::RpcClient<T>,
+    registry: &str,
+    pubkey: &[u8; 32],
+) -> Result<(u128, u128), String> {
+    let mut data = Vec::with_capacity(36);
+    data.extend_from_slice(&REWARDS_OF_SELECTOR);
+    data.extend_from_slice(pubkey); // bytes32 pubkey is already a 32-byte ABI word
+    let call = serde_json::json!({
+        "to": registry,
+        "data": format!("0x{}", hex::encode(&data)),
+    });
+    let ret = rpc.eth_call(call).map_err(|e| e.to_string())?;
+    if ret.len() < 64 {
+        return Err(format!("rewardsOf returned {} bytes, expected 64", ret.len()));
+    }
+    Ok((u128_from_word(&ret[0..32]), u128_from_word(&ret[32..64])))
+}
+
 /// Read the node's `proposer.key`, sign the registration digest with it, and return
 /// `(proposer_pubkey, ed25519_sig)` — the two values `registerValidator` needs. The
 /// 32-byte seed is read, used, and zeroized here; it never leaves this function.
@@ -376,5 +411,25 @@ mod tests {
         }
         let rpc = RpcClient::with_transport(M(7));
         assert_eq!(read_registration_nonce(&rpc, REGISTRY, &addr20(STAKER)).unwrap(), 7);
+    }
+
+    #[test]
+    fn read_validator_rewards_decodes_total_and_claimable() {
+        use crate::rpc::{RpcClient, RpcError, RpcTransport};
+        // rewardsOf returns two uint256 words: (total, claimableNow).
+        struct M(u128, u128);
+        impl RpcTransport for M {
+            fn call(&self, _body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+                let mut buf = [0u8; 64];
+                buf[16..32].copy_from_slice(&self.0.to_be_bytes());
+                buf[48..64].copy_from_slice(&self.1.to_be_bytes());
+                Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(buf))}))
+            }
+        }
+        let rpc = RpcClient::with_transport(M(9_410_000_000_000_000_000u128, 4_000_000_000_000_000_000u128));
+        let pubkey = [0x11u8; 32];
+        let (total, claimable) = read_validator_rewards(&rpc, REGISTRY, &pubkey).unwrap();
+        assert_eq!(total, 9_410_000_000_000_000_000u128);
+        assert_eq!(claimable, 4_000_000_000_000_000_000u128);
     }
 }

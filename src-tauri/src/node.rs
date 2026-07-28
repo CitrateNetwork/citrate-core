@@ -101,7 +101,11 @@ const NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE: &str = "2000";
 /// The live ValidatorRegistry on chain 40204 — canonical
 /// `citrate-chain/contracts/addresses/40204.json` (`ValidatorRegistry`), the same
 /// address the fleet producer runs.
-const NODE_VALIDATOR_REGISTRY_VALUE: &str = "0x61d44d8a14443646b756905410be951e6ece95a6";
+/// From the generated 40204 book (`crate::addresses`) — the SAME source
+/// `grant_status` reads, so the node env and the app's reads cannot disagree.
+fn node_validator_registry_value() -> &'static str {
+    crate::addresses::validator_registry()
+}
 /// SYNC-S1 D3 (`citrate-chain node/src/dag_prune.rs`): bound the in-memory DAG
 /// store. D1 removed the Θ(N²) blue-ancestry retention that OOM-killed followers
 /// in the 9k–15k range (our node froze at 14840); D3 caps the remaining O(N)
@@ -325,6 +329,14 @@ impl NodeManager {
         let mut spec = SidecarSpec::new("citrate-node", self.bin.clone(), args);
         spec.env = vec![
             (NODE_STORAGE_KEY_ENV.to_string(), storage_key_hex.to_string()),
+            // The node's `tracing` output is piped (not a TTY) into the log tail the
+            // UI renders; emit PLAIN text so ANSI colour escapes don't surface as
+            // unrenderable boxes. `NO_COLOR` (https://no-color.org) is honoured by
+            // tracing-subscriber + most Rust log stacks. The UI also strips ANSI
+            // defensively (src/surfaces/Node.tsx), but killing it at the source is
+            // the real fix.
+            ("NO_COLOR".to_string(), "1".to_string()),
+            ("CLICOLOR".to_string(), "0".to_string()),
             // CONSENSUS-CRITICAL: reproduce the fleet producer's validator/§R' state
             // path or the node forks the state root and wedges (see the const docs +
             // DGX_NODE_SYNC_WEDGE_RESPONSE_2026-07-22).
@@ -335,7 +347,7 @@ impl NodeManager {
             ),
             (
                 NODE_VALIDATOR_REGISTRY_ENV.to_string(),
-                NODE_VALIDATOR_REGISTRY_VALUE.to_string(),
+                node_validator_registry_value().to_string(),
             ),
             // SYNC-S1 D3: bound the DAG store so a long-running desktop follower
             // does not OOM near 150k blocks (opt-in on the node; the app opts in).
@@ -531,6 +543,42 @@ pub fn node_proposer_identity(
     })
 }
 
+/// The node's REAL validator earnings — `(total, claimable)` SALT wei from
+/// `ValidatorRegistry.rewardsOf(proposerPubkey)` on 40204. The block subsidy accrues
+/// HERE, keyed by the proposer pubkey, which is the correct source (W1.4 fix,
+/// replacing the wrong `ContributionAccounting.claimable` read). A not-yet-registered
+/// validator returns `(0, 0)` honestly — never a fabricated number (Rule 1).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatorEarnings {
+    pub total_wei: String,
+    pub claimable_wei: String,
+    #[serde(rename = "proposerPubkey")]
+    pub proposer_pubkey: String,
+}
+
+#[tauri::command]
+pub fn node_validator_earnings(
+    state: State<'_, NodeState>,
+) -> std::result::Result<ValidatorEarnings, String> {
+    let pubkey_hex = state.0.proposer_pubkey()?;
+    let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
+    let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!("proposer pubkey is {} bytes, expected 32", bytes.len()));
+    }
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&bytes);
+    let rpc = crate::rpc::RpcClient::citrate();
+    let (total, claimable) =
+        crate::validator::read_validator_rewards(&rpc, node_validator_registry_value(), &pubkey)?;
+    Ok(ValidatorEarnings {
+        total_wei: total.to_string(),
+        claimable_wei: claimable.to_string(),
+        proposer_pubkey: pubkey_hex,
+    })
+}
+
 /// W1.3 — the validator bond (SALT wei) the member sends as `msg.value` on
 /// `registerValidator`. Matches the membership grant + `ValidatorRegistry.minStake`
 /// (32,000 SALT). If minStake ever rises above this the register reverts (BadStake)
@@ -570,17 +618,34 @@ pub fn node_register_validator(
 ) -> std::result::Result<crate::ceremony::CeremonyView, String> {
     let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
     let staker = crate::validator::parse_address_20(&wallet.address)?;
-    let registry = crate::validator::parse_address_20(NODE_VALIDATOR_REGISTRY_VALUE)?;
-    // Live replay-guard nonce for the digest (real read, never fabricated).
+    let registry = crate::validator::parse_address_20(node_validator_registry_value())?;
     let rpc = crate::rpc::RpcClient::citrate();
+    // Honesty guard (Rule 1): registerValidator{value:32k} is a SELF-BOND from the
+    // member EOA — the contract hard-requires `msg.value >= minStake`. If the
+    // membership grant hasn't funded the EOA yet (the ADR-2026-07-27 bond-fund leg),
+    // the EOA has < 32k and the broadcast would revert "insufficient funds". Fail
+    // here with a clear reason instead of minting a doomed ceremony that looks like
+    // activation succeeded.
+    let balance = rpc.get_balance(&wallet.address).map_err(|e| e.to_string())?;
+    if balance < VALIDATOR_STAKE_WEI {
+        let salt = |w: u128| w / 1_000_000_000_000_000_000u128;
+        return Err(format!(
+            "validator bond not funded: your wallet ({}) holds {} SALT but registration \
+             needs {} (the 32k bond, self-bonded from your wallet). The membership grant \
+             funds this automatically; if it hasn't arrived, the treasury bond-fund step \
+             is still pending — activation can't proceed until then.",
+            wallet.address, salt(balance), salt(VALIDATOR_STAKE_WEI)
+        ));
+    }
+    // Live replay-guard nonce for the digest (real read, never fabricated).
     let nonce =
-        crate::validator::read_registration_nonce(&rpc, NODE_VALIDATOR_REGISTRY_VALUE, &staker)?;
+        crate::validator::read_registration_nonce(&rpc, node_validator_registry_value(), &staker)?;
     // Sign the registration with the node's proposer key (seed stays in validator.rs).
     let (pubkey, sig) = state.0.sign_registration(40204, &registry, &staker, nonce)?;
     let calldata = crate::validator::register_validator_calldata(&pubkey, &sig);
     let raw = encode_register_json(
         &wallet.address,
-        NODE_VALIDATOR_REGISTRY_VALUE,
+        node_validator_registry_value(),
         VALIDATOR_STAKE_WEI,
         &calldata,
     );

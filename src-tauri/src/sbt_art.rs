@@ -43,7 +43,7 @@
 use base64::Engine;
 use sha3::{Digest, Keccak256};
 
-use crate::grant_status::CITRATE_MEMBER_SBT;
+use crate::grant_status::citrate_member_sbt;
 
 /// 4-byte selector for `isSubBound(bytes32)` — `keccak256("isSubBound(bytes32)")[..4]`.
 /// PINNED here + proven by the `is_sub_bound_selector_is_keccak_of_signature` drift
@@ -122,7 +122,7 @@ fn encode_word_calldata(selector: [u8; 4], word: &[u8; 32]) -> Vec<u8> {
 fn is_sub_bound_call(sub_hash: &[u8; 32]) -> serde_json::Value {
     let calldata = encode_word_calldata(is_sub_bound_selector(), sub_hash);
     serde_json::json!({
-        "to": CITRATE_MEMBER_SBT,
+        "to": citrate_member_sbt(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -131,7 +131,7 @@ fn is_sub_bound_call(sub_hash: &[u8; 32]) -> serde_json::Value {
 fn token_id_for_sub_call(sub_hash: &[u8; 32]) -> serde_json::Value {
     let calldata = encode_word_calldata(token_id_for_sub_selector(), sub_hash);
     serde_json::json!({
-        "to": CITRATE_MEMBER_SBT,
+        "to": citrate_member_sbt(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -140,7 +140,7 @@ fn token_id_for_sub_call(sub_hash: &[u8; 32]) -> serde_json::Value {
 fn token_uri_call(token_id_word: &[u8; 32]) -> serde_json::Value {
     let calldata = encode_word_calldata(token_uri_selector(), token_id_word);
     serde_json::json!({
-        "to": CITRATE_MEMBER_SBT,
+        "to": citrate_member_sbt(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }

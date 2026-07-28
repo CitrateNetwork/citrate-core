@@ -1,3 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["src-tauri", "kit"]
+
+# Space: full DWARF debug info is the bulk of a debug build's target/ size.
+# "line-tables-only" keeps file:line in panics/backtraces (so debugging still
+# works) but drops the heavy variable/type DWARF — typically shrinks debug
+# artifacts by a large fraction. Applies to the whole workspace + its deps.
+[profile.dev]
+debug = "line-tables-only"

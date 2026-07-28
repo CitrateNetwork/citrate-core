@@ -17,6 +17,7 @@ pub use citrate_core_kit::{
     ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
 };
 
+mod addresses;
 mod activity;
 mod agent;
 mod ai;
@@ -210,6 +211,10 @@ pub fn run() {
             // W1.3 — register the member's node as a block-producing validator
             // (registerValidator{value:32k} via the ceremony; staker = the EOA).
             node::node_register_validator,
+            // W1.4 — the REAL validator earnings: rewardsOf(proposerPubkey) on the
+            // ValidatorRegistry (the correct block-subsidy source, not the old
+            // ContributionAccounting.claimable read).
+            node::node_validator_earnings,
             // node logs — Q-A.2/Q-B.2 REAL streamed stdout+stderr from the
             // supervised node's bounded ring buffer. Fills the Node LOG panel in
             // a packaged build (was permanently empty: stdout was inherited then

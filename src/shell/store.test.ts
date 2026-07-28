@@ -241,7 +241,10 @@ describe("store withdraw (WP2) — honest in web-dev sim", () => {
   });
 
   it("walletRequestWithdrawal in web-dev opens a review and fabricates NO settlement", async () => {
-    store.setState({ walletReview: null });
+    // Withdrawing is payout-gated on verified KYC (live-checked), so a member who
+    // reaches the review is verified.
+    store.setState({ walletReview: null, s2: "verified" });
+    vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
     const before = store.getSnapshot().selfStake;
     await store.walletRequestWithdrawal("1000000000000000000");
     // Q-E.1 — no balance mutation, no fabricated activity entry: the action STOPS
@@ -256,7 +259,8 @@ describe("store withdraw (WP2) — honest in web-dev sim", () => {
   });
 
   it("walletClaimWithdrawal in web-dev opens a review and fabricates NO settlement", async () => {
-    store.setState({ walletReview: null });
+    store.setState({ walletReview: null, s2: "verified" });
+    vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
     const liquidBefore = store.getSnapshot().liquid;
     await store.walletClaimWithdrawal("1");
     expect(store.getSnapshot().liquid).toBe(liquidBefore);
@@ -413,7 +417,10 @@ describe("Q-E.1 wallet review gate — money actions never self-broadcast", () =
   let rejectSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    store.setState({ walletReview: null, liquid: 100, selfStake: 100 });
+    // A member exercising withdrawals is, by the payout gate, KYC-verified — and
+    // the gate re-checks live, so stub /userinfo too.
+    store.setState({ walletReview: null, liquid: 100, selfStake: 100, s2: "verified" });
+    vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
     // Every money action funnels its build call to a view we control.
     vi.spyOn(bridge.wallet, "send").mockResolvedValue(view);
     vi.spyOn(bridge.wallet, "stake").mockResolvedValue(view);
@@ -637,5 +644,77 @@ describe("isGrantOnChain — vault OR bonded stake settles the grant leg", () =>
   it("an absent bondedStakeWei (older bridge) still works off the vault alone", () => {
     expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: true })).toBe(true);
     expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Payout gate — KYC qualifies getting SALT OUT, not taking part.
+//
+// Participation is deliberately un-gated (a paid member runs the node and accrues
+// earnings with no KYC). Verification gates value LEAVING: claiming rewards and
+// withdrawing stake. The check is LIVE — a cached claim must not authorize a payout.
+//
+// Honest limit these tests do NOT pretend away: this is app-side. A member with
+// their own key can call the contracts directly. It is a product default, not
+// enforcement; the contract-side gate is a separate deliverable.
+// ---------------------------------------------------------------------------
+describe("payout gate — claiming and withdrawing require verified KYC", () => {
+  let claimSpy: ReturnType<typeof vi.spyOn>;
+  let reqSpy: ReturnType<typeof vi.spyOn>;
+  let claimWdSpy: ReturnType<typeof vi.spyOn>;
+  let userinfoSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    store.setState({ walletReview: null, s2: "none" });
+    claimSpy = vi.spyOn(bridge.agent, "claim").mockResolvedValue({ kind: "nothing" } as never);
+    reqSpy = vi.spyOn(bridge.wallet, "requestWithdrawal").mockResolvedValue({} as never);
+    claimWdSpy = vi.spyOn(bridge.wallet, "claimWithdrawal").mockResolvedValue({} as never);
+    // authUserinfo succeeds but does not change s2 — the test drives s2 directly.
+    userinfoSpy = vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ walletReview: null, s2: "none" });
+  });
+
+  it("an UNVERIFIED member cannot claim earnings — the ceremony is never built", async () => {
+    store.setState({ s2: "none" });
+    await store.claimRewards();
+    expect(claimSpy).not.toHaveBeenCalled();
+  });
+
+  it("an unverified member cannot withdraw stake, nor collect a matured withdrawal", async () => {
+    store.setState({ s2: "none" });
+    await store.walletRequestWithdrawal("1000000000000000000");
+    await store.walletClaimWithdrawal("1");
+    expect(reqSpy).not.toHaveBeenCalled();
+    expect(claimWdSpy).not.toHaveBeenCalled();
+  });
+
+  it("pending / review / failed are all refused — only `verified` opens the door", async () => {
+    for (const st of ["pending", "review", "failed"] as const) {
+      store.setState({ s2: st });
+      await store.claimRewards();
+    }
+    expect(claimSpy).not.toHaveBeenCalled();
+  });
+
+  it("a VERIFIED member proceeds — participation earnings become withdrawable", async () => {
+    store.setState({ s2: "verified" });
+    await store.claimRewards();
+    expect(claimSpy).toHaveBeenCalled();
+  });
+
+  it("re-checks LIVE: a cached claim never authorizes a payout on its own", async () => {
+    store.setState({ s2: "verified" });
+    await store.claimRewards();
+    expect(userinfoSpy).toHaveBeenCalled();
+  });
+
+  it("an unreachable authority FAILS CLOSED even when the cached claim says verified", async () => {
+    store.setState({ s2: "verified" });
+    userinfoSpy.mockRejectedValue(new Error("network"));
+    await store.claimRewards();
+    expect(claimSpy).not.toHaveBeenCalled();
   });
 });

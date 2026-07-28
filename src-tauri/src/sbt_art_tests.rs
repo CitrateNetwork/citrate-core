@@ -82,7 +82,7 @@ const EXPECTED_IMAGE_DATA_URI: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0
 #[test]
 fn sbt_address_is_the_canonical_reroll_value() {
     assert_eq!(
-        CITRATE_MEMBER_SBT,
+        citrate_member_sbt(),
         "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1"
     );
 }
@@ -276,7 +276,7 @@ fn reads_target_the_sbt_with_pinned_selectors() {
     // wire shape the read sends; the full read path is covered above).
     let sh = sub_hash(SAMPLE_SUB);
     let bound = is_sub_bound_call(&sh);
-    assert_eq!(bound["to"], CITRATE_MEMBER_SBT);
+    assert_eq!(bound["to"], citrate_member_sbt());
     assert!(bound["data"]
         .as_str()
         .unwrap()
