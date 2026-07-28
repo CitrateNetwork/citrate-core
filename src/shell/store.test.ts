@@ -4,7 +4,7 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
 import { bridge } from "../bridge";
 import type { CeremonyView } from "../bridge/types";
@@ -589,5 +589,53 @@ describe("wallet link — binding this device's wallet to the identity", () => {
     expect(linkRejectSpy).toHaveBeenCalledWith("wlink-1");
     expect(signingReject).not.toHaveBeenCalled();
     expect(linkApproveSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isGrantOnChain — the stake can live in TWO places.
+//
+// Before ADR 2026-07-27 the grant staked into MembershipStakeVault. Under the
+// bond-fund model the treasury funds the member's EOA and the member self-bonds,
+// so the principal sits in the ValidatorRegistry and the vault reads 0 FOREVER.
+// Settling on the vault alone left a correctly-bonded validator permanently
+// "ungranted" — working, but indistinguishable from broken.
+// ---------------------------------------------------------------------------
+describe("isGrantOnChain — vault OR bonded stake settles the grant leg", () => {
+  const REQ = (32000n * 10n ** 18n).toString();
+
+  it("no SBT is never granted, whatever the stake says", () => {
+    expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: false, bondedStakeWei: REQ })).toBe(false);
+  });
+
+  it("legacy vault grant still settles (the member granted before bond-fund)", () => {
+    expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: true, bondedStakeWei: "0" })).toBe(true);
+  });
+
+  // THE REGRESSION: this is the real post-bond-fund shape and it returned false
+  // before the fix, so a bonded validator never settled.
+  it("BOND-FUND: zero vault stake but a bonded validator DOES settle", () => {
+    expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: REQ })).toBe(true);
+  });
+
+  it("neither source reaching the requirement does not settle", () => {
+    expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: "0" })).toBe(false);
+    const short = (31999n * 10n ** 18n).toString();
+    expect(isGrantOnChain({ attributedStakeWei: short, hasSbt: true, bondedStakeWei: short })).toBe(false);
+  });
+
+  it("the two are NOT summed — a member cannot reach the bar by halves", () => {
+    const half = (16000n * 10n ** 18n).toString();
+    expect(isGrantOnChain({ attributedStakeWei: half, hasSbt: true, bondedStakeWei: half })).toBe(false);
+  });
+
+  it("an unparseable value contributes 0 rather than throwing (fail-closed)", () => {
+    expect(isGrantOnChain({ attributedStakeWei: "not-a-number", hasSbt: true, bondedStakeWei: REQ })).toBe(true);
+    expect(isGrantOnChain({ attributedStakeWei: "not-a-number", hasSbt: true, bondedStakeWei: "0" })).toBe(false);
+  });
+
+  it("an absent bondedStakeWei (older bridge) still works off the vault alone", () => {
+    expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: true })).toBe(true);
+    expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true })).toBe(false);
   });
 });

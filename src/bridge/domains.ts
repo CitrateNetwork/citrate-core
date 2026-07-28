@@ -403,6 +403,15 @@ export interface GrantStatus {
   attributedStakeWei: string;
   attributedSharesWei: string;
   hasSbt: boolean;
+  /**
+   * `ValidatorRegistry.stakeOf(pubkeyOfStaker(member))` — the BONDED principal.
+   * Under the bond-fund model this is where the member's 32k actually is; the
+   * vault fields above read 0 for such a member, which is why settling on the
+   * vault alone made a working validator look ungranted.
+   */
+  bondedStakeWei: string;
+  /** `pubkeyOfStaker(member) != 0` — the member has registered a validator. */
+  hasValidator: boolean;
 }
 
 export interface MembershipDomain {
