@@ -1,4 +1,3 @@
-import markBlack from "../assets/brand/citrate_mark_black.svg";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
 import { Store } from "../shell/store";
@@ -92,9 +91,9 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "296px 1fr", minHeight: 0 }}>
         {/* progress spine */}
         <div style={{ borderRight: "1px solid var(--line-1)", background: "var(--srf-1)", padding: "26px 22px", display: "flex", flexDirection: "column", gap: 8, minHeight: 0, overflow: "auto" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-            <img src={markBlack} alt="" style={{ width: 24, height: 24 }} />
-            <img src={marqueeBlack} alt="Citrate" style={{ height: 13 }} />
+          <div style={{ display: "flex", alignItems: "center", marginBottom: 18 }}>
+            {/* marquee-only, 2.5× (was the mark icon + a height:13 marquee) */}
+            <img src={marqueeBlack} alt="Citrate" style={{ height: 33 }} />
           </div>
           <div style={{ ...eyebrow, marginBottom: 6 }}>Membership onboarding</div>
           {stages.map(([, label], i) => {
