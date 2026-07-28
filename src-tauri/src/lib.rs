@@ -13,7 +13,9 @@
 // Re-exported here so every in-crate reference (`crate::custody::…`,
 // `crate::ceremony::…`, and the `generate_handler!` command paths below) keeps
 // resolving unchanged — the extraction is invisible above this line.
-pub use citrate_core_kit::{ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet};
+pub use citrate_core_kit::{
+    ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
+};
 
 mod activity;
 mod agent;
@@ -69,6 +71,12 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             app.manage(ceremony::build_ceremony_state());
+            // Wallet-link — bind THIS device's custody EOA to the member's Citrate
+            // identity, through the ceremony above. Until a wallet is bound the
+            // authority's `wallet_address` claim is the counterfactual smart-wallet
+            // address, which no key can spend from — so the membership money path
+            // would bond-fund an address the member cannot reach.
+            app.manage(wallet_link::build_link_state());
             // CORE-C1.1 — the NodeManager: the real citrate-node under the
             // SidecarSupervisor with an encrypted data dir. @rule8: the 32-byte
             // storage master key lives in the OS keyring (never on disk clear)
@@ -185,6 +193,9 @@ pub fn run() {
             ceremony::sign_approve,
             ceremony::sign_and_broadcast,
             ceremony::sign_reject,
+            wallet_link::wallet_link_request,
+            wallet_link::wallet_link_approve,
+            wallet_link::wallet_link_reject,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an

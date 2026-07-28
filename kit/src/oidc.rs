@@ -740,6 +740,16 @@ pub trait HttpClient: Send + Sync {
     /// `POST url` with `application/x-www-form-urlencoded` body → body string.
     /// Used for `/token` + `/revoke`.
     fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<String>;
+    /// `POST url` with a JSON body and an optional bearer → body string.
+    ///
+    /// The identity ↔ wallet registry (`/identity/:sub/wallets`) is the first
+    /// endpoint that needs BOTH a JSON body and an Authorization header, which
+    /// neither `get` nor `post_form` can express. Default-implemented as
+    /// unsupported so existing test fakes keep compiling and fail LOUDLY rather
+    /// than silently succeeding if they are ever driven down this path.
+    fn post_json(&self, _url: &str, _bearer: Option<&str>, _body: &str) -> Result<String> {
+        Err(AuthError::Network)
+    }
 }
 
 /// Production HTTP client: blocking `ureq`.
@@ -767,6 +777,55 @@ impl HttpClient for UreqClient {
             .read_to_string()
             .map_err(|_| AuthError::TokenExchange)
     }
+
+    fn post_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String> {
+        let mut req = ureq::post(url).header("Content-Type", "application/json");
+        if let Some(tok) = bearer {
+            req = req.header("Authorization", &format!("Bearer {tok}"));
+        }
+        // A non-2xx from ureq is an Err, so a rejected link (401 replayed nonce,
+        // 409 already linked elsewhere) surfaces as Network rather than being
+        // mistaken for a successful link with an odd body.
+        let mut resp = req.send(body).map_err(|_| AuthError::Network)?;
+        resp.body_mut()
+            .read_to_string()
+            .map_err(|_| AuthError::Network)
+    }
+}
+
+/// A one-time wallet-link challenge from `/identity/:sub/wallets/challenge`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WalletLinkChallenge {
+    /// The one-time nonce; must be echoed back on submit.
+    pub nonce: String,
+    /// The exact message to sign, with the literal `0x<wallet>` placeholder where
+    /// the address goes. Substitute — never re-derive the format (see
+    /// `AuthManager::wallet_link_challenge`).
+    #[serde(rename = "message_template")]
+    pub message_template: String,
+}
+
+/// The placeholder the authority puts where the wallet address belongs.
+pub const WALLET_LINK_PLACEHOLDER: &str = "0x<wallet>";
+
+/// Substitute the real address into a link-challenge template.
+///
+/// Returns `None` when the placeholder is absent, which means the authority's
+/// message format changed under us. Failing closed is deliberate: signing a
+/// message we did not fully understand is exactly what the ceremony exists to
+/// prevent, and a proof over the wrong string would fail verification anyway —
+/// better to refuse before asking a human to approve it.
+pub fn wallet_link_message(template: &str, address: &str) -> Option<String> {
+    if !template.contains(WALLET_LINK_PLACEHOLDER) {
+        return None;
+    }
+    // The authority lowercases the address when it builds the message.
+    Some(template.replace(WALLET_LINK_PLACEHOLDER, &address.to_lowercase()))
+}
+
+/// Percent-encode a `sub` for use as a single path segment.
+fn urlencoding_sub(sub: &str) -> String {
+    url::form_urlencoded::byte_serialize(sub.as_bytes()).collect::<String>()
 }
 
 /// `application/x-www-form-urlencoded` body.
@@ -1312,12 +1371,83 @@ impl AuthManager {
         serde_json::from_str::<Claims>(&body).map_err(|_| AuthError::Network)
     }
 
+    // --- identity ↔ wallet registry (the wallet_address binding) --------
+
+    /// Ask the authority for a one-time wallet-link challenge.
+    ///
+    /// WHY THIS LIVES HERE. The registry endpoints need the session bearer, and
+    /// the access token never leaves this module (I-2) — the same posture as
+    /// `userinfo`. Callers get the nonce + message and never the token.
+    ///
+    /// The returned `message_template` carries the literal `0x<wallet>` where the
+    /// address belongs. Callers MUST substitute rather than re-derive the format:
+    /// the authority rebuilds this exact string from (authority, sub, address,
+    /// nonce, chainId) and verifies the signature against it, so a client that
+    /// formats its own message would produce a proof that silently fails to
+    /// recover to the signer.
+    pub fn wallet_link_challenge(&self) -> Result<WalletLinkChallenge> {
+        let (sub, access) = self.session_sub_and_token()?;
+        let url = format!(
+            "{}/identity/{}/wallets/challenge",
+            self.cfg.issuer.trim_end_matches('/'),
+            urlencoding_sub(&sub)
+        );
+        let body = self.http.post_json(&url, Some(&access), "{}")?;
+        serde_json::from_str::<WalletLinkChallenge>(&body).map_err(|_| AuthError::Network)
+    }
+
+    /// Submit a proven wallet link. `signature` must be the EIP-191 signature of
+    /// the challenge message by `address`'s own key.
+    ///
+    /// A non-2xx (replayed nonce, a wallet already linked to another identity, a
+    /// signature that does not recover) surfaces as an error — never a silent
+    /// success, because the caller's next step is to trust that the authority now
+    /// serves this address as `wallet_address`.
+    pub fn wallet_link_submit(
+        &self,
+        address: &str,
+        signature: &str,
+        nonce: &str,
+    ) -> Result<()> {
+        let (sub, access) = self.session_sub_and_token()?;
+        let url = format!(
+            "{}/identity/{}/wallets",
+            self.cfg.issuer.trim_end_matches('/'),
+            urlencoding_sub(&sub)
+        );
+        let body = serde_json::json!({
+            "address": address,
+            "signature": signature,
+            "nonce": nonce,
+        })
+        .to_string();
+        self.http.post_json(&url, Some(&access), &body)?;
+        Ok(())
+    }
+
+    /// The signed-in sub plus its access token. Both come from the live session;
+    /// `NotSignedIn` when there is none.
+    fn session_sub_and_token(&self) -> Result<(String, String)> {
+        let guard = self.lock();
+        let sess = guard.as_ref().ok_or(AuthError::NotSignedIn)?;
+        if sess.claims.sub.is_empty() {
+            return Err(AuthError::NotSignedIn);
+        }
+        Ok((sess.claims.sub.clone(), sess.access_token.to_string()))
+    }
+
     // --- A3.4: KYC seam -------------------------------------------------
 
     /// The `/kyc/start` URL to open in the browser (S2). Polling is done via
     /// `userinfo` (the `kyc_status` claim) — no separate command needed.
     pub fn kyc_start_url(&self) -> &str {
         &self.cfg.kyc_start
+    }
+
+    /// The pinned issuer (the trust anchor). Surfaced so a ceremony can display
+    /// the true asker verbatim; carries no secret.
+    pub fn issuer(&self) -> &str {
+        &self.cfg.issuer
     }
 
     // --- A3.2: logout ---------------------------------------------------

@@ -30,3 +30,4 @@ pub mod rpc;
 pub mod supervisor;
 pub mod txdecode;
 pub mod wallet;
+pub mod wallet_link;
