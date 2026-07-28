@@ -349,10 +349,14 @@ fn resolve_llama_bin<R: tauri::Runtime>(
             path.display()
         ));
     }
+    // Bundled as a `resources` DIRECTORY (`llama/`) — the binary sits alongside its
+    // llama.cpp/ggml dylibs so its `@loader_path` rpath resolves them (a bare
+    // `externalBin` can't carry the dylib tree). See tauri.conf.json `resources`.
     let resource = app
         .path()
         .resource_dir()
         .map_err(|e| e.to_string())?
+        .join("llama")
         .join("llama-server");
     Ok(resource)
 }

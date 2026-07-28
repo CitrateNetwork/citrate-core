@@ -325,6 +325,14 @@ impl NodeManager {
         let mut spec = SidecarSpec::new("citrate-node", self.bin.clone(), args);
         spec.env = vec![
             (NODE_STORAGE_KEY_ENV.to_string(), storage_key_hex.to_string()),
+            // The node's `tracing` output is piped (not a TTY) into the log tail the
+            // UI renders; emit PLAIN text so ANSI colour escapes don't surface as
+            // unrenderable boxes. `NO_COLOR` (https://no-color.org) is honoured by
+            // tracing-subscriber + most Rust log stacks. The UI also strips ANSI
+            // defensively (src/surfaces/Node.tsx), but killing it at the source is
+            // the real fix.
+            ("NO_COLOR".to_string(), "1".to_string()),
+            ("CLICOLOR".to_string(), "0".to_string()),
             // CONSENSUS-CRITICAL: reproduce the fleet producer's validator/§R' state
             // path or the node forks the state root and wedges (see the const docs +
             // DGX_NODE_SYNC_WEDGE_RESPONSE_2026-07-22).

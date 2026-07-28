@@ -3,6 +3,15 @@ import { SurfaceProps } from "./shared";
 import { nodeLabel } from "../shell/state";
 import { BRIDGE_MODE } from "../bridge/mode";
 
+// Strip ANSI colour/style escape sequences from a node log line. The node emits
+// `tracing` output; even with NO_COLOR set in the spawn env (node.rs) we strip
+// defensively here so a stray escape never renders as an unfilled box glyph.
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
+}
+
 // Q-A.4b — in the PACKAGED (tauri) build there is no real read for these vitals
 // yet, so they must render an honest state instead of a fabricated number/row:
 //   - blocksProposed: no validator registration exists yet (Q-C) → honest label;
@@ -234,23 +243,25 @@ export function Node({ store, s }: SurfaceProps) {
           )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 12 }}>
-            {/* log tail */}
-            <div className="surface" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+            {/* log tail — minWidth:0 lets this flex child shrink instead of the
+                long log lines widening the whole column (the "too wide" bug);
+                lines wrap within the bounded panel and it scrolls vertically. */}
+            <div className="surface" style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderBottom: "1px solid var(--line-1)" }}>
                 <span style={{ fontSize: 13.5, fontWeight: 500 }}>Log tail</span>
                 <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>
                   ~/.citrate/core/node.log
                 </span>
               </div>
-              <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 4, maxHeight: 280, overflow: "auto", background: "var(--srf-inset)" }}>
+              <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 4, maxHeight: 280, overflowY: "auto", overflowX: "hidden", minWidth: 0, background: "var(--srf-inset)" }}>
                 {logsEmpty && (
                   <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
                     — node is off; no log stream —
                   </span>
                 )}
                 {logLines.map((lg) => (
-                  <span key={lg.id} className="mono tabular" style={{ fontSize: 10.5, lineHeight: 1.6, color: "var(--tx-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    <span style={{ color: "var(--tx-3)" }}>{lg.t}</span>  {lg.line}
+                  <span key={lg.id} className="mono tabular" style={{ fontSize: 10.5, lineHeight: 1.6, color: "var(--tx-2)", whiteSpace: "pre-wrap", wordBreak: "break-word", overflowWrap: "anywhere" }}>
+                    <span style={{ color: "var(--tx-3)" }}>{lg.t}</span>  {stripAnsi(lg.line)}
                   </span>
                 ))}
               </div>

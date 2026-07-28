@@ -137,11 +137,11 @@ fn fixture_manager(
 
 #[test]
 fn pinned_model_consts_match_grounded_facts() {
-    assert_eq!(MODEL_FILE, "gemma-4-E4B-it-Q4_K_M.gguf");
-    assert_eq!(MODEL_SIZE_BYTES, 5_335_289_824);
+    assert_eq!(MODEL_FILE, "gemma-4-E4B-it-Q4_0.gguf");
+    assert_eq!(MODEL_SIZE_BYTES, 4_590_807_392);
     assert_eq!(
         MODEL_SHA256,
-        "90ce98129eb3e8cc57e62433d500c97c624b1e3af1fcc85dd3b55ad7e0313e9f"
+        "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2"
     );
     // A 64-hex-char (32-byte) lowercase sha256.
     assert_eq!(MODEL_SHA256.len(), 64);
