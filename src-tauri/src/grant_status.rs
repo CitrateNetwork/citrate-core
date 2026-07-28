@@ -64,6 +64,29 @@ const ATTRIBUTED_SHARES_SELECTOR: [u8; 4] = [0x90, 0x81, 0x00, 0x72];
 /// drift trips the tripwire (the store compares attributedStake against this).
 const VALIDATOR_STAKE_REQUIREMENT_SELECTOR: [u8; 4] = [0xa3, 0xea, 0xc0, 0x15];
 
+/// The ValidatorRegistry. Under the bond-fund model (ADR 2026-07-27) the member's
+/// 32k lives HERE, not in the vault — see the note on [`read_grant_status`]. Same
+/// address the node is configured with (`node::NODE_VALIDATOR_REGISTRY_VALUE`).
+pub const CITRATE_VALIDATOR_REGISTRY: &str = "0x61d44d8a14443646b756905410be951e6ece95a6";
+
+/// 4-byte selector for `pubkeyOfStaker(address)` —
+/// `keccak256("pubkeyOfStaker(address)")[..4]`. PINNED + drift-tested (Rule 11).
+const PUBKEY_OF_STAKER_SELECTOR: [u8; 4] = [0xe7, 0xbe, 0x52, 0x9e];
+
+/// 4-byte selector for `stakeOf(bytes32)` — `keccak256("stakeOf(bytes32)")[..4]`.
+/// Returns the validator's `bondedStake`. PINNED + drift-tested (Rule 11).
+const STAKE_OF_SELECTOR: [u8; 4] = [0x07, 0x17, 0x7c, 0x9c];
+
+/// Selector for `pubkeyOfStaker(address)`.
+pub fn pubkey_of_staker_selector() -> [u8; 4] {
+    PUBKEY_OF_STAKER_SELECTOR
+}
+
+/// Selector for `stakeOf(bytes32)`.
+pub fn stake_of_selector() -> [u8; 4] {
+    STAKE_OF_SELECTOR
+}
+
 /// 4-byte selector for `balanceOf(address)` — `keccak256("balanceOf(address)")[..4]`.
 /// The canonical ERC-20/721 `balanceOf`; PINNED + drift-tested. Reused here for the
 /// `CitrateMemberSBT.balanceOf(member)` membership read (== 1 for a member).
@@ -132,6 +155,14 @@ pub struct GrantStatus {
     /// `CitrateMemberSBT.balanceOf(member) == 1` — the member holds the SBT.
     #[serde(rename = "hasSbt")]
     pub has_sbt: bool,
+    /// `ValidatorRegistry.stakeOf(pubkeyOfStaker(member))` in wei (decimal string)
+    /// — the BONDED principal. Under the bond-fund model this is where a member's
+    /// 32k actually is; the vault fields above read 0 for such a member.
+    #[serde(rename = "bondedStakeWei")]
+    pub bonded_stake_wei: String,
+    /// `pubkeyOfStaker(member) != 0` — the member has registered a validator.
+    #[serde(rename = "hasValidator")]
+    pub has_validator: bool,
 }
 
 /// Validate a `0x`-prefixed 20-byte hex address; return the lowercased canonical
@@ -177,6 +208,38 @@ fn attributed_shares_call(addr: &str) -> serde_json::Value {
     })
 }
 
+/// The `eth_call` object for `pubkeyOfStaker(member)` on the registry: `{to, data}`.
+fn pubkey_of_staker_call(addr: &str) -> serde_json::Value {
+    let calldata = encode_address_calldata(pubkey_of_staker_selector(), addr);
+    serde_json::json!({
+        "to": CITRATE_VALIDATOR_REGISTRY,
+        "data": format!("0x{}", hex::encode(calldata)),
+    })
+}
+
+/// The `eth_call` object for `stakeOf(pubkey)` on the registry: `{to, data}`.
+/// `pubkey_word` is the raw 32-byte word returned by `pubkeyOfStaker`.
+fn stake_of_call(pubkey_word: &[u8; 32]) -> serde_json::Value {
+    let mut calldata = Vec::with_capacity(36);
+    calldata.extend_from_slice(&stake_of_selector());
+    calldata.extend_from_slice(pubkey_word);
+    serde_json::json!({
+        "to": CITRATE_VALIDATOR_REGISTRY,
+        "data": format!("0x{}", hex::encode(calldata)),
+    })
+}
+
+/// Decode a 32-byte word from an `eth_call` return, or `None` if it is short.
+/// Mirrors `decode_uint256_word`'s input shape (the transport returns raw bytes).
+fn decode_word32(ret: &[u8]) -> Option<[u8; 32]> {
+    if ret.len() < 32 {
+        return None;
+    }
+    let mut word = [0u8; 32];
+    word.copy_from_slice(&ret[..32]);
+    Some(word)
+}
+
 /// The `eth_call` object for `balanceOf(member)` on the SBT contract: `{to, data}`.
 fn sbt_balance_of_call(addr: &str) -> serde_json::Value {
     let calldata = encode_address_calldata(sbt_balance_of_selector(), addr);
@@ -189,7 +252,17 @@ fn sbt_balance_of_call(addr: &str) -> serde_json::Value {
 /// **The real grant-status read.** Read, on the live 40204 RPC via `eth_call`:
 /// - `MembershipStakeVault.attributedStake(member)` → wei,
 /// - `MembershipStakeVault.attributedShares(member)` → wei,
-/// - `CitrateMemberSBT.balanceOf(member)` → `has_sbt = (balance == 1)`.
+/// - `CitrateMemberSBT.balanceOf(member)` → `has_sbt = (balance == 1)`,
+/// - `ValidatorRegistry.pubkeyOfStaker(member)` → `has_validator`, and when set,
+///   `ValidatorRegistry.stakeOf(pubkey)` → `bonded_stake_wei`.
+///
+/// WHY BOTH STAKE READS. Before ADR 2026-07-27 the grant staked into the vault, so
+/// `attributedStake` was the member's principal. Under the bond-fund model the
+/// treasury funds the member's EOA and the member self-bonds, so the principal
+/// lives in the ValidatorRegistry and the vault reads 0 FOREVER. Reading only the
+/// vault made a correctly-bonded validator display 0 stake and never settle its
+/// grant leg — working, but indistinguishable from broken. Both are read so members
+/// granted under EITHER model report honestly; the caller settles on either.
 ///
 /// Rule 1: every value comes from chain, not a sim; a fresh/never-granted member
 /// honestly reads 0 / 0 / false. `rpc` is injected so tests script a mock transport;
@@ -219,10 +292,36 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
     let sbt_balance =
         decode_uint256_word(&sbt_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
 
+    // ValidatorRegistry: the member's pubkey binding, then its bonded principal.
+    // A zero pubkey means "no validator" — we do NOT then call stakeOf, because
+    // stakeOf(0) is a meaningless read rather than an honest zero.
+    let pubkey_ret = rpc
+        .eth_call(pubkey_of_staker_call(&addr))
+        .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+    let pubkey_word = decode_word32(&pubkey_ret)
+        .ok_or_else(|| {
+            GrantStatusError::Decode(format!(
+                "short pubkeyOfStaker return ({} bytes, need 32)",
+                pubkey_ret.len()
+            ))
+        })?;
+    let has_validator = pubkey_word.iter().any(|b| *b != 0);
+
+    let bonded_stake = if has_validator {
+        let bonded_ret = rpc
+            .eth_call(stake_of_call(&pubkey_word))
+            .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+        decode_uint256_word(&bonded_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?
+    } else {
+        0
+    };
+
     Ok(GrantStatus {
         attributed_stake_wei: attributed_stake.to_string(),
         attributed_shares_wei: attributed_shares.to_string(),
         has_sbt: sbt_balance == 1,
+        bonded_stake_wei: bonded_stake.to_string(),
+        has_validator,
     })
 }
 

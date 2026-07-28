@@ -94,22 +94,39 @@ export const VALIDATOR_STAKE_REQUIREMENT_WEI = 32000n * 10n ** 18n;
 /**
  * BC-1.3 — is the 32,000-SALT membership grant GENUINELY on-chain?
  *
- * The S5 grant leg settles ONLY when the vault attributes at least the validator
- * stake requirement to the member AND the member holds the SBT (Rule 1 — read from
- * `MembershipStakeVault.attributedStake` + `CitrateMemberSBT.balanceOf`, never a
- * fabricated settlement). `attributedStakeWei` is a decimal wei string from the
- * real read; parse it as a BigInt so a value beyond JS number range is exact. A
- * malformed/absent value fails closed (not granted).
+ * The S5 grant leg settles ONLY when the member holds the SBT AND at least the
+ * validator stake requirement is attributable to them on chain (Rule 1 — read from
+ * chain, never a fabricated settlement).
+ *
+ * TWO PLACES THE STAKE CAN LIVE. Before ADR 2026-07-27 the grant staked into
+ * `MembershipStakeVault`, so `attributedStake` was the answer. Under the bond-fund
+ * model the treasury funds the member's EOA and the member self-bonds, so the
+ * principal sits in the `ValidatorRegistry` and the vault reads 0 FOREVER —
+ * settling on the vault alone left a correctly-bonded validator permanently
+ * "ungranted" in the UI: working, but indistinguishable from broken. EITHER
+ * satisfies the requirement, so members granted under either model settle honestly.
+ *
+ * Wei values are decimal strings parsed as BigInt so a value beyond JS number range
+ * is exact. A malformed/absent value contributes 0 — fail-closed, never fabricated.
  */
-export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean }): boolean {
+export function isGrantOnChain(g: {
+  attributedStakeWei: string;
+  hasSbt: boolean;
+  bondedStakeWei?: string;
+}): boolean {
   if (!g.hasSbt) return false;
-  let stake: bigint;
-  try {
-    stake = BigInt(g.attributedStakeWei);
-  } catch {
-    return false; // fail-closed on an unparseable stake — never fabricate a grant
-  }
-  return stake >= VALIDATOR_STAKE_REQUIREMENT_WEI;
+  const parse = (v: string | undefined): bigint => {
+    if (v === undefined) return 0n;
+    try {
+      return BigInt(v);
+    } catch {
+      return 0n; // fail-closed on an unparseable value — never fabricate a grant
+    }
+  };
+  const vaulted = parse(g.attributedStakeWei);
+  const bonded = parse(g.bondedStakeWei);
+  const staked = vaulted > bonded ? vaulted : bonded;
+  return staked >= VALIDATOR_STAKE_REQUIREMENT_WEI;
 }
 
 /**
