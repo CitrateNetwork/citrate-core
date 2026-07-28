@@ -1989,7 +1989,6 @@ export class Store {
     setTimeout(tick, 5000);
   }
   onS3Pay(): void {
-    this.setState({ s3: "paying" });
     // Tauri: open the REAL core-membership checkout popup, then POLL the on-chain
     // membership grant. The money + grant happen ENTIRELY server-side
     // (core-membership → treasury-signer droplet); this app only opens the URL and
@@ -1997,6 +1996,20 @@ export class Store {
     // >=32k stake) — NOT the KYC entitlement (which a verified member holds before
     // paying), and NEVER a faked settle (Rule 1). See pollMembership for why.
     if (BRIDGE_MODE === "tauri") {
+      // ORDERING GUARD (Rule 1; see wallet_link.rs). The grant funds + mints to the
+      // authority's `wallet_address` claim. Until THIS device's custody EOA is
+      // LINKED, that claim is the counterfactual smart-wallet address no key can
+      // spend — so core-membership refuses (`grant_denied_no_member_wallet`) rather
+      // than strand the 32k bond at an unspendable address. So LINK FIRST, then
+      // check out. The link ceremony re-reads the claim on approval
+      // (authUserinfo/refreshWallet), so walletIsLinked() flips true and the next
+      // Pay proceeds. This mirrors how activation is gated on the link.
+      if (!this.walletIsLinked()) {
+        this.toast("Link your wallet first — approve the link, then tap Pay again.");
+        void this.linkWallet();
+        return;
+      }
+      this.setState({ s3: "paying" });
       void bridge.membership.checkout().catch(() => {
         // Popup open failed (headless / user cancel at OS level) — stay "paying";
         // the poll below simply never settles. The user can retry (S3 re-enterable).
@@ -2006,6 +2019,7 @@ export class Store {
     }
     // Web-dev sim: keep the prototype's fake settle so onboarding still walks.
     // (Guarded: the sim membership.checkout is a no-op; the tier flip is sim-only.)
+    this.setState({ s3: "paying" });
     setTimeout(() => {
       this.setState({ s3: "settled", tier: "pilot" });
       this.save();

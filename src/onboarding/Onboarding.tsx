@@ -399,9 +399,20 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
       </div>
       {s.s3 === "idle" && (
         <div>
-          <button className="btn btn-primary btn-lg" onClick={() => store.onS3Pay()}>
-            Check out in your browser · $48
-          </button>
+          {!store.walletIsLinked() ? (
+            <>
+              <button className="btn btn-primary btn-lg" onClick={() => store.linkWallet()}>
+                Link your wallet
+              </button>
+              <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-3)", margin: "8px 0 0" }}>
+                Binds this device's wallet to your identity so your membership funds an address only you can spend from. Approve the link, then check out.
+              </p>
+            </>
+          ) : (
+            <button className="btn btn-primary btn-lg" onClick={() => store.onS3Pay()}>
+              Check out in your browser · $48
+            </button>
+          )}
         </div>
       )}
       {s.s3 === "paying" && (
