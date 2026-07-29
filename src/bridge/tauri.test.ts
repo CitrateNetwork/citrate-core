@@ -92,6 +92,9 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         attributedStakeWei: (32000n * 10n ** 18n).toString(),
         attributedSharesWei: (32000n * 10n ** 18n).toString(),
         hasSbt: true,
+        bondedStakeWei: "0",
+        hasValidator: false,
+        nativeBalanceWei: (32000n * 10n ** 18n).toString(),
       };
     // CORE-B1.2 signing — the ceremony commands. request → decoded view (NO
     // signature); approve → a signature hex ONLY (never a key); reject → void.
@@ -807,6 +810,8 @@ describe("tauri adapter — membership.checkout opens the real checkout popup (D
     expect(invokeMock).toHaveBeenCalledWith("membership_grant_status", { memberAddress: "0xabc" });
     expect(status.attributedStakeWei).toBe((32000n * 10n ** 18n).toString());
     expect(status.hasSbt).toBe(true);
+    // The bond-fund native balance crosses the boundary so the settle gate can see it.
+    expect(status.nativeBalanceWei).toBe((32000n * 10n ** 18n).toString());
   });
 });
 

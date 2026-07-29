@@ -656,10 +656,25 @@ describe("isGrantOnChain — vault OR bonded stake settles the grant leg", () =>
     expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: REQ })).toBe(true);
   });
 
+  // THE 2026-07-28 STALL: right after payment the treasury funded the member's EOA
+  // natively (32k) + minted the SBT, but the member hasn't self-bonded yet, so BOTH
+  // vault and registry read 0. Before the native leg this member polled forever.
+  it("BOND-FUND (just granted): funded native EOA, not yet self-bonded, DOES settle", () => {
+    expect(
+      isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: "0", nativeBalanceWei: REQ }),
+    ).toBe(true);
+  });
+
+  it("native funding without the SBT is NEVER granted (SBT is the hard precondition)", () => {
+    expect(
+      isGrantOnChain({ attributedStakeWei: "0", hasSbt: false, bondedStakeWei: "0", nativeBalanceWei: REQ }),
+    ).toBe(false);
+  });
+
   it("neither source reaching the requirement does not settle", () => {
-    expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: "0" })).toBe(false);
+    expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: "0", nativeBalanceWei: "0" })).toBe(false);
     const short = (31999n * 10n ** 18n).toString();
-    expect(isGrantOnChain({ attributedStakeWei: short, hasSbt: true, bondedStakeWei: short })).toBe(false);
+    expect(isGrantOnChain({ attributedStakeWei: short, hasSbt: true, bondedStakeWei: short, nativeBalanceWei: short })).toBe(false);
   });
 
   it("the two are NOT summed — a member cannot reach the bar by halves", () => {

@@ -98,13 +98,20 @@ export const VALIDATOR_STAKE_REQUIREMENT_WEI = 32000n * 10n ** 18n;
  * validator stake requirement is attributable to them on chain (Rule 1 — read from
  * chain, never a fabricated settlement).
  *
- * TWO PLACES THE STAKE CAN LIVE. Before ADR 2026-07-27 the grant staked into
+ * THREE PLACES THE PRINCIPAL CAN LIVE. Before ADR 2026-07-27 the grant staked into
  * `MembershipStakeVault`, so `attributedStake` was the answer. Under the bond-fund
- * model the treasury funds the member's EOA and the member self-bonds, so the
- * principal sits in the `ValidatorRegistry` and the vault reads 0 FOREVER —
- * settling on the vault alone left a correctly-bonded validator permanently
- * "ungranted" in the UI: working, but indistinguishable from broken. EITHER
- * satisfies the requirement, so members granted under either model settle honestly.
+ * model the treasury funds the member's OWN EOA with the 32k bond and the member
+ * later self-bonds via `registerValidator`, so:
+ *   - RIGHT AFTER the grant (funded, not yet registered) the principal is the EOA's
+ *     NATIVE balance (`nativeBalanceWei`) — vault AND registry both read 0;
+ *   - AFTER the member self-bonds, the principal moves to the `ValidatorRegistry`
+ *     (`bondedStakeWei`) and the native balance drops.
+ * Settling on the vault alone (or vault+registry) left a correctly-GRANTED but
+ * not-yet-registered member polling "still settling" FOREVER — working, but
+ * indistinguishable from broken (the 2026-07-28 stall). SBT + the MAX of the three
+ * principal reads settles honestly across the whole lifecycle. `hasSbt` stays a hard
+ * precondition, so a wallet that merely happens to hold 32k native (but no SBT) is
+ * never mistaken for a granted member.
  *
  * Wei values are decimal strings parsed as BigInt so a value beyond JS number range
  * is exact. A malformed/absent value contributes 0 — fail-closed, never fabricated.
@@ -113,6 +120,7 @@ export function isGrantOnChain(g: {
   attributedStakeWei: string;
   hasSbt: boolean;
   bondedStakeWei?: string;
+  nativeBalanceWei?: string;
 }): boolean {
   if (!g.hasSbt) return false;
   const parse = (v: string | undefined): bigint => {
@@ -125,8 +133,9 @@ export function isGrantOnChain(g: {
   };
   const vaulted = parse(g.attributedStakeWei);
   const bonded = parse(g.bondedStakeWei);
-  const staked = vaulted > bonded ? vaulted : bonded;
-  return staked >= VALIDATOR_STAKE_REQUIREMENT_WEI;
+  const funded = parse(g.nativeBalanceWei);
+  const principal = [vaulted, bonded, funded].reduce((a, b) => (a > b ? a : b));
+  return principal >= VALIDATOR_STAKE_REQUIREMENT_WEI;
 }
 
 /**

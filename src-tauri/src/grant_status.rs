@@ -14,6 +14,14 @@
 //!   the member's AA wallet and staked it.
 //! - `CitrateMemberSBT.balanceOf(member) == 1` — the member holds the SBT.
 //!
+//! Under the ADR 2026-07-27 bond-fund model the grant instead funds the member's
+//! OWN EOA with the 32k bond (replacing `vault.grant`), so the settle gate ALSO
+//! accepts `eth_getBalance(member) >= 32000e18` (native funded bond) and
+//! `ValidatorRegistry.stakeOf(pubkeyOfStaker(member)) >= 32000e18` (already
+//! self-bonded). `isGrantOnChain` settles on SBT + the MAX of those principal reads,
+//! so a member granted under EITHER model — and whether or not they have self-bonded
+//! yet — settles honestly instead of polling forever.
+//!
 //! `attributedShares(member)` is ALSO read and returned (a granted member reads
 //! `> 0`), but it is NOT part of the settle gate — stake + SBT is the actual gate.
 //! It is surfaced for display/telemetry only.
@@ -173,6 +181,15 @@ pub struct GrantStatus {
     /// `pubkeyOfStaker(member) != 0` — the member has registered a validator.
     #[serde(rename = "hasValidator")]
     pub has_validator: bool,
+    /// `eth_getBalance(member)` in wei (decimal string) — the member EOA's native
+    /// SALT. Under the ADR 2026-07-27 bond-fund model the grant funds the member's
+    /// OWN EOA with the 32k bond (replacing `vault.grant`), so a just-granted member
+    /// who has NOT yet self-bonded holds the grant principal HERE — the vault AND
+    /// registry both read 0 for such a member. The store's settle gate folds this in
+    /// so a funded-but-not-yet-registered member settles honestly (Rule 1: a live
+    /// read, never a fabricated grant).
+    #[serde(rename = "nativeBalanceWei")]
+    pub native_balance_wei: String,
 }
 
 /// Validate a `0x`-prefixed 20-byte hex address; return the lowercased canonical
@@ -326,12 +343,22 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
         0
     };
 
+    // Native balance (eth_getBalance): the ADR 2026-07-27 bond-fund grant funds the
+    // member's OWN EOA with the 32k bond instead of `vault.grant`, so a just-granted
+    // member who has not yet self-bonded holds the principal as native SALT here
+    // (vault + registry both read 0). Read it LAST so the eth_call ordering above is
+    // unchanged; the settle gate treats this as an alternative "grant landed" signal.
+    let native_balance = rpc
+        .get_balance(&addr)
+        .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+
     Ok(GrantStatus {
         attributed_stake_wei: attributed_stake.to_string(),
         attributed_shares_wei: attributed_shares.to_string(),
         has_sbt: sbt_balance == 1,
         bonded_stake_wei: bonded_stake.to_string(),
         has_validator,
+        native_balance_wei: native_balance.to_string(),
     })
 }
 

@@ -652,8 +652,8 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // 32,000 SALT in wei — the validator stake requirement a granted member meets.
         const REQUIREMENT_WEI = (32000n * 10n ** 18n).toString();
         return paid
-          ? { attributedStakeWei: REQUIREMENT_WEI, attributedSharesWei: REQUIREMENT_WEI, hasSbt: true, bondedStakeWei: "0", hasValidator: false }
-          : { attributedStakeWei: "0", attributedSharesWei: "0", hasSbt: false, bondedStakeWei: "0", hasValidator: false };
+          ? { attributedStakeWei: REQUIREMENT_WEI, attributedSharesWei: REQUIREMENT_WEI, hasSbt: true, bondedStakeWei: "0", hasValidator: false, nativeBalanceWei: REQUIREMENT_WEI }
+          : { attributedStakeWei: "0", attributedSharesWei: "0", hasSbt: false, bondedStakeWei: "0", hasValidator: false, nativeBalanceWei: "0" };
       },
       // BC-5.3 — SIM: there is NO real chain in the web preview, so this NEVER
       // fabricates an on-chain emblem. It returns null so the caller renders the

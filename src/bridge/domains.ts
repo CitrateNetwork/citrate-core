@@ -430,6 +430,14 @@ export interface GrantStatus {
   bondedStakeWei: string;
   /** `pubkeyOfStaker(member) != 0` — the member has registered a validator. */
   hasValidator: boolean;
+  /**
+   * `eth_getBalance(member)` — the member EOA's NATIVE SALT. Under the ADR
+   * 2026-07-27 bond-fund grant the treasury funds the member's own EOA with the 32k
+   * bond, so a just-granted member who has NOT yet self-bonded holds the principal
+   * HERE (vault + registry both read 0). The settle gate folds this in so a
+   * funded-but-unregistered member settles instead of polling forever.
+   */
+  nativeBalanceWei: string;
 }
 
 export interface MembershipDomain {

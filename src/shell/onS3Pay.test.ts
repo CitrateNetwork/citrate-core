@@ -19,9 +19,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // The evolving on-chain grant the mocked bridge returns. Tests flip `current` to
 // model the server-side grant landing on chain.
-const NOT_GRANTED = { attributedStakeWei: "0", hasSbt: false };
-const GRANTED = { attributedStakeWei: (32000n * 10n ** 18n).toString(), hasSbt: true };
-const grantState = { current: NOT_GRANTED as { attributedStakeWei: string; hasSbt: boolean } };
+type GrantShape = { attributedStakeWei: string; hasSbt: boolean; bondedStakeWei?: string; nativeBalanceWei?: string };
+const NOT_GRANTED: GrantShape = { attributedStakeWei: "0", hasSbt: false };
+const GRANTED: GrantShape = { attributedStakeWei: (32000n * 10n ** 18n).toString(), hasSbt: true };
+const grantState = { current: NOT_GRANTED as GrantShape };
 
 // A /userinfo that is ALREADY a paid+active tier (a KYC-verified member) — present
 // from the first poll to prove S3 does NOT settle on the entitlement alone.
@@ -136,6 +137,30 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
 
     // The server-side grant lands on chain.
     grantState.current = GRANTED;
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+
+    expect(store.state.s3).toBe("settled");
+  });
+
+  // THE 2026-07-28 STALL, end to end: the ADR 2026-07-27 grant funds the member's
+  // EOA natively (32k) + mints the SBT, but the vault + registry read 0 until the
+  // member self-bonds. This shape polled "paying" forever before the native leg.
+  it("settles on the bond-fund grant: native-funded EOA + SBT, zero vault/registry stake", async () => {
+    const store = new Store();
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
+    store.onS3Pay();
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+    expect(store.state.s3).toBe("paying");
+
+    // The real bond-fund grant lands: SBT minted + EOA funded natively, NOT vaulted.
+    grantState.current = {
+      attributedStakeWei: "0",
+      bondedStakeWei: "0",
+      nativeBalanceWei: (32000n * 10n ** 18n).toString(),
+      hasSbt: true,
+    };
     await vi.advanceTimersByTimeAsync(5000);
     await flush();
 
