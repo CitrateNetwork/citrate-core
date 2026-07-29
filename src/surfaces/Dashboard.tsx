@@ -40,7 +40,21 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const { data: liveHeight, isPending: heightPending, error: heightError } = useBlockNumber({ watch: true, chainId: citrate.id });
 
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
-  const staked = (s.hasGrant ? 32000 : 0) + s.selfStake;
+  // HONEST staked = REAL attributed stake (MembershipStakeVault.attributedStake →
+  // s5StakeWei) + self-stake — NOT a hardcoded 32,000. Under the current bond-fund
+  // model the grant funds the EOA LIQUID (attributedStake reads 0), so a just-granted
+  // member honestly shows 0 staked and their 32k in "liquid"; once the grant is
+  // actually staked (the 1-year-lock model) attributedStake carries it and this shows
+  // the real number. Matches Wallet.tsx (Rule 1 — never claim a stake that isn't there).
+  const grantStakedSalt = (() => {
+    if (!s.hasGrant || !s.s5StakeWei) return 0;
+    try {
+      return Number(BigInt(s.s5StakeWei) / 10n ** 18n);
+    } catch {
+      return 0;
+    }
+  })();
+  const staked = grantStakedSalt + s.selfStake;
 
   // Height vitals value: live chain read when node is off (reads fall back to
   // the public RPC in the design), sim height when the local node drives it.

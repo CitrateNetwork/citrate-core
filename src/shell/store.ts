@@ -1476,6 +1476,22 @@ export class Store {
         patch.modelError = st.msg;
       }
       this.setState(patch);
+      // If the local model is verified-Ready, SPAWN the llama-server sidecar so
+      // chat actually uses on-device Gemma. Previously serveStart was only called
+      // right after a fresh verify (onboarding), so a normal launch with an
+      // already-verified model left the server down → inference fell back to the
+      // canned demo provider. Idempotent (serveStart returns AlreadyRunning if up);
+      // best-effort (a missing/failed llama-server binary is caught, chat stays on
+      // its honest fallback). Re-select the provider once the server is healthy.
+      if (BRIDGE_MODE === "tauri" && st.state === "ready") {
+        try {
+          await bridge.model.serveStart();
+          await this.rebuildProvider();
+        } catch {
+          /* honest no-op: no local server (binary missing / spawn failed) → chat
+             stays on the gateway/demo fallback rather than a fabricated answer */
+        }
+      }
     } catch {
       /* honest no-op: a failed poll keeps the last real status, never a sim number */
     }

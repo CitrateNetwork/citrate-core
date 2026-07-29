@@ -379,7 +379,7 @@ export function Wallet({ store, s }: SurfaceProps) {
               </div>
             </div>
             <p style={{ fontSize: 11.5, lineHeight: 1.55, color: "var(--tx-3)", margin: 0 }}>
-              Granted principal is vaulted until mainnet release and cannot be withdrawn — by construction, not by UI. Validator reward eligibility ends below 32,000 SALT staked.
+              The membership grant funds this wallet directly; a staked + time-locked model is in progress. This card shows the REAL on-chain attributed stake, never a fabricated figure. Validator reward eligibility ends below 32,000 SALT staked.
             </p>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
