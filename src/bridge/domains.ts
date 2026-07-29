@@ -130,6 +130,24 @@ export interface WalletDomain {
    * A fresh wallet honestly returns []. Never fabricated (Rule 1). */
   pendingWithdrawals(): Promise<PendingWithdrawal[]>;
   /**
+   * Seamlessly device-provision the custody vault and ensure the wallet exists,
+   * returning its PUBLIC address (never key/seed). Idempotent — safe to call on
+   * every launch; an already-provisioned device short-circuits to a cheap read.
+   *
+   * WHY IT MATTERS: this is the missing runtime step behind the "Wallet link
+   * unavailable" dead-end. On a fresh install the custody vault was uninitialized
+   * + locked and no wallet had been minted, so `linkRequest`/`balances`/`address`
+   * all failed closed. `ensureReady` init+unlocks the vault under a device-bound
+   * keyring passphrase (no user passphrase — the owner-approved model) and mints
+   * the wallet silently, so there is a REAL EOA to link and fund. Call it after
+   * sign-in and before the membership grant.
+   *
+   * Tauri → `wallet_ensure_ready` (real custody + wallet). The sim shim returns a
+   * deterministic, clearly-labelled NON-CHAIN persona address (no vault/key in the
+   * web preview).
+   */
+  ensureReady(): Promise<{ address: string; created: boolean }>;
+  /**
    * Bind THIS device's custody EOA to the member's Citrate identity, as a PENDING
    * ceremony. Signs NOTHING — the human approves via `wallet.linkApprove`.
    *

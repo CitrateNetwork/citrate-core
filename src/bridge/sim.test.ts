@@ -93,6 +93,17 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     expect(await bridge.wallet.pendingWithdrawals()).toEqual([]);
   });
 
+  // No custody vault/key exists in web-dev, so ensureReady provisions nothing: it
+  // returns the deterministic NON-CHAIN persona address and created:false (the real
+  // init+unlock+mint happens only in the desktop app — Rule 1).
+  it("wallet.ensureReady returns the persona address, created:false (no real mint in sim)", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    const r = await bridge.wallet.ensureReady();
+    expect(r.address).toBe("0xabc"); // the fakeHost persona walletAddr
+    expect(r.created).toBe(false);
+  });
+
   // CORE item 4 — in sim the web shim reaches no indexer, so wallet.activity
   // echoes the host's prototype `s().activity` (the seed), never a fabricated
   // history. (In a Tauri build the adapter invokes the real CitrateScan read.)

@@ -187,6 +187,13 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
         return invoke<PendingWithdrawal[]>("wallet_pending_withdrawals");
       },
+      // Seamless device provisioning + first-run wallet mint (@rule8). Returns
+      // ONLY the public address (never key/seed). Idempotent — the Rust command
+      // short-circuits when already provisioned. This is what makes the vault
+      // initialized+unlocked and a real EOA exist BEFORE linkRequest runs.
+      async ensureReady(): Promise<{ address: string; created: boolean }> {
+        return invoke<{ address: string; created: boolean }>("wallet_ensure_ready");
+      },
       // Bind this device's custody EOA to the Citrate identity. Signs NOTHING
       // here — the human approves the personal_sign ceremony, and only then is
       // the proof submitted to the authority.

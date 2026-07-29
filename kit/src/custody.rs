@@ -125,6 +125,19 @@ const KEYRING_GENERATION_ACCOUNT: &str = "custody-generation";
 /// as the per-guess brake. Stored as 8-byte big-endian `u64`.
 const KEYRING_LOCKOUT_GEN_ACCOUNT: &str = "custody-lockout-generation";
 
+/// OS keyring account for the auto-generated device passphrase backing the
+/// SEAMLESS, no-user-passphrase provisioning path (owner decision: the security
+/// boundary is the OS login / keychain, not a memorized secret — matches the S4
+/// "your smart wallet already exists" copy). It lives under the SAME
+/// `ai.citrate.core` service as the master key, so the fresh-install cache wipe
+/// (which clears that whole service) also clears this — correctly forcing a
+/// re-provision on the next launch. Stored as `AUTO_PASSPHRASE_LEN` random bytes.
+/// See [`CustodyVault::ensure_auto_unlocked`].
+const KEYRING_AUTO_PASSPHRASE_ACCOUNT: &str = "custody-auto-passphrase";
+/// Length of the auto-generated device passphrase, bytes. 32 bytes of the OS RNG
+/// is full-entropy; the passphrase never leaves the keyring and this process.
+const AUTO_PASSPHRASE_LEN: usize = 32;
+
 /// Envelope file name inside the app data dir.
 const ENVELOPE_FILE: &str = "custody.enc";
 
@@ -1043,6 +1056,78 @@ impl CustodyVault {
         let result = self.unlock_inner(passphrase);
         passphrase.zeroize(); // scrub the caller's inbound passphrase (spec)
         result
+    }
+
+    /// Seamless device-bound provisioning (owner decision): idempotently make the
+    /// vault initialized AND unlocked WITHOUT a user passphrase. The passphrase is
+    /// auto-generated (32 bytes from the OS RNG) and stored in the OS keyring beside
+    /// the master key; the security boundary is the OS login/keychain, matching the
+    /// S4 "your smart wallet already exists" copy. This is the runtime provisioning
+    /// path the onboarding wallet-link needs — before it, `custody_init`/`unlock`
+    /// were only ever exercised by tests, so a fresh install had an uninitialized,
+    /// locked vault and every wallet read failed closed.
+    ///
+    /// Steps (idempotent):
+    /// 1. already unlocked (respecting auto-lock) → `Ok` immediately;
+    /// 2. get-or-create the device passphrase in the keyring;
+    /// 3. fresh install (no envelope) → `init` the vault under it;
+    /// 4. `unlock` the session under it.
+    ///
+    /// Fails closed like the rest of custody: an unreachable keyring, or an existing
+    /// envelope whose device passphrase has vanished (keychain reset / migration),
+    /// return an error rather than silently re-provisioning over a vault that may
+    /// still hold funds. The real recovery for a lost keychain is the BIP39 seed
+    /// (D-B1-1). `init`/`unlock` each zeroize the passphrase copy they are handed.
+    pub fn ensure_auto_unlocked(&self) -> Result<()> {
+        // Idempotent fast path: an already-unlocked session needs nothing.
+        if self.is_unlocked() {
+            return Ok(());
+        }
+        let pass = self.get_or_create_auto_passphrase()?;
+        // Fresh install: initialize the vault under the device passphrase. `init`
+        // fails closed if an envelope already exists OR the keyring master is not
+        // clean (CRY-5 `mint_master_key`), so this never clobbers an existing vault.
+        if !self.is_initialized() {
+            let mut init_pass = *pass; // stack copy; `init` zeroizes it
+            self.init(&mut init_pass)?;
+        }
+        // Unlock the session under the same passphrase (`unlock` zeroizes its arg).
+        let mut unlock_pass = *pass; // stack copy; `unlock` zeroizes it
+        self.unlock(&mut unlock_pass)
+        // `pass` (Zeroizing) wipes on drop here.
+    }
+
+    /// Get-or-create the auto-generated device passphrase in the OS keyring, for
+    /// [`ensure_auto_unlocked`]. Fail-closed policy:
+    /// - present + correct length → return it;
+    /// - present + wrong length → `Corrupt` (tamper; never silently reissue);
+    /// - absent + a vault ALREADY exists → `KeyringUnavailable` (minting a fresh
+    ///   passphrase would strand the existing, possibly-funded vault — the
+    ///   keychain-reset / migration case, whose real recovery is the BIP39 seed);
+    /// - absent + no vault → mint 32 fresh OS-RNG bytes, persist, return.
+    fn get_or_create_auto_passphrase(&self) -> Result<Zeroizing<[u8; AUTO_PASSPHRASE_LEN]>> {
+        if let Some(mut bytes) = self.keyring.get(KEYRING_AUTO_PASSPHRASE_ACCOUNT)? {
+            let out = if bytes.len() == AUTO_PASSPHRASE_LEN {
+                let mut out = Zeroizing::new([0u8; AUTO_PASSPHRASE_LEN]);
+                out.copy_from_slice(&bytes);
+                Some(out)
+            } else {
+                None
+            };
+            bytes.zeroize(); // scrub the transient keyring read
+            return out.ok_or(CustodyError::Corrupt);
+        }
+        // Absent. If a vault already exists, the passphrase was lost/deleted — fail
+        // closed rather than reissue a passphrase that cannot open the existing
+        // vault (that would look like a silent wipe of a funded wallet).
+        if self.is_initialized() {
+            return Err(CustodyError::KeyringUnavailable);
+        }
+        let mut pass = Zeroizing::new([0u8; AUTO_PASSPHRASE_LEN]);
+        rand::thread_rng().fill_bytes(pass.as_mut());
+        self.keyring
+            .set(KEYRING_AUTO_PASSPHRASE_ACCOUNT, pass.as_ref())?;
+        Ok(pass)
     }
 
     /// Fixed dummy salt for the absent-vault KDF (CRY-2). Not secret; its only

@@ -197,6 +197,10 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
         stakedWei: "5000000000000000000", // 5 SALT self-staked
         address: "0x9858effd232b4033e47d90003d41ec34ecaeda94",
       };
+    // CORE wallet_ensure_ready — seamless device provisioning + first-run mint.
+    // Returns ONLY the public address (never key/seed) + whether it was minted.
+    case "wallet_ensure_ready":
+      return { address: "0x9858effd232b4033e47d90003d41ec34ecaeda94", created: true };
     // CORE wallet_send — a native transfer bridged into a PENDING ceremony;
     // returns the decoded view (the human approves via sign_and_broadcast).
     case "open_external":
@@ -414,6 +418,16 @@ describe("tauri adapter — wallet.balances is a REAL 40204 read", () => {
     expect(b.claimable).toBeCloseTo(Number(BigInt(earningsMock.claimableWei)) / 1e18, 9);
     expect(b.staked).toBeCloseTo(5, 9); // real LiquidStakingPool.balanceOf (self-stake), no -1 sentinel
     expect(b.address).toBe("0x9858effd232b4033e47d90003d41ec34ecaeda94");
+  });
+
+  it("wallet.ensureReady invokes wallet_ensure_ready and passes the public address + created flag through", async () => {
+    const bridge = createTauriBridge();
+    const r = await bridge.wallet.ensureReady();
+    expect(invokeMock).toHaveBeenCalledWith("wallet_ensure_ready", undefined);
+    expect(r.address).toBe("0x9858effd232b4033e47d90003d41ec34ecaeda94");
+    expect(r.created).toBe(true);
+    // @rule8 / I-2: the boundary carries ONLY the address + a flag — no key/seed.
+    expect(Object.keys(r).sort()).toEqual(["address", "created"]);
   });
 
   it("wallet.stake invokes wallet_stake with {amountWei} and returns a pending CeremonyView", async () => {

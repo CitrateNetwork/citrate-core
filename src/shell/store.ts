@@ -1685,6 +1685,22 @@ export class Store {
    * challenge message verbatim and approves it. No funds move.
    */
   async linkWallet(): Promise<void> {
+    // ROOT-CAUSE FIX (the "Wallet link unavailable" saga): a fresh install has an
+    // uninitialized + LOCKED custody vault and NO minted wallet, so linkRequest()
+    // — and every wallet read (balances/address) — failed closed, and the grant
+    // fell back to a derived placeholder address. Provision the device wallet
+    // FIRST: seamless + device-bound (auto keyring passphrase, no user passphrase;
+    // security boundary = the OS login). ensureReady() init+unlocks the vault and
+    // mints the wallet silently, returning the real custody EOA. We stamp it into
+    // custodyAddr so walletIsLinked() has the custody side even before the first
+    // balances read lands. Idempotent — a no-op on an already-provisioned device.
+    try {
+      const { address } = await bridge.wallet.ensureReady();
+      if (address) this.setState({ custodyAddr: address });
+    } catch (err) {
+      this.toast("Wallet setup unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
     let view: Awaited<ReturnType<typeof bridge.wallet.linkRequest>>;
     try {
       view = await bridge.wallet.linkRequest();

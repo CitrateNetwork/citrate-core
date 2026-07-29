@@ -90,6 +90,11 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
 
   it("opens the checkout popup and enters 'paying'", async () => {
     const store = new Store();
+    // Precondition (c1513cb link gate): onS3Pay only proceeds to "paying" once the
+    // device wallet is LINKED (claim === custody). Provisioning + linking is the
+    // seamless step ahead of pay; here we assert the pay/poll/settle logic, so we
+    // start from a linked wallet.
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
     store.onS3Pay();
     expect(store.state.s3).toBe("paying");
     await flush();
@@ -100,6 +105,11 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
     // /userinfo is already tier:pilot + active (a KYC-verified member) but the
     // on-chain grant has NOT landed — S3 must stay "paying".
     const store = new Store();
+    // Precondition (c1513cb link gate): onS3Pay only proceeds to "paying" once the
+    // device wallet is LINKED (claim === custody). Provisioning + linking is the
+    // seamless step ahead of pay; here we assert the pay/poll/settle logic, so we
+    // start from a linked wallet.
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
     store.onS3Pay();
     for (let i = 0; i < 3; i++) {
       await vi.advanceTimersByTimeAsync(5000);
@@ -112,6 +122,11 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
 
   it("settles ONLY once the on-chain grant (SBT + >=32k stake) lands", async () => {
     const store = new Store();
+    // Precondition (c1513cb link gate): onS3Pay only proceeds to "paying" once the
+    // device wallet is LINKED (claim === custody). Provisioning + linking is the
+    // seamless step ahead of pay; here we assert the pay/poll/settle logic, so we
+    // start from a linked wallet.
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
     store.onS3Pay();
 
     // Tick with no grant → still paying.
@@ -130,6 +145,11 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
   it("a grant with the SBT but BELOW the stake threshold does NOT settle (fail-closed)", async () => {
     grantState.current = { attributedStakeWei: (31999n * 10n ** 18n).toString(), hasSbt: true };
     const store = new Store();
+    // Precondition (c1513cb link gate): onS3Pay only proceeds to "paying" once the
+    // device wallet is LINKED (claim === custody). Provisioning + linking is the
+    // seamless step ahead of pay; here we assert the pay/poll/settle logic, so we
+    // start from a linked wallet.
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
     store.onS3Pay();
     for (let i = 0; i < 3; i++) {
       await vi.advanceTimersByTimeAsync(5000);

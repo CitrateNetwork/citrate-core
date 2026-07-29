@@ -30,6 +30,7 @@ mod membership;
 mod memory;
 mod model;
 mod node;
+mod provisioning;
 mod sbt_art;
 mod seam;
 mod serve;
@@ -263,6 +264,13 @@ pub fn run() {
             // A claim is a SIGNED value-bearing write that routes through the
             // SignatureCeremony (agent bridge → B1.4), never signed here (@rule8).
             earnings::agent_earnings,
+            // wallet provisioning (@rule8) — seamless device-bound init+unlock of
+            // the custody vault (auto passphrase in the OS keyring, no user
+            // passphrase) + silent first-run wallet mint. Returns ONLY the public
+            // address (never key/seed). Idempotent; the onboarding link calls it
+            // after sign-in and before the membership grant so the REAL device
+            // wallet is what gets linked + paid. Signs nothing (Rule 3 untouched).
+            provisioning::wallet_ensure_ready,
             // wallet balances — REAL liquid (eth_getBalance) + claimable read.
             earnings::wallet_balances,
             // wallet send — a native SALT transfer bridged into a PENDING ceremony

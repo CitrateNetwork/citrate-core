@@ -1414,3 +1414,125 @@ fn adv_f1b_negative_control_legacy_guard_is_load_bearing() {
          legacy `None` marker — which fails closed — is the load-bearing fix)"
     );
 }
+
+// ----- ensure_auto_unlocked: seamless device-bound provisioning ---------
+//
+// The runtime path that fixes the onboarding "Wallet link unavailable" bug:
+// before this, custody_init/unlock ran only in tests, so a fresh install had an
+// uninitialized+locked vault and every wallet read failed closed. These prove
+// the get-or-create-passphrase + init + unlock path is correct and idempotent,
+// and that it fails CLOSED rather than clobbering an existing vault.
+
+#[test]
+fn ensure_auto_unlocked_fresh_initializes_and_unlocks() {
+    let (v, fake, _p) = vault(0);
+    assert!(!v.is_initialized(), "precondition: fresh, no envelope");
+    assert!(!v.is_unlocked(), "precondition: no session");
+
+    v.ensure_auto_unlocked().expect("fresh provision succeeds");
+
+    assert!(v.is_initialized(), "envelope now exists");
+    assert!(v.is_unlocked(), "session now unlocked");
+    // The device passphrase was minted into the keyring at the expected account,
+    // full length.
+    let pass = fake
+        .get(KEYRING_AUTO_PASSPHRASE_ACCOUNT)
+        .unwrap()
+        .expect("passphrase persisted");
+    assert_eq!(pass.len(), AUTO_PASSPHRASE_LEN);
+}
+
+#[test]
+fn ensure_auto_unlocked_is_idempotent_and_stable() {
+    let (v, fake, _p) = vault(0);
+    v.ensure_auto_unlocked().unwrap();
+    let pass1 = fake.get(KEYRING_AUTO_PASSPHRASE_ACCOUNT).unwrap().unwrap();
+
+    // A real wallet write proves the vault is genuinely usable post-provision.
+    v.put("member-note", &mut b"hello".to_vec()).unwrap();
+
+    // Second call is a no-op fast path (already unlocked): still Ok, same vault,
+    // same passphrase, slot intact.
+    v.ensure_auto_unlocked().unwrap();
+    let pass2 = fake.get(KEYRING_AUTO_PASSPHRASE_ACCOUNT).unwrap().unwrap();
+    assert_eq!(pass1, pass2, "passphrase is stable across calls (not reissued)");
+    assert_eq!(
+        v.custody_get("member-note").unwrap().as_slice(),
+        b"hello",
+        "the same vault/DEK is served — not clobbered"
+    );
+}
+
+#[test]
+fn ensure_auto_unlocked_relocks_then_reunlocks_same_vault() {
+    let (v, _fake, _p) = vault(0);
+    v.ensure_auto_unlocked().unwrap();
+    v.put("member-note", &mut b"persist-me".to_vec()).unwrap();
+
+    // Simulate auto-lock / manual lock, then re-provision: must UNLOCK (not
+    // re-init) using the stored device passphrase, and serve the SAME slot.
+    v.lock();
+    assert!(!v.is_unlocked());
+    v.ensure_auto_unlocked().expect("re-unlock via stored passphrase");
+    assert!(v.is_unlocked());
+    assert_eq!(
+        v.custody_get("member-note").unwrap().as_slice(),
+        b"persist-me",
+        "re-unlock opened the SAME vault, no clobber/re-init"
+    );
+}
+
+#[test]
+fn ensure_auto_unlocked_survives_app_restart() {
+    // A fresh CustodyVault instance over the SAME keyring + envelope path models
+    // relaunching the app: provisioning must recognise the existing vault and
+    // just unlock it.
+    let (v1, fake, p) = vault(0);
+    v1.ensure_auto_unlocked().unwrap();
+    v1.put("member-note", &mut b"restart-me".to_vec()).unwrap();
+    drop(v1);
+
+    let v2 = CustodyVault::new(Box::new(SharedFake(fake.clone())), p, 0);
+    assert!(v2.is_initialized(), "envelope survives the restart");
+    assert!(!v2.is_unlocked(), "a new instance starts locked");
+    v2.ensure_auto_unlocked().expect("restart re-unlock succeeds");
+    assert_eq!(
+        v2.custody_get("member-note").unwrap().as_slice(),
+        b"restart-me",
+    );
+}
+
+#[test]
+fn ensure_auto_unlocked_fails_closed_when_passphrase_lost() {
+    // Keychain partial reset: the envelope survives but the device passphrase is
+    // gone. Re-provisioning MUST fail closed (never mint a new passphrase that
+    // can't open the existing, possibly-funded vault).
+    let (v, fake, p) = vault(0);
+    v.ensure_auto_unlocked().unwrap();
+    drop(v);
+
+    // Drop ONLY the auto-passphrase (leave master + envelope), model a restart.
+    fake.delete(KEYRING_AUTO_PASSPHRASE_ACCOUNT).unwrap();
+    let v2 = CustodyVault::new(Box::new(SharedFake(fake.clone())), p, 0);
+    assert!(v2.is_initialized());
+    let err = v2
+        .ensure_auto_unlocked()
+        .expect_err("must fail closed when the passphrase is lost but the vault exists");
+    assert_eq!(err, CustodyError::KeyringUnavailable);
+    // And it did NOT reissue a passphrase (no silent re-provision).
+    assert!(
+        fake.get(KEYRING_AUTO_PASSPHRASE_ACCOUNT).unwrap().is_none(),
+        "no passphrase was minted over the existing vault"
+    );
+}
+
+#[test]
+fn ensure_auto_unlocked_rejects_tampered_passphrase() {
+    let (v, fake, _p) = vault(0);
+    // Plant a wrong-length passphrase entry (tamper) before any provision.
+    fake.set(KEYRING_AUTO_PASSPHRASE_ACCOUNT, &[0u8; 8]).unwrap();
+    let err = v
+        .ensure_auto_unlocked()
+        .expect_err("a malformed passphrase entry is tamper, not a reissue trigger");
+    assert_eq!(err, CustodyError::Corrupt);
+}

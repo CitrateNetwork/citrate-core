@@ -528,6 +528,10 @@ describe("wallet link — binding this device's wallet to the identity", () => {
 
   beforeEach(() => {
     store.setState({ walletReview: null, walletAddr: "", custodyAddr: "" });
+    // Seamless device provisioning runs first inside linkWallet — mock it to a
+    // fixed custody EOA so the link tests are deterministic (the real provisioning
+    // is proven in kit's custody/provisioning suites).
+    vi.spyOn(bridge.wallet, "ensureReady").mockResolvedValue({ address: "0x" + "cd".repeat(20), created: false });
     vi.spyOn(bridge.wallet, "linkRequest").mockResolvedValue(linkView);
     linkApproveSpy = vi
       .spyOn(bridge.wallet, "linkApprove")
@@ -568,6 +572,33 @@ describe("wallet link — binding this device's wallet to the identity", () => {
     expect(store.state.walletReview?.view.id).toBe("wlink-1");
     expect(linkApproveSpy).not.toHaveBeenCalled();
     expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  // ROOT-CAUSE regression guard: linkWallet must device-provision the wallet
+  // (ensureReady) BEFORE requesting the link, and stamp the returned custody EOA —
+  // otherwise a fresh install has no vault/wallet and linkRequest fails closed with
+  // "Wallet link unavailable" (the whole money-path bug).
+  it("linkWallet provisions the device wallet first and stamps the custody EOA", async () => {
+    const ensureSpy = vi.spyOn(bridge.wallet, "ensureReady").mockResolvedValue({ address: "0x" + "cd".repeat(20), created: true });
+    const reqSpy = vi.spyOn(bridge.wallet, "linkRequest").mockResolvedValue(linkView);
+    store.setState({ custodyAddr: "" });
+
+    await store.linkWallet();
+
+    expect(ensureSpy).toHaveBeenCalledTimes(1);
+    // ensureReady resolved before linkRequest was invoked (provision-then-link).
+    expect(ensureSpy.mock.invocationCallOrder[0]).toBeLessThan(reqSpy.mock.invocationCallOrder[0]);
+    // The real custody EOA is stamped so walletIsLinked() has the custody side.
+    expect(store.state.custodyAddr).toBe("0x" + "cd".repeat(20));
+    expect(store.state.walletReview?.kind).toBe("wallet-link");
+  });
+
+  it("linkWallet surfaces an honest error and does NOT request a link if provisioning fails", async () => {
+    vi.spyOn(bridge.wallet, "ensureReady").mockRejectedValue(new Error("keyring unavailable"));
+    const reqSpy = vi.spyOn(bridge.wallet, "linkRequest").mockResolvedValue(linkView);
+    await store.linkWallet();
+    expect(reqSpy).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
   });
 
   // THE LOAD-BEARING ONE. A link is a personal_sign whose proof is POSTed to the

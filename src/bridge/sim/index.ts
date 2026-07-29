@@ -350,6 +350,14 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("wallet.claimWithdrawal");
         return simWalletCeremony({ action: `Claim matured withdrawal #${id}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
+      async ensureReady(): Promise<{ address: string; created: boolean }> {
+        // No custody vault or key exists in web-dev, so nothing is provisioned or
+        // minted. Return the deterministic persona address — a NON-CHAIN preview
+        // identity, not a real EOA — and `created:false` (nothing was minted). The
+        // real init+unlock+mint happens only in the desktop app (Rule 1).
+        assertSimAllowed("wallet.ensureReady");
+        return { address: s().walletAddr, created: false };
+      },
       async linkRequest(): Promise<CeremonyView> {
         // There is no custody key and no authority session in web-dev, so there
         // is nothing to prove control of. Refuse honestly rather than mint a
