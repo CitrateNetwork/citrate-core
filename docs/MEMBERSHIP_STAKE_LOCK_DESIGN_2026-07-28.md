@@ -1,113 +1,116 @@
 ---
 created: 2026-07-28
-branch: test/combined-remediation
+updated: 2026-07-28
+branch: docs/lock-design-decisions
 author: Claude (Opus 4.8), directed by @SaulBuilds
-status: draft — design for owner review (NO code yet)
+status: decisions locked — contract spec for G1 (owner-reviewed)
 ---
 
-# Membership stake: 1‑year locked grant — design draft
+# Membership stake: 1‑year locked validator bond — design + spec
 
-The owner's decision (2026‑07‑28): the $48 membership grant must land **staked,
-non‑withdrawable, locked exactly 1 year, with no user action**. This does not
-exist on‑chain today, so this is a **citrate‑chain contract program** followed by
-backend + app wiring. This draft frames the decisions BEFORE any code.
+Owner decisions (2026‑07‑28) are LOCKED (§A). The good news: the existing
+`citrate-chain/contracts/src/core_membership/MembershipStakeVault.sol` **already**
+implements most of this — staked + validator‑eligibility‑attributed + a
+`Attributed → Released → Claimed` lock lifecycle whose ONLY SALT‑out path is
+`claimReleased`. The program is mostly ADDITIONS to that contract, not a new one.
 
-## 1. Where we are (verified on live 40204)
-- The grant currently funds the member EOA **liquid** (`core-membership grant/execute.ts`
-  leg 1 `fundMember`, ADR 2026‑07‑27 "replacing vault.grant"). On‑chain a granted
-  member reads: native `32000.05 SALT`, `MembershipStakeVault.attributedStake = 0`,
-  no validator bond.
-- The dormant `MembershipStakeVault.grant(member, amount) payable` still exists and
-  would stake into the LiquidStakingPool + attribute shares — but has **no lock**.
-- The longest lock anywhere is `LiquidStakingPool` withdrawal delay ≈ **7 days**
-  (`50_400` blocks). There is **no `lockUntil` / unlock‑time / 1‑year mechanism** on
-  any deployed contract.
+## A. Locked decisions (owner)
+1. **The locked 32k IS the validator bond** (model V). No separate membership stake.
+2. **Extend `MembershipStakeVault`** — do NOT add new erroneous contracts. Compose
+   into multiple contracts ONLY if stack depth forces it.
+3. **Upgradeable — required.** (The contract is currently NOT upgradeable — see §C.1.)
+4. **Automatic time‑based unlock**, expressed as a **block height a fixed count ahead
+   of the grant's start height**, targeting **~1 year minus up to ~1 day** ("a little
+   less than a year, within a day, is better than a little more") — so a member can
+   exit slightly early rather than be held over.
+5. **No automatic withdraw.** Unlock makes exit ELIGIBLE; funds stay staked +
+   producing until the member acts. Auto‑returning principal would silently drop node
+   operators. Optional **re‑lock incentive** is a later/mainnet feature.
+6. **KYC supersedes every withdrawal check.** No release/claim if the member is not
+   KYC‑verified — even after the time lock elapses. This gate is checked FIRST.
+7. **Entitlement (companion):** a paid‑but‑unverified member GETS ACCESS (tier
+   `commercial`), but **cannot withdraw the stake OR download from the commissary**
+   until KYC‑verified.
 
-## 2. The load‑bearing design question (needs owner call)
-Is the locked 32k the **validator bond** or a **separate membership stake**?
-- **(V) Membership == validator bond.** The 32k is the validator's stake in
-  `ValidatorRegistry` (produces blocks + earns the subsidy). Problem: `registerValidator`
-  is `msg.sender`‑bonded (staker = the caller) and needs a synced node + `proposer.key`
-  — so a treasury‑granted, no‑user‑lift, timed‑1‑year lock does **not** map cleanly
-  onto the current registry (which has no timed lock and no treasury‑on‑behalf path).
-- **(M) Membership stake, separate from validator.** The 32k sits in a lock‑aware
-  membership vault (staked, non‑withdrawable 1 yr), and becoming a block‑producing
-  validator is a *separate, optional* step. Cleaner to build; but then "staked" ≠
-  "earning validator rewards" until they also activate a validator.
-- **(H) Hybrid.** Locked membership stake now (M), and later the same principal can
-  be *delegated* to a validator without unlocking.
+## B. What the vault already gives us (verified in source)
+`MembershipStakeVault.sol`:
+- `grant(member, amount) payable onlyOwner` — stakes into `LiquidStakingPool`, mints
+  stSALT to the vault, records `grantedAt`, sets `attributedShares[member]`, state
+  `Attributed`. Comment: "attribute validator eligibility to the member."
+- `attributedStake(member) = pool.previewWithdraw(attributedShares[member])`, and
+  `meetsRequirement := attributedStake(member) >= VALIDATOR_STAKE_REQUIREMENT` — the
+  vault stake IS the validator‑eligibility measure.
+- Lifecycle `Attributed → Released → Claimed` (+ `Lapsed`/`renew`). The ONLY path that
+  moves SALT out is `claimReleased`, reachable only from `Released`. So principal is
+  **non‑withdrawable until an explicit release** — exactly the lock we want.
+- Release today is orchestrator‑driven (`releaseGrant` / `enableMainnetRelease`,
+  `onlyOwner`) — NOT time‑automatic. The source even carries the open TODO: "should the
+  vault additionally hard‑enforce `block.timestamp >= grantedAt + 365 days`". We are
+  answering that TODO: **yes.**
+- NO clawback, no owner‑withdrawal, no sweep — "stake coverage, not a treasury pocket."
 
-**This choice determines the whole contract.** My recommendation: **(M)** for the
-first ship — a lock‑aware membership vault is the smallest correct contract that
-meets "staked + non‑withdrawable + 1‑year, no user lift", and it decouples the money
-lock from the (heavier) validator/producer path. Validator activation stays the
-existing separate flow.
+## C. What to ADD (the G1 contract work, on the extended vault)
+1. **Upgradeability.** Convert to a UUPS (or transparent) proxy: `Initializable`,
+   `initialize(owner, pool)` replacing the constructor, `_authorizeUpgrade onlyOwner`,
+   storage‑gap. The `immutable pool` becomes an initialized storage var. This is the
+   riskiest change (storage layout) — do it first, re‑verify the existing suite green.
+2. **Automatic time‑release eligibility.** Add `LOCK_BLOCKS` (≈ 1 year − ~1 day, in
+   40204 block time) and record `unlockBlock = block.number + LOCK_BLOCKS` at grant.
+   Make release ELIGIBLE (not automatic transfer) once `block.number >= unlockBlock`:
+   a member‑callable `requestRelease(grantId)` that moves `Attributed → Released`
+   iff `block.number >= unlockBlock` AND the KYC gate (§C.3) passes. Keep the existing
+   owner `releaseGrant` for admin/lapse paths. (Prefer block height over timestamp:
+   the owner specified blocks‑ahead‑of‑tip, and it's miner‑manipulation‑resistant.)
+3. **KYC gate that supersedes all.** Both `requestRelease` and `claimReleased` must
+   FIRST require the member is KYC‑verified. KYC is off‑chain, so pick ONE:
+   - **(i) Attestation on `CitrateMemberSBT`** — the SBT carries a `kycVerified` flag
+     the vault reads (`ICitrateMemberSBT(sbt).isKycVerified(member)`). Hard on‑chain
+     enforcement; needs the SBT to expose/maintain the flag.
+   - **(ii) Orchestrator‑gated** — release stays `onlyOwner` and the treasury signer
+     only calls it for KYC‑verified members (off‑chain check). Simpler; enforcement
+     lives in the operator, not the contract.
+   RECOMMEND (i) if the SBT can carry the flag (matches "supersedes every check,
+   on‑chain"); else (ii) as an honest interim. Either way the gate is checked BEFORE
+   the time check.
+4. **Node/consensus reconciliation (the one real open question).** The node's
+   stake‑gated membership reads `CITRATE_VALIDATOR_REGISTRY` (`ValidatorRegistry`),
+   while the vault attributes eligibility via `attributedShares`. Decide how a
+   vault‑granted member becomes a block‑producing validator:
+   - (a) consensus ALSO honors `MembershipStakeVault.meetsRequirement(member)`, or
+   - (b) the vault registers the member in `ValidatorRegistry` on grant.
+   This is a citrate‑chain consensus decision (DGX) — flag for G0.5. Until resolved, a
+   vault‑granted member is staked + eligible‑by‑vault but may not yet PRODUCE blocks.
 
-## 3. Proposed contract (assuming M)
-Two implementation shapes:
+## D. Cross‑repo wiring (after G1 + audit + deploy)
+1. **core‑membership** `grant/execute.ts`: switch leg 1 from `fundMember` (liquid) →
+   `vault.grant(member, 32k)` (the existing staked+attributed path). Idempotent.
+2. **citrate‑core app**:
+   - `grant_status.rs`: read `attributedStake` + the new `unlockBlock`; add to
+     `GrantStatus`. Settle S3 on `attributedStake >= 32k` (the original gate) and
+     **REMOVE the temporary #105 native‑balance bridge** (settling on liquid was only
+     to unstick the interim build).
+   - Dashboard/Wallet: show "Staked · unlocks at block N (~<date>)"; the honesty fix
+     already reads real `attributedStake`, so it lights up automatically.
+   - Withdrawal UI: only offer release when `block.number >= unlockBlock` AND KYC‑
+     verified (chain enforces both regardless).
+3. **Entitlement companion** (§A.7): core‑membership leg 3 writes `commercial` (not
+   `commercial.kyc`) for a paid‑unverified member; `citrate-identity` /userinfo gate
+   serves `commercial` without KYC (only `commercial.kyc` needs verified); withdrawal
+   (above) + commissary download gate on KYC‑verified.
 
-**(A) Extend `MembershipStakeVault`** — add:
-```
-function grantLocked(address member, uint256 unlockTime) external payable onlyTreasury
-  // stakes msg.value for `member`, records lockedUntil[member] = unlockTime
-mapping(address => uint64) public lockedUntil;   // 0 = no lock
-// withdrawal path reverts while block.timestamp < lockedUntil[member]
-function unlockTimeOf(address) external view returns (uint64);  // for the app read
-```
-Pros: reuses the vault + its `attributedStake` read the app already knows. Cons:
-requires the vault be upgradeable (or redeployed → reroll) and a withdrawal guard.
+## E. Sequencing + gates
+- **G0.5 — consensus reconciliation** (§C.4) with DGX: how vault attribution → block
+  production. Blocks the "membership = validator produces blocks" promise.
+- **G1 — contract red/green** (@rule8, T1 money): upgradeability first (storage‑safe),
+  then time‑release, then KYC gate. Failing tests first: only‑after‑unlock, KYC‑
+  supersedes‑time, no‑early‑release, no‑double‑claim, reentrancy, upgrade‑storage‑safe.
+- **G2 — independent audit** before deploy.
+- **G3 — deploy/upgrade + reroll**; re‑pin/getCode.
+- **G4 — backend + app wiring** (§D) + E2E: pay → staked+locked grant → app settles on
+  attributedStake → dashboard shows lock + unlock block → release blocked until unlock
+  AND KYC → claim pays out.
 
-**(B) New `LockedMembershipVault`** — dedicated contract holding the bond with an
-explicit `lockedUntil`, `grantLocked(member, unlockTime) payable onlyTreasury`, and a
-`withdraw()` gated on `block.timestamp >= lockedUntil`. Pros: clean separation,
-auditable in isolation. Cons: a new address (reroll) + the app learns a new contract.
-
-Recommendation: **(A)** if the vault is upgradeable; else **(B)**. Either way the key
-invariants for audit (@rule8):
-- only the treasury signer can `grantLocked` (no user‑forgeable lock/mint);
-- principal is **non‑withdrawable** until `lockedUntil` (revert, not UI‑only);
-- `lockedUntil = grantTime + 365 days`, set at grant, immutable;
-- re‑grant / top‑up semantics defined (extend lock? refuse? — decide);
-- the member's `attributedStake`/balance reads reflect the locked principal so the
-  app can settle + display it.
-
-## 4. Cross‑repo wiring (after the contract lands + is audited)
-1. **citrate‑chain**: implement + test the lock‑aware grant; audit (@rule8); deploy
-   (address‑neutral if CREATE2, else re‑pin) + reroll.
-2. **core‑membership** `grant/execute.ts`: switch leg 1 from `fundMember` (liquid) →
-   `grantLocked(member, now + 365d)`. Keep idempotency (skip if already locked‑staked).
-3. **citrate‑core app**:
-   - `grant_status.rs`: read the locked stake + `unlockTime`; add to `GrantStatus`.
-   - `isGrantOnChain` (store.ts): settle S3 on the **locked attributedStake ≥ 32k**
-     (and REMOVE the temporary #105 native‑balance bridge — settling on liquid was
-     only to unstick the current build).
-   - Dashboard/Wallet: show "Staked · locked until <date>" from the real read (the
-     honesty fix already reads real `attributedStake`, so it lights up automatically).
-   - Withdrawal UI: hide/disable while locked (chain enforces it regardless).
-
-## 5. Sequencing + gates
-- **G0 — design sign‑off** (this doc): pick M/V/H + A/B; define re‑grant + reward
-  semantics.
-- **G1 — contract red/green**: failing tests first (only‑treasury, non‑withdrawable‑
-  until, exact‑1‑year, reentrancy, top‑up), then implementation.
-- **G2 — audit (@rule8)**: T1 money contract; independent review before deploy.
-- **G3 — deploy + reroll**; re‑pin/getCode all addresses.
-- **G4 — backend + app wiring**; E2E: pay → locked‑staked grant → app settles on the
-  locked stake → dashboard shows the lock + unlock date → withdrawal blocked.
-
-## 6. Interim state (until this ships)
-The current build settles S3 on the **liquid** grant (#105) and the dashboard honestly
-shows it as liquid (0 staked). That is a deliberate bridge so the app is testable now;
-G4 removes it. No user funds are at risk in the interim — the 32k is liquid + spendable
-(honestly labeled), just not yet locked.
-
-## Open questions for the owner
-1. **M / V / H** — is the locked 32k the validator bond, a separate membership stake,
-   or hybrid? (Determines the contract.)
-2. **Vault upgradeable?** (Extend `MembershipStakeVault` vs a new `LockedMembershipVault`.)
-3. **Rewards while locked** — does the locked stake earn (staking yield / validator
-   subsidy) during the year, or is it purely a lock?
-4. **Unlock behavior at +1yr** — auto‑withdrawable, auto‑renew, or convert to liquid
-   stake? What is the member's post‑lock state?
-5. **KYC coupling** — does the locked grant require KYC‑verified (ties to the
-   entitlement gate below)?
+## F. Interim (until G4 ships)
+The current build settles S3 on the **liquid** grant (#105) and honestly shows it as
+liquid (0 staked). Deliberate bridge so the app is testable now; G4's app changes
+remove it. No funds at risk — the 32k is liquid + spendable, honestly labeled.
