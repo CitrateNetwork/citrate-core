@@ -135,6 +135,21 @@ describe("HIPAA sign-out-by-default — no session/PII persisted", () => {
   });
 });
 
+// ALF-ND-A — the `alf_member` claim gates the ALF surface + nav. On sign-out the flag MUST
+// clear; otherwise a signed-out account would keep the ALF workbench, a false-membership
+// surface (Rule 1). This guards the reset the same way the tier/entitlement reset is guarded.
+describe("ALF-ND — alfMember gating flag clears on sign-out", () => {
+  it("authLogout clears alfMember (a signed-out account is never an ALF member)", async () => {
+    const spy = vi.spyOn(bridge.auth, "logout").mockResolvedValue(undefined as unknown as void);
+    store.setState({ alfMember: true, signedIn: true, citrateRole: "alf_member" });
+    expect(store.state.alfMember).toBe(true);
+    await store.authLogout();
+    expect(store.state.alfMember).toBe(false);
+    expect(store.state.signedIn).toBe(false);
+    spy.mockRestore();
+  });
+});
+
 // CORE-AI1 (@rule8) — the real-vs-demo provider selection + the key-never-in-state
 // invariant. A REAL provider is chosen only in the Tauri build AND only when the
 // default id is actually configured (its key sealed in the keyring); otherwise the

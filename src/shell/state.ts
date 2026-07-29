@@ -211,6 +211,11 @@ export interface AppState {
    */
   citrateRole: string;
   /**
+   * ALF cooperative membership flag (ALF-ND). True iff the `citrate_role` claim is
+   * `alf_member` — a CLAIM, never tier-derived (DGX_HANDOFF §4.3). Gates the ALF surface + nav.
+   */
+  alfMember: boolean;
+  /**
    * CORE-A3 identity — the REAL signed-in user, folded from the live /userinfo
    * claims (`sub`, `email`, `wallet_address`). In a Tauri build these are the
    * source of truth for every identity surface (Sidebar, Settings account/RBAC,
@@ -484,6 +489,7 @@ export function freshState(pid: string): AppState {
     tier: P.fresh ? "free" : P.tier,
     org: P.org,
     citrateRole: P.role,
+    alfMember: false, // set true only by applyAuthStatus when the alf_member claim is present
     // Real identity is empty until a live sign-in folds /userinfo claims in
     // (applyAuthStatus). Until then the sim persona is the display fallback.
     signedIn: false,

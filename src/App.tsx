@@ -11,7 +11,7 @@ import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar } from "./shell/Sidebar";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { UpdateBanner } from "./shell/UpdateBanner";
-import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal } from "./surfaces";
+import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
 
 const queryClient = new QueryClient();
 
@@ -73,6 +73,8 @@ function Shell({ s }: { s: AppState }) {
         return <Settings store={store} s={s} />;
       case "journal":
         return <Journal store={store} s={s} />;
+      case "alf":
+        return <ALF store={store} s={s} />;
       default:
         return <Dashboard store={store} s={s} />;
     }
@@ -183,7 +185,7 @@ function Root() {
     }
     const onHash = () => {
       const r = (location.hash || "").replace(/^#\//, "");
-      if (r && r !== store.state.route && ["dashboard", "wallet", "node", "storage", "journal", "comms", "commissary", "settings"].indexOf(r) >= 0) {
+      if (r && r !== store.state.route && ["dashboard", "wallet", "node", "storage", "journal", "comms", "commissary", "settings", "alf"].indexOf(r) >= 0) {
         store.setState({ route: r });
       }
     };

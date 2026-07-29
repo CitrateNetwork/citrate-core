@@ -17,6 +17,12 @@ export const NAVI: [string, string, string, string][] = [
   ["settings", "Settings", "M4 7 H20 M4 12 H20 M4 17 H20", "M9 5 V9 M15 10 V14 M8 15 V19"],
 ];
 
+// ALF cooperative workbench — appended to the nav ONLY for ALF members (gated on
+// s.alfMember, a claim). Graduation-cap glyph. See src/surfaces/ALF.tsx (ALF-ND-A).
+const ALF_NAV: [string, string, string, string] = [
+  "alf", "ALF", "M12 3 L22 8 L12 13 L2 8 Z", "M6 10.5 V15 C6 16.5 9 18 12 18 C15 18 18 16.5 18 15 V10.5",
+];
+
 const nodeColors: Record<string, string> = {
   off: "var(--tx-3)",
   prov: "#ffbd10",
@@ -46,7 +52,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
       </div>
       <nav style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-          {NAVI.map(([id, label, iconA, iconB]) => {
+          {(s.alfMember ? [...NAVI, ALF_NAV] : NAVI).map(([id, label, iconA, iconB]) => {
             const active = s.route === id;
             const dot = id === "comms" && s.stage === "done";
             return (

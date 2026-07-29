@@ -6,4 +6,5 @@ export { Comms } from "./Comms";
 export { Commissary } from "./Commissary";
 export { Settings } from "./Settings";
 export { Journal } from "./Journal";
+export { ALF } from "./ALF";
 export type { SurfaceProps } from "./shared";

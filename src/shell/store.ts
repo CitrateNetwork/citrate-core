@@ -816,6 +816,9 @@ export class Store {
     // The authority may omit the citrate_role claim for a plain member; a
     // signed-in paid account is a "member" by default (never the persona's role).
     patch.citrateRole = st.role || "member";
+    // ALF cooperative membership is a CLAIM (DGX_HANDOFF §4.3): alf_member is a
+    // citrate_role minted by the authority, never tier-derived. Gates the ALF surface.
+    patch.alfMember = patch.citrateRole === "alf_member";
     // KYC claim → the S2 seam's five states (none/pending/verified/failed/review).
     if (st.kycStatus === "verified") patch.s2 = "verified";
     else if (st.kycStatus === "pending") patch.s2 = "pending";
@@ -856,6 +859,7 @@ export class Store {
       // false membership badge on a signed-out/free account (Rule 1).
       entitlement: "lapsed",
       citrateRole: "member",
+      alfMember: false, // clear the ALF flag on sign-out — a signed-out account is not an ALF member (Rule 1)
       org: null,
       signedIn: false,
       authSub: null,
