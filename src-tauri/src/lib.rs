@@ -145,6 +145,11 @@ pub fn run() {
             custody::custody_status,
             custody::custody_init,
             custody::custody_unlock,
+            // Seamless device-bound re-unlock (passphrase-less model): re-provisions
+            // + unlocks from the keyring device passphrase, for the Settings "Unlock"
+            // control and app launch/resume. Without it an auto-locked vault (and the
+            // wallet reads gated on it) stay stuck — no user passphrase exists to enter.
+            custody::custody_ensure_unlocked,
             custody::custody_lock,
             custody::custody_put,
             custody::custody_list,
@@ -380,6 +385,7 @@ mod tests {
             "custody::custody_status",
             "custody::custody_init",
             "custody::custody_unlock",
+            "custody::custody_ensure_unlocked",
             "custody::custody_lock",
             "custody::custody_put",
             "custody::custody_list",

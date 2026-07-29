@@ -336,15 +336,22 @@ export class Store {
       // BC-3 — fold the REAL local-model status on launch so the S6.5 step (and
       // Settings) show a resumed download / an already-verified model honestly.
       void this.refreshModel();
-      // Real wallet balances (native liquid + claimable) — folded once on launch;
-      // the Wallet surface also refreshes on mount + after a settled ceremony.
-      void this.refreshWallet();
-      // WP2 — the real pending-withdrawal queue (chain-sourced), folded on launch;
-      // the Wallet surface also refreshes on mount + after a settle.
-      void this.refreshPendingWithdrawals();
-      // Item 4 — the real indexed tx history (CitrateScan txlist), folded on
-      // launch; the Wallet surface also refreshes on mount + after a settle.
-      void this.refreshActivity();
+      // Seamless device-bound unlock FIRST (passphrase-less model): a fresh launch
+      // starts with a LOCKED in-memory session, and there is no user passphrase to
+      // enter, so nothing else re-unlocks the vault. Every wallet read below is gated
+      // on an unlocked vault (address/balances do an in-process custody_get), so
+      // without this they fail closed and the wallet appears broken. Run the wallet
+      // reads AFTER the unlock attempt resolves (best-effort; a reset keychain leaves
+      // the honest locked state).
+      void this.custodyEnsureUnlocked().finally(() => {
+        // Real wallet balances (native liquid + claimable) — folded once on launch;
+        // the Wallet surface also refreshes on mount + after a settled ceremony.
+        void this.refreshWallet();
+        // WP2 — the real pending-withdrawal queue (chain-sourced), folded on launch.
+        void this.refreshPendingWithdrawals();
+        // Item 4 — the real indexed tx history (CitrateScan txlist), folded on launch.
+        void this.refreshActivity();
+      });
     }
   }
 
@@ -566,6 +573,26 @@ export class Store {
   async custodyUnlock(passphrase: string): Promise<void> {
     await bridge.custody.unlock(passphrase);
     await this.refreshCustody();
+  }
+
+  /**
+   * Seamless device-bound unlock (passphrase-less model). Re-provisions + unlocks
+   * the vault from the OS-keyring device passphrase — the Settings "Unlock" control
+   * and app-launch path both call this. There is no user passphrase to type, so a
+   * locked vault (auto-lock or fresh launch) can ONLY be recovered this way; without
+   * it the wallet reads gated on the vault appear broken. Best-effort: a reset
+   * keychain fails closed and leaves the honest "locked" state.
+   */
+  async custodyEnsureUnlocked(): Promise<void> {
+    try {
+      await bridge.custody.ensureUnlocked();
+    } catch {
+      // Reset keychain / device secret unavailable — fail closed. `refreshCustody`
+      // below folds the honest locked state; callers read `store.state.custodyLock`
+      // rather than a thrown error (the Settings control toasts off that state).
+    } finally {
+      await this.refreshCustody();
+    }
   }
 
   /** Lock the custody vault, then refresh lock state. */

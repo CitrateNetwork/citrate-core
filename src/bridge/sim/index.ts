@@ -224,6 +224,18 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // UI state only — the web shim performs no crypto and holds no secret.
         simUnlocked = true;
       },
+      async ensureUnlocked(): Promise<CustodyStatus> {
+        assertSimAllowed("custody.ensureUnlocked");
+        // Device-bound seamless unlock — UI state only in the web shim.
+        simInitialized = true;
+        simUnlocked = true;
+        return {
+          initialized: simInitialized,
+          unlocked: simUnlocked,
+          autolockMins: s().autolock,
+          keyringStatus: "unavailable",
+        };
+      },
       async lock(): Promise<void> {
         assertSimAllowed("custody.lock");
         simUnlocked = false;

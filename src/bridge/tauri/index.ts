@@ -74,6 +74,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async unlock(passphrase: string): Promise<void> {
         await invoke("custody_unlock", { passphrase });
       },
+      async ensureUnlocked(): Promise<CustodyStatus> {
+        return invoke<CustodyStatus>("custody_ensure_unlocked");
+      },
       async lock(): Promise<void> {
         await invoke("custody_lock");
       },

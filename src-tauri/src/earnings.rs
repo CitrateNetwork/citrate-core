@@ -292,6 +292,15 @@ pub struct WalletBalances {
 pub fn wallet_balances(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<WalletBalances, String> {
+    // Self-heal the passphrase-less vault: reading the wallet address needs an
+    // UNLOCKED vault (in-process custody_get), but the vault auto-locks (~30 min)
+    // and there is no user passphrase to re-enter. Re-provision + unlock from the
+    // keyring device secret first (idempotent) so a mid-session auto-lock never
+    // makes the wallet look broken. Fails closed on a reset keychain.
+    custody
+        .0
+        .ensure_auto_unlocked()
+        .map_err(|e| e.to_string())?;
     let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
     let rpc = crate::rpc::RpcClient::citrate();
     let liquid = rpc

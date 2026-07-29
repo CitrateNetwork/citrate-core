@@ -1650,6 +1650,30 @@ pub fn custody_unlock(
     r
 }
 
+/// Seamless device-bound RE-UNLOCK for the passphrase-less provisioning model.
+/// Idempotent: gets-or-creates the device passphrase in the OS keyring, inits the
+/// vault if needed, and unlocks the session — exactly like onboarding's
+/// `wallet_ensure_ready`, but callable from the Settings "Unlock" control and on
+/// app launch/resume. Without this, once the vault auto-locks (or on a fresh
+/// launch, where the in-memory session starts locked) there is NO user passphrase
+/// to re-enter, so the vault — and every wallet read gated on it (balances,
+/// address) — stays locked and the wallet appears broken. Returns the fresh status
+/// so the UI reflects the unlocked state at once. Fails closed on a reset keychain
+/// (same policy as `ensure_auto_unlocked`).
+#[tauri::command]
+pub fn custody_ensure_unlocked(
+    state: State<'_, CustodyState>,
+) -> std::result::Result<CustodyStatus, String> {
+    let v = &state.0;
+    v.ensure_auto_unlocked().map_err(err_str)?;
+    Ok(CustodyStatus {
+        initialized: v.is_initialized(),
+        unlocked: v.is_unlocked(),
+        autolock_mins: (*v.autolock_secs.lock().unwrap() / 60) as u32,
+        keyring_status: keyring_probe(),
+    })
+}
+
 #[tauri::command]
 pub fn custody_lock(state: State<'_, CustodyState>) -> std::result::Result<(), String> {
     state.0.lock();

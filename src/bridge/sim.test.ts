@@ -293,6 +293,16 @@ describe("sim adapter — custody UI state only (no real secret, stores nothing)
     expect((await bridge.custody.status()).unlocked).toBe(false);
   });
 
+  it("ensureUnlocked (device-bound, no passphrase) re-unlocks after a lock", async () => {
+    const { host } = fakeHost();
+    const bridge = createSimBridge(host);
+    await bridge.custody.lock();
+    expect((await bridge.custody.status()).unlocked).toBe(false);
+    const st = await bridge.custody.ensureUnlocked();
+    expect(st.unlocked).toBe(true);
+    expect((await bridge.custody.status()).unlocked).toBe(true);
+  });
+
   it("listSlots returns no real slots in sim (metadata only, never bytes)", async () => {
     const { host } = fakeHost();
     const bridge = createSimBridge(host);

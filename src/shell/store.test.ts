@@ -764,3 +764,37 @@ describe("payout gate — claiming and withdrawing require verified KYC", () => 
     expect(claimSpy).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// custodyEnsureUnlocked — seamless device-bound re-unlock (passphrase-less model).
+// A locked vault has no user passphrase to enter, so this is the ONLY recovery
+// path; it also runs on launch so the wallet reads (gated on an unlocked vault)
+// do not appear broken.
+// ---------------------------------------------------------------------------
+describe("store.custodyEnsureUnlocked — device-bound re-unlock", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("calls the seamless bridge unlock and refreshes the lock state to unlocked", async () => {
+    const ensureSpy = vi
+      .spyOn(bridge.custody, "ensureUnlocked")
+      .mockResolvedValue({ initialized: true, unlocked: true, autolockMins: 30, keyringStatus: "available" });
+    const statusSpy = vi
+      .spyOn(bridge.custody, "status")
+      .mockResolvedValue({ initialized: true, unlocked: true, autolockMins: 30, keyringStatus: "available" });
+
+    store.setState({ custodyLock: "locked" });
+    await store.custodyEnsureUnlocked();
+
+    expect(ensureSpy).toHaveBeenCalledTimes(1);
+    expect(statusSpy).toHaveBeenCalled(); // refreshCustody ran
+    expect(store.state.custodyLock).toBe("unlocked");
+  });
+
+  it("fails closed: a reset-keychain error still refreshes state (honest locked), never throws through", async () => {
+    vi.spyOn(bridge.custody, "ensureUnlocked").mockRejectedValue(new Error("keyring unavailable"));
+    vi.spyOn(bridge.custody, "status").mockResolvedValue({ initialized: true, unlocked: false, autolockMins: 30, keyringStatus: "unavailable" });
+    store.setState({ custodyLock: "unknown" });
+    await store.custodyEnsureUnlocked();
+    expect(store.state.custodyLock).toBe("locked"); // refreshCustody folded the honest locked state
+  });
+});

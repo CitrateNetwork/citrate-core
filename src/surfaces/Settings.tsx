@@ -848,22 +848,22 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => {
-                      // Q-A.1 (Rule 1) — a minimal passphrase prompt so Unlock is a
-                      // REAL action, not a button that silently calls unlock("") and
-                      // fails. Empty/cancelled input is a no-op (no fake success). A
-                      // wrong passphrase surfaces the real vault error honestly.
-                      const pass = typeof window !== "undefined" ? window.prompt("Enter your vault passphrase to unlock") : null;
-                      if (!pass) return;
+                      // Seamless device-bound unlock (Rule 1): provisioning is
+                      // passphrase-less — the vault key is a random device secret in
+                      // the OS keyring, NOT something the user can type. So Unlock
+                      // re-provisions + unlocks from that keyring secret (the OS login
+                      // is the security boundary). A reset keychain fails closed and
+                      // the vault honestly stays locked.
                       void store
-                        .custodyUnlock(pass)
+                        .custodyEnsureUnlocked()
                         .then(() => {
                           if (store.state.custodyLock === "unlocked") store.toast("Vault unlocked");
-                          else store.toast("Vault stayed locked — passphrase not accepted");
+                          else store.toast("Vault stayed locked — device key unavailable");
                         })
                         .catch((err) => store.toast("Unlock failed — " + String((err as Error).message ?? err)));
                     }}
                   >
-                    Unlock…
+                    Unlock
                   </button>
                 )}
               </div>
