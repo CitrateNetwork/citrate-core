@@ -344,6 +344,11 @@ export class Store {
       // reads AFTER the unlock attempt resolves (best-effort; a reset keychain leaves
       // the honest locked state).
       void this.custodyEnsureUnlocked().finally(() => {
+        // Re-establish the signed-in session from the vaulted OIDC refresh token so
+        // a restart keeps the member's paid tier instead of dropping to signed-out
+        // → public/free. The refresh token is a custody slot, so this MUST run after
+        // the unlock above (a locked vault fails the read closed).
+        void this.resumeSession();
         // Real wallet balances (native liquid + claimable) — folded once on launch;
         // the Wallet surface also refreshes on mount + after a settled ceremony.
         void this.refreshWallet();
@@ -616,6 +621,35 @@ export class Store {
     } catch {
       /* honest no-op: the auth domain reported unavailable / not signed in */
     }
+  }
+
+  /**
+   * Re-establish the signed-in session on LAUNCH from the vaulted OIDC refresh
+   * token (A3), so a restart keeps the paid tier instead of dropping the member to
+   * signed-out → public/free. `bridge.auth.status()` reads only the in-memory
+   * session, which is empty on a fresh process; `bridge.auth.refresh()` silently
+   * mints a fresh session from the refresh token sealed in the custody vault. That
+   * read REQUIRES an unlocked vault (the token is a custody slot), so this must run
+   * AFTER `custodyEnsureUnlocked`. A never-signed-in user (no token) or a declined
+   * refresh fails gracefully and stays honestly signed out. After a successful
+   * refresh we re-check the LIVE entitlement (`authUserinfo`) — the federation RP
+   * rule — so the current tier (e.g. a just-raised membership) is folded, not a
+   * stale claim.
+   */
+  async resumeSession(): Promise<void> {
+    let refreshed = false;
+    try {
+      const st = await bridge.auth.refresh();
+      this.applyAuthStatus(st);
+      refreshed = true;
+    } catch {
+      // No vaulted refresh token (never signed in) or the refresh was declined —
+      // stay signed out honestly rather than fabricate a session.
+    }
+    // Live /userinfo re-check once the session is back, so the freshest entitlement
+    // (tier/expiry) is folded. Skipped when there is no session to re-check.
+    if (refreshed) await this.authUserinfo();
+    else await this.refreshAuth();
   }
 
   /**

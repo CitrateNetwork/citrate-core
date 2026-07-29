@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
 import { bridge } from "../bridge";
-import type { CeremonyView } from "../bridge/types";
+import type { CeremonyView, AuthStatus } from "../bridge/types";
 
 describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
   it("absent/empty expiry is NOT expired (authority may omit it)", () => {
@@ -796,5 +796,43 @@ describe("store.custodyEnsureUnlocked — device-bound re-unlock", () => {
     store.setState({ custodyLock: "unknown" });
     await store.custodyEnsureUnlocked();
     expect(store.state.custodyLock).toBe("locked"); // refreshCustody folded the honest locked state
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resumeSession — re-establish the signed-in session on launch from the vaulted
+// OIDC refresh token, so a restart keeps the paid tier instead of dropping to
+// signed-out/public. Runs after the vault unlocks (the token is a custody slot).
+// ---------------------------------------------------------------------------
+describe("store.resumeSession — launch session re-establish", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("mints a fresh session from the refresh token, folds it, and re-checks live entitlement", async () => {
+    const paid: AuthStatus = {
+      signedIn: true, sub: "usr_1", tier: "commercial.kyc", org: null, role: "member",
+      kycStatus: "verified", walletAddr: "0xabc", expiresAt: "2999-01-01", email: "d@example.com",
+    };
+    const refreshSpy = vi.spyOn(bridge.auth, "refresh").mockResolvedValue(paid);
+    const applySpy = vi.spyOn(store, "applyAuthStatus");
+    const userinfoSpy = vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
+    const refreshAuthSpy = vi.spyOn(store, "refreshAuth").mockResolvedValue(undefined);
+
+    await store.resumeSession();
+
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(applySpy).toHaveBeenCalledWith(paid); // the refreshed session was folded
+    expect(userinfoSpy).toHaveBeenCalledTimes(1); // live /userinfo re-check after refresh
+    expect(refreshAuthSpy).not.toHaveBeenCalled(); // NOT the signed-out fallback path
+  });
+
+  it("no vaulted token (never signed in): stays signed out, falls back to a status read", async () => {
+    vi.spyOn(bridge.auth, "refresh").mockRejectedValue(new Error("no refresh token"));
+    const userinfoSpy = vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
+    const refreshAuthSpy = vi.spyOn(store, "refreshAuth").mockResolvedValue(undefined);
+
+    await store.resumeSession();
+
+    expect(refreshAuthSpy).toHaveBeenCalledTimes(1); // fallback status read
+    expect(userinfoSpy).not.toHaveBeenCalled(); // no live re-check without a session
   });
 });
