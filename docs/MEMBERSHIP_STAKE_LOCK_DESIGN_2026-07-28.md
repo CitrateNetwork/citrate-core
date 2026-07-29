@@ -4,6 +4,9 @@ updated: 2026-07-28
 branch: docs/lock-design-decisions
 author: Claude (Opus 4.8), directed by @SaulBuilds
 status: decisions locked — contract spec for G1 (owner-reviewed)
+relates:
+  - citrate-core/docs/DGX_HANDOFF_CONSENSUS_AND_ALF_2026-07-28.md  (packages M-1/M-2/M-3 for DGX + deconflicts vs ALF-ND)
+  - citrate-alf-web/docs/ALF_ND_NODE_BRIDGE_PLAN_2026-07-28.md      (independent track; shares only the alf_member claim)
 ---
 
 # Membership stake: 1‑year locked validator bond — design + spec
