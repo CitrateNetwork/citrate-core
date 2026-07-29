@@ -38,3 +38,9 @@ src-tauri/oauth.dev.json
 # directory's README, ignore the binaries.
 src-tauri/binaries/*
 !src-tauri/binaries/README.md
+
+# Local AI model + llama.cpp build artifacts. gemma gguf (~4.7G) + bge embed
+# model live under src-tauri/models/; the compiled llama.cpp runtime under
+# src-tauri/llama/ (~22M). Both are fetched/built locally, never committed.
+src-tauri/models/
+src-tauri/llama/
