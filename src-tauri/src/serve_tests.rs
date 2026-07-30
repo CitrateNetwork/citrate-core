@@ -170,6 +170,29 @@ fn spawn_args_are_the_grounded_llama_server_cli() {
 }
 
 // ---------------------------------------------------------------------------
+// (7) the health check carries a NON-ZERO startup grace (LLAMA_START_GRACE) so a
+// cold llama.cpp load (mmap a multi-GB GGUF + build the Metal graph, longer than
+// one 5s probe interval) is not killed mid-load and crash-looped to Failed — the
+// bug seen in the wild (9 consecutive "health check failed" records). Pins the
+// wiring so a regression to grace: ZERO is caught.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn health_check_carries_the_cold_start_grace() {
+    let (mgr, _dir) = stub_manager("grace");
+    let spec = mgr.build_spec();
+    let hc = spec
+        .health_check
+        .expect("the llama-server sidecar must have a health check");
+    assert_eq!(hc.grace, LLAMA_START_GRACE, "wired grace must be LLAMA_START_GRACE");
+    assert!(
+        hc.grace >= std::time::Duration::from_secs(60),
+        "the cold-start grace ({:?}) must comfortably exceed a slow GGUF load",
+        hc.grace
+    );
+}
+
+// ---------------------------------------------------------------------------
 // PROVIDER SELECTION — the honest inference-state harness (ai.rs). One pure fn
 // over (local ready+healthy, gateway key configured) → the honest state the
 // frontend renders. Every branch is unit-tested. LOCAL wins over gateway wins

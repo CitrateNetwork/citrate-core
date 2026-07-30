@@ -202,6 +202,18 @@ pub struct HealthCheck {
     /// that has not answered within `interval` is treated as unhealthy so a
     /// wedged probe recovers the child instead of stalling supervision.
     pub interval: Duration,
+    /// A startup GRACE window (Docker's `--start-period`): for this long AFTER a
+    /// (re)spawn, a failing OR wedged probe is NOT counted as unhealthy — the
+    /// child is presumed still starting up, so no restart is triggered. Once the
+    /// grace has elapsed a failing probe restarts the child as before. A probe
+    /// that SUCCEEDS during the grace is honoured immediately (the child is up).
+    /// `Duration::ZERO` disables the grace (every probe counts from the start),
+    /// which is the pre-existing behaviour for sidecars that come up instantly.
+    /// This exists because a slow-cold-starting child (e.g. `llama-server` mmap-
+    /// ing a multi-GB GGUF + building the Metal graph) takes far longer than one
+    /// probe interval to bind its port, and without a grace the first probe kills
+    /// it mid-load and it crash-loops to terminal `Failed` before it can serve.
+    pub grace: Duration,
     /// The probe: returns `true` if the child is healthy. `Arc` (not `Box`) so
     /// the runner can hand it to a dedicated probe thread — the probe NEVER runs
     /// inline on the monitor thread, so even a blocking/hanging probe cannot
@@ -213,6 +225,7 @@ impl std::fmt::Debug for HealthCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HealthCheck")
             .field("interval", &self.interval)
+            .field("grace", &self.grace)
             .field("probe", &"<fn>")
             .finish()
     }
@@ -1121,6 +1134,19 @@ fn supervise_running(
     // A probe must answer within its own interval; a probe that has not answered
     // by this bound is treated as unhealthy (wedged probe != healthy).
     let probe_timeout = health.map(|hc| hc.interval).unwrap_or(Duration::ZERO);
+    // The startup GRACE window (Docker's `--start-period`): a probe that fails or
+    // wedges while `elapsed < grace` is TOLERATED (the child is presumed still
+    // loading) rather than restarting it. `ZERO` for a child with no grace, which
+    // preserves the pre-existing "every probe counts from the start" behaviour.
+    let grace_ms = health.map(|hc| hc.grace.as_millis() as u64).unwrap_or(0);
+
+    // Whether the child is still inside its startup grace (measured on the same
+    // injected clock as `sustained_healthy`, so tests stay deterministic).
+    macro_rules! in_start_grace {
+        () => {
+            clock.now_unix_ms().saturating_sub(started_ms) < grace_ms
+        };
+    }
 
     // Helper: mark sustained-healthy once the child has been Running long enough.
     macro_rules! refresh_health {
@@ -1187,7 +1213,10 @@ fn supervise_running(
                     if let Some(healthy) = runner.poll() {
                         probe = None;
                         probe_elapsed = Duration::ZERO;
-                        if !healthy {
+                        // A probe that FAILS inside the startup grace is tolerated
+                        // (the child is presumed still loading) — reset and wait
+                        // for the next interval rather than restarting mid-load.
+                        if !healthy && !in_start_grace!() {
                             return RunReport {
                                 outcome: RunOutcome::Unhealthy,
                                 sustained_healthy,
@@ -1196,14 +1225,24 @@ fn supervise_running(
                     } else {
                         probe_elapsed += poll;
                         if probe_elapsed >= probe_timeout {
-                            // The probe is wedged past its interval — unhealthy.
-                            // We DROP the runner (its detached thread may still
-                            // be blocked, but it holds no supervisor lock and
-                            // cannot block teardown). Restart recovers the child.
-                            return RunReport {
-                                outcome: RunOutcome::Unhealthy,
-                                sustained_healthy,
-                            };
+                            // The probe is wedged past its interval. Outside the
+                            // grace this is unhealthy → restart; INSIDE the grace
+                            // a wedged probe is tolerated (a slow-loading child may
+                            // not answer yet), so we drop this runner and let the
+                            // next interval start a fresh probe. Either way we DROP
+                            // the runner (its detached thread may still be blocked,
+                            // but holds no supervisor lock and cannot block
+                            // teardown).
+                            if in_start_grace!() {
+                                probe = None;
+                                probe_elapsed = Duration::ZERO;
+                                since_probe = Duration::ZERO;
+                            } else {
+                                return RunReport {
+                                    outcome: RunOutcome::Unhealthy,
+                                    sustained_healthy,
+                                };
+                            }
                         }
                     }
                 }

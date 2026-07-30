@@ -416,6 +416,8 @@ fn failing_health_check_triggers_restart() {
     let calls2 = calls.clone();
     let health = HealthCheck {
         interval: Duration::from_millis(30),
+        // No startup grace: a failing probe counts from the first interval.
+        grace: Duration::ZERO,
         // First probe healthy (return true), subsequent probes unhealthy.
         probe: Arc::new(move || calls2.fetch_add(1, Ordering::SeqCst) == 0),
     };
@@ -452,6 +454,77 @@ fn failing_health_check_triggers_restart() {
     assert!(
         records.iter().any(|r| r.exit.contains("health check failed")),
         "no health-failure crash record: {records:?}"
+    );
+
+    sup.stop();
+}
+
+// ---------------------------------------------------------------------------
+// 6b) startup grace: a probe that FAILS during the grace window does NOT restart
+// the child (it is presumed still loading). Once the child comes up mid-grace the
+// probe succeeds and it stays Running. This is the llama-server cold-start fix:
+// without the grace, the first failing probe kills a slow-loading server and it
+// crash-loops to terminal Failed before it can ever bind its port.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn failing_health_probe_within_start_grace_does_not_restart() {
+    let tmp = TmpDir::new("grace");
+    let crash_file = tmp.path("crashes.jsonl");
+
+    // A child that "starts up slowly": the probe reports UNHEALTHY for the first
+    // ~250ms (as if the server has not bound its port yet), then healthy. The
+    // process itself is a long-lived sleep, so it never self-exits.
+    let probe_calls = Arc::new(AtomicU64::new(0));
+    let probe_calls2 = probe_calls.clone();
+    let started = std::time::Instant::now();
+    let health = HealthCheck {
+        interval: Duration::from_millis(20),
+        // Grace comfortably longer than the ~250ms slow-start window.
+        grace: Duration::from_millis(800),
+        probe: Arc::new(move || {
+            probe_calls2.fetch_add(1, Ordering::SeqCst);
+            started.elapsed() >= Duration::from_millis(250)
+        }),
+    };
+    let mut spec = SidecarSpec::new("slow-start", sleep_bin(), vec!["60".into()]);
+    spec.health_check = Some(health);
+    let mut cfg = SupervisorConfig::new(spec, &crash_file);
+    // A tiny backoff/cap so that IF the fix were absent the crash-loop would race
+    // to Failed well within the assertion window (making the red state obvious).
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(5),
+        multiplier: 2,
+        max_delay: Duration::from_millis(20),
+        max_retries: 3,
+    };
+    let sup = Supervisor::start(cfg).expect("supervisor starts");
+
+    let st = sup.wait_until(|s| matches!(s, SupervisorState::Running), Duration::from_secs(5));
+    assert!(matches!(st.state, SupervisorState::Running), "never reached Running: {st:?}");
+
+    // Let the slow-start window pass and several probes run (some failing, then
+    // succeeding) — well inside the 800ms grace.
+    std::thread::sleep(Duration::from_millis(600));
+
+    let s = sup.status();
+    assert_eq!(
+        s.restarts, 0,
+        "a probe that failed DURING the start grace must not restart the child (restarts={})",
+        s.restarts
+    );
+    assert!(
+        matches!(s.state, SupervisorState::Running),
+        "child must stay Running through a failing-then-healthy start grace: {s:?}"
+    );
+    assert!(
+        probe_calls.load(Ordering::SeqCst) >= 2,
+        "the probe should have run multiple times during the grace"
+    );
+    let records = read_crash_records(&crash_file);
+    assert!(
+        !records.iter().any(|r| r.exit.contains("health check failed")),
+        "no health-failure restart may occur inside the start grace: {records:?}"
     );
 
     sup.stop();
@@ -701,6 +774,8 @@ fn hanging_health_probe_does_not_stall_crash_detection_or_stop() {
     // inline design this would freeze the monitor loop for 10s.
     let health = HealthCheck {
         interval: Duration::from_millis(30),
+        // No startup grace: the wedged probe must be caught from the first probe.
+        grace: Duration::ZERO,
         probe: Arc::new(move || {
             std::thread::sleep(Duration::from_secs(10));
             true

@@ -57,6 +57,17 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
 /// (mirrors node.rs's NODE_HEALTHY_AFTER rationale).
 const LLAMA_HEALTHY_AFTER: Duration = Duration::from_secs(60);
 
+/// The health-probe STARTUP GRACE (`HealthCheck::grace`). Until this elapses after
+/// a (re)spawn, a failing `/health` probe does NOT restart the server — it is
+/// presumed still loading. Without this, a cold start (mmap the ~4.6 GB GGUF +
+/// build the Metal graph, tens of seconds on member hardware and slower on a cold
+/// disk) fails the first 5s probe, the supervisor kills the server mid-load, and
+/// it crash-loops to terminal `Failed` before it can ever bind — the exact bug
+/// seen in the wild (9 consecutive "health check failed" records, empty stderr).
+/// Generous (3 min) so even a slow first load on a spinning disk completes; a
+/// genuinely dead server is still caught the moment the grace expires.
+const LLAMA_START_GRACE: Duration = Duration::from_secs(180);
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -244,6 +255,7 @@ impl LlamaServerManager {
         let health_url = format!("http://127.0.0.1:{}/health", self.port);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
+            grace: LLAMA_START_GRACE,
             probe: std::sync::Arc::new(move || http_health_ok(&health_url)),
         });
         spec
