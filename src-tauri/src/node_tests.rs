@@ -181,13 +181,19 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
         Some("0x61d44d8a14443646b756905410be951e6ece95a6"),
         "ValidatorRegistry must be the live 40204 address the fleet runs",
     );
-    // SYNC-S1 D3: the app opts the follower into DAG pruning so a long-running
-    // desktop node does not OOM near 150k blocks. Pruning is a no-op on the node
-    // unless this env is set, so it MUST be present in the spawn env.
+    // INVERTED 2026-07-30. This previously asserted the retain window MUST be
+    // wired, on the reasoning that an unpruned desktop follower OOMs near 150k
+    // blocks. That reasoning is right in general and wrong on 40204: block
+    // 54,601 merges a parent at HEIGHT 32, and a 10,000-block window prunes it
+    // away, so admission of 54,601 fails MissingParent forever and the node can
+    // never cold-sync past 54,600 (chain PR #144). The test was faithfully
+    // pinning the bug.
     assert_eq!(
         get(NODE_DAG_PRUNE_RETAIN_ENV),
-        Some("10000"),
-        "DAG-prune retain window must be wired (bounds follower memory past 150k blocks)",
+        None,
+        "DAG pruning must NOT be wired: it wedges cold sync at block 54,600. \
+         See the NODE_DAG_PRUNE_RETAIN_ENV doc comment for the re-enable \
+         conditions — this is a deliberate memory-for-correctness trade.",
     );
     // Still joins the public testnet with the encrypted data dir.
     assert!(spec.args.iter().any(|a| a == "testnet"), "joins the public testnet");
@@ -574,4 +580,41 @@ fn live_bounded_sync_proof() {
         "real node must write encryption.meta (encryption-at-rest active)"
     );
     let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+/// The node must NOT be spawned with DAG pruning enabled.
+///
+/// Setting `CITRATE_DAG_PRUNE_RETAIN` is what made a fresh node unable to
+/// cold-sync past block 54,600 on 40204 (chain PR #144). Block 54,601 merges a
+/// parent at height 32; a 10,000-block retain window deletes it, and admission
+/// then fails `MissingParent` forever — blocks stored, applied head frozen, the
+/// same range re-imported every ~2 s. Every member desktop would have hit it,
+/// because this app set the variable on every node it spawned.
+///
+/// This asserts the SOURCE rather than a running process: a grep over the spec
+/// builder, so the guard holds without needing a keyring, a binary, or a live
+/// chain. Re-adding the pair fails here first.
+///
+/// See the `NODE_DAG_PRUNE_RETAIN_ENV` doc comment for the conditions under
+/// which pruning may be re-enabled.
+#[test]
+fn node_spec_never_enables_dag_pruning() {
+    let src = include_str!("node.rs");
+
+    // The constant survives (the debug_assert names it), but it must never be
+    // pushed into `spec.env`.
+    let pushed = src.contains("NODE_DAG_PRUNE_RETAIN_ENV.to_string()");
+    assert!(
+        !pushed,
+        "CITRATE_DAG_PRUNE_RETAIN must not be added to the node's env: it wedges \
+         cold sync at block 54,600 (block 54,601 merges a parent at height 32, \
+         which a retain window prunes away). See the const's doc comment."
+    );
+
+    // And the literal value must not have crept back in by another route.
+    assert!(
+        !src.contains("NODE_DAG_PRUNE_RETAIN_VALUE"),
+        "the retain VALUE constant should be gone entirely — its presence means \
+         someone is about to set it again"
+    );
 }

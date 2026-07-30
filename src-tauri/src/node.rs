@@ -116,8 +116,47 @@ fn node_validator_registry_value() -> &'static str {
 /// retain window in blocks; the node clamps to a 1_000 floor (10× MAX_REORG_DEPTH),
 /// and `block_serve` reads the CHAIN store, so pruning the DAG store never affects
 /// what this node can serve to peers. 10_000 = 100× the deepest revertible reorg.
+/// ⛔ **DELIBERATELY NOT SET.** Retained as a named constant so the
+/// `debug_assert!` in `build_spec` can name it, and so anyone tempted to re-add
+/// it lands on this comment first.
+///
+/// Setting this is what made a fresh node unable to cold-sync past block 54,600
+/// on 40204 — the bug escalated as chain PR #144. The reasoning below (bound the
+/// DAG store or a desktop follower OOMs) is CORRECT in general and WRONG on this
+/// chain, for one specific reason:
+///
+///   block 54,600  `0xb3b1ee47…`  mergeParentHashes: []
+///   block 54,601  `0xa267188c…`  mergeParentHashes: ["0x175fdf2b…"]
+///   `0x175fdf2b…` is at **height 32**
+///
+/// Block 54,601 merges a parent 54,569 blocks below itself — an artefact of the
+/// 2026-07-27 concurrent-producer fork, produced before any rule bounded
+/// merge-parent depth. With a 10,000 retain window at applied height 54,600 the
+/// pruning point is 44,600, so height 32 is deleted and admission of 54,601 fails
+/// `MissingParent` FOREVER: blocks stored, applied head frozen, the same range
+/// re-imported every ~2 s. No fleet node sets this, which is the only reason the
+/// fleet was unaffected.
+///
+/// Proven both ways by chain PR #145 (`node/src/dag_prune.rs`):
+/// `no_pruning_admits_the_deep_merge_parent_that_wedges_a_pruned_node` passes,
+/// `merge_block_referencing_a_pruned_parent_is_rejected_not_scored` reproduces
+/// the failure. The two differ only in whether a prune pass ran.
+///
+/// **The memory concern is real and now unmitigated**: an unpruned desktop
+/// follower still grows ~16 KB/block and will approach the wall the original
+/// comment warned about. Accepted deliberately — a node that cannot sync at all
+/// is strictly worse than one that syncs and needs an occasional restart.
+///
+/// **Before re-enabling**, one of:
+///   * chain-side: the bounded blue-set walk from
+///     `handoffs/PRUNE_MERGE_PARENT_BOUND_SPEC.md` lands (MP-DEPTH #138 is now
+///     active past height 100,000, which was its precondition); or
+///   * a retain window proven larger than the deepest merge in pre-100,000
+///     history. 60,000 would cover the one known anomaly, but an EXHAUSTIVE scan
+///     is required first — the 28-height sample that found 54,601 is not proof
+///     that it is the only one, and a block at height 99,000 merging genesis
+///     would need a 99,000 window.
 const NODE_DAG_PRUNE_RETAIN_ENV: &str = "CITRATE_DAG_PRUNE_RETAIN";
-const NODE_DAG_PRUNE_RETAIN_VALUE: &str = "10000";
 
 /// Node-side errors surfaced to the bridge as strings.
 #[derive(Debug)]
@@ -414,13 +453,12 @@ impl NodeManager {
                 NODE_VALIDATOR_REGISTRY_ENV.to_string(),
                 node_validator_registry_value().to_string(),
             ),
-            // SYNC-S1 D3: bound the DAG store so a long-running desktop follower
-            // does not OOM near 150k blocks (opt-in on the node; the app opts in).
-            (
-                NODE_DAG_PRUNE_RETAIN_ENV.to_string(),
-                NODE_DAG_PRUNE_RETAIN_VALUE.to_string(),
-            ),
         ];
+        // DAG pruning is deliberately NOT set — see `NODE_DAG_PRUNE_RETAIN_ENV`.
+        debug_assert!(
+            !spec.env.iter().any(|(k, _)| k == NODE_DAG_PRUNE_RETAIN_ENV),
+            "DAG pruning must not be enabled: it wedges cold sync at block 54,600"
+        );
         spec
     }
 
