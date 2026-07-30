@@ -46,6 +46,7 @@
 //! tuning of an existing, already-modelled parameter, not a new transition.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -198,6 +199,16 @@ pub struct NodeManager {
     /// wallet's private key). `None` until the wallet is unlocked/available, in
     /// which case the node spawns as a plain follower (no `--mine`).
     coinbase: Mutex<Option<String>>,
+    /// Whether the block producer is ARMED. A member node must NOT produce while
+    /// it is still catching up: a node tens of thousands of blocks behind that
+    /// starts producing builds its own competing block at the fork it is syncing
+    /// through (the 2026-07-27 concurrent-producer fork at 54600), whose state no
+    /// peer reproduces — its producer fork-choice then diverges from its own
+    /// applied tip and the node wedges instead of following the canonical chain.
+    /// So `--mine` is gated on this flag (NOT merely on a known coinbase): the
+    /// node spawns as a plain FOLLOWER and is only armed once it has caught up to
+    /// the network tip (see [`Self::arm_mining`]). Off by default.
+    mining_armed: AtomicBool,
 }
 
 impl NodeManager {
@@ -219,6 +230,7 @@ impl NodeManager {
             rpc_url: rpc_url.into(),
             sup: Mutex::new(None),
             coinbase: Mutex::new(None),
+            mining_armed: AtomicBool::new(false),
         }
     }
 
@@ -237,6 +249,50 @@ impl NodeManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// Whether the block producer is currently armed (see [`Self::build_spec`]).
+    pub fn is_mining_armed(&self) -> bool {
+        self.mining_armed.load(Ordering::Relaxed)
+    }
+
+    /// Arm the block producer and, if the node is running, restart it so the next
+    /// spawn carries `--mine --coinbase`. Idempotent — arming an already-armed
+    /// node is a no-op (returns without touching the supervisor). Callers MUST
+    /// gate this on being caught up to the network tip ([`Self::arm_mining_if_synced`]);
+    /// arming while behind reintroduces the concurrent-producer wedge this guards.
+    pub fn arm_mining(&self) {
+        if self.mining_armed.swap(true, Ordering::Relaxed) {
+            return; // already armed — do not churn the supervisor
+        }
+        let running = self.sup.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if running {
+            self.stop();
+            // Best-effort respawn under the mining spec; a failed restart leaves
+            // the node stopped (the supervisor status reports it honestly).
+            let _ = self.start();
+        }
+    }
+
+    /// Arm the producer IFF the node has caught up to the network tip. Reads the
+    /// local head (this node's RPC) and the AUTHORITATIVE network tip (the public
+    /// citrate RPC) — deliberately NOT the local node's own `eth_syncing`, which
+    /// reports "synced" the instant the node produces its own block, the very bug
+    /// this guards. Arms only when a coinbase is known and it is not already
+    /// armed. Best-effort: any RPC error → no-arm (stays a follower), never panics.
+    /// Returns whether it armed on this call.
+    pub fn arm_mining_if_synced(&self) -> bool {
+        if self.is_mining_armed() || self.coinbase().is_none() {
+            return false;
+        }
+        let (Some(local), Some(tip)) = (self.head_height(), remote_network_tip()) else {
+            return false;
+        };
+        if is_caught_up(local, tip) {
+            self.arm_mining();
+            return true;
+        }
+        false
     }
 
     /// W1.1 (WP-11) — the node's ed25519 proposer pubkey, read from the secret
@@ -316,15 +372,24 @@ impl NodeManager {
             "--data-dir".to_string(),
             self.data_dir.to_string_lossy().to_string(),
         ];
-        // W1.5 — arm the block producer when the member's coinbase is known. The
-        // node self-gates on active-set eligibility ("proposer not in the active
-        // set at minStake"), so this is safe to always pass once the wallet is
-        // available: it produces nothing until WO-1 admits the pubkey, then lights
-        // up with no app change. A follower with no coinbase omits both flags.
-        if let Some(coinbase) = self.coinbase() {
-            args.push("--mine".to_string());
-            args.push("--coinbase".to_string());
-            args.push(coinbase);
+        // W1.5 — arm the block producer ONLY when (a) the member's coinbase is
+        // known AND (b) mining has been ARMED (the node has caught up to the
+        // network tip; see [`Self::arm_mining`] + the `mining_armed` field doc).
+        // The node's own active-set self-gating ("proposer not in the active set
+        // at minStake") is NOT sufficient here: a registered validator IS in the
+        // active set, so eligibility alone would let it produce while still tens
+        // of thousands of blocks behind — which is exactly the wedge (a competing
+        // block at the 54600 concurrent-producer fork, state no peer reproduces).
+        // Until armed the node spawns as a plain FOLLOWER (omits both flags) and
+        // just follows the canonical chain to the tip. `--mine` only ever forces
+        // mining ON (citrate-chain node/src/main.rs) — there is no CLI off-switch —
+        // so gating the flag here is the only lever the app has.
+        if self.mining_armed.load(Ordering::Relaxed) {
+            if let Some(coinbase) = self.coinbase() {
+                args.push("--mine".to_string());
+                args.push("--coinbase".to_string());
+                args.push(coinbase);
+            }
         }
         let mut spec = SidecarSpec::new("citrate-node", self.bin.clone(), args);
         spec.env = vec![
@@ -449,6 +514,36 @@ impl NodeManager {
         let peers = client.peer_count().unwrap_or(0);
         Some((height, peers))
     }
+
+    /// This node's local head height (`eth_blockNumber` over its own RPC), or
+    /// `None` if the RPC is not up. The arm gate reads this as the "how far have I
+    /// caught up" side of the comparison.
+    fn head_height(&self) -> Option<u64> {
+        RpcClient::with_transport(HttpTransport::new(self.rpc_url.clone()))
+            .block_number()
+            .ok()
+    }
+}
+
+/// The authoritative network tip: `eth_blockNumber` on the public citrate RPC
+/// (`rpc.citrate.ai`). Read from the network, NOT from this node's own view, so
+/// a wedged/self-mining local node cannot fool the arm gate into thinking it has
+/// caught up. `None` on any transport error (→ no-arm, stay a follower).
+fn remote_network_tip() -> Option<u64> {
+    crate::rpc::RpcClient::citrate().block_number().ok()
+}
+
+/// The block margin within which the local node counts as "caught up" to the
+/// network tip. At 40204's 2.0s block time this is ~1 minute of slack: small
+/// enough that a producer armed here is genuinely at the head, large enough to
+/// absorb the tip advancing a few blocks during the check itself.
+const SYNC_ARM_MARGIN: u64 = 32;
+
+/// Pure gate: is `local` height within [`SYNC_ARM_MARGIN`] of the network `tip`?
+/// Extracted as a free function so the arm decision is unit-testable without any
+/// RPC. Saturating so a (spurious) `local > tip` can never underflow.
+pub fn is_caught_up(local: u64, tip: u64) -> bool {
+    local.saturating_add(SYNC_ARM_MARGIN) >= tip
 }
 
 /// Managed Tauri state: the process-wide node manager.

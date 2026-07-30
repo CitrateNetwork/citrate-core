@@ -193,27 +193,57 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     assert!(spec.args.iter().any(|a| a == "testnet"), "joins the public testnet");
 }
 
-/// W1.5 — when a coinbase (the member's wallet address) is set, the node spawns
-/// with `--mine --coinbase <addr>` so the block-production path is ENABLED. The
-/// node still self-gates on active-set eligibility (it won't produce until WO-1
-/// admits the pubkey), but the producer is armed: the moment the member is in the
-/// active set it proposes with NO app rebuild.
+/// A known coinbase alone does NOT arm the producer: the node must catch up to
+/// the network tip first. So with a coinbase set but mining NOT armed, the node
+/// spawns as a plain FOLLOWER (no `--mine`/`--coinbase`). This is the guard for
+/// the concurrent-producer wedge — a validator that is in the active set would
+/// otherwise produce a competing block while still tens of thousands of blocks
+/// behind. Once ARMED (caught up), the next spawn carries `--mine --coinbase`.
 #[test]
-fn spawn_args_carry_coinbase_and_mine_when_set() {
+fn spawn_is_follower_until_armed_then_mines() {
     let (mgr, _fake, _data) = stub_manager("coinbase-set");
     mgr.set_coinbase("0xd12c00c377eb4615a7ae934df509c903a29ecb6c".to_string());
-    let spec = mgr.build_spec("00");
-    assert!(spec.args.iter().any(|a| a == "--mine"), "mining enabled");
-    let ci = spec
+
+    // Coinbase known but NOT armed → follower (no mining flags).
+    let follower = mgr.build_spec("00");
+    assert!(
+        !follower.args.iter().any(|a| a == "--mine"),
+        "a coinbase alone must NOT arm mining — the node syncs as a follower first",
+    );
+    assert!(
+        !follower.args.iter().any(|a| a == "--coinbase"),
+        "no --coinbase flag until the producer is armed",
+    );
+    assert!(!mgr.is_mining_armed(), "not armed by set_coinbase");
+
+    // Arm (as the caught-up gate would) → the next spawn carries --mine --coinbase.
+    mgr.arm_mining();
+    assert!(mgr.is_mining_armed(), "armed after arm_mining");
+    let producer = mgr.build_spec("00");
+    assert!(producer.args.iter().any(|a| a == "--mine"), "mining armed");
+    let ci = producer
         .args
         .iter()
         .position(|a| a == "--coinbase")
-        .expect("--coinbase flag present");
+        .expect("--coinbase flag present once armed");
     assert_eq!(
-        spec.args.get(ci + 1).map(String::as_str),
+        producer.args.get(ci + 1).map(String::as_str),
         Some("0xd12c00c377eb4615a7ae934df509c903a29ecb6c"),
         "coinbase is the member's wallet address (the earner/staker)",
     );
+}
+
+/// The pure sync gate: the producer arms only once the local head is within
+/// `SYNC_ARM_MARGIN` of the authoritative network tip. Far behind → false (stay a
+/// follower); at/near the tip → true; a spurious local-ahead never underflows.
+#[test]
+fn is_caught_up_gate_only_true_near_the_tip() {
+    use super::is_caught_up;
+    assert!(!is_caught_up(54_600, 109_150), "54k behind is not caught up");
+    assert!(!is_caught_up(109_100, 109_150), "50 behind (> margin 32) is not caught up");
+    assert!(is_caught_up(109_130, 109_150), "20 behind (<= margin) is caught up");
+    assert!(is_caught_up(109_150, 109_150), "at the tip is caught up");
+    assert!(is_caught_up(109_200, 109_150), "ahead never underflows → caught up");
 }
 
 /// Without a coinbase (a fresh follower, or pre-wallet boot), the node spawns
@@ -239,6 +269,8 @@ fn spawn_args_omit_mining_when_no_coinbase() {
 fn set_coinbase_is_reflected_in_the_next_spawn() {
     let (mgr, _fake, _data) = stub_manager("coinbase-restart");
     mgr.set_coinbase("0x0000000000000000000000000000000000000001".to_string());
+    // The coinbase only reaches the argv once the producer is armed (caught up).
+    mgr.arm_mining();
     let spec = mgr.build_spec("00");
     let ci = spec.args.iter().position(|a| a == "--coinbase").unwrap();
     assert_eq!(
