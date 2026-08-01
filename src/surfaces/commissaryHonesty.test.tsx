@@ -73,6 +73,16 @@ describe("Commissary honesty — no fabricated verification claim (Rule 1)", () 
     // A digest containing an ellipsis is a placeholder, not a hash.
     expect(out).not.toMatch(/sha256:[0-9a-f]*…/);
   });
+
+  it("does NOT call the local seed a signed manifest", () => {
+    // `CATALOG` is a TypeScript seed in src/data/seed.ts. It is never fetched,
+    // never signed, and never verified against the JWKS — the honest seam
+    // (`commissary_catalog` in seam.rs) correctly returns `unavailable:` and the
+    // surface bypasses it. Calling this "signed manifest v3" in the header claimed
+    // a provenance chain that does not exist.
+    const out = html({ tier: "enterprise" });
+    expect(out).not.toContain("signed manifest v3");
+  });
 });
 
 describe("Commissary gating — fail CLOSED on a tier it does not recognise", () => {

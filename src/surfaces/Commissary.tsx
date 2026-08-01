@@ -218,7 +218,7 @@ export function Commissary({ store, s }: SurfaceProps) {
           ))}
         </span>
         <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
-          catalog · signed manifest v3
+          catalog · local seed · not yet the signed manifest
         </span>
       </div>
 
