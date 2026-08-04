@@ -411,6 +411,22 @@ impl NodeManager {
             "--data-dir".to_string(),
             self.data_dir.to_string_lossy().to_string(),
         ];
+        // Pass our config EXPLICITLY. Without `--config` the node walks its
+        // fallback chain ($CITRATE_CONFIG → ~/.citrate/node.toml →
+        // /etc/citrate/node.toml → empty default), and `bootstrap_nodes`
+        // defaults to `[]` — so a fresh install has nothing to dial and sits at
+        // height 0 with 0 peers forever (verified 2026-08-04 on a clean data
+        // dir). Developer machines masked this because ~/.citrate/node.toml
+        // exists there; `--config` also stops US inheriting a developer's file,
+        // which could point a member at the wrong chain entirely.
+        //
+        // Best-effort: if the config cannot be written we still launch, because
+        // a node that starts and reports "0 peers" is far easier to diagnose
+        // than one that refuses to start at all. `ensure_node_config` logs.
+        if let Ok(cfg) = ensure_node_config(&self.data_dir) {
+            args.push("--config".to_string());
+            args.push(cfg.to_string_lossy().to_string());
+        }
         // W1.5 — arm the block producer ONLY when (a) the member's coinbase is
         // known AND (b) mining has been ARMED (the node has caught up to the
         // network tip; see [`Self::arm_mining`] + the `mining_armed` field doc).
@@ -607,6 +623,43 @@ fn resolve_node_bin<R: Runtime>(app: &AppHandle<R>) -> std::result::Result<PathB
     }
     // Bundled externalBin: installed next to the main executable (Contents/MacOS).
     crate::supervisor::resolve_external_bin(app, "citrate")
+}
+
+/// The member node config, compiled in.
+///
+/// Embedded rather than bundled as a Tauri resource so it cannot go missing at
+/// runtime: a resource lookup that fails leaves the node with no bootnodes,
+/// which is silent (0 peers) rather than loud. `include_str!` makes an absent
+/// file a BUILD error instead.
+const MEMBER_NODE_CONFIG: &str = include_str!("../config/member-node.toml");
+
+/// The `{{DATA_DIR}}` placeholder in [`MEMBER_NODE_CONFIG`].
+const DATA_DIR_PLACEHOLDER: &str = "{{DATA_DIR}}";
+
+/// Write the member node config into `data_dir/node.toml` if it is not already
+/// there, and return its path.
+///
+/// Does NOT overwrite an existing file: an operator who hand-edits their
+/// bootnodes or ports must keep those edits across restarts and upgrades. The
+/// cost is that a shipped bootnode change does not reach existing installs —
+/// deliberate, since silently rewriting a user's config is worse. Delete the
+/// file to regenerate.
+fn ensure_node_config(data_dir: &std::path::Path) -> std::io::Result<PathBuf> {
+    let path = data_dir.join("node.toml");
+    if path.exists() {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(data_dir)?;
+    // Escape for TOML basic strings: on Windows the path contains backslashes,
+    // which would otherwise be read as escape sequences and yield a broken or
+    // (worse) subtly wrong data_dir.
+    let escaped = data_dir
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let rendered = MEMBER_NODE_CONFIG.replace(DATA_DIR_PLACEHOLDER, &escaped);
+    std::fs::write(&path, rendered)?;
+    Ok(path)
 }
 
 /// Build the managed node state from a live app handle: the real OS keyring, the

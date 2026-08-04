@@ -1,0 +1,83 @@
+# citrate-core — member node configuration (chain 40204 testnet-beta)
+#
+# Written to <app_data_dir>/node/node.toml on first launch by
+# `node::ensure_node_config`, and passed explicitly with `--config` so the node
+# NEVER silently falls back to a developer's ~/.citrate/node.toml.
+#
+# WHY THIS FILE EXISTS
+#
+# The node takes bootnodes ONLY from `bootstrap_nodes` here. Its resolution
+# order is --config → $CITRATE_CONFIG → ~/.citrate/node.toml →
+# /etc/citrate/node.toml → an EMPTY default, and `bootstrap_nodes` defaults to
+# `[]`. citrate-core previously shipped none of these, so a fresh install had
+# nothing to dial: verified 2026-08-04 on a clean data dir, the node sat at
+# height 0 with 0 peers indefinitely. It only appeared to work on developer
+# machines because ~/.citrate/node.toml exists there as a chain-dev artefact.
+#
+# Derived from citrate-chain node/config/testnet-beta.toml. Keep the bootnode
+# list in sync with that file — it is the canonical source.
+#
+# `{{DATA_DIR}}` is substituted at write time with the app's node data dir.
+
+[chain]
+chain_id = 40204
+genesis_hash = ""
+block_time = 2
+ghostdag_k = 18
+
+[network]
+listen_addr = "0.0.0.0:30303"
+# Format: "noise_<hex>@<host>:<port>" — trusted form; the node verifies the
+# remote's Noise static key against the declared identity at handshake (WP-H.2).
+# Hosts are DNS A-records, so these survive droplet rebuilds.
+bootstrap_nodes = [
+    "noise_f356d3ebb07371eaad371b3960272f9d58fc457cde409c34549ef03776b78141@boot1.citrate.ai:30303",
+    "noise_4ed281386422f6a65b92d8760d24baa82bb1b476e9dd3e21d5a070d026802c07@boot2.citrate.ai:30303",
+    "noise_2b4924671e0babc9f52eb1695c72141a9c639e17ad95a2a2d2a715eae34a420e@boot3.citrate.ai:30303",
+    # LOAD-BEARING: boot{1,2,3} are discovery-only and advertise height 0, so a
+    # fresh node never triggers sync from them alone. The sequencer is the only
+    # peer that follows the real head — without it a member connects to three
+    # peers and still never syncs. Do not "tidy" it out of this list.
+    "noise_6ee549718d522c9ccc122585dfedef72aea8df24f4a2bb0264e7658a91118b4a@rpc.citrate.ai:30303",
+]
+max_peers = 50
+allowed_peers = []             # empty = open beta
+
+[rpc]
+# Loopback ONLY. The desktop app polls this for height/peers; nothing outside
+# the machine should reach a member's node. (testnet-beta.toml binds 0.0.0.0
+# because it targets servers behind a firewall — that is wrong for a laptop.)
+enabled = true
+listen_addr = "127.0.0.1:8545"
+ws_addr = "127.0.0.1:8546"
+allow_eth_send_transaction = false
+
+[storage]
+data_dir = "{{DATA_DIR}}"
+# DAG pruning is controlled by the CITRATE_DAG_PRUNE_RETAIN env var, which
+# node.rs deliberately does NOT set — see NODE_DAG_PRUNE_RETAIN_ENV. This
+# `pruning` key is the separate CHAIN-STORE pruner; leave it off so a member
+# keeps full history and can serve peers.
+pruning = false
+keep_blocks = 100000
+
+[mining]
+# MUST stay false. citrate-chain does `if cli.mine { config.mining.enabled = true }`
+# — the flag only ever forces mining ON, so this key is the base state. Shipping
+# `true` (as testnet-beta.toml does, since it targets validator hosts) would make
+# every member mine from first launch, defeating node.rs's `mining_armed` gate
+# and letting a node produce blocks while tens of thousands behind — the exact
+# wedge that created the 54,600 concurrent-producer fork.
+enabled = false
+coinbase = ""
+target_block_time = 2
+min_gas_price = 1000000000
+
+[vrf]
+strict_vrf = true
+migration_mode = false
+
+[checkpoint]
+interval = 50
+committee_size = 100
+quorum_threshold = 67

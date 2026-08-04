@@ -79,11 +79,14 @@ const EXPECTED_IMAGE_DATA_URI: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0
 /// The SBT reads target the canonical post-reroll CitrateMemberSBT address (reused
 /// from grant_status, the same book value). A paste error would read the WRONG
 /// contract.
+/// Updated for the 2026-08-04 re-roll (was `0x4ce39f89…`). CitrateMemberSBT is a
+/// plain CREATE deploy, so it is deployer-nonce-derived and MOVES every re-roll.
+/// Re-pin from `contracts/addresses/40204.json`, not from a projection.
 #[test]
 fn sbt_address_is_the_canonical_reroll_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1"
+        "0xad826d0439f7ad5a3512a8927b632cbca2840e10"
     );
 }
 
