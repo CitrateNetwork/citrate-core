@@ -28,6 +28,29 @@ At runtime the app resolves each sidecar from the bundled resource dir
 or from an override env var (`CITRATE_NODE_BIN` / `CITRATE_NODE_AGENT_BIN` /
 `CITRATE_MEM_MCP_BIN`), so dev and tests never need the bundle.
 
+## Producing the `citrate` node sidecar — use the script
+
+```bash
+../../scripts/build-sidecar.sh                            # host triple
+../../scripts/build-sidecar.sh --target aarch64-apple-darwin
+```
+
+**Do not hand-copy a `citrate` binary into this directory.** Chain 40204 was
+re-rolled 2026-08-04 and both consensus activation heights went to 0
+(citrate-chain PR #157: `VALUE_TRANSFER_ACTIVATION_HEIGHT` 300_000 → 0,
+`MERGE_DEPTH_ACTIVATION_HEIGHT` 100_000 → 0). A binary built from an older
+citrate-chain **silently forks the chain**: it connects, syncs and reports
+healthy while computing different state roots below height 300,000 and accepting
+merge blocks the fleet rejects.
+
+`build-sidecar.sh` reads those two constants out of the citrate-chain source
+before building and refuses to proceed if either is non-zero, so a stale checkout
+fails fast instead of shipping a forking app. Binaries do NOT cross
+architectures — build a Mac sidecar on a Mac.
+
+Full instructions, macOS targets and the state-root parity check that proves you
+are not on a fork: [`BUILDING.md`](../../BUILDING.md).
+
 **mem-mcp is SPAWNED, not a Cargo dependency** — no `mem-*` workspace crate
 appears in `src-tauri`'s `cargo tree` (the lean-tree invariant). The heavy
 rocksdb + transformer build and the ~440 MB bge embedding model are an **S7**
