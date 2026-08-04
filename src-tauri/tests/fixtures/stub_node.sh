@@ -45,16 +45,30 @@ mkdir -p "${DATA_DIR}"
 SENTINEL="CITRATE_PLAINTEXT_SENTINEL_v1"
 
 # XOR the sentinel with the (repeating) key bytes → non-plaintext ciphertext.
-# Pure bash/od so there is no dependency on openssl/python being present.
-python3 - "$DATA_DIR/data.rocks" "$CITRATE_STORAGE_KEY" "$SENTINEL" <<'PY'
-import sys
-out_path, key_hex, sentinel = sys.argv[1], sys.argv[2], sys.argv[3]
-key = bytes.fromhex(key_hex)
-pt = sentinel.encode()
-ct = bytes(pt[i] ^ key[i % len(key)] for i in range(len(pt)))
-with open(out_path, "wb") as f:
-    f.write(ct)
-PY
+#
+# Pure bash: no python, openssl or od dependency. The comment above this block
+# always CLAIMED that, but the implementation shelled out to `python3 -`, which
+# made the whole ciphertext-at-rest tripwire fail on any machine whose `python3`
+# is a wrapper that rejects stdin scripts (e.g. a uv-managed shim — observed
+# 2026-08-04 on the DGX, where this test failed for that reason alone and
+# looked like a real encryption regression). A test fixture that depends on the
+# host's python is a fixture that fails for reasons unrelated to what it tests.
+key_hex="${CITRATE_STORAGE_KEY}"
+declare -a KEY_BYTES=()
+for (( i=0; i<${#key_hex}; i+=2 )); do
+  KEY_BYTES+=( $(( 16#${key_hex:i:2} )) )
+done
+if [ "${#KEY_BYTES[@]}" -eq 0 ]; then
+  echo "stub_node: CITRATE_STORAGE_KEY is not valid hex" >&2
+  exit 4
+fi
+
+escapes=""
+for (( i=0; i<${#SENTINEL}; i++ )); do
+  printf -v ch '%d' "'${SENTINEL:i:1}"
+  escapes+="$(printf '\\x%02x' $(( ch ^ KEY_BYTES[ i % ${#KEY_BYTES[@]} ] )))"
+done
+printf '%b' "$escapes" > "$DATA_DIR/data.rocks"
 
 # encryption.meta marker (like core/storage's encryption.meta).
 printf '{"cipher":"stub-xor","value_format":1}' > "${DATA_DIR}/encryption.meta"

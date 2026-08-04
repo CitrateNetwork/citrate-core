@@ -83,20 +83,31 @@ const REQUIREMENT_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
 
 /// The vault address MUST be the canonical 40204.json value. A paste error here
 /// would read grant state from the wrong contract (@rule8 — a mis-settled S5).
+///
+/// Updated for the 2026-08-04 re-roll (was `0x61e324cf…`). MembershipStakeVault
+/// is deployed with plain CREATE, so its address is deployer-nonce-derived and
+/// MOVES on every re-roll — unlike the CREATE2 contracts in this book, which
+/// reproduced byte-identically. This tripwire firing on a re-roll is it working:
+/// update it from `contracts/addresses/40204.json`, never from a runbook's
+/// projection (the 2026-08-04 orchestrator projected `0x61E324cF…` and was wrong,
+/// because the dry-run's deploy ORDER differed from the real one).
 #[test]
 fn membership_stake_vault_is_the_canonical_40204_value() {
     assert_eq!(
         membership_stake_vault(),
-        "0x61e324cfd6b7cb106ac0ad1df163bdfef2b74268"
+        "0x04c32967816187b2efdcd4937dbba59e051f99db"
     );
 }
 
 /// The SBT address MUST be the canonical 40204.json value.
+///
+/// Updated for the 2026-08-04 re-roll (was `0x4ce39f89…`) — plain CREATE, so
+/// nonce-derived and it moves on every re-roll. See the vault pin above.
 #[test]
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0x4ce39f891c0a519fa0e0de97a1dd3e3f856e0cf1"
+        "0xad826d0439f7ad5a3512a8927b632cbca2840e10"
     );
 }
 

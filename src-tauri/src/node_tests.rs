@@ -618,3 +618,118 @@ fn node_spec_never_enables_dag_pruning() {
          someone is about to set it again"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Member node config (bootnodes) — a fresh install must be able to find peers.
+// ---------------------------------------------------------------------------
+
+/// The embedded config must carry bootnodes. Without them the node has nothing
+/// to dial and sits at height 0 with 0 peers forever — verified on a clean data
+/// dir 2026-08-04, and previously masked on dev machines by the presence of
+/// ~/.citrate/node.toml.
+#[test]
+fn member_config_has_bootnodes() {
+    let cfg = include_str!("../config/member-node.toml");
+    assert!(
+        cfg.contains("bootstrap_nodes = ["),
+        "member config must declare bootstrap_nodes"
+    );
+    let peers = cfg.matches("noise_").count();
+    assert!(
+        peers >= 4,
+        "expected the 3 bootnodes + the sequencer, found {peers} peer entries"
+    );
+}
+
+/// LOAD-BEARING: boot{1,2,3} are discovery-only and advertise height 0, so a
+/// fresh node never triggers sync from them alone. Dropping the sequencer gives
+/// a member three peers and no way to reach the head.
+#[test]
+fn member_config_includes_the_sequencer_not_just_bootnodes() {
+    let cfg = include_str!("../config/member-node.toml");
+    assert!(
+        cfg.contains("@rpc.citrate.ai:30303"),
+        "the sequencer must be in bootstrap_nodes — boot1/2/3 advertise height 0 \
+         and cannot pull a fresh node to the head on their own"
+    );
+}
+
+/// citrate-chain does `if cli.mine { config.mining.enabled = true }`, so the
+/// config is the BASE state and the flag only forces mining ON. Shipping
+/// `enabled = true` (as citrate-chain's testnet-beta.toml does, because it
+/// targets validator hosts) would make every member mine from first launch —
+/// defeating the `mining_armed` gate and letting a node produce blocks while
+/// far behind, which is how the 54,600 concurrent-producer fork happened.
+#[test]
+fn member_config_never_enables_mining() {
+    let cfg = include_str!("../config/member-node.toml");
+    let mining = cfg
+        .split("[mining]")
+        .nth(1)
+        .expect("member config must have a [mining] section");
+    let section = mining.split("\n[").next().unwrap_or(mining);
+    assert!(
+        section.contains("enabled = false"),
+        "[mining] enabled must be false — the --mine flag is the only intended \
+         way to turn production on, and it can only force it ON"
+    );
+}
+
+/// A member's RPC must not be reachable from the network.
+#[test]
+fn member_config_binds_rpc_to_loopback() {
+    let cfg = include_str!("../config/member-node.toml");
+    assert!(
+        !cfg.contains("listen_addr = \"0.0.0.0:8545\"") && !cfg.contains("ws_addr = \"0.0.0.0:8546\""),
+        "the member RPC/WS must bind 127.0.0.1, not 0.0.0.0 — this is a laptop, \
+         not a firewalled server"
+    );
+    assert!(cfg.contains("listen_addr = \"127.0.0.1:8545\""));
+}
+
+/// The node must be launched with `--config`, or it walks its fallback chain and
+/// can inherit a developer's ~/.citrate/node.toml — which may point at another
+/// chain entirely.
+#[test]
+fn node_spec_passes_config_explicitly() {
+    let src = include_str!("node.rs");
+    assert!(
+        src.contains("\"--config\".to_string()"),
+        "build_spec must pass --config so the node cannot fall back to \
+         ~/.citrate/node.toml"
+    );
+}
+
+/// The placeholder must actually be substituted, and the result must not still
+/// contain it — a literal `{{DATA_DIR}}` on disk is a broken config.
+#[test]
+fn ensure_node_config_substitutes_the_data_dir_and_is_idempotent() {
+    let tmp = std::env::temp_dir().join(format!(
+        "citrate-core-cfg-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let path = ensure_node_config(&tmp).expect("write config");
+    let written = std::fs::read_to_string(&path).expect("read back");
+    assert!(
+        !written.contains("{{DATA_DIR}}"),
+        "the DATA_DIR placeholder must be substituted"
+    );
+    assert!(
+        written.contains(&tmp.to_string_lossy().replace('\\', "\\\\")),
+        "the config must point at the data dir it was written for"
+    );
+
+    // Must NOT clobber operator edits on a second call.
+    std::fs::write(&path, "# hand-edited\n").expect("simulate an operator edit");
+    let again = ensure_node_config(&tmp).expect("second call");
+    assert_eq!(again, path);
+    assert_eq!(
+        std::fs::read_to_string(&again).expect("read"),
+        "# hand-edited\n",
+        "an existing config must never be overwritten"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
