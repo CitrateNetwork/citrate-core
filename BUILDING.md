@@ -146,9 +146,13 @@ What actually proves agreement is that **your node re-executed each block and
 got the same root**. That verdict is in its log:
 
 ```bash
-grep -c 'root verified'        "$DD/node.log"   # should equal your height
-grep -c 'state root mismatch'  "$DD/node.log"   # MUST be 0
+grep -c 'state root mismatch'  "$DD/node.log"   # MUST be 0 — this is the gate
+grep -c 'root verified'        "$DD/node.log"   # >= height (reorgs re-apply, so it runs slightly ahead)
 ```
+
+`state root mismatch` must be **exactly 0**. A wedged node still logs plenty of
+`root verified` lines for the blocks below the divergence, so a large count on
+its own is not the signal — the zero is.
 
 Then confirm it converged on the fleet's head — equal heights, not merely "a
 large number":
