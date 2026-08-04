@@ -102,38 +102,69 @@ Things worth knowing about that file:
 
 ## Verifying you built the right thing
 
-After `scripts/build-sidecar.sh`, run the sidecar directly and confirm it reaches
-the tip. On a clean data dir it should find peers within seconds and sync at
-roughly 900 blocks/min:
+### You MUST pass the consensus env, or the node wedges at height 2000
+
+The node does **not** read the §R' epoch-reward settings from `node.toml`. They
+arrive as environment variables, and the app supplies them when it spawns the
+sidecar (`src-tauri/src/node.rs`, `NODE_VALIDATOR_*` / `NODE_BLOCK_V2_*`).
+Running the bare binary without them is **not** the same thing the app does:
+validator rewards stay off, so an *empty* block 2000 settles to a different
+state root, the receive-path check rejects it, and the node retries that block
+forever at ~0 progress.
+
+These three must match the fleet producer's systemd env exactly:
 
 ```bash
+export CITRATE_BLOCK_V2=1
+export CITRATE_VALIDATOR_ACTIVATION_HEIGHT=2000
+export CITRATE_VALIDATOR_REGISTRY=$(python3 -c "import json;print(json.load(open('src-tauri/addresses/40204.json'))['addresses']['ValidatorRegistry'])")
+
 DD=$(mktemp -d)
-src-tauri/binaries/citrate-<triple> --network testnet --data-dir "$DD" &
-sleep 60
-curl -s -XPOST -H 'content-type: application/json' \
-  --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-  http://127.0.0.1:8545
+sed "s|{{DATA_DIR}}|$DD|" src-tauri/config/member-node.toml > "$DD/node.toml"
+src-tauri/binaries/citrate-<triple> --config "$DD/node.toml" --network testnet > "$DD/node.log" 2>&1 &
 ```
 
-The strongest check is **state-root parity with the fleet** — this is what proves
-you are not on a fork. Compare a few heights against the public RPC; they must be
-identical:
+Always pass `--config` explicitly. Without it the node falls back to
+`$CITRATE_CONFIG` → `~/.citrate/node.toml`, and on a machine that has done
+citrate-chain work that file exists — so you end up verifying a developer's
+config instead of the one members actually get.
+
+If you see this, you forgot the env above; the binary is fine:
+
+```
+REJECT block <hash> @ 2000 — state root mismatch (claimed …, computed …)
+```
+
+### The real proof is your own executor, not an RPC comparison
+
+Comparing `eth_getBlockByNumber` state roots against `rpc.citrate.ai` **proves
+almost nothing**. That call returns the root *claimed in the block header*, and
+both sides return the same header because it is the same block fetched off the
+same network. It matches even while your node is rejecting that very block.
+
+What actually proves agreement is that **your node re-executed each block and
+got the same root**. That verdict is in its log:
 
 ```bash
-for h in 0x64 0x7d0 0x1388; do
-  echo "height $((h))"
-  for url in http://127.0.0.1:8545 https://rpc.citrate.ai; do
-    curl -s -XPOST -H 'content-type: application/json' \
-      --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"$h\",false],\"id\":1}" \
-      "$url" | grep -o '"stateRoot":"0x[0-9a-f]*"'
-  done
+grep -c 'root verified'        "$DD/node.log"   # should equal your height
+grep -c 'state root mismatch'  "$DD/node.log"   # MUST be 0
+```
+
+Then confirm it converged on the fleet's head — equal heights, not merely "a
+large number":
+
+```bash
+for url in http://127.0.0.1:8545 https://rpc.citrate.ai; do
+  curl -s -XPOST -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' "$url"
 done
 ```
 
-Reference result from the 2026-08-04 validation on Linux/aarch64: genesis
-`0xd1a1941e…`, cold sync **genesis → head, 5,646 blocks in ~6 minutes**, state
-roots identical at heights 100 / 2000 / 5000 / 5376 — including across the
-validator-activation boundary at 2000.
+Reference result, 2026-08-04 on **macOS 15.6.1 / aarch64**, sidecar built from
+citrate-chain `9b4c523`: cold sync **genesis → tip, 9,051 blocks**, local height
+equal to the fleet's, **0 state-root mismatches**, ~1.25 GB RSS. Genesis
+`0xd1a1941e…` / state root `0xd703e8c6…`. The earlier Linux/aarch64 run measured
+5,646 blocks in ~6 minutes at ~4.2 GB RSS.
 
 ## Running tests
 
@@ -141,7 +172,8 @@ validator-activation boundary at 2000.
 cd src-tauri && cargo test --lib
 ```
 
-Expect **272 passing**. Two tests use shell fixtures that invoke `python3 -`
+Expect **274 passing, 0 failed** (5 ignored) — measured 2026-08-04. Two tests use
+shell fixtures that invoke `python3 -`
 (`stub_mem_mcp.sh`, `stub_node_agent.sh`). They pass with a normal python3 but
 fail on hosts whose `python3` is a wrapper rejecting stdin scripts (e.g. some
 uv-managed shims) — a fixture limitation, not a code failure. If you see exactly
@@ -152,7 +184,8 @@ those two fail, check `echo 'print(1)' | python3 -` before investigating further
 A follower currently keeps full history: DAG pruning is deliberately disabled
 (`node.rs`, `NODE_DAG_PRUNE_RETAIN_ENV`) because it used to wedge cold sync at
 block 54,600 on the *old* chain. Measured 2026-08-04: ~4.2 GB RSS to sync 5,646
-blocks. That workaround is no longer strictly required — the re-rolled chain
+blocks on Linux, ~1.25 GB for 9,051 blocks on macOS. That workaround is no longer
+strictly required — the re-rolled chain
 enforces MP-DEPTH from genesis, so no valid block can cite a merge parent deeper
 than 100 and the 54,600 wedge is impossible by construction — but re-enabling
 pruning is a deliberate change that has not been made yet. Budget memory

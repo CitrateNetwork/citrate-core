@@ -103,18 +103,29 @@ cp target/release/node-agent \
    /path/to/citrate-core/src-tauri/binaries/node-agent-$TRIPLE
 ```
 
-The **mem-mcp** memory daemon (example bin `mcp_serve`, package `mem-mcp`, from
-citrate-memories; source pin tracked via a Rule-12 `[[drift]]` entry on
-citrate-federation planset/core-beta-wiring). The daemon is the
-`mcp_serve` example, built with the `rocksdb,transformer` features:
+The **mem-mcp** memory daemon (bin `mem-mcp`, package `mem-mcp`, from
+citrate-memories), built with the `rocksdb,transformer` features:
 
 ```bash
 # from citrate-memories:
-cargo build --release -p mem-mcp --example mcp_serve --features rocksdb,transformer
+cargo build --release -p mem-mcp --bin mem-mcp --features rocksdb,transformer
 TRIPLE=$(rustc -vV | sed -n 's/host: //p')
-cp target/release/examples/mcp_serve \
+cp target/release/mem-mcp \
    /path/to/citrate-core/src-tauri/binaries/mem-mcp-$TRIPLE
 ```
+
+It used to be the `mcp_serve` **example** (`target/release/examples/mcp_serve`);
+that target no longer exists — it was promoted to a real bin in
+citrate-memories#15. The old command fails with "no example target named
+`mcp_serve`".
+
+**Build it from `ff12cab` (`feat/bge-bundle-and-fresh-store-bootstrap`), not from
+`main`.** `memory.rs` spawns the daemon with `CITRATE_BGE_MODEL_DIR` (load the
+bundled BGE weights offline) and `CITRATE_MEM_EMBED=bge` (force BGE on a store
+with no embedder yet). Both env vars exist only on that branch. A `main` build
+ignores them, silently falls back to the `HashingEmbedder`, and a fresh store is
+then **permanently** locked to lexical vectors — semantic recall is dead and
+nothing reports an error. Re-check this once that branch merges.
 
 ## Running without a bundle (dev + tests)
 
