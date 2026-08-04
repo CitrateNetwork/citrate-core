@@ -240,11 +240,62 @@ pub trait Keyring: Send + Sync {
 
 /// The real platform keyring, via the `keyring` v3 crate. Secrets are stored
 /// base64-free as raw bytes through `set_secret`/`get_secret`.
-pub struct OsKeyring;
+///
+/// # The keyring service is per-APP, and getting it wrong is destructive
+///
+/// This kit is shared by citrate-core AND citrate-quorum. The service name used
+/// to be a hardcoded [`KEYRING_SERVICE`] constant, which meant BOTH apps wrote
+/// their custody anchors into ONE namespace while keeping SEPARATE envelope
+/// files. That is a latent, permanent lockout:
+///
+///   * quorum initialises first → writes `custody-master-key` +
+///     `custody-generation` under `ai.citrate.core`
+///   * citrate-core starts, has no envelope of its own, but
+///     `enforce_anchor_initialized` sees the anchor and concludes
+///     "was-anchored, envelope absent" — the F-1 rollback shape — and returns
+///     [`CustodyError::Corrupt`] FOREVER
+///
+/// Observed live on the DGX 2026-08-04: citrate-core onboarding step 3 failed
+/// with "custody envelope corrupt or tampered" while quorum's vault
+/// (`ai.citrate.quorum/custody.enc`, 2026-07-30) was perfectly healthy. The
+/// guard was right; the namespace was wrong.
+///
+/// The obvious "fix" — clearing the keyring — would have DESTROYED quorum's
+/// live vault, because `custody-master-key` is what seals its envelope. Do not
+/// do that. Give each app its own service instead.
+///
+/// [`Self::legacy`] preserves the original namespace and MUST keep being used
+/// by anything whose secrets already live there (citrate-quorum's vault, and
+/// citrate-core's node storage key + mem-store key — repointing those would
+/// orphan real encrypted data, not just a preference).
+pub struct OsKeyring {
+    service: &'static str,
+}
+
+impl OsKeyring {
+    /// The original shared namespace. citrate-quorum's LIVE vault is sealed
+    /// under this, as are citrate-core's node/mem storage keys. Never repoint
+    /// an existing consumer off it without a migration — the data becomes
+    /// undecryptable.
+    pub const LEGACY_SERVICE: &'static str = KEYRING_SERVICE;
+
+    /// Keyring over the legacy shared namespace. For existing consumers only.
+    pub fn legacy() -> Self {
+        Self {
+            service: Self::LEGACY_SERVICE,
+        }
+    }
+
+    /// Keyring over an explicit, app-owned namespace. New consumers use this so
+    /// two apps can never collide on the custody anchor again.
+    pub fn with_service(service: &'static str) -> Self {
+        Self { service }
+    }
+}
 
 impl Keyring for OsKeyring {
     fn get(&self, account: &str) -> Result<Option<Vec<u8>>> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+        let entry = keyring::Entry::new(self.service, account)
             .map_err(|_| CustodyError::KeyringUnavailable)?;
         match entry.get_secret() {
             Ok(bytes) => Ok(Some(bytes)),
@@ -254,7 +305,7 @@ impl Keyring for OsKeyring {
     }
 
     fn set(&self, account: &str, secret: &[u8]) -> Result<()> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+        let entry = keyring::Entry::new(self.service, account)
             .map_err(|_| CustodyError::KeyringUnavailable)?;
         entry
             .set_secret(secret)
@@ -262,7 +313,7 @@ impl Keyring for OsKeyring {
     }
 
     fn delete(&self, account: &str) -> Result<()> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+        let entry = keyring::Entry::new(self.service, account)
             .map_err(|_| CustodyError::KeyringUnavailable)?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -1725,13 +1776,37 @@ fn keyring_probe() -> String {
 
 /// Build the managed custody state from a live app handle: the real OS keyring +
 /// the app-data envelope path + the persisted `config.autolock`.
+/// Build custody over the LEGACY shared keyring namespace.
+///
+/// Kept for citrate-quorum, whose live vault is sealed under it. New callers
+/// should use [`build_custody_state_with_service`] — see [`OsKeyring`] for why
+/// sharing one namespace across two apps is a permanent lockout.
 pub fn build_custody_state<R: Runtime>(
     app: &AppHandle<R>,
     autolock_mins: u32,
 ) -> std::result::Result<CustodyState, String> {
+    build_custody_state_with_service(app, autolock_mins, OsKeyring::LEGACY_SERVICE)
+}
+
+/// Build custody over an explicit, app-owned keyring namespace.
+///
+/// `service` must be unique per application. Two apps sharing one service share
+/// the custody ANCHOR (`custody-generation`) while keeping separate envelope
+/// files, and the second app to start is locked out permanently with
+/// [`CustodyError::Corrupt`] — the anchor says a vault exists, its own envelope
+/// says otherwise, and that is exactly the F-1 rollback shape the guard refuses.
+///
+/// Changing the service for an EXISTING install orphans its vault: the master
+/// key that seals the envelope lives under the old service. Only ever introduce
+/// a new namespace for an app that has no vault yet, or ship a migration.
+pub fn build_custody_state_with_service<R: Runtime>(
+    app: &AppHandle<R>,
+    autolock_mins: u32,
+    service: &'static str,
+) -> std::result::Result<CustodyState, String> {
     let path = envelope_path(app)?;
     Ok(CustodyState(CustodyVault::new(
-        Box::new(OsKeyring),
+        Box::new(OsKeyring::with_service(service)),
         path,
         autolock_mins,
     )))

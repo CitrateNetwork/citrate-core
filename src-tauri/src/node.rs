@@ -671,7 +671,9 @@ pub fn build_node_state<R: Runtime>(app: &AppHandle<R>) -> std::result::Result<N
     let crash_record_path = data_root.join("node").join("crash-records.jsonl");
     let bin = resolve_node_bin(app)?;
     Ok(NodeState(NodeManager::new(
-        Box::new(OsKeyring),
+        // LEGACY namespace on purpose: this is the node's at-rest storage key,
+        // not custody. Repointing it would orphan the encrypted node data dir.
+        Box::new(OsKeyring::legacy()),
         bin,
         data_dir,
         crash_record_path,
