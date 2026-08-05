@@ -550,7 +550,7 @@ describe("wallet link — binding this device's wallet to the identity", () => {
     vi.spyOn(bridge.wallet, "linkRequest").mockResolvedValue(linkView);
     linkApproveSpy = vi
       .spyOn(bridge.wallet, "linkApprove")
-      .mockResolvedValue({ address: "0x" + "cd".repeat(20), linked: true });
+      .mockResolvedValue({ address: "0x" + "cd".repeat(20), linked: true, canonical: true });
     linkRejectSpy = vi.spyOn(bridge.wallet, "linkReject").mockResolvedValue(undefined);
     broadcastSpy = vi.spyOn(bridge.signing, "broadcast").mockResolvedValue({ txHash: "0xhash", blockNumber: 1 });
     vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined as never);
@@ -624,6 +624,33 @@ describe("wallet link — binding this device's wallet to the identity", () => {
     expect(linkApproveSpy).toHaveBeenCalledWith("wlink-1", false);
     expect(broadcastSpy).not.toHaveBeenCalled();
     expect(store.state.walletReview).toBeNull();
+  });
+
+  // linked !== canonical, and conflating them is the bug this pair exists for.
+  // The link is durable the moment the proof is accepted, but the authority only
+  // serves THIS address as `wallet_address` if it is ALSO canonical (it defaults
+  // to first-linked). A member whose custody vault was replaced links
+  // successfully and stays blocked — told it worked. Observed live 2026-08-04.
+  it("says the payout address moved only when the wallet is CANONICAL", async () => {
+    await store.linkWallet();
+    await store.approveWalletReview();
+    const said = String(store.getSnapshot().toast ?? "");
+    expect(said).toMatch(/authority now pays/i);
+  });
+
+  it("does NOT claim the authority pays you when the wallet is linked but NOT canonical", async () => {
+    linkApproveSpy.mockResolvedValue({
+      address: "0x" + "cd".repeat(20),
+      linked: true,
+      canonical: false,
+    });
+    await store.linkWallet();
+    await store.approveWalletReview();
+    const said = String(store.getSnapshot().toast ?? "");
+    expect(said).not.toMatch(/authority now pays/i);
+    // and it must SAY so rather than fall silent — a member about to pay in
+    // needs to know the money would land on the old address.
+    expect(said).toMatch(/did not move|still the one on file/i);
   });
 
   it("a failed submit leaves nothing linked and releases the ceremony", async () => {

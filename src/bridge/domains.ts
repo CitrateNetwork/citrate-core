@@ -175,7 +175,7 @@ export interface WalletDomain {
    * it is consumed in-process (I-2). This is NOT `signing.broadcast`: no
    * transaction is sent and no funds move.
    */
-  linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean }>;
+  linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean; canonical: boolean }>;
   /** Decline a pending link: release the ceremony + drop the one-time nonce. */
   linkReject(id: string): Promise<void>;
 }

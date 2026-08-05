@@ -1922,7 +1922,19 @@ export class Store {
         const res = await bridge.wallet.linkApprove(r.view.id, ack);
         this.setState({ walletReview: null });
         this.addActivity(r.label, "no funds moved", "");
-        this.toast("Wallet linked — the authority now pays " + res.address.slice(0, 10) + "….");
+        // `linked` and `canonical` are different facts and the difference is the
+        // whole bug: the link is durable the moment the proof is accepted, but
+        // the authority only serves THIS address as `wallet_address` if it is
+        // also canonical. Claiming "the authority now pays you" off `linked`
+        // alone is how a member ends up blocked while being told it worked.
+        if (res.canonical) {
+          this.toast("Wallet linked — the authority now pays " + res.address.slice(0, 10) + "….");
+        } else {
+          this.toast(
+            "Wallet linked, but the payout address did not move. Your earlier wallet is " +
+              "still the one on file — contact support before paying in.",
+          );
+        }
         // Re-read the claim so the UI reflects the new binding rather than
         // asserting it: walletIsLinked() must be earned by a real read.
         await this.authUserinfo();

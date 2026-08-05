@@ -377,7 +377,7 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("wallet.linkRequest");
         throw new Error("Wallet linking runs in the desktop app (it signs with the custody key).");
       },
-      async linkApprove(): Promise<{ address: string; linked: boolean }> {
+      async linkApprove(): Promise<{ address: string; linked: boolean; canonical: boolean }> {
         assertSimAllowed("wallet.linkApprove");
         throw new Error("Wallet linking runs in the desktop app (it signs with the custody key).");
       },
