@@ -182,8 +182,24 @@ pub enum AuthError {
     NotSignedIn,
     /// The custody vault is locked or unavailable (cannot store/read the token).
     Custody,
-    /// A network/transport error talking to the authority.
+    /// A network/transport error talking to the authority. RESERVED for genuine
+    /// transport failures (DNS, TLS, connection refused, timeout) — never a
+    /// reply the authority actually sent. See [`Self::Unauthorized`] /
+    /// [`Self::Rejected`].
     Network,
+    /// The authority answered **401**: the access token is missing, expired, or
+    /// rejected. Distinct from [`Self::Network`] because the remedy is entirely
+    /// different — refresh the session / sign in again, not "check your
+    /// connection". Collapsing this into `Network` told members the service was
+    /// unreachable when it was answering fine (the 2026-08-04 wallet-link
+    /// dead end); a signed-out session read as an outage.
+    Unauthorized,
+    /// The authority answered some other non-2xx. Carries ONLY the status code —
+    /// never the body, which can echo attacker-influenced input and is not
+    /// needed to choose a remedy (ADV-9: no token/secret material in any
+    /// variant). `409` on a wallet link means "already linked to another
+    /// identity"; `400` a replayed nonce or bad signature.
+    Rejected(u16),
     /// The authority is unreachable / not yet deployed (honest, per Rule 1). The
     /// production `login`/`refresh` path surfaces this when auth.citrate.ai has
     /// not been redeployed yet (the sprint's hard dependency); the mock-driven
@@ -194,6 +210,10 @@ pub enum AuthError {
 
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Rejected carries a code, so it cannot share the &'static str table.
+        if let AuthError::Rejected(status) = self {
+            return write!(f, "auth: the authority rejected the request (HTTP {status})");
+        }
         let s = match self {
             AuthError::StateMismatch => "auth: callback state mismatch (rejected)",
             AuthError::TokenExchange => "auth: token exchange rejected",
@@ -203,7 +223,10 @@ impl std::fmt::Display for AuthError {
             AuthError::NotSignedIn => "auth: not signed in",
             AuthError::Custody => "auth: custody vault locked or unavailable",
             AuthError::Network => "auth: could not reach the authority",
+            AuthError::Unauthorized => "auth: session expired or not authorized — sign in again",
             AuthError::Unavailable => "auth: authority unavailable",
+            // Handled above (needs the status code); unreachable here.
+            AuthError::Rejected(_) => "auth: the authority rejected the request",
         };
         f.write_str(s)
     }
@@ -752,6 +775,25 @@ pub trait HttpClient: Send + Sync {
     }
 }
 
+/// Classify a `ureq` failure, PRESERVING what the authority actually said.
+///
+/// ureq is configured (its default) to treat a non-2xx as `Err`, so a reply the
+/// authority genuinely sent arrives here as an error. Mapping the whole enum to
+/// [`AuthError::Network`] — as every call site used to — threw the status away
+/// and told the member "could not reach the authority" when the authority had
+/// answered promptly with `401`. That single lost byte is what made an expired
+/// session indistinguishable from an outage.
+///
+/// Only genuine transport failures stay [`AuthError::Network`]. The status code
+/// is the ONLY thing carried out of the response (ADV-9: never the body).
+pub(crate) fn classify_ureq(err: &ureq::Error) -> AuthError {
+    match err {
+        ureq::Error::StatusCode(401) => AuthError::Unauthorized,
+        ureq::Error::StatusCode(status) => AuthError::Rejected(*status),
+        _ => AuthError::Network,
+    }
+}
+
 /// Production HTTP client: blocking `ureq`.
 pub struct UreqClient;
 
@@ -761,7 +803,8 @@ impl HttpClient for UreqClient {
         if let Some(tok) = bearer {
             req = req.header("Authorization", &format!("Bearer {tok}"));
         }
-        let mut resp = req.call().map_err(|_| AuthError::Network)?;
+        let mut resp = req.call().map_err(|e| classify_ureq(&e))?;
+        // A body-read failure IS a transport fault — Network is correct here.
         resp.body_mut()
             .read_to_string()
             .map_err(|_| AuthError::Network)
@@ -783,10 +826,12 @@ impl HttpClient for UreqClient {
         if let Some(tok) = bearer {
             req = req.header("Authorization", &format!("Bearer {tok}"));
         }
-        // A non-2xx from ureq is an Err, so a rejected link (401 replayed nonce,
-        // 409 already linked elsewhere) surfaces as Network rather than being
-        // mistaken for a successful link with an odd body.
-        let mut resp = req.send(body).map_err(|_| AuthError::Network)?;
+        // A non-2xx from ureq is an Err — never mistake it for a successful link
+        // with an odd body. `classify_ureq` keeps WHICH rejection it was: 401
+        // (expired session) and 409 (already linked to another identity) need
+        // opposite remedies, and both used to read as "could not reach".
+        let mut resp = req.send(body).map_err(|e| classify_ureq(&e))?;
+        // A body-read failure IS a transport fault — Network is correct here.
         resp.body_mut()
             .read_to_string()
             .map_err(|_| AuthError::Network)
