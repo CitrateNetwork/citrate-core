@@ -1577,3 +1577,70 @@ fn strip_query(u: &str, key: &str) -> String {
     parsed.query_pairs_mut().clear().extend_pairs(pairs);
     parsed.to_string()
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP-STATUS FIDELITY — the authority's answer must survive the error mapping.
+//
+// Regression for the 2026-08-04 wallet-link dead end: every `ureq` failure was
+// mapped to `AuthError::Network`, so an expired session (401) surfaced to the
+// member as "auth: could not reach the authority" while auth.citrate.ai was
+// answering in ~190ms. The remedy for 401 (sign in again) and for a transport
+// fault (check the network) are opposite, so collapsing them made the real
+// cause undiagnosable from the UI.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_401_is_unauthorized_not_network() {
+    // THE regression. An expired/rejected token must never read as unreachable.
+    let e = classify_ureq(&ureq::Error::StatusCode(401));
+    assert_eq!(e, AuthError::Unauthorized);
+    assert_ne!(e, AuthError::Network, "a 401 must not masquerade as a transport failure");
+}
+
+#[test]
+fn other_non_2xx_keeps_its_status_code() {
+    // 409 = wallet already linked to another identity; 400 = replayed nonce.
+    assert_eq!(classify_ureq(&ureq::Error::StatusCode(409)), AuthError::Rejected(409));
+    assert_eq!(classify_ureq(&ureq::Error::StatusCode(400)), AuthError::Rejected(400));
+    assert_eq!(classify_ureq(&ureq::Error::StatusCode(500)), AuthError::Rejected(500));
+}
+
+#[test]
+fn a_genuine_transport_fault_is_still_network() {
+    // Network keeps its meaning: only when nothing was received from the peer.
+    let io = ureq::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::ConnectionRefused,
+        "connection refused",
+    ));
+    assert_eq!(classify_ureq(&io), AuthError::Network);
+}
+
+#[test]
+fn each_variant_renders_an_actionable_remedy() {
+    // The member-facing string must point at the right fix.
+    let unauth = AuthError::Unauthorized.to_string();
+    assert!(
+        unauth.contains("sign in again"),
+        "401 must tell the member to re-authenticate, got: {unauth}"
+    );
+    assert!(
+        !unauth.contains("could not reach"),
+        "401 must not blame the connection, got: {unauth}"
+    );
+
+    // A rejection must name the status so a support report is actionable.
+    let rejected = AuthError::Rejected(409).to_string();
+    assert!(rejected.contains("409"), "the status code must survive, got: {rejected}");
+
+    // And Network still means what it says.
+    assert!(AuthError::Network.to_string().contains("could not reach"));
+}
+
+#[test]
+fn rejected_never_leaks_a_response_body() {
+    // ADV-9: only the status code crosses out of the response. `Rejected` holds a
+    // u16 by construction, so there is no body to leak — asserted structurally so
+    // a future widening to carry the body fails here first.
+    let rendered = AuthError::Rejected(403).to_string();
+    assert_eq!(rendered, "auth: the authority rejected the request (HTTP 403)");
+}
