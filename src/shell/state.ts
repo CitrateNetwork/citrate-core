@@ -298,6 +298,18 @@ export interface AppState {
   liquid: number;
   selfStake: number;
   /**
+   * The member's REAL validator bond in the `ValidatorRegistry` (SALT), read from
+   * live chain state (`pubkeyOfStaker(bond)` → `stakeOf`) via refreshNode / the grant
+   * poll. This is the ONLY signal that the member is a staked validator: under the
+   * bond-clone model (2026-08-05) the membership grant deploys + funds the member's
+   * `MemberBond` clone with the 32k, and the member ACTIVATES it via
+   * `MemberBond.activate` (the clone then bonds into the registry) — until then this
+   * is 0 even though `hasGrant` is true. The node's "validating" status gates on this,
+   * NOT on `hasGrant` (a granted-but-unactivated member is `synced`, not validating —
+   * Rule 1: a funded bond is not the same as an activated one).
+   */
+  bondedStake: number;
+  /**
    * CORE WP2 — the wallet's PENDING (unclaimed) LiquidStakingPool withdrawals,
    * read from live chain state (getLogs WithdrawalRequested + withdrawals(id) +
    * block_number) via refreshPendingWithdrawals(). NOT persisted — the source of
@@ -380,9 +392,9 @@ export interface AppState {
    * This device's CUSTODY EOA (from `wallet.balances().address`) — the address
    * that actually signs, as opposed to `walletAddr`, which is the authority's
    * `wallet_address` CLAIM. They differ until the member links this wallet, and
-   * that difference is exactly what strands a validator bond: the money path pays
-   * the claim, the self-bond is sent from the custody EOA. Empty until a real
-   * balances() read lands (never fabricated).
+   * that difference is exactly what strands a validator bond: the money path grants
+   * to the claim (the clone's `onlyMember`), the activation is sent from the custody
+   * EOA. Empty until a real balances() read lands (never fabricated).
    */
   custodyAddr: string;
   socketPath: string;
@@ -541,6 +553,7 @@ export function freshState(pid: string): AppState {
     crashes: [],
     liquid: 0,
     selfStake: 0,
+    bondedStake: 0,
     pendingWithdrawals: [],
     hasGrant: false,
     hasSbt: false,
@@ -737,7 +750,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // Every launch starts signed-out; identity is re-derived only from a live
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
-  "liquid", "selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
+  "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
   "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "socketPath",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",

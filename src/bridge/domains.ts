@@ -215,6 +215,14 @@ export interface NodeDomain {
    */
   registerValidator(): Promise<CeremonyView>;
   /**
+   * W1.x — arm the producer, consensus-gated on being synced. The node runs as a
+   * plain follower and never mints its `proposer.key`; arming respawns it with
+   * `--mine --coinbase`, which mints the key the bond activation needs. Returns
+   * whether it armed on this call (idempotent — already-armed / not-synced → false).
+   * Tauri → `node_arm_mining`; the sim shim is an honest no-op (returns false).
+   */
+  armMining(): Promise<boolean>;
+  /**
    * Start the bundled IPFS (kubo) daemon that the node uses for artifact/model
    * pin/add on 127.0.0.1:5001. Idempotent; started alongside the node. Tauri →
    * `ipfs_start`; the sim shim is a no-op (no daemon in the web preview).

@@ -658,6 +658,24 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             </div>
           </div>
         )}
+        {/* The node supervisor failed to start (e.g. a stale RocksDB LOCK held by an
+            orphaned node from a prior run, no disk, or a missing sidecar). Before this
+            branch existed, `error` rendered NOTHING — an empty panel with no way to
+            recover, so a failed start looked like a hang. Surface it honestly and let
+            the member retry (`startNode` fails closed again if it still can't start). */}
+        {s.node === "error" && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Node didn’t start</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                the supervisor could not launch the node — retry, or check the log for the reason
+              </div>
+            </div>
+            <button className="btn btn-primary btn-lg" onClick={() => store.startNode()}>
+              Retry
+            </button>
+          </div>
+        )}
         {s.node === "syncing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -679,15 +697,38 @@ function S6({ store, s }: { store: Store; s: AppState }) {
             </div>
           </div>
         )}
-        {(s.node === "validating" || s.node === "synced") && (
+        {/* VALIDATING is now gated on the REAL ValidatorRegistry bond (s.bondedStake
+            from pubkeyOfStaker→stakeOf), not on `hasGrant`. A funded-but-unbonded
+            node is `synced`, not `validating` — so this "eligible for proposer" line
+            only shows when the 32k is genuinely bonded (Rule 1). */}
+        {s.node === "validating" && (
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--accent)", animation: "ccPulse 2.4s var(--ease-standard) infinite", flexShrink: 0 }}></span>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 15, fontWeight: 500 }}>Validating</div>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                synced · stake 32,000 SALT ≥ minimum · eligible for proposer election
+                synced · bonded {fmtI(s.bondedStake)} SALT ≥ minimum · eligible for proposer election
               </div>
             </div>
+          </div>
+        )}
+        {/* SYNCED = the node is caught up and the treasury has granted + funded the
+            member's MemberBond clone with the 32k, but the member has not activated it
+            yet. Onboarding auto-opens the activation ceremony (maybeAutoBond); this is
+            the visible fallback if the member dismissed it — one click re-opens the
+            MemberBond.activate review (Rule 3: the human still approves). */}
+        {s.node === "synced" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: "var(--warn, var(--accent))", flexShrink: 0 }}></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 500 }}>Synced — not yet a validator</div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+                bond 32,000 SALT to enter the active set and earn the proposer subsidy
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={() => void store.activateValidator()}>
+              Bond 32,000 SALT
+            </button>
           </div>
         )}
       </div>
@@ -759,6 +800,20 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
           <span className="mono tabular" style={{ fontSize: 12, color: "var(--tx-2)" }} data-testid="model-bytes">
             {gb(s.modelDownloadedBytes)} / {gb(s.modelTotalBytes)} GB
           </span>
+          {/* A download can stall (dropped connection) WITHOUT the supervisor
+              marking it "error" — leaving this state with no Skip, no Retry, and a
+              greyed "Enter your dashboard" (a trap observed 2026-08-05). Always offer
+              an escape while downloading: Skip proceeds to the gateway now; Restart
+              re-triggers the streamed (resumable) fetch. The model is optional —
+              chat runs on the gateway either way. */}
+          <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+            <button className="btn btn-ghost" onClick={() => store.skipModel()}>
+              Skip — use the gateway
+            </button>
+            <button className="btn btn-ghost" onClick={() => store.startModelDownload()}>
+              Restart download
+            </button>
+          </div>
         </div>
       )}
 

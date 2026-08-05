@@ -411,6 +411,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("node.registerValidator");
         throw new Unavailable("node", "registerValidator");
       },
+      // No real node to arm in the web preview → honest no-op (never a fabricated arm).
+      async armMining() {
+        assertSimAllowed("node.armMining");
+        return false;
+      },
       // No kubo daemon in the web preview — honest no-op (nothing spawned).
       async startIpfs() {
         assertSimAllowed("node.startIpfs");

@@ -356,6 +356,30 @@ describe("mapNodeState — supervisor state → app node lifecycle", () => {
   });
 });
 
+describe("staked = REAL registry bond, not hasGrant (W1.3 Rule-1 fix)", () => {
+  // The membership grant deploys + funds the member's MemberBond clone with the 32k
+  // (bond-clone model, 2026-08-05); the member must ACTIVATE it via MemberBond.activate
+  // before the clone bonds into the registry. Before the fix, `staked` was computed as
+  // `hasGrant ? 32000` — so a granted-but-unactivated member reported as staked=32000
+  // and the node read as "validating · eligible for proposer election" with 0 bonded.
+  // The snapshot's `staked` must now come from the REAL bond (`bondedStake`) only.
+  it("hasGrant alone does NOT count as staked", () => {
+    store.setState({ hasGrant: true, bondedStake: 0, selfStake: 0 });
+    expect(store.snapshot().staked).toBe(0);
+    // …and that 0 keeps the node OUT of the validating set.
+    expect(mapNodeState("running", 100, store.snapshot().staked)).toBe("synced");
+  });
+  it("a real registry bond counts as staked", () => {
+    store.setState({ hasGrant: true, bondedStake: 32000, selfStake: 0 });
+    expect(store.snapshot().staked).toBe(32000);
+    expect(mapNodeState("running", 100, store.snapshot().staked)).toBe("validating");
+  });
+  it("bonded stake and self-stake add", () => {
+    store.setState({ hasGrant: false, bondedStake: 32000, selfStake: 2500 });
+    expect(store.snapshot().staked).toBe(34500);
+  });
+});
+
 // Q-A.2/Q-B.2 — REAL streamed node logs. The store folds the bridge's node.logs()
 // (Rust node_logs ring of stdout+stderr) into s.logs so the Node LOG panel shows
 // live node output in a packaged build. `foldNodeLogs` is the pure converter; the
@@ -518,9 +542,9 @@ describe("Q-E.1 wallet review gate — money actions never self-broadcast", () =
 //
 // The authority mints `wallet_address` for every member; until a wallet is linked
 // that claim is the counterfactual smart-wallet address, which no key can spend
-// from. The membership money path pays THAT address while the validator self-bond
-// is sent from this device's custody EOA — so an unlinked member's 32,000 SALT
-// bond lands somewhere unreachable. These pin the gate and, above all, that a
+// from. The membership money path grants to THAT address (the clone's `onlyMember`)
+// while the bond activation is sent from this device's custody EOA — so an unlinked
+// member's clone is bound to an unreachable address. These pin the gate and, above all, that a
 // link NEVER reaches `signing.broadcast` (it is a signature, not a transaction).
 // ---------------------------------------------------------------------------
 describe("wallet link — binding this device's wallet to the identity", () => {

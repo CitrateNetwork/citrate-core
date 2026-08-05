@@ -776,12 +776,14 @@ const VALIDATOR_STAKE_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
 const REGISTER_GAS: u64 = 600_000;
 
 /// Build the `{from,to,value,data,gas,chainId}` JSON the ceremony's `Transaction`
-/// intent consumes (same shape as `staking::encode_stake_json`).
-fn encode_register_json(from: &str, registry: &str, value_wei: u128, calldata: &[u8]) -> String {
+/// intent consumes for `MemberBond.activate` (same shape as `staking::encode_stake_json`).
+/// `to` is the member's bond CLONE; `value` is 0 — the clone forwards its OWN principal
+/// (the 32k is already inside it), so the member EOA only pays gas.
+fn encode_activate_json(from: &str, bond: &str, calldata: &[u8]) -> String {
     serde_json::json!({
         "from": from,
-        "to": registry,
-        "value": format!("0x{value_wei:x}"),
+        "to": bond,
+        "value": "0x0",
         "data": format!("0x{}", hex::encode(calldata)),
         "gas": format!("0x{REGISTER_GAS:x}"),
         "chainId": format!("0x{:x}", 40204u64),
@@ -789,13 +791,17 @@ fn encode_register_json(from: &str, registry: &str, value_wei: u128, calldata: &
     .to_string()
 }
 
-/// W1.3 — register the member's node as a block-producing validator. Reads the
-/// live `registrationNonce`, signs the register digest with the node's
-/// `proposer.key`, and submits `registerValidator{value:32k}(pubkey, sig)` as a
-/// PENDING ceremony (Rule 3 — the human approves; `sign_and_broadcast` signs the
-/// EIP-155 tx from the member EOA + broadcasts). `staker = msg.sender = the EOA`,
-/// so the member owns the validator + its rewards. Requires the vault UNLOCKED and
-/// the node to have minted its key (started once); either leg errors honestly.
+/// W1.3 (bond-clone model, owner decision 2026-08-05 — reverses ADR-2026-07-27) —
+/// activate the member's validator bond. The 32k already lives inside the member's
+/// `MemberBond` clone (deployed + funded by `vault.grant` at payment). This reads the
+/// live `bondOf(member)` escrow, signs the register digest — binding the CLONE as the
+/// staker, because the clone (not the EOA) is what calls `registerValidator`, so the
+/// registry sees `msg.sender = clone` — with the node's `proposer.key`, and submits
+/// `MemberBond.activate(pubkey, sig)` TO the clone as a PENDING ceremony (Rule 3 — the
+/// human approves; `sign_and_broadcast` signs the EIP-155 tx from the member EOA, which
+/// is the clone's `onlyMember`). The tx carries NO value — the clone forwards its own
+/// principal. Requires the node to have minted its key (started once); each leg errors
+/// honestly (no deployed bond / already activated / underfunded).
 #[tauri::command]
 pub fn node_register_validator(
     state: State<'_, NodeState>,
@@ -803,38 +809,55 @@ pub fn node_register_validator(
     ceremony: State<'_, crate::ceremony::CeremonyState>,
 ) -> std::result::Result<crate::ceremony::CeremonyView, String> {
     let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
-    let staker = crate::validator::parse_address_20(&wallet.address)?;
     let registry = crate::validator::parse_address_20(node_validator_registry_value())?;
     let rpc = crate::rpc::RpcClient::citrate();
-    // Honesty guard (Rule 1): registerValidator{value:32k} is a SELF-BOND from the
-    // member EOA — the contract hard-requires `msg.value >= minStake`. If the
-    // membership grant hasn't funded the EOA yet (the ADR-2026-07-27 bond-fund leg),
-    // the EOA has < 32k and the broadcast would revert "insufficient funds". Fail
-    // here with a clear reason instead of minting a doomed ceremony that looks like
-    // activation succeeded.
-    let balance = rpc.get_balance(&wallet.address).map_err(|e| e.to_string())?;
-    if balance < VALIDATOR_STAKE_WEI {
-        let salt = |w: u128| w / 1_000_000_000_000_000_000u128;
+
+    // Honesty guard (Rule 1): activation can only bond a clone that is deployed AND
+    // funded, and only once. Read the live grant status keyed on the member EOA (the
+    // address that will send `activate`, and the one `bondOf` is derived from). A
+    // member whose grant has not landed has no deployed bond; one who already activated
+    // would revert `AlreadyActivated`. Fail here with a clear reason rather than mint a
+    // doomed ceremony that looks like activation succeeded.
+    let grant = crate::grant_status::read_grant_status(&rpc, &wallet.address)
+        .map_err(|e| e.to_string())?;
+    if !grant.bond_deployed {
         return Err(format!(
-            "validator bond not funded: your wallet ({}) holds {} SALT but registration \
-             needs {} (the 32k bond, self-bonded from your wallet). The membership grant \
-             funds this automatically; if it hasn't arrived, the treasury bond-fund step \
-             is still pending — activation can't proceed until then.",
-            wallet.address, salt(balance), salt(VALIDATOR_STAKE_WEI)
+            "validator bond not ready: no MemberBond escrow is deployed for your wallet ({}). \
+             The membership grant deploys and funds it at payment; if it hasn't arrived, the \
+             treasury grant step is still pending — activation can't proceed until then.",
+            wallet.address
         ));
     }
-    // Live replay-guard nonce for the digest (real read, never fabricated).
+    if grant.has_validator {
+        return Err(format!(
+            "already a validator: your bond ({}) has already activated its proposer key.",
+            grant.bond_address
+        ));
+    }
+    // The clone forwards its principal to `registerValidator`; the funded principal
+    // (set to the 32k at grant time) must meet the bond or `registerValidator` reverts.
+    let principal: u128 = grant.attributed_principal_wei.parse().unwrap_or(0);
+    if principal < VALIDATOR_STAKE_WEI {
+        let salt = |w: u128| w / 1_000_000_000_000_000_000u128;
+        return Err(format!(
+            "validator bond underfunded: your MemberBond ({}) holds {} SALT of attributed \
+             principal but activation needs {} (the 32k bond). The treasury grant funds this \
+             automatically; if it hasn't fully landed, activation can't proceed yet.",
+            grant.bond_address, salt(principal), salt(VALIDATOR_STAKE_WEI)
+        ));
+    }
+
+    // The staker bound in the register digest is the CLONE (the `msg.sender` inside
+    // `registry.registerValidator`), NOT the member EOA.
+    let staker = crate::validator::parse_address_20(&grant.bond_address)?;
+    // Live replay-guard nonce for the CLONE's registration digest (real read, never fabricated).
     let nonce =
         crate::validator::read_registration_nonce(&rpc, node_validator_registry_value(), &staker)?;
     // Sign the registration with the node's proposer key (seed stays in validator.rs).
     let (pubkey, sig) = state.0.sign_registration(40204, &registry, &staker, nonce)?;
-    let calldata = crate::validator::register_validator_calldata(&pubkey, &sig);
-    let raw = encode_register_json(
-        &wallet.address,
-        node_validator_registry_value(),
-        VALIDATOR_STAKE_WEI,
-        &calldata,
-    );
+    let calldata = crate::validator::member_bond_activate_calldata(&pubkey, &sig);
+    // Sent FROM the member EOA (the clone's `onlyMember`) TO the clone, value 0.
+    let raw = encode_activate_json(&wallet.address, &grant.bond_address, &calldata);
     let intent = crate::ceremony::SignatureIntent {
         origin: "local-user".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
@@ -842,6 +865,20 @@ pub fn node_register_validator(
         raw,
     };
     Ok(ceremony.0.request(intent))
+}
+
+/// W1.x — arm the block producer, CONSENSUS-GATED on being synced. Delegates to
+/// [`NodeManager::arm_mining_if_synced`], which arms only when a coinbase is known
+/// AND the node has caught up to the network tip (arming while behind reintroduces
+/// the concurrent-producer wedge that caused the 54600 fork). On arm the node
+/// respawns with `--mine --coinbase`, and the chain node then MINTS `proposer.key`
+/// — the ed25519 validator identity the bond activation needs. Without this the node
+/// stays a plain follower forever, never mints the key, and the bond can never
+/// activate. Idempotent + honest: returns `true` iff it armed on THIS call (already
+/// armed, no coinbase, or not-yet-synced all return `false`, never a fabricated arm).
+#[tauri::command]
+pub fn node_arm_mining(state: State<'_, NodeState>) -> bool {
+    state.0.arm_mining_if_synced()
 }
 
 #[tauri::command]

@@ -214,9 +214,13 @@ pub fn run() {
             // W1.1 — the node's proposer identity (coinbase + derived ed25519
             // proposer pubkey) for the validator status surface + registration.
             node::node_proposer_identity,
-            // W1.3 — register the member's node as a block-producing validator
-            // (registerValidator{value:32k} via the ceremony; staker = the EOA).
+            // W1.3 — activate the member's validator bond (bond-clone model): the
+            // ceremony sends MemberBond.activate to the funded clone; the clone (=
+            // staker) forwards its principal to registerValidator.
             node::node_register_validator,
+            // W1.x — arm the producer once synced (consensus-gated); the respawn
+            // mints proposer.key, the validator identity the bond activation needs.
+            node::node_arm_mining,
             // W1.4 — the REAL validator earnings: rewardsOf(proposerPubkey) on the
             // ValidatorRegistry (the correct block-subsidy source, not the old
             // ContributionAccounting.claimable read).

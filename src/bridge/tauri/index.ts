@@ -230,6 +230,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async registerValidator() {
         return invoke<CeremonyView>("node_register_validator");
       },
+      // W1.x — arm the producer once synced (consensus-gated). The respawn mints
+      // proposer.key, the validator identity the bond activation needs. Returns
+      // whether it armed on this call (idempotent; false if already armed / not synced).
+      async armMining() {
+        return invoke<boolean>("node_arm_mining");
+      },
       // Start the bundled kubo daemon (idempotent) — the node reaches it on :5001.
       async startIpfs() {
         await invoke("ipfs_start");

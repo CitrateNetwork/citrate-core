@@ -63,6 +63,13 @@ pub fn read_proposer_pubkey(data_dir: &std::path::Path) -> Result<String, String
 use sha3::{Digest as _, Keccak256};
 
 /// `registerValidator(bytes32,bytes)` selector (`keccak256(sig)[..4]`).
+///
+/// Retained as the golden reference the bond-clone activation is checked against: the
+/// app no longer sends `registerValidator` directly (the member's `MemberBond` clone
+/// does, on-chain, inside `activate`), but the activate calldata layout must stay
+/// byte-for-byte identical to this — see `member_bond_activate_calldata` and the
+/// `member_bond_activate_calldata_matches_register_layout` drift test.
+#[allow(dead_code)] // production-dead since the bond-clone retarget; kept for the drift test
 pub const REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0x10, 0xf5, 0x3b, 0xa1];
 /// `registrationNonce(address)` selector — the eth_call that reads the staker's
 /// current nonce for the digest.
@@ -131,9 +138,38 @@ pub fn sign_registration(
 
 /// ABI-encode the `registerValidator(bytes32 proposerPubkey, bytes ed25519Sig)`
 /// calldata (selector + head + tail). The 64-byte sig is already 32-aligned.
+///
+/// Production-dead since the bond-clone retarget (the app sends `activate`, and the
+/// clone re-emits `registerValidator` on-chain); retained as the golden layout that
+/// `member_bond_activate_calldata` is drift-tested against.
+#[allow(dead_code)]
 pub fn register_validator_calldata(proposer_pubkey: &[u8; 32], ed25519_sig: &[u8; 64]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + 32 * 3 + 64);
     out.extend_from_slice(&REGISTER_VALIDATOR_SELECTOR);
+    out.extend_from_slice(proposer_pubkey); // head word 1: bytes32
+    out.extend_from_slice(&word_u64(0x40)); // head word 2: offset to the bytes arg
+    out.extend_from_slice(&word_u64(64)); // tail: byte length
+    out.extend_from_slice(ed25519_sig); // tail: the 64 sig bytes (32-aligned)
+    out
+}
+
+/// `MemberBond.activate(bytes32,bytes)` selector (`keccak256("activate(bytes32,bytes)")[..4]`).
+///
+/// Bond-clone model (owner decision 2026-08-05, reverses ADR-2026-07-27): the member
+/// calls THIS on their `MemberBond` clone, and the clone forwards to
+/// `registry.registerValidator{value: principal}(pubkey, sig)`. So the registry sees
+/// `msg.sender = the clone` as the staker — the registration digest MUST bind the clone
+/// address, not the member EOA. The calldata layout is identical to
+/// `registerValidator(bytes32,bytes)` (the clone re-emits the same call); only the
+/// selector and the tx target (the clone, not the registry) differ. PINNED + drift-tested.
+pub const MEMBER_BOND_ACTIVATE_SELECTOR: [u8; 4] = [0x4b, 0xac, 0x89, 0xff];
+
+/// ABI-encode `MemberBond.activate(bytes32 proposerPubkey, bytes ed25519Sig)` calldata.
+/// Same head/tail layout as [`register_validator_calldata`] (bytes32 + dynamic bytes,
+/// 64-byte sig already 32-aligned); only the selector differs.
+pub fn member_bond_activate_calldata(proposer_pubkey: &[u8; 32], ed25519_sig: &[u8; 64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 32 * 3 + 64);
+    out.extend_from_slice(&MEMBER_BOND_ACTIVATE_SELECTOR);
     out.extend_from_slice(proposer_pubkey); // head word 1: bytes32
     out.extend_from_slice(&word_u64(0x40)); // head word 2: offset to the bytes arg
     out.extend_from_slice(&word_u64(64)); // tail: byte length
@@ -326,6 +362,21 @@ mod tests {
     fn selectors_match_the_contract_signatures() {
         assert_eq!(REGISTER_VALIDATOR_SELECTOR, keccak256(b"registerValidator(bytes32,bytes)")[..4]);
         assert_eq!(REGISTRATION_NONCE_SELECTOR, keccak256(b"registrationNonce(address)")[..4]);
+        // Bond-clone activation: the member calls MemberBond.activate, not the registry.
+        assert_eq!(MEMBER_BOND_ACTIVATE_SELECTOR, keccak256(b"activate(bytes32,bytes)")[..4]);
+    }
+
+    #[test]
+    fn member_bond_activate_calldata_matches_register_layout_bar_the_selector() {
+        // The clone re-emits registerValidator, so activate's wire shape is identical
+        // to register_validator_calldata except the leading selector.
+        let pubkey = proposer_pubkey_from_seed(&[0x01; 32]);
+        let sig = sign_registration(&[0x01; 32], 40204, &addr20(REGISTRY), &addr20(STAKER), 0);
+        let activate = member_bond_activate_calldata(&pubkey, &sig);
+        let register = register_validator_calldata(&pubkey, &sig);
+        assert_eq!(&activate[..4], &MEMBER_BOND_ACTIVATE_SELECTOR, "activate selector");
+        assert_ne!(&activate[..4], &register[..4], "distinct selector from registerValidator");
+        assert_eq!(&activate[4..], &register[4..], "identical bytes32+bytes body");
     }
 
     #[test]

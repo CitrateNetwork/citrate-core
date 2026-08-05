@@ -298,6 +298,12 @@ export class Store {
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
   private modelTimer: ReturnType<typeof setInterval> | null = null;
   private nodeStarting = false;
+  // W1.x — true once the producer has been armed this session (the node respawns
+  // with --mine and mints proposer.key). Gate for `maybeAutoBond` step 1.
+  private validatorArmed = false;
+  // W1.3 — true once the onboarding S6 auto bond-activation ceremony has been opened this
+  // session, so `maybeAutoBond` does not re-open the wallet review every 2s poll.
+  private autoBondAttempted = false;
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
@@ -358,7 +364,16 @@ export class Store {
       this.nodeTimer = setInterval(() => void this.refreshNode(), 2000);
       // BC-3 — fold the REAL local-model status on launch so the S6.5 step (and
       // Settings) show a resumed download / an already-verified model honestly.
-      void this.refreshModel();
+      // AND actually RESUME it: a prior session that was mid-download leaves the
+      // status "downloading" (a `.part` on disk) but NOTHING re-drives the fetch on
+      // the next launch — so the bar froze at its last % forever with no network
+      // activity (observed 2026-08-05). If we resolve to "downloading" and the
+      // member hasn't skipped, kick the streamed (Range-resumable) fetch again.
+      void this.refreshModel().then(() => {
+        if (this.state.modelState === "downloading" && !this.state.modelSkipped) {
+          this.startModelDownload();
+        }
+      });
       // Seamless device-bound unlock FIRST (passphrase-less model): a fresh launch
       // starts with a LOCKED in-memory session, and there is no user passphrase to
       // enter, so nothing else re-unlocks the vault. Every wallet read below is gated
@@ -693,11 +708,30 @@ export class Store {
     if (this.state.node === "paused") return; // respect an explicit pause
     try {
       const st = await bridge.node.status();
-      const staked = (this.state.hasGrant ? 32000 : 0) + this.state.selfStake;
+      // REAL validator bond (SALT) from the ValidatorRegistry (pubkeyOfStaker(bond)
+      // → stakeOf, via grantStatus, keyed on the member's MemberBond clone). This —
+      // NOT `hasGrant` — is what makes a member a validator: the membership grant
+      // deploys + funds the clone (bond-clone model, 2026-08-05), and the member
+      // activates it via `MemberBond.activate`, whose clone then bonds into the
+      // registry. Reading `hasGrant ? 32000` here was the Rule-1 lie that let a
+      // funded-but-unactivated member read as "validating" with 0 actually bonded.
+      // Read the bond only while the node is running and we are still WAITING for it
+      // (< 32k); once bonded the value is stable, so we stop re-reading it every 2s.
+      let bonded = this.state.bondedStake;
+      if (st.state === "running" && bonded < 32000) {
+        try {
+          const g = await bridge.membership.grantStatus(this.identity().wallet);
+          bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
+        } catch {
+          /* honest no-op: keep the last real bond value, never fabricate */
+        }
+      }
+      const staked = bonded + this.state.selfStake;
       const patch: Partial<AppState> = {
         height: st.height,
         peers: st.peers,
         syncPct: st.syncPct,
+        bondedStake: bonded,
         // There is NO real finality/checkpoint-age source from the node yet
         // (WO-1 adds citrate_getDagStats). Mark it unavailable (< 0) rather than
         // leaving the fabricated seed value — displays render "—" (Rule 1).
@@ -717,9 +751,69 @@ export class Store {
         /* honest no-op: keep the last real log tail, never a fabricated one */
       }
       this.setState(patch);
+      // W1.3 — auto-initiate the validator bond activation during onboarding S6 once
+      // the node is running (proposer.key minted) and the member is granted + linked
+      // but not yet activated. Rule 3 forbids auto-approve, so this only OPENS the
+      // wallet review; the human still approves the MemberBond.activate ceremony once.
+      this.maybeAutoBond();
     } catch {
       /* honest no-op: a failed poll keeps the last real values, never a sim number */
     }
+  }
+
+  /**
+   * W1.3 (@rule8 · Rule 3) — auto-open the validator bond-activation ceremony during
+   * onboarding S6. Under the bond-clone model (2026-08-05) the membership grant
+   * deploys + funds the member's `MemberBond` clone with the 32k; the member must
+   * then ACTIVATE it via `MemberBond.activate(pubkey, sig)` on the clone (from their
+   * own EOA, the clone's `onlyMember`), which makes the clone bond into the registry.
+   * Until activation the 32k just sits in the clone and the node is never a real
+   * validator (the gap the pre-fix flow left open). This fires the EXISTING
+   * `activateValidator` path — it builds the ceremony and STOPS for explicit human
+   * approval (no auto-approve).
+   *
+   * Fires at most once per session (`autoBondAttempted`): if the member dismisses
+   * the review, S6 keeps its manual "bond" affordance rather than re-opening the
+   * modal every 2s. Guards fail closed — a not-ready node / unlinked wallet / not-yet-
+   * granted member simply does not trigger (and `node_register_validator`'s own
+   * on-chain guards — bond deployed + funded, not already activated — fail closed
+   * again behind it).
+   */
+  private maybeAutoBond(): void {
+    if (BRIDGE_MODE !== "tauri") return;
+    const s = this.state;
+    if (s.stage !== "s6") return; // only during node ignition; the dashboard has its own button
+    if (s.bondedStake >= 32000) return; // already a bonded validator — nothing to do
+    if (!this.walletIsLinked()) return; // S4: the EOA must be the member's wallet_address
+    if (!s.hasGrant) return; // the grant must have deployed + funded the bond clone (settled S5)
+
+    // STEP 1 — ARM the producer so the node mints `proposer.key` (the validator
+    // identity activation needs). The node runs as a plain follower and NEVER mints
+    // the key on its own; arming respawns it with `--mine --coinbase`, which does.
+    // Gate on the node being "synced" (mapNodeState requires syncPct==100) — and
+    // `arm_mining_if_synced` re-checks the network tip on the backend, so a premature
+    // call is a safe no-op. Retry each 2s poll until it actually arms (returns true);
+    // only THEN advance to activation, so we never open a doomed ceremony against a
+    // missing key.
+    if (!this.validatorArmed) {
+      if (s.node === "synced" || s.node === "validating") {
+        void bridge.node.armMining().then((armed) => {
+          if (armed) this.validatorArmed = true;
+        });
+      }
+      return; // wait for the arm + the proposer.key mint before activating
+    }
+
+    // STEP 2 — the producer is armed and proposer.key is (being) minted. Auto-open
+    // the MemberBond.activate ceremony. `activateValidator` returns false WITHOUT
+    // consuming the attempt if the key isn't on disk yet (respawn still in flight),
+    // so the poll retries until it opens. Rule 3: this only OPENS the review — the
+    // human approves once.
+    if (s.walletReview) return; // a review is already open
+    if (this.autoBondAttempted) return; // opened once this session
+    void this.activateValidator().then((opened) => {
+      if (opened) this.autoBondAttempted = true;
+    });
   }
 
   /**
@@ -1031,7 +1125,7 @@ export class Store {
       peers: s.peers,
       finalityAge: Math.round(s.finAge),
       nodeState: nodeLabelLocal(s.node),
-      staked: (s.hasGrant ? 32000 : 0) + s.selfStake,
+      staked: s.bondedStake + s.selfStake,
       liquid: s.liquid,
       claimable: s.claimable,
       earningsToday: s.earnToday,
@@ -1091,7 +1185,14 @@ export class Store {
           const np = Math.min(100, s.syncPct + 5 + Math.random() * 9);
           u.syncPct = np;
           if (np >= 100) {
-            u.node = ((s.hasGrant ? 32000 : 0) + s.selfStake) >= 32000 ? "validating" : "synced";
+            // SIM-ONLY preview: the sim has no real ValidatorRegistry, so it treats
+            // a granted member's principal as the bond and folds it into
+            // `bondedStake` too, keeping the fabricated node state and the
+            // `snapshot().staked` vitals (= bondedStake + selfStake) coherent. The
+            // REAL tauri path reads the genuine registry bond in refreshNode.
+            const simBond = s.hasGrant ? 32000 : 0;
+            u.bondedStake = simBond;
+            u.node = simBond + s.selfStake >= 32000 ? "validating" : "synced";
             if (s.stage === "s6") u.s6ready = true;
           }
         }
@@ -1762,25 +1863,31 @@ export class Store {
   }
 
   /**
-   * W1.3 (@rule8) — activate the member's node as a block-producing validator.
-   * Builds the pending `registerValidator{value:32k}` ceremony
+   * W1.3 (@rule8) — activate the member's node as a block-producing validator
+   * (bond-clone model). Builds the pending `MemberBond.activate(pubkey, sig)` ceremony
    * (bridge.node.registerValidator → node_register_validator: reads the live nonce,
-   * signs the register digest with the node's `proposer.key`, staker = the member
-   * EOA), then STOPS and surfaces the decoded tx for human approval. On approval it
-   * broadcasts (B1.4): the 32k bond leaves the wallet into ValidatorRegistry, the
-   * node enters the active set, and it begins producing + earning the subsidy.
-   * Only meaningful once the node is synced + its proposer.key is minted; a
-   * not-ready node (or web-dev) errors honestly — never a fabricated activation.
+   * signs the register digest with the node's `proposer.key`, staker = the member's
+   * bond CLONE), then STOPS and surfaces the decoded tx for human approval. The tx is
+   * sent from the member EOA to the clone and carries NO value — the 32k already lives
+   * in the clone. On approval it broadcasts (B1.4): the clone forwards its principal
+   * into ValidatorRegistry, the node enters the active set, and it begins producing +
+   * earning the subsidy. Only meaningful once the node is synced + its proposer.key is
+   * minted AND the bond is deployed + funded; a not-ready node (or web-dev) errors
+   * honestly — never a fabricated activation.
    */
-  async activateValidator(): Promise<void> {
+  async activateValidator(): Promise<boolean> {
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
     try {
       view = await bridge.node.registerValidator();
     } catch (err) {
+      // Honest failure — most often "proposer key not available yet" while the
+      // armed node is still respawning/minting it. Return false so the auto-bond
+      // caller does NOT consume its one-shot attempt and simply retries next poll.
       this.toast("Validator activation unavailable — " + String((err as Error).message ?? err));
-      return;
+      return false;
     }
     this.openWalletReview("stake", "Activate validator · bond 32,000 SALT", view, "32,000 SALT validator bond");
+    return true;
   }
 
   /**
@@ -1788,10 +1895,11 @@ export class Store {
    *
    * WHY IT COMES FIRST. The authority mints a `wallet_address` claim for every
    * member; until a wallet is linked that claim is the counterfactual smart-wallet
-   * address, which no private key can spend from. The membership money path pays
-   * THAT address, while the validator self-bond is sent from this device's custody
-   * EOA — so activating before linking means the 32,000 SALT bond lands somewhere
-   * the member cannot reach. Linking makes the two the same address.
+   * address, which no private key can spend from. The membership money path grants to
+   * THAT address (it becomes the `MemberBond` clone's `member`/`onlyMember`), while
+   * the bond activation (`MemberBond.activate`) is sent from this device's custody
+   * EOA — so if they differ, the clone is bound to an address this device cannot sign
+   * as and `activate` reverts `onlyMember`. Linking makes the two the same address.
    *
    * Signs nothing here: this builds the pending personal_sign ceremony and STOPS,
    * exactly like every other wallet action. The human sees the authority's
@@ -1999,6 +2107,10 @@ export class Store {
       this.setState({ walletReview: null });
       if (r.kind === "claim") await this.refreshEarnings();
       else await this.refreshWallet();
+      // Activating the bond (MemberBond.activate) makes the clone bond its principal
+      // into the ValidatorRegistry — re-read the REAL bond now so the node flips to
+      // "validating" immediately instead of waiting for the next 2s poll.
+      if (r.kind === "stake") await this.refreshNode();
       if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
       await this.refreshActivity();
       this.save();
