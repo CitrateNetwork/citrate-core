@@ -4,7 +4,7 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, describeBond, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
 import { bridge } from "../bridge";
 import type { CeremonyView, AuthStatus } from "../bridge/types";
@@ -673,65 +673,82 @@ describe("wallet link — binding this device's wallet to the identity", () => {
 });
 
 // ---------------------------------------------------------------------------
-// isGrantOnChain — the stake can live in TWO places.
+// isGrantOnChain — the vault is the answer again (M-2, citrate-chain #141).
 //
-// Before ADR 2026-07-27 the grant staked into MembershipStakeVault. Under the
-// bond-fund model the treasury funds the member's EOA and the member self-bonds,
-// so the principal sits in the ValidatorRegistry and the vault reads 0 FOREVER.
-// Settling on the vault alone left a correctly-bonded validator permanently
-// "ungranted" — working, but indistinguishable from broken.
+// This gate was widened twice, both times because the model moved the principal
+// somewhere it could not see: ADR 2026-07-27 funded the member's own EOA (native
+// leg), then they self-bonded into the registry (bonded leg). Settling on the
+// vault alone left a correctly-granted member polling forever — the 2026-07-28
+// stall.
+//
+// Under M-2 the principal has ONE home (the MemberBond escrow) and the vault
+// attributes it from grant time, so attribution is durable and both extra legs go.
+// They would be WRONG to keep: the registry reads 0 until the member activates
+// (days), and the native leg never fills — M-2 sends only ~0.05 SALT of gas.
 // ---------------------------------------------------------------------------
-describe("isGrantOnChain — vault OR bonded stake settles the grant leg", () => {
+describe("isGrantOnChain — vault attribution settles the grant leg", () => {
   const REQ = (32000n * 10n ** 18n).toString();
 
   it("no SBT is never granted, whatever the stake says", () => {
-    expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: false, bondedStakeWei: REQ })).toBe(false);
+    expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: false })).toBe(false);
   });
 
-  it("legacy vault grant still settles (the member granted before bond-fund)", () => {
-    expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: true, bondedStakeWei: "0" })).toBe(true);
-  });
-
-  // THE REGRESSION: this is the real post-bond-fund shape and it returned false
-  // before the fix, so a bonded validator never settled.
-  it("BOND-FUND: zero vault stake but a bonded validator DOES settle", () => {
-    expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: REQ })).toBe(true);
-  });
-
-  // THE 2026-07-28 STALL: right after payment the treasury funded the member's EOA
-  // natively (32k) + minted the SBT, but the member hasn't self-bonded yet, so BOTH
-  // vault and registry read 0. Before the native leg this member polled forever.
-  it("BOND-FUND (just granted): funded native EOA, not yet self-bonded, DOES settle", () => {
-    expect(
-      isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: "0", nativeBalanceWei: REQ }),
-    ).toBe(true);
-  });
-
-  it("native funding without the SBT is NEVER granted (SBT is the hard precondition)", () => {
-    expect(
-      isGrantOnChain({ attributedStakeWei: "0", hasSbt: false, bondedStakeWei: "0", nativeBalanceWei: REQ }),
-    ).toBe(false);
-  });
-
-  it("neither source reaching the requirement does not settle", () => {
-    expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true, bondedStakeWei: "0", nativeBalanceWei: "0" })).toBe(false);
-    const short = (31999n * 10n ** 18n).toString();
-    expect(isGrantOnChain({ attributedStakeWei: short, hasSbt: true, bondedStakeWei: short, nativeBalanceWei: short })).toBe(false);
-  });
-
-  it("the two are NOT summed — a member cannot reach the bar by halves", () => {
-    const half = (16000n * 10n ** 18n).toString();
-    expect(isGrantOnChain({ attributedStakeWei: half, hasSbt: true, bondedStakeWei: half })).toBe(false);
-  });
-
-  it("an unparseable value contributes 0 rather than throwing (fail-closed)", () => {
-    expect(isGrantOnChain({ attributedStakeWei: "not-a-number", hasSbt: true, bondedStakeWei: REQ })).toBe(true);
-    expect(isGrantOnChain({ attributedStakeWei: "not-a-number", hasSbt: true, bondedStakeWei: "0" })).toBe(false);
-  });
-
-  it("an absent bondedStakeWei (older bridge) still works off the vault alone", () => {
+  it("attribution at or above the requirement settles", () => {
     expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: true })).toBe(true);
+  });
+
+  // THE M-2 WINDOW: granted and funded, but the member has not run the activation
+  // ceremony — the registry reads 0 for days. Settling on it would report a
+  // granted member as ungranted: the mirror image of the stall the legs fixed.
+  it("a granted-but-not-yet-activated member settles on attribution alone", () => {
+    expect(isGrantOnChain({ attributedStakeWei: REQ, hasSbt: true })).toBe(true);
+  });
+
+  it("below the requirement does not settle", () => {
     expect(isGrantOnChain({ attributedStakeWei: "0", hasSbt: true })).toBe(false);
+    const short = (31999n * 10n ** 18n).toString();
+    expect(isGrantOnChain({ attributedStakeWei: short, hasSbt: true })).toBe(false);
+  });
+
+  it("an unparseable value fails closed rather than throwing", () => {
+    expect(isGrantOnChain({ attributedStakeWei: "not-a-number", hasSbt: true })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// describeBond — what the dashboard says about the lock (M-2.2 / M-2.3).
+// ---------------------------------------------------------------------------
+describe("describeBond — honest about the lock and the KYC gate", () => {
+  const base = {
+    bondDeployed: true,
+    unlockBlock: 300_000,
+    isUnlocked: false,
+    isKycVerified: false,
+    hasValidator: false,
+  };
+
+  it("never claims 'staked' for a member whose escrow does not exist", () => {
+    expect(describeBond({ ...base, bondDeployed: false })).toBe("Not yet staked");
+  });
+
+  it("names the unlock height while locked", () => {
+    expect(describeBond(base)).toBe("Staked · unlocks at block 300,000");
+  });
+
+  // Owner decision A.6: KYC supersedes the lock. An unverified member must NOT be
+  // told their funds are available just because the year elapsed.
+  it("an unlocked but unverified member is told KYC is required, not that they can withdraw", () => {
+    expect(describeBond({ ...base, isUnlocked: true })).toBe("Unlocked · KYC required to withdraw");
+  });
+
+  // Owner decision A.5: unlock makes exit ELIGIBLE. "can withdraw", never "has".
+  it("an unlocked, verified member CAN withdraw — eligibility, not a payout", () => {
+    expect(describeBond({ ...base, isUnlocked: true, isKycVerified: true })).toBe(
+      "Unlocked · can withdraw",
+    );
+    expect(
+      describeBond({ ...base, isUnlocked: true, isKycVerified: true, hasValidator: true }),
+    ).toBe("Unlocked · validating · can withdraw");
   });
 });
 

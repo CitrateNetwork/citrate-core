@@ -69,9 +69,34 @@ pub fn citrate_member_sbt() -> &'static str {
 /// mis-settle S5 (@rule8).
 const ATTRIBUTED_STAKE_SELECTOR: [u8; 4] = [0xb9, 0x2e, 0x7e, 0xcb];
 
-/// 4-byte selector for `attributedShares(address)` —
-/// `keccak256("attributedShares(address)")[..4]`. PINNED + drift-tested.
-const ATTRIBUTED_SHARES_SELECTOR: [u8; 4] = [0x90, 0x81, 0x00, 0x72];
+/// 4-byte selector for `attributedPrincipal(address)` —
+/// `keccak256("attributedPrincipal(address)")[..4]`. PINNED + drift-tested.
+///
+/// M-2 (citrate-chain #141) REPLACED `attributedShares` with this. The old name
+/// was an stSALT SHARE COUNT from the pool model; there are no shares under
+/// bonding, so the old selector would hit a function the vault no longer has and
+/// return empty — a drift that reads as "0 shares" rather than as an error.
+const ATTRIBUTED_PRINCIPAL_SELECTOR: [u8; 4] = [0x60, 0xde, 0xc6, 0xe8];
+
+/// 4-byte selector for `bondOf(address)` — `keccak256("bondOf(address)")[..4]`.
+/// PINNED + drift-tested. Returns the member's `MemberBond` escrow address,
+/// CREATE2-deterministic so it resolves even before the bond is deployed.
+const BOND_OF_SELECTOR: [u8; 4] = [0x72, 0xd2, 0xb6, 0xc0];
+
+/// `MemberBond.unlockBlock()` — `keccak256("unlockBlock()")[..4]`. PINNED.
+const UNLOCK_BLOCK_SELECTOR: [u8; 4] = [0xea, 0x35, 0xdf, 0x16];
+
+/// `MemberBond.isUnlocked()` — `keccak256("isUnlocked()")[..4]`. PINNED. True
+/// once EITHER lock leg has elapsed (height or wall-clock).
+const IS_UNLOCKED_SELECTOR: [u8; 4] = [0x83, 0x80, 0xed, 0xb7];
+
+/// `MemberBond.isKycVerified()` — `keccak256("isKycVerified()")[..4]`. PINNED.
+/// Reads through to the SBT attestation; gates money OUT, never participation.
+const IS_KYC_VERIFIED_SELECTOR: [u8; 4] = [0xb2, 0x0e, 0xa7, 0x04];
+
+/// `MemberBond.activated()` — `keccak256("activated()")[..4]`. PINNED. True once
+/// the member has bonded their principal into the registry via the ceremony.
+const ACTIVATED_SELECTOR: [u8; 4] = [0x18, 0x66, 0x01, 0xca];
 
 /// 4-byte selector for `VALIDATOR_STAKE_REQUIREMENT()` (no args) —
 /// `keccak256("VALIDATOR_STAKE_REQUIREMENT()")[..4]`. PINNED + drift-tested. The
@@ -115,9 +140,34 @@ pub fn attributed_stake_selector() -> [u8; 4] {
     ATTRIBUTED_STAKE_SELECTOR
 }
 
-/// Selector for `attributedShares(address)`.
-pub fn attributed_shares_selector() -> [u8; 4] {
-    ATTRIBUTED_SHARES_SELECTOR
+/// Selector for `attributedPrincipal(address)`.
+pub fn attributed_principal_selector() -> [u8; 4] {
+    ATTRIBUTED_PRINCIPAL_SELECTOR
+}
+
+/// Selector for `bondOf(address)`.
+pub fn bond_of_selector() -> [u8; 4] {
+    BOND_OF_SELECTOR
+}
+
+/// Selector for `MemberBond.unlockBlock()`.
+pub fn unlock_block_selector() -> [u8; 4] {
+    UNLOCK_BLOCK_SELECTOR
+}
+
+/// Selector for `MemberBond.isUnlocked()`.
+pub fn is_unlocked_selector() -> [u8; 4] {
+    IS_UNLOCKED_SELECTOR
+}
+
+/// Selector for `MemberBond.isKycVerified()`.
+pub fn is_kyc_verified_selector() -> [u8; 4] {
+    IS_KYC_VERIFIED_SELECTOR
+}
+
+/// Selector for `MemberBond.activated()`.
+pub fn activated_selector() -> [u8; 4] {
+    ACTIVATED_SELECTOR
 }
 
 /// Selector for `VALIDATOR_STAKE_REQUIREMENT()`.
@@ -166,30 +216,45 @@ pub struct GrantStatus {
     /// store settles the grant leg when this `>= VALIDATOR_STAKE_REQUIREMENT`.
     #[serde(rename = "attributedStakeWei")]
     pub attributed_stake_wei: String,
-    /// `MembershipStakeVault.attributedShares(member)` in wei (decimal string). A
-    /// granted member reads `> 0`.
-    #[serde(rename = "attributedSharesWei")]
-    pub attributed_shares_wei: String,
+    /// `MembershipStakeVault.attributedPrincipal(member)` in wei (decimal string).
+    /// M-2 replaced `attributedShares` (an stSALT share count) with raw bonded
+    /// principal. A granted member reads `> 0`.
+    #[serde(rename = "attributedPrincipalWei")]
+    pub attributed_principal_wei: String,
+    /// `MembershipStakeVault.bondOf(member)` — the member's bond escrow. Always
+    /// present (CREATE2-deterministic); `bond_deployed` says whether it is real.
+    #[serde(rename = "bondAddress")]
+    pub bond_address: String,
+    /// Whether the escrow at `bond_address` actually exists on chain yet. The
+    /// address alone would imply a bond that may never have been created.
+    #[serde(rename = "bondDeployed")]
+    pub bond_deployed: bool,
+    /// `MemberBond.unlockBlock()` — the height leg of the 1-year lock. `None`
+    /// until the bond exists.
+    #[serde(rename = "unlockBlock")]
+    pub unlock_block: Option<u64>,
+    /// `MemberBond.isUnlocked()` — true once EITHER lock leg has elapsed (height
+    /// or wall-clock). Unlock makes exit ELIGIBLE; it never moves funds itself.
+    #[serde(rename = "isUnlocked")]
+    pub is_unlocked: bool,
+    /// `MemberBond.isKycVerified()` — the SBT attestation the bond reads FIRST on
+    /// every value-out path. Gates money OUT only: an unverified member keeps
+    /// membership, access and their validator slot (owner decision A.7).
+    #[serde(rename = "isKycVerified")]
+    pub is_kyc_verified: bool,
     /// `CitrateMemberSBT.balanceOf(member) == 1` — the member holds the SBT.
     #[serde(rename = "hasSbt")]
     pub has_sbt: bool,
-    /// `ValidatorRegistry.stakeOf(pubkeyOfStaker(member))` in wei (decimal string)
-    /// — the BONDED principal. Under the bond-fund model this is where a member's
-    /// 32k actually is; the vault fields above read 0 for such a member.
+    /// `ValidatorRegistry.stakeOf(pubkeyOfStaker(bond))` in wei (decimal string) —
+    /// the principal actually bonded in the registry. Zero until the member runs
+    /// the activation ceremony; the vault's attribution is set from grant time, so
+    /// this is NOT the settle signal.
     #[serde(rename = "bondedStakeWei")]
     pub bonded_stake_wei: String,
-    /// `pubkeyOfStaker(member) != 0` — the member has registered a validator.
+    /// `pubkeyOfStaker(bondOf(member)) != 0` — the member has ACTIVATED a
+    /// validator. NOTE the staker is the member's BOND CLONE, not the member.
     #[serde(rename = "hasValidator")]
     pub has_validator: bool,
-    /// `eth_getBalance(member)` in wei (decimal string) — the member EOA's native
-    /// SALT. Under the ADR 2026-07-27 bond-fund model the grant funds the member's
-    /// OWN EOA with the 32k bond (replacing `vault.grant`), so a just-granted member
-    /// who has NOT yet self-bonded holds the grant principal HERE — the vault AND
-    /// registry both read 0 for such a member. The store's settle gate folds this in
-    /// so a funded-but-not-yet-registered member settles honestly (Rule 1: a live
-    /// read, never a fabricated grant).
-    #[serde(rename = "nativeBalanceWei")]
-    pub native_balance_wei: String,
 }
 
 /// Validate a `0x`-prefixed 20-byte hex address; return the lowercased canonical
@@ -226,16 +291,36 @@ fn attributed_stake_call(addr: &str) -> serde_json::Value {
     })
 }
 
-/// The `eth_call` object for `attributedShares(member)` on the vault: `{to, data}`.
-fn attributed_shares_call(addr: &str) -> serde_json::Value {
-    let calldata = encode_address_calldata(attributed_shares_selector(), addr);
+/// The `eth_call` object for `attributedPrincipal(member)` on the vault.
+fn attributed_principal_call(addr: &str) -> serde_json::Value {
+    let calldata = encode_address_calldata(attributed_principal_selector(), addr);
     serde_json::json!({
         "to": membership_stake_vault(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
 
-/// The `eth_call` object for `pubkeyOfStaker(member)` on the registry: `{to, data}`.
+/// The `eth_call` object for `bondOf(member)` on the vault: `{to, data}`.
+fn bond_of_call(addr: &str) -> serde_json::Value {
+    let calldata = encode_address_calldata(bond_of_selector(), addr);
+    serde_json::json!({
+        "to": membership_stake_vault(),
+        "data": format!("0x{}", hex::encode(calldata)),
+    })
+}
+
+/// An `eth_call` object for a no-argument getter on the member's bond escrow.
+fn bond_nullary_call(bond: &str, selector: [u8; 4]) -> serde_json::Value {
+    serde_json::json!({
+        "to": bond,
+        "data": format!("0x{}", hex::encode(selector)),
+    })
+}
+
+/// The `eth_call` object for `pubkeyOfStaker(staker)` on the registry.
+///
+/// The staker under M-2 is the member's BOND CLONE, not the member — passing the
+/// member address here reads zero forever.
 fn pubkey_of_staker_call(addr: &str) -> serde_json::Value {
     let calldata = encode_address_calldata(pubkey_of_staker_selector(), addr);
     serde_json::json!({
@@ -307,11 +392,11 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
     let attributed_stake =
         decode_uint256_word(&stake_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
 
-    let shares_ret = rpc
-        .eth_call(attributed_shares_call(&addr))
+    let principal_ret = rpc
+        .eth_call(attributed_principal_call(&addr))
         .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-    let attributed_shares =
-        decode_uint256_word(&shares_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
+    let attributed_principal =
+        decode_uint256_word(&principal_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
 
     let sbt_ret = rpc
         .eth_call(sbt_balance_of_call(&addr))
@@ -319,46 +404,90 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
     let sbt_balance =
         decode_uint256_word(&sbt_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
 
-    // ValidatorRegistry: the member's pubkey binding, then its bonded principal.
-    // A zero pubkey means "no validator" — we do NOT then call stakeOf, because
-    // stakeOf(0) is a meaningless read rather than an honest zero.
-    let pubkey_ret = rpc
-        .eth_call(pubkey_of_staker_call(&addr))
+    // The member's bond escrow. CREATE2-deterministic, so this answers even for a
+    // member who has never been granted — which is exactly why the address alone is
+    // not evidence of anything and `bond_deployed` is read separately.
+    let bond_ret = rpc
+        .eth_call(bond_of_call(&addr))
         .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-    let pubkey_word = decode_word32(&pubkey_ret)
-        .ok_or_else(|| {
+    let bond_word = decode_word32(&bond_ret).ok_or_else(|| {
+        GrantStatusError::Decode(format!(
+            "short bondOf return ({} bytes, need 32)",
+            bond_ret.len()
+        ))
+    })?;
+    let bond_address = format!("0x{}", hex::encode(&bond_word[12..32]));
+
+    // Bond getters. An `eth_call` to an address with NO CODE returns empty, so a
+    // short return here means "not deployed yet" rather than a decode fault — the
+    // honest reading for a member whose grant has not landed. Every downstream
+    // field then reports its fail-closed value (locked, unverified, no validator).
+    let unlock_ret = rpc
+        .eth_call(bond_nullary_call(&bond_address, unlock_block_selector()))
+        .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+    let bond_deployed = unlock_ret.len() >= 32;
+
+    let (unlock_block, is_unlocked, is_kyc_verified) = if bond_deployed {
+        let unlock =
+            decode_uint256_word(&unlock_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
+        let unlocked_ret = rpc
+            .eth_call(bond_nullary_call(&bond_address, is_unlocked_selector()))
+            .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+        let kyc_ret = rpc
+            .eth_call(bond_nullary_call(&bond_address, is_kyc_verified_selector()))
+            .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+        (
+            Some(unlock as u64),
+            decode_uint256_word(&unlocked_ret).map(|v| v == 1).unwrap_or(false),
+            decode_uint256_word(&kyc_ret).map(|v| v == 1).unwrap_or(false),
+        )
+    } else {
+        (None, false, false)
+    };
+
+    // ValidatorRegistry: the STAKER's pubkey binding, then its bonded principal.
+    //
+    // The staker is the member's BOND CLONE, not the member — reading
+    // `pubkeyOfStaker(member)` returns zero forever under M-2 and would report a
+    // fully-activated validator as having none. Skipped entirely when the bond does
+    // not exist: `pubkeyOfStaker` on a codeless address is meaningless rather than
+    // an honest zero, and so is `stakeOf(0)`.
+    let (has_validator, bonded_stake) = if bond_deployed {
+        let pubkey_ret = rpc
+            .eth_call(pubkey_of_staker_call(&bond_address))
+            .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+        let pubkey_word = decode_word32(&pubkey_ret).ok_or_else(|| {
             GrantStatusError::Decode(format!(
                 "short pubkeyOfStaker return ({} bytes, need 32)",
                 pubkey_ret.len()
             ))
         })?;
-    let has_validator = pubkey_word.iter().any(|b| *b != 0);
-
-    let bonded_stake = if has_validator {
-        let bonded_ret = rpc
-            .eth_call(stake_of_call(&pubkey_word))
-            .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-        decode_uint256_word(&bonded_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?
+        let has = pubkey_word.iter().any(|b| *b != 0);
+        let staked = if has {
+            let bonded_ret = rpc
+                .eth_call(stake_of_call(&pubkey_word))
+                .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
+            decode_uint256_word(&bonded_ret)
+                .map_err(|e| GrantStatusError::Decode(e.to_string()))?
+        } else {
+            0
+        };
+        (has, staked)
     } else {
-        0
+        (false, 0)
     };
-
-    // Native balance (eth_getBalance): the ADR 2026-07-27 bond-fund grant funds the
-    // member's OWN EOA with the 32k bond instead of `vault.grant`, so a just-granted
-    // member who has not yet self-bonded holds the principal as native SALT here
-    // (vault + registry both read 0). Read it LAST so the eth_call ordering above is
-    // unchanged; the settle gate treats this as an alternative "grant landed" signal.
-    let native_balance = rpc
-        .get_balance(&addr)
-        .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
 
     Ok(GrantStatus {
         attributed_stake_wei: attributed_stake.to_string(),
-        attributed_shares_wei: attributed_shares.to_string(),
+        attributed_principal_wei: attributed_principal.to_string(),
         has_sbt: sbt_balance == 1,
+        bond_address,
+        bond_deployed,
         bonded_stake_wei: bonded_stake.to_string(),
         has_validator,
-        native_balance_wei: native_balance.to_string(),
+        unlock_block,
+        is_unlocked,
+        is_kyc_verified,
     })
 }
 

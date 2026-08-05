@@ -77,6 +77,14 @@ const MEMBER_ADDR: &str = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
 // 32,000 SALT in wei — the validator stake requirement a granted member must meet.
 const REQUIREMENT_WEI: u128 = 32_000u128 * 1_000_000_000_000_000_000u128;
 
+/// The member's `MemberBond` escrow (M-2). A DISTINCT address from `MEMBER_ADDR`
+/// on purpose: these tests exist to prove the registry's staker is the CLONE, and
+/// a read accidentally pointed at the member would pass unnoticed if the two
+/// values were the same.
+const BOND_ADDR: &str = "0x00000000000000000000000000000000000b0d1e";
+/// `bondOf`'s 32-byte return word: the address left-padded to a full word.
+const BOND_WORD: &str = "0x00000000000000000000000000000000000000000000000000000000000b0d1e";
+
 // ===========================================================================
 // Canonical address + selector pins (Rule 11 tripwires)
 // ===========================================================================
@@ -121,14 +129,30 @@ fn attributed_stake_selector_is_keccak_of_signature() {
     );
 }
 
-/// The pinned `attributedShares(address)` selector is the REAL keccak of the
+/// The pinned `attributedPrincipal(address)` selector is the REAL keccak of the
 /// signature (Rule 11 drift tripwire).
+///
+/// M-2 replaced `attributedShares` with this. The old selector would hit a
+/// function the vault no longer has and return empty — a drift that reads as
+/// "0 shares" rather than as an error.
 #[test]
-fn attributed_shares_selector_is_keccak_of_signature() {
+fn attributed_principal_selector_is_keccak_of_signature() {
     assert_eq!(
-        attributed_shares_selector(),
-        derive_selector("attributedShares(address)")
+        attributed_principal_selector(),
+        derive_selector("attributedPrincipal(address)")
     );
+}
+
+/// The pinned M-2 bond selectors are the REAL keccaks of their signatures (Rule 11
+/// drift tripwires). A drift here silently mis-reports the LOCK or the KYC gate on
+/// a T1 money surface.
+#[test]
+fn bond_selectors_are_keccak_of_signatures() {
+    assert_eq!(bond_of_selector(), derive_selector("bondOf(address)"));
+    assert_eq!(unlock_block_selector(), derive_selector("unlockBlock()"));
+    assert_eq!(is_unlocked_selector(), derive_selector("isUnlocked()"));
+    assert_eq!(is_kyc_verified_selector(), derive_selector("isKycVerified()"));
+    assert_eq!(activated_selector(), derive_selector("activated()"));
 }
 
 /// The pinned `VALIDATOR_STAKE_REQUIREMENT()` selector is the REAL keccak of the
@@ -203,13 +227,17 @@ fn sbt_balance_of_call_targets_the_sbt_contract() {
 
 #[test]
 fn read_grant_status_granted_member_reads_real_stake_and_sbt() {
-    // Call order: attributedStake, attributedShares, balanceOf(SBT).
+    // M-2 call order: attributedStake, attributedPrincipal, balanceOf(SBT),
+    // bondOf, unlockBlock, isUnlocked, isKycVerified, pubkeyOfStaker(BOND).
     let responses = vec![
         ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedStake == 32000e18
-        ok(JsonValue::String(uint256_hex(1))),               // attributedShares > 0
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedPrincipal
         ok(JsonValue::String(uint256_hex(1))),               // SBT balanceOf == 1
-        ok(JsonValue::String(uint256_hex(0))),               // pubkeyOfStaker == 0 (vault-era member)
-        ok(JsonValue::String(hex_quantity(0))),              // eth_getBalance (native) == 0
+        ok(JsonValue::String(BOND_WORD.to_string())),        // bondOf -> the escrow
+        ok(JsonValue::String(uint256_hex(300_000))),         // unlockBlock (bond IS deployed)
+        ok(JsonValue::String(uint256_hex(0))),               // isUnlocked == false
+        ok(JsonValue::String(uint256_hex(0))),               // isKycVerified == false
+        ok(JsonValue::String(uint256_hex(0))),               // pubkeyOfStaker(bond) == 0
     ];
     let rpc = RpcClient::with_transport(MockRpc::new(responses));
     let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
@@ -219,16 +247,27 @@ fn read_grant_status_granted_member_reads_real_stake_and_sbt() {
         REQUIREMENT_WEI.to_string(),
         "the real attributedStake, not a sim"
     );
-    assert_eq!(status.attributed_shares_wei, "1", "the real attributedShares");
-    assert!(status.has_sbt, "SBT balanceOf==1 → member holds the SBT");
-    assert_eq!(status.native_balance_wei, "0", "vault-era member: 0 native");
+    assert_eq!(
+        status.attributed_principal_wei,
+        REQUIREMENT_WEI.to_string(),
+        "the real attributedPrincipal"
+    );
+    assert!(status.has_sbt, "SBT balanceOf==1 -> member holds the SBT");
+    assert!(status.bond_deployed, "the escrow exists");
+    assert_eq!(status.unlock_block, Some(300_000), "the height leg of the lock");
+    assert!(!status.is_unlocked, "still inside the 1-year lock");
+    assert!(!status.is_kyc_verified, "unverified until the orchestrator attests");
 
-    // The calls targeted the right contracts in order: attributedStake, shares, SBT,
-    // pubkeyOfStaker (this member has no validator, so stakeOf is correctly skipped),
-    // then eth_getBalance (native) last.
+    // The staker read MUST target the BOND, not the member: under M-2 the clone is
+    // the staker, so asking about the member reads zero forever and would report a
+    // fully-activated validator as having none.
     let reqs = rpc.transport().requests();
-    assert_eq!(reqs.len(), 5, "stake, shares, sbt, pubkeyOfStaker, getBalance");
-    assert_eq!(reqs[4]["method"].as_str().unwrap(), "eth_getBalance");
+    assert_eq!(reqs.len(), 8, "stake, principal, sbt, bondOf, 3 bond getters, pubkeyOfStaker");
+    let staker_calldata = reqs[7]["params"][0]["data"].as_str().unwrap().to_ascii_lowercase();
+    assert!(
+        staker_calldata.ends_with(&BOND_ADDR[2..].to_ascii_lowercase()),
+        "pubkeyOfStaker must be asked about the BOND ({BOND_ADDR}); calldata was {staker_calldata}"
+    );
     assert_eq!(
         reqs[0]["params"][0]["to"].as_str().unwrap().to_ascii_lowercase(),
         membership_stake_vault()
@@ -241,21 +280,39 @@ fn read_grant_status_granted_member_reads_real_stake_and_sbt() {
 
 #[test]
 fn read_grant_status_fresh_member_honestly_reads_zero_and_no_sbt() {
-    // A never-granted member: attributedStake=0, attributedShares=0, sbt=0.
+    // A never-granted member: 0 stake, 0 principal, no SBT, and a bond address that
+    // RESOLVES (CREATE2 is deterministic) but has no code — so the bond getters
+    // return empty and every downstream field reports fail-closed.
     let responses = vec![
         ok(JsonValue::String(uint256_hex(0))),
         ok(JsonValue::String(uint256_hex(0))),
         ok(JsonValue::String(uint256_hex(0))),
-        ok(JsonValue::String(uint256_hex(0))), // pubkeyOfStaker == 0 (no validator)
-        ok(JsonValue::String(hex_quantity(0))), // eth_getBalance (native) == 0
+        ok(JsonValue::String(BOND_WORD.to_string())), // bondOf still answers
+        ok(JsonValue::String("0x".to_string())),      // unlockBlock: NO CODE -> empty
     ];
     let rpc = RpcClient::with_transport(MockRpc::new(responses));
     let status = read_grant_status(&rpc, MEMBER_ADDR).expect("fresh grant status read");
 
     assert_eq!(status.attributed_stake_wei, "0", "fresh member: 0 stake");
-    assert_eq!(status.attributed_shares_wei, "0", "fresh member: 0 shares");
+    assert_eq!(status.attributed_principal_wei, "0", "fresh member: 0 principal");
     assert!(!status.has_sbt, "fresh member holds no SBT (balanceOf==0)");
-    assert_eq!(status.native_balance_wei, "0", "fresh member: 0 native");
+    assert_eq!(
+        status.bond_address, BOND_ADDR,
+        "the address resolves even for a never-granted member (CREATE2)"
+    );
+    assert!(
+        !status.bond_deployed,
+        "but it does NOT exist - the address alone must never imply a grant"
+    );
+    assert_eq!(status.unlock_block, None, "no lock without a bond");
+    assert!(!status.is_unlocked, "fail-closed: locked");
+    assert!(!status.is_kyc_verified, "fail-closed: unverified");
+    assert!(!status.has_validator, "no bond, no validator read");
+    assert_eq!(
+        rpc.transport().requests().len(),
+        5,
+        "an undeployed bond short-circuits: no isUnlocked/isKyc/pubkeyOfStaker reads"
+    );
 }
 
 #[test]
@@ -291,11 +348,15 @@ fn read_grant_status_refuses_to_truncate_a_value_beyond_u128() {
 fn grant_status_serializes_camelcase_decimal_strings() {
     let status = GrantStatus {
         attributed_stake_wei: REQUIREMENT_WEI.to_string(),
-        attributed_shares_wei: "1".to_string(),
+        attributed_principal_wei: REQUIREMENT_WEI.to_string(),
         has_sbt: true,
+        bond_address: BOND_ADDR.to_string(),
+        bond_deployed: true,
         bonded_stake_wei: "0".to_string(),
         has_validator: false,
-        native_balance_wei: REQUIREMENT_WEI.to_string(),
+        unlock_block: Some(300_000),
+        is_unlocked: false,
+        is_kyc_verified: false,
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -303,13 +364,13 @@ fn grant_status_serializes_camelcase_decimal_strings() {
         REQUIREMENT_WEI.to_string(),
         "wei as a decimal string, camelCase key (like PendingWithdrawal)"
     );
-    assert_eq!(json["attributedSharesWei"], "1");
+    assert_eq!(json["attributedPrincipalWei"], REQUIREMENT_WEI.to_string());
     assert_eq!(json["hasSbt"], true);
-    assert_eq!(
-        json["nativeBalanceWei"],
-        REQUIREMENT_WEI.to_string(),
-        "the funded-bond native balance crosses the bridge as a camelCase decimal string"
-    );
+    assert_eq!(json["bondAddress"], BOND_ADDR);
+    assert_eq!(json["bondDeployed"], true);
+    assert_eq!(json["unlockBlock"], 300_000, "the lock crosses the bridge as a number");
+    assert_eq!(json["isUnlocked"], false);
+    assert_eq!(json["isKycVerified"], false);
 }
 
 /// The pinned `pubkeyOfStaker(address)` selector is the REAL keccak of the
@@ -334,13 +395,16 @@ fn stake_of_selector_is_keccak_of_signature() {
 /// and `stakeOf` is NEVER called — `stakeOf(0x00…)` is a meaningless read, not an
 /// honest zero, so we must not dress it up as one.
 #[test]
-fn no_validator_reads_zero_bonded_and_never_calls_stake_of() {
+fn no_bond_skips_both_registry_reads_entirely() {
+    // No escrow at all (never granted). `pubkeyOfStaker` on a codeless address is
+    // meaningless rather than an honest zero, and so is `stakeOf(0x00…)` — neither
+    // may be dressed up as a real read.
     let responses = vec![
-        ok(JsonValue::String(uint256_hex(0))),  // attributedStake
-        ok(JsonValue::String(uint256_hex(0))),  // attributedShares
-        ok(JsonValue::String(uint256_hex(0))),  // SBT balanceOf
-        ok(JsonValue::String(uint256_hex(0))),  // pubkeyOfStaker == 0
-        ok(JsonValue::String(hex_quantity(0))), // eth_getBalance (native)
+        ok(JsonValue::String(uint256_hex(0))),        // attributedStake
+        ok(JsonValue::String(uint256_hex(0))),        // attributedPrincipal
+        ok(JsonValue::String(uint256_hex(0))),        // SBT balanceOf
+        ok(JsonValue::String(BOND_WORD.to_string())), // bondOf (resolves, CREATE2)
+        ok(JsonValue::String("0x".to_string())),      // unlockBlock: NO CODE
     ];
     let transport = MockRpc::new(responses);
     let rpc = RpcClient::with_transport(transport);
@@ -348,66 +412,86 @@ fn no_validator_reads_zero_bonded_and_never_calls_stake_of() {
 
     assert!(!status.has_validator);
     assert_eq!(status.bonded_stake_wei, "0");
-    // Five reads: stake, shares, sbt, pubkeyOfStaker (4 eth_call), then the native
-    // eth_getBalance. Exactly FOUR eth_calls proves stakeOf — the 5th eth_call — was
-    // NOT sent (a meaningless `stakeOf(0x00…)` we must not dress up as an honest zero).
+    assert!(!status.bond_deployed);
+
     let reqs = rpc.transport().requests();
     let eth_calls = reqs.iter().filter(|r| r["method"] == "eth_call").count();
-    let balance_calls = reqs.iter().filter(|r| r["method"] == "eth_getBalance").count();
-    assert_eq!(eth_calls, 4, "stakeOf must not be called without a pubkey");
-    assert_eq!(balance_calls, 1, "the native balance is read once");
+    assert_eq!(
+        eth_calls, 5,
+        "an undeployed bond stops after unlockBlock: no isUnlocked/isKyc, and \
+         neither pubkeyOfStaker nor stakeOf"
+    );
+    assert_eq!(
+        reqs.iter().filter(|r| r["method"] == "eth_getBalance").count(),
+        0,
+        "M-2 reads no native balance: the principal is in the escrow, never the member"
+    );
 }
 
-/// A BOND-FUND member: nothing in the vault, but a registered validator holding the
-/// full bond. This is the shape that read as "ungranted" before the registry reads
-/// were added — working, but indistinguishable from broken.
+
+/// An ACTIVATED member: the escrow has bonded its principal into the registry and
+/// the member is validating. Attribution STAYS set the whole time — under M-2 the
+/// vault is credited at grant and stays credited, so unlike the bond-fund era there
+/// is no window where a working validator reads as ungranted.
 #[test]
-fn bonded_member_reads_the_registry_stake_even_with_an_empty_vault() {
+fn activated_member_reads_the_registry_stake_via_the_bond() {
     let pubkey_word = format!("0x{}", hex::encode([0x11u8; 32]));
     let responses = vec![
-        ok(JsonValue::String(uint256_hex(0))),               // attributedStake  == 0 (vault never credited)
-        ok(JsonValue::String(uint256_hex(0))),               // attributedShares == 0
-        ok(JsonValue::String(uint256_hex(1))),               // SBT balanceOf    == 1
-        ok(JsonValue::String(pubkey_word)),                  // pubkeyOfStaker   != 0
-        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // stakeOf(pubkey)  == 32000e18
-        ok(JsonValue::String(hex_quantity(0))),              // eth_getBalance (native, spent on the bond)
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedStake
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedPrincipal
+        ok(JsonValue::String(uint256_hex(1))),               // SBT balanceOf == 1
+        ok(JsonValue::String(BOND_WORD.to_string())),        // bondOf
+        ok(JsonValue::String(uint256_hex(300_000))),         // unlockBlock
+        ok(JsonValue::String(uint256_hex(0))),               // isUnlocked == false
+        ok(JsonValue::String(uint256_hex(1))),               // isKycVerified == true
+        ok(JsonValue::String(pubkey_word)),                  // pubkeyOfStaker(BOND) != 0
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // stakeOf(pubkey)
     ];
     let rpc = RpcClient::with_transport(MockRpc::new(responses));
     let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
 
-    assert!(status.has_validator, "pubkeyOfStaker != 0 ⇒ the member has a validator");
+    assert!(status.has_validator, "pubkeyOfStaker(bond) != 0 => activated");
     assert_eq!(
         status.bonded_stake_wei,
         REQUIREMENT_WEI.to_string(),
-        "the bonded principal comes from the registry, not the vault"
+        "the bonded principal comes from the registry"
     );
-    assert_eq!(status.attributed_stake_wei, "0", "and the vault honestly reads 0");
+    assert_eq!(
+        status.attributed_stake_wei,
+        REQUIREMENT_WEI.to_string(),
+        "and attribution REMAINS set under M-2 - bonding does not empty the vault"
+    );
+    assert!(status.is_kyc_verified, "verified, so withdrawal is gated only by the lock");
+    assert!(!status.is_unlocked, "which has not elapsed");
 }
 
-/// THE STALL REPRO (2026-07-28): a member the ADR 2026-07-27 grant just funded — the
-/// treasury sent the 32k bond to the member's OWN EOA (native) + minted the SBT, but
-/// the member has NOT self-bonded yet. The vault reads 0, the registry reads 0 (no
-/// validator), and ONLY the native balance carries the principal. Before the native
-/// read this member polled "still settling" forever despite a perfect grant.
+/// THE M-2 WINDOW: granted, escrow funded, but the member has not run the
+/// activation ceremony yet — which can be days. The registry reads 0 the whole
+/// time, so settling on it would report a granted member as ungranted: the mirror
+/// image of the 2026-07-28 stall the native-balance bridge was added to fix.
+/// Attribution is what carries this window now.
 #[test]
-fn funded_eoa_member_reads_the_native_bond_before_self_bonding() {
+fn granted_but_unactivated_member_settles_on_attribution() {
     let responses = vec![
-        ok(JsonValue::String(uint256_hex(0))),               // attributedStake  == 0
-        ok(JsonValue::String(uint256_hex(0))),               // attributedShares == 0
-        ok(JsonValue::String(uint256_hex(1))),               // SBT balanceOf    == 1 (granted)
-        ok(JsonValue::String(uint256_hex(0))),               // pubkeyOfStaker   == 0 (not yet registered)
-        ok(JsonValue::String(hex_quantity(REQUIREMENT_WEI))), // eth_getBalance   == 32000e18 (funded bond)
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedStake
+        ok(JsonValue::String(uint256_hex(REQUIREMENT_WEI))), // attributedPrincipal
+        ok(JsonValue::String(uint256_hex(1))),               // SBT balanceOf == 1 (granted)
+        ok(JsonValue::String(BOND_WORD.to_string())),        // bondOf
+        ok(JsonValue::String(uint256_hex(300_000))),         // unlockBlock (escrow funded)
+        ok(JsonValue::String(uint256_hex(0))),               // isUnlocked
+        ok(JsonValue::String(uint256_hex(0))),               // isKycVerified
+        ok(JsonValue::String(uint256_hex(0))),               // pubkeyOfStaker == 0 (not activated)
     ];
     let rpc = RpcClient::with_transport(MockRpc::new(responses));
     let status = read_grant_status(&rpc, MEMBER_ADDR).expect("grant status read");
 
     assert!(status.has_sbt, "the grant minted the SBT");
-    assert!(!status.has_validator, "the member has not self-bonded yet");
-    assert_eq!(status.attributed_stake_wei, "0", "vault never credited (bond-fund model)");
-    assert_eq!(status.bonded_stake_wei, "0", "registry empty until the member registers");
+    assert!(status.bond_deployed, "and funded the escrow");
+    assert!(!status.has_validator, "but the member has not activated yet");
+    assert_eq!(status.bonded_stake_wei, "0", "registry empty until activation");
     assert_eq!(
-        status.native_balance_wei,
+        status.attributed_stake_wei,
         REQUIREMENT_WEI.to_string(),
-        "the 32k grant principal is the member's native EOA balance — the settle signal"
+        "attribution is the settle signal across this window"
     );
 }

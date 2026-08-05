@@ -427,26 +427,39 @@ export interface ChatDomain {
  */
 export interface GrantStatus {
   attributedStakeWei: string;
-  attributedSharesWei: string;
+  /**
+   * `MembershipStakeVault.attributedPrincipal(member)`. M-2 replaced
+   * `attributedShares` (an stSALT share count) with raw bonded principal —
+   * there are no shares under bonding.
+   */
+  attributedPrincipalWei: string;
   hasSbt: boolean;
   /**
-   * `ValidatorRegistry.stakeOf(pubkeyOfStaker(member))` — the BONDED principal.
-   * Under the bond-fund model this is where the member's 32k actually is; the
-   * vault fields above read 0 for such a member, which is why settling on the
-   * vault alone made a working validator look ungranted.
+   * `MembershipStakeVault.bondOf(member)` — the member's MemberBond escrow.
+   * ALWAYS present (CREATE2-deterministic), so it resolves even for a member who
+   * has never been granted. `bondDeployed` is what says it is real.
+   */
+  bondAddress: string;
+  bondDeployed: boolean;
+  /**
+   * `ValidatorRegistry.stakeOf(pubkeyOfStaker(bond))` — the principal actually
+   * bonded in the registry. Zero until the member runs the activation ceremony,
+   * so this is NOT the settle signal; attribution is.
    */
   bondedStakeWei: string;
-  /** `pubkeyOfStaker(member) != 0` — the member has registered a validator. */
-  hasValidator: boolean;
   /**
-   * `eth_getBalance(member)` — the member EOA's NATIVE SALT. Under the ADR
-   * 2026-07-27 bond-fund grant the treasury funds the member's own EOA with the 32k
-   * bond, so a just-granted member who has NOT yet self-bonded holds the principal
-   * HERE (vault + registry both read 0). The settle gate folds this in so a
-   * funded-but-unregistered member settles instead of polling forever.
+   * `pubkeyOfStaker(bondOf(member)) != 0` — the member has ACTIVATED a validator.
+   * NOTE the staker is the member's bond clone, not the member.
    */
-  nativeBalanceWei: string;
+  hasValidator: boolean;
+  /** `MemberBond.unlockBlock()` — height leg of the 1-year lock; null pre-bond. */
+  unlockBlock: number | null;
+  /** `MemberBond.isUnlocked()` — either leg elapsed. Eligibility, not a payout. */
+  isUnlocked: boolean;
+  /** `MemberBond.isKycVerified()` — gates money OUT only, never participation. */
+  isKycVerified: boolean;
 }
+
 
 export interface MembershipDomain {
   entitlement(): Promise<{ status: "active" | "expiring" | "grace" | "lapsed"; tier: string; expiresAt: string }>;

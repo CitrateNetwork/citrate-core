@@ -98,45 +98,68 @@ export const VALIDATOR_STAKE_REQUIREMENT_WEI = 32000n * 10n ** 18n;
  * validator stake requirement is attributable to them on chain (Rule 1 — read from
  * chain, never a fabricated settlement).
  *
- * THREE PLACES THE PRINCIPAL CAN LIVE. Before ADR 2026-07-27 the grant staked into
- * `MembershipStakeVault`, so `attributedStake` was the answer. Under the bond-fund
- * model the treasury funds the member's OWN EOA with the 32k bond and the member
- * later self-bonds via `registerValidator`, so:
- *   - RIGHT AFTER the grant (funded, not yet registered) the principal is the EOA's
- *     NATIVE balance (`nativeBalanceWei`) — vault AND registry both read 0;
- *   - AFTER the member self-bonds, the principal moves to the `ValidatorRegistry`
- *     (`bondedStakeWei`) and the native balance drops.
- * Settling on the vault alone (or vault+registry) left a correctly-GRANTED but
- * not-yet-registered member polling "still settling" FOREVER — working, but
- * indistinguishable from broken (the 2026-07-28 stall). SBT + the MAX of the three
- * principal reads settles honestly across the whole lifecycle. `hasSbt` stays a hard
- * precondition, so a wallet that merely happens to hold 32k native (but no SBT) is
- * never mistaken for a granted member.
+ * THE VAULT IS THE ANSWER AGAIN (M-2, citrate-chain #141). This gate has been
+ * widened twice, both times because the model moved the principal somewhere the
+ * gate could not see:
+ *   - ADR 2026-07-27 funded the member's OWN EOA, so a just-granted member held
+ *     the 32k as NATIVE balance and the vault read 0 — added `nativeBalanceWei`;
+ *   - after they self-bonded it moved to the registry — added `bondedStakeWei`.
+ * Settling on the vault alone left a correctly-granted member polling "still
+ * settling" forever (the 2026-07-28 stall): working, indistinguishable from broken.
+ *
+ * Under M-2 the principal has exactly ONE home again — the member's MemberBond
+ * escrow — and the vault attributes it at GRANT time and keeps attributing it. So
+ * `attributedStake` is durable across the whole lifecycle and both extra legs go.
+ *
+ * They would in fact be WRONG to keep. The registry leg stays 0 from the grant
+ * until the member runs the activation ceremony, which can be days; the native leg
+ * never fills at all, because M-2 sends the member only ~0.05 SALT of gas. Keeping
+ * either would be reading a number that no longer carries the meaning it did.
+ *
+ * `hasSbt` remains a hard precondition.
  *
  * Wei values are decimal strings parsed as BigInt so a value beyond JS number range
- * is exact. A malformed/absent value contributes 0 — fail-closed, never fabricated.
+ * is exact. A malformed value fails closed — never a fabricated grant.
  */
-export function isGrantOnChain(g: {
-  attributedStakeWei: string;
-  hasSbt: boolean;
-  bondedStakeWei?: string;
-  nativeBalanceWei?: string;
-}): boolean {
+export function isGrantOnChain(g: { attributedStakeWei: string; hasSbt: boolean }): boolean {
   if (!g.hasSbt) return false;
-  const parse = (v: string | undefined): bigint => {
-    if (v === undefined) return 0n;
-    try {
-      return BigInt(v);
-    } catch {
-      return 0n; // fail-closed on an unparseable value — never fabricate a grant
-    }
-  };
-  const vaulted = parse(g.attributedStakeWei);
-  const bonded = parse(g.bondedStakeWei);
-  const funded = parse(g.nativeBalanceWei);
-  const principal = [vaulted, bonded, funded].reduce((a, b) => (a > b ? a : b));
-  return principal >= VALIDATOR_STAKE_REQUIREMENT_WEI;
+  let staked: bigint;
+  try {
+    staked = BigInt(g.attributedStakeWei);
+  } catch {
+    return false; // fail-closed on an unparseable value — never fabricate a grant
+  }
+  return staked >= VALIDATOR_STAKE_REQUIREMENT_WEI;
 }
+
+/**
+ * How the dashboard describes a member's bond (M-2.2 / M-2.3). Pure, so the
+ * wording is testable without a render.
+ *
+ * Rule 1: every branch names a real on-chain fact. "Staked" is never claimed for a
+ * member whose escrow does not exist, and an unlock is never advertised as
+ * withdrawable while KYC is outstanding — the chain enforces both gates, and the UI
+ * must not imply otherwise.
+ */
+export function describeBond(g: {
+  bondDeployed: boolean;
+  unlockBlock: number | null;
+  isUnlocked: boolean;
+  isKycVerified: boolean;
+  hasValidator: boolean;
+}): string {
+  if (!g.bondDeployed) return "Not yet staked";
+  if (!g.isUnlocked) {
+    const at = g.unlockBlock === null ? "—" : g.unlockBlock.toLocaleString();
+    return `Staked · unlocks at block ${at}`;
+  }
+  // Unlocked. Owner decision A.5: eligible, never automatic — so "can", not "has".
+  // A.6: KYC supersedes the lock, so an unverified member is NOT told their funds
+  // are available.
+  if (!g.isKycVerified) return "Unlocked · KYC required to withdraw";
+  return g.hasValidator ? "Unlocked · validating · can withdraw" : "Unlocked · can withdraw";
+}
+
 
 /**
  * W3.3 — render mem hits as plain text the agent feeds back to the model. Honest
@@ -2229,6 +2252,8 @@ export class Store {
               s5: "settled",
               s5n: 32000,
               s5StakeWei: grant.attributedStakeWei,
+              // M-2.2/M-2.3: the lock + KYC state, straight from the bond.
+              s5BondStatus: describeBond(grant),
               hasGrant: true,
               hasSbt: grant.hasSbt,
             });
@@ -2285,6 +2310,8 @@ export class Store {
               s5: "settled",
               s5n: 32000,
               s5StakeWei: grant.attributedStakeWei,
+              // M-2.2/M-2.3: the lock + KYC state, straight from the bond.
+              s5BondStatus: describeBond(grant),
               hasGrant: true,
               hasSbt: grant.hasSbt,
             });

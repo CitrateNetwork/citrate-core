@@ -1018,8 +1018,11 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Vault release</span>
+                  {/* M-2.2/M-2.3 (Rule 1): the REAL lock + KYC state read from the
+                      member's MemberBond escrow, not a policy slogan. "—" when the
+                      read has not landed — never an invented status. */}
                   <span className="mono" style={{ fontSize: 11.5 }}>
-                    mainnet release policy
+                    {s.s5BondStatus ?? "—"}
                   </span>
                 </div>
               </div>

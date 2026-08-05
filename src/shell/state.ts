@@ -265,6 +265,14 @@ export interface AppState {
    * formats wei→SALT from this — it never shows a hardcoded "32,000".
    */
   s5StakeWei: string | null;
+  /**
+   * M-2.2/M-2.3 — a plain-language description of the member's bond escrow
+   * (`describeBond`), e.g. "Staked · unlocks at block 300,000". Derived ONLY
+   * from the real grant-status read; `null` until the grant lands. Replaces the
+   * hardcoded "mainnet release policy" line, which described a release flag that
+   * no longer exists — the member's own lock + KYC gates govern release now.
+   */
+  s5BondStatus: string | null;
   kycOutcome: "verified" | "failed" | "review";
   route: string;
   wTab: string;
@@ -508,6 +516,7 @@ export function freshState(pid: string): AppState {
     s5c: 0,
     s5n: 0,
     s5StakeWei: null,
+    s5BondStatus: null,
     kycOutcome: "verified",
     route: "dashboard",
     wTab: "overview",
@@ -730,7 +739,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "walletAddr", "socketPath",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "socketPath",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.

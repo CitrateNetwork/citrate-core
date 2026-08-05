@@ -663,9 +663,34 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         const paid = rank > RANK.free && st.entitlement === "active";
         // 32,000 SALT in wei — the validator stake requirement a granted member meets.
         const REQUIREMENT_WEI = (32000n * 10n ** 18n).toString();
+        const SIM_BOND = "0x00000000000000000000000000000000000b0d1e";
         return paid
-          ? { attributedStakeWei: REQUIREMENT_WEI, attributedSharesWei: REQUIREMENT_WEI, hasSbt: true, bondedStakeWei: "0", hasValidator: false, nativeBalanceWei: REQUIREMENT_WEI }
-          : { attributedStakeWei: "0", attributedSharesWei: "0", hasSbt: false, bondedStakeWei: "0", hasValidator: false, nativeBalanceWei: "0" };
+          // A deterministic placeholder escrow — the sim has no chain, so this is
+          // NOT a CREATE2 projection and must never be presented as one.
+          ? {
+              attributedStakeWei: REQUIREMENT_WEI,
+              attributedPrincipalWei: REQUIREMENT_WEI,
+              hasSbt: true,
+              bondAddress: SIM_BOND,
+              bondDeployed: true,
+              bondedStakeWei: "0",
+              hasValidator: false,
+              unlockBlock: 300_000,
+              isUnlocked: false,
+              isKycVerified: false,
+            }
+          : {
+              attributedStakeWei: "0",
+              attributedPrincipalWei: "0",
+              hasSbt: false,
+              bondAddress: SIM_BOND,
+              bondDeployed: false,
+              bondedStakeWei: "0",
+              hasValidator: false,
+              unlockBlock: null,
+              isUnlocked: false,
+              isKycVerified: false,
+            };
       },
       // BC-5.3 — SIM: there is NO real chain in the web preview, so this NEVER
       // fabricates an on-chain emblem. It returns null so the caller renders the

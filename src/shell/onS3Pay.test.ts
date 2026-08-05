@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // The evolving on-chain grant the mocked bridge returns. Tests flip `current` to
 // model the server-side grant landing on chain.
-type GrantShape = { attributedStakeWei: string; hasSbt: boolean; bondedStakeWei?: string; nativeBalanceWei?: string };
+type GrantShape = { attributedStakeWei: string; hasSbt: boolean };
 const NOT_GRANTED: GrantShape = { attributedStakeWei: "0", hasSbt: false };
 const GRANTED: GrantShape = { attributedStakeWei: (32000n * 10n ** 18n).toString(), hasSbt: true };
 const grantState = { current: NOT_GRANTED as GrantShape };
@@ -143,10 +143,11 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
     expect(store.state.s3).toBe("settled");
   });
 
-  // THE 2026-07-28 STALL, end to end: the ADR 2026-07-27 grant funds the member's
-  // EOA natively (32k) + mints the SBT, but the vault + registry read 0 until the
-  // member self-bonds. This shape polled "paying" forever before the native leg.
-  it("settles on the bond-fund grant: native-funded EOA + SBT, zero vault/registry stake", async () => {
+  // M-2 (citrate-chain #141): the grant funds the member's BOND ESCROW and the
+  // vault attributes the principal from grant time, so S3 settles on attribution
+  // — including in the window before the member runs the activation ceremony,
+  // when the registry still reads 0. That window can be days.
+  it("settles on the M-2 bond grant: vault attribution + SBT, before activation", async () => {
     const store = new Store();
     store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
     store.onS3Pay();
@@ -154,17 +155,33 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
     await flush();
     expect(store.state.s3).toBe("paying");
 
-    // The real bond-fund grant lands: SBT minted + EOA funded natively, NOT vaulted.
     grantState.current = {
-      attributedStakeWei: "0",
-      bondedStakeWei: "0",
-      nativeBalanceWei: (32000n * 10n ** 18n).toString(),
+      attributedStakeWei: (32000n * 10n ** 18n).toString(),
       hasSbt: true,
     };
     await vi.advanceTimersByTimeAsync(5000);
     await flush();
 
     expect(store.state.s3).toBe("settled");
+  });
+
+  // The removed bridge, pinned as a NEGATIVE. Under ADR 2026-07-27 a member
+  // holding 32k of NATIVE SALT settled S3. Under M-2 the member never holds the
+  // principal — the escrow does, and they receive only ~0.05 SALT of gas — so a
+  // wallet that merely holds 32k must NOT settle a membership.
+  it("a member holding 32k natively but with NO vault attribution does NOT settle", async () => {
+    const store = new Store();
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
+    store.onS3Pay();
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+
+    grantState.current = { attributedStakeWei: "0", hasSbt: true };
+    for (let i = 0; i < 3; i++) {
+      await vi.advanceTimersByTimeAsync(5000);
+      await flush();
+    }
+    expect(store.state.s3).toBe("paying");
   });
 
   it("a grant with the SBT but BELOW the stake threshold does NOT settle (fail-closed)", async () => {

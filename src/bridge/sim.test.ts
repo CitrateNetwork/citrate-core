@@ -216,8 +216,12 @@ describe("sim adapter contract (delegates to the host Store)", () => {
     const bridge = createSimBridge(host);
     const g = await bridge.membership.grantStatus("0xabc");
     expect(g.attributedStakeWei).toBe("0");
-    expect(g.attributedSharesWei).toBe("0");
+    expect(g.attributedPrincipalWei).toBe("0");
     expect(g.hasSbt).toBe(false);
+    // M-2: the bond address always resolves (CREATE2), so "not granted" has to be
+    // carried by bondDeployed — the address alone must never imply a grant.
+    expect(g.bondDeployed).toBe(false);
+    expect(g.unlockBlock).toBeNull();
   });
 
   it("membership.grantStatus reads NOT-granted for a paid but LAPSED sim member", async () => {
