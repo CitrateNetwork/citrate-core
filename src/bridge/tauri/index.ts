@@ -203,8 +203,8 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async linkRequest(): Promise<CeremonyView> {
         return invoke<CeremonyView>("wallet_link_request");
       },
-      async linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean }> {
-        return invoke<{ address: string; linked: boolean }>("wallet_link_approve", { id, rawAck });
+      async linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean; canonical: boolean }> {
+        return invoke<{ address: string; linked: boolean; canonical: boolean }>("wallet_link_approve", { id, rawAck });
       },
       async linkReject(id: string): Promise<void> {
         return invoke<void>("wallet_link_reject", { id });

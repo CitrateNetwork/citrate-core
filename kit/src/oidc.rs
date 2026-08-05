@@ -1470,6 +1470,37 @@ impl AuthManager {
         Ok(())
     }
 
+    /// Make an already-linked wallet the CANONICAL one — the address the
+    /// authority serves as the `wallet_address` claim, and therefore the address
+    /// the treasury pays.
+    ///
+    /// Canonical defaults to FIRST-linked at the authority, so that a restart or
+    /// a stray second link can never silently move a member's pay-to address.
+    /// That default is right, and it is also why this call has to exist: when a
+    /// member's device custody vault is replaced, the desktop mints a NEW custody
+    /// EOA and links it, but the claim stays pinned to the wallet linked first.
+    /// `walletIsLinked` requires `wallet_address == this device's custody
+    /// address`, so onboarding blocks — permanently, and silently, because the
+    /// link itself succeeded. Observed live 2026-08-04.
+    ///
+    /// The authority refuses any address that is not already a PROVEN link for
+    /// this sub, so this can only re-order wallets whose ownership the EIP-191
+    /// challenge already established. It cannot introduce an address.
+    ///
+    /// A non-2xx surfaces as an error rather than a silent success: the caller's
+    /// next step is to trust that the authority now serves this address.
+    pub fn wallet_set_canonical(&self, address: &str) -> Result<()> {
+        let (sub, access) = self.session_sub_and_token()?;
+        let url = format!(
+            "{}/identity/{}/wallets/{}/canonical",
+            self.cfg.issuer.trim_end_matches('/'),
+            urlencoding_sub(&sub),
+            urlencoding_sub(address)
+        );
+        self.http.post_json(&url, Some(&access), "{}")?;
+        Ok(())
+    }
+
     /// The signed-in sub plus its access token. Both come from the live session;
     /// `NotSignedIn` when there is none.
     fn session_sub_and_token(&self) -> Result<(String, String)> {

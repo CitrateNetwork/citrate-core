@@ -54,6 +54,14 @@ pub struct WalletLinkResult {
     pub address: String,
     /// True once the authority has accepted the proof.
     pub linked: bool,
+    /// True when the authority now serves THIS address as `wallet_address`.
+    ///
+    /// Separate from `linked` because they can genuinely differ: the link is
+    /// durable the moment the proof is accepted, but the CLAIM only moves if the
+    /// address is also canonical. Reporting one bit for both would let the UI
+    /// declare success while the member stays blocked — the exact failure this
+    /// field exists to make visible.
+    pub canonical: bool,
 }
 
 /// Errors surfaced to the UI. Coarse and secret-free — never the bearer, never
@@ -280,9 +288,44 @@ pub fn wallet_link_approve(
     auth.0
         .wallet_link_submit(&proof.address, &proof.signature, &proof.nonce)
         .map_err(|e| LinkError::Authority(e.to_string()).to_string())?;
+
+    // Make THIS device's wallet the canonical one — the address the authority
+    // serves as `wallet_address`, and therefore the address the treasury pays.
+    //
+    // The authority defaults canonical to FIRST-linked so a stray second link can
+    // never silently move a member's pay-to address. That protects against an
+    // AUTOMATIC link; this one is neither automatic nor stray — the human just
+    // approved a ceremony binding this specific wallet, and the desktop's own
+    // invariant (`walletIsLinked`: claim == this device's custody address) says
+    // this is the address that must be served. Without the promotion, a member
+    // whose custody vault was replaced links successfully and stays blocked
+    // forever, with no error anywhere (observed live 2026-08-04).
+    //
+    // Idempotent: on a first link the address is already canonical and the call
+    // is a no-op at the authority.
+    //
+    // NOT fatal. The link is already durable and proven; failing the whole
+    // command here would tell the member their wallet was not linked when it
+    // was — the same reasoning the authority uses for its own canonical hook.
+    // The outcome is REPORTED instead, so the UI can tell the truth rather than
+    // claim a success the claim does not reflect.
+    let canonical = match auth.0.wallet_set_canonical(&proof.address) {
+        Ok(()) => true,
+        Err(e) => {
+            // Logged, never returned across the bridge: the authority's error
+            // text is diagnostic, not something the UI should render.
+            eprintln!(
+                "[wallet-link] linked {} but could not make it canonical: {e}",
+                proof.address
+            );
+            false
+        }
+    };
+
     Ok(WalletLinkResult {
         address: proof.address,
         linked: true,
+        canonical,
     })
 }
 
