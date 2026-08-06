@@ -223,7 +223,8 @@ pub fn read_claimable<T: crate::rpc::RpcTransport>(
 /// node-agent's request. `claimable_wei` is folded into the human-readable
 /// `context` so the approval UI shows what is being swept (the REAL value the
 /// caller just read, not a fabricated one).
-pub fn user_claim_request(claimable_wei: u128) -> crate::agent::AgentSignatureRequest {
+/// `to` is the contract the claim is sent to — see [`user_claim_request`].
+pub fn user_claim_request_to(claimable_wei: u128, to: &str) -> crate::agent::AgentSignatureRequest {
     let calldata = format!("0x{}", hex::encode(claim_rewards_selector()));
     crate::agent::AgentSignatureRequest {
         // C2-F-3: a synthetic id in the DISJOINT user-claim id space (`1 << 63`,
@@ -232,7 +233,7 @@ pub fn user_claim_request(claimable_wei: u128) -> crate::agent::AgentSignatureRe
         // sequential and never reach this range.
         id: USER_CLAIM_ID,
         intent: "claimRewards".to_string(),
-        to: CONTRIBUTION_ACCOUNTING.to_string(),
+        to: to.to_string(),
         calldata,
         value_wei: "0".to_string(),
         chain_id: crate::rpc::CITRATE_CHAIN_ID,
@@ -323,4 +324,15 @@ pub async fn wallet_balances(
 #[cfg(test)]
 mod tests {
     include!("earnings_tests.rs");
+}
+
+
+/// The CONTRIBUTION claim — `ContributionAccounting.claimRewards()`.
+///
+/// Kept as the default for a member who is NOT an activated validator. A
+/// validator's rewards do not live here: they accrue in `ValidatorRegistry` and
+/// are released through `MemberBond.claimRewards()` (see `user_claim_request_to`
+/// and its caller in `agent::user_claim`).
+pub fn user_claim_request(claimable_wei: u128) -> crate::agent::AgentSignatureRequest {
+    user_claim_request_to(claimable_wei, CONTRIBUTION_ACCOUNTING)
 }
