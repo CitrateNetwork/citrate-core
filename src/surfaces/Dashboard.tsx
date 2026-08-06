@@ -55,6 +55,10 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     }
   })();
   const staked = grantStakedSalt + s.selfStake;
+  // REGISTERED validator = the member's bond clone is the registry's staker, which
+  // the store folds as `bondedStake` from grantStatus. Distinct from `staked`
+  // (attributed grant principal): a funded member is not yet a validator.
+  const isBondedValidator = s.bondedStake >= 32000;
 
   // Height vitals value: live chain read when node is off (reads fall back to
   // the public RPC in the design), sim height when the local node drives it.
@@ -82,7 +86,19 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Finality", value: s.finAge < 0 ? "—" : Math.round(s.finAge) + "s", sub: s.finAge < 0 ? "no source yet" : "checkpoint age", color: "var(--tx-1)", tip: "BFT checkpoint every ~50 blocks", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "LiquidStakingPool shares", vsize: "21px" },
-    { label: "Today", value: s.node === "validating" || s.earnToday > 0 ? fmt2(s.earnToday) : "—", sub: s.earnToday > 0 ? "SALT earned" : "not validating", color: s.earnToday > 0 ? "var(--accent-text)" : "var(--tx-3)", tip: "ContributionAccounting", vsize: "21px" },
+    // The SUBTITLE used to read "not validating" whenever earnToday === 0 — i.e. it
+    // reported EARNINGS as validator STATUS. A member who had just bonded 32,000
+    // SALT and was producing blocks saw "0.00 / not validating" (2026-08-06). Status
+    // now comes from the bond being the registry staker; the number stays whatever
+    // was really read (W1.4 rewardsOf for a registered validator).
+    {
+      label: "Today",
+      value: isBondedValidator || s.earnToday > 0 ? fmt2(s.earnToday) : "—",
+      sub: isBondedValidator ? (s.earnToday > 0 ? "SALT earned" : "no rewards yet") : "not validating",
+      color: s.earnToday > 0 ? "var(--accent-text)" : "var(--tx-3)",
+      tip: isBondedValidator ? "ValidatorRegistry.rewardsOf" : "ContributionAccounting",
+      vsize: "21px",
+    },
   ];
 
   // Chat runs on the built-in local demo agent today — neither the gateway nor a

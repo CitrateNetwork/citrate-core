@@ -236,6 +236,11 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async lastCrash() {
         return invoke<{ reason: string; atUnixMs: number } | null>("node_last_crash");
       },
+      async validatorEarnings() {
+        return invoke<{ totalWei: string; claimableWei: string; proposerPubkey: string }>(
+          "node_validator_earnings",
+        );
+      },
       // W1.x — arm the producer once synced (consensus-gated). The respawn mints
       // proposer.key, the validator identity the bond activation needs. Returns
       // whether it armed on this call (idempotent; false if already armed / not synced).

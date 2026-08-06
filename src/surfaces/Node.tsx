@@ -111,7 +111,24 @@ export function Node({ store, s }: SurfaceProps) {
   const diskStr = TAURI ? "—" : s.node === "off" ? "—" : "3.1 GB";
   const crashEmpty = s.crashes.length === 0;
   const crashRows = s.crashes;
-  const blocksProposedStr = TAURI ? "not a registered validator" : s.node === "off" ? "—" : fmtI(s.blocksProposed);
+  // REGISTRATION is a real, readable fact: the bond clone is the registry staker
+  // once `pubkeyOfStaker(bond) != 0`, which the store folds as `bondedStake` from
+  // grantStatus. This line used to be the literal "not a registered validator" for
+  // EVERY tauri build regardless of truth, so a member who had just bonded 32,000
+  // SALT was told they were not a validator (observed 2026-08-06, right after a
+  // successful MemberBond.activate).
+  //
+  // BLOCKS PROPOSED still has NO source — no RPC exposes a per-proposer count — so
+  // a registered validator honestly reads "—" rather than a fabricated tally. What
+  // changes is that we no longer DENY the registration we can actually see.
+  const isRegisteredValidator = s.bondedStake >= 32000;
+  const blocksProposedStr = TAURI
+    ? isRegisteredValidator
+      ? "—"
+      : "not a registered validator"
+    : s.node === "off"
+      ? "—"
+      : fmtI(s.blocksProposed);
   const electionStr =
     !TAURI && s.node === "validating" && staked >= 32000 ? ((staked / 8200000) * 100).toFixed(2) + "% stake share / round" : "—";
   const restartsStr = String(s.crashes.length);
@@ -354,6 +371,12 @@ export function Node({ store, s }: SurfaceProps) {
                     )}
                   </>
                 )}
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Registered</span>
+                  <span className="mono tabular" style={{ fontSize: 12, color: isRegisteredValidator ? "var(--ok)" : "var(--tx-3)" }}>
+                    {isRegisteredValidator ? `yes · ${fmtI(s.bondedStake)} SALT bonded` : "no"}
+                  </span>
+                </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-2)" }}>Blocks proposed</span>
                   <span className="mono tabular" style={{ fontSize: 12 }}>{blocksProposedStr}</span>

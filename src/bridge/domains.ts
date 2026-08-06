@@ -225,6 +225,13 @@ export interface NodeDomain {
    */
   lastCrash(): Promise<{ reason: string; atUnixMs: number } | null>;
   /**
+   * W1.4 — the REAL validator rewards: `rewardsOf(proposerPubkey)` on the
+   * ValidatorRegistry, keyed on the node's own proposer key. A not-yet-registered
+   * validator honestly returns zeros. This is the CORRECT source for validator
+   * earnings; `ContributionAccounting.claimable` is a different accrual.
+   */
+  validatorEarnings(): Promise<{ totalWei: string; claimableWei: string; proposerPubkey: string }>;
+  /**
    * W1.x — arm the producer, consensus-gated on being synced. The node runs as a
    * plain follower and never mints its `proposer.key`; arming respawns it with
    * `--mine --coinbase`, which mints the key the bond activation needs. Returns

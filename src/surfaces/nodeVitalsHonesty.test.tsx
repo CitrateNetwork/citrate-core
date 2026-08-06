@@ -27,8 +27,10 @@ import { freshState, type AppState, type PeerRow } from "../shell/state";
 import type { Store } from "../shell/store";
 
 // Node only touches `store` in effects/handlers (never fired by a static render)
-// and refreshEarnings in an effect. A no-op stub covers render.
-const noopStore = {} as unknown as Store;
+// and refreshEarnings in an effect. A no-op stub covers render — EXCEPT for the
+// predicates the markup calls directly during render (walletIsLinked gates the
+// activate section), which must be present or the render throws.
+const noopStore = { walletIsLinked: () => true } as unknown as Store;
 
 // A running, validating node with the fabricated sim vitals PRE-SEEDED into state
 // (blocksProposed / cpu / ram / peerRows). In tauri these must NOT surface as
@@ -102,5 +104,35 @@ describe("Node vitals — Q-A.4b tauri display honesty", () => {
     expect(html).not.toContain(">Pause<");
     expect(html).not.toContain(">Resume<");
     expect(html).toContain(">Stop<");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VALIDATOR REGISTRATION must be READ, not asserted. `blocksProposedStr` was the
+// literal "not a registered validator" for EVERY tauri build, so a member who had
+// just bonded 32,000 SALT — clone deployed, pubkeyOfStaker set, producing blocks —
+// was told they were not a validator (observed 2026-08-06 immediately after a
+// successful MemberBond.activate).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Node — validator registration reflects the real bond", () => {
+  it("a BONDED validator is not told it is unregistered", () => {
+    const s = runningState({ node: "validating", bondedStake: 32000 });
+    const html = renderToStaticMarkup(<Node store={noopStore} s={s} />);
+    expect(html).not.toContain("not a registered validator");
+    expect(html).toContain("32,000 SALT bonded");
+  });
+
+  it("an UNBONDED member is still honestly told so", () => {
+    const s = runningState({ node: "synced", bondedStake: 0 });
+    const html = renderToStaticMarkup(<Node store={noopStore} s={s} />);
+    expect(html).toContain("not a registered validator");
+  });
+
+  it("blocks proposed stays '—' even when registered — there is no source for it", () => {
+    const s = runningState({ node: "validating", bondedStake: 32000, blocksProposed: 7 });
+    const html = renderToStaticMarkup(<Node store={noopStore} s={s} />);
+    // NEGATIVE CONTROL: the seeded sim count must not surface as a real tally.
+    expect(html).not.toContain(">7<");
   });
 });
