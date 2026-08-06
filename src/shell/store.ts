@@ -1820,6 +1820,28 @@ export class Store {
    * showing the last honest value rather than a fabricated one.
    */
   async refreshEarnings(): Promise<void> {
+    // W1.4 FIRST, for a REGISTERED validator. `node_validator_earnings` reads
+    // `rewardsOf(proposerPubkey)` on the ValidatorRegistry — the actual accrual for
+    // producing blocks. It has existed since W1.4 and had NO caller: the app showed
+    // `ContributionAccounting.claimable` instead, which node.rs itself documents as
+    // "the wrong read" for a validator. A bonded member therefore saw 0.00 earnings
+    // no matter how many blocks they proposed.
+    //
+    // Only meaningful once the bond is the registry's staker; before that it
+    // honestly returns zeros, so we fall through to the contribution read rather
+    // than pin a validator's display at zero.
+    if (this.state.bondedStake >= 32000) {
+      try {
+        const v = await bridge.node.validatorEarnings();
+        const total = Number(BigInt(v.totalWei)) / 1e18;
+        const claimable = Number(BigInt(v.claimableWei)) / 1e18;
+        this.setState({ earnVal: total, claimable, earnSource: "chain" });
+        this.save();
+        return;
+      } catch {
+        /* fall through to the contribution read — never fabricate */
+      }
+    }
     try {
       const e = await bridge.agent.earnings();
       // Wei string → SALT number for the prototype's numeric display.
