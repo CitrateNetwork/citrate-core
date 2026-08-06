@@ -968,3 +968,45 @@ describe("activateValidator — arms block production before it needs the key", 
     expect(opened).toBe(false); // honest failure, attempt not consumed
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTHORITY HAND-OFF must carry the signed-in identity. The app's session lives
+// in its own vault; the system browser has a SEPARATE cookie session, and
+// auth.citrate.ai resolves identity from the BROWSER cookie. Opening a bare URL
+// therefore hands the member whichever account their browser holds — observed
+// 2026-08-06: signed in as a test member, "Manage account" and KYC both opened
+// the ADMIN's account, which on the KYC path means verifying the wrong identity.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("openAuthorityPage — carries the app's identity, not the browser's", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("passes login_hint for the signed-in account", async () => {
+    const opened: string[] = [];
+    vi.spyOn(store, "openExternal").mockImplementation(async (u: string) => {
+      opened.push(u);
+    });
+    store.setState({ authEmail: "thekontenders@gmail.com" });
+
+    await store.openAuthorityPage("https://auth.citrate.ai/kyc/start", "identity verification");
+
+    expect(opened).toHaveLength(1);
+    const u = new URL(opened[0]);
+    expect(u.searchParams.get("login_hint")).toBe("thekontenders@gmail.com");
+    // NEGATIVE CONTROL: the bare URL (what shipped) carried no identity at all.
+    expect(opened[0]).not.toBe("https://auth.citrate.ai/kyc/start");
+  });
+
+  it("still opens when signed out, without inventing an account", async () => {
+    const opened: string[] = [];
+    vi.spyOn(store, "openExternal").mockImplementation(async (u: string) => {
+      opened.push(u);
+    });
+    store.setState({ authEmail: null });
+
+    await store.openAuthorityPage("https://auth.citrate.ai/account", "your account page");
+
+    expect(opened[0]).toBe("https://auth.citrate.ai/account");
+    expect(opened[0]).not.toContain("login_hint");
+  });
+});

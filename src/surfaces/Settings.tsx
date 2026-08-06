@@ -481,7 +481,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => void store.openExternal("https://auth.citrate.ai/account")}
+                  onClick={() => void store.openAuthorityPage("https://auth.citrate.ai/account", "your account page")}
                 >
                   Manage account ↗
                 </button>
