@@ -929,8 +929,10 @@ pub async fn node_register_validator(
 /// activate. Idempotent + honest: returns `true` iff it armed on THIS call (already
 /// armed, no coinbase, or not-yet-synced all return `false`, never a fabricated arm).
 #[tauri::command]
-pub fn node_arm_mining(state: State<'_, NodeState>) -> bool {
-    state.0.arm_mining_if_synced()
+pub async fn node_arm_mining(state: State<'_, NodeState>) -> std::result::Result<bool, String> {
+    // `Result` is required for an async command that borrows `State<'_>`; the
+    // arm itself is infallible (a not-synced / no-coinbase node returns false).
+    Ok(state.0.arm_mining_if_synced())
 }
 
 #[tauri::command]
