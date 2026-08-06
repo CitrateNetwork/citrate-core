@@ -1960,6 +1960,30 @@ export class Store {
    * honestly — never a fabricated activation.
    */
   async activateValidator(): Promise<boolean> {
+    // ARM FIRST. The node runs as a plain follower and never mints `proposer.key`
+    // on its own — arming respawns it with `--mine --coinbase`, which does. Only
+    // `maybeAutoBond` armed, and that is gated on `stage === "s6"`, so a member who
+    // had FINISHED onboarding (stage "done") and pressed Activate on the dashboard
+    // hit "proposer key not available yet" forever: nothing in that path ever armed
+    // the producer (observed 2026-08-06 with 32,000 SALT already funded on chain).
+    //
+    // `arm_mining_if_synced` re-checks the network tip on the backend and no-ops if
+    // the node is not caught up or has no coinbase, so calling it here is safe and
+    // idempotent. The key appears a few seconds later on respawn, so we do NOT open
+    // a ceremony on this pass — we say what is happening and let the caller retry.
+    if (!this.validatorArmed) {
+      let armed = false;
+      try {
+        armed = await bridge.node.armMining();
+      } catch {
+        /* honest no-op: surfaced by the registerValidator error below */
+      }
+      if (armed) {
+        this.validatorArmed = true;
+        this.toast("Block production armed — minting your validator key, then activation opens.");
+        return false; // retry once the key lands
+      }
+    }
     let view: Awaited<ReturnType<typeof bridge.node.registerValidator>>;
     try {
       view = await bridge.node.registerValidator();
