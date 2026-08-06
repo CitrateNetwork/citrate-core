@@ -56,10 +56,27 @@ export const CATALOG = {
       platforms: ['macOS arm64', 'Linux x86_64'],
       checksum: 'sha256:e33a90cd…1b7f2' },
   ],
+  // MIRRORS the canonical catalog: core-membership `src/lib/commissary/catalog.ts`
+  // (merged 2026-08-06). Ids, tiers and install strings are copied VERBATIM — the
+  // pinned version is part of the command, because a floating `npm i` stops matching
+  // the integrity hash published beside it.
+  //
+  // What was here before told members to run three commands that do not install our
+  // software:
+  //   `npm install @citrate/sdk`  — SUCCEEDS, and installs someone else's package.
+  //       `@citrate/sdk` is owned by `cnidarian-foundation`, NOT us, and its 0.5.1
+  //       (Apr 2026) outranks our real 0.2.0 by version number.
+  //   `pip install citrate-ai`    — 404.
+  //   `npm install @citrate/marketplace --registry=ghcr` — 404, and ours is on npm.
+  //
+  // Do not "tidy" the scope back to @citrate/*. Ownership, verified 2026-08-02 via
+  // `npm owner ls`: @citratelabs/sdk + @citratelabs/marketplace-sdk are citrate-inc;
+  // @citrate/sdk is a third party's. See core-membership `superseded.ts` — the owner
+  // decision is to name the canonical three exactly and take NO registry action.
   sdks: [
-    { id: 'citrate-js', name: 'citrate-js', registry: 'npm', install: 'npm install @citrate/sdk', desc: 'TypeScript SDK — chain reads, UserOps, memory client.', minTier: 'free', docs: 'atlas/sdk/js' },
-    { id: 'citrate-ai-sdk', name: 'citrate-ai-sdk', registry: 'PyPI', install: 'pip install citrate-ai', desc: 'Python SDK — gateway inference, MCP tools, agent harness.', minTier: 'free', docs: 'atlas/sdk/python' },
-    { id: 'marketplace-sdk', name: 'marketplace-sdk', registry: 'GitHub Packages', install: 'npm install @citrate/marketplace --registry=ghcr', desc: 'x402 marketplace bidding and settlement. Registry auth required.', minTier: 'pilot', docs: 'atlas/sdk/marketplace' },
+    { id: 'citrate-sdk-ts', name: 'Citrate SDK (TypeScript)', registry: 'npm', install: 'npm i @citratelabs/sdk@0.2.0', desc: 'TypeScript SDK — chain reads, UserOps, memory client.', minTier: 'free', docs: 'atlas/sdk/js' },
+    { id: 'citrate-sdk-py', name: 'Citrate SDK (Python)', registry: 'PyPI', install: 'pip install citrate-labs-sdk==0.6.0', desc: 'Python SDK — gateway inference, MCP tools, agent harness.', minTier: 'free', docs: 'atlas/sdk/python' },
+    { id: 'citrate-sdk-marketplace', name: 'Marketplace SDK', registry: 'npm', install: 'npm i @citratelabs/marketplace-sdk@0.1.0', desc: 'x402 marketplace bidding and settlement.', minTier: 'free', docs: 'atlas/sdk/marketplace' },
   ],
   docs: [
     { id: 'd1', name: 'Validator operations handbook', tier: 'member', minTier: 'pilot', desc: 'Sync, heartbeat, slashing protection, claim batching.' },
