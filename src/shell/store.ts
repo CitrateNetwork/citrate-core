@@ -1056,7 +1056,16 @@ export class Store {
 
   /** Open KYC in the browser; S2 status then arrives via userinfo polling. */
   async kycStart(): Promise<void> {
-    await bridge.auth.kycStart();
+    // Same hazard as "Manage account", but on the compliance path: `kyc_start`
+    // opened a BARE authority URL, and the authority resolves identity from the
+    // BROWSER's cookie. A member whose browser held a different Citrate session
+    // was sent to verify THAT account — the exact failure seen 2026-08-06, where a
+    // test member's KYC opened the admin's already-verified account.
+    //
+    // Route it through the identity-aware opener so we at least hint the intended
+    // account and say plainly whose page this is. A server-side authenticated
+    // hand-off is the real fix (see handoffs/IDENTITY_ACCOUNT_HANDOFF_2026-08-06).
+    await this.openAuthorityPage("https://auth.citrate.ai/kyc/start", "identity verification");
   }
 
   /**
@@ -1071,6 +1080,45 @@ export class Store {
     } catch (err) {
       this.toast("Could not open the link — " + String((err as Error).message ?? err));
     }
+  }
+
+  /**
+   * Open an AUTHORITY page (account, KYC) for the account THIS APP is signed in as.
+   *
+   * The app's session lives in its own vault; the system browser has a SEPARATE
+   * cookie session. `auth.citrate.ai` resolves identity from the BROWSER cookie
+   * (`/kyc/start` reads `provider.Session.get`), so opening a bare URL hands the
+   * member whichever account their browser happens to hold:
+   *
+   *   - no browser session  -> 401 dead end
+   *   - a DIFFERENT account -> the page silently opens as that other member
+   *
+   * Observed 2026-08-06: signed into the app as a test member, "Manage account"
+   * opened the ADMIN account. On the KYC path that is not cosmetic — it is
+   * verifying the wrong identity on a compliance-and-money flow.
+   *
+   * The app cannot assert its identity to the authority today: `/kyc/start` takes
+   * only `level` and `return_to`, with no bearer and no subject. The real fix is a
+   * server-side authenticated hand-off (a one-time, sub-bound link minted with the
+   * app's access token). Until that exists we do the two things we honestly can:
+   * pass `login_hint` so a browser with NO session lands on the right account, and
+   * NAME the account we intend, so a mismatch is visible rather than silent.
+   */
+  async openAuthorityPage(url: string, what: string): Promise<void> {
+    const email = this.state.authEmail || "";
+    let target = url;
+    if (email) {
+      const u = new URL(url);
+      // Helps only when the browser has no session; it cannot override one.
+      u.searchParams.set("login_hint", email);
+      target = u.toString();
+    }
+    this.toast(
+      email
+        ? `Opening ${what} for ${email}. If your browser is signed into a different Citrate account, sign out there first — the page follows the browser's session, not the app's.`
+        : `Opening ${what} in your browser.`,
+    );
+    await this.openExternal(target);
   }
 
   /**
