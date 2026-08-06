@@ -741,15 +741,36 @@ pub fn node_status(state: State<'_, NodeState>) -> std::result::Result<NodeStatu
 }
 
 #[tauri::command]
-pub fn node_start(
+pub async fn node_start(
     state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<(), String> {
-    // W1.5 — arm the producer with the member's own wallet as coinbase when the
-    // vault is unlocked. Best-effort: a locked or absent wallet just starts a
-    // plain follower; the coinbase can be set later and the node restarted.
+    // W1.5 — arm the producer with a coinbase when the vault is unlocked.
+    // Best-effort: a locked or absent wallet just starts a plain follower.
     if let Ok(info) = crate::wallet::address_auto_unlocked(&custody.0) {
-        state.0.set_coinbase(info.address);
+        // THE COINBASE MUST BE THE REGISTRY'S STAKER, NOT THE MEMBER'S EOA.
+        //
+        // Under the bond-clone model (#114/#127) the member's MemberBond CLONE is
+        // what registers and bonds; §R' settlement enforces `coinbase == registered
+        // staker` and rejects the block otherwise. Setting the EOA here meant an
+        // armed, correctly-bonded validator failed EVERY block with:
+        //
+        //   Reward settlement rejected: coinbase e14d2f9d… != registered staker
+        //   d9ff524e… for proposer 650609f7…
+        //
+        // The node looked healthy — synced, mining armed, peers fine — and produced
+        // nothing, forever (observed 2026-08-06). This predates the bond-clone
+        // retarget: mining to your own wallet was correct under the old self-bond
+        // model and silently became wrong when the staker moved to the clone.
+        //
+        // Pre-grant (no bond deployed) the EOA is still the right coinbase: there is
+        // no clone yet, and such a node is not a registered validator anyway.
+        let rpc = crate::rpc::RpcClient::citrate();
+        let coinbase = match crate::grant_status::read_grant_status(&rpc, &info.address) {
+            Ok(g) if g.bond_deployed && !g.bond_address.is_empty() => g.bond_address,
+            _ => info.address,
+        };
+        state.0.set_coinbase(coinbase);
     }
     state.0.start().map_err(|e| e.to_string())
 }
