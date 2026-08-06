@@ -194,6 +194,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // ONLY the public address (never key/seed). Idempotent — the Rust command
       // short-circuits when already provisioned. This is what makes the vault
       // initialized+unlocked and a real EOA exist BEFORE linkRequest runs.
+      async deviceId(): Promise<string> {
+        return invoke<string>("device_id");
+      },
       async ensureReady(): Promise<{ address: string; created: boolean }> {
         return invoke<{ address: string; created: boolean }>("wallet_ensure_ready");
       },
@@ -229,6 +232,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // as a pending ceremony; returns the decoded view for human approval.
       async registerValidator() {
         return invoke<CeremonyView>("node_register_validator");
+      },
+      async lastCrash() {
+        return invoke<{ reason: string; atUnixMs: number } | null>("node_last_crash");
       },
       // W1.x — arm the producer once synced (consensus-gated). The respawn mints
       // proposer.key, the validator identity the bond activation needs. Returns

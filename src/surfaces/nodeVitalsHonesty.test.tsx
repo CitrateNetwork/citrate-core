@@ -62,14 +62,23 @@ describe("Node vitals — Q-A.4b tauri display honesty", () => {
     expect(html).not.toContain("780 MB");
   });
 
-  it("syncing state shows 'syncing…' not a precise fake percent (binary 0/100 stub)", () => {
-    const s = runningState({ node: "syncing", syncPct: 0 });
+  // syncPct used to be a 0/100 stub, so this asserted a bare "syncing…". It is now
+  // a REAL percentage (local head vs the authoritative network tip, node.rs), so
+  // the honest thing is to SHOW it — and to show "—" when the tip is unknown.
+  it("syncing state shows the REAL percent", () => {
+    const s = runningState({ node: "syncing", syncPct: 62 });
     const html = renderToStaticMarkup(<Node store={noopStore} s={s} />);
-    // No precise-looking fake percent label from the binary stub. The visible
-    // sync readout must read "syncing…", not ">0%<"/">2%<" etc. (the bar's CSS
-    // width:100% is not a user-facing percent value).
-    expect(html).toContain(">syncing…<");
-    expect(html).not.toMatch(/>\d+%</);
+    expect(html).toContain(">62%<");
+    // The old stub wording must not come back — it hid real progress.
+    expect(html).not.toContain(">syncing…<");
+  });
+
+  it("an UNKNOWN sync percent renders '—', never a fabricated 100", () => {
+    // node.rs yields a negative syncPct when the network tip cannot be read.
+    const s = runningState({ node: "syncing", syncPct: -1 });
+    const html = renderToStaticMarkup(<Node store={noopStore} s={s} />);
+    expect(html).toContain(">—<");
+    expect(html).not.toMatch(/>-?\d+%</); // no "-1%", and no invented "100%"
   });
 
   it("peers panel shows the REAL count + an honest 'peer detail coming', never fabricated peer rows", () => {

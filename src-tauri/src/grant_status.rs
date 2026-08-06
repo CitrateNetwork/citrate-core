@@ -496,12 +496,29 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
 /// @rule8 / Rule 3 — no signing, no custody, no key material. `member_address` is
 /// the AA smart-wallet the grant targets (the OIDC `wallet_address` claim), NOT the
 /// custody EOA. A malformed address fails closed before any node call.
+/// ASYNC + `spawn_blocking` — this MUST NOT run on the main thread.
+///
+/// `read_grant_status` makes NINE sequential blocking `eth_call`s to the public
+/// 40204 RPC (stake, principal, SBT, bond, unlock, unlocked, KYC, pubkey, bonded).
+/// At the measured ~240 ms per round trip that is ~2.4 s of work — and `refreshNode`
+/// polls it every 2 s while the member is not yet bonded, i.e. throughout onboarding.
+///
+/// As a synchronous `#[tauri::command]` Tauri ran it ON THE MAIN THREAD, so the next
+/// poll began before the previous returned and the event loop never got to process
+/// input: the window rendered but did not respond to clicks (observed 2026-08-05 on
+/// a syncing node). Moving the blocking work to the runtime's blocking pool keeps the
+/// UI thread free; the reads themselves are unchanged, so the honesty guarantees in
+/// `read_grant_status` still hold.
 #[tauri::command]
-pub fn membership_grant_status(
+pub async fn membership_grant_status(
     member_address: String,
 ) -> std::result::Result<GrantStatus, String> {
-    let rpc = crate::rpc::RpcClient::citrate();
-    read_grant_status(&rpc, &member_address).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let rpc = crate::rpc::RpcClient::citrate();
+        read_grant_status(&rpc, &member_address).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("grant-status: background read failed: {e}"))?
 }
 
 #[cfg(test)]

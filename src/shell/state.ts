@@ -288,6 +288,16 @@ export interface AppState {
   lastCp: number;
   finAge: number;
   node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "error";
+  /**
+   * What the MEMBER wants the node to do, as distinct from what it is doing.
+   *
+   * `node` is observed state and is rewritten every 2s by the poller, so it can
+   * never express intent: after a quit/restart it read "off" and nothing started
+   * the node again — a member's validator silently stayed down until they found
+   * the button (observed 2026-08-06). This field is the intent, so launch can
+   * auto-start WITHOUT overriding a deliberate stop.
+   */
+  nodeIntent: "run" | "stopped";
   syncPct: number;
   hb: number;
   cpu: number;
@@ -544,6 +554,8 @@ export function freshState(pid: string): AppState {
     lastCp: 131200,
     finAge: 8,
     node: "off",
+    // Default RUN: a fresh install should bring its node up on first launch.
+    nodeIntent: "run",
     syncPct: 0,
     hb: 4,
     cpu: 0,
@@ -751,7 +763,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // authority session (refreshAuth → auth.status), never from disk. No account
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
-  "node", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
+  "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
   "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "socketPath",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never

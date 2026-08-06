@@ -622,7 +622,10 @@ function SettleRow({ k, v, accent }: { k: string; v: string; accent?: boolean })
 
 function S6({ store, s }: { store: Store; s: AppState }) {
   const syncPct = s.syncPct | 0;
-  const heightStr = fmtI(s.height - Math.round((100 - s.syncPct) * 14));
+  // The REAL height. This used to subtract `(100 - syncPct) * 14` to fake a
+  // "catching up" number off the 0/100 stub — a fabricated height (Rule 1). With a
+  // real syncPct there is nothing to estimate: show what the node actually has.
+  const heightStr = fmtI(s.height);
   return (
     <div className="cc-fade-up" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={eyebrow}>S6 · Node ignition</div>

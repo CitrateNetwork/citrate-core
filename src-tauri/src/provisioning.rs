@@ -78,3 +78,31 @@ pub fn wallet_ensure_ready(
 mod tests {
     include!("provisioning_tests.rs");
 }
+
+/// **Command — device_id.** A REAL, stable fingerprint of THIS device.
+///
+/// WHY THIS EXISTS. The UI rendered `dev_…` from `makeAddr(P.name + "::device")`
+/// where `P` is a **demo persona** (`state.ts`) — a plausible-looking identifier
+/// derived from a fictional character, shown in Settings next to "Machine
+/// attestation" as though it identified the machine. It identified nothing
+/// (Rule 1). The attestation copy beside it was honest; the id was not.
+///
+/// The custody key IS device-bound (sealed under the OS keyring device secret,
+/// per-install), so its PUBLIC key is a sound, non-secret device fingerprint —
+/// stable across launches, different on every install, and already public via the
+/// wallet address. We hash it with a domain separator so the id cannot be confused
+/// with, or reversed to, an address; only the digest leaves.
+///
+/// This is a device IDENTIFIER, not attestation: it proves nothing about hardware.
+/// The "hardware-backed attestation is not available in this build" line stays
+/// truthful and must remain until real attestation ships.
+#[tauri::command]
+pub fn device_id(custody: tauri::State<'_, crate::custody::CustodyState>) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let info = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    let mut h = Sha256::new();
+    h.update(b"citrate-core/device-id/v1\x00");
+    h.update(info.public_key_hex.as_bytes());
+    let digest = h.finalize();
+    Ok(format!("dev_{}", hex::encode(digest))[..14].to_string())
+}

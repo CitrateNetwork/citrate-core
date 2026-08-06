@@ -303,6 +303,28 @@ pub fn address(vault: &CustodyVault) -> Result<WalletInfo> {
     // `entropy` (Zeroizing) + `key` zeroize on drop here.
 }
 
+/// [`address`], but self-healing the passphrase-less vault first.
+///
+/// WHY THIS EXISTS. The vault auto-locks (~30 min) and, in the device-bound model,
+/// there is no user passphrase to re-enter — only the keyring device secret can
+/// re-open it. `address` fails closed on a locked vault, so EVERY command that
+/// merely wanted the member's own address started returning "custody vault locked
+/// or unavailable" once the app had been open for half an hour.
+///
+/// That is not a security boundary — the same device secret is right there, and
+/// `wallet_balances` already self-healed exactly this way. It just had not been
+/// applied consistently, so validator activation, staking, withdrawals, transfers
+/// and the activity feed all failed closed on an idle app while balances kept
+/// working (observed 2026-08-06: "Validator activation unavailable — wallet:
+/// custody vault locked or unavailable" with 32,000 SALT already bonded on chain).
+///
+/// `ensure_auto_unlocked` is idempotent and fails closed on a reset keychain, so
+/// this weakens nothing: a vault that genuinely cannot be re-opened still errors.
+pub fn address_auto_unlocked(vault: &CustodyVault) -> Result<WalletInfo> {
+    vault.ensure_auto_unlocked()?;
+    address(vault)
+}
+
 /// **In-process only.** Read the sealed entropy from the vault. `custody_get`
 /// requires an unlocked session (fails closed `Denied` when locked) and returns
 /// a `Zeroizing` buffer.

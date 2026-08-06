@@ -14,7 +14,7 @@ use std::sync::Mutex as StdMutex;
 /// In-memory keyring fake — the injection point that lets every crypto/session
 /// test run without a live platform keyring.
 #[derive(Default)]
-struct FakeKeyring {
+pub(crate) struct FakeKeyring {
     store: StdMutex<std::collections::HashMap<String, Vec<u8>>>,
 }
 
@@ -68,7 +68,7 @@ const PASS: &[u8] = b"correct horse battery staple";
 const WRONG: &[u8] = b"Tr0ub4dor&3-but-wrong";
 
 /// Build a vault over a fresh temp envelope path + a shared in-memory keyring.
-fn vault(autolock_mins: u32) -> (CustodyVault, std::sync::Arc<FakeKeyring>, PathBuf) {
+pub(crate) fn vault(autolock_mins: u32) -> (CustodyVault, std::sync::Arc<FakeKeyring>, PathBuf) {
     let fake = std::sync::Arc::new(FakeKeyring::default());
     let mut p = std::env::temp_dir();
     let uniq = format!(

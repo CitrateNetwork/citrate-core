@@ -76,7 +76,7 @@ pub fn wallet_send(
         return Err("wallet: transfer amount must be greater than zero".to_string());
     }
     // The sender = THIS vault's wallet (public address only; never the key).
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let intent = SignatureIntent {
         origin: LOCAL_USER_ORIGIN.to_string(),
         kind: IntentKind::Transaction,

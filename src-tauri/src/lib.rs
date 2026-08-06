@@ -225,6 +225,10 @@ pub fn run() {
             // ValidatorRegistry (the correct block-subsidy source, not the old
             // ContributionAccounting.claimable read).
             node::node_validator_earnings,
+            // Watchdog: why did the supervised node stop? (crash-records.jsonl tail)
+            node::node_last_crash,
+            // Real device fingerprint (hash of the device-bound custody pubkey).
+            provisioning::device_id,
             // node logs — Q-A.2/Q-B.2 REAL streamed stdout+stderr from the
             // supervised node's bounded ring buffer. Fills the Node LOG panel in
             // a packaged build (was permanently empty: stdout was inherited then

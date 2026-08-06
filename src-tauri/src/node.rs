@@ -248,6 +248,14 @@ pub struct NodeManager {
     /// node spawns as a plain FOLLOWER and is only armed once it has caught up to
     /// the network tip (see [`Self::arm_mining`]). Off by default.
     mining_armed: AtomicBool,
+    /// Cached authoritative network tip + when it was read.
+    ///
+    /// `node_status` is polled every 2s ON THE MAIN THREAD, so reading the public
+    /// RPC there directly would freeze the UI ~240ms per tick — the very defect
+    /// the grant-status async change fixed. The tip moves ~30 blocks/min, so a
+    /// 15s cache is plenty to drive a progress figure while turning 30 network
+    /// round-trips per minute into 4.
+    tip_cache: Mutex<Option<(u64, std::time::Instant)>>,
 }
 
 impl NodeManager {
@@ -270,6 +278,7 @@ impl NodeManager {
             sup: Mutex::new(None),
             coinbase: Mutex::new(None),
             mining_armed: AtomicBool::new(false),
+            tip_cache: Mutex::new(None),
         }
     }
 
@@ -320,6 +329,26 @@ impl NodeManager {
     /// this guards. Arms only when a coinbase is known and it is not already
     /// armed. Best-effort: any RPC error → no-arm (stays a follower), never panics.
     /// Returns whether it armed on this call.
+    /// The network tip, re-read at most every 15s. See `tip_cache`.
+    fn cached_network_tip(&self) -> Option<u64> {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(15);
+        let mut guard = self.tip_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((tip, at)) = *guard {
+            if at.elapsed() < TTL {
+                return Some(tip);
+            }
+        }
+        match remote_network_tip() {
+            Some(tip) => {
+                *guard = Some((tip, std::time::Instant::now()));
+                Some(tip)
+            }
+            // Keep serving the last known tip rather than flapping to "unknown"
+            // on one failed read; only a never-successful read yields None.
+            None => guard.map(|(tip, _)| tip),
+        }
+    }
+
     pub fn arm_mining_if_synced(&self) -> bool {
         if self.is_mining_armed() || self.coinbase().is_none() {
             return false;
@@ -535,7 +564,30 @@ impl NodeManager {
         } else {
             (0, 0)
         };
-        let sync_pct = if running && height > 0 { 100.0 } else { 0.0 };
+        // REAL sync progress against the AUTHORITATIVE network tip.
+        //
+        // This was `if running && height > 0 { 100.0 }` — not a percentage at all,
+        // just "the node is up and has at least one block". So the app reported
+        // "synced" at block 1, `mapNodeState`'s `syncPct < 100` branch was
+        // unreachable, and a member 16,000 blocks behind saw NODE: synced while
+        // block production correctly refused to arm (observed 2026-08-06 at height
+        // 67,824 with the fleet at ~84,000). Claiming synced when we are not is
+        // exactly the Rule-1 failure `arm_mining_if_synced` already guards against,
+        // which is why that path deliberately compares against the PUBLIC RPC
+        // rather than the local node's own `eth_syncing`.
+        //
+        // Use the same authoritative comparison here so the UI and the mining gate
+        // agree. A failed tip read yields `None` — report progress as unknown
+        // (-1.0) rather than assert 100, so the surface can honestly render "—".
+        let sync_pct = if !running || height == 0 {
+            0.0
+        } else {
+            match self.cached_network_tip() {
+                Some(tip) if is_caught_up(height, tip) => 100.0,
+                Some(tip) if tip > 0 => ((height as f64 / tip as f64) * 100.0).clamp(0.0, 99.9),
+                _ => -1.0, // tip unknown — never fabricate "synced"
+            }
+        };
         NodeStatus {
             state: state.to_string(),
             peers,
@@ -696,7 +748,7 @@ pub fn node_start(
     // W1.5 — arm the producer with the member's own wallet as coinbase when the
     // vault is unlocked. Best-effort: a locked or absent wallet just starts a
     // plain follower; the coinbase can be set later and the node restarted.
-    if let Ok(info) = crate::wallet::address(&custody.0) {
+    if let Ok(info) = crate::wallet::address_auto_unlocked(&custody.0) {
         state.0.set_coinbase(info.address);
     }
     state.0.start().map_err(|e| e.to_string())
@@ -721,7 +773,7 @@ pub fn node_proposer_identity(
     state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<ProposerIdentity, String> {
-    let info = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let info = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let proposer_pubkey = state.0.proposer_pubkey()?;
     Ok(ProposerIdentity {
         coinbase: info.address,
@@ -808,7 +860,7 @@ pub fn node_register_validator(
     custody: State<'_, crate::custody::CustodyState>,
     ceremony: State<'_, crate::ceremony::CeremonyState>,
 ) -> std::result::Result<crate::ceremony::CeremonyView, String> {
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let registry = crate::validator::parse_address_20(node_validator_registry_value())?;
     let rpc = crate::rpc::RpcClient::citrate();
 
@@ -899,4 +951,45 @@ pub fn node_logs(state: State<'_, NodeState>) -> std::result::Result<Vec<LogLine
 #[cfg(test)]
 mod tests {
     include!("node_tests.rs");
+}
+
+/// The most recent supervised-node crash, or `None` if it has never crashed.
+#[derive(serde::Serialize)]
+pub struct LastCrash {
+    /// Human-readable cause, taken from the node's own stderr tail (falling back
+    /// to the exit status when stderr was empty). Never a generic placeholder.
+    pub reason: String,
+    #[serde(rename = "atUnixMs")]
+    pub at_unix_ms: u64,
+}
+
+/// **Command — node_last_crash.** Read the last line of `crash-records.jsonl`.
+///
+/// The supervisor restarts a crashed node with backoff and, at the cap, gives up
+/// and writes a record — but nothing surfaced it, so a validator could sit down
+/// indefinitely while the app looked idle. The watchdog uses this to tell the
+/// member WHY their node stopped ("LOCK: Resource temporarily unavailable",
+/// "No space left on device") instead of a generic failure line (Rule 1).
+///
+/// Read-only and best-effort: a missing/short/corrupt file is `None`, never an
+/// error that would itself need explaining.
+#[tauri::command]
+pub fn node_last_crash<R: Runtime>(app: AppHandle<R>) -> Option<LastCrash> {
+    let path = app.path().app_data_dir().ok()?.join("node").join("crash-records.jsonl");
+    let contents = std::fs::read_to_string(path).ok()?;
+    let last = contents.lines().rev().find(|l| !l.trim().is_empty())?;
+    let v: serde_json::Value = serde_json::from_str(last).ok()?;
+    let stderr_tail = v.get("stderr_tail").and_then(|x| x.as_str()).unwrap_or("").trim();
+    let exit = v.get("exit").and_then(|x| x.as_str()).unwrap_or("").trim();
+    // Prefer the node's own words; fall back to the exit status.
+    let reason = if stderr_tail.is_empty() { exit } else { stderr_tail };
+    if reason.is_empty() {
+        return None;
+    }
+    // Keep it to one readable line for a toast.
+    let reason: String = reason.lines().next().unwrap_or(reason).chars().take(180).collect();
+    Some(LastCrash {
+        reason,
+        at_unix_ms: v.get("at_unix_ms").and_then(|x| x.as_u64()).unwrap_or(0),
+    })
 }

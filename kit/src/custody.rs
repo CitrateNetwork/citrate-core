@@ -1738,6 +1738,6 @@ pub fn build_custody_state<R: Runtime>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     include!("custody_tests.rs");
 }
