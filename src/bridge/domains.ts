@@ -156,6 +156,11 @@ export interface WalletDomain {
    */
   ensureReady(): Promise<{ address: string; created: boolean }>;
   /**
+   * A REAL device fingerprint: sha256 over the device-bound custody PUBLIC key.
+   * Stable per install, non-secret, and NOT attestation (see provisioning.rs).
+   */
+  deviceId(): Promise<string>;
+  /**
    * Bind THIS device's custody EOA to the member's Citrate identity, as a PENDING
    * ceremony. Signs NOTHING — the human approves via `wallet.linkApprove`.
    *
@@ -214,6 +219,11 @@ export interface NodeDomain {
    * `node_register_validator`; the sim shim is honestly Unavailable (no node/key).
    */
   registerValidator(): Promise<CeremonyView>;
+  /**
+   * The most recent supervised-node crash, or null if it has never crashed.
+   * Used by the liveness watchdog to name the REAL reason a node stopped.
+   */
+  lastCrash(): Promise<{ reason: string; atUnixMs: number } | null>;
   /**
    * W1.x — arm the producer, consensus-gated on being synced. The node runs as a
    * plain follower and never mints its `proposer.key`; arming respawns it with

@@ -642,7 +642,7 @@ pub fn wallet_stake(
         return Err("staking: stake amount must be greater than zero".to_string());
     }
     // The staker = THIS vault's wallet (public address only; never the key).
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let intent = SignatureIntent {
         origin: LOCAL_USER_ORIGIN.to_string(),
         kind: IntentKind::Transaction,
@@ -674,7 +674,7 @@ pub fn wallet_request_withdrawal(
         return Err("staking: withdraw amount must be greater than zero".to_string());
     }
     // The staker = THIS vault's wallet (public address only; never the key).
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     // Live reads: the caller's self-stake SALT (balanceOf) + raw shares (shares).
     let rpc = crate::rpc::RpcClient::citrate();
     let self_stake_salt = read_self_stake(&rpc, &wallet.address).map_err(|e| e.to_string())?;
@@ -704,7 +704,7 @@ pub fn wallet_claim_withdrawal(
     let id: u128 = request_id
         .parse()
         .map_err(|_| "staking: request id is not a u128 value".to_string())?;
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let intent = SignatureIntent {
         origin: LOCAL_USER_ORIGIN.to_string(),
         kind: IntentKind::Transaction,
@@ -723,7 +723,7 @@ pub fn wallet_claim_withdrawal(
 pub fn wallet_pending_withdrawals(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<Vec<PendingWithdrawal>, String> {
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let rpc = crate::rpc::RpcClient::citrate();
     read_pending_withdrawals(&rpc, &wallet.address).map_err(|e| e.to_string())
 }

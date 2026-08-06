@@ -296,6 +296,11 @@ export class Store {
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
+  /** Epoch ms of the last `grantStatus` bond read — see the throttle in refreshNode. */
+  private lastBondReadAt = 0;
+  private nodeWatchdog: ReturnType<typeof setInterval> | null = null;
+  /** True while an outage has already been reported, so we warn once, not every 30s. */
+  private nodeOutageNotified = false;
   private modelTimer: ReturnType<typeof setInterval> | null = null;
   private nodeStarting = false;
   // W1.x — true once the producer has been armed this session (the node respawns
@@ -362,6 +367,22 @@ export class Store {
     if (BRIDGE_MODE === "tauri") {
       void this.refreshNode();
       this.nodeTimer = setInterval(() => void this.refreshNode(), 2000);
+      // AUTOSTART. `startNode()` was reachable ONLY from a button, so after any
+      // quit/restart/crash a member's node stayed down until they went looking for
+      // it — silently not syncing, not producing, not earning. Bring it up on every
+      // launch UNLESS the member explicitly stopped it (nodeIntent === "stopped").
+      // Deferred a tick so the first refreshNode() can observe an already-running
+      // supervisor and we don't double-spawn (node.rs is idempotent, but this keeps
+      // the UI out of a spurious "prov").
+      setTimeout(() => {
+        if (this.state.nodeIntent !== "run") return;
+        if (this.state.node !== "off" && this.state.node !== "error") return;
+        this.startNode();
+      }, 1500);
+      // WATCHDOG. The supervisor retries a crashed node with backoff and then gives
+      // up; nothing told the member. Poll the gap between intent and reality and say
+      // so ONCE per outage, with the real reason from the node's own crash record.
+      this.nodeWatchdog = setInterval(() => void this.checkNodeLiveness(), 30_000);
       // BC-3 — fold the REAL local-model status on launch so the S6.5 step (and
       // Settings) show a resumed download / an already-verified model honestly.
       // AND actually RESUME it: a prior session that was mid-download leaves the
@@ -381,6 +402,20 @@ export class Store {
       // without this they fail closed and the wallet appears broken. Run the wallet
       // reads AFTER the unlock attempt resolves (best-effort; a reset keychain leaves
       // the honest locked state).
+      // Replace the persona-derived placeholder id with the REAL device fingerprint
+      // (sha256 of the device-bound custody pubkey). Honest no-op on failure: the
+      // labelled placeholder stands rather than a wrong claim about this machine.
+      void bridge.wallet
+        .deviceId()
+        .then((id) => {
+          if (id) {
+            this.setState({ deviceId: id });
+            this.save();
+          }
+        })
+        .catch(() => {
+          /* no vault yet (or web-dev) — leave the existing id untouched */
+        });
       void this.custodyEnsureUnlocked().finally(() => {
         // Re-establish the signed-in session from the vaulted OIDC refresh token so
         // a restart keeps the member's paid tier instead of dropping to signed-out
@@ -718,7 +753,16 @@ export class Store {
       // Read the bond only while the node is running and we are still WAITING for it
       // (< 32k); once bonded the value is stable, so we stop re-reading it every 2s.
       let bonded = this.state.bondedStake;
-      if (st.state === "running" && bonded < 32000) {
+      // THROTTLED. `grantStatus` is NINE sequential public-RPC eth_calls (~2.4 s of
+      // network). refreshNode ticks every 2 s, so reading it every tick meant the
+      // reads overlapped continuously — 27 calls/min per member against the shared
+      // 40204 RPC, for a value that only changes once (at activation). Re-read at
+      // most every BOND_READ_MS; the vitals fold below still runs every tick off the
+      // fast LOCAL node RPC (~0.3 ms), so height/peers/sync stay live.
+      const BOND_READ_MS = 15_000;
+      const dueForBondRead = Date.now() - this.lastBondReadAt >= BOND_READ_MS;
+      if (st.state === "running" && bonded < 32000 && dueForBondRead) {
+        this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
           bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
@@ -1029,6 +1073,8 @@ export class Store {
     this.timer = null;
     if (this.nodeTimer) clearInterval(this.nodeTimer);
     this.nodeTimer = null;
+    if (this.nodeWatchdog) clearInterval(this.nodeWatchdog);
+    this.nodeWatchdog = null;
   }
 
   // ---------- helpers ----------
@@ -1560,8 +1606,45 @@ export class Store {
   }
 
   // ---------- node lifecycle ----------
+  /**
+   * Notice when the node is DOWN but the member wanted it up, and say so.
+   *
+   * The supervisor already restarts a crashed node with backoff, but after the cap
+   * it gives up silently: `node.rs` writes a crash record and stops. A validator
+   * can therefore sit stopped indefinitely — not syncing, not producing, not
+   * earning — while the app looks idle. Nothing surfaced that (2026-08-06: nine
+   * `LOCK: Resource temporarily unavailable` crashes, no user-visible sign).
+   *
+   * One attempt to bring it back, then an HONEST toast naming the real reason from
+   * the node's own crash record (Rule 1 — never "something went wrong"). Warned
+   * once per outage so a persistent failure does not spam every 30s; the latch
+   * clears when the node is observed running again.
+   */
+  private async checkNodeLiveness(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") return;
+    if (this.state.nodeIntent !== "run") return; // member stopped it deliberately
+    if (this.nodeStarting) return; // a spawn is already in flight
+    const down = this.state.node === "off" || this.state.node === "error";
+    if (!down) {
+      this.nodeOutageNotified = false; // recovered — re-arm the warning
+      return;
+    }
+    if (this.nodeOutageNotified) return;
+    this.nodeOutageNotified = true;
+    // Why did it stop? The node's crash record is the real answer.
+    let reason = "";
+    try {
+      const rec = await bridge.node.lastCrash();
+      if (rec?.reason) reason = " — " + rec.reason;
+    } catch {
+      /* honest no-op: no crash record available, warn without a reason */
+    }
+    this.toast("Node is not running" + reason + ". Restarting…");
+    this.startNode();
+  }
+
   startNode(): void {
-    this.setState({ node: "prov", syncPct: 0, logs: [], peerRows: [] });
+    this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
       // Spawn the REAL supervised node (bridge.node.start → node.rs). The 2s
       // poller (refreshNode) then folds live state/height/peers as it boots +
@@ -1602,7 +1685,8 @@ export class Store {
 
   /** Stop the node. Tauri: release the real supervisor (bridge.node.stop). */
   stopNode(): void {
-    this.setState({ node: "off", peers: 0, logs: [], syncPct: 0, peerRows: [] });
+    // Explicit member action — remember it so launch does NOT restart the node.
+    this.setState({ node: "off", nodeIntent: "stopped", peers: 0, logs: [], syncPct: 0, peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
       // Only claim the supervisor was released once the real stop RESOLVES — the
       // optimistic "off" reflects intent, but the toast must not overstate.

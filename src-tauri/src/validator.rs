@@ -32,7 +32,16 @@ pub fn proposer_pubkey_from_seed(seed: &[u8; 32]) -> [u8; 32] {
 pub fn read_proposer_pubkey(data_dir: &std::path::Path) -> Result<String, String> {
     let path = data_dir.join(PROPOSER_KEY_FILE);
     let mut bytes = std::fs::read(&path)
-        .map_err(|e| format!("proposer key not available yet ({}): {e}", path.display()))?;
+        .map_err(|_| {
+            // The file is ABSENT until the node arms mining, and mining arms only
+            // once the local head reaches the network tip. Reporting the path and
+            // "os error 2" told the member their install was broken when the node
+            // was simply still syncing. Name the real gate instead (Rule 1).
+            "proposer key not minted yet — your node mints it once it finishes syncing \
+             to the network tip and arms block production. Leave the node running; \
+             activation unlocks automatically."
+                .to_string()
+        })?;
     if bytes.len() != 32 {
         bytes.zeroize();
         return Err(format!(
@@ -265,7 +274,16 @@ pub fn sign_registration_from_data_dir(
 ) -> Result<([u8; 32], [u8; 64]), String> {
     let path = data_dir.join(PROPOSER_KEY_FILE);
     let mut bytes = std::fs::read(&path)
-        .map_err(|e| format!("proposer key not available yet ({}): {e}", path.display()))?;
+        .map_err(|_| {
+            // The file is ABSENT until the node arms mining, and mining arms only
+            // once the local head reaches the network tip. Reporting the path and
+            // "os error 2" told the member their install was broken when the node
+            // was simply still syncing. Name the real gate instead (Rule 1).
+            "proposer key not minted yet — your node mints it once it finishes syncing \
+             to the network tip and arms block production. Leave the node running; \
+             activation unlocks automatically."
+                .to_string()
+        })?;
     if bytes.len() != 32 {
         bytes.zeroize();
         return Err(format!("proposer.key is {} bytes, expected 32", bytes.len()));

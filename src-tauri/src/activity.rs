@@ -411,7 +411,7 @@ pub fn read_activity<H: ActivityHttpClient>(http: &H, address: &str) -> Result<A
 pub fn wallet_activity(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<Vec<ActivityEntry>, String> {
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let http = UreqActivityClient;
     read_activity(&http, &wallet.address)
         .map(|r| r.entries)

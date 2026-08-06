@@ -536,3 +536,44 @@ fn personal_sign_commits_to_the_message() {
     let b = sign_personal(&v, b"transfer 1000 SALT").expect("b");
     assert_ne!(a, b, "the signature must depend on the message");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTO-LOCK SELF-HEAL. The device-bound vault auto-locks (~30 min) and there is
+// no passphrase to re-enter — only the keyring device secret reopens it. Every
+// command that just wanted the member's own address therefore started failing
+// with "custody vault locked or unavailable" on an idle app: validator
+// activation, staking, withdrawals, transfers, the activity feed. Balances kept
+// working because wallet_balances alone self-healed. `address_auto_unlocked` is
+// that self-heal applied consistently (observed 2026-08-06 blocking a bond whose
+// 32,000 SALT was already on chain).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn address_auto_unlocked_reopens_an_auto_locked_vault() {
+    // DEVICE-BOUND vault (the shipped model): provisioned from the keyring device
+    // secret, no user passphrase. `crate::custody::tests::vault` is that fixture.
+    let (v, _fake, _p) = crate::custody::tests::vault(0);
+    v.ensure_auto_unlocked().expect("device-bound provision");
+    import(&v, CANONICAL_MNEMONIC).expect("import while unlocked");
+    let expected = address(&v).expect("addr while unlocked");
+
+    v.lock(); // what the ~30-minute auto-lock does
+
+    // The plain read fails closed — this is what every caller hit.
+    assert!(address(&v).is_err(), "a locked vault must fail closed for address()");
+
+    // The self-healing read reopens from the keyring device secret and returns
+    // the SAME wallet — never a different or freshly-minted one.
+    let got = address_auto_unlocked(&v).expect("auto-unlock should reopen the vault");
+    assert_eq!(got.address, expected.address, "must be the same wallet, not a new one");
+}
+
+#[test]
+fn address_auto_unlocked_is_idempotent_on_an_already_open_vault() {
+    let (v, _fake, _p) = crate::custody::tests::vault(0);
+    v.ensure_auto_unlocked().expect("device-bound provision");
+    import(&v, CANONICAL_MNEMONIC).expect("import while unlocked");
+    let a = address_auto_unlocked(&v).expect("open vault");
+    let b = address_auto_unlocked(&v).expect("still open");
+    assert_eq!(a.address, b.address);
+}

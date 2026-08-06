@@ -968,7 +968,7 @@ pub fn user_claim(
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<crate::ceremony::CeremonyView, String> {
     // Read the wallet's public address (never the key) + the REAL claimable.
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let rpc = crate::rpc::RpcClient::citrate();
     let snap = crate::earnings::read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
     let claimable_wei: u128 = snap

@@ -259,7 +259,7 @@ pub fn agent_earnings(
 ) -> std::result::Result<EarningsSnapshot, String> {
     // The wallet address to read claimable for = THIS vault's node-operator
     // wallet (reads the public identity, NOT the key).
-    let wallet = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let rpc = crate::rpc::RpcClient::citrate();
     read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())
 }

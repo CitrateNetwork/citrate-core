@@ -362,6 +362,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("wallet.claimWithdrawal");
         return simWalletCeremony({ action: `Claim matured withdrawal #${id}`, cost: "gas settles in the desktop app", destination: "LiquidStakingPool" });
       },
+      async deviceId(): Promise<string> {
+        // No custody vault in web-dev, so there is no real device key to fingerprint.
+        // Fail honestly rather than mint a fake id (Rule 1).
+        throw new Unavailable("wallet", "deviceId");
+      },
       async ensureReady(): Promise<{ address: string; created: boolean }> {
         // No custody vault or key exists in web-dev, so nothing is provisioned or
         // minted. Return the deterministic persona address — a NON-CHAIN preview
@@ -407,6 +412,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       // W1.3 — no real node/proposer key in the web preview → honest Unavailable
       // (never a fabricated registration ceremony).
+      async lastCrash() {
+        // Web-dev has no supervisor and therefore no crash record — honestly null,
+        // never a fabricated failure (Rule 1).
+        return null;
+      },
       async registerValidator() {
         assertSimAllowed("node.registerValidator");
         throw new Unavailable("node", "registerValidator");
