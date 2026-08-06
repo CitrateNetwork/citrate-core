@@ -248,6 +248,14 @@ pub struct NodeManager {
     /// node spawns as a plain FOLLOWER and is only armed once it has caught up to
     /// the network tip (see [`Self::arm_mining`]). Off by default.
     mining_armed: AtomicBool,
+    /// Cached authoritative network tip + when it was read.
+    ///
+    /// `node_status` is polled every 2s ON THE MAIN THREAD, so reading the public
+    /// RPC there directly would freeze the UI ~240ms per tick — the very defect
+    /// the grant-status async change fixed. The tip moves ~30 blocks/min, so a
+    /// 15s cache is plenty to drive a progress figure while turning 30 network
+    /// round-trips per minute into 4.
+    tip_cache: Mutex<Option<(u64, std::time::Instant)>>,
 }
 
 impl NodeManager {
@@ -270,6 +278,7 @@ impl NodeManager {
             sup: Mutex::new(None),
             coinbase: Mutex::new(None),
             mining_armed: AtomicBool::new(false),
+            tip_cache: Mutex::new(None),
         }
     }
 
@@ -320,6 +329,26 @@ impl NodeManager {
     /// this guards. Arms only when a coinbase is known and it is not already
     /// armed. Best-effort: any RPC error → no-arm (stays a follower), never panics.
     /// Returns whether it armed on this call.
+    /// The network tip, re-read at most every 15s. See `tip_cache`.
+    fn cached_network_tip(&self) -> Option<u64> {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(15);
+        let mut guard = self.tip_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((tip, at)) = *guard {
+            if at.elapsed() < TTL {
+                return Some(tip);
+            }
+        }
+        match remote_network_tip() {
+            Some(tip) => {
+                *guard = Some((tip, std::time::Instant::now()));
+                Some(tip)
+            }
+            // Keep serving the last known tip rather than flapping to "unknown"
+            // on one failed read; only a never-successful read yields None.
+            None => guard.map(|(tip, _)| tip),
+        }
+    }
+
     pub fn arm_mining_if_synced(&self) -> bool {
         if self.is_mining_armed() || self.coinbase().is_none() {
             return false;
@@ -535,7 +564,30 @@ impl NodeManager {
         } else {
             (0, 0)
         };
-        let sync_pct = if running && height > 0 { 100.0 } else { 0.0 };
+        // REAL sync progress against the AUTHORITATIVE network tip.
+        //
+        // This was `if running && height > 0 { 100.0 }` — not a percentage at all,
+        // just "the node is up and has at least one block". So the app reported
+        // "synced" at block 1, `mapNodeState`'s `syncPct < 100` branch was
+        // unreachable, and a member 16,000 blocks behind saw NODE: synced while
+        // block production correctly refused to arm (observed 2026-08-06 at height
+        // 67,824 with the fleet at ~84,000). Claiming synced when we are not is
+        // exactly the Rule-1 failure `arm_mining_if_synced` already guards against,
+        // which is why that path deliberately compares against the PUBLIC RPC
+        // rather than the local node's own `eth_syncing`.
+        //
+        // Use the same authoritative comparison here so the UI and the mining gate
+        // agree. A failed tip read yields `None` — report progress as unknown
+        // (-1.0) rather than assert 100, so the surface can honestly render "—".
+        let sync_pct = if !running || height == 0 {
+            0.0
+        } else {
+            match self.cached_network_tip() {
+                Some(tip) if is_caught_up(height, tip) => 100.0,
+                Some(tip) if tip > 0 => ((height as f64 / tip as f64) * 100.0).clamp(0.0, 99.9),
+                _ => -1.0, // tip unknown — never fabricate "synced"
+            }
+        };
         NodeStatus {
             state: state.to_string(),
             peers,

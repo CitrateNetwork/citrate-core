@@ -88,12 +88,14 @@ export function Node({ store, s }: SurfaceProps) {
   // (bridge.node.stop). If a real supervisor pause lands (Q-C), re-add them wired.
   const onNodeStop = () => store.stopNode();
   const showSync = s.node === "syncing";
-  // Q-A.4b item 2 — syncPct is a binary 0/100 stub in the packaged build (node.rs;
-  // a real percent needs eth_syncing/getDagStats, Q-B.3). Don't imply a precise
-  // fake percent: show "syncing…" while syncing. The web-dev sim animates a real
-  // (prototype) percent, so keep the numeric bar there.
-  const syncPctStr = TAURI ? "syncing…" : (s.syncPct | 0) + "%";
-  const syncBarW = TAURI ? "100%" : (s.syncPct | 0) + "%";
+  // syncPct is now a REAL percentage: local head vs the authoritative network tip
+  // (node.rs, same comparison that gates block production), cached 15s. It used to
+  // be a 0/100 stub, which is why this showed a bare "syncing…" and a full-width
+  // bar. A negative value means the tip could not be read — render "—" rather than
+  // guess (Rule 1); never claim 100 on an unknown.
+  const syncKnown = s.syncPct >= 0;
+  const syncPctStr = syncKnown ? (s.syncPct | 0) + "%" : "—";
+  const syncBarW = syncKnown ? (s.syncPct | 0) + "%" : "0%";
   const logsEmpty = s.node === "off";
   const logLines = s.logs;
   // Q-A.4b item 3 — per-peer rows are DEAD in tauri (no getDagStats yet). Never
