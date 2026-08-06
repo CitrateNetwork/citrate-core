@@ -749,12 +749,13 @@ impl AgentManager {
         vault: &CustodyVault,
         rpc: &crate::rpc::RpcClient<T>,
         claimable_wei: u128,
+        to: &str,
     ) -> Result<(String, AgentSignatureRequest), AgentError> {
         // Honest zero: nothing to claim → no ceremony, no tx (Rule 1 / I-3).
         if claimable_wei == 0 {
             return Err(AgentError::NoPending);
         }
-        let req = crate::earnings::user_claim_request(claimable_wei);
+        let req = crate::earnings::user_claim_request_to(claimable_wei, to);
         let id = self.bridge_request(ceremony, vault, rpc, &req)?;
         Ok((id, req))
     }
@@ -966,19 +967,66 @@ pub async fn user_claim(
     agent: State<'_, AgentState>,
     ceremony: State<'_, crate::ceremony::CeremonyState>,
     custody: State<'_, crate::custody::CustodyState>,
+    node: State<'_, crate::node::NodeState>,
 ) -> std::result::Result<crate::ceremony::CeremonyView, String> {
-    // Read the wallet's public address (never the key) + the REAL claimable.
+    // Read the wallet's public address (never the key).
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let rpc = crate::rpc::RpcClient::citrate();
-    let snap = crate::earnings::read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
-    let claimable_wei: u128 = snap
-        .claimable_wei
-        .parse()
-        .map_err(|_| "earnings: claimable is not a u128 wei value".to_string())?;
+
+    // WHICH CLAIM IS THIS? The two are different contracts with different money.
+    //
+    // A VALIDATOR's rewards accrue in `ValidatorRegistry` against the proposer
+    // pubkey, and only the registered staker — the member's MemberBond CLONE — may
+    // call `ValidatorRegistry.claimRewards(pubkey)`. The member reaches them
+    // through `MemberBond.claimRewards()`, which is `onlyMember` (so the EOA IS the
+    // right signer) and forwards the proceeds on.
+    //
+    // Everything here previously went to `ContributionAccounting`, so a validator
+    // pressing Claim signed a tx against a contract holding none of their rewards.
+    // It became reachable the moment validator earnings were surfaced, because the
+    // button enables on a non-zero claimable that this tx could never collect.
+    //
+    // Same 4 bytes either way — `claimRewards()` is 0x372500ab on BOTH — so only
+    // the target changes. (`ValidatorRegistry.claimRewards(bytes32)` is 0x7790ddc6
+    // and is NOT what we build: the clone calls that, not the member.)
+    let grant = crate::grant_status::read_grant_status(&rpc, &wallet.address).ok();
+    let is_validator = grant
+        .as_ref()
+        .map(|g| g.bond_deployed && g.has_validator)
+        .unwrap_or(false);
+
+    let (to, claimable_wei) = if is_validator {
+        // MATURED validator rewards only — `rewardsOf(pubkey).claimableNow`. Rewards
+        // inside the REWARD_RING evidence window are still slashable and are NOT
+        // claimable; the contract reports them separately for exactly that reason.
+        let pubkey_hex = node.0.proposer_pubkey()?;
+        let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
+        let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
+        if bytes.len() != 32 {
+            return Err(format!("proposer pubkey is {} bytes, expected 32", bytes.len()));
+        }
+        let mut pubkey = [0u8; 32];
+        pubkey.copy_from_slice(&bytes);
+        let (_total, claimable) = crate::validator::read_validator_rewards(
+            &rpc,
+            crate::addresses::validator_registry(),
+            &pubkey,
+        )?;
+        let bond = grant.as_ref().map(|g| g.bond_address.clone()).unwrap_or_default();
+        (bond, claimable)
+    } else {
+        let snap = crate::earnings::read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
+        let wei: u128 = snap
+            .claimable_wei
+            .parse()
+            .map_err(|_| "earnings: claimable is not a u128 wei value".to_string())?;
+        (crate::earnings::CONTRIBUTION_ACCOUNTING.to_string(), wei)
+    };
+
     // Bridge the REAL claim into a pending ceremony (honest 0 → NoPending error).
     let (id, _req) = agent
         .0
-        .bridge_user_claim(&ceremony.0, &custody.0, &rpc, claimable_wei)
+        .bridge_user_claim(&ceremony.0, &custody.0, &rpc, claimable_wei, &to)
         .map_err(|e| e.to_string())?;
     // Return the pending ceremony view so the human approves it via the ceremony's
     // own sign_and_broadcast (B1.4) — this command never signs.
