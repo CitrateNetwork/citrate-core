@@ -408,7 +408,7 @@ pub fn read_activity<H: ActivityHttpClient>(http: &H, address: &str) -> Result<A
 /// error, never fabricated); a transport/parse failure returns an error so the
 /// store keeps its last honest list.
 #[tauri::command]
-pub fn wallet_activity(
+pub async fn wallet_activity(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<Vec<ActivityEntry>, String> {
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;

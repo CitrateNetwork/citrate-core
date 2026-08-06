@@ -254,7 +254,7 @@ pub fn user_claim_request(claimable_wei: u128) -> crate::agent::AgentSignatureRe
 /// key is never touched); a locked/absent vault fails closed with a clear error.
 /// Returns the single real claimable (wei) — no sim decomposition (Rule 1).
 #[tauri::command]
-pub fn agent_earnings(
+pub async fn agent_earnings(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<EarningsSnapshot, String> {
     // The wallet address to read claimable for = THIS vault's node-operator
@@ -289,7 +289,7 @@ pub struct WalletBalances {
 /// never touched). Any RPC/decode failure fails closed with a clear error — the UI
 /// keeps its last honest value rather than a fabricated one.
 #[tauri::command]
-pub fn wallet_balances(
+pub async fn wallet_balances(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<WalletBalances, String> {
     // Self-heal the passphrase-less vault: reading the wallet address needs an

@@ -796,7 +796,7 @@ pub struct ValidatorEarnings {
 }
 
 #[tauri::command]
-pub fn node_validator_earnings(
+pub async fn node_validator_earnings(
     state: State<'_, NodeState>,
 ) -> std::result::Result<ValidatorEarnings, String> {
     let pubkey_hex = state.0.proposer_pubkey()?;
@@ -855,7 +855,7 @@ fn encode_activate_json(from: &str, bond: &str, calldata: &[u8]) -> String {
 /// principal. Requires the node to have minted its key (started once); each leg errors
 /// honestly (no deployed bond / already activated / underfunded).
 #[tauri::command]
-pub fn node_register_validator(
+pub async fn node_register_validator(
     state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
     ceremony: State<'_, crate::ceremony::CeremonyState>,
