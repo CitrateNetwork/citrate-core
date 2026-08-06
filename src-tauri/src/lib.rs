@@ -414,6 +414,88 @@ mod tests {
         );
     }
 
+    /// UI-RESPONSIVENESS TRIPWIRE (2026-08-06).
+    ///
+    /// A SYNCHRONOUS `#[tauri::command]` runs on the MAIN THREAD. Any such command
+    /// that performs a blocking network read freezes the window for the duration.
+    /// `membership_grant_status` did exactly this — nine sequential ~240ms
+    /// `eth_call`s, polled every 2s — and the app rendered but ignored clicks.
+    ///
+    /// Every command that touches the RPC is now `pub async fn`, so Tauri runs it
+    /// off the UI thread. This test re-derives that from the SOURCE so the property
+    /// cannot regress silently: a future `pub fn` command whose body reaches the
+    /// network fails here, at the commit that introduces it.
+    ///
+    /// Deliberately source-scanning rather than a runtime assertion: the defect is
+    /// a compile-time shape (sync vs async), invisible to any unit test of the
+    /// command's own logic.
+    #[test]
+    fn no_synchronous_tauri_command_performs_network_io() {
+        // Files whose commands legitimately reach the 40204 RPC.
+        let sources: &[(&str, &str)] = &[
+            ("activity.rs", include_str!("activity.rs")),
+            ("agent.rs", include_str!("agent.rs")),
+            ("earnings.rs", include_str!("earnings.rs")),
+            ("grant_status.rs", include_str!("grant_status.rs")),
+            ("node.rs", include_str!("node.rs")),
+            ("sbt_art.rs", include_str!("sbt_art.rs")),
+            ("staking.rs", include_str!("staking.rs")),
+            ("transfer.rs", include_str!("transfer.rs")),
+            ("validator.rs", include_str!("validator.rs")),
+        ];
+        // Assembled from parts so this test's own prose cannot self-match.
+        let attr = "#[tauri".to_string() + "::command]";
+        let mut offenders: Vec<String> = Vec::new();
+
+        for (name, src) in sources {
+            let lines: Vec<&str> = src.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if line.trim() != attr {
+                    continue;
+                }
+                // The signature is the next non-attribute, non-doc line.
+                let Some(sig_idx) = (i + 1..lines.len().min(i + 12)).find(|&j| {
+                    let t = lines[j].trim_start();
+                    t.starts_with("pub fn ") || t.starts_with("pub async fn ")
+                }) else {
+                    continue;
+                };
+                let sig = lines[sig_idx].trim_start();
+                if sig.starts_with("pub async fn ") {
+                    continue; // already off the UI thread
+                }
+                // Scan this sync command's body to the next command or EOF.
+                let end = (sig_idx + 1..lines.len())
+                    .find(|&j| lines[j].trim() == attr)
+                    .unwrap_or(lines.len());
+                let body = lines[sig_idx..end].join("\n");
+                // Ignore comment lines so prose mentioning the RPC cannot trip this.
+                let code: String = body
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let touches_network = code.contains("RpcClient::")
+                    || code.contains("read_grant_status(")
+                    || code.contains("remote_network_tip(");
+                if touches_network {
+                    let fn_name = sig
+                        .trim_start_matches("pub fn ")
+                        .split('(')
+                        .next()
+                        .unwrap_or(sig);
+                    offenders.push(format!("{name}::{fn_name}"));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these synchronous #[tauri::command]s do blocking network I/O on the MAIN \
+             THREAD and will freeze the UI — make them `pub async fn`: {offenders:?}"
+        );
+    }
+
     /// B1.1-ADV-2, relocated here in the WP-S1.2 kit extraction (was in the
     /// kit's `wallet_tests.rs`, which after the split could only see the kit's
     /// lib.rs — the real `generate_handler!` registry lives in THIS file). The

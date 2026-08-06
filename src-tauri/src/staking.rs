@@ -662,7 +662,7 @@ pub fn wallet_stake(
 /// `sign_and_broadcast` (B1.4). Requires the vault UNLOCKED to read the caller's
 /// public address; a locked/absent vault fails closed. Mirrors `wallet_stake`.
 #[tauri::command]
-pub fn wallet_request_withdrawal(
+pub async fn wallet_request_withdrawal(
     amount_wei: String,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
@@ -720,7 +720,7 @@ pub fn wallet_claim_withdrawal(
 /// key is never touched). A fresh wallet honestly returns an empty list. Mirrors
 /// `wallet_balances`.
 #[tauri::command]
-pub fn wallet_pending_withdrawals(
+pub async fn wallet_pending_withdrawals(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<Vec<PendingWithdrawal>, String> {
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;

@@ -304,7 +304,7 @@ pub fn read_sbt_emblem<T: crate::rpc::RpcTransport>(
 /// Rule 3 — no signing, no custody, no key material. The `sub` is the OIDC subject
 /// string; the raw sub never goes on chain (only `keccak256(sub)`).
 #[tauri::command]
-pub fn sbt_token_uri(sub: String) -> std::result::Result<Option<String>, String> {
+pub async fn sbt_token_uri(sub: String) -> std::result::Result<Option<String>, String> {
     let rpc = crate::rpc::RpcClient::citrate();
     read_sbt_emblem(&rpc, &sub)
         .map(|opt| opt.map(|e| e.image_data_uri))

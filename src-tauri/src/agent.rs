@@ -962,7 +962,7 @@ pub fn agent_stop(state: State<'_, AgentState>) -> std::result::Result<(), Strin
 /// re-reads `claimable`. Requires the vault UNLOCKED (to read the public address +
 /// sign at approve); a locked/absent vault fails closed with a clear error.
 #[tauri::command]
-pub fn user_claim(
+pub async fn user_claim(
     agent: State<'_, AgentState>,
     ceremony: State<'_, crate::ceremony::CeremonyState>,
     custody: State<'_, crate::custody::CustodyState>,
