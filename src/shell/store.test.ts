@@ -919,3 +919,52 @@ describe("store.resumeSession — launch session re-establish", () => {
     expect(userinfoSpy).not.toHaveBeenCalled(); // no live re-check without a session
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARM BEFORE ACTIVATE. The node runs as a plain follower and never mints
+// `proposer.key` on its own; arming respawns it with `--mine --coinbase`, which
+// does. Only `maybeAutoBond` armed, and that is gated on `stage === "s6"` — so a
+// member who had FINISHED onboarding (stage "done") and pressed Activate on the
+// dashboard hit "proposer key not available yet" forever, with 32,000 SALT
+// already funded on chain (observed 2026-08-06).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("activateValidator — arms block production before it needs the key", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("calls armMining BEFORE registerValidator", async () => {
+    const order: string[] = [];
+    const arm = vi.spyOn(bridge.node, "armMining").mockImplementation(async () => {
+      order.push("arm");
+      return true;
+    });
+    const reg = vi.spyOn(bridge.node, "registerValidator").mockImplementation(async () => {
+      order.push("register");
+      throw new Error("should not be reached on the arming pass");
+    });
+
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = false;
+    const opened = await store.activateValidator();
+
+    expect(arm).toHaveBeenCalled();
+    // Arming respawns the node; the key lands seconds later, so this pass must NOT
+    // open a doomed ceremony — it reports false so the caller retries.
+    expect(opened).toBe(false);
+    expect(order).toEqual(["arm"]);
+    expect(reg).not.toHaveBeenCalled();
+  });
+
+  it("does not re-arm once armed — it proceeds to the ceremony", async () => {
+    const arm = vi.spyOn(bridge.node, "armMining").mockResolvedValue(true);
+    const reg = vi
+      .spyOn(bridge.node, "registerValidator")
+      .mockRejectedValue(new Error("proposer key not minted yet"));
+
+    (store as unknown as { validatorArmed: boolean }).validatorArmed = true;
+    const opened = await store.activateValidator();
+
+    expect(arm).not.toHaveBeenCalled();
+    expect(reg).toHaveBeenCalled(); // went straight for the ceremony
+    expect(opened).toBe(false); // honest failure, attempt not consumed
+  });
+});
