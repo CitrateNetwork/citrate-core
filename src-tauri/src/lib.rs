@@ -475,9 +475,18 @@ mod tests {
                     .filter(|l| !l.trim_start().starts_with("//"))
                     .collect::<Vec<_>>()
                     .join("\n");
+                // Direct network use, PLUS the helpers known to reach the network
+                // one level down. `node_arm_mining` was missed by the direct-match
+                // form: its body only calls `arm_mining_if_synced`, which calls
+                // `remote_network_tip`. This list is the honest limit of a
+                // source-level scan — it does not follow arbitrary call graphs, so
+                // a NEW transitively-networking helper must be added here.
                 let touches_network = code.contains("RpcClient::")
                     || code.contains("read_grant_status(")
-                    || code.contains("remote_network_tip(");
+                    || code.contains("remote_network_tip(")
+                    || code.contains("arm_mining_if_synced(")
+                    || code.contains("read_self_stake(")
+                    || code.contains("read_claimable(");
                 if touches_network {
                     let fn_name = sig
                         .trim_start_matches("pub fn ")

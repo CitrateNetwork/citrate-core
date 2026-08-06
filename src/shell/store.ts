@@ -771,6 +771,28 @@ export class Store {
         }
       }
       const staked = bonded + this.state.selfStake;
+      // RE-ARM AFTER RESTART. `validatorArmed` is in-memory, and arming is what
+      // respawns the node with `--mine --coinbase`. So an ALREADY-BONDED validator
+      // came back from every app restart as a plain follower: synced, healthy, and
+      // silently producing nothing — the member only finds out by noticing rewards
+      // never move (observed 2026-08-06 after a reinstall, with 32,000 SALT bonded
+      // and proposer.key already minted).
+      //
+      // `arm_mining_if_synced` re-checks the tip and no-ops without a coinbase or
+      // when behind, so this is safe to attempt on the poll; it stops once armed.
+      if (!this.validatorArmed && bonded >= 32000 && (st.state === "running" || st.state === "starting")) {
+        void bridge.node
+          .armMining()
+          .then((armed) => {
+            if (armed) {
+              this.validatorArmed = true;
+              this.toast("Block production re-armed — your validator is producing again.");
+            }
+          })
+          .catch(() => {
+            /* honest no-op: surfaced by the node vitals, never a fabricated arm */
+          });
+      }
       const patch: Partial<AppState> = {
         height: st.height,
         peers: st.peers,
