@@ -2,15 +2,18 @@
 // citrate-core — Commissary
 // Ported 1:1 from design/CitrateCore.dc.html (COMMISSARY section + inline
 // script: cTabs / appCards / sdkCards / docCards / svcCards; tier gating via
-// RANK compare against effTier; org-scoped cards HIDE on org mismatch — never
-// shown as locked (Atlas doctrine); signed, checksum-verified downloads with
-// the honest mint → dl → verify → done state machine off s.dl.
+// RANK compare against effTier (FAIL-CLOSED — see rankOf); org-scoped cards
+// HIDE on org mismatch — never shown as locked (Atlas doctrine).
 //
-// Data source — signed catalog manifest v3 (data/seed.ts CATALOG in the
-// prototype). Every card names its real state; downloads are honest: a
-// signed URL is minted against a live entitlement check, the bytes stream,
-// then sha256 is verified and the install is audit-logged. Wiring replaces
-// the sim, not the UI (Rule 1).
+// Data source — data/seed.ts CATALOG, a LOCAL SEED. It is not yet the signed
+// manifest: the live fetch + JWKS verification is WS-G / CM-3, unbuilt.
+//
+// DOWNLOADS DO NOT RUN (Rule 1, QA 2026-08-01). The mint → dl → verify → done
+// state machine was a setTimeout chain that verified nothing and then claimed
+// "✓ verified · sha256 match · audit-logged". It was removed, not restyled —
+// the same remedy Storage got for the same bug class. Cards list honestly as
+// "not yet downloadable", which is also what the server returns today (409
+// artifact_unreleased for every entry, with ARTIFACT_STORE_BASE unset).
 // =====================================================================
 import { SurfaceProps } from "./shared";
 import { CATALOG } from "../data/seed";
@@ -45,27 +48,53 @@ const CTABS: [string, string][] = [
   ["services", "Services"],
 ];
 
+/**
+ * Rank a tier FAIL-CLOSED (QA 2026-08-01).
+ *
+ * The gate was `RANK[minTier] > RANK[effTier]`. A tier absent from RANK yields
+ * `undefined`, and `2 > undefined` is false — so an UNRECOGNISED tier rendered every
+ * gated card UNLOCKED. That is reachable, not theoretical: the identity authority
+ * mints the ladder, this map is a client-side copy of it, and the two are known to
+ * disagree. An unknown tier must collapse to the LEAST access, never the most.
+ */
+const rankOf = (tier: string | undefined): number => {
+  const r = tier == null ? undefined : RANK[tier];
+  return typeof r === "number" ? r : -1;
+};
+
+/**
+ * A seeded checksum is a real digest only if it looks like one. The seed ships
+ * ELIDED placeholders ("sha256:2f8e17aa…c9c41") which cannot verify anything;
+ * rendering one in a mono font beside the word "verified" dresses a placeholder as
+ * provenance (Rule 1). Show them as pending until a real release ledger fills them.
+ */
+const isRealDigest = (c: string | undefined): boolean =>
+  typeof c === "string" && /^sha256:[0-9a-f]{64}$/i.test(c);
+
 export function Commissary({ store, s }: SurfaceProps) {
-  const rank = RANK;
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
 
-  // Honest download state machine, written to s.dl[id] exactly as the design's
-  // render logic reads it: mint (signed URL + live entitlement check) → dl
-  // (byte stream, %) → verify (sha256) → done (verified · audit-logged).
+  // NO DOWNLOAD RUNS HERE YET (Rule 1, QA 2026-08-01).
+  //
+  // This was a setTimeout chain — mint → dl → verify → done — that streamed no
+  // bytes, computed no digest, and wrote no audit row, then rendered
+  // "✓ verified · sha256 match · audit-logged". Three false claims about
+  // cryptographic verification that never happened. Storage carried the same bug
+  // and it was removed there rather than dressed up (see storageHonesty.test.tsx);
+  // this is the same remedy applied to the same bug class.
+  //
+  // The real client is WS-G / CM-3: fetch the EdDSA-signed manifest, verify it
+  // against the JWKS, redeem the single-use URL, stream the bytes, and check the
+  // sha256 before marking installed. It cannot serve real bytes until the artifact
+  // store exists (`ARTIFACT_STORE_BASE` is unset), so until then the honest state
+  // is "not downloadable yet" — which is also exactly what the server says: the
+  // download route returns 409 `artifact_unreleased` for every catalog entry today.
   const startDownload = (id: string) => {
-    const cur = s.dl[id];
-    if (cur && cur.st !== "idle" && cur.st !== "done") return;
-    const set = (patch: { st: string; pct: number }) =>
-      store.setState((st0) => ({ dl: { ...st0.dl, [id]: patch } }));
-    set({ st: "mint", pct: 0 });
-    setTimeout(() => set({ st: "dl", pct: 12 }), 700);
-    setTimeout(() => set({ st: "dl", pct: 46 }), 1300);
-    setTimeout(() => set({ st: "dl", pct: 83 }), 1900);
-    setTimeout(() => set({ st: "verify", pct: 100 }), 2500);
-    setTimeout(() => {
-      set({ st: "done", pct: 100 });
-      store.save();
-    }, 3200);
+    store.setState((st0) => ({ dl: { ...st0.dl, [id]: { st: "unavailable", pct: 0 } } }));
+    store.toast(
+      "Downloads are not live yet — the artifact store is not provisioned, so there " +
+        "are no verified bytes to serve. Listed, not yet downloadable.",
+    );
   };
 
   const cTabs = CTABS.map(([id, label]) => ({
@@ -88,7 +117,7 @@ export function Commissary({ store, s }: SurfaceProps) {
   const appCards = CATALOG.apps
     .filter((a) => !("orgScope" in a) || (a as { orgScope?: string }).orgScope === s.org)
     .map((a) => {
-      const locked = rank[a.minTier] > rank[effTier];
+      const locked = rankOf(a.minTier) > rankOf(effTier);
       const dl = s.dl[a.id] || { st: "idle", pct: 0 };
       const [bBg, bBd, bFg] = badge(a.status);
       const isMicro = a.kind === "micro-app";
@@ -101,7 +130,7 @@ export function Commissary({ store, s }: SurfaceProps) {
         version: a.version,
         size: a.size,
         platformsLine: a.platforms.join(" · "),
-        checksum: a.checksum,
+        checksum: isRealDigest(a.checksum) ? a.checksum : "checksum pending · no verified release",
         badgeBg: bBg,
         badgeBd: bBd,
         badgeFg: bFg,
@@ -116,16 +145,14 @@ export function Commissary({ store, s }: SurfaceProps) {
               : "Enterprise is consultative — the contact form opens in your browser.",
           ),
         dlIdle: dl.st === "idle",
-        dlBusy: dl.st === "mint" || dl.st === "dl" || dl.st === "verify",
-        dlDone: dl.st === "done",
-        dlLabel:
-          dl.st === "mint"
-            ? "minting signed URL · live entitlement check"
-            : dl.st === "dl"
-            ? "downloading · " + (dl.pct | 0) + "%"
-            : "verifying sha256…",
-        dlPctW: dl.st === "mint" ? "6%" : dl.st === "verify" ? "100%" : (dl.pct | 0) + "%",
-        metaLine: isMicro ? caps.join(" · ") : "signed URL · first-download expiry",
+        // No busy state exists while the client is unwired — a progress bar with
+        // nothing behind it is the fabrication this pass removed.
+        dlBusy: false,
+        dlDone: false,
+        dlUnavailable: dl.st === "unavailable",
+        dlLabel: "",
+        dlPctW: "0%",
+        metaLine: isMicro ? caps.join(" · ") : "listed · not yet downloadable",
         actionLabel: isMicro ? "Open panel" : "Download",
         onAction: isMicro ? () => store.openMicroApp(a) : () => startDownload(a.id),
       };
@@ -144,7 +171,7 @@ export function Commissary({ store, s }: SurfaceProps) {
   const docCards = CATALOG.docs
     .filter((d) => !("orgScope" in d) || (d as { orgScope?: string }).orgScope === s.org)
     .map((d) => {
-      const locked = rank[d.minTier] > rank[effTier];
+      const locked = rankOf(d.minTier) > rankOf(effTier);
       const [tBg, tBd, tFg] = tierPill(d.tier);
       return {
         id: d.id,
@@ -191,7 +218,7 @@ export function Commissary({ store, s }: SurfaceProps) {
           ))}
         </span>
         <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)" }}>
-          catalog · signed manifest v3
+          catalog · local seed · not yet the signed manifest
         </span>
       </div>
 
@@ -257,15 +284,10 @@ export function Commissary({ store, s }: SurfaceProps) {
                       </button>
                     </>
                   )}
-                  {a.dlDone && (
-                    <>
-                      <span className="mono" style={{ fontSize: 10.5, color: "var(--ok)", flex: 1 }}>
-                        ✓ verified · sha256 match · audit-logged
-                      </span>
-                      <button className="btn btn-ghost btn-sm" onClick={a.onAction}>
-                        Re-download
-                      </button>
-                    </>
+                  {a.dlUnavailable && (
+                    <span className="mono" style={{ fontSize: 10.5, color: "var(--warn)", flex: 1 }}>
+                      not downloadable yet · artifact store not provisioned
+                    </span>
                   )}
                 </div>
               )}
