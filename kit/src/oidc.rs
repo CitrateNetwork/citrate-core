@@ -97,6 +97,11 @@ pub struct AuthorityConfig {
     /// is derived from the issuer directly (S2 browser-open only, not a protocol
     /// endpoint).
     pub kyc_start: String,
+    /// `POST /kyc/handoff` — the AUTHENTICATED hand-off mint (citrate-identity #85).
+    /// The app proves its subject with the access token it already holds and gets
+    /// back a single-use, subject-bound URL. Not in discovery; derived from the
+    /// issuer like `kyc_start`.
+    pub kyc_handoff: String,
     /// The hardcoded production issuer — the TRUST ANCHOR. The discovery `issuer`
     /// MUST equal this or the whole flow fails closed (no endpoint is trusted from
     /// an authority whose issuer we did not pin).
@@ -116,6 +121,7 @@ impl AuthorityConfig {
         AuthorityConfig {
             discovery: format!("{base}/.well-known/openid-configuration"),
             kyc_start: format!("{base}/kyc/start"),
+            kyc_handoff: format!("{base}/kyc/handoff"),
             issuer: base.to_string(),
             client_id: "citrate-core".to_string(),
         }
@@ -1520,6 +1526,31 @@ impl AuthManager {
         &self.cfg.kyc_start
     }
 
+    /// Mint a SUBJECT-BOUND hand-off URL for an authority surface.
+    ///
+    /// `auth.citrate.ai` used to resolve the acting user from the BROWSER cookie,
+    /// so opening a bare `/kyc/start` handed the member whichever account their
+    /// browser held — a member could verify the WRONG identity (2026-08-06:
+    /// signed in as a test member, KYC opened the admin's verified account).
+    ///
+    /// citrate-identity #85 closed that: we POST the access token we already hold,
+    /// the authority mints a single-use nonce bound to OUR `sub`, and the consuming
+    /// page resolves from the nonce and IGNORES the cookie.
+    ///
+    /// `target` is `"kyc"` or `"account"`. Errors are the caller's cue to fall back
+    /// to the bare URL — degraded (cookie-resolved) but not broken.
+    pub fn handoff_url(&self, target: &str) -> Result<String> {
+        let (_sub, access) = self.session_sub_and_token()?;
+        let body = serde_json::json!({ "target": target }).to_string();
+        let raw = self.http.post_json(&self.cfg.kyc_handoff, Some(&access), &body)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|_| AuthError::Rejected(200))?;
+        v.get("url")
+            .and_then(|u| u.as_str())
+            .map(|u| u.to_string())
+            .ok_or(AuthError::Rejected(200))
+    }
+
     /// The pinned issuer (the trust anchor). Surfaced so a ceremony can display
     /// the true asker verbatim; carries no secret.
     pub fn issuer(&self) -> &str {
@@ -1827,7 +1858,14 @@ pub fn kyc_start(
     auth: State<'_, AuthState>,
 ) -> std::result::Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let url = auth.0.kyc_start_url().to_string();
+    // Prefer the authenticated hand-off so the page binds to THIS app's subject.
+    // Falling back to the bare URL keeps a signed-out/offline case working, at the
+    // old (cookie-resolved) fidelity — degraded, never silently wrong-account,
+    // because the UI still names the account it intends.
+    let url = auth
+        .0
+        .handoff_url("kyc")
+        .unwrap_or_else(|_| auth.0.kyc_start_url().to_string());
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|_| err_str(AuthError::Network))

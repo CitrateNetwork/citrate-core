@@ -296,6 +296,10 @@ impl MockAuthority {
         AuthorityConfig {
             discovery: format!("{}/.well-known/openid-configuration", self.base),
             kyc_start: format!("{}/kyc/start", self.base),
+            // The mock authority serves the hand-off mint at the same shape as
+            // production (citrate-identity #85); tests that do not exercise it
+            // simply never call it.
+            kyc_handoff: format!("{}/kyc/handoff", self.base),
             issuer: self.issuer.clone(),
             client_id: self.client_id.clone(),
         }
