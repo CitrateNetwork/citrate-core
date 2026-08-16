@@ -379,6 +379,12 @@ export class Store {
         if (this.state.node !== "off" && this.state.node !== "error") return;
         this.startNode();
       }, 1500);
+      // RESUME S3 FROM CHAIN TRUTH. `s3` is not persisted, so every launch re-enters
+      // S3 as `idle` — a screen whose only control is "Check out · $48". A member
+      // whose grant landed while the app was closed would therefore be invited to
+      // pay a second time for a membership they already hold. Ask the chain once on
+      // launch; a granted member lands on Continue instead of a checkout button.
+      if (this.state.stage === "s3") void this.settleS3IfAlreadyGranted();
       // WATCHDOG. The supervisor retries a crashed node with backoff and then gives
       // up; nothing told the member. Poll the gap between intent and reality and say
       // so ONCE per outage, with the real reason from the node's own crash record.
@@ -2462,12 +2468,24 @@ export class Store {
         void this.linkWallet();
         return;
       }
-      this.setState({ s3: "paying" });
-      void bridge.membership.checkout().catch(() => {
-        // Popup open failed (headless / user cancel at OS level) — stay "paying";
-        // the poll below simply never settles. The user can retry (S3 re-enterable).
-      });
-      this.pollMembership();
+      // ★ MONEY GUARD ★ — never open checkout for a member who ALREADY holds the
+      // grant. Settlement is chain truth, and the client had no way to observe an
+      // existing grant: `settled` was reachable ONLY through `pollMembership`, which
+      // ran ONLY from this handler. So a member who was granted while the app was
+      // closed (or after its poll gave up) came back to S3 `idle`, whose only
+      // control is "Check out in your browser · $48" — and paying again is the one
+      // thing that cannot help, because the membership is one-per-sub and the second
+      // order can never be granted. Observed 2026-08-15: a member reached three
+      // stranded `paid` orders this way. Read the chain BEFORE spending money.
+      void (async () => {
+        if (await this.settleS3IfAlreadyGranted()) return;
+        this.setState({ s3: "paying" });
+        void bridge.membership.checkout().catch(() => {
+          // Popup open failed (headless / user cancel at OS level) — stay "paying";
+          // the poll below simply never settles. The user can retry (S3 re-enterable).
+        });
+        this.pollMembership();
+      })();
       return;
     }
     // Web-dev sim: keep the prototype's fake settle so onboarding still walks.
@@ -2561,6 +2579,41 @@ export class Store {
     if (this.state.s3 !== "paying") return;
     this.setState({ s3PollExhausted: false });
     this.pollMembership();
+  }
+
+  /**
+   * Settle S3 directly from chain truth when the member ALREADY holds the grant.
+   *
+   * The missing "resume from what is actually true" step. S3's only exit was the
+   * Continue button behind `s3 === "settled"`, and the only writer of `settled` was
+   * `pollMembership`, started only by `onS3Pay`. Nothing ever asked the simple
+   * question "is this member already granted?" — so a member granted out-of-band
+   * (reconciler sweep, operator remediation, or simply a grant that landed after
+   * the app closed) was stranded on a screen whose only affordance was to pay again.
+   *
+   * Same evidence bar as the poll: `isGrantOnChain && hasSbt`, read permissionlessly
+   * from chain 40204. Returns false — and changes nothing — on any read failure, so
+   * a flaky RPC can never manufacture a settle (Rule 1).
+   */
+  async settleS3IfAlreadyGranted(): Promise<boolean> {
+    if (BRIDGE_MODE !== "tauri") return false;
+    if (this.state.s3 === "settled") return true;
+    try {
+      const grant = await bridge.membership.grantStatus(this.identity().wallet);
+      if (isGrantOnChain(grant) && grant.hasSbt) {
+        this.setState({
+          s3: "settled",
+          s3PollExhausted: false,
+          hasGrant: true,
+          hasSbt: grant.hasSbt,
+        });
+        this.save();
+        return true;
+      }
+    } catch {
+      // Honest no-op: an unreadable chain is not evidence of a grant.
+    }
+    return false;
   }
   onS5Begin(): void {
     this.setState({ s5: "verifying", s5c: 0 });

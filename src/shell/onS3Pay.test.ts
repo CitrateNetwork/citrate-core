@@ -97,9 +97,42 @@ describe("onS3Pay (tauri) — opens checkout, polls the on-chain grant, settles 
     // start from a linked wallet.
     store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
     store.onS3Pay();
-    expect(store.state.s3).toBe("paying");
+    // `paying` is now set AFTER an awaited chain read — onS3Pay checks for an
+    // existing grant before spending money (the money guard below), so the
+    // transition lands a microtask later than it used to.
     await flush();
+    expect(store.state.s3).toBe("paying");
     expect(checkoutMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ★ MONEY GUARD ★ — the member is ALREADY granted on chain (grant landed while the
+  // app was closed, or via a reconciler sweep / operator remediation). Opening
+  // checkout here charges them a second time for a one-per-sub membership whose
+  // second order can NEVER be granted. Observed 2026-08-15: a member accumulated
+  // three stranded `paid` orders because S3's only control was "Check out · $48".
+  it("MONEY GUARD: an already-granted member is settled WITHOUT opening checkout", async () => {
+    grantState.current = GRANTED;
+    const store = new Store();
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc" });
+
+    store.onS3Pay();
+    await flush();
+
+    expect(store.state.s3).toBe("settled");
+    // The whole point: no charge.
+    expect(checkoutMock).not.toHaveBeenCalled();
+  });
+
+  it("settleS3IfAlreadyGranted does NOT settle on an unreadable chain (fail closed)", async () => {
+    grantStatusMock.mockRejectedValueOnce(new Error("rpc down"));
+    const store = new Store();
+    store.setState({ walletAddr: "0xabc", custodyAddr: "0xabc", s3: "idle" });
+
+    const settled = await store.settleS3IfAlreadyGranted();
+
+    // A failed read is not evidence of a grant (Rule 1).
+    expect(settled).toBe(false);
+    expect(store.state.s3).toBe("idle");
   });
 
   it("REGRESSION: a paid+active KYC entitlement with NO on-chain grant does NOT settle (no advancing past S3 unpaid)", async () => {
