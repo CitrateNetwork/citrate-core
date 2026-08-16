@@ -2501,7 +2501,23 @@ export class Store {
    */
   private pollMembership(attempt = 0): void {
     if (BRIDGE_MODE !== "tauri") return;
-    const MAX_ATTEMPTS = 60; // ~5 min at 5s cadence — matches the checkout window
+    // CADENCE. The old budget was 60 × 5s = 5 minutes flat, which was SHORTER than
+    // the server's own retry cadence: core-membership re-drives stranded grants on a
+    // 10-minute cron (`vercel.json` crons → /api/cron/reconcile-grants). So whenever
+    // the Stripe webhook's grant attempt failed — the case the reconciler exists to
+    // rescue — the client had already given up before the FIRST retry could run, and
+    // the member sat on a dead spinner while the system healed itself behind them.
+    // Observed 2026-08-15: paid at 12:43, poll expired ~12:48, first eligible sweep
+    // was later still.
+    //
+    // Now: fast for the checkout window (the happy path settles in seconds), then
+    // slow and long enough to span several reconciler sweeps without hammering the
+    // public RPC — grantStatus is nine sequential eth_calls.
+    const FAST_ATTEMPTS = 24; // 2 min at 5s — the normal settle window
+    const FAST_MS = 5_000;
+    const SLOW_MS = 30_000;
+    const MAX_ATTEMPTS = FAST_ATTEMPTS + 52; // + 26 min at 30s ≈ 28 min total
+    const delay = attempt < FAST_ATTEMPTS ? FAST_MS : SLOW_MS;
     const tick = () => {
       if (this.state.s3 !== "paying") return; // resolved or navigated away
       const member = this.identity().wallet;
@@ -2512,20 +2528,39 @@ export class Store {
           // ONLY the genuine on-chain grant settles S3 — never the pre-payment
           // KYC entitlement (Rule 1).
           if (isGrantOnChain(grant) && grant.hasSbt) {
-            this.setState({ s3: "settled" });
+            this.setState({ s3: "settled", s3PollExhausted: false });
             this.save();
             return;
           }
           // Not yet granted — keep polling until the bounded cap.
           if (attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
-          // At the cap we stop polling; S3 stays "paying" (re-enterable), never faked.
+          // At the cap we stop polling; S3 stays "paying" (re-enterable) and we SAY SO
+          // rather than leaving a spinner that will never resolve. Never faked.
+          else this.setState({ s3PollExhausted: true });
         })
         .catch(() => {
           // Transient RPC/read error — retry until the cap; never fabricate a settle.
           if (this.state.s3 === "paying" && attempt + 1 < MAX_ATTEMPTS) this.pollMembership(attempt + 1);
+          else if (this.state.s3 === "paying") this.setState({ s3PollExhausted: true });
         });
     };
-    setTimeout(tick, 5000);
+    setTimeout(tick, delay);
+  }
+
+  /**
+   * Re-check the membership grant after the bounded poll gave up — the exit from
+   * what used to be a dead-end spinner.
+   *
+   * Chain-read ONLY. It restarts `pollMembership`, which settles S3 exclusively on
+   * the real on-chain grant (`isGrantOnChain && hasSbt`). It does NOT re-open Stripe
+   * checkout, so re-checking can never charge a member a second time — the exact
+   * hazard that made the dead end dangerous, since the only control the member could
+   * see was "Check out in your browser · $48".
+   */
+  recheckMembership(): void {
+    if (this.state.s3 !== "paying") return;
+    this.setState({ s3PollExhausted: false });
+    this.pollMembership();
   }
   onS5Begin(): void {
     this.setState({ s5: "verifying", s5c: 0 });

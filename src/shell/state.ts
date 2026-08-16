@@ -253,6 +253,19 @@ export interface AppState {
   s1: "idle" | "waiting" | "attest" | "done";
   s2: "none" | "pending" | "verified" | "failed" | "review";
   s3: "idle" | "paying" | "settled";
+  /**
+   * The bounded S3 grant poll ran out of budget while still "paying".
+   *
+   * The poll used to just stop, leaving a spinner with no exit: `s3 === "paying"`
+   * renders only a loader, so a member whose grant had not landed yet had NO way
+   * to resume waiting and no explanation. That is a dead end, and it is reachable
+   * in NORMAL operation — core-membership's grant reconciler runs on a 10-minute
+   * cron with a 6-HOUR backoff after a denial, so a grant can legitimately land
+   * long after any client-side budget we are willing to spend. Surfacing this flag
+   * lets S3 say so honestly and offer a re-check that costs nothing (it re-reads
+   * the chain; it never re-opens checkout, so it can never double-charge).
+   */
+  s3PollExhausted: boolean;
   s5: "idle" | "verifying" | "settling" | "settled";
   s5c: number;
   s5n: number;
@@ -534,6 +547,7 @@ export function freshState(pid: string): AppState {
     s1: "idle",
     s2: "none",
     s3: "idle",
+    s3PollExhausted: false,
     s5: "idle",
     s5c: 0,
     s5n: 0,
