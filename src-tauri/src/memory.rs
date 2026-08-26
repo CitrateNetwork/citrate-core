@@ -843,7 +843,7 @@ pub fn build_memory_state<R: tauri::Runtime>(
     let model_dir = resolve_bge_model_dir(app);
     Ok(MemoryState(
         MemoryManager::new(
-            Box::new(crate::custody::OsKeyring),
+            Box::new(crate::custody::OsKeyring::legacy()),
             bin,
             store_path,
             socket_path,

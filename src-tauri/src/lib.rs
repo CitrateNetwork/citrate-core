@@ -13,6 +13,15 @@
 // Re-exported here so every in-crate reference (`crate::custody::…`,
 // `crate::ceremony::…`, and the `generate_handler!` command paths below) keeps
 // resolving unchanged — the extraction is invisible above this line.
+/// The keyring namespace citrate-core custody owns.
+///
+/// MUST differ from `OsKeyring::LEGACY_SERVICE`: the kit is shared with
+/// citrate-quorum, which owns the legacy namespace and has a live vault sealed
+/// there. Two apps on one service share the custody anchor while keeping
+/// separate envelopes, which locks the second app out permanently with
+/// `Corrupt`. Pinned by `custody_keyring_service_is_not_the_legacy_shared_one`.
+pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
+
 pub use citrate_core_kit::{
     ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
 };
@@ -59,8 +68,25 @@ pub fn run() {
             let autolock = config::config_read(handle.clone())
                 .map(|c| c.autolock)
                 .unwrap_or_else(|_| config::AppConfig::default().autolock);
-            let state = custody::build_custody_state(handle, autolock)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            // Custody gets its OWN keyring namespace. The kit is shared with
+            // citrate-quorum, which already owns the legacy `ai.citrate.core`
+            // service: its live vault's master key is sealed there. Sharing one
+            // service means sharing the custody ANCHOR while keeping separate
+            // envelope files, so whichever app starts second sees "anchor says a
+            // vault exists, my envelope says it does not" — the F-1 rollback
+            // shape — and is locked out permanently with `Corrupt`.
+            //
+            // Observed live on the DGX 2026-08-04: onboarding step 3 failed with
+            // "custody envelope corrupt or tampered" purely because quorum had
+            // initialised first. Clearing the keyring would have DESTROYED
+            // quorum's vault, so the namespace moves instead — and only for
+            // citrate-core custody, which has no vault to orphan. The node
+            // storage key and mem-store key deliberately STAY on the legacy
+            // service (see node.rs / memory.rs) because their data already
+            // exists under it.
+            let state =
+                custody::build_custody_state_with_service(handle, autolock, CUSTODY_KEYRING_SERVICE)
+                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             app.manage(state);
             // CORE-A3 — the auth manager (real loopback-PKCE OIDC against
             // auth.citrate.ai; refresh token → the A2 vault; access token in
@@ -573,5 +599,43 @@ mod tests {
                 "signing command must be registered: ceremony::{cmd}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod custody_namespace_tests {
+    use super::CUSTODY_KEYRING_SERVICE;
+    use citrate_core_kit::custody::OsKeyring;
+
+    /// citrate-core custody MUST NOT share a keyring service with the kit's
+    /// legacy namespace.
+    ///
+    /// The kit is shared with citrate-quorum, which owns the legacy service and
+    /// has a LIVE vault sealed under it. Two apps on one service share the
+    /// custody ANCHOR (`custody-generation`) while keeping SEPARATE envelope
+    /// files, so whichever starts second sees "the anchor says a vault exists,
+    /// my envelope says it does not" — the F-1 rollback shape — and is locked
+    /// out permanently with `CustodyError::Corrupt`.
+    ///
+    /// Observed live on the DGX 2026-08-04: onboarding step 3 failed with
+    /// "custody envelope corrupt or tampered" purely because quorum had
+    /// initialised first. The tempting fix (clear the keyring) would have
+    /// DESTROYED quorum's vault — `custody-master-key` is what seals its
+    /// envelope. Hence: separate namespaces, and never repoint an app that
+    /// already has a vault.
+    #[test]
+    fn custody_keyring_service_is_not_the_legacy_shared_one() {
+        assert_ne!(
+            CUSTODY_KEYRING_SERVICE,
+            OsKeyring::LEGACY_SERVICE,
+            "citrate-core custody must own its keyring namespace; sharing the \
+             legacy one with citrate-quorum locks whichever app starts second \
+             out of its vault forever"
+        );
+        assert!(
+            !CUSTODY_KEYRING_SERVICE.is_empty(),
+            "an empty service name would silently collide with anything else \
+             using an empty service"
+        );
     }
 }

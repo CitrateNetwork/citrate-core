@@ -470,7 +470,7 @@ fn real_keyring_roundtrip_or_skip() {
         );
         return;
     }
-    let os = OsKeyring;
+    let os = OsKeyring::legacy();
     let acct = "custody-test-roundtrip";
     let secret = b"os-keyring-roundtrip-secret";
     // Clean any stale entry, then round-trip put/get/delete.
