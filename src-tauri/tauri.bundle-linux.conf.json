@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "targets": ["deb"],
+    "createUpdaterArtifacts": false,
+    "externalBin": [
+      "binaries/citrate",
+      "binaries/node-agent",
+      "binaries/mem-mcp",
+      "binaries/llama-server",
+      "binaries/ipfs"
+    ]
+  }
+}
