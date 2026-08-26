@@ -415,7 +415,7 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
           )}
         </div>
       )}
-      {s.s3 === "paying" && (
+      {s.s3 === "paying" && !s.s3PollExhausted && (
         <div className="surface" style={{ display: "flex", alignItems: "center", gap: 18, padding: "18px 20px" }}>
           <div style={{ width: 46, height: 46, flexShrink: 0 }}>
             <LoaderMark size={46} />
@@ -426,6 +426,36 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
               core-membership · settlement confirmed by webhook, not by this app
             </div>
           </div>
+        </div>
+      )}
+      {/* The poll ran out of budget with no grant on chain. This is NOT an error and
+          NOT a failed payment — the membership grant is provisioned server-side and
+          can legitimately land later (the reconciler re-drives stranded grants on a
+          10-minute cron, with a 6-hour backoff after a denial). Say exactly that, and
+          offer a re-check that only READS the chain. Deliberately no "pay again"
+          affordance here: the payment already settled, and a second checkout would
+          charge again for a membership that is already owed. */}
+      {s.s3 === "paying" && s.s3PollExhausted && (
+        <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }} data-testid="s3-poll-exhausted">
+          <div style={{ fontSize: 15, fontWeight: 500 }}>Payment received — the grant has not landed yet</div>
+          <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+            Your payment settled. The membership grant (the SBT and the 32,000 SALT stake) is
+            issued server-side and has not appeared on chain yet. This app stopped polling to
+            avoid hammering the network — it does not mean anything failed, and you do not need
+            to pay again.
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button className="btn btn-primary" onClick={() => store.recheckMembership()}>
+              Check again
+            </button>
+            <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
+              reads chain 40204 · never re-opens checkout
+            </span>
+          </div>
+          <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--tx-3)", margin: 0 }}>
+            Still nothing after a while? Your seat is recorded and owed — contact support with
+            your order rather than paying twice.
+          </p>
         </div>
       )}
       {s.s3 === "settled" && (
