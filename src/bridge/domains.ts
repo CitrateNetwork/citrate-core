@@ -583,3 +583,46 @@ export interface BridgeContract {
   comms: CommsDomain;
   connections: ConnectionsDomain;
 }
+
+// =====================================================================
+// CX — social-node domains (planset citrate-core-social). Frozen in CX-S0.2 and
+// composed onto BridgeContract as `bridge: BridgeContract & CxBridge` (bridge/index.ts),
+// so the existing monolith bridges are never edited. Each domain's impl lives in its own
+// file owned by its lane (src/bridge/{tauri,sim}/<domain>.ts) — see .agentile/cx-ownership.map.
+// Interfaces are contract-first (Rule 7): declared here BEFORE any implementation, and only
+// changed via a serialized spine-PR (01_SCOPE §5.2).
+// =====================================================================
+
+/** A downloadable/local model, from Hugging Face, GitHub Releases, or the bundle (C-16). */
+export interface ModelDescriptor {
+  id: string;
+  source: "hf" | "github" | "bundled";
+  repo: string;
+  file: string;
+  revision?: string;
+  sizeBytes: number;
+  sha256: string;
+  kind: "gguf" | "safetensors";
+}
+
+/** C-16 — model catalog & switcher (local + HF + GitHub). Wired in CX-S1. */
+export interface ModelsCatalogDomain {
+  /** Locally-present, verified models. */
+  local(): Promise<ModelDescriptor[]>;
+  /** Search downloadable models from a connected source (HF Hub / GitHub Releases). */
+  search(source: "hf" | "github", query: string): Promise<ModelDescriptor[]>;
+  /** Download + verify a descriptor; resolves on Ready. */
+  download(id: string): Promise<void>;
+  /** Switch the active local model (restarts llama-server -m). */
+  select(id: string): Promise<void>;
+}
+
+/**
+ * The CX domain surface, composed onto the bridge alongside the legacy domains.
+ * S0.2 declares ONE worked domain (modelsCatalog); the remaining CX domains
+ * (storage, groups, cluster, training, agentTools) are added here by the same
+ * frozen pattern as their lanes come online — each an additive, contract-first entry.
+ */
+export interface CxBridge {
+  modelsCatalog: ModelsCatalogDomain;
+}
