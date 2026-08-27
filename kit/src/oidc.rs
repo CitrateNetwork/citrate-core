@@ -818,8 +818,13 @@ impl HttpClient for UreqClient {
 
     fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<String> {
         let body = encode_form(form);
+        // `Accept: application/json` is REQUIRED for GitHub's token endpoint: without it GitHub
+        // returns `application/x-www-form-urlencoded`, which the token-response `serde_json` parse
+        // then rejects (Commons CX-S1.2). Every OAuth2 token endpoint we call returns JSON when
+        // asked, so this is universally safe (OIDC/Google/Notion/HF already do; GitHub needs it).
         let mut resp = ureq::post(url)
             .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Accept", "application/json")
             .send(&body)
             .map_err(|_| AuthError::TokenExchange)?;
         resp.body_mut()
