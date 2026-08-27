@@ -1648,3 +1648,37 @@ fn rejected_never_leaks_a_response_body() {
     let rendered = AuthError::Rejected(403).to_string();
     assert_eq!(rendered, "auth: the authority rejected the request (HTTP 403)");
 }
+
+// Commons CX-S1.2 — the real UreqClient.post_form MUST send `Accept: application/json`, or
+// GitHub's token endpoint replies form-encoded and the JSON token-parse fails. Proven over a
+// real loopback socket that captures the request bytes (same discipline as the mock authority).
+#[test]
+fn post_form_sends_accept_application_json() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let n = sock.read(&mut buf).unwrap();
+        let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let body = "{}";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = sock.write_all(resp.as_bytes());
+        req
+    });
+
+    let url = format!("http://{addr}/token");
+    let out = UreqClient.post_form(&url, &[("grant_type", "authorization_code")]);
+    assert!(out.is_ok(), "post_form should succeed against the loopback server");
+
+    let req = server.join().unwrap().to_lowercase();
+    assert!(
+        req.contains("accept: application/json"),
+        "post_form must send Accept: application/json (GitHub returns form-encoded otherwise); got:\n{req}"
+    );
+    assert!(req.contains("content-type: application/x-www-form-urlencoded"));
+}
