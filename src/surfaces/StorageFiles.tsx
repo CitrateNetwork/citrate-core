@@ -119,11 +119,11 @@ export function StorageFiles({ store }: SurfaceProps) {
         </div>
       </div>
 
-      {/* ---- honest network-bond note ---- */}
+      {/* ---- honest network-bond note (D-22 subsidy framing, RT-4; not yet live) ---- */}
       <div style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
-        Pinning keeps a file on <em>your</em> node. Paying the network to keep it available for you
-        (a staked SALT storage bond) arrives once the on-chain bond is finalized — until then,
-        files pin locally.
+        Pinning keeps a file on <em>your</em> node. Network storage — where the network rewards
+        pinners for keeping your data available, backed by a staked SALT bond from a shared
+        subsidy pool — arrives once the on-chain bond is finalized. Until then, files pin locally.
       </div>
 
       {/* ---- the file store ---- */}
