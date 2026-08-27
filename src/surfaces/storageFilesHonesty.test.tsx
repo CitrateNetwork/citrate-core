@@ -29,9 +29,9 @@ describe("StorageFiles honesty — subsidy-framed, no user-earnings/guaranteed/d
     expect(html.toLowerCase()).toContain("rewards pinners");
   });
 
-  it("is honest that network storage is forthcoming — files pin locally until the bond is live", () => {
+  it("frames pinning as a staked SALT bond the user approves (D-22 subsidy, ceremony-gated)", () => {
     const lower = html.toLowerCase();
-    expect(lower).toContain("pin locally");
-    expect(lower).toContain("on-chain bond is finalized");
+    expect(lower).toContain("staked salt bond");
+    expect(lower).toContain("approve"); // the human approves the tx; nothing is signed for them
   });
 });

@@ -5,10 +5,10 @@
 // your node, retrieve by CID, unpin. Real data via bridge.storage folded through the storage
 // slice. Honest states throughout (Rule 1): empty when nothing, real error text on failure.
 //
-// S2.3 pins LOCALLY (to this node's kubo). The network-wide ceremony-gated SALT bond (paying the
-// network to keep your file) is S2.2 — blocked on a chain-side fix
-// (docs/FINDING_PIN_COMMD_BOND_2026-08-26.md) — so the surface says so plainly rather than
-// implying a network bond it can't yet place.
+// Pinning keeps the file on this node's kubo AND places a real ceremony-gated staked-SALT bond
+// (S2.2: registerModel on the redeployed IPFSIncentivesV3, #170-sound CommD). The bond tx is
+// submitted as a PENDING SignatureCeremony — the human approves it in the signing surface; nothing
+// signs here (Rule 3). D-22/RT-4 subsidy framing per the honesty tripwire.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
@@ -119,11 +119,11 @@ export function StorageFiles({ store }: SurfaceProps) {
         </div>
       </div>
 
-      {/* ---- honest network-bond note (D-22 subsidy framing, RT-4; not yet live) ---- */}
+      {/* ---- network-bond note (D-22 subsidy framing, RT-4; now live) ---- */}
       <div style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
-        Pinning keeps a file on <em>your</em> node. Network storage — where the network rewards
-        pinners for keeping your data available, backed by a staked SALT bond from a shared
-        subsidy pool — arrives once the on-chain bond is finalized. Until then, files pin locally.
+        Pinning keeps a file on <em>your</em> node and places a staked SALT bond you approve, so the
+        network rewards pinners for keeping your data available. You approve the bond transaction in
+        the signing screen; nothing is signed for you.
       </div>
 
       {/* ---- the file store ---- */}
@@ -173,7 +173,14 @@ export function StorageFiles({ store }: SurfaceProps) {
                     {busy ? "…" : "Unpin"}
                   </button>
                 ) : (
-                  <button className="btn btn-sm" onClick={() => void localPin(p.cid)} disabled={busy}>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => {
+                      void localPin(p.cid);
+                      store.toast("Bond submitted — approve the transaction in the signing screen");
+                    }}
+                    disabled={busy}
+                  >
                     {busy ? "…" : "Pin"}
                   </button>
                 )}
