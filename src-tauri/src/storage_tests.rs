@@ -192,3 +192,69 @@ fn parse_pin_ls_extracts_the_keys() {
     // An empty pin set is valid, not an error.
     assert_eq!(parse_pin_ls(r#"{"Keys":{}}"#).unwrap(), Vec::<String>::new());
 }
+
+// CX-S2.2 — the bond commitments must match citrate-chain's frozen CommD vectors BYTE-FOR-BYTE.
+// A drift here would register a slashable bond, so this is a hard money-path gate, not a nicety.
+// Source: citrate-chain crates/citrate-commd/tests/commd_frozen_v1.rs.
+#[test]
+fn bond_commitments_match_the_chain_frozen_vectors() {
+    let cases: &[(&str, Vec<u8>, &str, &str)] = &[
+        (
+            "empty",
+            vec![],
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "294d5514bcdc323b146ef99c58c637945d2d3b43a5cb5efc0b0c057c36f28d3a",
+        ),
+        (
+            "one_byte_0x01",
+            vec![1],
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "0403682fea89ee0ec92726d683e023ebd8c5b78f6ab3098175e81455620f48b7",
+        ),
+        (
+            "hello_pin",
+            b"hello pin".to_vec(),
+            "00000000000000000000000000000000000000000000006e6970206f6c6c6568",
+            "2b0894c438660404477b872ced1b10a5ebc3d83263238cb38eae09355c202d7f",
+        ),
+        (
+            "100_incrementing",
+            (0..100u32).map(|i| i as u8).collect(),
+            "02765621f5f7e5c569458c89aff1f46adf4d6bf58a135d66eb2dc9c3a6e64290",
+            "03f2fcdf67adea13e3d76eed02265bc432473b09c5bd89d26b7d6a275ffe1216",
+        ),
+    ];
+    for (label, data, commd, dc) in cases {
+        let c = bond_commitments(data);
+        assert_eq!(hex::encode(c.comm_d), *commd, "commD drift at {label}");
+        assert_eq!(hex::encode(c.data_commit), *dc, "dataCommit drift at {label}");
+        // dataHash is plain keccak256(data).
+        assert_eq!(c.data_hash, keccak256(data));
+    }
+}
+
+#[test]
+fn register_model_calldata_is_abi_well_formed() {
+    let c = bond_commitments(b"hello pin");
+    let data_uri = "ipfs://bafytestcid";
+    let cd = register_model_calldata(bond_cid(data_uri), &c, data_uri);
+
+    // selector = keccak256("registerModel(bytes32,bytes32,bytes32,bytes32,string)")[..4]
+    assert_eq!(
+        &cd[0..4],
+        &keccak256(b"registerModel(bytes32,bytes32,bytes32,bytes32,string)")[..4]
+    );
+    // cid, commD, dataHash, dataCommit are words 0..4 (after the selector).
+    assert_eq!(&cd[4..36], &bond_cid(data_uri));
+    assert_eq!(&cd[36..68], &c.comm_d);
+    assert_eq!(&cd[68..100], &c.data_hash);
+    assert_eq!(&cd[100..132], &c.data_commit);
+    // word 4 = string offset = 0xa0 (5 head words).
+    assert_eq!(cd[132 + 31], 0xa0);
+    // tail: length word then the right-padded uri bytes.
+    let uri = data_uri.as_bytes();
+    assert_eq!(cd[164 + 31], uri.len() as u8);
+    assert_eq!(&cd[196..196 + uri.len()], uri);
+    // The args (everything after the 4-byte selector) are 32-byte aligned.
+    assert_eq!((cd.len() - 4) % 32, 0);
+}

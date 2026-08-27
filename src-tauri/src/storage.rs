@@ -337,6 +337,11 @@ impl StorageManager {
         self.transport.pin_rm(cid)
     }
 
+    /// Fetch a CID's raw bytes (no disk write) — used to compute the bond commitments (S2.2).
+    pub fn cat(&self, cid: &str) -> Result<Vec<u8>> {
+        self.transport.cat(cid)
+    }
+
     /// Retrieve a CID's bytes to `<dir>/retrieved/<cid>` and return that path.
     pub fn retrieve(&self, cid: &str) -> Result<PathBuf> {
         let bytes = self.transport.cat(cid)?;
@@ -407,14 +412,123 @@ pub fn storage_add(app: tauri::AppHandle, path: String) -> std::result::Result<A
         .map_err(|e| e.to_string())
 }
 
-/// **Command — storage_pin.** Pin a CID with a SALT bond (ceremony-gated bond arrives in S2.2).
+// ---------------------------------------------------------------------------
+// CX-S2.2 — the ceremony-gated IPFSIncentivesV3 model bond (@rule8 · money path).
+// ---------------------------------------------------------------------------
+
+use sha3::{Digest as _, Keccak256};
+
+/// The deployed IPFSIncentivesV3 on chain 40204 — REDEPLOYED with the #170 sound-CommD fix
+/// (citrate-chain PR #179; the pre-fix 0xb024ad… is superseded). Registration verifies nothing
+/// on-chain (the three commitments are trusted at registration and only tested if challenged), so
+/// the client needs no proof/precompile.
+pub const IPFS_INCENTIVES_V3: &str = "0xa1a37f794b77292cf8511c4b179af18d5a663683";
+/// MIN_MODEL_BOND — 55 SALT (the #170 params). Wei = 55 × 1e18.
+const MIN_MODEL_BOND_WEI: u128 = 55_000_000_000_000_000_000;
+/// Explicit gas for `registerModel` (a calldata tx MUST carry explicit gas).
+const REGISTER_MODEL_GAS: u64 = 300_000;
+
+fn keccak256(bytes: &[u8]) -> [u8; 32] {
+    let mut h = Keccak256::new();
+    h.update(bytes);
+    h.finalize().into()
+}
+
+/// The three 32-byte commitments the bond registers, from the file's bytes.
+pub struct BondCommitments {
+    pub comm_d: [u8; 32],
+    pub data_hash: [u8; 32],
+    pub data_commit: [u8; 32],
+}
+
+/// Compute (commD, dataHash, dataCommit) EXACTLY as the chain's canonical `citrate-commd`
+/// (Poseidon-BN254 Merkle / sponge + keccak). Byte-exactness is pinned by a storage_tests vector
+/// check against citrate-commd's frozen `commd_frozen_v1.rs` — a mismatch would register a
+/// slashable bond, so this is a hard gate, not a nicety.
+pub fn bond_commitments(bytes: &[u8]) -> BondCommitments {
+    BondCommitments {
+        comm_d: citrate_commd::compute_comm_d(bytes),
+        data_hash: keccak256(bytes),
+        data_commit: citrate_commd::compute_data_commit(bytes),
+    }
+}
+
+/// The on-chain `bytes32 cid` = keccak256(dataUri). CONVENTION from the IPFSIncentivesV3 tests
+/// (the contract treats cid as an opaque key); reconcile with the pinner cid when the seal/challenge
+/// path activates (0x0130 + the trusted-setup ceremony — not live yet).
+pub fn bond_cid(data_uri: &str) -> [u8; 32] {
+    keccak256(data_uri.as_bytes())
+}
+
+/// ABI-encode `registerModel(bytes32 cid, bytes32 commD, bytes32 dataHash, bytes32 dataCommit,
+/// string dataUri)`: 4 static words + a string-offset word (0xa0), then the string tail.
+pub fn register_model_calldata(cid: [u8; 32], c: &BondCommitments, data_uri: &str) -> Vec<u8> {
+    let selector = &keccak256(b"registerModel(bytes32,bytes32,bytes32,bytes32,string)")[..4];
+    let mut out = Vec::with_capacity(4 + 32 * 6 + 64);
+    out.extend_from_slice(selector);
+    out.extend_from_slice(&cid);
+    out.extend_from_slice(&c.comm_d);
+    out.extend_from_slice(&c.data_hash);
+    out.extend_from_slice(&c.data_commit);
+    let mut offset = [0u8; 32]; // string offset = 5 head words × 32 = 160 = 0xa0
+    offset[31] = 0xa0;
+    out.extend_from_slice(&offset);
+    let uri = data_uri.as_bytes();
+    let mut len = [0u8; 32];
+    len[24..].copy_from_slice(&(uri.len() as u64).to_be_bytes());
+    out.extend_from_slice(&len);
+    out.extend_from_slice(uri);
+    let pad = (32 - uri.len() % 32) % 32;
+    out.extend(std::iter::repeat(0u8).take(pad));
+    out
+}
+
+/// The pending-ceremony tx JSON (mirrors node.rs::encode_activate_json): from the member EOA, to
+/// IPFSIncentivesV3, value = the bond, data = registerModel calldata.
+fn encode_bond_tx_json(from: &str, calldata: &[u8]) -> String {
+    serde_json::json!({
+        "from": from,
+        "to": IPFS_INCENTIVES_V3,
+        "value": format!("0x{MIN_MODEL_BOND_WEI:x}"),
+        "data": format!("0x{}", hex::encode(calldata)),
+        "gas": format!("0x{REGISTER_MODEL_GAS:x}"),
+        "chainId": format!("0x{:x}", 40204u64),
+    })
+    .to_string()
+}
+
+/// **Command — storage_pin.** Pin a CID locally AND place the network storage bond: fetch the
+/// bytes, compute the canonical commitments, and submit a `registerModel` tx as a PENDING
+/// SignatureCeremony (Rule 3 — the human approves via the signing flow; nothing signs here). The
+/// bond appears in the ceremony pending list for approval. Returns `()` (the frozen DTO shape); the
+/// ceremony is surfaced by the existing signing surface.
 #[tauri::command]
 pub fn storage_pin(
     app: tauri::AppHandle,
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     cid: String,
     bond_salt: String,
 ) -> std::result::Result<(), String> {
-    build_manager(&app)?.pin(&cid, &bond_salt).map_err(|e| e.to_string())
+    let mgr = build_manager(&app)?;
+    // Keep the file on THIS node (local pin), recording the bond marker.
+    mgr.pin(&cid, &bond_salt).map_err(|e| e.to_string())?;
+    // Fetch the bytes + compute the canonical commitments for the on-chain bond.
+    let bytes = mgr.cat(&cid).map_err(|e| e.to_string())?;
+    let data_uri = format!("ipfs://{cid}");
+    let commits = bond_commitments(&bytes);
+    let calldata = register_model_calldata(bond_cid(&data_uri), &commits, &data_uri);
+    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    let raw = encode_bond_tx_json(&wallet.address, &calldata);
+    let intent = crate::ceremony::SignatureIntent {
+        origin: "local-user".to_string(),
+        kind: crate::ceremony::IntentKind::Transaction,
+        chain_id: 40204,
+        raw,
+    };
+    // Submit the PENDING ceremony (the user approves + broadcasts via the signing surface).
+    ceremony.0.request(intent);
+    Ok(())
 }
 
 /// **Command — storage_list.** The pinning file store (index ∪ live pins).
