@@ -12,6 +12,8 @@ import { Sidebar } from "./shell/Sidebar";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
+// CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
+import { Models, StorageFiles, Groups, Cluster, Train, Agent } from "./surfaces";
 
 const queryClient = new QueryClient();
 
@@ -26,6 +28,13 @@ export const REGISTER: Record<string, "instrument" | "charter"> = {
   comms: "charter",
   commissary: "charter",
   settings: "charter",
+  // CX surfaces (CX-S0.4)
+  models: "instrument",
+  files: "instrument",
+  groups: "charter",
+  cluster: "instrument",
+  train: "instrument",
+  agent: "charter",
 };
 
 function Shell({ s }: { s: AppState }) {
@@ -75,6 +84,19 @@ function Shell({ s }: { s: AppState }) {
         return <Journal store={store} s={s} />;
       case "alf":
         return <ALF store={store} s={s} />;
+      // CX surfaces (CX-S0.4 shells; lanes fill them in their own files)
+      case "models":
+        return <Models store={store} s={s} />;
+      case "files":
+        return <StorageFiles store={store} s={s} />;
+      case "groups":
+        return <Groups store={store} s={s} />;
+      case "cluster":
+        return <Cluster store={store} s={s} />;
+      case "train":
+        return <Train store={store} s={s} />;
+      case "agent":
+        return <Agent store={store} s={s} />;
       default:
         return <Dashboard store={store} s={s} />;
     }
@@ -185,7 +207,7 @@ function Root() {
     }
     const onHash = () => {
       const r = (location.hash || "").replace(/^#\//, "");
-      if (r && r !== store.state.route && ["dashboard", "wallet", "node", "storage", "journal", "comms", "commissary", "settings", "alf"].indexOf(r) >= 0) {
+      if (r && r !== store.state.route && ["dashboard", "wallet", "node", "storage", "journal", "comms", "commissary", "settings", "alf", "models", "files", "groups", "cluster", "train", "agent"].indexOf(r) >= 0) {
         store.setState({ route: r });
       }
     };

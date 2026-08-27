@@ -13,13 +13,16 @@
 // import cycle the Store binds itself here once via `bindSimHost()`.
 // =====================================================================
 import { BRIDGE_MODE } from "./mode";
-import type { BridgeContract } from "./domains";
+import type { BridgeContract, CxBridge } from "./domains";
 import { createSimBridge, type SimHost } from "./sim";
 import { createTauriBridge } from "./tauri";
+import { cxTauri, cxSim } from "./cx";
 import type { AppState } from "../shell/state";
 import { DEFAULT_APP_CONFIG } from "./types";
 
-export type { BridgeContract } from "./domains";
+export type { BridgeContract, CxBridge } from "./domains";
+/** The full bridge = the legacy contract + the CX social-node domains (planset). */
+export type FullBridge = BridgeContract & CxBridge;
 export type { AppConfig, KeyringStatus, CustodyStatus, SlotInfo } from "./types";
 export { Unavailable, isUnavailable } from "./types";
 
@@ -55,16 +58,19 @@ export function bindSimHost(host: SimHost): void {
 }
 
 // --- assembly --------------------------------------------------------
-function assemble(): BridgeContract {
-  const impl =
-    BRIDGE_MODE === "tauri"
-      ? createTauriBridge()
-      : // In sim mode we read through a live getter so the Store can bind late.
-        createSimBridge({
-          getState: () => simHost.getState(),
-          patch: (u) => simHost.patch(u),
-        });
-  return { mode: BRIDGE_MODE, ...impl };
+// The legacy monolith bridges (createTauriBridge/createSimBridge) are spread unchanged;
+// the CX domains (cxTauri/cxSim) are spread alongside, so adding a CX feature never edits
+// the monolith — the parallel-safe seam (planset 02_ARCHITECTURE §3).
+function assemble(): FullBridge {
+  if (BRIDGE_MODE === "tauri") {
+    return { mode: BRIDGE_MODE, ...createTauriBridge(), ...cxTauri() };
+  }
+  // In sim mode we read through a live getter so the Store can bind late.
+  const host: SimHost = {
+    getState: () => simHost.getState(),
+    patch: (u) => simHost.patch(u),
+  };
+  return { mode: BRIDGE_MODE, ...createSimBridge(host), ...cxSim(host) };
 }
 
-export const bridge: BridgeContract = assemble();
+export const bridge: FullBridge = assemble();

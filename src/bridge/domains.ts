@@ -583,3 +583,170 @@ export interface BridgeContract {
   comms: CommsDomain;
   connections: ConnectionsDomain;
 }
+
+// =====================================================================
+// CX — social-node domains (planset citrate-core-social). Frozen in CX-S0.2 and
+// composed onto BridgeContract as `bridge: BridgeContract & CxBridge` (bridge/index.ts),
+// so the existing monolith bridges are never edited. Each domain's impl lives in its own
+// file owned by its lane (src/bridge/{tauri,sim}/<domain>.ts) — see .agentile/cx-ownership.map.
+// Interfaces are contract-first (Rule 7): declared here BEFORE any implementation, and only
+// changed via a serialized spine-PR (01_SCOPE §5.2).
+// =====================================================================
+
+/** A downloadable/local model, from Hugging Face, GitHub Releases, or the bundle (C-16). */
+export interface ModelDescriptor {
+  id: string;
+  source: "hf" | "github" | "bundled";
+  repo: string;
+  file: string;
+  revision?: string;
+  sizeBytes: number;
+  sha256: string;
+  kind: "gguf" | "safetensors";
+}
+
+/** C-16 — model catalog & switcher (local + HF + GitHub). Wired in CX-S1. */
+export interface ModelsCatalogDomain {
+  /** Locally-present, verified models. */
+  local(): Promise<ModelDescriptor[]>;
+  /** Search downloadable models from a connected source (HF Hub / GitHub Releases). */
+  search(source: "hf" | "github", query: string): Promise<ModelDescriptor[]>;
+  /** Download + verify a descriptor; resolves on Ready. */
+  download(id: string): Promise<void>;
+  /** Switch the active local model (restarts llama-server -m). */
+  select(id: string): Promise<void>;
+}
+
+// ── C-17 storage & pinning file store (lane s2) ──
+export interface PinRow {
+  cid: string;
+  sizeBytes: number;
+  bondSalt: string;
+  pinState: "pinned" | "pinning" | "challenged" | "unpinned";
+  addedAt: number;
+}
+export interface StorageDomain {
+  /** Add a local file to IPFS; returns its CID. */
+  add(path: string): Promise<{ cid: string; sizeBytes: number }>;
+  /** Pin a CID with a SALT bond — ceremony-gated (D-18). */
+  pin(cid: string, bondSalt: string): Promise<void>;
+  list(): Promise<PinRow[]>;
+  retrieve(cid: string): Promise<{ path: string }>;
+  unpin(cid: string): Promise<void>;
+}
+
+// ── C-19 groups: secure 1:1 + group comms, admin RBAC (lane s3) ──
+export type GroupRole = "owner" | "admin" | "member" | "guest" | "agent";
+export interface GroupMember {
+  address: string;
+  role: GroupRole;
+}
+export interface Group {
+  id: string;
+  owner: string;
+  kind: "dm" | "channel" | "forum";
+  members: GroupMember[];
+}
+export interface GroupMessage {
+  id: string;
+  groupId: string;
+  sender: string;
+  body: string;
+  ts: number;
+}
+export interface GroupsDomain {
+  create(kind: Group["kind"], name: string): Promise<Group>;
+  list(): Promise<Group[]>;
+  join(groupId: string): Promise<void>;
+  roster(groupId: string): Promise<GroupMember[]>;
+  /** Grant/change a role — a signed RoleAssertion enforced at the relay. */
+  assignRole(groupId: string, address: string, role: GroupRole): Promise<void>;
+  /** Atomic offboard — drops all four planes in one epoch (ADR-001). */
+  offboard(groupId: string, address: string): Promise<void>;
+  send(groupId: string, body: string): Promise<void>;
+  messages(groupId: string): Promise<GroupMessage[]>;
+}
+
+// ── C-20 group clusters: private P2P + shared files/compute (lane s4) ──
+export interface ClusterPeer {
+  address: string;
+  online: boolean;
+}
+export interface ClusterStatus {
+  groupId: string;
+  online: number;
+  total: number;
+  sharedFiles: string[];
+}
+export interface ClusterDomain {
+  status(groupId: string): Promise<ClusterStatus>;
+  join(groupId: string): Promise<void>;
+  peers(groupId: string): Promise<ClusterPeer[]>;
+  /** Co-pin a CID across the Group roster. */
+  shareFile(groupId: string, cid: string): Promise<void>;
+  leave(groupId: string): Promise<void>;
+}
+
+// ── C-21 train-together: group federated training (lane s5) ──
+export type RoundPhase = "idle" | "open" | "aggregating" | "committed" | "settled";
+export interface RoundStatus {
+  groupId: string;
+  round: number;
+  phase: RoundPhase;
+  participants: number;
+}
+export interface RewardInfo {
+  round: number;
+  weight: string;
+  salt: string;
+}
+export interface TrainingDomain {
+  start(groupId: string): Promise<void>;
+  status(groupId: string): Promise<RoundStatus>;
+  /** Lease -> local DiLoCo train -> submit a Q16 pseudo-gradient. */
+  contribute(groupId: string): Promise<void>;
+  reward(groupId: string): Promise<RewardInfo>;
+  /** Claim the member's SALT reward — ceremony-gated (D-18/D-23). */
+  claim(groupId: string): Promise<void>;
+}
+
+// ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──
+export interface AgentSkill {
+  name: string;
+  description: string;
+}
+export interface AgentApproval {
+  id: string;
+  kind: "code" | "chain" | "shell";
+  summary: string;
+}
+export interface AgentHarnessStatus {
+  running: boolean;
+  skills: number;
+  pendingApprovals: number;
+}
+export interface AgentHarnessDomain {
+  /** Sidecar a Hermes agent (keyless; every chain effect stays ceremony-gated). */
+  start(): Promise<void>;
+  status(): Promise<AgentHarnessStatus>;
+  skills(): Promise<AgentSkill[]>;
+  /** Run a skill/code task behind the mandatory HITL approval flow. */
+  runSkill(name: string, argsJson: string): Promise<{ ok: boolean }>;
+  pendingApprovals(): Promise<AgentApproval[]>;
+  stop(): Promise<void>;
+}
+
+/**
+ * The CX domain surface, composed onto the bridge alongside the legacy domains.
+ * FROZEN (CX-S0.2): each domain's impl lives in its own lane-owned file; changing a
+ * signature/DTO here requires a serialized spine-PR (01_SCOPE §5.2). Every entry is
+ * additive — no existing interface above this block is modified.
+ */
+export interface CxBridge {
+  modelsCatalog: ModelsCatalogDomain;
+  storage: StorageDomain;
+  groups: GroupsDomain;
+  cluster: ClusterDomain;
+  training: TrainingDomain;
+  agentHarness: AgentHarnessDomain;
+}

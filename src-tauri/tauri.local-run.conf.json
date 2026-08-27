@@ -1,7 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "targets": ["app", "dmg"],
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "targets": ["app"],
     "externalBin": [
       "binaries/citrate",
       "binaries/node-agent",
@@ -17,8 +19,8 @@
       "models/bge-base-en-v1.5/*"
     ],
     "macOS": {
-      "signingIdentity": "Developer ID Application: Larry Klosowski (DDHUG44QC7)",
-      "hardenedRuntime": true
+      "signingIdentity": "-",
+      "hardenedRuntime": false
     }
   }
 }

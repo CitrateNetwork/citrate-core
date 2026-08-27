@@ -47,6 +47,15 @@ mod shell;
 mod staking;
 mod transfer;
 mod validator;
+// CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
+// command names once here + in generate_handler! below; each lane fills in its own module's
+// bodies (never this file). See .agentile/cx-ownership.map.
+mod cluster;
+mod comms;
+mod hermes;
+mod model_catalog;
+mod storage;
+mod training;
 
 use tauri::Manager;
 
@@ -229,6 +238,41 @@ pub fn run() {
             wallet_link::wallet_link_request,
             wallet_link::wallet_link_approve,
             wallet_link::wallet_link_reject,
+            // ── CX (planset citrate-core-social) — command names FROZEN in S0.3. Each is a
+            // NotWired stub until its lane wires the body (in its own module, never here). ──
+            model_catalog::model_catalog_local,
+            model_catalog::model_catalog_search,
+            model_catalog::model_catalog_download,
+            model_catalog::model_catalog_select,
+            storage::storage_add,
+            storage::storage_pin,
+            storage::storage_list,
+            storage::storage_retrieve,
+            storage::storage_unpin,
+            comms::groups_create,
+            comms::groups_list,
+            comms::groups_join,
+            comms::groups_roster,
+            comms::groups_assign_role,
+            comms::groups_offboard,
+            comms::groups_send,
+            comms::groups_messages,
+            cluster::cluster_status,
+            cluster::cluster_join,
+            cluster::cluster_peers,
+            cluster::cluster_share_file,
+            cluster::cluster_leave,
+            training::training_start,
+            training::training_status,
+            training::training_contribute,
+            training::training_reward,
+            training::training_claim,
+            hermes::hermes_start,
+            hermes::hermes_status,
+            hermes::hermes_skills,
+            hermes::hermes_run_skill,
+            hermes::hermes_pending_approvals,
+            hermes::hermes_stop,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an

@@ -15,6 +15,13 @@ export const NAVI: [string, string, string, string][] = [
   ["comms", "Comms", "M18 16 V11 A6 6 0 0 0 6 11 V16 L4 18 H20 Z", "M10 21 A2 2 0 0 0 14 21"],
   ["commissary", "Commissary", "M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z", "M3 8 L12 13 L21 8 M12 13 V21"],
   ["settings", "Settings", "M4 7 H20 M4 12 H20 M4 17 H20", "M9 5 V9 M15 10 V14 M8 15 V19"],
+  // CX surfaces (planset citrate-core-social, CX-S0.4). IA/ordering is finalized in CX-S7.
+  ["models", "Models", "M4 7 L12 3 L20 7 L12 11 Z", "M4 12 L12 16 L20 12 M4 17 L12 21 L20 17"],
+  ["files", "Files", "M6 3 H14 L18 7 V21 H6 Z", "M14 3 V7 H18 M9 12 H15 M9 16 H15"],
+  ["groups", "Groups", "M8 11 A3 3 0 1 0 8 5 A3 3 0 0 0 8 11 Z M2 20 A6 6 0 0 1 14 20", "M16 11 A3 3 0 0 0 16 5 M18 20 A6 6 0 0 0 15 15"],
+  ["cluster", "Cluster", "M12 5 A2 2 0 1 0 12 4.99 M5 18 A2 2 0 1 0 5 17.99 M19 18 A2 2 0 1 0 19 17.99", "M12 7 L6 16 M12 7 L18 16"],
+  ["train", "Train", "M4 18 L9 12 L13 15 L20 6", "M4 20 H20 M4 4 V20"],
+  ["agent", "Agent", "M8 4 H16 V10 A4 4 0 0 1 8 10 Z M6 20 A6 6 0 0 1 18 20", "M10 7 H10.01 M14 7 H14.01"],
 ];
 
 // ALF cooperative workbench — appended to the nav ONLY for ALF members (gated on
