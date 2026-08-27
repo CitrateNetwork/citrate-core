@@ -77,10 +77,54 @@ pub const MODEL_URL_ENV: &str = "CITRATE_MODEL_URL";
 /// bytes of the download so a wrong/HTML-error body is caught immediately.
 pub const GGUF_MAGIC: [u8; 4] = *b"GGUF";
 
-/// The status side-file (JSON) that records whether the model has been VERIFIED.
-/// `Ready` is derived from this file's `verified == true`, so a bare on-disk file
-/// is never Ready without a real verify (the no-Ready-without-verify guard).
-const STATUS_FILE: &str = "gemma-4-E4B-it-Q4_0.gguf.status.json";
+// The status side-file is now DERIVED per model as `<file>.status.json` (ModelManager),
+// so multiple models each keep their own verified flag. (Was a single STATUS_FILE const.)
+
+/// Where a model's bytes come from (CX-S1 catalog).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelSource {
+    /// Shipped in the app bundle (seeded on first run); no network.
+    Bundled,
+    /// A Hugging Face repo file (resolve URL).
+    HuggingFace { repo: String, revision: String },
+    /// A GitHub release asset.
+    GitHub { repo: String, tag: String },
+}
+
+/// A model the app can hold on disk — the bundled Gemma, or a catalog model from Hugging
+/// Face / GitHub. The pinned `sha256`/`size_bytes` are the verify gate; `.part` and
+/// `.status.json` derive from `file`, so models coexist in `models/` by filename (CX-S1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelDescriptor {
+    /// Stable id (e.g. "bundled:gemma-4-e4b" or "hf:<repo>/<file>").
+    pub id: String,
+    pub source: ModelSource,
+    /// The on-disk GGUF/safetensors filename.
+    pub file: String,
+    /// Exact byte length (the download refuses to finalize until this many bytes arrive).
+    pub size_bytes: u64,
+    /// Pinned lowercase-hex SHA-256 (verify quarantines on mismatch — no Ready without it).
+    pub sha256: String,
+    /// The download URL (GGUF over HTTP); empty for bundle-only.
+    pub url: String,
+}
+
+/// The default (bundled Gemma) descriptor — the single model the app has always shipped,
+/// now expressed as a descriptor so the catalog can add more alongside it. Its values are
+/// the existing pins ([`MODEL_FILE`]/[`MODEL_SIZE_BYTES`]/[`MODEL_SHA256`]/[`DEFAULT_MODEL_URL`]).
+pub fn default_descriptor() -> ModelDescriptor {
+    ModelDescriptor {
+        id: "bundled:gemma-4-e4b-it-q4_0".to_string(),
+        source: ModelSource::HuggingFace {
+            repo: "ggml-org/gemma-4-E4B-it-GGUF".to_string(),
+            revision: "main".to_string(),
+        },
+        file: MODEL_FILE.to_string(),
+        size_bytes: MODEL_SIZE_BYTES,
+        sha256: MODEL_SHA256.to_string(),
+        url: DEFAULT_MODEL_URL.to_string(),
+    }
+}
 
 /// Resolve the model source URL: the `override` (from `CITRATE_MODEL_URL`) if
 /// present, else [`DEFAULT_MODEL_URL`]. Taken as an explicit arg (not read inline)
@@ -272,12 +316,17 @@ pub struct ModelManager {
     expected_hash: String,
     /// The pinned expected byte length.
     expected_size: u64,
+    /// The model's on-disk filename. Defaults to [`MODEL_FILE`] (the bundled Gemma) for
+    /// backward compatibility; the catalog (CX-S1) overrides it per model via [`with_file`]
+    /// / [`from_descriptor`], so multiple models coexist in `models/` by filename. The
+    /// `.part` and `.status.json` side-files are DERIVED from it.
+    file: String,
 }
 
 impl ModelManager {
-    /// Build a manager over an explicit model dir + transport + pinned hash/size.
-    /// Production uses [`build_model_state`] (real Gemma pins); tests inject a
-    /// fixture transport + a fixture hash.
+    /// Build a manager over an explicit model dir + transport + pinned hash/size. The model
+    /// filename defaults to [`MODEL_FILE`] (Gemma) — use [`with_file`] for a catalog model.
+    /// Production uses [`build_model_state`] (real Gemma pins); tests inject a fixture.
     pub fn new(
         dir: PathBuf,
         transport: Box<dyn ModelTransport>,
@@ -289,22 +338,41 @@ impl ModelManager {
             transport,
             expected_hash,
             expected_size,
+            file: MODEL_FILE.to_string(),
         }
     }
 
-    /// The final model file path (`<dir>/<MODEL_FILE>`).
+    /// Override the model filename (builder) — the catalog sets this per model so several
+    /// models live in the same `models/` dir. `.part`/`.status.json` derive from it.
+    pub fn with_file(mut self, file: impl Into<String>) -> Self {
+        self.file = file.into();
+        self
+    }
+
+    /// Build a manager for a specific [`ModelDescriptor`] (CX-S1 catalog): its pinned
+    /// hash/size/filename over the given dir + transport.
+    pub fn from_descriptor(
+        dir: PathBuf,
+        transport: Box<dyn ModelTransport>,
+        desc: &ModelDescriptor,
+    ) -> Self {
+        ModelManager::new(dir, transport, desc.sha256.clone(), desc.size_bytes)
+            .with_file(desc.file.clone())
+    }
+
+    /// The final model file path (`<dir>/<file>`).
     fn final_path(&self) -> PathBuf {
-        self.dir.join(MODEL_FILE)
+        self.dir.join(&self.file)
     }
 
-    /// The in-progress partial path (`<dir>/<MODEL_FILE>.part`).
+    /// The in-progress partial path (`<dir>/<file>.part`).
     fn part_path(&self) -> PathBuf {
-        self.dir.join(format!("{MODEL_FILE}.part"))
+        self.dir.join(format!("{}.part", self.file))
     }
 
-    /// The status side-file path.
+    /// The status side-file path (`<dir>/<file>.status.json`).
     fn status_path(&self) -> PathBuf {
-        self.dir.join(STATUS_FILE)
+        self.dir.join(format!("{}.status.json", self.file))
     }
 
     /// Read the recorded verified flag (default false / absent).
