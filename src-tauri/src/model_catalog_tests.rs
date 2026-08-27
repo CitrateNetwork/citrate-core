@@ -159,3 +159,42 @@ fn resolver_surfaces_transport_errors_as_err() {
     let http = FixtureHttp::new(&[]);
     assert!(hf_search(&http, "x", None).is_err());
 }
+
+#[test]
+fn model_file_from_id_extracts_the_filename() {
+    assert_eq!(
+        model_file_from_id("hf:acme/cool-gguf/model-q4.gguf").unwrap(),
+        "model-q4.gguf"
+    );
+    assert_eq!(
+        model_file_from_id("github:owner/repo/m.gguf@v1.0").unwrap(),
+        "m.gguf"
+    );
+    // Bundled ids map to the app's default model file (no network, no parse).
+    assert_eq!(
+        model_file_from_id("bundled:gemma-4-e4b-it-q4_0").unwrap(),
+        crate::model::MODEL_FILE
+    );
+    assert!(model_file_from_id("nonsense").is_err());
+    assert!(model_file_from_id("github:no-at-sign").is_err());
+}
+
+#[test]
+fn resolve_by_id_reresolves_a_fresh_descriptor() {
+    let sha = hex64('C');
+    let tree = format!(
+        r#"[{{"path":"model-q4.gguf","size":1,"lfs":{{"oid":"{sha}","size":1234}}}}]"#
+    );
+    let http = FixtureHttp::new(&[("/tree/", tree.as_str())]);
+
+    // hf id → re-resolves via hf_files, matching by filename.
+    let d = resolve_by_id(&http, "hf:acme/cool-gguf/model-q4.gguf", None).expect("resolves");
+    assert_eq!(d.repo, "acme/cool-gguf");
+    assert_eq!(d.file, "model-q4.gguf");
+    assert_eq!(d.sha256, sha.to_lowercase());
+    assert_eq!(d.size_bytes, 1234);
+
+    // A file the repo doesn't expose → an honest not-found error, not a fabricated descriptor.
+    assert!(resolve_by_id(&http, "hf:acme/cool-gguf/missing.gguf", None).is_err());
+    assert!(resolve_by_id(&http, "bundled:x", None).is_err()); // bundled has no catalog source
+}

@@ -266,6 +266,22 @@ struct StatusFile {
     verified: bool,
 }
 
+/// Whether `<dir>/<file>` is a verified-Ready model, WITHOUT needing a transport or the pinned
+/// size — reads the same on-disk facts as [`ModelManager::status`] (the final file is present
+/// AND its `<file>.status.json` records the EARNED `verified` flag). The model-SELECT path
+/// (CX-S1.5) gates on this for an arbitrary catalog model file, where no per-model
+/// [`ModelManager`] is otherwise in hand. No Ready without a real verify still holds.
+pub fn is_file_ready(dir: &std::path::Path, file: &str) -> bool {
+    if !dir.join(file).exists() {
+        return false;
+    }
+    std::fs::read_to_string(dir.join(format!("{file}.status.json")))
+        .ok()
+        .and_then(|s| serde_json::from_str::<StatusFile>(&s).ok())
+        .map(|s| s.verified)
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // The HTTP transport seam (injectable — mirrors rpc.rs::RpcTransport). Two ops:
 // the total size (a HEAD-like read) and a byte-range GET stream from an offset

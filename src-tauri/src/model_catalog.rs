@@ -196,6 +196,64 @@ pub fn github_releases(
     Ok(out)
 }
 
+// ---- id resolution (download/select by stable id) ----
+
+/// Re-resolve a full descriptor from its stable id (as produced by the resolver). STATELESS:
+/// parse the id, re-fetch the source's real sha256/size, return the matching descriptor — so a
+/// download always verifies against a FRESHLY-fetched pin, never one the webview kept around.
+pub fn resolve_by_id(
+    http: &dyn HttpClient,
+    id: &str,
+    token: Option<&str>,
+) -> Result<ModelDescriptor, String> {
+    if let Some(rest) = id.strip_prefix("hf:") {
+        // "<owner>/<name>/<file>"
+        let (repo, file) = rest
+            .rsplit_once('/')
+            .ok_or_else(|| format!("malformed hf id: {id}"))?;
+        hf_files(http, repo, "main", token)?
+            .into_iter()
+            .find(|d| d.file == file)
+            .ok_or_else(|| format!("model '{file}' not found in {repo}"))
+    } else if let Some(rest) = id.strip_prefix("github:") {
+        // "<owner>/<name>/<file>@<tag>"
+        let (path, _tag) = rest
+            .rsplit_once('@')
+            .ok_or_else(|| format!("malformed github id: {id}"))?;
+        let (repo, _file) = path
+            .rsplit_once('/')
+            .ok_or_else(|| format!("malformed github id: {id}"))?;
+        github_releases(http, repo, token)?
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| format!("release asset not found: {id}"))
+    } else {
+        Err(format!("unknown model id source: {id}"))
+    }
+}
+
+/// The on-disk filename a model id maps to — WITHOUT any network (used by select, which only
+/// needs the local path). Bundled ids map to the app's default model file.
+pub fn model_file_from_id(id: &str) -> Result<String, String> {
+    if id.starts_with("bundled:") {
+        return Ok(crate::model::MODEL_FILE.to_string());
+    }
+    if let Some(rest) = id.strip_prefix("hf:") {
+        return rest
+            .rsplit_once('/')
+            .map(|(_repo, file)| file.to_string())
+            .ok_or_else(|| format!("malformed hf id: {id}"));
+    }
+    if let Some(rest) = id.strip_prefix("github:") {
+        return rest
+            .rsplit_once('@')
+            .and_then(|(path, _tag)| path.rsplit_once('/'))
+            .map(|(_repo, file)| file.to_string())
+            .ok_or_else(|| format!("malformed github id: {id}"));
+    }
+    Err(format!("unknown model id source: {id}"))
+}
+
 // ---- helpers ----
 
 /// Percent-encode a query for a URL query value (RFC 3986 unreserved set stays literal).
@@ -252,17 +310,55 @@ pub fn model_catalog_search(
     search(&crate::oidc::UreqClient, src, &query, None)
 }
 
-/// Download + verify a descriptor by id. Wired in S1.5 (build the transport from
-/// `descriptor.download_url()` → `ModelManager::from_descriptor` → download + verify).
+/// Download + verify a catalog model by id. Re-resolves the id to a fresh descriptor (its real
+/// sha256/size), builds the transport from `descriptor.download_url()`, and runs the streamed
+/// resumable download + verify into `models/<file>`. Resolves only once the file is verified-Ready
+/// (the download path quarantines on hash/size mismatch — no unverified model lands).
 #[tauri::command]
-pub fn model_catalog_download(_id: String) -> Result<(), String> {
-    not_wired("download")
+pub fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    use tauri::Manager;
+    let desc = resolve_by_id(&crate::oidc::UreqClient, &id, None)?;
+    let url = desc
+        .download_url()
+        .ok_or_else(|| format!("model '{id}' is bundled and has no catalog download URL"))?;
+    let models_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("models");
+    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+    let transport = Box::new(crate::model::UreqModelTransport::new(url));
+    let mgr = crate::model::ModelManager::from_descriptor(models_dir, transport, &desc);
+    mgr.download().map_err(|e| e.to_string())?;
+    mgr.verify().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
-/// Switch the active local model (restart `llama-server -m`). Wired in S1.5.
+/// Switch the active local model (restart `llama-server -m`). Gates on the TARGET file being
+/// downloaded+verified ([`crate::model::is_file_ready`]) — fails closed with an honest error if
+/// not, leaving the current model serving — then hands the path to `serve::select_model`.
 #[tauri::command]
-pub fn model_catalog_select(_id: String) -> Result<(), String> {
-    not_wired("select")
+pub fn model_catalog_select(
+    app: tauri::AppHandle,
+    serve: tauri::State<'_, crate::serve::ServeState>,
+    id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let file = model_file_from_id(&id)?;
+    let models_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("models");
+    if !crate::model::is_file_ready(&models_dir, &file) {
+        return Err(format!(
+            "model '{file}' is not downloaded and verified yet — download it first"
+        ));
+    }
+    serve
+        .0
+        .select_model(models_dir.join(&file), true)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -138,8 +138,9 @@ fn map_state(state: &SupervisorState) -> &'static str {
 pub struct LlamaServerManager {
     /// The bundled `llama-server` binary path (Tauri resource dir or override).
     bin: PathBuf,
-    /// The verified model GGUF path (the `-m` arg).
-    model_path: PathBuf,
+    /// The verified model GGUF path (the `-m` arg). Interior-mutable so the active model can be
+    /// switched at runtime ([`Self::select_model`]) without rebuilding the managed state.
+    model_path: Mutex<PathBuf>,
     /// Where crash records are appended.
     crash_record_path: PathBuf,
     /// The loopback port the server binds.
@@ -173,7 +174,7 @@ impl LlamaServerManager {
     ) -> Self {
         LlamaServerManager {
             bin,
-            model_path,
+            model_path: Mutex::new(model_path),
             crash_record_path,
             port,
             health_interval: HEALTH_INTERVAL,
@@ -217,9 +218,10 @@ impl LlamaServerManager {
     /// The grounded `llama-server` argv: `-m <model> --host 127.0.0.1 --port <p>
     /// --ctx-size <n>`. Loopback-only bind.
     fn spawn_args(&self) -> Vec<String> {
+        let model_path = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
         vec![
             "-m".to_string(),
-            self.model_path.to_string_lossy().to_string(),
+            model_path.to_string_lossy().to_string(),
             "--host".to_string(),
             "127.0.0.1".to_string(),
             "--port".to_string(),
@@ -296,6 +298,44 @@ impl LlamaServerManager {
             sup.stop();
             drop(sup);
         }
+    }
+
+    /// Switch the active model at runtime: repoint `-m` at `new_path` and (re)spawn the sidecar
+    /// on it. `model_ready` is the caller-supplied gate for the TARGET model (from
+    /// [`crate::model::is_file_ready`]) — the same injected-readiness pattern as
+    /// [`Self::start_if_ready`], so this stays a pure lifecycle primitive.
+    ///
+    /// Fails CLOSED: the readiness gate is checked BEFORE anything is stopped or swapped, so a
+    /// not-ready target leaves the currently-serving model untouched (no half-applied switch).
+    /// Once gated, it stops the old server, swaps the path, and starts on the new model.
+    pub fn select_model(&self, new_path: PathBuf, model_ready: bool) -> Result<()> {
+        if !model_ready {
+            return Err(ServeError::ModelNotReady);
+        }
+        self.stop();
+        {
+            let mut guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = new_path;
+        }
+        // Already gated on readiness above; start re-checks the binary + idempotency.
+        self.start_if_ready(true)
+    }
+
+    /// The active model GGUF path (the current `-m` target).
+    pub fn current_model_path(&self) -> PathBuf {
+        self.model_path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The active model's filename — the label `ai_chat_local` sends to the OpenAI-compatible
+    /// endpoint so chat follows the selected model, never a hardcoded default.
+    pub fn current_model_file(&self) -> String {
+        self.current_model_path()
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default()
     }
 
     /// The current status: supervisor state + the local baseURL + a coarse
