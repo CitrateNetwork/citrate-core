@@ -7,4 +7,11 @@ export { Commissary } from "./Commissary";
 export { Settings } from "./Settings";
 export { Journal } from "./Journal";
 export { ALF } from "./ALF";
+// CX (planset citrate-core-social) — new surfaces, one per feature lane (CX-S0.4 shells).
+export { Models } from "./Models";
+export { StorageFiles } from "./StorageFiles";
+export { Groups } from "./Groups";
+export { Cluster } from "./Cluster";
+export { Train } from "./Train";
+export { Agent } from "./Agent";
 export type { SurfaceProps } from "./shared";
