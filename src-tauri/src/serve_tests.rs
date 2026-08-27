@@ -274,3 +274,52 @@ fn selection_no_model_when_no_key_and_not_downloading_but_model_absent() {
     assert_eq!(InferenceState::GatewayOnly.as_str(), "gateway-only");
     assert_eq!(InferenceState::Demo.as_str(), "demo");
 }
+
+// ---------------------------------------------------------------------------
+// (CX-S1.5) runtime model switch. select_model gates on the target's readiness,
+// repoints `-m`, and respawns on the new model.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn select_model_rejects_a_not_ready_target_without_swapping() {
+    let (mgr, dir) = stub_manager("select-gate");
+    let before = mgr.current_model_path();
+    let r = mgr.select_model(dir.join("other.gguf"), false);
+    assert!(matches!(r, Err(ServeError::ModelNotReady)), "got {r:?}");
+    // Fails closed: the active model is untouched (no half-applied switch).
+    assert_eq!(mgr.current_model_path(), before);
+    assert_eq!(mgr.status().state, "stopped");
+}
+
+#[test]
+fn select_model_repoints_the_m_flag_and_respawns() {
+    let (mgr, dir) = stub_manager("select-swap");
+    let mgr = mgr
+        .with_spawn_args(vec!["3600".to_string()])
+        .with_health_interval(std::time::Duration::from_secs(3600));
+    // A second, present model to switch onto.
+    let new_model = dir.join("model2.gguf");
+    std::fs::write(&new_model, b"GGUF-2").unwrap();
+
+    mgr.select_model(new_model.clone(), true)
+        .expect("select starts the sidecar on the new model");
+
+    // The active model + the grounded `-m` argv both reflect the switch.
+    assert_eq!(mgr.current_model_file(), "model2.gguf");
+    let args = mgr.spawn_args_for_test();
+    let m = args.iter().position(|a| a == "-m").expect("-m present");
+    assert_eq!(args[m + 1], new_model.to_string_lossy());
+
+    // And the sidecar actually reaches Running on the new model.
+    let mut running = false;
+    for _ in 0..100 {
+        if mgr.status().state == "running" {
+            running = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(running, "sidecar must reach Running after select_model");
+    mgr.stop();
+    assert_eq!(mgr.status().state, "stopped");
+}

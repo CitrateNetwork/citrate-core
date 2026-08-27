@@ -862,11 +862,12 @@ pub fn ai_chat_local(
     ai: tauri::State<'_, AiState>,
     serve: tauri::State<'_, crate::serve::ServeState>,
 ) -> std::result::Result<String, String> {
-    // The port + model name come from Rust-owned state, never the webview. (For a
-    // single-model llama-server the model field is a label; using the pinned model
-    // name keeps the webview from supplying anything on the local path.)
+    // The port + model name come from Rust-owned state, never the webview. The label is the
+    // ACTIVE model's filename (CX-S1.5 runtime switch) so chat follows whatever `-m` the sidecar
+    // is currently serving, rather than a hardcoded default; the webview still supplies nothing.
     let port = serve.0.port();
-    ai.0.chat_local(port, crate::model::MODEL_FILE, &messages_json, &context_json)
+    let active_model = serve.0.current_model_file();
+    ai.0.chat_local(port, &active_model, &messages_json, &context_json)
         .map_err(|e| e.to_string())
 }
 
