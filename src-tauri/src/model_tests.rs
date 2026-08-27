@@ -483,3 +483,47 @@ fn size_mismatch_is_rejected() {
     assert!(!matches!(mgr.status(), ModelStatus::Ready));
 }
 
+// Commons CX-S1.3 — ModelDescriptor + per-model filename. The default descriptor mirrors the
+// shipped Gemma pins, and a catalog model with a different filename is isolated on disk from
+// the default (each keeps its own file + verified side-file in the same models/ dir).
+#[test]
+fn model_descriptor_default_and_per_file_isolation() {
+    let d = default_descriptor();
+    assert_eq!(d.file, MODEL_FILE);
+    assert_eq!(d.size_bytes, MODEL_SIZE_BYTES);
+    assert_eq!(d.sha256, MODEL_SHA256);
+
+    let body = gguf_fixture(4096);
+    let (base, dir) = fixture_manager("descriptor", body.clone(), FixtureTransport::new(body.clone()));
+    // A catalog model with a DIFFERENT filename.
+    let custom = base.with_file("catalog-model.gguf");
+    custom.download().expect("download to the custom filename");
+    assert!(dir.join("catalog-model.gguf").exists(), "custom model file lands under its own name");
+    // Downloaded but not verified → NOT Ready (no Ready without verify).
+    assert!(!matches!(custom.status(), ModelStatus::Ready));
+    custom.verify().expect("verify the custom model");
+    assert!(matches!(custom.status(), ModelStatus::Ready));
+    assert!(dir.join("catalog-model.gguf.status.json").exists(), "per-file status side-file");
+
+    // A DEFAULT-file manager over the SAME dir does not see the custom model (isolation).
+    let default_mgr = ModelManager::new(
+        dir.clone(),
+        Box::new(FixtureTransport::new(body.clone())),
+        sha256_hex(&body),
+        body.len() as u64,
+    );
+    assert!(matches!(default_mgr.status(), ModelStatus::NotPresent));
+
+    // from_descriptor builds a manager pinned to the descriptor's file/hash/size.
+    let desc = ModelDescriptor {
+        id: "hf:test/model".to_string(),
+        source: ModelSource::HuggingFace { repo: "test/model".to_string(), revision: "main".to_string() },
+        file: "catalog-model.gguf".to_string(),
+        size_bytes: body.len() as u64,
+        sha256: sha256_hex(&body),
+        url: String::new(),
+    };
+    let from_desc = ModelManager::from_descriptor(dir.clone(), Box::new(FixtureTransport::new(body.clone())), &desc);
+    assert!(matches!(from_desc.status(), ModelStatus::Ready), "from_descriptor sees the already-verified custom model");
+}
+
