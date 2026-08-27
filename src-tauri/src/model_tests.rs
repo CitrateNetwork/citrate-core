@@ -492,6 +492,33 @@ fn model_descriptor_default_and_per_file_isolation() {
     assert_eq!(d.file, MODEL_FILE);
     assert_eq!(d.size_bytes, MODEL_SIZE_BYTES);
     assert_eq!(d.sha256, MODEL_SHA256);
+    assert_eq!(d.source, ModelSource::Bundled);
+    assert_eq!(d.kind, ModelKind::Gguf);
+
+    // Serializes to the bridge ModelDescriptor DTO 1:1 (camelCase, lowercase enums).
+    let json = serde_json::to_value(&d).unwrap();
+    assert_eq!(json["source"], "bundled");
+    assert_eq!(json["kind"], "gguf");
+    assert_eq!(json["sizeBytes"], MODEL_SIZE_BYTES);
+    assert_eq!(json["sha256"], MODEL_SHA256);
+    assert!(json.get("url").is_none(), "url is derived, never serialized");
+
+    // download_url() derives the HF resolve path — for an Hf descriptor at the default's
+    // repo/rev/file it reproduces DEFAULT_MODEL_URL exactly; a Bundled one has no URL.
+    assert_eq!(d.download_url(), None);
+    let hf = ModelDescriptor { source: ModelSource::Hf, ..default_descriptor() };
+    assert_eq!(hf.download_url().as_deref(), Some(DEFAULT_MODEL_URL));
+    let gh = ModelDescriptor {
+        source: ModelSource::Github,
+        repo: "owner/repo".to_string(),
+        file: "m.gguf".to_string(),
+        revision: Some("v1.2".to_string()),
+        ..default_descriptor()
+    };
+    assert_eq!(
+        gh.download_url().as_deref(),
+        Some("https://github.com/owner/repo/releases/download/v1.2/m.gguf")
+    );
 
     let body = gguf_fixture(4096);
     let (base, dir) = fixture_manager("descriptor", body.clone(), FixtureTransport::new(body.clone()));
@@ -517,11 +544,13 @@ fn model_descriptor_default_and_per_file_isolation() {
     // from_descriptor builds a manager pinned to the descriptor's file/hash/size.
     let desc = ModelDescriptor {
         id: "hf:test/model".to_string(),
-        source: ModelSource::HuggingFace { repo: "test/model".to_string(), revision: "main".to_string() },
+        source: ModelSource::Hf,
+        repo: "test/model".to_string(),
         file: "catalog-model.gguf".to_string(),
+        revision: Some("main".to_string()),
         size_bytes: body.len() as u64,
         sha256: sha256_hex(&body),
-        url: String::new(),
+        kind: ModelKind::Gguf,
     };
     let from_desc = ModelManager::from_descriptor(dir.clone(), Box::new(FixtureTransport::new(body.clone())), &desc);
     assert!(matches!(from_desc.status(), ModelStatus::Ready), "from_descriptor sees the already-verified custom model");

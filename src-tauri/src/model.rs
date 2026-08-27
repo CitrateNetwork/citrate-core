@@ -81,48 +81,87 @@ pub const GGUF_MAGIC: [u8; 4] = *b"GGUF";
 // so multiple models each keep their own verified flag. (Was a single STATUS_FILE const.)
 
 /// Where a model's bytes come from (CX-S1 catalog).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where a model's bytes come from. Serializes to the bridge DTO's `"hf" | "github" |
+/// "bundled"` (CX-S1 `ModelDescriptor.source`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ModelSource {
-    /// Shipped in the app bundle (seeded on first run); no network.
+    /// A Hugging Face Hub repo file (resolve URL).
+    Hf,
+    /// A GitHub release asset (`revision` is the release tag).
+    Github,
+    /// Seeded from the app bundle / the app's default first-run download; no catalog fetch.
     Bundled,
-    /// A Hugging Face repo file (resolve URL).
-    HuggingFace { repo: String, revision: String },
-    /// A GitHub release asset.
-    GitHub { repo: String, tag: String },
 }
 
-/// A model the app can hold on disk — the bundled Gemma, or a catalog model from Hugging
-/// Face / GitHub. The pinned `sha256`/`size_bytes` are the verify gate; `.part` and
-/// `.status.json` derive from `file`, so models coexist in `models/` by filename (CX-S1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A model's on-disk format. Serializes to the bridge DTO's `"gguf" | "safetensors"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelKind {
+    Gguf,
+    Safetensors,
+}
+
+/// A downloadable/local model — mirrors the bridge `ModelDescriptor` DTO 1:1 (camelCase over
+/// the wire). The pinned `sha256`/`size_bytes` are the verify gate; `.part` and `.status.json`
+/// derive from `file`, so models coexist in `models/` by filename. The download URL is DERIVED
+/// from (source, repo, revision, file) via [`ModelDescriptor::download_url`] — never stored, so
+/// a descriptor stays self-describing and can't drift from its own URL (CX-S1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelDescriptor {
-    /// Stable id (e.g. "bundled:gemma-4-e4b" or "hf:<repo>/<file>").
+    /// Stable id (e.g. "hf:<repo>/<file>" or "bundled:gemma-4-e4b").
     pub id: String,
     pub source: ModelSource,
+    /// The `owner/name` repo slug on the source (empty for a source that has none).
+    pub repo: String,
     /// The on-disk GGUF/safetensors filename.
     pub file: String,
+    /// The revision — HF git ref or GitHub release tag. Defaults to `main` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     /// Exact byte length (the download refuses to finalize until this many bytes arrive).
     pub size_bytes: u64,
     /// Pinned lowercase-hex SHA-256 (verify quarantines on mismatch — no Ready without it).
     pub sha256: String,
-    /// The download URL (GGUF over HTTP); empty for bundle-only.
-    pub url: String,
+    pub kind: ModelKind,
 }
 
-/// The default (bundled Gemma) descriptor — the single model the app has always shipped,
-/// now expressed as a descriptor so the catalog can add more alongside it. Its values are
-/// the existing pins ([`MODEL_FILE`]/[`MODEL_SIZE_BYTES`]/[`MODEL_SHA256`]/[`DEFAULT_MODEL_URL`]).
+impl ModelDescriptor {
+    /// The HTTP URL the bytes are fetched from — DERIVED from the descriptor, never stored.
+    /// `None` for a bundled model (seeded from the app, not downloaded from a catalog source).
+    /// The HF form is exactly [`DEFAULT_MODEL_URL`] for the default Gemma descriptor.
+    pub fn download_url(&self) -> Option<String> {
+        let rev = self.revision.as_deref().unwrap_or("main");
+        match self.source {
+            ModelSource::Hf => Some(format!(
+                "https://huggingface.co/{}/resolve/{}/{}",
+                self.repo, rev, self.file
+            )),
+            ModelSource::Github => Some(format!(
+                "https://github.com/{}/releases/download/{}/{}",
+                self.repo, rev, self.file
+            )),
+            ModelSource::Bundled => None,
+        }
+    }
+}
+
+/// The default Gemma descriptor — the single model the app has always shipped, now expressed
+/// as a descriptor so the catalog can add more alongside it. Its values are the existing pins
+/// ([`MODEL_FILE`]/[`MODEL_SIZE_BYTES`]/[`MODEL_SHA256`]); `download_url()` reproduces
+/// [`DEFAULT_MODEL_URL`]. `source` is `Bundled` (it is the app's built-in default), while the
+/// repo/revision still point at the real HF resolve path so a re-download resolves correctly.
 pub fn default_descriptor() -> ModelDescriptor {
     ModelDescriptor {
         id: "bundled:gemma-4-e4b-it-q4_0".to_string(),
-        source: ModelSource::HuggingFace {
-            repo: "ggml-org/gemma-4-E4B-it-GGUF".to_string(),
-            revision: "main".to_string(),
-        },
+        source: ModelSource::Bundled,
+        repo: "ggml-org/gemma-4-E4B-it-GGUF".to_string(),
         file: MODEL_FILE.to_string(),
+        revision: Some("main".to_string()),
         size_bytes: MODEL_SIZE_BYTES,
         sha256: MODEL_SHA256.to_string(),
-        url: DEFAULT_MODEL_URL.to_string(),
+        kind: ModelKind::Gguf,
     }
 }
 
