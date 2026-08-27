@@ -147,3 +147,22 @@ Per-platform cross-compilation + notarization of these sidecar binaries is an
 **S7** release-hardening item, not part of C1.x. CI cannot build the node-agent
 (heavy, private repo), so its cross-build joins the node's at S7. Until then,
 packaging is a per-host manual copy as above.
+
+## CX sidecars (planset citrate-core-social) — declared, built later
+
+Two additional `externalBin` sidecars are declared in the overlay configs for the
+CX (social-node) planset:
+
+- `binaries/comms-relay` — the server-blind MLS relay (`comms-core` built
+  `default-features=false`), produced by **citrate-comms**; wired in CX-S3.1.
+  Resolved via `CITRATE_COMMS_RELAY_BIN` or the bundled resource dir.
+- `binaries/hermes` — the NousResearch Hermes agent (`testing-hermes-design`),
+  sidecar'd keyless per the `agent.rs` pattern; wired in CX-S6.1. Resolved via
+  `CITRATE_HERMES_BIN`.
+
+They are listed in `tauri.bundle-node.conf.json` / `tauri.local-run.conf.json` now so
+the spine is frozen once (planset 01 §4), but the **packaging build is gated on the
+binaries existing** — `npx tauri build --config …` fails honestly until they are copied
+in. `cargo build`/`cargo test` are unaffected (they use the base `tauri.conf.json`, which
+carries no `externalBin`). Note: `mem-mcp` is ALREADY bundled here — the memory-graph gap
+is the ingest path + auto-start, not bundling (the older FEATURE_MAP note was stale).
