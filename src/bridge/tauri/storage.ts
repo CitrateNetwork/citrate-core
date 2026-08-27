@@ -1,23 +1,27 @@
-// CX bridge impl — storage (C-17), TAURI. Owned by lane s2 (CX-S2) after S0.
-// S0.2 stub: honest Unavailable. CX-S2 wires kubo add/pin/ls/rm/cat + the ceremony-gated
-// IPFSIncentivesV3 bond, copying this shape.
-import type { StorageDomain } from "../domains";
-import { Unavailable } from "../types";
+// CX bridge impl — storage (C-17), TAURI. Owned by lane s2 (CX-S2).
+//
+// S2.3: real invokes of the S2.1 kubo seam commands. `pin`'s `bondSalt` is recorded locally; the
+// real ceremony-gated on-chain bond is S2.2 (blocked on the chain-side CommD fix — see
+// docs/FINDING_PIN_COMMD_BOND_2026-08-26.md), so the surface pins LOCALLY and says so honestly.
+import { invoke } from "@tauri-apps/api/core";
+import type { PinRow, StorageDomain } from "../domains";
 
 export const tauriStorage: StorageDomain = {
-  async add() {
-    throw new Unavailable("storage", "add");
+  add(path) {
+    return invoke<{ cid: string; sizeBytes: number }>("storage_add", { path });
   },
-  async pin() {
-    throw new Unavailable("storage", "pin");
+  async pin(cid, bondSalt) {
+    await invoke("storage_pin", { cid, bondSalt });
   },
-  async list() {
-    throw new Unavailable("storage", "list");
+  list() {
+    return invoke<PinRow[]>("storage_list");
   },
-  async retrieve() {
-    throw new Unavailable("storage", "retrieve");
+  async retrieve(cid) {
+    // The Rust command returns the on-disk path string; the domain shape wraps it.
+    const path = await invoke<string>("storage_retrieve", { cid });
+    return { path };
   },
-  async unpin() {
-    throw new Unavailable("storage", "unpin");
+  async unpin(cid) {
+    await invoke("storage_unpin", { cid });
   },
 };
