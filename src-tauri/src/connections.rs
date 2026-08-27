@@ -47,6 +47,9 @@ pub enum Service {
     GitHub,
     GoogleDrive,
     Notion,
+    /// Hugging Face — model downloads (public need no token; gated/private need `read-repos`).
+    /// Added for Commons CX-S1 (model catalog). Standard OAuth2 + PKCE; loopback redirect OK.
+    HuggingFace,
 }
 
 impl Service {
@@ -55,6 +58,7 @@ impl Service {
             Service::GitHub => "github",
             Service::GoogleDrive => "gdrive",
             Service::Notion => "notion",
+            Service::HuggingFace => "hf",
         }
     }
 
@@ -63,6 +67,7 @@ impl Service {
             "github" => Some(Service::GitHub),
             "gdrive" => Some(Service::GoogleDrive),
             "notion" => Some(Service::Notion),
+            "hf" => Some(Service::HuggingFace),
             _ => None,
         }
     }
@@ -73,6 +78,7 @@ impl Service {
             Service::GitHub => "https://github.com/login/oauth/authorize",
             Service::GoogleDrive => "https://accounts.google.com/o/oauth2/v2/auth",
             Service::Notion => "https://api.notion.com/v1/oauth/authorize",
+            Service::HuggingFace => "https://huggingface.co/oauth/authorize",
         }
     }
 
@@ -82,6 +88,7 @@ impl Service {
             Service::GitHub => "https://github.com/login/oauth/access_token",
             Service::GoogleDrive => "https://oauth2.googleapis.com/token",
             Service::Notion => "https://api.notion.com/v1/oauth/token",
+            Service::HuggingFace => "https://huggingface.co/oauth/token",
         }
     }
 
@@ -92,7 +99,7 @@ impl Service {
     /// hosted https bounce, which returns the browser to the same loopback listener.
     pub fn redirect_uri(self) -> &'static str {
         match self {
-            Service::GitHub | Service::GoogleDrive => OAUTH_REDIRECT_URI,
+            Service::GitHub | Service::GoogleDrive | Service::HuggingFace => OAUTH_REDIRECT_URI,
             Service::Notion => HOSTED_REDIRECT_URI,
         }
     }
@@ -107,6 +114,7 @@ impl Service {
             Service::GitHub => &["repo"],
             Service::GoogleDrive => &["https://www.googleapis.com/auth/drive.readonly"],
             Service::Notion => &[],
+            Service::HuggingFace => &["read-repos"],
         }
     }
 }
@@ -201,6 +209,7 @@ pub fn authorize_url(service: Service, client_id: &str, state: &str, challenge: 
             q.push(("owner".into(), "user".into()));
         }
         Service::GitHub => {}
+        Service::HuggingFace => {}
     }
     let query = q
         .iter()
@@ -267,7 +276,8 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 /// The three MCP services, for status enumeration.
-const ALL_SERVICES: [Service; 3] = [Service::GitHub, Service::GoogleDrive, Service::Notion];
+const ALL_SERVICES: [Service; 4] =
+    [Service::GitHub, Service::GoogleDrive, Service::Notion, Service::HuggingFace];
 
 /// Errors surfaced by the connection flow. Mapped to a `String` at the command
 /// boundary; never carries a token, code, or secret.
@@ -342,6 +352,7 @@ fn env_prefix(service: Service) -> &'static str {
         Service::GitHub => "GITHUB",
         Service::GoogleDrive => "GOOGLE",
         Service::Notion => "NOTION",
+        Service::HuggingFace => "HF",
     }
 }
 
@@ -802,10 +813,40 @@ mod tests {
 
     #[test]
     fn service_ids_round_trip() {
-        for s in [Service::GitHub, Service::GoogleDrive, Service::Notion] {
+        for s in [
+            Service::GitHub,
+            Service::GoogleDrive,
+            Service::Notion,
+            Service::HuggingFace,
+        ] {
             assert_eq!(Service::from_id(s.id()), Some(s));
         }
         assert_eq!(Service::from_id("slack"), None);
+    }
+
+    #[test]
+    fn huggingface_oauth_shape() {
+        // Commons CX-S1: HF is a standard OAuth2+PKCE provider with a loopback redirect.
+        assert_eq!(Service::HuggingFace.id(), "hf");
+        assert_eq!(
+            Service::HuggingFace.authorize_endpoint(),
+            "https://huggingface.co/oauth/authorize"
+        );
+        assert_eq!(
+            Service::HuggingFace.token_endpoint(),
+            "https://huggingface.co/oauth/token"
+        );
+        // Accepts the http loopback redirect (native app), like GitHub/Google (not the Notion bounce).
+        assert_eq!(Service::HuggingFace.redirect_uri(), OAUTH_REDIRECT_URI);
+        assert_eq!(Service::HuggingFace.default_scopes(), &["read-repos"]);
+        assert_eq!(env_prefix(Service::HuggingFace), "HF");
+        // authorize URL carries the standard params + the read-repos scope, no provider extras.
+        let url = authorize_url(Service::HuggingFace, "hf_client", "st", "ch");
+        assert!(url.starts_with("https://huggingface.co/oauth/authorize?"));
+        assert!(url.contains("client_id=hf_client"));
+        assert!(url.contains("scope=read-repos"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8975%2Foauth%2Fcallback"));
     }
 
     #[test]
