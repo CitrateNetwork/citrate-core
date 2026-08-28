@@ -418,11 +418,6 @@ pub fn storage_add(app: tauri::AppHandle, path: String) -> std::result::Result<A
 
 use sha3::{Digest as _, Keccak256};
 
-/// The deployed IPFSIncentivesV3 on chain 40204 — REDEPLOYED with the #170 sound-CommD fix
-/// (citrate-chain PR #179; the pre-fix 0xb024ad… is superseded). Registration verifies nothing
-/// on-chain (the three commitments are trusted at registration and only tested if challenged), so
-/// the client needs no proof/precompile.
-pub const IPFS_INCENTIVES_V3: &str = "0xa1a37f794b77292cf8511c4b179af18d5a663683";
 /// MIN_MODEL_BOND — 55 SALT (the #170 params). Wei = 55 × 1e18.
 const MIN_MODEL_BOND_WEI: u128 = 55_000_000_000_000_000_000;
 /// Explicit gas for `registerModel` (a calldata tx MUST carry explicit gas).
@@ -488,7 +483,9 @@ pub fn register_model_calldata(cid: [u8; 32], c: &BondCommitments, data_uri: &st
 fn encode_bond_tx_json(from: &str, calldata: &[u8]) -> String {
     serde_json::json!({
         "from": from,
-        "to": IPFS_INCENTIVES_V3,
+        // REROLL-SENSITIVE: sourced from the pinned address book (addresses.rs), never hardcoded —
+        // a genesis reroll is an address-book update, not a code change.
+        "to": crate::addresses::ipfs_incentives_v3(),
         "value": format!("0x{MIN_MODEL_BOND_WEI:x}"),
         "data": format!("0x{}", hex::encode(calldata)),
         "gas": format!("0x{REGISTER_MODEL_GAS:x}"),

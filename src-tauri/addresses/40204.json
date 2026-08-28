@@ -7,6 +7,7 @@
     "ValidatorRegistry": "0x61d44d8a14443646b756905410be951e6ece95a6",
     "CitrateWalletFactory": "0xc9c7b3d3fe28012ab5f2583a4f58531e9f26d3f5",
     "LiquidStakingPool": "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e",
-    "CitratePaymaster": "0x0cd122ace90084afb26d5101074af15aaccc1c0e"
+    "CitratePaymaster": "0x0cd122ace90084afb26d5101074af15aaccc1c0e",
+    "IPFSIncentivesV3": "0xa1a37f794b77292cf8511c4b179af18d5a663683"
   }
 }
