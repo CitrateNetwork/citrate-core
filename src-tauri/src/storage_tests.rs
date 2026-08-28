@@ -258,3 +258,13 @@ fn register_model_calldata_is_abi_well_formed() {
     // The args (everything after the 4-byte selector) are 32-byte aligned.
     assert_eq!((cd.len() - 4) % 32, 0);
 }
+
+// Reroll-proofing: the bond target address is sourced from the pinned address book (addresses.rs),
+// never hardcoded — so a genesis reroll is a book update, not a code change.
+#[test]
+fn bond_target_address_is_book_sourced_and_wellformed() {
+    let addr = crate::addresses::ipfs_incentives_v3();
+    assert!(addr.starts_with("0x") && addr.len() == 42, "not a 20-byte hex: {addr}");
+    assert!(addr[2..].bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_eq!(addr, addr.to_ascii_lowercase(), "book addresses are normalized lowercase");
+}

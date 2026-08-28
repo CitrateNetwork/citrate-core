@@ -41,6 +41,8 @@ struct Addresses {
     citrate_wallet_factory: String,
     #[serde(rename = "LiquidStakingPool")]
     liquid_staking_pool: String,
+    #[serde(rename = "IPFSIncentivesV3")]
+    ipfs_incentives_v3: String,
 }
 
 fn book() -> &'static Book {
@@ -62,6 +64,7 @@ fn book() -> &'static Book {
         b.addresses.validator_registry = b.addresses.validator_registry.to_ascii_lowercase();
         b.addresses.citrate_wallet_factory = b.addresses.citrate_wallet_factory.to_ascii_lowercase();
         b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
+        b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
         b
     })
 }
@@ -97,6 +100,13 @@ pub fn citrate_wallet_factory() -> &'static str {
 #[allow(dead_code)]
 pub fn liquid_staking_pool() -> &'static str {
     &book().addresses.liquid_staking_pool
+}
+
+/// `IPFSIncentivesV3` — the model-storage bond contract (CX-S2.2 `registerModel`). REROLL-SENSITIVE:
+/// sourced here from the address book (never hardcoded) so a genesis reroll is an address-book
+/// update, not a code change + rebuild.
+pub fn ipfs_incentives_v3() -> &'static str {
+    &book().addresses.ipfs_incentives_v3
 }
 
 #[cfg(test)]
