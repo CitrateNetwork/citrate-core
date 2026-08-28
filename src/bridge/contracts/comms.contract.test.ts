@@ -5,7 +5,7 @@ import { bridge } from "../index";
 describe("CX bridge contract — groups (frozen CX-S0.2)", () => {
   it("exposes the groups domain with its frozen methods", () => {
     expect(bridge.groups).toBeDefined();
-    for (const m of ["create", "list", "join", "roster", "assignRole", "offboard", "send", "messages"] as const) {
+    for (const m of ["create", "list", "join", "addMember", "roster", "assignRole", "offboard", "send", "messages"] as const) {
       expect(typeof bridge.groups[m]).toBe("function");
     }
   });

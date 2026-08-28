@@ -20,16 +20,18 @@ export function simGroups(_host: SimHost): GroupsDomain {
 
   const view = (g: SimGroup): Group => ({
     id: g.id,
+    name: g.name,
     owner: g.owner,
     kind: g.kind,
     members: g.members.map((m) => ({ ...m })),
   });
 
   return {
-    async create(kind, _name): Promise<Group> {
+    async create(kind, name): Promise<Group> {
       const id = `sim-g${seq++}`;
       const g: SimGroup = {
         id,
+        name,
         owner: SIM_SELF,
         kind,
         members: [{ address: SIM_SELF, role: "owner" }],
@@ -43,6 +45,12 @@ export function simGroups(_host: SimHost): GroupsDomain {
     },
     async join() {
       /* sim: single dev user; join is a no-op */
+    },
+    async addMember(groupId, address) {
+      const g = groups.get(groupId);
+      if (g && !g.members.some((m) => m.address === address)) {
+        g.members.push({ address, role: "member" });
+      }
     },
     async roster(groupId) {
       return groups.get(groupId)?.members.map((m) => ({ ...m })) ?? [];
