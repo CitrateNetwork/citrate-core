@@ -25,14 +25,17 @@ export const tauriGroups: GroupsDomain = {
     // Compose the frozen Group from the fresh roster (the daemon seeds the owner as sole member).
     const members = toMembers(await invoke<Pair[]>("groups_roster", { group: id }));
     const owner = members.find((m) => m.role === "owner")?.address ?? "";
-    return { id, owner, kind, members };
+    return { id, name, owner, kind, members };
   },
   async list(): Promise<Group[]> {
-    const rows = await invoke<Pair[]>("groups_list"); // (id, name) — name can't ride the frozen DTO
-    return rows.map(([id]) => ({ id, owner: "", kind: "channel" as Group["kind"], members: [] }));
+    const rows = await invoke<Pair[]>("groups_list"); // (id, name)
+    return rows.map(([id, name]) => ({ id, name, owner: "", kind: "channel" as Group["kind"], members: [] }));
   },
   async join(groupId) {
     await invoke("groups_join", { group: groupId });
+  },
+  async addMember(groupId, address) {
+    await invoke("groups_add_member", { group: groupId, member: address });
   },
   async roster(groupId) {
     return toMembers(await invoke<Pair[]>("groups_roster", { group: groupId }));

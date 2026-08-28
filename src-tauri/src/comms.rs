@@ -389,10 +389,9 @@ enum Request {
     CreateGroup { name: String },
     ListGroups,
     JoinGroup { group: String },
-    // NOTE: the daemon exposes AddMember (owner invites a member → welcome material), but the
-    // frozen GroupsDomain has no `addMember` command, so the client cannot issue it yet. Exposing
-    // the invite flow needs an S0 domain amendment (a `groups_add_member` command + DTO); tracked
-    // as a Lane-C follow-on. Until then the client speaks only the frozen surface.
+    /// Owner-invite: add a member who has published a key package to the shared relay. The daemon
+    /// produces + publishes the MLS welcome; the invitee then joins. (Post-S0 amendment, CX-S3.5.)
+    AddMember { group: String, member: String },
     Roster { group: String },
     AssignRole { group: String, member: String, role: String },
     Offboard { group: String, member: String },
@@ -426,6 +425,12 @@ enum Response {
     Ok,
     GroupCreated { id: String },
     Groups { groups: Vec<GroupView> },
+    /// The welcome material the daemon produced for the invitee (published to the relay too); the
+    /// owner-client only needs to know the add succeeded, so the fields are informational.
+    Added {
+        #[allow(dead_code)]
+        member: String,
+    },
     Messages { messages: Vec<MsgView> },
     Roster { members: Vec<RosterEntry> },
     Error { message: String },
@@ -595,6 +600,21 @@ pub fn groups_list(app: tauri::AppHandle) -> std::result::Result<Vec<(String, St
 #[tauri::command]
 pub fn groups_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::JoinGroup { group })?)
+}
+
+/// **groups_add_member** — owner-invite a member (who has published a key package to the relay).
+/// The daemon produces + publishes the MLS welcome; the invitee then joins. Post-S0 amendment.
+#[tauri::command]
+pub fn groups_add_member(
+    app: tauri::AppHandle,
+    group: String,
+    member: String,
+) -> std::result::Result<(), String> {
+    match route(&app, Request::AddMember { group, member })? {
+        Response::Added { .. } => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
 
 /// **groups_roster** — the (address, role) roster.

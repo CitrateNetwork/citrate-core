@@ -22,6 +22,7 @@ import {
   reloadMessages,
   assignRole,
   offboardMember,
+  addMemberToGroup,
   groupLabel,
 } from "../shell/slices/groups";
 
@@ -38,6 +39,7 @@ export function Groups({ store }: SurfaceProps) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Group["kind"]>("channel");
   const [draft, setDraft] = useState("");
+  const [invite, setInvite] = useState("");
 
   useEffect(() => {
     void refreshGroups();
@@ -193,6 +195,32 @@ export function Groups({ store }: SurfaceProps) {
                 <span style={{ fontSize: 10.5, color: "var(--tx-3)", textTransform: "uppercase", letterSpacing: 0.4 }}>
                   Members · roles enforced at the relay
                 </span>
+                {/* invite: the member must have published a key package to the relay first */}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    className="input"
+                    placeholder="Invite by address (0x…)"
+                    value={invite}
+                    onChange={(e) => setInvite(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && invite.trim()) {
+                        void addMemberToGroup(invite.trim());
+                        setInvite("");
+                      }
+                    }}
+                    style={{ flex: 1, fontSize: 11.5 }}
+                  />
+                  <button
+                    className="btn btn-sm"
+                    disabled={!invite.trim() || st.busyMember === invite.trim()}
+                    onClick={() => {
+                      void addMemberToGroup(invite.trim());
+                      setInvite("");
+                    }}
+                  >
+                    Invite
+                  </button>
+                </div>
                 {st.roster.length === 0 ? (
                   <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>Just you so far.</span>
                 ) : (

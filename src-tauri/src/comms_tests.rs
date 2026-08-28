@@ -223,3 +223,23 @@ fn member_ipc_authenticates_and_round_trips_a_request() {
     // A wrong bearer is rejected (no "ready").
     let _ = handle.join();
 }
+
+#[test]
+fn add_member_request_serializes_and_added_response_parses() {
+    // The post-S0 owner-invite path: Request::AddMember -> op "addMember"; the daemon's Added
+    // response (member/welcome/ratchet_tree) parses (extra fields ignored — the owner-client only
+    // needs to know the add succeeded).
+    let req = serde_json::to_string(&Request::AddMember {
+        group: "aa".repeat(32),
+        member: "0x00000000000000000000000000000000000000c0".into(),
+    })
+    .expect("serialize");
+    assert!(req.contains("\"op\":\"addMember\""), "op tag: {req}");
+    assert!(req.contains("\"member\":\"0x0000"), "member field: {req}");
+
+    let resp: Response = serde_json::from_str(
+        "{\"type\":\"added\",\"member\":\"0xabc\",\"welcome\":\"dead\",\"ratchetTree\":\"beef\"}",
+    )
+    .expect("parse Added");
+    assert!(matches!(resp, Response::Added { .. }));
+}

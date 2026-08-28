@@ -144,6 +144,21 @@ export async function offboardMember(address: string): Promise<void> {
   }
 }
 
+/** Owner-invite a member (who has published a key package to the relay), then reload the roster. */
+export async function addMemberToGroup(address: string): Promise<void> {
+  const groupId = groupsSlice.get().selectedId;
+  const addr = address.trim();
+  if (!groupId || !addr) return;
+  groupsSlice.set({ busyMember: addr, error: null });
+  try {
+    await bridge.groups.addMember(groupId, addr);
+    groupsSlice.set({ busyMember: null });
+    groupsSlice.set({ roster: await bridge.groups.roster(groupId) });
+  } catch (e) {
+    groupsSlice.set({ busyMember: null, error: message(e) });
+  }
+}
+
 /** Join a group you were added to on a shared relay. */
 export async function joinGroup(groupId: string): Promise<void> {
   groupsSlice.set({ error: null });
@@ -156,7 +171,7 @@ export async function joinGroup(groupId: string): Promise<void> {
   }
 }
 
-/** The display label for a group: its session name if known, else a short id (see module note). */
+/** The display label for a group: its name (now on the DTO), else a session name, else a short id. */
 export function groupLabel(state: GroupsState, g: Group): string {
-  return state.names[g.id] ?? `${g.id.slice(0, 10)}…`;
+  return g.name || state.names[g.id] || `${g.id.slice(0, 10)}…`;
 }

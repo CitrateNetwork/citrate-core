@@ -643,6 +643,8 @@ export interface GroupMember {
 }
 export interface Group {
   id: string;
+  /** Human name (the daemon stores it; `list` returns it). Amended in post-S0 (CX-S3.5). */
+  name: string;
   owner: string;
   kind: "dm" | "channel" | "forum";
   members: GroupMember[];
@@ -658,6 +660,11 @@ export interface GroupsDomain {
   create(kind: Group["kind"], name: string): Promise<Group>;
   list(): Promise<Group[]>;
   join(groupId: string): Promise<void>;
+  /**
+   * Owner-invite: add a member who has published a key package to the shared relay. The daemon
+   * produces + publishes the MLS welcome; the invitee then `join`s. Amended post-S0 (CX-S3.5).
+   */
+  addMember(groupId: string, address: string): Promise<void>;
   roster(groupId: string): Promise<GroupMember[]>;
   /** Grant/change a role — a signed RoleAssertion enforced at the relay. */
   assignRole(groupId: string, address: string, role: GroupRole): Promise<void>;
