@@ -41,8 +41,137 @@ fn canonical_address(raw: &str) -> Option<String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CX-S4.2 — admission gate + membership lifecycle (the RBAC→network safety core).
+//
+// S4.1 answered "who COULD be a peer" (the roster). S4.2 answers "who IS in the mesh, and can we
+// prove no unauthorized peer ever is". Admission is role-gated (D-24: role >= Member — a guest is in
+// the group's conversation but NOT its compute/file mesh), and membership is reconciled against the
+// live roster so an offboard/role-drop EVICTS the peer in the same step (the offboard safety
+// property). The libp2p wire that dials/gossips over this membership is S4.3 (a sidecar reusing
+// citrate-compute-pool/training-worker/libp2p_transport.rs — src-tauri stays lean, no libp2p link,
+// mirroring the comms member-daemon). Formal model: src-tauri/formal/ClusterAdmission.tla.
+// ---------------------------------------------------------------------------
+
+/// The minimum group role admitted to a cluster (D-24). Guests/agents below this are group members
+/// but not mesh peers. Unknown roles rank lowest (fail closed).
+const MIN_CLUSTER_RANK: u8 = 2; // Member
+
+/// Rank the group role vocabulary (matches comms Role) so admission can compare by threshold.
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "owner" => 5,
+        "admin" => 4,
+        "partner" => 3,
+        "member" => 2,
+        "agent" => 1,
+        "guest" => 0,
+        _ => 0, // unknown → lowest (fail closed — never admit on an unrecognized role)
+    }
+}
+
+/// The role-gated allowed set from a (address, role) roster: canonical addresses whose role is
+/// >= Member. This is the S4.2 refinement of S4.1's `allowed_peers` (which is address-only).
+fn allowed_set(roster: &[(String, String)]) -> std::collections::BTreeSet<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for (addr, role) in roster {
+        if role_rank(role) >= MIN_CLUSTER_RANK {
+            if let Some(a) = canonical_address(addr) {
+                set.insert(a);
+            }
+        }
+    }
+    set
+}
+
+/// Admission policy: a candidate is admitted IFF its (canonical) address is in the role-gated
+/// allowed set. The transport enforces this before dialing / accepting a topic subscription.
+#[allow(dead_code)] // consumed by the S4.3 transport; exercised by cluster_tests
+pub(crate) fn admit(address: &str, allowed: &std::collections::BTreeSet<String>) -> bool {
+    canonical_address(address)
+        .map(|a| allowed.contains(&a))
+        .unwrap_or(false)
+}
+
+/// The cluster's live membership: the role-gated allowed set (from the roster) and the set of
+/// currently-admitted peers. INVARIANT (formal: ClusterAdmission): `admitted ⊆ allowed` at all times
+/// — no unauthorized peer is ever in the mesh, and an offboard/role-drop evicts in the same step.
+#[allow(dead_code)] // the state machine the S4.3 libp2p transport drives; proven by cluster_tests
+pub(crate) struct ClusterMembership {
+    allowed: std::collections::BTreeSet<String>,
+    admitted: std::collections::BTreeSet<String>,
+}
+
+#[allow(dead_code)]
+impl ClusterMembership {
+    /// Open a membership over a group roster (address, role). No peer is admitted until it joins.
+    pub fn new(roster: &[(String, String)]) -> Self {
+        ClusterMembership {
+            allowed: allowed_set(roster),
+            admitted: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// A candidate presents itself (a valid, owner-signed RoleAssertion for this group was verified
+    /// upstream by the comms layer → we get its (address, role) here). Admit IFF the policy passes;
+    /// returns whether it was admitted. Idempotent.
+    pub fn join(&mut self, address: &str, role: &str) -> bool {
+        if role_rank(role) < MIN_CLUSTER_RANK {
+            return false;
+        }
+        match canonical_address(address) {
+            Some(a) if self.allowed.contains(&a) => {
+                self.admitted.insert(a);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A peer leaves (voluntarily or dropped). Idempotent.
+    pub fn leave(&mut self, address: &str) {
+        if let Some(a) = canonical_address(address) {
+            self.admitted.remove(&a);
+        }
+    }
+
+    /// Reconcile against a new roster (offboard / role change): recompute the allowed set and EVICT
+    /// any admitted peer no longer allowed (the offboard safety property — one step, no window where
+    /// a removed member is still meshed). Returns the evicted peers (the transport disconnects them).
+    pub fn reconcile(&mut self, roster: &[(String, String)]) -> Vec<String> {
+        self.allowed = allowed_set(roster);
+        let evicted: Vec<String> = self
+            .admitted
+            .iter()
+            .filter(|a| !self.allowed.contains(*a))
+            .cloned()
+            .collect();
+        for e in &evicted {
+            self.admitted.remove(e);
+        }
+        evicted
+    }
+
+    /// The currently-admitted peers (canonical addresses), sorted.
+    pub fn admitted(&self) -> Vec<String> {
+        self.admitted.iter().cloned().collect()
+    }
+
+    /// Whether `address` is currently admitted.
+    pub fn is_admitted(&self, address: &str) -> bool {
+        canonical_address(address)
+            .map(|a| self.admitted.contains(&a))
+            .unwrap_or(false)
+    }
+
+    /// The safety invariant, checkable at runtime + asserted in tests: admitted ⊆ allowed.
+    pub fn invariant_holds(&self) -> bool {
+        self.admitted.is_subset(&self.allowed)
+    }
+}
+
 fn not_wired(cmd: &str) -> Result<(), String> {
-    Err(format!("cluster::{cmd} is not wired yet (CX-S4.2 libp2p transport)"))
+    Err(format!("cluster::{cmd} is not wired yet (CX-S4.3 libp2p transport)"))
 }
 
 #[tauri::command]
