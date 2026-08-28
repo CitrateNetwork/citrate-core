@@ -102,6 +102,12 @@ citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", r
 ed25519-dalek = "2"
 # hex: encode the (non-secret) public key for display in WalletInfo.
 hex = "0.4"
+# CX-S3.2b — validate/mint the device-sealed comms member key (Option A): a scoped secp256k1
+# secret sealed in the OS keyring. k256 checks a minted/loaded 32-byte value is a real secp256k1
+# scalar before it is handed to the member-daemon (whose EthWallet::from_secret_key would reject
+# 0 / >= n). ALREADY in the tree transitively (citrate-wallet-core → bip32 → k256, and the kit),
+# so naming it direct adds NO new compiled crate. Was a dev-dep (ecrecover test); promoted here.
+k256 = { version = "0.13", features = ["ecdsa"] }
 
 # CORE-C1.0 — SidecarSupervisor process-signalling. `libc` is used ONLY for the
 # Unix `kill(pid, SIGTERM|SIGKILL|0)` on the graceful-stop / liveness path
@@ -117,14 +123,8 @@ libc = "0.2"
 # Test-only mock OIDC authority: p256 signs the id_token with a TEST key and
 #   serves its public coords as JWKS, so the full flow is exercised headlessly.
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
-# CORE-B1.1 test-only: ecrecover round-trip proof (WP-3 / B1.1-ADV) — recover the
-#   signer's verifying key from a recoverable secp256k1 signature and confirm it
-#   maps back to the derived EVM address. Same k256 0.13 the wallet-core crate
-#   uses (transitive), pinned here as a direct dev-dep so the test can name the
-#   recovery types. sha3 = the Keccak-256 used to derive the address from the
-#   recovered uncompressed pubkey (matches wallet-core's derive_address).
-#   (sha3 moved to [dependencies] for the BC-5.3 SBT subHash — still test-reachable.)
-k256 = { version = "0.13", features = ["ecdsa"] }
+# k256 (ecrecover round-trip proof, CORE-B1.1) moved to [dependencies] for CX-S3.2b (comms-key
+# validation); still test-reachable there. sha3 likewise lives in [dependencies] (BC-5.3 SBT subHash).
 # CORE-B1.4 test-only: reconstruct the EIP-155 signing-hash RLP payload in the
 # ceremony tx-broadcast test to ecrecover the broadcast signature back to the
 # wallet address. Same `rlp` 0.5 the wallet-core lean crypto path uses.

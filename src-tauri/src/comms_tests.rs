@@ -75,17 +75,73 @@ fn start_refuses_when_binary_missing() {
 }
 
 #[test]
-fn spec_env_carries_socket_bearerpath_seed_domain_never_argv() {
+fn spec_env_carries_socket_bearerpath_seedpath_domain_never_inline() {
     let (mgr, dir) = stub_manager("env");
     let env: std::collections::BTreeMap<String, String> =
         mgr.spec_env_for_test().into_iter().collect();
     assert_eq!(env.get(ENV_SOCKET).map(String::as_str), Some(dir.join("member.sock").to_string_lossy().as_ref()));
     // The bearer crosses as a FILE PATH, never the token value.
     assert_eq!(env.get(ENV_BEARER_FILE).map(String::as_str), Some(dir.join("member.bearer").to_string_lossy().as_ref()));
-    assert!(env.contains_key(ENV_SEED));
+    // The seed ALSO crosses as a 0600 FILE PATH — never inline (env/argv leak to `ps`).
+    assert_eq!(env.get(ENV_SEED_FILE).map(String::as_str), Some(dir.join("member.seed").to_string_lossy().as_ref()));
+    assert!(!env.contains_key("CITRATE_MEMBER_SEED"), "the raw seed value must never cross inline");
+    assert!(!env.values().any(|v| v.contains(&*mgr_seed_hex())), "no env value carries the seed bytes");
     assert_eq!(env.get(ENV_DOMAIN).map(String::as_str), Some(COMMS_DOMAIN));
     // No positional argv (config is all ENV).
     assert!(mgr.spec_env_for_test().iter().all(|(k, _)| k.starts_with("CITRATE_MEMBER_")));
+}
+
+/// The dummy seed value stub_manager configures — used to assert it never appears inline in env.
+fn mgr_seed_hex() -> String {
+    "deadbeef".repeat(8)
+}
+
+// ---- Option A: device-sealed comms key (keyring mint/load) ----
+
+use crate::custody::Keyring as _; // bring `.set()`/`.get()` into scope for the direct test call
+
+/// An in-memory fake OS keyring for the seed-provisioning tests (no real keychain in CI).
+struct FakeKeyring(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+impl FakeKeyring {
+    fn new() -> Self {
+        FakeKeyring(std::sync::Mutex::new(std::collections::HashMap::new()))
+    }
+}
+impl crate::custody::Keyring for FakeKeyring {
+    fn get(&self, account: &str) -> std::result::Result<Option<Vec<u8>>, crate::custody::CustodyError> {
+        Ok(self.0.lock().unwrap().get(account).cloned())
+    }
+    fn set(&self, account: &str, secret: &[u8]) -> std::result::Result<(), crate::custody::CustodyError> {
+        self.0.lock().unwrap().insert(account.to_string(), secret.to_vec());
+        Ok(())
+    }
+    fn delete(&self, account: &str) -> std::result::Result<(), crate::custody::CustodyError> {
+        self.0.lock().unwrap().remove(account);
+        Ok(())
+    }
+}
+
+#[test]
+fn comms_seed_is_minted_sealed_and_stable_across_restarts() {
+    let kr = FakeKeyring::new();
+    let first = load_or_mint_comms_seed(&kr).expect("mint");
+    // 32 bytes hex, and a VALID secp256k1 scalar — the daemon's EthWallet::from_secret_key accepts it.
+    assert_eq!(first.len(), COMMS_SEED_LEN * 2);
+    let bytes = hex::decode(&*first).expect("hex");
+    assert!(k256::ecdsa::SigningKey::from_slice(&bytes).is_ok(), "minted key is a valid secp256k1 scalar");
+    // Sealed under the comms account.
+    assert!(kr.0.lock().unwrap().contains_key(KEYRING_COMMS_ACCOUNT));
+    // Stable: a second load returns the SAME sealed key (persistent member identity, never re-minted).
+    let second = load_or_mint_comms_seed(&kr).expect("load");
+    assert_eq!(&*first, &*second);
+}
+
+#[test]
+fn comms_seed_rejects_a_corrupt_stored_key() {
+    let kr = FakeKeyring::new();
+    // Wrong length → hard fault (never hand a bad key to the daemon).
+    kr.set(KEYRING_COMMS_ACCOUNT, &[1, 2, 3]).unwrap();
+    assert!(matches!(load_or_mint_comms_seed(&kr), Err(CommsError::Keyring(_))));
 }
 
 #[test]

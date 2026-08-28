@@ -9,15 +9,22 @@
 //!
 //! ENV config to the daemon (never argv — argv leaks to `ps`): `CITRATE_MEMBER_SOCKET` (the UDS the
 //! daemon binds + we connect to), `CITRATE_MEMBER_BEARER_FILE` (a 0600 token file, the IPC gate),
-//! `CITRATE_MEMBER_SEED` (the member's signing identity), `CITRATE_MEMBER_DOMAIN`.
+//! `CITRATE_MEMBER_SEED_FILE` (a 0600 file holding the signing seed — never inline), `CITRATE_MEMBER_DOMAIN`.
 //!
-//! ## Identity (GATED — pending the DGX keys/devops decision)
-//! The daemon needs a signing seed but Rule 3 forbids exporting the main custody wallet. The chosen
-//! identity model (device-sealed comms key vs. ceremony-signed wallet identity vs. derived sub-key)
-//! is being confirmed on the DGX. Until then [`provision_comms_seed`] returns an honest
-//! `NotConfigured` (Rule 1 — never a fake identity), so `groups_*` surface "comms identity not
-//! provisioned" rather than run under a wrong/insecure key. EVERYTHING ELSE — spawn/supervise, the
-//! UDS client, the `groups_*` routing — is identity-agnostic and lives here, wired and tested.
+//! ## Identity — Option A: device-sealed comms key (confirmed 2026-08-27)
+//! The daemon needs a signing seed but Rule 3 forbids exporting the main custody wallet. Decision: a
+//! FRESH, scoped secp256k1 comms key, sealed in the OS keyring (account `comms-member-key`, legacy
+//! custody service) and NEVER exported — the same custody pattern as the node storage key + mem-mcp
+//! store key. It holds NO value (not funds, not the SBT): a per-device identity, so
+//! `member address = comms key`. Loss → re-mint; deliberately no backup (don't spread a non-value
+//! key). [`provision_comms_seed`] mints-or-loads it; [`CommsMemberManager::start`] writes it to a
+//! 0600 file and passes the PATH (`CITRATE_MEMBER_SEED_FILE`), so the secret never crosses env/argv.
+//! An unreachable keyring fails CLOSED (never a fake/absent identity — Rule 1).
+//!
+//! A wallet<->comms off-chain attestation (the "roster == wallet" property, via `wallet_link`) is a
+//! deferred follow-on: nothing consumes it yet (the relay keys the roster on the comms address via
+//! SIWE). On-chain anchoring is deferred further. The whole comms-identity path is reroll-insensitive
+//! — SIWE / sign_binding sign over {domain, address, nonce, chain_id} and never touch chain state.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -40,8 +47,15 @@ pub const COMMS_DOMAIN: &str = "relay.citrate.internal";
 // The daemon's env knobs (comms-member-daemon/src/main.rs).
 const ENV_SOCKET: &str = "CITRATE_MEMBER_SOCKET";
 const ENV_BEARER_FILE: &str = "CITRATE_MEMBER_BEARER_FILE";
-const ENV_SEED: &str = "CITRATE_MEMBER_SEED";
+/// The seed crosses as a 0600 FILE PATH, never inline (env/argv leak to `ps`).
+const ENV_SEED_FILE: &str = "CITRATE_MEMBER_SEED_FILE";
 const ENV_DOMAIN: &str = "CITRATE_MEMBER_DOMAIN";
+
+/// OS keyring account for the device-sealed comms member key (Option A). A distinct account under
+/// the legacy custody service — the same namespacing the mem-mcp store key uses.
+const KEYRING_COMMS_ACCOUNT: &str = "comms-member-key";
+/// secp256k1 secret length.
+const COMMS_SEED_LEN: usize = 32;
 
 /// Supervision bearer length (256-bit).
 const TOKEN_LEN: usize = 32;
@@ -55,7 +69,8 @@ const COMMS_START_GRACE: Duration = Duration::from_secs(20);
 
 #[derive(Debug)]
 pub enum CommsError {
-    /// The comms identity (seed) is not provisioned — GATED on the DGX identity decision.
+    /// The comms identity (seed) is not present — the manager was constructed with an empty seed,
+    /// or the IPC was attempted before start. Provisioning itself surfaces as `Keyring`.
     NotConfigured,
     /// The bundled `comms-member-daemon` binary could not be located (packaging gap).
     BinaryNotFound(String),
@@ -65,19 +80,20 @@ pub enum CommsError {
     AlreadyRunning,
     /// A loopback IPC failure (socket, bearer, framing) — no secret carried.
     Ipc(String),
+    /// The OS keyring is unreachable / a stored comms key is corrupt — fail closed (never mint or
+    /// run under a random/absent identity). No key material carried.
+    Keyring(String),
 }
 
 impl std::fmt::Display for CommsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CommsError::NotConfigured => write!(
-                f,
-                "comms identity not provisioned yet (pending the keys/devops identity decision)"
-            ),
+            CommsError::NotConfigured => write!(f, "comms identity not available (daemon not started)"),
             CommsError::BinaryNotFound(m) => write!(f, "comms-member-daemon binary not bundled: {m}"),
             CommsError::Spawn(m) => write!(f, "comms-member-daemon spawn error: {m}"),
             CommsError::AlreadyRunning => write!(f, "comms-member-daemon already running"),
             CommsError::Ipc(m) => write!(f, "comms ipc error: {m}"),
+            CommsError::Keyring(m) => write!(f, "comms keyring error: {m}"),
         }
     }
 }
@@ -172,6 +188,12 @@ impl CommsMemberManager {
         !self.seed_hex.is_empty()
     }
 
+    /// The 0600 file the sealed comms seed is written to at start (the daemon reads the PATH, so the
+    /// secret never crosses env/argv). Derived from `data_dir` — the seed itself lives in the keyring.
+    fn seed_path(&self) -> PathBuf {
+        self.data_dir.join("member.seed")
+    }
+
     #[cfg(test)]
     fn effective_spawn_args(&self) -> Vec<String> {
         self.spawn_args_override.clone().unwrap_or_default()
@@ -189,7 +211,8 @@ impl CommsMemberManager {
         spec.env = vec![
             (ENV_SOCKET.to_string(), self.socket_path.to_string_lossy().to_string()),
             (ENV_BEARER_FILE.to_string(), self.bearer_path.to_string_lossy().to_string()),
-            (ENV_SEED.to_string(), self.seed_hex.to_string()),
+            // The seed crosses as a 0600 FILE PATH (written in `start`), never inline.
+            (ENV_SEED_FILE.to_string(), self.seed_path().to_string_lossy().to_string()),
             (ENV_DOMAIN.to_string(), self.domain.clone()),
         ];
         let sock = self.socket_path.clone();
@@ -221,7 +244,10 @@ impl CommsMemberManager {
         }
         std::fs::create_dir_all(&self.data_dir).ok();
         let token = mint_bearer();
-        persist_bearer(&self.bearer_path, &token)?;
+        persist_secret_0600(&self.bearer_path, &token)?;
+        // Write the sealed comms seed to its 0600 file — the daemon reads the PATH, so the secret
+        // never crosses env/argv. Removed on stop (best-effort).
+        persist_secret_0600(&self.seed_path(), &self.seed_hex)?;
         let spec = self.build_spec();
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         config.backoff = BackoffPolicy::new();
@@ -242,6 +268,9 @@ impl CommsMemberManager {
             sup.stop();
             drop(sup);
         }
+        // Best-effort: don't leave the seed/bearer secrets on disk after teardown.
+        let _ = std::fs::remove_file(self.seed_path());
+        let _ = std::fs::remove_file(&self.bearer_path);
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -292,12 +321,13 @@ fn mint_bearer() -> Zeroizing<String> {
     Zeroizing::new(hex::encode(bytes.as_ref()))
 }
 
-fn persist_bearer(path: &Path, token: &str) -> Result<()> {
+/// Write a secret (bearer token or seed hex) to a 0600 file under a 0700 dir. Fail closed.
+fn persist_secret_0600(path: &Path, secret: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
         harden_dir_perms(parent).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
     }
-    std::fs::write(path, token.as_bytes()).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
+    std::fs::write(path, secret.as_bytes()).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
     harden_perms(path).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
     Ok(())
 }
@@ -438,13 +468,62 @@ fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Respons
 
 static MANAGER: OnceLock<CommsMemberManager> = OnceLock::new();
 
-/// Provision the member's signing seed. GATED (Rule 1): the identity model (device-sealed comms key
-/// vs. ceremony-signed wallet vs. derived sub-key) is being confirmed on the DGX keys/devops side.
-/// Until then this returns `NotConfigured` — the app never runs the daemon under a wrong/insecure
-/// key. When the decision lands, this becomes: generate/load the sealed comms key from the OS keyring
-/// (Option A) or drive the ceremony (Option B) / derive it (Option C).
+/// Load the device-sealed comms key from the OS keyring, minting a fresh secp256k1 key on first use
+/// (Option A). Returned as hex [`Zeroizing`] ready to write to the daemon's 0600 seed file. The key
+/// is a scoped, non-value per-device identity (NOT the custody wallet); it leaves this process only
+/// into that 0600 file. Stable across restarts (persistent member identity). An unreachable keyring,
+/// or a stored key that is the wrong length or not a valid secp256k1 scalar, is a HARD FAULT — we
+/// never run the daemon under a random/absent identity (fail closed).
+fn load_or_mint_comms_seed(keyring: &dyn crate::custody::Keyring) -> Result<Zeroizing<String>> {
+    match keyring
+        .get(KEYRING_COMMS_ACCOUNT)
+        .map_err(|e| CommsError::Keyring(e.to_string()))?
+    {
+        Some(bytes) => {
+            if bytes.len() != COMMS_SEED_LEN {
+                return Err(CommsError::Keyring(format!(
+                    "stored comms key has wrong length {}",
+                    bytes.len()
+                )));
+            }
+            // Validate it is a real secp256k1 scalar before we hand it to the daemon (the daemon's
+            // EthWallet::from_secret_key would reject 0 / >= n).
+            k256::ecdsa::SigningKey::from_slice(&bytes).map_err(|_| {
+                CommsError::Keyring("stored comms key is not a valid secp256k1 scalar".into())
+            })?;
+            let hex = Zeroizing::new(hex::encode(&bytes));
+            let mut bytes = bytes;
+            use zeroize::Zeroize;
+            bytes.zeroize();
+            Ok(hex)
+        }
+        None => {
+            // Mint a fresh valid secp256k1 secret via rejection sampling (OsRng bytes → validate),
+            // so we depend only on rand's OsRng + k256 validation, not their rng-trait versions.
+            use rand::rngs::OsRng;
+            use rand::RngCore;
+            let mut raw = Zeroizing::new([0u8; COMMS_SEED_LEN]);
+            loop {
+                OsRng.fill_bytes(raw.as_mut());
+                if k256::ecdsa::SigningKey::from_slice(raw.as_ref()).is_ok() {
+                    break;
+                }
+            }
+            keyring
+                .set(KEYRING_COMMS_ACCOUNT, raw.as_ref())
+                .map_err(|e| CommsError::Keyring(e.to_string()))?;
+            Ok(Zeroizing::new(hex::encode(raw.as_ref())))
+        }
+    }
+}
+
+/// Provision the member's signing seed (Option A — device-sealed comms key, confirmed 2026-08-27).
+/// Mints-or-loads a fresh scoped secp256k1 key sealed in the OS keyring (never exported), the same
+/// custody pattern as the node/mem storage keys. Reroll-insensitive. Fails CLOSED on an unreachable
+/// keyring — never a fake identity (Rule 1).
 fn provision_comms_seed<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Result<Zeroizing<String>> {
-    Err(CommsError::NotConfigured)
+    let keyring = crate::custody::OsKeyring::legacy();
+    load_or_mint_comms_seed(&keyring)
 }
 
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton, so no
