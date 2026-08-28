@@ -123,3 +123,69 @@ fn the_invariant_holds_across_a_join_reconcile_rejoin_sequence() {
     assert!(m.join(B, "member"), "B re-added can rejoin");
     assert!(m.invariant_holds());
 }
+
+// ---- CX-S4.3 (lean): the transport seam + membership-driven connection lifecycle ----
+
+/// An in-process transport double: records who is "connected" so we can assert the wire tracks the
+/// admitted set. Stands in for the S4.3 libp2p sidecar (which opens real Noise/gossipsub sessions).
+struct FakeTransport {
+    connected: std::collections::BTreeSet<String>,
+}
+impl FakeTransport {
+    fn new() -> Self {
+        FakeTransport { connected: std::collections::BTreeSet::new() }
+    }
+}
+impl ClusterTransport for FakeTransport {
+    fn dial(&mut self, peer: &str) {
+        self.connected.insert(peer.to_string());
+    }
+    fn disconnect(&mut self, peer: &str) {
+        self.connected.remove(peer);
+    }
+    fn connected(&self) -> Vec<String> {
+        self.connected.iter().cloned().collect()
+    }
+}
+
+#[test]
+fn admitting_a_peer_dials_it_rejecting_does_not() {
+    let mut s = ClusterSession::new(&roster(&[(A, "member"), (C, "guest")]), FakeTransport::new());
+    assert!(s.join(A, "member"));
+    assert!(!s.join(C, "guest"));       // guest rejected
+    assert!(!s.join(B, "member"));      // stranger rejected
+    assert_eq!(s.transport.connected(), vec![A.to_string()], "only the admitted peer is dialed");
+    assert!(s.wire_tracks_admitted());
+}
+
+#[test]
+fn leaving_disconnects_the_wire() {
+    let mut s = ClusterSession::new(&roster(&[(A, "member")]), FakeTransport::new());
+    s.join(A, "member");
+    s.leave(A);
+    assert!(s.transport.connected().is_empty());
+    assert!(s.wire_tracks_admitted());
+}
+
+#[test]
+fn offboard_reconcile_tears_down_the_evicted_peers_wire_in_one_step() {
+    let mut s = ClusterSession::new(&roster(&[(A, "member"), (B, "member")]), FakeTransport::new());
+    s.join(A, "member");
+    s.join(B, "member");
+    assert_eq!(s.transport.connected().len(), 2);
+    let evicted = s.reconcile(&roster(&[(A, "member")])); // B offboarded
+    assert_eq!(evicted, vec![B.to_string()]);
+    assert_eq!(s.transport.connected(), vec![A.to_string()], "B's wire is torn down, A stays");
+    assert!(s.wire_tracks_admitted(), "the wire never outruns the RBAC gate");
+}
+
+#[test]
+fn the_wire_never_contains_an_unadmitted_peer_across_a_sequence() {
+    let mut s = ClusterSession::new(&roster(&[(A, "admin"), (B, "member")]), FakeTransport::new());
+    s.join(A, "admin");
+    s.join(B, "member");
+    s.reconcile(&roster(&[(A, "guest")])); // A demoted below Member -> evicted; B no longer in roster -> evicted
+    assert!(s.transport.connected().is_empty(), "both evicted, wire empty");
+    assert!(s.wire_tracks_admitted());
+    assert!(s.membership().admitted().is_empty());
+}

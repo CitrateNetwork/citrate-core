@@ -170,6 +170,89 @@ impl ClusterMembership {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CX-S4.3 (lean) — the transport seam + the membership-driven connection lifecycle.
+//
+// The membership state machine (S4.2) decides WHO may be meshed; the transport is the WIRE. Binding
+// them (S4.3) is the point: an admission opens a connection, a leave or offboard-eviction closes it,
+// so the wire state always tracks the admitted set — which tracks the roster (the RBAC→network
+// boundary, end to end). The real transport is the S4.3 libp2p SIDECAR (Noise identity + gossipsub
+// fan-out, reusing citrate-compute-pool/training-worker/libp2p_transport.rs); src-tauri stays lean
+// (no libp2p link) and speaks to it over a UDS, mirroring the comms member-daemon. Here we own the
+// SEAM + the pure driving logic, proven against an in-process transport; the sidecar impls the trait.
+// ---------------------------------------------------------------------------
+
+/// The cluster's network transport — the seam the membership lifecycle drives. `dial` opens a Noise
+/// session + joins the peer to the group's gossipsub topic; `disconnect` tears it down. Both are
+/// idempotent. The real impl is the S4.3 libp2p sidecar.
+#[allow(dead_code)]
+pub(crate) trait ClusterTransport {
+    fn dial(&mut self, peer: &str);
+    fn disconnect(&mut self, peer: &str);
+    fn connected(&self) -> Vec<String>;
+}
+
+/// Binds a [`ClusterMembership`] to a [`ClusterTransport`]: admit → dial, leave/evict → disconnect.
+/// INVARIANT: the connected (wire) set never contains a peer that is not admitted — the transport
+/// cannot outrun the RBAC gate. Proven against an in-process transport in cluster_tests; the S4.3
+/// libp2p sidecar runs this exact lifecycle.
+#[allow(dead_code)]
+pub(crate) struct ClusterSession<T: ClusterTransport> {
+    membership: ClusterMembership,
+    transport: T,
+}
+
+#[allow(dead_code)]
+impl<T: ClusterTransport> ClusterSession<T> {
+    pub fn new(roster: &[(String, String)], transport: T) -> Self {
+        ClusterSession {
+            membership: ClusterMembership::new(roster),
+            transport,
+        }
+    }
+
+    /// A candidate joins: admit per policy, and on success DIAL it. Returns whether admitted.
+    pub fn join(&mut self, address: &str, role: &str) -> bool {
+        let admitted = self.membership.join(address, role);
+        if admitted {
+            if let Some(a) = canonical_address(address) {
+                self.transport.dial(&a);
+            }
+        }
+        admitted
+    }
+
+    /// A peer leaves: drop membership + disconnect the wire.
+    pub fn leave(&mut self, address: &str) {
+        self.membership.leave(address);
+        if let Some(a) = canonical_address(address) {
+            self.transport.disconnect(&a);
+        }
+    }
+
+    /// The roster changed (offboard / role drop): reconcile membership and DISCONNECT every evicted
+    /// peer in the same step — the wire is torn down for a removed member with no window. Returns the
+    /// evicted peers.
+    pub fn reconcile(&mut self, roster: &[(String, String)]) -> Vec<String> {
+        let evicted = self.membership.reconcile(roster);
+        for e in &evicted {
+            self.transport.disconnect(e);
+        }
+        evicted
+    }
+
+    pub fn membership(&self) -> &ClusterMembership {
+        &self.membership
+    }
+
+    /// Whether the wire never contains an unadmitted peer (connected ⊆ admitted) — the S4.3 safety
+    /// property the transport must preserve.
+    pub fn wire_tracks_admitted(&self) -> bool {
+        let admitted: std::collections::BTreeSet<String> = self.membership.admitted().into_iter().collect();
+        self.transport.connected().iter().all(|p| admitted.contains(p))
+    }
+}
+
 fn not_wired(cmd: &str) -> Result<(), String> {
     Err(format!("cluster::{cmd} is not wired yet (CX-S4.3 libp2p transport)"))
 }
