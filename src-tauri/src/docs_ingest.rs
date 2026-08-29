@@ -338,6 +338,34 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_docs_corpus_is_curated_and_ingestable() {
+        // gA-memory: the corpus must SHIP with real docs, or the first-run ingest has nothing to
+        // author and the memory graph stays empty (the gate could never flip). This reads the actual
+        // bundled `src-tauri/docs-corpus/` and proves it is non-empty and chunks to authorable pieces.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs-corpus");
+        let docs = read_corpus_dir(&dir).expect("read shipped corpus");
+        assert!(
+            docs.len() >= 6,
+            "the starter corpus must ship real docs; got {}",
+            docs.len()
+        );
+        let mut total_chunks = 0usize;
+        for (title, md) in &docs {
+            assert!(!title.trim().is_empty(), "each doc has a title");
+            let chunks = chunk_markdown(title, md, 1200);
+            assert!(
+                !chunks.is_empty(),
+                "doc {title:?} produces at least one chunk"
+            );
+            total_chunks += chunks.len();
+        }
+        assert!(
+            total_chunks >= docs.len(),
+            "the corpus produces ingestable chunks"
+        );
+    }
+
+    #[test]
     fn skipped_report_carries_a_reason_and_zero_counts() {
         let r = IngestReport::skipped("not-semantic");
         assert_eq!(r.docs, 0);
