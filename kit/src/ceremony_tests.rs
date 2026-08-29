@@ -58,11 +58,15 @@ const PASS: &[u8] = b"correct horse battery staple";
 /// and holding the canonical wallet (so `approve` can actually sign).
 fn vault_with_wallet() -> (CustodyVault, PathBuf) {
     let mut p = std::env::temp_dir();
-    let uniq = format!("citrate-core-ceremony-test-{}-{}.enc", std::process::id(), {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        N.fetch_add(1, Ordering::Relaxed)
-    });
+    let uniq = format!(
+        "citrate-core-ceremony-test-{}-{}.enc",
+        std::process::id(),
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            N.fetch_add(1, Ordering::Relaxed)
+        }
+    );
     p.push(uniq);
     let _ = std::fs::remove_file(&p);
     let v = CustodyVault::new(Box::new(FakeKeyring::default()), p.clone(), 0);
@@ -76,11 +80,15 @@ fn vault_with_wallet() -> (CustodyVault, PathBuf) {
 /// unlocked, but with NO wallet stored (for the B1.5-R2 absent-slot contrast).
 fn vault_no_wallet() -> (CustodyVault, PathBuf) {
     let mut p = std::env::temp_dir();
-    let uniq = format!("citrate-core-ceremony-nowallet-{}-{}.enc", std::process::id(), {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        N.fetch_add(1, Ordering::Relaxed)
-    });
+    let uniq = format!(
+        "citrate-core-ceremony-nowallet-{}-{}.enc",
+        std::process::id(),
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            N.fetch_add(1, Ordering::Relaxed)
+        }
+    );
     p.push(uniq);
     let _ = std::fs::remove_file(&p);
     let v = CustodyVault::new(Box::new(FakeKeyring::default()), p.clone(), 0);
@@ -125,21 +133,37 @@ fn integration_request_decode_approve_ecrecovers_and_is_single_use() {
 
     // request → PENDING view, NO signature, message decoded for display.
     let view = c.request(intent);
-    assert!(view.decoded.action.contains("Sign message"), "decoded action shown: {}", view.decoded.action);
-    assert!(view.decoded.action.contains(msg), "the true message is surfaced verbatim");
-    assert!(!view.requires_raw_ack, "a UTF-8 personal_sign is decodable (no raw-ack)");
+    assert!(
+        view.decoded.action.contains("Sign message"),
+        "decoded action shown: {}",
+        view.decoded.action
+    );
+    assert!(
+        view.decoded.action.contains(msg),
+        "the true message is surfaced verbatim"
+    );
+    assert!(
+        !view.requires_raw_ack,
+        "a UTF-8 personal_sign is decodable (no raw-ack)"
+    );
     assert_eq!(c.pending_count(), 1, "one ceremony pending after request");
     // The request path returns NO signature type at all (compile-enforced: the
     // return is a CeremonyView, which has no signature field).
 
     // approve → a signature.
-    let sig = c.approve(&v, &view.id, false).expect("approve a pending decodable ceremony");
+    let sig = c
+        .approve(&v, &view.id, false)
+        .expect("approve a pending decodable ceremony");
     // 65 bytes: r||s||v. This asserted 128 hex chars (64 bytes, r||s) until
     // `personal_sign` became a real EIP-191 signature — the old form carried no
     // recovery id, so nothing outside this process could tell who signed. The
     // recovery below is the property that changed; the length is just its shadow.
     assert_eq!(sig.sig_hex.len(), 130, "r||s||v = 65 bytes = 130 hex chars");
-    assert_eq!(c.pending_count(), 0, "the ceremony is consumed on approve (single-use)");
+    assert_eq!(
+        c.pending_count(),
+        0,
+        "the ceremony is consumed on approve (single-use)"
+    );
 
     // ecrecover, exactly as an external verifier would: EIP-191 prehash, the
     // recovery id carried IN the signature (v - 27), no knowledge of our key.
@@ -151,8 +175,8 @@ fn integration_request_decode_approve_ecrecovers_and_is_single_use() {
     let prehash = crate::wallet::eip191_prehash(msg.as_bytes());
     let recid = RecoveryId::from_byte(raw[64] - 27).expect("v is 27/28");
     let rec_sig = K256Sig::from_slice(&raw[..64]).expect("r||s");
-    let recovered =
-        k256::ecdsa::VerifyingKey::recover_from_prehash(&prehash, &rec_sig, recid).expect("recover");
+    let recovered = k256::ecdsa::VerifyingKey::recover_from_prehash(&prehash, &rec_sig, recid)
+        .expect("recover");
     assert_eq!(
         address_of_verifying_key(&recovered).to_lowercase(),
         CANONICAL_ADDRESS.to_lowercase(),
@@ -166,9 +190,15 @@ fn integration_request_decode_approve_ecrecovers_and_is_single_use() {
         "a second approve on a consumed id must error"
     );
     // unknown id → error.
-    assert_eq!(c.approve(&v, "999999", false).err(), Some(CeremonyError::UnknownCeremony));
+    assert_eq!(
+        c.approve(&v, "999999", false).err(),
+        Some(CeremonyError::UnknownCeremony)
+    );
     // reject on unknown id → error.
-    assert_eq!(c.reject("999999").err(), Some(CeremonyError::UnknownCeremony));
+    assert_eq!(
+        c.reject("999999").err(),
+        Some(CeremonyError::UnknownCeremony)
+    );
 }
 
 #[test]
@@ -324,16 +354,26 @@ fn adv2_no_signing_command_returns_secret_material() {
     // and carry no secret. `Signature` holds only hex of the (non-secret) sig +
     // the kind; there is no key/seed/entropy field. Prove it round-trips as
     // metadata and contains no key bytes by construction.
-    let sig = Signature { sig_hex: "ab".repeat(64), kind: IntentKind::PersonalSign };
+    let sig = Signature {
+        sig_hex: "ab".repeat(64),
+        kind: IntentKind::PersonalSign,
+    };
     let j = serde_json::to_string(&sig).expect("Signature is Serialize (non-secret)");
-    assert!(j.contains("sigHex"), "Signature crosses the bridge as a signature, not a key");
+    assert!(
+        j.contains("sigHex"),
+        "Signature crosses the bridge as a signature, not a key"
+    );
     // A CeremonyView carries origin + decoded + id — never key material.
     let view = CeremonyView {
         id: "1".into(),
         origin: "o".into(),
         kind: IntentKind::PersonalSign,
         chain_id: 40204,
-        decoded: DecodedAction { action: "a".into(), cost: "".into(), destination: "".into() },
+        decoded: DecodedAction {
+            action: "a".into(),
+            cost: "".into(),
+            destination: "".into(),
+        },
         requires_raw_ack: false,
     };
     let jv = serde_json::to_string(&view).expect("CeremonyView is Serialize (non-secret)");
@@ -347,8 +387,14 @@ fn adv2_wallet_create_is_not_serialize_compile_barrier_holds() {
     // future change derived Serialize on it (or made a command return it), that
     // command would fail to compile — the I-2 barrier. We assert the NON-secret
     // WalletInfo IS serializable (the only wallet type allowed across the bridge).
-    let info = crate::wallet::WalletInfo { address: "0xabc".into(), public_key_hex: "04ff".into() };
-    assert!(serde_json::to_string(&info).is_ok(), "WalletInfo (non-secret) is Serialize");
+    let info = crate::wallet::WalletInfo {
+        address: "0xabc".into(),
+        public_key_hex: "04ff".into(),
+    };
+    assert!(
+        serde_json::to_string(&info).is_ok(),
+        "WalletInfo (non-secret) is Serialize"
+    );
 }
 
 // =========================================================================
@@ -376,17 +422,27 @@ fn adv3_approve_while_locked_fails_closed() {
     // security property (a closed error, no sig), not a single label, exactly as
     // B1.1-ADV-3 asserts `NotFound | Custody`.
     assert!(
-        matches!(r, Err(CeremonyError::NoWallet) | Err(CeremonyError::VaultLocked)),
+        matches!(
+            r,
+            Err(CeremonyError::NoWallet) | Err(CeremonyError::VaultLocked)
+        ),
         "approve on a locked vault must fail closed (no signature), got {r:?}"
     );
     // The ceremony was CONSUMED (approve removes first, then signs). A locked
     // approve therefore does not leave a re-approvable ceremony — fail closed AND
     // single-use. (This is the deliberate consume-first ordering.)
-    assert_eq!(c.pending_count(), 0, "a locked approve still consumes the id (fail-closed single-use)");
+    assert_eq!(
+        c.pending_count(),
+        0,
+        "a locked approve still consumes the id (fail-closed single-use)"
+    );
     // Re-unlock: a NEW ceremony signs fine (the lock was the only gate).
     v.unlock(&mut PASS.to_vec()).expect("re-unlock");
     let v2 = c.request(personal_sign_intent("after unlock"));
-    assert!(c.approve(&v, &v2.id, false).is_ok(), "signing works again after unlock");
+    assert!(
+        c.approve(&v, &v2.id, false).is_ok(),
+        "signing works again after unlock"
+    );
 }
 
 #[test]
@@ -444,7 +500,10 @@ fn adv5_true_origin_surfaced_and_undecodable_is_raw_gated() {
         raw: hex::encode(b"Approve unlimited spend"),
     };
     let view = c.request(evil.clone());
-    assert_eq!(view.origin, evil.origin, "the TRUE origin is surfaced verbatim");
+    assert_eq!(
+        view.origin, evil.origin,
+        "the TRUE origin is surfaced verbatim"
+    );
     assert!(
         view.decoded.action.contains("Approve unlimited spend"),
         "the decode reflects the ACTUAL payload, not a fabricated benign action"
@@ -459,8 +518,14 @@ fn adv5_true_origin_surfaced_and_undecodable_is_raw_gated() {
         raw: hex::encode([0x02u8, 0xf8, 0x6b, 0x82]), // opaque tx-ish bytes
     };
     let txview = c.request(tx);
-    assert_eq!(txview.decoded.action, UNRECOGNIZED_ACTION, "undecodable → Unrecognized");
-    assert!(txview.requires_raw_ack, "undecodable calldata requires a raw ack");
+    assert_eq!(
+        txview.decoded.action, UNRECOGNIZED_ACTION,
+        "undecodable → Unrecognized"
+    );
+    assert!(
+        txview.requires_raw_ack,
+        "undecodable calldata requires a raw ack"
+    );
 
     // approve WITHOUT the raw ack → blocked.
     // NEGATIVE CONTROL (stated): if `approve` skipped the `requires_raw_ack &&
@@ -473,11 +538,21 @@ fn adv5_true_origin_surfaced_and_undecodable_is_raw_gated() {
     );
     // The ceremony is RE-INSERTED on a missing-ack rejection, so the human can
     // retry WITH the ack.
-    assert_eq!(c.pending_count(), 2, "a missing-ack approve does not consume the ceremony");
+    assert_eq!(
+        c.pending_count(),
+        2,
+        "a missing-ack approve does not consume the ceremony"
+    );
 
     // approve WITH the explicit raw ack → signs (the human took responsibility).
-    let sig = c.approve(&v, &txview.id, true).expect("raw-ack approve signs");
-    assert_eq!(sig.sig_hex.len(), 128, "raw-mode still produces a valid r||s signature");
+    let sig = c
+        .approve(&v, &txview.id, true)
+        .expect("raw-ack approve signs");
+    assert_eq!(
+        sig.sig_hex.len(),
+        128,
+        "raw-mode still produces a valid r||s signature"
+    );
     assert_eq!(sig.kind, IntentKind::Transaction);
 }
 
@@ -498,10 +573,23 @@ fn adv5_typed_data_decodes_and_malformed_typed_data_is_raw_gated() {
         raw: hex::encode(serde_json::to_vec(&td).unwrap()),
     };
     let view = c.request(intent);
-    assert!(view.decoded.action.contains("Permit"), "primaryType surfaced: {}", view.decoded.action);
-    assert!(view.decoded.action.contains("Citrate"), "domain name surfaced");
-    assert_eq!(view.decoded.destination, "0x1234000000000000000000000000000000005678");
-    assert!(!view.requires_raw_ack, "well-formed typed data is decodable");
+    assert!(
+        view.decoded.action.contains("Permit"),
+        "primaryType surfaced: {}",
+        view.decoded.action
+    );
+    assert!(
+        view.decoded.action.contains("Citrate"),
+        "domain name surfaced"
+    );
+    assert_eq!(
+        view.decoded.destination,
+        "0x1234000000000000000000000000000000005678"
+    );
+    assert!(
+        !view.requires_raw_ack,
+        "well-formed typed data is decodable"
+    );
 
     // Typed data that is not JSON → Unrecognized → raw-ack gated.
     let bad = SignatureIntent {
@@ -512,7 +600,10 @@ fn adv5_typed_data_decodes_and_malformed_typed_data_is_raw_gated() {
     };
     let badview = c.request(bad);
     assert_eq!(badview.decoded.action, UNRECOGNIZED_ACTION);
-    assert!(badview.requires_raw_ack, "non-JSON typed data must be raw-gated");
+    assert!(
+        badview.requires_raw_ack,
+        "non-JSON typed data must be raw-gated"
+    );
 }
 
 // =========================================================================
@@ -541,9 +632,13 @@ fn adv6_approval_is_bound_to_explicit_id_no_approve_latest() {
     // `b` here — so `status(a)` would be None and `status(b)` Some, and BOTH
     // assertions below flip. Approving the older id proves approval is bound to the
     // exact id, not to recency/default-focus.
-    c.approve(&v, &a.id, false).expect("approve the explicitly-named (older) id");
+    c.approve(&v, &a.id, false)
+        .expect("approve the explicitly-named (older) id");
     assert_eq!(c.pending_count(), 1, "only the named ceremony was consumed");
-    assert!(c.status(&a.id).is_none(), "the EXPLICITLY-NAMED (older) ceremony was consumed");
+    assert!(
+        c.status(&a.id).is_none(),
+        "the EXPLICITLY-NAMED (older) ceremony was consumed"
+    );
     assert!(
         c.status(&b.id).is_some(),
         "the LATEST ceremony is untouched — no approve-latest / auto-approve"
@@ -552,7 +647,10 @@ fn adv6_approval_is_bound_to_explicit_id_no_approve_latest() {
     // The pixel-level default-focus / one-click property is the honest UI gap
     // (not headless-testable); the CORE contract (explicit-id binding) is proven.
     // The remaining latest id still approves independently when named.
-    assert!(c.approve(&v, &b.id, false).is_ok(), "the latest id approves only when named");
+    assert!(
+        c.approve(&v, &b.id, false).is_ok(),
+        "the latest id approves only when named"
+    );
     assert_eq!(c.pending_count(), 0);
 }
 
@@ -569,7 +667,11 @@ fn adv10_one_approval_one_signature_consumed() {
 
     // First approve → signature.
     let sig1 = c.approve(&v, &view.id, false).expect("first approve signs");
-    assert_eq!(sig1.sig_hex.len(), 130, "r||s||v — personal_sign is EIP-191 now");
+    assert_eq!(
+        sig1.sig_hex.len(),
+        130,
+        "r||s||v — personal_sign is EIP-191 now"
+    );
 
     // Replay the SAME id → error, NO second signature.
     // NEGATIVE CONTROL (stated): if `approve` looked up the ceremony without
@@ -581,7 +683,11 @@ fn adv10_one_approval_one_signature_consumed() {
         Some(CeremonyError::UnknownCeremony),
         "a replayed approval must not produce a second signature"
     );
-    assert_eq!(c.pending_count(), 0, "one approval consumed the single-use ceremony");
+    assert_eq!(
+        c.pending_count(),
+        0,
+        "one approval consumed the single-use ceremony"
+    );
 }
 
 #[test]
@@ -597,15 +703,24 @@ fn adv10_concurrent_duplicate_approvals_yield_one_signature() {
     let mut handles = Vec::new();
     for _ in 0..8 {
         let (c, v, id) = (Arc::clone(&c), Arc::clone(&v), view.id.clone());
-        handles.push(std::thread::spawn(move || c.approve(&v, &id, false).is_ok()));
+        handles.push(std::thread::spawn(move || {
+            c.approve(&v, &id, false).is_ok()
+        }));
     }
     let successes = handles
         .into_iter()
         .map(|h| h.join().unwrap())
         .filter(|ok| *ok)
         .count();
-    assert_eq!(successes, 1, "exactly one of the racing approvals signs; the rest error");
-    assert_eq!(c.pending_count(), 0, "the ceremony is consumed exactly once");
+    assert_eq!(
+        successes, 1,
+        "exactly one of the racing approvals signs; the rest error"
+    );
+    assert_eq!(
+        c.pending_count(),
+        0,
+        "the ceremony is consumed exactly once"
+    );
 }
 
 // =========================================================================
@@ -622,8 +737,15 @@ fn decode_binary_personal_sign_is_shown_not_raw_gated() {
         raw: hex::encode([0xff, 0xfe, 0x00, 0x01]), // non-UTF-8 bytes
     };
     let d = decode_intent(&intent);
-    assert!(d.action.contains("raw bytes"), "binary message shown as bytes: {}", d.action);
-    assert_ne!(d.action, UNRECOGNIZED_ACTION, "a showable binary message is not raw-gated");
+    assert!(
+        d.action.contains("raw bytes"),
+        "binary message shown as bytes: {}",
+        d.action
+    );
+    assert_ne!(
+        d.action, UNRECOGNIZED_ACTION,
+        "a showable binary message is not raw-gated"
+    );
 }
 
 #[test]
@@ -635,7 +757,10 @@ fn decode_malformed_hex_payload_is_unrecognized() {
         raw: "0xZZZZ".into(), // not hex
     };
     let d = decode_intent(&intent);
-    assert_eq!(d.action, UNRECOGNIZED_ACTION, "unparseable payload → Unrecognized (raw-gated)");
+    assert_eq!(
+        d.action, UNRECOGNIZED_ACTION,
+        "unparseable payload → Unrecognized (raw-gated)"
+    );
 }
 
 // =========================================================================
@@ -659,13 +784,19 @@ fn ceremony_errors_are_secret_free() {
     ] {
         let s = format!("{e} {e:?}");
         // No error carries the canonical mnemonic or any hex-looking key blob.
-        assert!(!s.to_lowercase().contains("abandon"), "no mnemonic in error text");
+        assert!(
+            !s.to_lowercase().contains("abandon"),
+            "no mnemonic in error text"
+        );
         // NOTE: FromMismatch deliberately carries PUBLIC addresses (claimed +
         // actual) so the human can see why a tx was refused; those are not
         // secret. The canonical ADDRESS assertion is scoped to the variants that
         // must not echo it — FromMismatch is constructed above with placeholder
         // (0x…dead / 0x…beef) addresses precisely so this sweep still holds.
-        assert!(!s.contains(CANONICAL_ADDRESS), "errors do not echo addresses/keys");
+        assert!(
+            !s.contains(CANONICAL_ADDRESS),
+            "errors do not echo addresses/keys"
+        );
     }
 }
 
@@ -686,16 +817,21 @@ fn adv8_no_secret_across_wallet_ceremony_rpc_txdecode() {
     // Drive a REAL create on a fresh vault so we have a live mnemonic/entropy to
     // hunt for, then assert NONE of it leaks through any error/Debug on the path.
     let mut p = std::env::temp_dir();
-    p.push(format!("citrate-core-adv8-{}-{}.enc", std::process::id(), {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        N.fetch_add(1, Ordering::Relaxed)
-    }));
+    p.push(format!(
+        "citrate-core-adv8-{}-{}.enc",
+        std::process::id(),
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            N.fetch_add(1, Ordering::Relaxed)
+        }
+    ));
     let _ = std::fs::remove_file(&p);
     let v = CustodyVault::new(Box::new(FakeKeyring::default()), p.clone(), 0);
     v.init(&mut PASS.to_vec()).expect("init");
     v.unlock(&mut PASS.to_vec()).expect("unlock");
-    let created = crate::wallet::create(&v).expect("create a fresh wallet for live secret material");
+    let created =
+        crate::wallet::create(&v).expect("create a fresh wallet for live secret material");
     let mnemonic = created.mnemonic.clone();
     let first_word = mnemonic.split_whitespace().next().unwrap().to_string();
     let three_word_prefix = mnemonic
@@ -816,14 +952,23 @@ fn adv5_tx_path_true_origin_and_undecodable_raw_gated_end_to_end() {
         .to_string(),
     };
     let view = c.request(legible);
-    assert_eq!(view.origin, evil_origin, "the TRUE origin is surfaced verbatim on the tx path");
+    assert_eq!(
+        view.origin, evil_origin,
+        "the TRUE origin is surfaced verbatim on the tx path"
+    );
     assert!(
         view.decoded.action.contains("1000000000000000000"),
         "the decode reflects the ACTUAL value, not a fabricated benign summary: {}",
         view.decoded.action
     );
-    assert_eq!(view.decoded.destination, "0x3535353535353535353535353535353535353535");
-    assert!(!view.requires_raw_ack, "a legible tx is decodable (no raw-ack)");
+    assert_eq!(
+        view.decoded.destination,
+        "0x3535353535353535353535353535353535353535"
+    );
+    assert!(
+        !view.requires_raw_ack,
+        "a legible tx is decodable (no raw-ack)"
+    );
 
     // An UNDECODABLE tx (opaque non-JSON bytes) is raw-gated, and approve_and_broadcast
     // WITHOUT the ack broadcasts NOTHING — end-to-end on the new tx path.
@@ -834,8 +979,14 @@ fn adv5_tx_path_true_origin_and_undecodable_raw_gated_end_to_end() {
         raw: hex::encode([0x02u8, 0xf8, 0x6b, 0x82]),
     };
     let ov = c.request(opaque);
-    assert_eq!(ov.decoded.action, UNRECOGNIZED_ACTION, "undecodable tx → Unrecognized");
-    assert!(ov.requires_raw_ack, "undecodable calldata is raw-gated on the tx path");
+    assert_eq!(
+        ov.decoded.action, UNRECOGNIZED_ACTION,
+        "undecodable tx → Unrecognized"
+    );
+    assert!(
+        ov.requires_raw_ack,
+        "undecodable calldata is raw-gated on the tx path"
+    );
 
     // NEGATIVE CONTROL (stated): if approve_and_broadcast skipped the
     // `requires_raw_ack && !raw_ack` gate, this blind approval would sign +
@@ -843,8 +994,15 @@ fn adv5_tx_path_true_origin_and_undecodable_raw_gated_end_to_end() {
     let mock = MockRpc::new(vec![]);
     let client = RpcClient::with_transport(mock);
     let r = c.approve_and_broadcast(&v, &client, &ov.id, false, bcfg(1));
-    assert_eq!(r.err(), Some(CeremonyError::RawAckRequired), "no ack → blocked, nothing signed");
-    assert!(client.transport.requests.borrow().is_empty(), "no RPC touched for a raw-gated tx");
+    assert_eq!(
+        r.err(),
+        Some(CeremonyError::RawAckRequired),
+        "no ack → blocked, nothing signed"
+    );
+    assert!(
+        client.transport.requests.borrow().is_empty(),
+        "no RPC touched for a raw-gated tx"
+    );
 }
 
 // =========================================================================
@@ -917,13 +1075,27 @@ fn canonical_addr_lower() -> String {
 fn b1_4_transaction_decodes_to_human_action_not_raw_gated() {
     let (_v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
-    let intent = tx_intent(&canonical_addr_lower(), "0x3535353535353535353535353535353535353535", "0x1");
+    let intent = tx_intent(
+        &canonical_addr_lower(),
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    );
     let view = c.request(intent);
     // B1.4 REPLACES B1.2's blanket "Unrecognized" for a legible tx: the human
     // now sees the action/cost/destination, and it is NOT raw-gated.
-    assert!(view.decoded.action.contains("Send"), "tx decoded for display: {}", view.decoded.action);
-    assert_eq!(view.decoded.destination, "0x3535353535353535353535353535353535353535");
-    assert!(!view.requires_raw_ack, "a legible tx is decodable (no raw-ack)");
+    assert!(
+        view.decoded.action.contains("Send"),
+        "tx decoded for display: {}",
+        view.decoded.action
+    );
+    assert_eq!(
+        view.decoded.destination,
+        "0x3535353535353535353535353535353535353535"
+    );
+    assert!(
+        !view.requires_raw_ack,
+        "a legible tx is decodable (no raw-ack)"
+    );
 }
 
 #[test]
@@ -940,9 +1112,9 @@ fn b1_4_approve_and_broadcast_signs_real_tx_and_ecrecovers_to_wallet() {
     // → receipt (block 0x64). Chain id 40204.
     let tx_hash = "0xabc0000000000000000000000000000000000000000000000000000000000abc";
     let mock = MockRpc::new(vec![
-        ok(JsonValue::String("0x7".into())),        // eth_getTransactionCount
+        ok(JsonValue::String("0x7".into())), // eth_getTransactionCount
         ok(JsonValue::String("0x77359400".into())), // eth_gasPrice (2e9)
-        ok(JsonValue::String(tx_hash.into())),      // eth_sendRawTransaction
+        ok(JsonValue::String(tx_hash.into())), // eth_sendRawTransaction
         ok(serde_json::json!({ "blockNumber": "0x64", "status": "0x1" })), // receipt
     ]);
     let client = RpcClient::with_transport(mock);
@@ -950,9 +1122,20 @@ fn b1_4_approve_and_broadcast_signs_real_tx_and_ecrecovers_to_wallet() {
     let result = c
         .approve_and_broadcast(&v, &client, &view.id, false, bcfg(2))
         .expect("approve + sign + broadcast a real tx");
-    assert_eq!(result.tx_hash, tx_hash, "the node-accepted hash is returned");
-    assert_eq!(result.block_number, Some(100), "0x64 → block 100 (inclusion proof)");
-    assert_eq!(c.pending_count(), 0, "the tx ceremony is consumed (single-use)");
+    assert_eq!(
+        result.tx_hash, tx_hash,
+        "the node-accepted hash is returned"
+    );
+    assert_eq!(
+        result.block_number,
+        Some(100),
+        "0x64 → block 100 (inclusion proof)"
+    );
+    assert_eq!(
+        c.pending_count(),
+        0,
+        "the tx ceremony is consumed (single-use)"
+    );
 
     // Reconstruct the EXACT raw tx that was broadcast and prove it ecrecovers to
     // the wallet address. We know the fields: nonce 7, gasPrice 2e9, gas 21000,
@@ -965,7 +1148,8 @@ fn b1_4_approve_and_broadcast_signs_real_tx_and_ecrecovers_to_wallet() {
         value: 1,
         data: vec![],
     };
-    let unified = citrate_wallet_core::secp256k1_from_mnemonic(CANONICAL_MNEMONIC, 0).expect("derive");
+    let unified =
+        citrate_wallet_core::secp256k1_from_mnemonic(CANONICAL_MNEMONIC, 0).expect("derive");
     let sk = match unified {
         citrate_wallet_core::UnifiedKey::Secp256k1(k) => k,
         _ => panic!("expected secp256k1"),
@@ -999,7 +1183,8 @@ fn b1_4_approve_and_broadcast_signs_real_tx_and_ecrecovers_to_wallet() {
     let addr_hash = Keccak256::digest(&uncompressed.as_bytes()[1..]);
     let recovered_addr = format!("0x{}", hex::encode(&addr_hash[12..32]));
     assert_eq!(
-        recovered_addr, canonical_addr_lower(),
+        recovered_addr,
+        canonical_addr_lower(),
         "the broadcast tx's signature ecrecovers to the wallet address (real signing, not a mock)"
     );
 }
@@ -1011,7 +1196,11 @@ fn b1_4_broadcast_uses_real_rpc_nonce_and_gas() {
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
     let from = canonical_addr_lower();
-    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let view = c.request(tx_intent(
+        &from,
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
 
     let mock = MockRpc::new(vec![
         ok(JsonValue::String("0x9".into())),
@@ -1032,7 +1221,10 @@ fn b1_4_broadcast_uses_real_rpc_nonce_and_gas() {
     assert_eq!(reqs[0]["params"][0].as_str().unwrap().to_lowercase(), from);
     assert_eq!(reqs[1]["method"], "eth_gasPrice");
     assert_eq!(reqs[2]["method"], "eth_sendRawTransaction");
-    assert!(reqs[2]["params"][0].as_str().unwrap().starts_with("0x"), "raw hex tx");
+    assert!(
+        reqs[2]["params"][0].as_str().unwrap().starts_with("0x"),
+        "raw hex tx"
+    );
     assert_eq!(reqs[3]["method"], "eth_getTransactionReceipt");
 }
 
@@ -1041,7 +1233,11 @@ fn b1_4_broadcast_single_use_replay_yields_no_second_tx() {
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
     let from = canonical_addr_lower();
-    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let view = c.request(tx_intent(
+        &from,
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
 
     let mock = MockRpc::new(vec![
         ok(JsonValue::String("0x0".into())),
@@ -1059,8 +1255,15 @@ fn b1_4_broadcast_single_use_replay_yields_no_second_tx() {
     let mock2 = MockRpc::new(vec![ok(JsonValue::String("0x0".into()))]);
     let client2 = RpcClient::with_transport(mock2);
     let r = c.approve_and_broadcast(&v, &client2, &view.id, false, bcfg(1));
-    assert_eq!(r.err(), Some(CeremonyError::UnknownCeremony), "replay must not broadcast again");
-    assert!(client2.transport.requests.borrow().is_empty(), "no RPC call on a consumed id");
+    assert_eq!(
+        r.err(),
+        Some(CeremonyError::UnknownCeremony),
+        "replay must not broadcast again"
+    );
+    assert!(
+        client2.transport.requests.borrow().is_empty(),
+        "no RPC call on a consumed id"
+    );
 }
 
 #[test]
@@ -1068,7 +1271,11 @@ fn b1_4_broadcast_fails_closed_when_locked() {
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
     let from = canonical_addr_lower();
-    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let view = c.request(tx_intent(
+        &from,
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
 
     v.lock();
     // Nonce+gas fetch precede signing; script them so we reach the vault signer,
@@ -1080,7 +1287,10 @@ fn b1_4_broadcast_fails_closed_when_locked() {
     let client = RpcClient::with_transport(mock);
     let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
     assert!(
-        matches!(r, Err(CeremonyError::NoWallet) | Err(CeremonyError::VaultLocked)),
+        matches!(
+            r,
+            Err(CeremonyError::NoWallet) | Err(CeremonyError::VaultLocked)
+        ),
         "a locked vault must fail closed (no signature, no broadcast), got {r:?}"
     );
     // send/receipt were NEVER called (signing failed before broadcast).
@@ -1089,7 +1299,11 @@ fn b1_4_broadcast_fails_closed_when_locked() {
         reqs.iter().all(|r| r["method"] != "eth_sendRawTransaction"),
         "no raw tx broadcast on a locked vault"
     );
-    assert_eq!(c.pending_count(), 0, "locked approve still consumes the id (fail-closed single-use)");
+    assert_eq!(
+        c.pending_count(),
+        0,
+        "locked approve still consumes the id (fail-closed single-use)"
+    );
 }
 
 #[test]
@@ -1104,16 +1318,33 @@ fn b1_4_undecodable_tx_calldata_still_raw_gated() {
         raw: hex::encode([0x02u8, 0xf8, 0x6b, 0x82]),
     };
     let view = c.request(intent);
-    assert_eq!(view.decoded.action, UNRECOGNIZED_ACTION, "undecodable → Unrecognized");
-    assert!(view.requires_raw_ack, "undecodable tx calldata still raw-gates (B1.2-ADV-5 preserved)");
+    assert_eq!(
+        view.decoded.action, UNRECOGNIZED_ACTION,
+        "undecodable → Unrecognized"
+    );
+    assert!(
+        view.requires_raw_ack,
+        "undecodable tx calldata still raw-gates (B1.2-ADV-5 preserved)"
+    );
 
     // approve_and_broadcast WITHOUT the raw ack → blocked, no RPC touched.
     let mock = MockRpc::new(vec![]);
     let client = RpcClient::with_transport(mock);
     let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
-    assert_eq!(r.err(), Some(CeremonyError::RawAckRequired), "no raw-ack → blocked");
-    assert!(client.transport.requests.borrow().is_empty(), "no broadcast for a gated tx");
-    assert_eq!(c.pending_count(), 1, "missing-ack re-inserts the ceremony for retry");
+    assert_eq!(
+        r.err(),
+        Some(CeremonyError::RawAckRequired),
+        "no raw-ack → blocked"
+    );
+    assert!(
+        client.transport.requests.borrow().is_empty(),
+        "no broadcast for a gated tx"
+    );
+    assert_eq!(
+        c.pending_count(),
+        1,
+        "missing-ack re-inserts the ceremony for retry"
+    );
 }
 
 #[test]
@@ -1124,7 +1355,11 @@ fn b1_4_broadcast_node_error_surfaces_no_fake_hash() {
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
     let from = canonical_addr_lower();
-    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let view = c.request(tx_intent(
+        &from,
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
 
     let mock = MockRpc::new(vec![
         ok(JsonValue::String("0x0".into())),
@@ -1135,7 +1370,10 @@ fn b1_4_broadcast_node_error_surfaces_no_fake_hash() {
     let client = RpcClient::with_transport(mock);
     let r = c.approve_and_broadcast(&v, &client, &view.id, false, bcfg(1));
     match r {
-        Err(CeremonyError::Broadcast(m)) => assert!(m.contains("insufficient funds"), "node reason surfaced: {m}"),
+        Err(CeremonyError::Broadcast(m)) => assert!(
+            m.contains("insufficient funds"),
+            "node reason surfaced: {m}"
+        ),
         other => panic!("expected a Broadcast error carrying the node reason, got {other:?}"),
     }
 }
@@ -1154,7 +1392,11 @@ fn b1_5_f2_from_matching_wallet_proceeds_to_broadcast() {
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();
     let from = canonical_addr_lower(); // == the vault wallet address
-    let view = c.request(tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x1"));
+    let view = c.request(tx_intent(
+        &from,
+        "0x3535353535353535353535353535353535353535",
+        "0x1",
+    ));
 
     let mock = MockRpc::new(vec![
         ok(JsonValue::String("0x1".into())),        // nonce
@@ -1208,7 +1450,11 @@ fn b1_5_f2_from_mismatch_fails_closed_before_sign_or_broadcast() {
     // Exact error variant + the (public, key-free) claimed/actual addresses.
     match r {
         Err(CeremonyError::FromMismatch { claimed, wallet }) => {
-            assert_eq!(claimed.to_lowercase(), spoof_from.to_lowercase(), "claimed from echoed");
+            assert_eq!(
+                claimed.to_lowercase(),
+                spoof_from.to_lowercase(),
+                "claimed from echoed"
+            );
             assert_eq!(
                 wallet.to_lowercase(),
                 canonical_addr_lower(),
@@ -1241,8 +1487,14 @@ fn b1_5_f2_from_mismatch_error_is_secret_free() {
         wallet: CANONICAL_ADDRESS.into(),
     };
     let s = format!("{e} {e:?}");
-    assert!(!s.to_lowercase().contains("abandon"), "no mnemonic in FromMismatch");
-    assert!(s.contains("dead") && s.contains("9858"), "both addresses surfaced for the human");
+    assert!(
+        !s.to_lowercase().contains("abandon"),
+        "no mnemonic in FromMismatch"
+    );
+    assert!(
+        s.contains("dead") && s.contains("9858"),
+        "both addresses surfaced for the human"
+    );
 }
 
 // NOTE (WP-S1.2): `b1_4_sign_and_broadcast_command_registered` moved to
@@ -1259,8 +1511,14 @@ fn b1_4_broadcast_result_is_serialize_and_secret_free() {
         block_number: Some(100),
     };
     let j = serde_json::to_string(&br).expect("BroadcastResult is Serialize");
-    assert!(j.contains("txHash") && j.contains("blockNumber"), "public tx facts: {j}");
-    assert!(!j.to_lowercase().contains("abandon"), "no mnemonic/key material in the result");
+    assert!(
+        j.contains("txHash") && j.contains("blockNumber"),
+        "public tx facts: {j}"
+    );
+    assert!(
+        !j.to_lowercase().contains("abandon"),
+        "no mnemonic/key material in the result"
+    );
 }
 
 // =========================================================================
@@ -1306,10 +1564,7 @@ fn b1_4_live_broadcast_real_40204_tx() {
     println!("[b1.4-live] app test wallet address: {app_addr}");
 
     // 2) Fund the app wallet from the funder via `cast send` (0.001 SALT).
-    let cast = format!(
-        "{}/.foundry/bin/cast",
-        std::env::var("HOME").expect("HOME")
-    );
+    let cast = format!("{}/.foundry/bin/cast", std::env::var("HOME").expect("HOME"));
     let fund = std::process::Command::new(&cast)
         .args([
             "send",
@@ -1349,8 +1604,14 @@ fn b1_4_live_broadcast_real_40204_tx() {
     };
     let c = SignatureCeremony::new();
     let view = c.request(intent);
-    println!("[b1.4-live] ceremony decoded action: {}", view.decoded.action);
-    assert!(!view.requires_raw_ack, "a legible transfer must not be raw-gated");
+    println!(
+        "[b1.4-live] ceremony decoded action: {}",
+        view.decoded.action
+    );
+    assert!(
+        !view.requires_raw_ack,
+        "a legible transfer must not be raw-gated"
+    );
 
     // 4) Approve → sign the REAL tx with the vault key → broadcast → confirm.
     //    (The approval call here stands in for the human — HITL UI not headless.)
@@ -1375,7 +1636,116 @@ fn b1_4_live_broadcast_real_40204_tx() {
     println!("[b1.4-live] app wallet (sender): {app_addr}");
     println!("[b1.4-live] ======================");
 
-    assert!(result.tx_hash.starts_with("0x") && result.tx_hash.len() == 66, "real tx hash");
-    assert!(result.block_number.is_some(), "the tx was confirmed by block inclusion");
+    assert!(
+        result.tx_hash.starts_with("0x") && result.tx_hash.len() == 66,
+        "real tx hash"
+    );
+    assert!(
+        result.block_number.is_some(),
+        "the tx was confirmed by block inclusion"
+    );
     let _ = std::fs::remove_file(&p);
+}
+
+// ── S7.5 (RT-5) — SessionBudget: the scoped, bounded authorization primitive. Default-off + fail-
+// closed. These pin the covers/consume/expiry bounds; the live request/approve wiring is post-ADR.
+
+fn intent(origin: &str, kind: IntentKind, chain_id: u64) -> SignatureIntent {
+    SignatureIntent {
+        origin: origin.into(),
+        kind,
+        chain_id,
+        raw: "0x00".into(),
+    }
+}
+
+fn budget() -> SessionBudget {
+    SessionBudget::new(
+        vec!["local-user".into(), "surface:groups".into()],
+        vec![IntentKind::Transaction],
+        40204,
+        3,
+        10_000, // expires at t=10s
+    )
+}
+
+#[test]
+fn covers_a_matching_intent_within_all_bounds() {
+    let b = budget();
+    assert!(b.covers(&intent("local-user", IntentKind::Transaction, 40204), 5_000));
+    assert!(b.covers(
+        &intent("surface:groups", IntentKind::Transaction, 40204),
+        5_000
+    ));
+    assert_eq!(b.remaining(), 3);
+}
+
+#[test]
+fn refuses_a_wrong_origin_kind_or_chain() {
+    let b = budget();
+    assert!(
+        !b.covers(
+            &intent("evil.example", IntentKind::Transaction, 40204),
+            5_000
+        ),
+        "origin not allowed"
+    );
+    assert!(
+        !b.covers(
+            &intent("local-user", IntentKind::PersonalSign, 40204),
+            5_000
+        ),
+        "kind not allowed"
+    );
+    assert!(
+        !b.covers(&intent("local-user", IntentKind::Transaction, 1), 5_000),
+        "wrong chain"
+    );
+}
+
+#[test]
+fn refuses_after_expiry() {
+    let b = budget();
+    assert!(
+        !b.covers(
+            &intent("local-user", IntentKind::Transaction, 40204),
+            10_000
+        ),
+        "at expiry"
+    );
+    assert!(
+        !b.covers(
+            &intent("local-user", IntentKind::Transaction, 40204),
+            99_999
+        ),
+        "past expiry"
+    );
+    assert!(b.is_expired(10_000));
+}
+
+#[test]
+fn consume_decrements_and_exhausts_at_max_ops() {
+    let mut b = budget();
+    assert_eq!(b.consume(), Ok(2));
+    assert_eq!(b.consume(), Ok(1));
+    assert_eq!(b.consume(), Ok(0));
+    assert_eq!(b.remaining(), 0);
+    // Exhausted → covers is false + consume errors (defensive).
+    assert!(
+        !b.covers(&intent("local-user", IntentKind::Transaction, 40204), 5_000),
+        "no ops left"
+    );
+    assert_eq!(b.consume(), Err("session budget exhausted"));
+}
+
+#[test]
+fn a_zero_op_budget_covers_nothing() {
+    let b = SessionBudget::new(
+        vec!["local-user".into()],
+        vec![IntentKind::Transaction],
+        40204,
+        0,
+        10_000,
+    );
+    assert!(!b.covers(&intent("local-user", IntentKind::Transaction, 40204), 5_000));
 }

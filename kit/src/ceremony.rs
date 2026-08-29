@@ -134,6 +134,85 @@ pub struct SignatureIntent {
     pub raw: String,
 }
 
+/// S7.5 (RT-5) — a scoped, session-lived authorization a member approves ONCE so a social node's
+/// many routine signatures (co-pins, cluster joins) do not each demand a fresh per-tx prompt.
+///
+/// It does NOT replace the ceremony signer and does NOT hold a key: a covered intent is still signed
+/// by `wallet::sign_message` through the ONE gated path ([`SignatureCeremony::approve`]). The budget
+/// only substitutes the member's ONE prior *scoped* approval for the per-tx human prompt — a
+/// deliberate, bounded relaxation of the single-use property, documented in
+/// `docs/adr/ADR-2026-08-29-session-ceremony-budget.md`. Default is **no budget** = today's behavior
+/// exactly: every intent prompts. Fail-closed: an intent is covered only if EVERY bound holds.
+///
+/// NOTE: this is the vetted PRIMITIVE. It is NOT yet consulted by `request`/`approve` — wiring the
+/// auto-approve path into the live signer lands only after the ADR + a security sign-off (@rule8, T1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionBudget {
+    /// Origins whose intents this budget covers (matched verbatim against `SignatureIntent::origin`).
+    pub origins: Vec<String>,
+    /// Intent kinds this budget covers.
+    pub kinds: Vec<IntentKind>,
+    /// The chain this budget is scoped to (an intent on another chain is never covered).
+    pub chain_id: u64,
+    /// The maximum number of signatures this one approval authorizes.
+    pub max_ops: u32,
+    /// Wall-clock expiry (epoch ms). After this, the budget covers nothing.
+    pub expires_at_ms: u64,
+    /// Signatures consumed so far (starts 0).
+    used_ops: u32,
+}
+
+impl SessionBudget {
+    /// Establish a budget (as a member-signed policy would). `used_ops` starts at 0.
+    pub fn new(
+        origins: Vec<String>,
+        kinds: Vec<IntentKind>,
+        chain_id: u64,
+        max_ops: u32,
+        expires_at_ms: u64,
+    ) -> Self {
+        SessionBudget {
+            origins,
+            kinds,
+            chain_id,
+            max_ops,
+            expires_at_ms,
+            used_ops: 0,
+        }
+    }
+
+    /// Whether this budget covers `intent` at `now_ms` — EVERY bound must hold (fail-closed): not
+    /// expired, ops remaining, chain matches, origin allowed, kind allowed. A covered intent may be
+    /// signed without a fresh human prompt (the budget IS the authorization).
+    pub fn covers(&self, intent: &SignatureIntent, now_ms: u64) -> bool {
+        now_ms < self.expires_at_ms
+            && self.used_ops < self.max_ops
+            && intent.chain_id == self.chain_id
+            && self.origins.iter().any(|o| o == &intent.origin)
+            && self.kinds.contains(&intent.kind)
+    }
+
+    /// Consume one op after a covered signature. Returns the remaining count, or `Err` if the budget
+    /// is already exhausted (a defensive guard — `covers` should have gated this).
+    pub fn consume(&mut self) -> std::result::Result<u32, &'static str> {
+        if self.used_ops >= self.max_ops {
+            return Err("session budget exhausted");
+        }
+        self.used_ops += 1;
+        Ok(self.max_ops - self.used_ops)
+    }
+
+    /// Signatures still authorized (0 once exhausted).
+    pub fn remaining(&self) -> u32 {
+        self.max_ops.saturating_sub(self.used_ops)
+    }
+
+    /// Whether the budget has expired at `now_ms`.
+    pub fn is_expired(&self, now_ms: u64) -> bool {
+        now_ms >= self.expires_at_ms
+    }
+}
+
 /// The non-secret view returned by `request` (and re-inspectable by `status`):
 /// the ceremony id + the true origin + the decoded action. Carries NO signature
 /// and NO key material — safe to cross the invoke bridge.
