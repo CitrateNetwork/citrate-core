@@ -4,7 +4,7 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, describeBond, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, store } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, describeBond, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, reconciledGrantPatch, store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
 import { bridge } from "../bridge";
 import type { CeremonyView, AuthStatus } from "../bridge/types";
@@ -1008,5 +1008,72 @@ describe("openAuthorityPage — carries the app's identity, not the browser's", 
 
     expect(opened[0]).toBe("https://auth.citrate.ai/account");
     expect(opened[0]).not.toContain("login_hint");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAUNCH-TIME GRANT RECONCILE — the "stranded after a restart" fix.
+//
+// Regression from the first fresh-email E2E (2026-08-05). Member 0xE14d2F9d…
+// paid, and the treasury grant fully landed on chain 40204: SBT minted, MemberBond
+// clone 0xD9FF524e… deployed and funded with 32,000 SALT. The app still showed
+// `s3: idle / s5: idle / hasGrant: false` and onboarding could not be completed.
+//
+// Cause: s3/s5 were advanced ONLY by pollMembership/pollGrant — in-memory, alive
+// only while their own step is active, and capped at ~5 minutes. Nothing ever
+// re-read the chain, so an app restart (or the cap) during checkout stranded a
+// fully-paid member permanently. `reconciledGrantPatch` is the pure decision the
+// launch-time reconcile uses; it must demand the SAME evidence as pollGrant.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const GRANTED: Parameters<typeof reconciledGrantPatch>[0] = {
+  attributedStakeWei: "32000000000000000000000",
+  attributedPrincipalWei: "32000000000000000000000",
+  hasSbt: true,
+  bondAddress: "0xD9FF524e1e1959440E4C5F18aa0Fe8b54f01752b",
+  bondDeployed: true,
+  bondedStakeWei: "0", // activation (S6) has NOT run — must not block the settle
+  hasValidator: false,
+  unlockBlock: 1_000_000,
+  isUnlocked: false,
+  isKycVerified: false,
+};
+
+describe("reconciledGrantPatch — settle from chain after a restart", () => {
+  it("settles S3+S5 for a real on-chain grant (the 0xE14d2F9d case)", () => {
+    const patch = reconciledGrantPatch(GRANTED);
+    expect(patch).not.toBeNull();
+    expect(patch!.s3).toBe("settled");
+    expect(patch!.s5).toBe("settled");
+    expect(patch!.hasGrant).toBe(true);
+    expect(patch!.hasSbt).toBe(true);
+    // The REAL attributed stake is carried through, never a hardcoded literal (F1).
+    expect(patch!.s5StakeWei).toBe(GRANTED.attributedStakeWei);
+  });
+
+  it("does NOT require validator activation — S6 is a separate, human step", () => {
+    // bondedStakeWei "0" + hasValidator false is exactly the post-grant/pre-activate
+    // state. Gating the settle on it would re-strand every member before S6.
+    expect(reconciledGrantPatch({ ...GRANTED, bondedStakeWei: "0", hasValidator: false })).not.toBeNull();
+  });
+
+  it("returns null without an SBT — never advances an unpaid member", () => {
+    expect(reconciledGrantPatch({ ...GRANTED, hasSbt: false })).toBeNull();
+  });
+
+  it("returns null with no attributed stake", () => {
+    expect(reconciledGrantPatch({ ...GRANTED, attributedStakeWei: "0" })).toBeNull();
+  });
+
+  it("agrees with pollGrant's gate on every input (they cannot diverge)", () => {
+    for (const g of [
+      GRANTED,
+      { ...GRANTED, hasSbt: false },
+      { ...GRANTED, attributedStakeWei: "0" },
+      { ...GRANTED, attributedStakeWei: "0", hasSbt: false },
+    ]) {
+      const pollWouldSettle = isGrantOnChain(g) && g.hasSbt;
+      expect(reconciledGrantPatch(g) !== null).toBe(pollWouldSettle);
+    }
   });
 });
