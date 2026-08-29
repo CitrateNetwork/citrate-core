@@ -277,11 +277,29 @@ export function Coach({ store, s }: { store: Store; s: AppState }) {
     <div data-register="charter" style={{ position: "fixed", inset: 0, background: "rgba(14,15,12,.38)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50, padding: 40 }}>
       <div className="cc-fade-up" style={{ width: "100%", maxWidth: 440, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", padding: "20px 22px", display: "flex", flexDirection: "column", gap: 10 }}>
         <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-          First run · {s.coach + 1} of 3
+          First run · {s.coach + 1} of {steps.length}
         </span>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 440, fontSize: 19, lineHeight: 1.25 }}>{cstep.title}</span>
         <p style={{ fontSize: 13, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>{cstep.body}</p>
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4, alignItems: "center" }}>
+          {/* CX-S7.2 — a step's optional CTA navigates the user to the surface it names (e.g. the
+              groups step opens Groups, so a non-technical user actually reaches a Group). Advancing
+              the coach as it navigates keeps the walk moving. */}
+          {cstep.cta && (
+            <button
+              className="btn btn-sm"
+              style={{ marginRight: "auto" }}
+              onClick={() => {
+                store.go(cstep.cta!.route);
+                const nx = s.coach + 1;
+                if (nx >= steps.length) store.setState({ coach: -1, coachDone: true });
+                else store.setState({ coach: nx });
+                store.save();
+              }}
+            >
+              {cstep.cta.label}
+            </button>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={() => { store.setState({ coach: -1, coachDone: true }); store.save(); }}>
             Skip
           </button>

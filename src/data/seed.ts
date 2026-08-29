@@ -150,8 +150,13 @@ export const GRAPH = {
   ],
 };
 
-export const COACH_STEPS = [
+// CX-S7.2 — the first-run coach leads a non-technical user "in a Group with a model running"
+// (gS-ia): they finished onboarding with a model (S6.5), so the coach now leads them to Groups.
+// A step may carry an optional `cta` that navigates to a surface (store.go(route)).
+export type CoachStep = { id: string; title: string; body: string; cta?: { label: string; route: string } };
+export const COACH_STEPS: CoachStep[] = [
   { id: 'earn', title: 'Your node earns while this window is closed', body: 'The vitals strip is chain truth from your local node — height, peers, finality, and today\u2019s earnings, decomposed honestly on the Node page.' },
+  { id: 'groups', title: 'Start a Group — you already have a model running', body: 'Your Groups are private and end-to-end encrypted. Create one to message people 1:1 or together, share files across a private mesh, and put your running model to work with the people you trust.', cta: { label: 'Open your Groups', route: 'groups' } },
   { id: 'chat', title: 'The agent is grounded in your machine', body: 'It reads your memory graph and local chain state. Anything it wants to write comes back to you for approval — every time.' },
   { id: 'commissary', title: 'The Commissary is your tier\u2019s store-room', body: 'Apps, SDKs, docs, and services. Locked cards name the one action that unlocks them. Downloads are signed and checksum-verified.' },
 ];
