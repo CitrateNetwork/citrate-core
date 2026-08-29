@@ -23,7 +23,10 @@ fn tmp_dir(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    p.push(format!("citrate-core-hermes-{tag}-{nanos}-{:?}", std::thread::current().id()));
+    p.push(format!(
+        "citrate-core-hermes-{tag}-{nanos}-{:?}",
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&p).expect("mk tmpdir");
     p
 }
@@ -47,7 +50,10 @@ fn start_refuses_when_binary_missing() {
         dir.join("crash"),
     );
     let r = mgr.start();
-    assert!(matches!(r, Err(HermesError::BinaryNotFound(_))), "got {r:?}");
+    assert!(
+        matches!(r, Err(HermesError::BinaryNotFound(_))),
+        "got {r:?}"
+    );
     assert_eq!(mgr.status().state, "stopped");
 }
 
@@ -56,12 +62,18 @@ fn spec_env_carries_addr_and_token_path_never_the_token() {
     let (mgr, _dir) = stub_manager("env");
     let env: std::collections::BTreeMap<String, String> =
         mgr.spec_env_for_test().into_iter().collect();
-    assert_eq!(env.get(HERMES_ADDR_ENV).map(String::as_str), Some(HERMES_CONTROL_ADDR));
+    assert_eq!(
+        env.get(HERMES_ADDR_ENV).map(String::as_str),
+        Some(HERMES_CONTROL_ADDR)
+    );
     assert!(env.contains_key(HERMES_TOKEN_FILE_ENV));
     // The env carries the token FILE PATH, never a 64-hex token value (that would leak via `ps`).
     for (_k, v) in mgr.spec_env_for_test() {
         let looks_like_token = v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit());
-        assert!(!looks_like_token, "no bearer token may appear in the child env: {v}");
+        assert!(
+            !looks_like_token,
+            "no bearer token may appear in the child env: {v}"
+        );
     }
 }
 
@@ -69,7 +81,10 @@ fn spec_env_carries_addr_and_token_path_never_the_token() {
 fn control_url_is_loopback_http() {
     let (mgr, _dir) = stub_manager("url");
     assert_eq!(mgr.control_url(), format!("http://{HERMES_CONTROL_ADDR}"));
-    assert_eq!(mgr.status().control_url, format!("http://{HERMES_CONTROL_ADDR}"));
+    assert_eq!(
+        mgr.status().control_url,
+        format!("http://{HERMES_CONTROL_ADDR}")
+    );
 }
 
 #[test]
@@ -101,7 +116,10 @@ fn start_mints_a_0600_bearer_file_then_reaches_running_and_stops() {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    assert!(running, "hermes stub must reach Running under the supervisor");
+    assert!(
+        running,
+        "hermes stub must reach Running under the supervisor"
+    );
     assert!(mgr.is_running());
     mgr.stop();
     assert_eq!(mgr.status().state, "stopped");
@@ -185,12 +203,8 @@ impl HermesControl for MockControl {
 /// A manager wired to a mock control + a pre-set session bearer, without spawning a sidecar.
 fn control_manager(mock: MockControl) -> HermesManager {
     let dir = tmp_dir("ctrl");
-    let mgr = HermesManager::new(
-        sleep_bin(),
-        dir.join("token"),
-        dir.join("crash"),
-    )
-    .with_control(Box::new(mock));
+    let mgr = HermesManager::new(sleep_bin(), dir.join("token"), dir.join("crash"))
+        .with_control(Box::new(mock));
     mgr.set_token_for_test("deadbeef");
     mgr
 }
@@ -434,21 +448,38 @@ fn bridge_pending_dedups_the_same_effect_to_one_ceremony() {
         rpc_ok(serde_json::json!("0x8000")),
     ]));
 
-    let id1 = mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap().unwrap().id;
-    let id2 = mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap().unwrap().id;
-    assert_eq!(id1, id2, "the same effect re-bridges to the SAME ceremony (no double broadcast)");
+    let id1 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc)
+        .unwrap()
+        .unwrap()
+        .id;
+    let id2 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc)
+        .unwrap()
+        .unwrap()
+        .id;
+    assert_eq!(
+        id1, id2,
+        "the same effect re-bridges to the SAME ceremony (no double broadcast)"
+    );
 }
 
 #[test]
 fn bridge_pending_skips_a_non_chain_effect() {
     // An approval with no to/data (a code/shell effect) has no chain signature to bridge.
     let mut mock = MockControl::new();
-    mock.approvals_resp = (200, r#"[{"id":"run-code","kind":"high","summary":"exec"}]"#.to_string());
+    mock.approvals_resp = (
+        200,
+        r#"[{"id":"run-code","kind":"high","summary":"exec"}]"#.to_string(),
+    );
     let mgr = control_manager(mock);
     let ceremony = SignatureCeremony::new();
     let vault = vault_with_wallet();
     let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
-    assert!(mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap().is_none());
+    assert!(mgr
+        .bridge_pending(&ceremony, &vault, &rpc)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -460,8 +491,20 @@ fn resolve_head_posts_to_the_right_endpoint() {
     mgr.set_token_for_test("deadbeef");
 
     mgr.resolve_head(true).expect("approve resolves");
-    assert!(shared.last_post_url.lock().unwrap().as_ref().unwrap().ends_with("/approvals/approve"));
+    assert!(shared
+        .last_post_url
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .ends_with("/approvals/approve"));
 
     mgr.resolve_head(false).expect("reject resolves");
-    assert!(shared.last_post_url.lock().unwrap().as_ref().unwrap().ends_with("/approvals/reject"));
+    assert!(shared
+        .last_post_url
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .ends_with("/approvals/reject"));
 }

@@ -30,9 +30,18 @@ use crate::supervisor::{
 
 /// The origin stamped on every intent bridged from Hermes; the ceremony DISPLAYS it verbatim so a
 /// human approving a chain effect sees it came from the agent, not the local user.
+// Consumed by the ceremony-bridge commands, whose live consumer is the (s0-owned) lib.rs
+// `generate_handler!` registration — a 2-line spine-PR that lands after the S6.3/S6.4 lane-PRs.
+// Until then the bridge chain reads as dead in the lib target (same pattern S6.1 used for its WP).
+#[allow(dead_code)]
 const HERMES_ORIGIN: &str = "agent:hermes";
 /// The Citrate chain id (40204). A Hermes chain effect carries no chain id; the bridge stamps this.
 const CITRATE_CHAIN_ID: u64 = 40204;
+
+// CX-S6.4 — the code-task HIC routing surface. Declared as a submodule of this (s6-owned) file so the
+// new module needs no `mod` line in the (s0-owned) lib.rs; the file is still `agent_tools.rs`.
+#[path = "agent_tools.rs"]
+pub mod agent_tools;
 
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
@@ -374,7 +383,10 @@ impl HermesManager {
         }
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // A new session starts with a clean dedup map.
-        self.bridged.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.bridged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// The current status: supervisor state + the control URL + a coarse healthy flag.
@@ -497,7 +509,7 @@ impl HermesManager {
             return Ok(None);
         };
         // Only chain effects (carrying to+data) bridge to a signing ceremony; code/shell effects have
-        // their own HITL (S6.4), not a chain signature.
+        // their own HIC-1 control decision (S6.4), not a chain signature.
         let (Some(to), Some(data)) = (head.to.clone(), head.data.clone()) else {
             return Ok(None);
         };
@@ -579,6 +591,7 @@ fn gas_call(to: &str, data: &str) -> serde_json::Value {
 /// Build the ceremony intent for a Hermes chain effect: origin `agent:hermes`, an
 /// [`IntentKind::Transaction`] whose `raw` is the `{from, to, value, data, chainId, gas}` tx JSON the
 /// ceremony's B1.4 decoder consumes (so the human sees the real action + it signs a REAL tx). No key.
+#[allow(dead_code)] // live consumer = the s0 lib.rs command registration (spine-PR); see HERMES_ORIGIN.
 fn hermes_intent(to: &str, data: &str, from: &str, gas: Option<u64>) -> SignatureIntent {
     let mut obj = serde_json::json!({
         "from": from,
@@ -619,7 +632,10 @@ pub fn resolve_hermes_bin<R: tauri::Runtime>(
         if path.exists() {
             return Ok(path);
         }
-        return Err(format!("{HERMES_BIN_ENV} set but not found: {}", path.display()));
+        return Err(format!(
+            "{HERMES_BIN_ENV} set but not found: {}",
+            path.display()
+        ));
     }
     let resource = app
         .path()
@@ -762,7 +778,13 @@ pub fn hermes_run_skill(
 pub fn hermes_pending_approvals(
     app: tauri::AppHandle,
 ) -> std::result::Result<Vec<PendingApproval>, String> {
-    manager(&app)?.pending_approvals().map_err(|e| e.to_string())
+    let mut approvals = manager(&app)?
+        .pending_approvals()
+        .map_err(|e| e.to_string())?;
+    // S6.4 — normalize the sidecar's coarse risk level to the AgentHarnessDomain kind
+    // (chain|code|shell) so the UI shows the right HIC-1 control (signature vs approve/reject).
+    agent_tools::normalize_kinds(&mut approvals);
+    Ok(approvals)
 }
 
 /// Stop the sidecar (SIGTERM → grace → SIGKILL; the session bearer is wiped). Idempotent.
@@ -777,6 +799,7 @@ pub fn hermes_stop(app: tauri::AppHandle) -> std::result::Result<(), String> {
 /// nothing pending / the head is a non-chain effect. The user then approves it via the normal
 /// ceremony path (`sign_and_broadcast`) and calls `hermes_resolve(true)` to let the capsule proceed.
 #[tauri::command]
+#[allow(dead_code)] // registered by the s0 lib.rs spine-PR; see HERMES_ORIGIN.
 pub fn hermes_bridge_pending(
     app: tauri::AppHandle,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
@@ -792,11 +815,11 @@ pub fn hermes_bridge_pending(
 /// lets the (already-signed-and-broadcast) effect proceed; `false` aborts it. The head is blocked
 /// until this call, so it targets the effect that was bridged.
 #[tauri::command]
-pub fn hermes_resolve(
-    app: tauri::AppHandle,
-    approve: bool,
-) -> std::result::Result<(), String> {
-    manager(&app)?.resolve_head(approve).map_err(|e| e.to_string())
+#[allow(dead_code)] // registered by the s0 lib.rs spine-PR; see HERMES_ORIGIN.
+pub fn hermes_resolve(app: tauri::AppHandle, approve: bool) -> std::result::Result<(), String> {
+    manager(&app)?
+        .resolve_head(approve)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
