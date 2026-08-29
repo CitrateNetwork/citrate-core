@@ -1,285 +1,500 @@
-//! CX-S4 (lane s4) — group private P2P cluster host commands (C-20).
+//! CX-S4 (lane s4) — group private P2P cluster (C-20), daemon-backed.
 //!
-//! ## S4.1 — roster → allowed-peers derivation (the RBAC→network boundary)
-//! A group's cluster is a private P2P mesh among its members. The authorization boundary is the
-//! group roster: the cluster admits a peer connection ONLY from an address in the roster. [`allowed_peers`]
-//! is that derivation — canonical, de-duplicated, stable across nodes — and is the set the hybrid
-//! Noise identities are minted from in S4.2 (D-24: Noise-identity + libp2p-gossipsub). S4.1 ships +
-//! TESTS the derivation; the live transport (dialing, gossipsub, connectivity, shared files) is S4.2,
-//! so the `cluster_*` commands below stay honest `not wired` until then (Rule 1 — never fake a peer).
+//! ## S4/CL-S2 — spawn the `cluster-daemon` and route the cluster over its UDS socket
+//! A Group's cluster is a private P2P mesh among its members. The mesh + the admission engine live in
+//! the standalone **citrate-cluster** daemon (Noise + gossipsub + the `cluster-core` RBAC gate — too
+//! heavy to link into this lean tree, exactly like the comms member-daemon). citrate-core runs it as
+//! a LOCAL supervised sidecar and speaks a light loopback Unix-socket JSON IPC to it. The admission
+//! logic that lived here in S4.1–S4.3 has MOVED to its canonical home, `cluster-core` (ADR-2026-08-28
+//! cluster-daemon-extraction) — this module is now a thin client, mirroring `comms.rs`.
 //!
-//! The S4.1 cluster VIEW (who your peers WOULD be) is composed on the frontend from the existing
-//! `groups_roster` command; this module owns the canonical authorization algorithm the transport
-//! will enforce. Names frozen; registered in lib.rs.
+//! The cluster never re-derives group membership: citrate-core feeds it the roster (from the comms
+//! member-daemon via `comms::groups_roster`) with `setRoster`, and the daemon reconciles the mesh +
+//! enforces the RBAC boundary. ENV config (never argv — leaks to `ps`): `CITRATE_CLUSTER_SOCKET`,
+//! `CITRATE_CLUSTER_BEARER_FILE` (0600 token file), `CITRATE_CLUSTER_SELF_ADDR` (this member's addr).
+//! In-process transport by default (single node — real admission, no cross-machine fan-out); the
+//! libp2p mesh is a config flip (`CITRATE_CLUSTER_LISTEN` + a seed) enabled once soaked (CL-S3).
 
-/// Derive the cluster's allowed-peer set from a group roster (CX-S4.1). The cluster admits P2P
-/// connections ONLY from addresses in this set — the RBAC boundary the S4.2 transport enforces when
-/// minting per-peer Noise identities. Canonicalizes each address (strip `0x`, lowercase), drops
-/// anything that is not a 20-byte hex address, de-duplicates, and sorts — so two nodes computing the
-/// set from the same roster get byte-identical results (a stable mesh membership).
-// Proven by cluster_tests in S4.1; its live consumer (per-peer Noise identity minting + gossipsub
-// admission) lands in S4.2, so it reads as unused for exactly one WP (the S3.1 primitive pattern).
-#[allow(dead_code)]
-pub(crate) fn allowed_peers(roster: &[String]) -> Vec<String> {
-    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for raw in roster {
-        if let Some(addr) = canonical_address(raw) {
-            set.insert(addr);
-        }
-    }
-    set.into_iter().collect()
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
+
+use crate::supervisor::{
+    BackoffPolicy, HealthCheck, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
+};
+
+/// Env override for the bundled `cluster-daemon` binary path (dev/tests).
+pub const CLUSTER_DAEMON_BIN_ENV: &str = "CITRATE_CLUSTER_BIN";
+
+// The daemon's env knobs (cluster-daemon/src/main.rs).
+const ENV_SOCKET: &str = "CITRATE_CLUSTER_SOCKET";
+const ENV_BEARER_FILE: &str = "CITRATE_CLUSTER_BEARER_FILE";
+const ENV_SELF_ADDR: &str = "CITRATE_CLUSTER_SELF_ADDR";
+
+const TOKEN_LEN: usize = 32;
+const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
+const CLUSTER_HEALTHY_AFTER: Duration = Duration::from_secs(30);
+const CLUSTER_START_GRACE: Duration = Duration::from_secs(20);
+
+// ---------------------------------------------------------------------------
+// Errors — coarse, secret-free.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum ClusterError {
+    /// No member identity yet (no wallet address to be this node's cluster id).
+    NotConfigured,
+    /// The bundled `cluster-daemon` binary could not be located (packaging gap).
+    BinaryNotFound(String),
+    /// The supervisor refused to start the sidecar.
+    Spawn(String),
+    /// The sidecar is already running (idempotent-start guard).
+    AlreadyRunning,
+    /// A loopback IPC failure (socket, bearer, framing) — no secret carried.
+    Ipc(String),
 }
 
-/// Canonical form of an EVM address for the peer set: lowercase, no `0x`, exactly 40 hex chars.
-/// Returns `None` for anything that is not a well-formed 20-byte address (dropped from the set).
-fn canonical_address(raw: &str) -> Option<String> {
-    let h = raw.trim().trim_start_matches("0x").to_ascii_lowercase();
-    if h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
-        Some(h)
-    } else {
-        None
+impl std::fmt::Display for ClusterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClusterError::NotConfigured => write!(f, "cluster identity not available (no wallet)"),
+            ClusterError::BinaryNotFound(m) => write!(f, "cluster-daemon binary not bundled: {m}"),
+            ClusterError::Spawn(m) => write!(f, "cluster-daemon spawn error: {m}"),
+            ClusterError::AlreadyRunning => write!(f, "cluster-daemon already running"),
+            ClusterError::Ipc(m) => write!(f, "cluster ipc error: {m}"),
+        }
+    }
+}
+impl std::error::Error for ClusterError {}
+
+type Result<T> = std::result::Result<T, ClusterError>;
+
+// ---------------------------------------------------------------------------
+// The manager — supervises the cluster-daemon sidecar + holds the IPC bearer.
+// ---------------------------------------------------------------------------
+
+/// Supervises the `cluster-daemon` sidecar (resolve binary → spawn ENV-configured → UDS-socket
+/// liveness → bounded-backoff restart) and holds the session bearer for the IPC.
+pub struct ClusterDaemonManager {
+    bin: PathBuf,
+    socket_path: PathBuf,
+    bearer_path: PathBuf,
+    data_dir: PathBuf,
+    /// This node's member address (hex, its cluster identity). Empty until known (no wallet).
+    self_addr: String,
+    crash_record_path: PathBuf,
+    health_interval: Duration,
+    #[cfg(test)]
+    spawn_args_override: Option<Vec<String>>,
+    token: Mutex<Option<Zeroizing<String>>>,
+    sup: Mutex<Option<Supervisor>>,
+}
+
+impl ClusterDaemonManager {
+    pub fn new(
+        bin: PathBuf,
+        socket_path: PathBuf,
+        bearer_path: PathBuf,
+        data_dir: PathBuf,
+        self_addr: impl Into<String>,
+        crash_record_path: PathBuf,
+    ) -> Self {
+        ClusterDaemonManager {
+            bin,
+            socket_path,
+            bearer_path,
+            data_dir,
+            self_addr: self_addr.into(),
+            crash_record_path,
+            health_interval: HEALTH_INTERVAL,
+            #[cfg(test)]
+            spawn_args_override: None,
+            token: Mutex::new(None),
+            sup: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_health_interval(mut self, interval: Duration) -> Self {
+        self.health_interval = interval;
+        self
+    }
+    #[cfg(test)]
+    pub fn with_spawn_args(mut self, args: Vec<String>) -> Self {
+        self.spawn_args_override = Some(args);
+        self
+    }
+
+    /// Whether the daemon can start — this node has a member identity (a wallet address).
+    pub fn is_configured(&self) -> bool {
+        !self.self_addr.is_empty()
+    }
+
+    #[cfg(test)]
+    fn effective_spawn_args(&self) -> Vec<String> {
+        self.spawn_args_override.clone().unwrap_or_default()
+    }
+    #[cfg(not(test))]
+    fn effective_spawn_args(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Build the [`SidecarSpec`]: ENV carries the socket + bearer-file PATH + this node's address
+    /// (never a token in argv). Liveness = the UDS socket accepts a connection (no HTTP).
+    fn build_spec(&self) -> SidecarSpec {
+        let mut spec =
+            SidecarSpec::new("cluster-daemon", self.bin.clone(), self.effective_spawn_args());
+        spec.env = vec![
+            (ENV_SOCKET.to_string(), self.socket_path.to_string_lossy().to_string()),
+            (ENV_BEARER_FILE.to_string(), self.bearer_path.to_string_lossy().to_string()),
+            (ENV_SELF_ADDR.to_string(), self.self_addr.clone()),
+        ];
+        let sock = self.socket_path.clone();
+        spec.health_check = Some(HealthCheck {
+            interval: self.health_interval,
+            grace: CLUSTER_START_GRACE,
+            probe: std::sync::Arc::new(move || UnixStream::connect(&sock).is_ok()),
+        });
+        spec
+    }
+
+    #[cfg(test)]
+    pub fn spec_env_for_test(&self) -> Vec<(String, String)> {
+        self.build_spec().env
+    }
+
+    /// Start the sidecar IFF the identity is present AND the binary exists. Mints a fresh session
+    /// bearer, persists it 0600 (the daemon adopts it), spawns under the supervisor. Fails CLOSED.
+    pub fn start(&self) -> Result<()> {
+        let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            return Err(ClusterError::AlreadyRunning);
+        }
+        if !self.is_configured() {
+            return Err(ClusterError::NotConfigured);
+        }
+        if !self.bin.exists() {
+            return Err(ClusterError::BinaryNotFound(self.bin.display().to_string()));
+        }
+        std::fs::create_dir_all(&self.data_dir).ok();
+        let token = mint_bearer();
+        persist_secret_0600(&self.bearer_path, &token)?;
+        let spec = self.build_spec();
+        let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+        config.backoff = BackoffPolicy::new();
+        config.healthy_after = CLUSTER_HEALTHY_AFTER;
+        let sup = Supervisor::start(config).map_err(|e| ClusterError::Spawn(e.to_string()))?;
+        *guard = Some(sup);
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
+        Ok(())
+    }
+
+    #[allow(dead_code)] // graceful teardown; used by tests + a future shutdown hook
+    pub fn stop(&self) {
+        let sup = {
+            let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+            guard.take()
+        };
+        if let Some(sup) = sup {
+            sup.stop();
+            drop(sup);
+        }
+        let _ = std::fs::remove_file(&self.bearer_path);
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    pub fn is_running(&self) -> bool {
+        let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(
+            guard.as_ref().map(|s| s.status().state),
+            Some(SupervisorState::Running)
+        )
+    }
+
+    fn bearer(&self) -> Option<Zeroizing<String>> {
+        self.token.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Send one request to the daemon over its UDS socket and return the response.
+    fn ipc(&self, req: &Request) -> Result<Response> {
+        let bearer = self.bearer().ok_or(ClusterError::NotConfigured)?;
+        cluster_ipc(&self.socket_path, &bearer, req)
+    }
+}
+
+// ---- bearer token (mirrors comms.rs / hermes.rs) ----
+
+fn mint_bearer() -> Zeroizing<String> {
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    let mut bytes = Zeroizing::new([0u8; TOKEN_LEN]);
+    OsRng.fill_bytes(bytes.as_mut());
+    Zeroizing::new(hex::encode(bytes.as_ref()))
+}
+
+fn persist_secret_0600(path: &Path, secret: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ClusterError::Ipc(e.kind().to_string()))?;
+        harden_dir_perms(parent).map_err(|e| ClusterError::Ipc(e.kind().to_string()))?;
+    }
+    std::fs::write(path, secret.as_bytes()).map_err(|e| ClusterError::Ipc(e.kind().to_string()))?;
+    harden_perms(path).map_err(|e| ClusterError::Ipc(e.kind().to_string()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn harden_perms(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o600);
+    std::fs::set_permissions(path, perms)
+}
+#[cfg(not(unix))]
+fn harden_perms(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+#[cfg(unix)]
+fn harden_dir_perms(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if dir.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let mut perms = std::fs::metadata(dir)?.permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(dir, perms)
+}
+#[cfg(not(unix))]
+fn harden_dir_perms(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Resolve the bundled `cluster-daemon` binary (env override → resource dir).
+pub fn resolve_cluster_daemon_bin(app: &tauri::AppHandle) -> std::result::Result<PathBuf, String> {
+    use tauri::Manager;
+    if let Ok(p) = std::env::var(CLUSTER_DAEMON_BIN_ENV) {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(format!("{CLUSTER_DAEMON_BIN_ENV} set but not found: {}", path.display()));
+    }
+    let resource = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("cluster-daemon");
+    Ok(resource)
+}
+
+// ---------------------------------------------------------------------------
+// The UDS JSON client — mirrors cluster-daemon::ipc.
+// ---------------------------------------------------------------------------
+
+/// A request to the daemon. `op`-tagged; mirrors cluster-daemon::ipc::Request.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+enum Request {
+    SetRoster { group: String, roster: Vec<(String, String)> },
+    Join { group: String },
+    Leave { group: String },
+    Status { group: String },
+    Peers { group: String },
+    ShareFile { group: String, cid: String },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PeerView {
+    address: String,
+    online: bool,
+}
+
+/// A response from the daemon. `type`-tagged; mirrors cluster-daemon::ipc::Response.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum Response {
+    Ok,
+    Reconciled {
+        #[allow(dead_code)]
+        evicted: Vec<String>,
+    },
+    Status {
+        online: usize,
+        total: usize,
+        /// The group's co-pinned file set. `default` so this stays compatible with a daemon that
+        /// predates the co-pin field (CL-S2 daemon side).
+        #[serde(default, rename = "sharedFiles")]
+        shared_files: Vec<String>,
+    },
+    Peers {
+        peers: Vec<PeerView>,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// Connect to the daemon's UDS, authenticate with the bearer, send one request, read one response.
+fn cluster_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
+    let stream = UnixStream::connect(socket_path)
+        .map_err(|e| ClusterError::Ipc(format!("connect {}: {e}", socket_path.display())))?;
+    let mut w = stream.try_clone().map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    let mut r = BufReader::new(stream);
+
+    // Auth handshake: {"token":"..."} → {"type":"ready"}.
+    writeln!(w, "{{\"token\":\"{bearer}\"}}").map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    let mut line = String::new();
+    r.read_line(&mut line).map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    if !line.contains("ready") {
+        return Err(ClusterError::Ipc(format!("auth rejected: {}", line.trim())));
+    }
+
+    // One request line → one response line.
+    let body = serde_json::to_string(req).map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    writeln!(w, "{body}").map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    line.clear();
+    r.read_line(&mut line).map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    serde_json::from_str::<Response>(line.trim())
+        .map_err(|e| ClusterError::Ipc(format!("decode: {e}: {}", line.trim())))
+}
+
+// ---------------------------------------------------------------------------
+// The bridge DTOs — serialize to the frozen ClusterStatus / ClusterPeer shapes.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterStatusDto {
+    group_id: String,
+    online: usize,
+    total: usize,
+    shared_files: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ClusterPeerDto {
+    address: String,
+    online: bool,
+}
+
+// ---------------------------------------------------------------------------
+// The lazy-start singleton + roster feed from comms.
+// ---------------------------------------------------------------------------
+
+static MANAGER: OnceLock<ClusterDaemonManager> = OnceLock::new();
+
+/// This node's member address = its wallet's public address (CL-2: the cluster id is the member
+/// identity). Read from custody; auto-unlocks the device-bound vault. No secret crosses this.
+fn self_address(app: &tauri::AppHandle) -> std::result::Result<String, String> {
+    use tauri::Manager;
+    let custody = app
+        .try_state::<crate::custody::CustodyState>()
+        .ok_or_else(|| "custody not initialized".to_string())?;
+    crate::wallet::address_auto_unlocked(&custody.0)
+        .map(|info| info.address)
+        .map_err(|e| e.to_string())
+}
+
+/// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton.
+fn ensure_started(app: &tauri::AppHandle) -> std::result::Result<&'static ClusterDaemonManager, String> {
+    use tauri::Manager;
+    if let Some(m) = MANAGER.get() {
+        if !m.is_running() {
+            m.start().map_err(|e| e.to_string())?;
+        }
+        return Ok(m);
+    }
+    let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("cluster");
+    let self_addr = self_address(app)?;
+    let bin = resolve_cluster_daemon_bin(app)?;
+    let mgr = ClusterDaemonManager::new(
+        bin,
+        data_root.join("cluster.sock"),
+        data_root.join("cluster.bearer"),
+        data_root.clone(),
+        self_addr,
+        data_root.join("cluster-crash.jsonl"),
+    );
+    mgr.start().map_err(|e| e.to_string())?;
+    Ok(MANAGER.get_or_init(|| mgr))
+}
+
+/// Route one request to the running daemon.
+fn route(app: &tauri::AppHandle, req: Request) -> std::result::Result<Response, String> {
+    ensure_started(app)?.ipc(&req).map_err(|e| e.to_string())
+}
+
+/// Push the group's current roster (from the comms member-daemon) to the cluster daemon so it
+/// reconciles the mesh. The cluster is a Group's cluster — no group/roster means no cluster.
+fn feed_roster(app: &tauri::AppHandle, group: &str) -> std::result::Result<(), String> {
+    let roster = crate::comms::groups_roster(app.clone(), group.to_string())?;
+    match route(app, Request::SetRoster { group: group.to_string(), roster })? {
+        Response::Reconciled { .. } | Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+fn parse_ok(r: Response) -> std::result::Result<(), String> {
+    match r {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
     }
 }
 
 // ---------------------------------------------------------------------------
-// CX-S4.2 — admission gate + membership lifecycle (the RBAC→network safety core).
-//
-// S4.1 answered "who COULD be a peer" (the roster). S4.2 answers "who IS in the mesh, and can we
-// prove no unauthorized peer ever is". Admission is role-gated (D-24: role >= Member — a guest is in
-// the group's conversation but NOT its compute/file mesh), and membership is reconciled against the
-// live roster so an offboard/role-drop EVICTS the peer in the same step (the offboard safety
-// property). The libp2p wire that dials/gossips over this membership is S4.3 (a sidecar reusing
-// citrate-compute-pool/training-worker/libp2p_transport.rs — src-tauri stays lean, no libp2p link,
-// mirroring the comms member-daemon). Formal model: src-tauri/formal/ClusterAdmission.tla.
+// Tauri command surface — cluster: status / join / peers / shareFile / leave.
 // ---------------------------------------------------------------------------
 
-/// The minimum group role admitted to a cluster (D-24). Guests/agents below this are group members
-/// but not mesh peers. Unknown roles rank lowest (fail closed).
-const MIN_CLUSTER_RANK: u8 = 2; // Member
-
-/// Rank the group role vocabulary (matches comms Role) so admission can compare by threshold.
-fn role_rank(role: &str) -> u8 {
-    match role {
-        "owner" => 5,
-        "admin" => 4,
-        "partner" => 3,
-        "member" => 2,
-        "agent" => 1,
-        "guest" => 0,
-        _ => 0, // unknown → lowest (fail closed — never admit on an unrecognized role)
-    }
-}
-
-/// The role-gated allowed set from a (address, role) roster: canonical addresses whose role is
-/// >= Member. This is the S4.2 refinement of S4.1's `allowed_peers` (which is address-only).
-fn allowed_set(roster: &[(String, String)]) -> std::collections::BTreeSet<String> {
-    let mut set = std::collections::BTreeSet::new();
-    for (addr, role) in roster {
-        if role_rank(role) >= MIN_CLUSTER_RANK {
-            if let Some(a) = canonical_address(addr) {
-                set.insert(a);
-            }
-        }
-    }
-    set
-}
-
-/// Admission policy: a candidate is admitted IFF its (canonical) address is in the role-gated
-/// allowed set. The transport enforces this before dialing / accepting a topic subscription.
-#[allow(dead_code)] // consumed by the S4.3 transport; exercised by cluster_tests
-pub(crate) fn admit(address: &str, allowed: &std::collections::BTreeSet<String>) -> bool {
-    canonical_address(address)
-        .map(|a| allowed.contains(&a))
-        .unwrap_or(false)
-}
-
-/// The cluster's live membership: the role-gated allowed set (from the roster) and the set of
-/// currently-admitted peers. INVARIANT (formal: ClusterAdmission): `admitted ⊆ allowed` at all times
-/// — no unauthorized peer is ever in the mesh, and an offboard/role-drop evicts in the same step.
-#[allow(dead_code)] // the state machine the S4.3 libp2p transport drives; proven by cluster_tests
-pub(crate) struct ClusterMembership {
-    allowed: std::collections::BTreeSet<String>,
-    admitted: std::collections::BTreeSet<String>,
-}
-
-#[allow(dead_code)]
-impl ClusterMembership {
-    /// Open a membership over a group roster (address, role). No peer is admitted until it joins.
-    pub fn new(roster: &[(String, String)]) -> Self {
-        ClusterMembership {
-            allowed: allowed_set(roster),
-            admitted: std::collections::BTreeSet::new(),
-        }
-    }
-
-    /// A candidate presents itself (a valid, owner-signed RoleAssertion for this group was verified
-    /// upstream by the comms layer → we get its (address, role) here). Admit IFF the policy passes;
-    /// returns whether it was admitted. Idempotent.
-    pub fn join(&mut self, address: &str, role: &str) -> bool {
-        if role_rank(role) < MIN_CLUSTER_RANK {
-            return false;
-        }
-        match canonical_address(address) {
-            Some(a) if self.allowed.contains(&a) => {
-                self.admitted.insert(a);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// A peer leaves (voluntarily or dropped). Idempotent.
-    pub fn leave(&mut self, address: &str) {
-        if let Some(a) = canonical_address(address) {
-            self.admitted.remove(&a);
-        }
-    }
-
-    /// Reconcile against a new roster (offboard / role change): recompute the allowed set and EVICT
-    /// any admitted peer no longer allowed (the offboard safety property — one step, no window where
-    /// a removed member is still meshed). Returns the evicted peers (the transport disconnects them).
-    pub fn reconcile(&mut self, roster: &[(String, String)]) -> Vec<String> {
-        self.allowed = allowed_set(roster);
-        let evicted: Vec<String> = self
-            .admitted
-            .iter()
-            .filter(|a| !self.allowed.contains(*a))
-            .cloned()
-            .collect();
-        for e in &evicted {
-            self.admitted.remove(e);
-        }
-        evicted
-    }
-
-    /// The currently-admitted peers (canonical addresses), sorted.
-    pub fn admitted(&self) -> Vec<String> {
-        self.admitted.iter().cloned().collect()
-    }
-
-    /// Whether `address` is currently admitted.
-    pub fn is_admitted(&self, address: &str) -> bool {
-        canonical_address(address)
-            .map(|a| self.admitted.contains(&a))
-            .unwrap_or(false)
-    }
-
-    /// The safety invariant, checkable at runtime + asserted in tests: admitted ⊆ allowed.
-    pub fn invariant_holds(&self) -> bool {
-        self.admitted.is_subset(&self.allowed)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// CX-S4.3 (lean) — the transport seam + the membership-driven connection lifecycle.
-//
-// The membership state machine (S4.2) decides WHO may be meshed; the transport is the WIRE. Binding
-// them (S4.3) is the point: an admission opens a connection, a leave or offboard-eviction closes it,
-// so the wire state always tracks the admitted set — which tracks the roster (the RBAC→network
-// boundary, end to end). The real transport is the S4.3 libp2p SIDECAR (Noise identity + gossipsub
-// fan-out, reusing citrate-compute-pool/training-worker/libp2p_transport.rs); src-tauri stays lean
-// (no libp2p link) and speaks to it over a UDS, mirroring the comms member-daemon. Here we own the
-// SEAM + the pure driving logic, proven against an in-process transport; the sidecar impls the trait.
-// ---------------------------------------------------------------------------
-
-/// The cluster's network transport — the seam the membership lifecycle drives. `dial` opens a Noise
-/// session + joins the peer to the group's gossipsub topic; `disconnect` tears it down. Both are
-/// idempotent. The real impl is the S4.3 libp2p sidecar.
-#[allow(dead_code)]
-pub(crate) trait ClusterTransport {
-    fn dial(&mut self, peer: &str);
-    fn disconnect(&mut self, peer: &str);
-    fn connected(&self) -> Vec<String>;
-}
-
-/// Binds a [`ClusterMembership`] to a [`ClusterTransport`]: admit → dial, leave/evict → disconnect.
-/// INVARIANT: the connected (wire) set never contains a peer that is not admitted — the transport
-/// cannot outrun the RBAC gate. Proven against an in-process transport in cluster_tests; the S4.3
-/// libp2p sidecar runs this exact lifecycle.
-#[allow(dead_code)]
-pub(crate) struct ClusterSession<T: ClusterTransport> {
-    membership: ClusterMembership,
-    transport: T,
-}
-
-#[allow(dead_code)]
-impl<T: ClusterTransport> ClusterSession<T> {
-    pub fn new(roster: &[(String, String)], transport: T) -> Self {
-        ClusterSession {
-            membership: ClusterMembership::new(roster),
-            transport,
-        }
-    }
-
-    /// A candidate joins: admit per policy, and on success DIAL it. Returns whether admitted.
-    pub fn join(&mut self, address: &str, role: &str) -> bool {
-        let admitted = self.membership.join(address, role);
-        if admitted {
-            if let Some(a) = canonical_address(address) {
-                self.transport.dial(&a);
-            }
-        }
-        admitted
-    }
-
-    /// A peer leaves: drop membership + disconnect the wire.
-    pub fn leave(&mut self, address: &str) {
-        self.membership.leave(address);
-        if let Some(a) = canonical_address(address) {
-            self.transport.disconnect(&a);
-        }
-    }
-
-    /// The roster changed (offboard / role drop): reconcile membership and DISCONNECT every evicted
-    /// peer in the same step — the wire is torn down for a removed member with no window. Returns the
-    /// evicted peers.
-    pub fn reconcile(&mut self, roster: &[(String, String)]) -> Vec<String> {
-        let evicted = self.membership.reconcile(roster);
-        for e in &evicted {
-            self.transport.disconnect(e);
-        }
-        evicted
-    }
-
-    pub fn membership(&self) -> &ClusterMembership {
-        &self.membership
-    }
-
-    /// Whether the wire never contains an unadmitted peer (connected ⊆ admitted) — the S4.3 safety
-    /// property the transport must preserve.
-    pub fn wire_tracks_admitted(&self) -> bool {
-        let admitted: std::collections::BTreeSet<String> = self.membership.admitted().into_iter().collect();
-        self.transport.connected().iter().all(|p| admitted.contains(p))
-    }
-}
-
-fn not_wired(cmd: &str) -> Result<(), String> {
-    Err(format!("cluster::{cmd} is not wired yet (CX-S4.3 libp2p transport)"))
-}
-
+/// **cluster_status** — the group's cluster status (connected / authorized + shared files).
 #[tauri::command]
-pub fn cluster_status() -> Result<(), String> {
-    not_wired("status")
+pub fn cluster_status(app: tauri::AppHandle, group: String) -> std::result::Result<ClusterStatusDto, String> {
+    feed_roster(&app, &group)?;
+    match route(&app, Request::Status { group: group.clone() })? {
+        Response::Status { online, total, shared_files } => {
+            Ok(ClusterStatusDto { group_id: group, online, total, shared_files })
+        }
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
 
+/// **cluster_peers** — the group's authorized peers with live connection state.
 #[tauri::command]
-pub fn cluster_join() -> Result<(), String> {
-    not_wired("join")
+pub fn cluster_peers(app: tauri::AppHandle, group: String) -> std::result::Result<Vec<ClusterPeerDto>, String> {
+    feed_roster(&app, &group)?;
+    match route(&app, Request::Peers { group })? {
+        Response::Peers { peers } => {
+            Ok(peers.into_iter().map(|p| ClusterPeerDto { address: p.address, online: p.online }).collect())
+        }
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
 
+/// **cluster_join** — this node joins the group's mesh.
 #[tauri::command]
-pub fn cluster_peers() -> Result<(), String> {
-    not_wired("peers")
+pub fn cluster_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
+    feed_roster(&app, &group)?;
+    parse_ok(route(&app, Request::Join { group })?)
 }
 
+/// **cluster_share_file** — announce a co-pinned CID to the group over the mesh.
 #[tauri::command]
-pub fn cluster_share_file() -> Result<(), String> {
-    not_wired("share_file")
+pub fn cluster_share_file(app: tauri::AppHandle, group: String, cid: String) -> std::result::Result<(), String> {
+    parse_ok(route(&app, Request::ShareFile { group, cid })?)
 }
 
+/// **cluster_leave** — this node leaves the group's mesh.
 #[tauri::command]
-pub fn cluster_leave() -> Result<(), String> {
-    not_wired("leave")
+pub fn cluster_leave(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
+    parse_ok(route(&app, Request::Leave { group })?)
 }
 
 #[cfg(test)]

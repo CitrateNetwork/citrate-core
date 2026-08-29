@@ -1,29 +1,21 @@
 // CX bridge impl — cluster (C-20), TAURI. Owned by lane s4 (CX-S4).
 //
-// S4.1: the cluster's authorized peer set IS the group roster (the RBAC→network boundary — Rust
-// `cluster::allowed_peers`). status/peers compose that view from the existing `groups_roster`
-// command; every peer is reported `online: false` and `status.online: 0` because the live P2P
-// transport (dialing, gossipsub connectivity, shared files) is S4.2 — we never fake a live peer
-// (Rule 1). join/shareFile/leave invoke the Rust cluster commands, which honestly report "not wired
-// yet (CX-S4.2 libp2p transport)".
+// CL-S2: the cluster is now DAEMON-BACKED. citrate-core spawns the citrate-cluster sidecar and the
+// `cluster_*` commands route over its UDS socket — the daemon holds the membership (admission via
+// cluster-core) + the co-pinned shared-file set, feeding on the group roster (from the comms daemon).
+// status/peers return REAL daemon state; `online` reflects live mesh connectivity (0 until peers are
+// actually connected — no fabricated peers, Rule 1). shareFile announces a co-pin over the mesh.
 import { invoke } from "@tauri-apps/api/core";
 import type { ClusterDomain, ClusterPeer, ClusterStatus } from "../domains";
 
-type Pair = [string, string]; // (address, role) from groups_roster
-
 export const tauriCluster: ClusterDomain = {
-  async status(groupId): Promise<ClusterStatus> {
-    const roster = await invoke<Pair[]>("groups_roster", { group: groupId });
-    // total = the authorized set; online = 0 until the S4.2 transport reports real connectivity.
-    return { groupId, online: 0, total: roster.length, sharedFiles: [] };
+  status(groupId): Promise<ClusterStatus> {
+    return invoke<ClusterStatus>("cluster_status", { group: groupId });
   },
-  async peers(groupId): Promise<ClusterPeer[]> {
-    const roster = await invoke<Pair[]>("groups_roster", { group: groupId });
-    return roster.map(([address]) => ({ address, online: false }));
+  peers(groupId): Promise<ClusterPeer[]> {
+    return invoke<ClusterPeer[]>("cluster_peers", { group: groupId });
   },
   async join(groupId) {
-    // The mesh membership is derived from the roster (you're already a member if you're in the
-    // group); actually dialing the mesh is S4.2. Honest error from the Rust command.
     await invoke("cluster_join", { group: groupId });
   },
   async shareFile(groupId, cid) {
