@@ -5,7 +5,8 @@ import { OnChainSbtEmblem } from "../identity/SbtEmblem";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
-// [id, label, iconA, iconB] — verbatim from the design's NAVI list.
+// [id, label, iconA, iconB] — verbatim from the design's NAVI list. Ordering/grouping is finalized
+// in CX-S7 via SECTIONS below (this stays the flat item registry the sections index into).
 export const NAVI: [string, string, string, string][] = [
   ["dashboard", "Dashboard", "M3 11 L12 3 L21 11 V20 H14 V14 H10 V20 H3 Z", "M0 0"],
   ["wallet", "Wallet", "M3 7 V17 A2 2 0 0 0 5 19 H19 A2 2 0 0 0 21 17 V9 A2 2 0 0 0 19 7 Z M3 7 A2 2 0 0 1 5 5 H16", "M15.5 13 H17.5"],
@@ -15,13 +16,23 @@ export const NAVI: [string, string, string, string][] = [
   ["comms", "Comms", "M18 16 V11 A6 6 0 0 0 6 11 V16 L4 18 H20 Z", "M10 21 A2 2 0 0 0 14 21"],
   ["commissary", "Commissary", "M21 8 L12 3 L3 8 V16 L12 21 L21 16 Z", "M3 8 L12 13 L21 8 M12 13 V21"],
   ["settings", "Settings", "M4 7 H20 M4 12 H20 M4 17 H20", "M9 5 V9 M15 10 V14 M8 15 V19"],
-  // CX surfaces (planset citrate-core-social, CX-S0.4). IA/ordering is finalized in CX-S7.
   ["models", "Models", "M4 7 L12 3 L20 7 L12 11 Z", "M4 12 L12 16 L20 12 M4 17 L12 21 L20 17"],
   ["files", "Files", "M6 3 H14 L18 7 V21 H6 Z", "M14 3 V7 H18 M9 12 H15 M9 16 H15"],
   ["groups", "Groups", "M8 11 A3 3 0 1 0 8 5 A3 3 0 0 0 8 11 Z M2 20 A6 6 0 0 1 14 20", "M16 11 A3 3 0 0 0 16 5 M18 20 A6 6 0 0 0 15 15"],
   ["cluster", "Cluster", "M12 5 A2 2 0 1 0 12 4.99 M5 18 A2 2 0 1 0 5 17.99 M19 18 A2 2 0 1 0 19 17.99", "M12 7 L6 16 M12 7 L18 16"],
   ["train", "Train", "M4 18 L9 12 L13 15 L20 6", "M4 20 H20 M4 4 V20"],
   ["agent", "Agent", "M8 4 H16 V10 A4 4 0 0 1 8 10 Z M6 20 A6 6 0 0 1 18 20", "M10 7 H10.01 M14 7 H14.01"],
+];
+
+// CX-S7.1 — the grandma-proof IA (gS-ia): the app is organized around YOU + YOUR GROUPS, not a flat
+// list of technical primitives. Each section lists the nav ids (from NAVI) in its group; "alf" is
+// appended to "You" only for ALF members. Section titles are the mental model a non-technical user
+// navigates by.
+export const SECTIONS: { title: string; ids: string[] }[] = [
+  { title: "You", ids: ["dashboard", "wallet", "storage", "files", "models", "agent", "journal"] },
+  { title: "Your Groups", ids: ["groups", "comms", "cluster", "train"] },
+  { title: "Your Node", ids: ["node"] },
+  { title: "More", ids: ["commissary", "settings"] },
 ];
 
 // ALF cooperative workbench — appended to the nav ONLY for ALF members (gated on
@@ -57,44 +68,65 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
           CORE
         </span>
       </div>
-      <nav style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-          {(s.alfMember ? [...NAVI, ALF_NAV] : NAVI).map(([id, label, iconA, iconB]) => {
-            const active = s.route === id;
-            const dot = id === "comms" && s.stage === "done";
-            return (
-              <li key={id}>
-                <a
-                  href={"#/" + id}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    store.go(id);
-                  }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    padding: "9px 12px",
-                    borderRadius: "var(--r-1)",
-                    fontSize: 13,
-                    fontWeight: active ? 500 : 400,
-                    color: active ? "#0e0f0c" : "#cde7d6",
-                    background: active ? "var(--citrate-green)" : "transparent",
-                    transition: "background var(--dur-fast) var(--ease-standard)",
-                    textDecoration: "none",
-                  }}
-                >
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                    <path d={iconA}></path>
-                    <path d={iconB}></path>
-                  </svg>
-                  <span style={{ flex: 1 }}>{label}</span>
-                  {dot && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
-                </a>
-              </li>
-            );
-          })}
-        </ul>
+      <nav style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        {(() => {
+          // Index the flat NAVI registry by id, and append ALF to "You" for members (CX-S7.1).
+          const byId: Record<string, [string, string, string, string]> = {};
+          for (const item of s.alfMember ? [...NAVI, ALF_NAV] : NAVI) byId[item[0]] = item;
+          const sections = s.alfMember
+            ? SECTIONS.map((sec) => (sec.title === "You" ? { ...sec, ids: [...sec.ids, "alf"] } : sec))
+            : SECTIONS;
+          return sections.map((sec) => (
+            <div key={sec.title}>
+              <div
+                className="mono"
+                style={{ padding: "0 12px 6px", fontSize: 9, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(205,231,214,.4)" }}
+              >
+                {sec.title}
+              </div>
+              <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                {sec.ids.map((id) => {
+                  const item = byId[id];
+                  if (!item) return null;
+                  const [, label, iconA, iconB] = item;
+                  const active = s.route === id;
+                  const dot = id === "comms" && s.stage === "done";
+                  return (
+                    <li key={id}>
+                      <a
+                        href={"#/" + id}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          store.go(id);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 12,
+                          padding: "9px 12px",
+                          borderRadius: "var(--r-1)",
+                          fontSize: 13,
+                          fontWeight: active ? 500 : 400,
+                          color: active ? "#0e0f0c" : "#cde7d6",
+                          background: active ? "var(--citrate-green)" : "transparent",
+                          transition: "background var(--dur-fast) var(--ease-standard)",
+                          textDecoration: "none",
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                          <path d={iconA}></path>
+                          <path d={iconB}></path>
+                        </svg>
+                        <span style={{ flex: 1 }}>{label}</span>
+                        {dot && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ));
+        })()}
       </nav>
       <div style={{ borderTop: "1px solid rgba(205,231,214,.12)", padding: "12px 8px 4px", display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
