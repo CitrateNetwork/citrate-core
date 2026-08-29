@@ -30,10 +30,6 @@ use crate::supervisor::{
 
 /// The origin stamped on every intent bridged from Hermes; the ceremony DISPLAYS it verbatim so a
 /// human approving a chain effect sees it came from the agent, not the local user.
-// Consumed by the ceremony-bridge commands, whose live consumer is the (s0-owned) lib.rs
-// `generate_handler!` registration — a 2-line spine-PR that lands after the S6.3/S6.4 lane-PRs.
-// Until then the bridge chain reads as dead in the lib target (same pattern S6.1 used for its WP).
-#[allow(dead_code)]
 const HERMES_ORIGIN: &str = "agent:hermes";
 /// The Citrate chain id (40204). A Hermes chain effect carries no chain id; the bridge stamps this.
 const CITRATE_CHAIN_ID: u64 = 40204;
@@ -614,7 +610,6 @@ fn gas_call(to: &str, data: &str) -> serde_json::Value {
 /// Build the ceremony intent for a Hermes chain effect: origin `agent:hermes`, an
 /// [`IntentKind::Transaction`] whose `raw` is the `{from, to, value, data, chainId, gas}` tx JSON the
 /// ceremony's B1.4 decoder consumes (so the human sees the real action + it signs a REAL tx). No key.
-#[allow(dead_code)] // live consumer = the s0 lib.rs command registration (spine-PR); see HERMES_ORIGIN.
 fn hermes_intent(to: &str, data: &str, from: &str, gas: Option<u64>) -> SignatureIntent {
     let mut obj = serde_json::json!({
         "from": from,
@@ -822,7 +817,6 @@ pub fn hermes_stop(app: tauri::AppHandle) -> std::result::Result<(), String> {
 /// nothing pending / the head is a non-chain effect. The user then approves it via the normal
 /// ceremony path (`sign_and_broadcast`) and calls `hermes_resolve(true)` to let the capsule proceed.
 #[tauri::command]
-#[allow(dead_code)] // registered by the s0 lib.rs spine-PR; see HERMES_ORIGIN.
 pub fn hermes_bridge_pending(
     app: tauri::AppHandle,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
@@ -838,7 +832,6 @@ pub fn hermes_bridge_pending(
 /// lets the (already-signed-and-broadcast) effect proceed; `false` aborts it. The head is blocked
 /// until this call, so it targets the effect that was bridged.
 #[tauri::command]
-#[allow(dead_code)] // registered by the s0 lib.rs spine-PR; see HERMES_ORIGIN.
 pub fn hermes_resolve(app: tauri::AppHandle, approve: bool) -> std::result::Result<(), String> {
     manager(&app)?
         .resolve_head(approve)
