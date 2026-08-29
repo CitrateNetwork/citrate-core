@@ -3,7 +3,9 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false,
-    "targets": ["app"],
+    "targets": [
+      "app"
+    ],
     "externalBin": [
       "binaries/citrate",
       "binaries/node-agent",
@@ -11,6 +13,7 @@
       "binaries/llama-server",
       "binaries/ipfs",
       "binaries/comms-member-daemon",
+      "binaries/cluster-daemon",
       "binaries/hermes"
     ],
     "resources": [

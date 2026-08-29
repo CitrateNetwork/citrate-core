@@ -1,7 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "externalBin": [
       "binaries/citrate",
       "binaries/node-agent",
@@ -9,6 +12,7 @@
       "binaries/llama-server",
       "binaries/ipfs",
       "binaries/comms-member-daemon",
+      "binaries/cluster-daemon",
       "binaries/hermes"
     ],
     "resources": [

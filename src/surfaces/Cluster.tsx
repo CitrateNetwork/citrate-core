@@ -1,11 +1,11 @@
 // =====================================================================
-// citrate-core — Cluster (CX-S4.1, lane s4)
+// citrate-core — Cluster (CX-S4 / CL-S2, lane s4)
 //
-// A group's private P2P cluster. In S4.1 the surface shows the AUTHORIZED peer set — the group's
-// members are the only addresses the mesh will admit (the RBAC→network boundary; the canonical
-// derivation is Rust `cluster::allowed_peers`). Live connectivity, shared files, and joining the
-// mesh are S4.2 (libp2p transport), so peers render as "authorized, not yet connected" and those
-// actions say so honestly (Rule 1) — no peer is ever shown online that isn't.
+// A group's private P2P cluster, DAEMON-BACKED (the citrate-cluster sidecar over UDS). The surface
+// shows the group's authorized peers (only members may join — the RBAC→network boundary) with their
+// LIVE connection state + the co-pinned shared-file set, all real daemon state. A peer shows online
+// only when it is actually connected (Rule 1 — never a fabricated peer); a lone node meshes with
+// no one yet.
 // =====================================================================
 import { useEffect } from "react";
 import { SurfaceProps } from "./shared";
@@ -39,8 +39,8 @@ export function Cluster(_props: SurfaceProps) {
 
       <p style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55, margin: 0 }}>
         A Group's cluster is a private peer-to-peer mesh. Only the Group's members may join it — the
-        roster is the admission list. Connecting to peers and sharing files across the mesh arrives
-        with the transport (S4.2); today this shows who the mesh will admit.
+        roster is the admission list, enforced by the cluster daemon. Peers show online as they
+        actually connect; a lone node has no one to mesh with yet.
       </p>
 
       {st.error && (
@@ -87,7 +87,7 @@ export function Cluster(_props: SurfaceProps) {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               <span style={{ fontSize: 20, fontWeight: 540 }}>{st.status?.sharedFiles.length ?? 0}</span>
-              <span style={{ fontSize: 10.5, color: "var(--tx-3)" }}>shared files (S4.2)</span>
+              <span style={{ fontSize: 10.5, color: "var(--tx-3)" }}>shared files</span>
             </div>
           </div>
 
@@ -121,8 +121,8 @@ export function Cluster(_props: SurfaceProps) {
           </div>
 
           <p style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.5, margin: 0 }}>
-            These addresses are authorized to join the mesh because they are in the Group. Bringing
-            them online over the peer-to-peer transport, and sharing files across them, lands in S4.2.
+            These addresses are authorized to join the mesh because they are in the Group. They come
+            online as their nodes connect over the peer-to-peer transport, and share files across it.
           </p>
         </>
       )}
