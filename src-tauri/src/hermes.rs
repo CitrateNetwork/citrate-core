@@ -14,12 +14,6 @@
 //! commands stay honest `not wired` until then. Managed as a process-wide singleton in this module,
 //! so no state wiring in the (s0-owned) `lib.rs` — Lane D stays race-free.
 //
-// The manager's production consumer (lazy-start singleton + the `hermes_*` control commands) lands
-// in S6.2/S6.3, and `lib.rs` is off-limits to lane s6. Until then the primitive is exercised only by
-// `hermes_tests`, so it reads as dead code for one WP. Allow it rather than fake a caller (Rule 1);
-// S6.2 removes this attribute.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -64,6 +58,15 @@ pub enum HermesError {
     Spawn(String),
     /// The sidecar is already running (idempotent-start guard).
     AlreadyRunning,
+    /// A control call was made with no live session bearer (the sidecar isn't started). Fail closed.
+    NotRunning,
+    /// The control transport failed (connection refused, timeout). NEVER carries the bearer.
+    Transport(String),
+    /// The control surface answered non-2xx (e.g. 401 wrong/absent bearer, 404 unknown skill, 503
+    /// e-stopped). Carries the status + a short message, never the bearer.
+    Control { status: u16, msg: String },
+    /// A control response body could not be decoded to the expected shape.
+    Decode(String),
 }
 
 impl std::fmt::Display for HermesError {
@@ -73,12 +76,115 @@ impl std::fmt::Display for HermesError {
             HermesError::Token(m) => write!(f, "hermes bearer-token error: {m}"),
             HermesError::Spawn(m) => write!(f, "hermes spawn error: {m}"),
             HermesError::AlreadyRunning => write!(f, "hermes already running"),
+            HermesError::NotRunning => write!(f, "hermes is not running (no session bearer)"),
+            HermesError::Transport(m) => write!(f, "hermes control transport error: {m}"),
+            HermesError::Control { status, msg } => {
+                write!(f, "hermes control returned {status}: {msg}")
+            }
+            HermesError::Decode(m) => write!(f, "hermes control decode error: {m}"),
         }
     }
 }
 impl std::error::Error for HermesError {}
 
 type Result<T> = std::result::Result<T, HermesError>;
+
+// ---------------------------------------------------------------------------
+// Control transport — the bearer-authed loopback calls to the sidecar (S6.2).
+// ---------------------------------------------------------------------------
+
+/// A bearer-authed control response: the raw status + body. Deliberately dumb — parsing lives in the
+/// manager methods so the transport can be mocked in tests without a real HTTP sidecar.
+#[derive(Debug, Clone)]
+pub struct ControlResp {
+    pub status: u16,
+    pub body: String,
+}
+
+/// The Hermes control transport. Every call presents the bearer as `Authorization: Bearer <token>`.
+/// Production is [`UreqControl`] (blocking ureq, already in the tree); tests inject a mock so the
+/// command wiring is verified without spawning a real sidecar. The bearer is passed per-call and
+/// never held by the transport.
+pub trait HermesControl: Send + Sync {
+    fn get(&self, url: &str, bearer: &str) -> Result<ControlResp>;
+    fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp>;
+}
+
+/// Production control transport over blocking `ureq`. On a non-2xx ureq surfaces the response (we map
+/// it to [`HermesError::Control`]); a transport failure (refused/timeout) maps to
+/// [`HermesError::Transport`] and never carries the bearer.
+pub struct UreqControl;
+
+impl UreqControl {
+    fn read(resp: ureq::http::Response<ureq::Body>) -> Result<ControlResp> {
+        let status = resp.status().as_u16();
+        let body = resp
+            .into_body()
+            .read_to_string()
+            .map_err(|e| HermesError::Transport(e.to_string()))?;
+        Ok(ControlResp { status, body })
+    }
+}
+
+impl HermesControl for UreqControl {
+    fn get(&self, url: &str, bearer: &str) -> Result<ControlResp> {
+        match ureq::get(url)
+            .header("Authorization", &format!("Bearer {bearer}"))
+            .call()
+        {
+            Ok(resp) => Self::read(resp),
+            // ureq returns Err on non-2xx; recover the status/body rather than losing it.
+            Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
+                status: code,
+                body: String::new(),
+            }),
+            Err(e) => Err(HermesError::Transport(e.to_string())),
+        }
+    }
+
+    fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp> {
+        match ureq::post(url)
+            .header("Authorization", &format!("Bearer {bearer}"))
+            .header("Content-Type", "application/json")
+            .send(body)
+        {
+            Ok(resp) => Self::read(resp),
+            Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
+                status: code,
+                body: String::new(),
+            }),
+            Err(e) => Err(HermesError::Transport(e.to_string())),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The AgentHarnessDomain DTOs the commands return (mirror the sidecar's wire shapes).
+// ---------------------------------------------------------------------------
+
+/// `GET /status` — the sidecar's running/skills/pending snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStatus {
+    pub running: bool,
+    pub skills: usize,
+    pub pending_approvals: usize,
+}
+
+/// One installed skill (a capsule).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillMeta {
+    pub name: String,
+    pub description: String,
+}
+
+/// One pending chain/skill effect awaiting human approval (surfaced to the ceremony bridge in S6.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingApproval {
+    pub id: String,
+    pub kind: String,
+    pub summary: String,
+}
 
 /// The bridge status shape for the Hermes sidecar. Public facts only (never the bearer).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +224,8 @@ pub struct HermesManager {
     /// The current session bearer (minted on start; wiped on drop). Held for control calls (S6.2+).
     token: Mutex<Option<Zeroizing<String>>>,
     sup: Mutex<Option<Supervisor>>,
+    /// The bearer-authed control transport (production ureq; tests inject a mock).
+    control: Box<dyn HermesControl>,
 }
 
 impl HermesManager {
@@ -133,7 +241,24 @@ impl HermesManager {
             spawn_args_override: None,
             token: Mutex::new(None),
             sup: Mutex::new(None),
+            control: Box::new(UreqControl),
         }
+    }
+
+    /// Test hook: inject a mock control transport so the command wiring is verified without a real
+    /// HTTP sidecar.
+    #[cfg(test)]
+    pub fn with_control(mut self, control: Box<dyn HermesControl>) -> Self {
+        self.control = control;
+        self
+    }
+
+    /// Test hook: set the session bearer directly (prod sets it only in `start`), so control methods
+    /// can be exercised against the mock transport without spawning the sidecar.
+    #[cfg(test)]
+    pub fn set_token_for_test(&self, token: &str) {
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Zeroizing::new(token.to_string()));
     }
 
     /// Test hook: override the `/health` probe cadence (avoids the startup-race flake).
@@ -252,6 +377,74 @@ impl HermesManager {
             Some(SupervisorState::Running)
         )
     }
+
+    // --- S6.2 bearer-authed control calls -------------------------------------------------------
+
+    /// Clone the live session bearer for a single call, or fail closed if none (not started).
+    fn bearer(&self) -> Result<Zeroizing<String>> {
+        self.token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|t| Zeroizing::new(t.to_string()))
+            .ok_or(HermesError::NotRunning)
+    }
+
+    /// Map a control response to the expected JSON shape; a non-2xx becomes a typed `Control` error
+    /// (fail closed — never parse an error body as success).
+    fn decode<T: serde::de::DeserializeOwned>(resp: ControlResp) -> Result<T> {
+        if !(200..300).contains(&resp.status) {
+            return Err(HermesError::Control {
+                status: resp.status,
+                msg: resp.body.chars().take(200).collect(),
+            });
+        }
+        serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))
+    }
+
+    /// `GET /status` — the sidecar's running/skills/pending snapshot.
+    pub fn remote_status(&self) -> Result<RemoteStatus> {
+        let bearer = self.bearer()?;
+        let resp = self
+            .control
+            .get(&format!("{}/status", self.control_url()), &bearer)?;
+        Self::decode(resp)
+    }
+
+    /// `GET /skills` — the installed skill catalog.
+    pub fn list_skills(&self) -> Result<Vec<SkillMeta>> {
+        let bearer = self.bearer()?;
+        let resp = self
+            .control
+            .get(&format!("{}/skills", self.control_url()), &bearer)?;
+        Self::decode(resp)
+    }
+
+    /// `POST /run_skill` — accept a skill for execution (its chain effects surface as approvals). The
+    /// body is `{ "name", "args" }`; the sidecar returns `{ ok }` = accepted.
+    pub fn run_skill(&self, name: &str, args: &serde_json::Value) -> Result<()> {
+        let bearer = self.bearer()?;
+        let body = serde_json::json!({ "name": name, "args": args }).to_string();
+        let resp =
+            self.control
+                .post(&format!("{}/run_skill", self.control_url()), &bearer, &body)?;
+        if !(200..300).contains(&resp.status) {
+            return Err(HermesError::Control {
+                status: resp.status,
+                msg: resp.body.chars().take(200).collect(),
+            });
+        }
+        Ok(())
+    }
+
+    /// `GET /approvals` — the pending chain/skill effects awaiting human approval.
+    pub fn pending_approvals(&self) -> Result<Vec<PendingApproval>> {
+        let bearer = self.bearer()?;
+        let resp = self
+            .control
+            .get(&format!("{}/approvals", self.control_url()), &bearer)?;
+        Self::decode(resp)
+    }
 }
 
 /// A best-effort HTTP GET liveness probe against the Hermes control `/health` (open, no bearer).
@@ -337,30 +530,96 @@ fn harden_dir_perms(_dir: &Path) -> std::io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Tauri command surface — wired over the control transport in S6.2/S6.3. Honest until then.
+// Tauri command surface (S6.2) — a process-wide lazy singleton drives the sidecar over the bearer
+// control transport. No state wiring in the (s0-owned) lib.rs; Lane D stays self-contained.
 // ---------------------------------------------------------------------------
 
-fn not_wired(cmd: &str) -> std::result::Result<(), String> {
-    Err(format!(
-        "hermes::{cmd} is not wired yet (CX-S6 scaffold — sidecar lifecycle is S6.1; control is S6.2/S6.3)"
-    ))
+use std::sync::OnceLock;
+
+/// The process-wide Hermes manager. Built lazily on first command from the app (resolve the bundled
+/// binary + the 0600 bearer/crash paths); one instance for the process lifetime.
+static HERMES: OnceLock<HermesManager> = OnceLock::new();
+
+/// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
+/// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
+/// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
+fn manager<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<&'static HermesManager, String> {
+    if let Some(h) = HERMES.get() {
+        return Ok(h);
+    }
+    use tauri::Manager;
+    let bin = resolve_hermes_bin(app)?;
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("hermes");
+    let token_path = base.join("bearer.token");
+    let crash_path = base.join("crashes.log");
+    // If another thread won the race, `set` fails and we return the stored winner — same instance.
+    let _ = HERMES.set(HermesManager::new(bin, token_path, crash_path));
+    Ok(HERMES.get().expect("manager just set"))
 }
 
-macro_rules! not_wired_cmd {
-    ($fn:ident, $name:literal) => {
-        #[tauri::command]
-        pub fn $fn() -> std::result::Result<(), String> {
-            not_wired($name)
-        }
-    };
+/// Start the sidecar (idempotent). Returns the local lifecycle status.
+#[tauri::command]
+pub fn hermes_start(app: tauri::AppHandle) -> std::result::Result<HermesStatus, String> {
+    let m = manager(&app)?;
+    m.start().map_err(|e| e.to_string())?;
+    Ok(m.status())
 }
 
-not_wired_cmd!(hermes_start, "start");
-not_wired_cmd!(hermes_status, "status");
-not_wired_cmd!(hermes_skills, "skills");
-not_wired_cmd!(hermes_run_skill, "run_skill");
-not_wired_cmd!(hermes_pending_approvals, "pending_approvals");
-not_wired_cmd!(hermes_stop, "stop");
+/// The AgentHarnessDomain status snapshot: running + skill/pending counts. A not-started sidecar is a
+/// clean stopped snapshot, not an error.
+#[tauri::command]
+pub fn hermes_status(app: tauri::AppHandle) -> std::result::Result<RemoteStatus, String> {
+    let m = manager(&app)?;
+    if !m.is_running() {
+        return Ok(RemoteStatus {
+            running: false,
+            skills: 0,
+            pending_approvals: 0,
+        });
+    }
+    m.remote_status().map_err(|e| e.to_string())
+}
+
+/// The installed skill catalog.
+#[tauri::command]
+pub fn hermes_skills(app: tauri::AppHandle) -> std::result::Result<Vec<SkillMeta>, String> {
+    manager(&app)?.list_skills().map_err(|e| e.to_string())
+}
+
+/// Accept a skill for execution; its chain effects surface as pending approvals (the ceremony bridge,
+/// S6.3). Returns `{ ok: true }` = accepted.
+#[tauri::command]
+pub fn hermes_run_skill(
+    app: tauri::AppHandle,
+    name: String,
+    args: serde_json::Value,
+) -> std::result::Result<serde_json::Value, String> {
+    manager(&app)?
+        .run_skill(&name, &args)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// The pending chain/skill effects awaiting human approval.
+#[tauri::command]
+pub fn hermes_pending_approvals(
+    app: tauri::AppHandle,
+) -> std::result::Result<Vec<PendingApproval>, String> {
+    manager(&app)?.pending_approvals().map_err(|e| e.to_string())
+}
+
+/// Stop the sidecar (SIGTERM → grace → SIGKILL; the session bearer is wiped). Idempotent.
+#[tauri::command]
+pub fn hermes_stop(app: tauri::AppHandle) -> std::result::Result<(), String> {
+    manager(&app)?.stop();
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

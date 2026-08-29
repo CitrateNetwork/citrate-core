@@ -117,3 +117,188 @@ fn double_start_is_rejected() {
     assert!(matches!(r, Err(HermesError::AlreadyRunning)), "got {r:?}");
     mgr.stop();
 }
+
+// ── CX-S6.2 — bearer-authed control transport. A mock stands in for the HTTP sidecar so the wiring
+// is proven without a real server; the bearer must be presented and a non-2xx must fail closed.
+
+/// A mock control transport: canned `(status, body)` per URL-suffix match, recording the bearer seen
+/// and the last POST body.
+struct MockControl {
+    status_resp: (u16, String),
+    skills_resp: (u16, String),
+    approvals_resp: (u16, String),
+    run_resp: (u16, String),
+    seen_bearer: Mutex<Option<String>>,
+    last_post_body: Mutex<Option<String>>,
+}
+
+impl MockControl {
+    fn new() -> Self {
+        MockControl {
+            status_resp: (404, String::new()),
+            skills_resp: (404, String::new()),
+            approvals_resp: (404, String::new()),
+            run_resp: (404, String::new()),
+            seen_bearer: Mutex::new(None),
+            last_post_body: Mutex::new(None),
+        }
+    }
+    fn pick(&self, url: &str) -> (u16, String) {
+        if url.ends_with("/status") {
+            self.status_resp.clone()
+        } else if url.ends_with("/skills") {
+            self.skills_resp.clone()
+        } else if url.ends_with("/approvals") {
+            self.approvals_resp.clone()
+        } else if url.ends_with("/run_skill") {
+            self.run_resp.clone()
+        } else {
+            (404, String::new())
+        }
+    }
+}
+
+impl HermesControl for MockControl {
+    fn get(&self, url: &str, bearer: &str) -> std::result::Result<ControlResp, HermesError> {
+        *self.seen_bearer.lock().unwrap() = Some(bearer.to_string());
+        let (status, body) = self.pick(url);
+        Ok(ControlResp { status, body })
+    }
+    fn post(
+        &self,
+        url: &str,
+        bearer: &str,
+        body: &str,
+    ) -> std::result::Result<ControlResp, HermesError> {
+        *self.seen_bearer.lock().unwrap() = Some(bearer.to_string());
+        *self.last_post_body.lock().unwrap() = Some(body.to_string());
+        let (status, resp) = self.pick(url);
+        Ok(ControlResp { status, body: resp })
+    }
+}
+
+/// A manager wired to a mock control + a pre-set session bearer, without spawning a sidecar.
+fn control_manager(mock: MockControl) -> HermesManager {
+    let dir = tmp_dir("ctrl");
+    let mgr = HermesManager::new(
+        sleep_bin(),
+        dir.join("token"),
+        dir.join("crash"),
+    )
+    .with_control(Box::new(mock));
+    mgr.set_token_for_test("deadbeef");
+    mgr
+}
+
+#[test]
+fn remote_status_parses_and_presents_the_bearer() {
+    let mut mock = MockControl::new();
+    mock.status_resp = (
+        200,
+        r#"{"running":true,"skills":2,"pendingApprovals":1}"#.to_string(),
+    );
+    let mgr = control_manager(mock);
+    let st = mgr.remote_status().expect("status parses");
+    assert_eq!(
+        st,
+        RemoteStatus {
+            running: true,
+            skills: 2,
+            pending_approvals: 1
+        }
+    );
+}
+
+#[test]
+fn list_skills_parses() {
+    let mut mock = MockControl::new();
+    mock.skills_resp = (
+        200,
+        r#"[{"name":"list-compliance-posture","description":"d"}]"#.to_string(),
+    );
+    let mgr = control_manager(mock);
+    let skills = mgr.list_skills().expect("skills parse");
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "list-compliance-posture");
+}
+
+#[test]
+fn run_skill_accepts_on_2xx() {
+    let mut mock = MockControl::new();
+    mock.run_resp = (200, r#"{"ok":true}"#.to_string());
+    let mgr = control_manager(mock);
+    mgr.run_skill("do-thing", &serde_json::json!({"to":"0x01"}))
+        .expect("a 2xx run is accepted");
+}
+
+#[test]
+fn run_skill_body_carries_name_and_args() {
+    let mock = MockControl {
+        run_resp: (200, r#"{"ok":true}"#.to_string()),
+        ..MockControl::new()
+    };
+    // Keep a handle to the mock's captured body by constructing the manager, running, then reading.
+    let dir = tmp_dir("runbody");
+    let mgr = HermesManager::new(sleep_bin(), dir.join("t"), dir.join("c"));
+    // Re-wire with an Arc-shared mock we can inspect.
+    let shared = std::sync::Arc::new(mock);
+    let mgr = mgr.with_control(Box::new(ArcControl(shared.clone())));
+    mgr.set_token_for_test("deadbeef");
+    mgr.run_skill("do-thing", &serde_json::json!({"to":"0x01"}))
+        .expect("run accepted");
+    let body = shared.last_post_body.lock().unwrap().clone().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["name"], "do-thing");
+    assert_eq!(v["args"]["to"], "0x01");
+}
+
+/// A thin `HermesControl` that forwards to a shared `MockControl` (so a test can inspect captures).
+struct ArcControl(std::sync::Arc<MockControl>);
+impl HermesControl for ArcControl {
+    fn get(&self, url: &str, bearer: &str) -> std::result::Result<ControlResp, HermesError> {
+        self.0.get(url, bearer)
+    }
+    fn post(
+        &self,
+        url: &str,
+        bearer: &str,
+        body: &str,
+    ) -> std::result::Result<ControlResp, HermesError> {
+        self.0.post(url, bearer, body)
+    }
+}
+
+#[test]
+fn pending_approvals_parses() {
+    let mut mock = MockControl::new();
+    mock.approvals_resp = (
+        200,
+        r#"[{"id":"abc","kind":"chain","summary":"send 1 SALT"}]"#.to_string(),
+    );
+    let mgr = control_manager(mock);
+    let approvals = mgr.pending_approvals().expect("approvals parse");
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0].kind, "chain");
+}
+
+#[test]
+fn control_fails_closed_without_a_bearer() {
+    // No session bearer set (sidecar not started) → NotRunning, never a blind call.
+    let dir = tmp_dir("nobearer");
+    let mgr = HermesManager::new(sleep_bin(), dir.join("t"), dir.join("c"))
+        .with_control(Box::new(MockControl::new()));
+    let r = mgr.remote_status();
+    assert!(matches!(r, Err(HermesError::NotRunning)), "got {r:?}");
+}
+
+#[test]
+fn a_non_2xx_control_response_is_a_typed_error() {
+    let mut mock = MockControl::new();
+    mock.status_resp = (401, "unauthorized".to_string());
+    let mgr = control_manager(mock);
+    let r = mgr.remote_status();
+    assert!(
+        matches!(r, Err(HermesError::Control { status: 401, .. })),
+        "got {r:?}"
+    );
+}
