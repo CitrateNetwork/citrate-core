@@ -1,26 +1,46 @@
-// CX bridge impl — agentHarness (C-22), TAURI. Owned by lane s6 (CX-S6) after S0.
-// Distinct from the legacy `agent` domain (node-agent GPU market). This is the Hermes
-// skills/code/comms harness. S0.2 stub: honest Unavailable. CX-S6 wires the keyless sidecar.
-import type { AgentHarnessDomain } from "../domains";
-import { Unavailable } from "../types";
+// CX bridge impl — agentHarness (C-22), TAURI. Owned by lane s6 (CX-S6).
+//
+// Distinct from the legacy `agent` domain (node-agent GPU market). This is the keyless Hermes
+// skills/code/comms harness. The Rust `hermes_*` commands (src-tauri/src/hermes.rs) were built to
+// this exact domain shape: `RemoteStatus` carries `#[serde(rename_all = "camelCase")]` so it
+// deserializes straight into AgentHarnessStatus ({running, skills, pendingApprovals}); `SkillMeta`
+// is AgentSkill; `PendingApproval` is AgentApproval (+ optional to/data the ceremony bridge uses,
+// harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
+// this bridge starts/stops the sidecar and reads its state; it never signs.
+import { invoke } from "@tauri-apps/api/core";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill } from "../domains";
+
+// The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
+// parses (an object/array/number), otherwise the raw text as a JSON string value; empty → {}.
+function toArgs(argsJson: string): unknown {
+  const t = argsJson.trim();
+  if (!t) return {};
+  try {
+    return JSON.parse(t);
+  } catch {
+    return t;
+  }
+}
 
 export const tauriAgentHarness: AgentHarnessDomain = {
   async start() {
-    throw new Unavailable("agentHarness", "start");
+    // Returns the sidecar's local lifecycle HermesStatus; the domain is void — callers read
+    // running-state via status().
+    await invoke("hermes_start");
   },
-  async status() {
-    throw new Unavailable("agentHarness", "status");
+  status(): Promise<AgentHarnessStatus> {
+    return invoke<AgentHarnessStatus>("hermes_status");
   },
-  async skills() {
-    throw new Unavailable("agentHarness", "skills");
+  skills(): Promise<AgentSkill[]> {
+    return invoke<AgentSkill[]>("hermes_skills");
   },
-  async runSkill() {
-    throw new Unavailable("agentHarness", "runSkill");
+  runSkill(name, argsJson): Promise<{ ok: boolean }> {
+    return invoke<{ ok: boolean }>("hermes_run_skill", { name, args: toArgs(argsJson) });
   },
-  async pendingApprovals() {
-    throw new Unavailable("agentHarness", "pendingApprovals");
+  pendingApprovals(): Promise<AgentApproval[]> {
+    return invoke<AgentApproval[]>("hermes_pending_approvals");
   },
   async stop() {
-    throw new Unavailable("agentHarness", "stop");
+    await invoke("hermes_stop");
   },
 };
