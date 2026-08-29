@@ -130,6 +130,7 @@ struct MockControl {
     run_resp: (u16, String),
     seen_bearer: Mutex<Option<String>>,
     last_post_body: Mutex<Option<String>>,
+    last_post_url: Mutex<Option<String>>,
 }
 
 impl MockControl {
@@ -141,6 +142,7 @@ impl MockControl {
             run_resp: (404, String::new()),
             seen_bearer: Mutex::new(None),
             last_post_body: Mutex::new(None),
+            last_post_url: Mutex::new(None),
         }
     }
     fn pick(&self, url: &str) -> (u16, String) {
@@ -148,6 +150,8 @@ impl MockControl {
             self.status_resp.clone()
         } else if url.ends_with("/skills") {
             self.skills_resp.clone()
+        } else if url.ends_with("/approvals/approve") || url.ends_with("/approvals/reject") {
+            (200, "{}".to_string()) // resolve endpoints: 200 OK
         } else if url.ends_with("/approvals") {
             self.approvals_resp.clone()
         } else if url.ends_with("/run_skill") {
@@ -172,6 +176,7 @@ impl HermesControl for MockControl {
     ) -> std::result::Result<ControlResp, HermesError> {
         *self.seen_bearer.lock().unwrap() = Some(bearer.to_string());
         *self.last_post_body.lock().unwrap() = Some(body.to_string());
+        *self.last_post_url.lock().unwrap() = Some(url.to_string());
         let (status, resp) = self.pick(url);
         Ok(ControlResp { status, body: resp })
     }
@@ -301,4 +306,162 @@ fn a_non_2xx_control_response_is_a_typed_error() {
         matches!(r, Err(HermesError::Control { status: 401, .. })),
         "got {r:?}"
     );
+}
+
+// ── CX-S6.3 — the ceremony bridge. A chain effect from the sidecar becomes a PENDING ceremony the
+// human approves (Rule 3: the bridge signs nothing). Harness mirrors agent_tests (canonical vault +
+// scripted mock RPC for the gas estimate).
+
+use crate::ceremony::SignatureCeremony;
+use crate::custody::{CustodyError, CustodyVault, Keyring};
+use crate::rpc::{RpcClient, RpcError, RpcTransport};
+
+const CANONICAL_MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const PASS: &[u8] = b"correct horse battery staple";
+
+#[derive(Default)]
+struct FakeKeyring {
+    store: Mutex<std::collections::HashMap<String, Vec<u8>>>,
+}
+impl Keyring for FakeKeyring {
+    fn get(&self, account: &str) -> std::result::Result<Option<Vec<u8>>, CustodyError> {
+        Ok(self.store.lock().unwrap().get(account).cloned())
+    }
+    fn set(&self, account: &str, secret: &[u8]) -> std::result::Result<(), CustodyError> {
+        self.store
+            .lock()
+            .unwrap()
+            .insert(account.to_string(), secret.to_vec());
+        Ok(())
+    }
+    fn delete(&self, account: &str) -> std::result::Result<(), CustodyError> {
+        self.store.lock().unwrap().remove(account);
+        Ok(())
+    }
+}
+
+/// A fresh unlocked vault holding the canonical wallet, so the bridge can read `from`.
+fn vault_with_wallet() -> CustodyVault {
+    let p = tmp_dir("vault").join("v.enc");
+    let _ = std::fs::remove_file(&p);
+    let v = CustodyVault::new(Box::new(FakeKeyring::default()), p, 0);
+    v.init(&mut PASS.to_vec()).expect("init");
+    v.unlock(&mut PASS.to_vec()).expect("unlock");
+    crate::wallet::import(&v, CANONICAL_MNEMONIC).expect("import canonical wallet");
+    v
+}
+
+/// A scripted RPC transport returning canned JSON-RPC results (here, the eth_estimateGas quantity).
+struct MockRpc {
+    responses: std::sync::Mutex<std::collections::VecDeque<serde_json::Value>>,
+}
+impl MockRpc {
+    fn new(responses: Vec<serde_json::Value>) -> Self {
+        MockRpc {
+            responses: std::sync::Mutex::new(responses.into_iter().collect()),
+        }
+    }
+}
+impl RpcTransport for MockRpc {
+    fn call(&self, _body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| RpcError::Transport("mock: no scripted response".into()))
+    }
+}
+fn rpc_ok(result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": result })
+}
+
+/// A MockControl whose /approvals returns one chain effect (to + data).
+fn chain_effect_mock() -> MockControl {
+    let mut m = MockControl::new();
+    m.approvals_resp = (
+        200,
+        r#"[{"id":"cap::eth-send","kind":"high","summary":"send",
+             "to":"0x4a86659BDab24dc444C72fbbaD4cd83491820E40","data":"0xdeadbeef"}]"#
+            .to_string(),
+    );
+    m
+}
+
+#[test]
+fn hermes_intent_has_agent_origin_and_the_real_calldata() {
+    let intent = hermes_intent("0xTO", "0xdeadbeef", "0xFROM", Some(0x8000));
+    assert_eq!(intent.origin, "agent:hermes");
+    assert_eq!(intent.chain_id, 40204);
+    let raw: serde_json::Value = serde_json::from_str(&intent.raw).unwrap();
+    assert_eq!(raw["from"], "0xFROM");
+    assert_eq!(raw["to"], "0xTO");
+    assert_eq!(raw["data"], "0xdeadbeef");
+    assert_eq!(raw["chainId"], "0x9d0c"); // 40204
+    assert_eq!(raw["gas"], "0x8000");
+}
+
+#[test]
+fn content_key_is_deterministic_and_distinct() {
+    assert_eq!(content_key("0xa", "0x1"), content_key("0xa", "0x1"));
+    assert_ne!(content_key("0xa", "0x1"), content_key("0xb", "0x1"));
+    assert_ne!(content_key("0xa", "0x1"), content_key("0xa", "0x2"));
+}
+
+#[test]
+fn bridge_pending_mints_a_ceremony_for_a_chain_effect() {
+    let mgr = control_manager(chain_effect_mock());
+    let ceremony = SignatureCeremony::new();
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![rpc_ok(serde_json::json!("0x8000"))]));
+
+    let view = mgr
+        .bridge_pending(&ceremony, &vault, &rpc)
+        .expect("bridge ok")
+        .expect("a chain effect was pending");
+    assert_eq!(view.origin, "agent:hermes");
+    // The ceremony now holds this as a pending intent (the human must approve it).
+    assert!(ceremony.status(&view.id).is_some(), "ceremony is pending");
+}
+
+#[test]
+fn bridge_pending_dedups_the_same_effect_to_one_ceremony() {
+    let mgr = control_manager(chain_effect_mock());
+    let ceremony = SignatureCeremony::new();
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        rpc_ok(serde_json::json!("0x8000")),
+        rpc_ok(serde_json::json!("0x8000")),
+    ]));
+
+    let id1 = mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap().unwrap().id;
+    let id2 = mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap().unwrap().id;
+    assert_eq!(id1, id2, "the same effect re-bridges to the SAME ceremony (no double broadcast)");
+}
+
+#[test]
+fn bridge_pending_skips_a_non_chain_effect() {
+    // An approval with no to/data (a code/shell effect) has no chain signature to bridge.
+    let mut mock = MockControl::new();
+    mock.approvals_resp = (200, r#"[{"id":"run-code","kind":"high","summary":"exec"}]"#.to_string());
+    let mgr = control_manager(mock);
+    let ceremony = SignatureCeremony::new();
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
+    assert!(mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap().is_none());
+}
+
+#[test]
+fn resolve_head_posts_to_the_right_endpoint() {
+    let shared = std::sync::Arc::new(chain_effect_mock());
+    let dir = tmp_dir("resolve");
+    let mgr = HermesManager::new(sleep_bin(), dir.join("t"), dir.join("c"))
+        .with_control(Box::new(ArcControl(shared.clone())));
+    mgr.set_token_for_test("deadbeef");
+
+    mgr.resolve_head(true).expect("approve resolves");
+    assert!(shared.last_post_url.lock().unwrap().as_ref().unwrap().ends_with("/approvals/approve"));
+
+    mgr.resolve_head(false).expect("reject resolves");
+    assert!(shared.last_post_url.lock().unwrap().as_ref().unwrap().ends_with("/approvals/reject"));
 }

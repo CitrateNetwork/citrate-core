@@ -14,6 +14,7 @@
 //! commands stay honest `not wired` until then. Managed as a process-wide singleton in this module,
 //! so no state wiring in the (s0-owned) `lib.rs` — Lane D stays race-free.
 //
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -21,9 +22,17 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::ceremony::{CeremonyView, IntentKind, SignatureCeremony, SignatureIntent};
+use crate::custody::CustodyVault;
 use crate::supervisor::{
     BackoffPolicy, HealthCheck, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
 };
+
+/// The origin stamped on every intent bridged from Hermes; the ceremony DISPLAYS it verbatim so a
+/// human approving a chain effect sees it came from the agent, not the local user.
+const HERMES_ORIGIN: &str = "agent:hermes";
+/// The Citrate chain id (40204). A Hermes chain effect carries no chain id; the bridge stamps this.
+const CITRATE_CHAIN_ID: u64 = 40204;
 
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
@@ -67,6 +76,9 @@ pub enum HermesError {
     Control { status: u16, msg: String },
     /// A control response body could not be decoded to the expected shape.
     Decode(String),
+    /// The ceremony bridge failed (e.g. the vault is locked/absent so `from` can't be read). Fail
+    /// closed — never bridge without the real signer's address.
+    Ceremony(String),
 }
 
 impl std::fmt::Display for HermesError {
@@ -82,6 +94,7 @@ impl std::fmt::Display for HermesError {
                 write!(f, "hermes control returned {status}: {msg}")
             }
             HermesError::Decode(m) => write!(f, "hermes control decode error: {m}"),
+            HermesError::Ceremony(m) => write!(f, "hermes ceremony bridge error: {m}"),
         }
     }
 }
@@ -178,12 +191,17 @@ pub struct SkillMeta {
     pub description: String,
 }
 
-/// One pending chain/skill effect awaiting human approval (surfaced to the ceremony bridge in S6.3).
+/// One pending chain/skill effect awaiting human approval. A chain effect carries the raw
+/// `to`/`data` (the calldata the ceremony signs); code/shell effects leave them `None`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingApproval {
     pub id: String,
     pub kind: String,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// The bridge status shape for the Hermes sidecar. Public facts only (never the bearer).
@@ -226,6 +244,11 @@ pub struct HermesManager {
     sup: Mutex<Option<Supervisor>>,
     /// The bearer-authed control transport (production ureq; tests inject a mock).
     control: Box<dyn HermesControl>,
+    /// S6.3 dedup: a chain effect's content key (hash of to+data) → the ceremony id already minted for
+    /// it. A still-pending effect maps to AT MOST ONE ceremony, so re-polling `bridge_pending` returns
+    /// the SAME ceremony (never a second → never a second broadcast). A consumed (approved/rejected)
+    /// entry is dropped so a legitimate re-accrual can bridge afresh. Cleared on stop.
+    bridged: Mutex<HashMap<String, String>>,
 }
 
 impl HermesManager {
@@ -242,6 +265,7 @@ impl HermesManager {
             token: Mutex::new(None),
             sup: Mutex::new(None),
             control: Box::new(UreqControl),
+            bridged: Mutex::new(HashMap::new()),
         }
     }
 
@@ -349,6 +373,8 @@ impl HermesManager {
             drop(sup);
         }
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // A new session starts with a clean dedup map.
+        self.bridged.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// The current status: supervisor state + the control URL + a coarse healthy flag.
@@ -444,6 +470,131 @@ impl HermesManager {
             .control
             .get(&format!("{}/approvals", self.control_url()), &bearer)?;
         Self::decode(resp)
+    }
+
+    // --- S6.3 ceremony bridge -------------------------------------------------------------------
+
+    /// Bridge the sidecar's HEAD pending chain effect into a PENDING ceremony (Rule 3): build the
+    /// `SignatureIntent{origin:"agent:hermes"}` for its raw (to, data) and `request` it into the
+    /// SignatureCeremony. This SIGNS NOTHING and touches no key — it only creates a ceremony the
+    /// HUMAN must approve; the ceremony's own approve path (`sign_and_broadcast`) does the single
+    /// signature + broadcast. The agent can never obtain a signature from here.
+    ///
+    /// Idempotent (dedup): the effect's content key (hash of to+data) maps to at most one still-
+    /// pending ceremony, so re-polling returns the SAME ceremony — never a second broadcast. Returns
+    /// `None` when there is nothing pending or the head is a non-chain (code/shell) effect.
+    ///
+    /// `vault` supplies `from` (the real signer's PUBLIC address, never the key); `rpc` estimates the
+    /// call's gas (never a fabricated number — Rule 1). A gas blip omits gas and the ceremony refuses
+    /// to finalize rather than signing a guessed gas (fail closed).
+    pub fn bridge_pending<T: crate::rpc::RpcTransport>(
+        &self,
+        ceremony: &SignatureCeremony,
+        vault: &CustodyVault,
+        rpc: &crate::rpc::RpcClient<T>,
+    ) -> Result<Option<CeremonyView>> {
+        let Some(head) = self.pending_approvals()?.into_iter().next() else {
+            return Ok(None);
+        };
+        // Only chain effects (carrying to+data) bridge to a signing ceremony; code/shell effects have
+        // their own HITL (S6.4), not a chain signature.
+        let (Some(to), Some(data)) = (head.to.clone(), head.data.clone()) else {
+            return Ok(None);
+        };
+        let key = content_key(&to, &data);
+
+        // FAST PATH: an existing still-pending ceremony for this effect → reuse it, no mint, no RPC.
+        {
+            let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = map.get(&key) {
+                if let Some(view) = ceremony.status(existing) {
+                    return Ok(Some(view));
+                }
+                map.remove(&key); // consumed → allow a fresh bridge
+            }
+        }
+
+        // The real signer is THIS vault's wallet — stamp its address as `from` (public identity only).
+        let from = crate::wallet::address_auto_unlocked(vault)
+            .map(|w| w.address)
+            .map_err(|e| HermesError::Ceremony(e.to_string()))?;
+        // Real gas estimate (computed off the dedup lock; a concurrent winner makes it moot, discarded).
+        let gas = rpc.estimate_gas(gas_call(&to, &data)).ok();
+
+        // ATOMIC check-and-mint under a single hold of the dedup lock: two concurrent bridges of the
+        // same effect cannot each mint a ceremony (the loser re-checks and reuses the winner's).
+        // `ceremony.request`/`status` lock only the ceremony's own mutex (disjoint), so no deadlock.
+        let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = map.get(&key) {
+            if let Some(view) = ceremony.status(existing) {
+                return Ok(Some(view));
+            }
+            map.remove(&key);
+        }
+        let view = ceremony.request(hermes_intent(&to, &data, &from, gas));
+        map.insert(key, view.id.clone());
+        Ok(Some(view))
+    }
+
+    /// Resolve the sidecar's HEAD approval after the human decided its ceremony: `approve` → the
+    /// capsule proceeds (the ceremony already signed + broadcast); otherwise → the capsule aborts.
+    /// The sidecar's queue is head-resolved and the head is BLOCKED until this call, so it targets the
+    /// same effect that was bridged. Stale/consumed dedup entries self-heal on the next bridge.
+    pub fn resolve_head(&self, approve: bool) -> Result<()> {
+        let bearer = self.bearer()?;
+        let path = if approve {
+            "/approvals/approve"
+        } else {
+            "/approvals/reject"
+        };
+        let resp = self
+            .control
+            .post(&format!("{}{}", self.control_url(), path), &bearer, "")?;
+        if !(200..300).contains(&resp.status) {
+            return Err(HermesError::Control {
+                status: resp.status,
+                msg: resp.body.chars().take(200).collect(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The dedup content key for a chain effect: a hex SHA3 of `to|data`, so identical calldata collides
+/// on one ceremony (deny a double-broadcast from rapid re-polling).
+fn content_key(to: &str, data: &str) -> String {
+    use sha3::{Digest, Keccak256};
+    let mut h = Keccak256::new();
+    h.update(to.as_bytes());
+    h.update(b"|");
+    h.update(data.as_bytes());
+    hex::encode(&h.finalize()[..16])
+}
+
+/// The `eth_estimateGas` call object for a chain effect: `{to, value:0x0, data}`.
+fn gas_call(to: &str, data: &str) -> serde_json::Value {
+    serde_json::json!({ "to": to, "value": "0x0", "data": data })
+}
+
+/// Build the ceremony intent for a Hermes chain effect: origin `agent:hermes`, an
+/// [`IntentKind::Transaction`] whose `raw` is the `{from, to, value, data, chainId, gas}` tx JSON the
+/// ceremony's B1.4 decoder consumes (so the human sees the real action + it signs a REAL tx). No key.
+fn hermes_intent(to: &str, data: &str, from: &str, gas: Option<u64>) -> SignatureIntent {
+    let mut obj = serde_json::json!({
+        "from": from,
+        "to": to,
+        "value": "0x0",
+        "data": data,
+        "chainId": format!("0x{CITRATE_CHAIN_ID:x}"),
+    });
+    if let Some(g) = gas {
+        obj["gas"] = serde_json::json!(format!("0x{g:x}"));
+    }
+    SignatureIntent {
+        origin: HERMES_ORIGIN.to_string(),
+        kind: IntentKind::Transaction,
+        chain_id: CITRATE_CHAIN_ID,
+        raw: obj.to_string(),
     }
 }
 
@@ -619,6 +770,33 @@ pub fn hermes_pending_approvals(
 pub fn hermes_stop(app: tauri::AppHandle) -> std::result::Result<(), String> {
     manager(&app)?.stop();
     Ok(())
+}
+
+/// S6.3 — bridge the sidecar's head pending CHAIN effect into a PENDING ceremony the human approves
+/// (Rule 3: signs nothing here). Returns the `CeremonyView` to display, or `null` when there is
+/// nothing pending / the head is a non-chain effect. The user then approves it via the normal
+/// ceremony path (`sign_and_broadcast`) and calls `hermes_resolve(true)` to let the capsule proceed.
+#[tauri::command]
+pub fn hermes_bridge_pending(
+    app: tauri::AppHandle,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+) -> std::result::Result<Option<CeremonyView>, String> {
+    let rpc = crate::rpc::RpcClient::citrate();
+    manager(&app)?
+        .bridge_pending(&ceremony.0, &custody.0, &rpc)
+        .map_err(|e| e.to_string())
+}
+
+/// S6.3 — resolve the sidecar's head effect after the human decided its ceremony: `approve=true`
+/// lets the (already-signed-and-broadcast) effect proceed; `false` aborts it. The head is blocked
+/// until this call, so it targets the effect that was bridged.
+#[tauri::command]
+pub fn hermes_resolve(
+    app: tauri::AppHandle,
+    approve: bool,
+) -> std::result::Result<(), String> {
+    manager(&app)?.resolve_head(approve).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
