@@ -29,7 +29,7 @@ import {
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
-import type { MemoryResult } from "../bridge/domains";
+import type { GrantStatus, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -158,6 +158,32 @@ export function describeBond(g: {
   // are available.
   if (!g.isKycVerified) return "Unlocked · KYC required to withdraw";
   return g.hasValidator ? "Unlocked · validating · can withdraw" : "Unlocked · can withdraw";
+}
+
+/**
+ * The onboarding patch implied by a REAL on-chain grant, or `null` when the grant
+ * is not (yet) genuinely on chain.
+ *
+ * Pure so the settle DECISION is testable without a chain, a bridge, or a mocked
+ * `BRIDGE_MODE` — the same reason `isGrantOnChain` / `describeBond` / `mapNodeState`
+ * are pure. It requires EXACTLY the evidence `pollGrant` requires (attributed stake
+ * on chain AND a minted SBT) and returns the SAME fields from the SAME values, so
+ * the launch-time reconcile and the in-flight poll can never disagree.
+ *
+ * Returning `null` (rather than an empty patch) keeps "no grant" a distinct,
+ * non-mutating outcome — a member mid-flow is never nudged forward (Rule 1).
+ */
+export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
+  if (!isGrantOnChain(g) || !g.hasSbt) return null;
+  return {
+    s3: "settled",
+    s5: "settled",
+    s5n: 32000,
+    s5StakeWei: g.attributedStakeWei,
+    s5BondStatus: describeBond(g),
+    hasGrant: true,
+    hasSbt: g.hasSbt,
+  };
 }
 
 
@@ -422,6 +448,11 @@ export class Store {
         .catch(() => {
           /* no vault yet (or web-dev) — leave the existing id untouched */
         });
+      // INDEPENDENT of the custody chain below. The grant is a permissionless chain
+      // read that needs no vault, no session and no unlock — chaining it behind
+      // custodyEnsureUnlocked() meant a vault that never settles silently suppressed
+      // it, stranding a paid member with a fully-granted on-chain position.
+      void this.reconcileOnboardingFromChain();
       void this.custodyEnsureUnlocked().finally(() => {
         // Re-establish the signed-in session from the vaulted OIDC refresh token so
         // a restart keeps the member's paid tier instead of dropping to signed-out
@@ -727,8 +758,54 @@ export class Store {
     }
     // Live /userinfo re-check once the session is back, so the freshest entitlement
     // (tier/expiry) is folded. Skipped when there is no session to re-check.
-    if (refreshed) await this.authUserinfo();
-    else await this.refreshAuth();
+    // WRAPPED: a rejection here must not skip the chain reconcile below. These are
+    // independent — the grant is a permissionless chain read that does not need a
+    // live session, and letting an auth hiccup suppress it is exactly how a paid
+    // member stays stranded (observed 2026-08-05).
+    try {
+      if (refreshed) await this.authUserinfo();
+      else await this.refreshAuth();
+    } catch {
+      /* honest no-op: entitlement display may lag; the chain read below still runs */
+    }
+    // The onboarding step state is LOCAL; the grant is on CHAIN. Re-sync them.
+    await this.reconcileOnboardingFromChain();
+  }
+
+  /**
+   * Fold the REAL on-chain grant into the onboarding step state at launch.
+   *
+   * WHY THIS EXISTS. `s3`/`s5` were advanced ONLY by `pollMembership`/`pollGrant`,
+   * which are in-memory, run solely while their step is the active one, and stop
+   * at a ~5-minute cap. Nothing re-read the chain afterwards. So a member who paid
+   * and whose treasury grant fully landed — SBT minted, MemberBond clone deployed
+   * and funded with 32,000 SALT — was stranded permanently if the app restarted or
+   * the cap elapsed during checkout: the chain said "member", the app said `s3:
+   * idle / hasGrant: false`, and onboarding could not be completed or re-entered.
+   * Observed 2026-08-05 on the first fresh-email E2E (member
+   * `0xE14d2F9d…`, bond `0xD9FF524e…`).
+   *
+   * This is a RECONCILE, not a shortcut: it settles on exactly the same evidence
+   * `pollGrant` requires — `isGrantOnChain(grant) && grant.hasSbt`, both live 40204
+   * reads — and sets the same fields from the same values. A member without a real
+   * grant is untouched, and a read failure is an honest no-op (Rule 1). It never
+   * advances S6/activation, which still needs the human ceremony.
+   */
+  private async reconcileOnboardingFromChain(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") return; // web-dev sim has no chain to reconcile against
+    const member = this.identity().wallet;
+    if (!member) return; // not signed in / no claim yet
+    if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
+    let grant: Awaited<ReturnType<typeof bridge.membership.grantStatus>>;
+    try {
+      grant = await bridge.membership.grantStatus(member);
+    } catch {
+      return; // transient RPC error — keep the last honest state, never fabricate
+    }
+    const patch = reconciledGrantPatch(grant);
+    if (!patch) return; // no real grant: leave the flow exactly as it was
+    this.setState(patch);
+    this.save();
   }
 
   /**
