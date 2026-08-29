@@ -5,13 +5,21 @@ author: Claude Fable 5, directed by @SaulBuilds
 status: active
 ---
 
-# src-tauri/binaries — bundled sidecars: citrate-node (D-C1-1) + node-agent (C1.2) + mem-mcp (C3)
+# src-tauri/binaries — bundled sidecars: citrate-node + node-agent + mem-mcp + llama + ipfs + comms + hermes
 
-Three sidecars are bundled as **Tauri `externalBin`s**: the `citrate` node (C1.1),
-the `node-agent` (C1.2), and the `mem-mcp` memory daemon (C3). All externalBin
-declarations live in a SEPARATE overlay config, `tauri.bundle-node.conf.json`
-(`bundle.externalBin: ["binaries/citrate", "binaries/node-agent", "binaries/mem-mcp"]`),
+Sidecars are bundled as **Tauri `externalBin`s**: the `citrate` node (C1.1), the
+`node-agent` (C1.2), the `mem-mcp` memory daemon (C3), `llama-server`, `ipfs`, the
+`hermes` agent, and the `comms-member-daemon` (CX-S3 — the wallet-owned OpenMLS
+member + in-process relay that Groups run on). All externalBin declarations live in
+SEPARATE overlay configs, `tauri.bundle-node.conf.json` / `tauri.local-run.conf.json`,
 NOT in the base `tauri.conf.json`.
+
+> **`comms-member-daemon` replaces the retired `comms-relay`** (the S3.1 bare relay).
+> The member-daemon subsumes it (D-C1/D-C2 reconciliation, CX-S3.2), so the overlays
+> declare `binaries/comms-member-daemon`. Build it with
+> `scripts/build-comms-daemon.sh` (from `../citrate-comms`); the app resolves it via
+> `comms::resolve_comms_member_bin` (bundled resource dir) or the `CITRATE_MEMBER_BIN`
+> override — dev/tests never need the bundle.
 
 **Why an overlay and not the base config:** `tauri-build` (the `build.rs` step)
 validates every `externalBin` path *on every `cargo build`* — so putting it in

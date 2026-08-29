@@ -8,7 +8,7 @@
       "binaries/mem-mcp",
       "binaries/llama-server",
       "binaries/ipfs",
-      "binaries/comms-relay",
+      "binaries/comms-member-daemon",
       "binaries/hermes"
     ],
     "resources": [
