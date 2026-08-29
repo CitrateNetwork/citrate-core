@@ -274,6 +274,8 @@ pub fn run() {
             hermes::hermes_run_skill,
             hermes::hermes_pending_approvals,
             hermes::hermes_stop,
+            hermes::hermes_bridge_pending,
+            hermes::hermes_resolve,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an
