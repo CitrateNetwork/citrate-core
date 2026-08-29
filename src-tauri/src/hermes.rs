@@ -253,10 +253,12 @@ pub struct HermesManager {
     sup: Mutex<Option<Supervisor>>,
     /// The bearer-authed control transport (production ureq; tests inject a mock).
     control: Box<dyn HermesControl>,
-    /// S6.3 dedup: a chain effect's content key (hash of to+data) → the ceremony id already minted for
-    /// it. A still-pending effect maps to AT MOST ONE ceremony, so re-polling `bridge_pending` returns
-    /// the SAME ceremony (never a second → never a second broadcast). A consumed (approved/rejected)
-    /// entry is dropped so a legitimate re-accrual can bridge afresh. Cleared on stop.
+    /// S6.3 dedup: a chain effect's content key (hash of to+data) → the ceremony id minted for it.
+    /// While an effect is the sidecar head it maps to AT MOST ONE ceremony: `bridge_pending` returns
+    /// the SAME ceremony while pending, and once that ceremony is consumed (approved OR rejected) it
+    /// returns None rather than minting a second — so an approved effect can never be re-bridged into a
+    /// second broadcast (H-1). The entry is cleared only by `resolve_head` (the head has moved) or on
+    /// stop, at which point a genuinely new effect may bridge fresh.
     bridged: Mutex<HashMap<String, String>>,
 }
 
@@ -492,8 +494,9 @@ impl HermesManager {
     /// HUMAN must approve; the ceremony's own approve path (`sign_and_broadcast`) does the single
     /// signature + broadcast. The agent can never obtain a signature from here.
     ///
-    /// Idempotent (dedup): the effect's content key (hash of to+data) maps to at most one still-
-    /// pending ceremony, so re-polling returns the SAME ceremony — never a second broadcast. Returns
+    /// Idempotent (dedup): the effect's content key (hash of to+data) maps to at most one ceremony
+    /// while it is the head — re-polling returns the SAME pending ceremony, and once decided returns
+    /// None (no second mint, no second broadcast) until `resolve_head` advances the head. Returns
     /// `None` when there is nothing pending or the head is a non-chain (code/shell) effect.
     ///
     /// `vault` supplies `from` (the real signer's PUBLIC address, never the key); `rpc` estimates the
@@ -515,14 +518,19 @@ impl HermesManager {
         };
         let key = content_key(&to, &data);
 
-        // FAST PATH: an existing still-pending ceremony for this effect → reuse it, no mint, no RPC.
+        // FAST PATH: this effect already has a bridged ceremony.
+        //   - still pending → reuse it (no mint, no RPC).
+        //   - CONSUMED (approved OR rejected) → the human already DECIDED this exact effect, but the
+        //     sidecar head is still blocked on it (only `resolve_head` advances it). We must NOT mint
+        //     a second ceremony for it: an approve→re-poll window would otherwise mint C2 for the same
+        //     (to, data), and approving C2 signs a REAL second tx (fresh nonce) = double-broadcast.
+        //     Return None ("decided, awaiting resolve"); the entry is cleared only by `resolve_head`,
+        //     when the sidecar head actually moves off this effect. THIS is what makes "at most one
+        //     broadcast per effect" a structural property, not a UI-ordering hope (fixes H-1).
         {
-            let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
+            let map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = map.get(&key) {
-                if let Some(view) = ceremony.status(existing) {
-                    return Ok(Some(view));
-                }
-                map.remove(&key); // consumed → allow a fresh bridge
+                return Ok(ceremony.status(existing)); // Some(pending view) or None (decided → no re-mint)
             }
         }
 
@@ -534,14 +542,12 @@ impl HermesManager {
         let gas = rpc.estimate_gas(gas_call(&to, &data)).ok();
 
         // ATOMIC check-and-mint under a single hold of the dedup lock: two concurrent bridges of the
-        // same effect cannot each mint a ceremony (the loser re-checks and reuses the winner's).
+        // same effect cannot each mint a ceremony (the loser re-checks and reuses the winner's), and a
+        // consumed entry is NOT re-minted (H-1). We only mint when there is NO entry for this effect.
         // `ceremony.request`/`status` lock only the ceremony's own mutex (disjoint), so no deadlock.
         let mut map = self.bridged.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = map.get(&key) {
-            if let Some(view) = ceremony.status(existing) {
-                return Ok(Some(view));
-            }
-            map.remove(&key);
+            return Ok(ceremony.status(existing)); // reuse pending, or None if decided (never re-mint)
         }
         let view = ceremony.request(hermes_intent(&to, &data, &from, gas));
         map.insert(key, view.id.clone());
@@ -551,7 +557,13 @@ impl HermesManager {
     /// Resolve the sidecar's HEAD approval after the human decided its ceremony: `approve` → the
     /// capsule proceeds (the ceremony already signed + broadcast); otherwise → the capsule aborts.
     /// The sidecar's queue is head-resolved and the head is BLOCKED until this call, so it targets the
-    /// same effect that was bridged. Stale/consumed dedup entries self-heal on the next bridge.
+    /// same effect that was bridged.
+    ///
+    /// On success this CLEARS the dedup map: the sidecar head now advances off the just-resolved
+    /// effect, so a genuinely new effect (even one with the same `(to, data)`) is allowed to bridge
+    /// fresh. Because the head is blocked until here, at most one effect is ever bridged at a time, so
+    /// clearing the whole map is exactly "forget the resolved effect" (H-1: an approved effect is NOT
+    /// re-bridgeable until its head is resolved here).
     pub fn resolve_head(&self, approve: bool) -> Result<()> {
         let bearer = self.bearer()?;
         let path = if approve {
@@ -568,12 +580,23 @@ impl HermesManager {
                 msg: resp.body.chars().take(200).collect(),
             });
         }
+        // The head moved off the resolved effect; forget it so the NEXT head can bridge fresh.
+        self.bridged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         Ok(())
     }
 }
 
 /// The dedup content key for a chain effect: a hex SHA3 of `to|data`, so identical calldata collides
 /// on one ceremony (deny a double-broadcast from rapid re-polling).
+///
+/// H-2: this covers `to` + `data` only. `hermes_intent` currently stamps a CONSTANT `value` ("0x0")
+/// and `chain_id` (40204), so two effects with the same `to|data` are genuinely the same action and
+/// collapsing them is correct. If Hermes ever emits VALUE-bearing effects or targets multiple chains,
+/// `value` and `chain_id` MUST be folded into this key (else two different-value calls to the same
+/// `to|data` would alias onto one ceremony). Keep this in lockstep with `hermes_intent`.
 fn content_key(to: &str, data: &str) -> String {
     use sha3::{Digest, Keccak256};
     let mut h = Keccak256::new();

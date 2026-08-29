@@ -465,6 +465,49 @@ fn bridge_pending_dedups_the_same_effect_to_one_ceremony() {
 }
 
 #[test]
+fn a_decided_effect_is_not_re_bridged_into_a_second_broadcast() {
+    // H-1: once a bridged effect's ceremony is CONSUMED (here via reject; the dangerous case is
+    // approve→broadcast), a re-poll of bridge_pending must NOT mint a second ceremony for the same
+    // (to,data) while it is still the sidecar head — that second approval would sign a real second tx
+    // (fresh nonce) = double-broadcast. It stays None until resolve_head advances the head.
+    let mgr = control_manager(chain_effect_mock());
+    let ceremony = SignatureCeremony::new();
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        rpc_ok(serde_json::json!("0x8000")),
+        rpc_ok(serde_json::json!("0x8000")),
+    ]));
+
+    let c1 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc)
+        .unwrap()
+        .unwrap();
+    ceremony
+        .reject(&c1.id)
+        .expect("the human decides it → the ceremony is consumed");
+    assert!(ceremony.status(&c1.id).is_none(), "consumed");
+
+    // Re-poll while the SAME effect is still the head → must NOT mint a second ceremony.
+    let repoll = mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap();
+    assert!(
+        repoll.is_none(),
+        "an already-decided head effect is NOT re-bridged (H-1: no second broadcast)"
+    );
+
+    // Only after resolve_head (the sidecar head advances) may a fresh effect bridge again.
+    mgr.resolve_head(false)
+        .expect("resolve advances the head + clears the dedup");
+    let c2 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc)
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        c2.id, c1.id,
+        "after resolve, a genuinely new head bridges a FRESH ceremony"
+    );
+}
+
+#[test]
 fn bridge_pending_skips_a_non_chain_effect() {
     // An approval with no to/data (a code/shell effect) has no chain signature to bridge.
     let mut mock = MockControl::new();
