@@ -11,7 +11,7 @@ import { Groups } from "./Groups";
 import { freshState } from "../shell/state";
 import type { Store } from "../shell/store";
 
-const stubStore = { toast: () => {} } as unknown as Store;
+const stubStore = { toast: () => {}, identity: () => ({ wallet: "" }) } as unknown as Store;
 const html = renderToStaticMarkup(<Groups store={stubStore} s={freshState("p1")} />);
 
 describe("Groups honesty — scoped reach, honest-empty, relay-enforced RBAC", () => {
@@ -22,9 +22,9 @@ describe("Groups honesty — scoped reach, honest-empty, relay-enforced RBAC", (
   });
 
   it("renders honest empty states with no fabricated room or message (Rule 1)", () => {
-    // Fresh mount, before any bridge load: the group list + conversation are empty prompts.
+    // Fresh mount, before any bridge load: the group list + main pane are empty prompts.
     expect(html.toLowerCase()).toContain("no groups yet");
-    expect(html.toLowerCase()).toContain("select a group");
+    expect(html.toLowerCase()).toContain("your groups live here");
   });
 
   it("is truthful that roles are enforced at the relay, not the client", () => {

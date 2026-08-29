@@ -40,6 +40,10 @@ export const ORIGIN_COLORS: Record<string, string> = {
   "node-agent": "#1b4965",
   "chat agent": "#5d60c9",
   "micro-app": "#a8497a",
+  // Keyless agent runtimes (CX-S6). Each proposes; the human disposes at the ceremony.
+  "agent:hermes": "#5d60c9",
+  "agent:openclaw": "#5d60c9",
+  "agent:grok": "#5d60c9",
 };
 
 export interface Persona {

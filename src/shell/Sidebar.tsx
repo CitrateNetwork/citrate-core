@@ -2,6 +2,7 @@ import marqueeWhite from "../assets/brand/citrate_marquee_white.svg";
 import { Store } from "./store";
 import { AppState, nodeLabel } from "./state";
 import { OnChainSbtEmblem } from "../identity/SbtEmblem";
+import { agentSlice } from "./slices/agent";
 
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 
@@ -22,6 +23,7 @@ export const NAVI: [string, string, string, string][] = [
   ["cluster", "Cluster", "M12 5 A2 2 0 1 0 12 4.99 M5 18 A2 2 0 1 0 5 17.99 M19 18 A2 2 0 1 0 19 17.99", "M12 7 L6 16 M12 7 L18 16"],
   ["train", "Train", "M4 18 L9 12 L13 15 L20 6", "M4 20 H20 M4 4 V20"],
   ["agent", "Agent", "M8 4 H16 V10 A4 4 0 0 1 8 10 Z M6 20 A6 6 0 0 1 18 20", "M10 7 H10.01 M14 7 H14.01"],
+  ["connections", "Connections", "M8 8 A4 4 0 0 0 8 16 H10 M16 8 A4 4 0 0 1 16 16 H14", "M8.5 12 H15.5"],
 ];
 
 // CX-S7.1 — the grandma-proof IA (gS-ia): the app is organized around YOU + YOUR GROUPS, not a flat
@@ -29,7 +31,7 @@ export const NAVI: [string, string, string, string][] = [
 // appended to "You" only for ALF members. Section titles are the mental model a non-technical user
 // navigates by.
 export const SECTIONS: { title: string; ids: string[] }[] = [
-  { title: "You", ids: ["dashboard", "wallet", "storage", "files", "models", "agent", "journal"] },
+  { title: "You", ids: ["dashboard", "wallet", "storage", "files", "models", "agent", "connections", "journal"] },
   { title: "Your Groups", ids: ["groups", "comms", "cluster", "train"] },
   { title: "Your Node", ids: ["node"] },
   { title: "More", ids: ["commissary", "settings"] },
@@ -53,6 +55,9 @@ const nodeColors: Record<string, string> = {
 
 export function Sidebar({ store, s }: { store: Store; s: AppState }) {
   const P = store.identity();
+  // The Agent item carries a live count of approvals awaiting the human, so a pending
+  // action is never something the owner has to go hunting for (AGENT-US-4).
+  const agentPending = agentSlice.use().approvals.length;
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   const tierText = effTier === "free" ? "public tier" : effTier === "enterprise" ? "enterprise · " + (s.org || "") : "pilot member";
   const tierColor = s.entitlement === "active" ? "rgba(205,231,214,.6)" : s.entitlement === "lapsed" ? "#dd7259" : "#ffbd10";
@@ -91,6 +96,7 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
                   const [, label, iconA, iconB] = item;
                   const active = s.route === id;
                   const dot = id === "comms" && s.stage === "done";
+                  const badge = id === "agent" && agentPending > 0 ? agentPending : 0;
                   return (
                     <li key={id}>
                       <a
@@ -118,7 +124,12 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
                           <path d={iconB}></path>
                         </svg>
                         <span style={{ flex: 1 }}>{label}</span>
-                        {dot && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
+                        {badge > 0 && (
+                          <span className="mono tabular" style={{ fontSize: 9.5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999, background: "var(--citrate-yellow)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+                            {badge}
+                          </span>
+                        )}
+                        {dot && badge === 0 && <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--citrate-yellow)" }}></span>}
                       </a>
                     </li>
                   );

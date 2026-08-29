@@ -14,4 +14,5 @@ export { Groups } from "./Groups";
 export { Cluster } from "./Cluster";
 export { Train } from "./Train";
 export { Agent } from "./Agent";
+export { Connections } from "./Connections";
 export type { SurfaceProps } from "./shared";
