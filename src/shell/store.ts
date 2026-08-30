@@ -1797,6 +1797,19 @@ export class Store {
   }
 
   startNode(): void {
+    // IDEMPOTENT START (onboarding-snag fix). The launch autostart already brings the node
+    // up, so a second startNode() — from the S5 provisioning step or a user tap — would ask
+    // the supervisor to spawn an already-live node and get `AlreadyRunning`, which used to
+    // surface as a scary "Could not start the node". If the node is already up or spawning,
+    // this is a no-op: just fold the live state (height/peers/sync) and let onboarding proceed.
+    if (
+      BRIDGE_MODE === "tauri" &&
+      (this.nodeStarting || (this.state.node !== "off" && this.state.node !== "error"))
+    ) {
+      this.setState({ nodeIntent: "run" });
+      void this.refreshNode();
+      return;
+    }
     this.setState({ node: "prov", nodeIntent: "run", syncPct: 0, logs: [], peerRows: [] });
     if (BRIDGE_MODE === "tauri") {
       // Spawn the REAL supervised node (bridge.node.start → node.rs). The 2s
@@ -1819,13 +1832,20 @@ export class Store {
         })
         .catch((e) => {
           this.nodeStarting = false;
-          this.setState({ node: "error" });
           // Surface the REAL failure. Tauri rejects a Rust `Err(String)` as a
           // plain string (not an Error), so an `instanceof Error` gate would
           // swallow the actual cause (e.g. "No space left on device", RocksDB
           // LOCK held) behind a generic line — a Rule-1 lie about why it failed.
           const reason =
             e instanceof Error ? e.message : typeof e === "string" && e.trim() ? e : "supervisor unavailable";
+          // AlreadyRunning is NOT a failure — the node is already up (a race past the
+          // idempotent guard above). Fold the live state and proceed; never scare the
+          // user with "could not start" when the node is in fact running.
+          if (/already running/i.test(reason)) {
+            void this.refreshNode();
+            return;
+          }
+          this.setState({ node: "error" });
           this.toast("Could not start the node: " + reason);
         });
       return;

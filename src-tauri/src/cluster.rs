@@ -275,7 +275,6 @@ fn harden_dir_perms(_dir: &Path) -> std::io::Result<()> {
 
 /// Resolve the bundled `cluster-daemon` binary (env override → resource dir).
 pub fn resolve_cluster_daemon_bin(app: &tauri::AppHandle) -> std::result::Result<PathBuf, String> {
-    use tauri::Manager;
     if let Ok(p) = std::env::var(CLUSTER_DAEMON_BIN_ENV) {
         let path = PathBuf::from(p);
         if path.exists() {
@@ -283,12 +282,8 @@ pub fn resolve_cluster_daemon_bin(app: &tauri::AppHandle) -> std::result::Result
         }
         return Err(format!("{CLUSTER_DAEMON_BIN_ENV} set but not found: {}", path.display()));
     }
-    let resource = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("cluster-daemon");
-    Ok(resource)
+    // externalBin lives next to the main executable (Contents/MacOS/<name>), not the resource dir.
+    crate::supervisor::resolve_external_bin(app, "cluster-daemon")
 }
 
 // ---------------------------------------------------------------------------

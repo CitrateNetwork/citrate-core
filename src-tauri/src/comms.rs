@@ -362,7 +362,6 @@ fn harden_dir_perms(_dir: &Path) -> std::io::Result<()> {
 pub fn resolve_comms_member_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
-    use tauri::Manager;
     if let Ok(p) = std::env::var(COMMS_MEMBER_BIN_ENV) {
         let path = PathBuf::from(p);
         if path.exists() {
@@ -370,12 +369,10 @@ pub fn resolve_comms_member_bin<R: tauri::Runtime>(
         }
         return Err(format!("{COMMS_MEMBER_BIN_ENV} set but not found: {}", path.display()));
     }
-    let resource = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("comms-member-daemon");
-    Ok(resource)
+    // Bundled externalBin: installed NEXT TO THE MAIN EXECUTABLE (Contents/MacOS/<name>), NOT the
+    // resource dir. Using resource_dir() here made a packaged app report "binary not bundled" even
+    // though the daemon shipped — mirror node.rs/ipfs.rs/mem-mcp via the shared resolver.
+    crate::supervisor::resolve_external_bin(app, "comms-member-daemon")
 }
 
 // ---------------------------------------------------------------------------

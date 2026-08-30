@@ -728,6 +728,12 @@ function S6({ store, s }: { store: Store; s: AppState }) {
                 peers {s.peers}
               </span>
             </div>
+            {s.peers > 0 && (
+              <div style={{ fontSize: 12, color: "var(--tx-3)" }}>
+                You’re connected — no need to wait. Continue below and your node keeps syncing in the
+                background; chain balances catch up on the Dashboard as it does.
+              </div>
+            )}
           </div>
         )}
         {/* VALIDATING is now gated on the REAL ValidatorRegistry bond (s.bondedStake
@@ -769,8 +775,14 @@ function S6({ store, s }: { store: Store; s: AppState }) {
         Data sources — local node RPC · node-agent supervision API 127.0.0.1:19600
       </div>
 
-      {/* S6.5 — local model in-flow (BC-3). Appears once the node is up. */}
-      {(s.node === "validating" || s.node === "synced") && <ModelStep store={store} s={s} />}
+      {/* S6.5 — local model in-flow (BC-3). The local model runs independently of chain sync, so we
+          do NOT make the member wait for a FULL sync to proceed: once the node is confirmed syncing
+          (up + at least one peer, so it is genuinely pulling the chain), the model step + "Enter your
+          dashboard" become available. The node keeps syncing IN THE BACKGROUND inside the app, and
+          the Node/Dashboard surfaces show its live progress. */}
+      {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && (
+        <ModelStep store={store} s={s} />
+      )}
     </div>
   );
 }

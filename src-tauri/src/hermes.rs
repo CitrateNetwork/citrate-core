@@ -644,7 +644,6 @@ fn http_health_ok(url: &str) -> bool {
 pub fn resolve_hermes_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
-    use tauri::Manager;
     if let Ok(p) = std::env::var(HERMES_BIN_ENV) {
         let path = PathBuf::from(p);
         if path.exists() {
@@ -655,12 +654,8 @@ pub fn resolve_hermes_bin<R: tauri::Runtime>(
             path.display()
         ));
     }
-    let resource = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("hermes");
-    Ok(resource)
+    // externalBin lives next to the main executable (Contents/MacOS/hermes), not the resource dir.
+    crate::supervisor::resolve_external_bin(app, "hermes")
 }
 
 // ---- bearer token (mirrors agent.rs's scheme) ----
