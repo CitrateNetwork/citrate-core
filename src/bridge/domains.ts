@@ -775,6 +775,17 @@ export interface ResolvedIdentity {
   network: SocialNetwork;
   handle: string;
 }
+/** The shareable binding payload that rides a group message (server-blind). Carries no token. */
+export interface ExportedBinding {
+  network: SocialNetwork;
+  handle: string;
+  address: string;
+  nonce: string;
+  signature: string;
+}
+/** Control-message sentinel: a group message body starting with this carries an ExportedBinding
+ *  (JSON follows). Clients ingest + hide these; they never render in the conversation. */
+export const SOCIAL_BINDING_MSG_PREFIX = "cbind1:";
 export interface SocialDomain {
   /** The user's current linked identities (device-local). Honest-empty when none/unwired. */
   status(): Promise<LinkedIdentity[]>;
@@ -793,9 +804,13 @@ export interface SocialDomain {
   setVisibility(network: SocialNetwork, visibility: SocialVisibility): Promise<LinkedIdentity>;
   /** Forget a link — drop the local record + tombstone to group members (ADR revocation). */
   disconnect(network: SocialNetwork): Promise<void>;
-  /** Resolve member addresses → verified, group-visible faces this device knows. Self today;
-   *  cross-member when bindings are shared server-blind to groups (ADR D1 follow-up). */
+  /** Resolve member addresses → verified, group-visible faces this device knows (own + foreign). */
   resolve(addresses: string[]): Promise<ResolvedIdentity[]>;
+  /** The shareable payload for a verified, group-visible link (null if none) — rides a group message. */
+  exportBinding(network: SocialNetwork): Promise<ExportedBinding | null>;
+  /** Accept a peer's binding from the relay. VERIFIES (sender==address + signature recovers) before
+   *  storing; returns whether it was accepted. */
+  ingestBinding(sender: string, binding: ExportedBinding): Promise<boolean>;
 }
 
 /**

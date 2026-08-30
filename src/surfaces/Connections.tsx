@@ -100,6 +100,8 @@ export function Connections({ store }: SurfaceProps) {
     try {
       await bridge.social.setVisibility(network, visibility);
       await loadSocial();
+      // Widening to groups shares the verified binding to your groups (server-blind, ADR D1).
+      if (visibility === "groups") void store.shareSocialBindings();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
     }
@@ -176,7 +178,7 @@ export function Connections({ store }: SurfaceProps) {
                 {link ? (
                   <>
                     {!link.verified && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => void store.verifySocial(so.id, () => void loadSocial())} title="Sign a wallet challenge to prove you own this account">
+                      <button className="btn btn-secondary btn-sm" onClick={() => void store.verifySocial(so.id, () => { void loadSocial(); void store.shareSocialBindings(); })} title="Sign a wallet challenge to prove you own this account">
                         Verify
                       </button>
                     )}

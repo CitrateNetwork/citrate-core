@@ -129,6 +129,53 @@ fn keyring_slot(network: &str) -> String {
     format!("social.{network}")
 }
 
+// --- foreign bindings (ADR D1): verified bindings received from group members, server-blind ---
+
+/// A verified binding shared to us by a peer over the ciphertext-only relay. Held after we recover
+/// its signature to the claimed address (so a peer can't assert a handle they don't control).
+#[derive(Serialize, Deserialize, Clone)]
+struct ForeignBinding {
+    network: String,
+    handle: String,
+    address: String,
+    seen_at: u64,
+}
+
+/// The shareable payload (rides a group message; the relay only sees ciphertext). It carries exactly
+/// what a receiver needs to reconstruct the signed message and recover the signer — no token.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedBinding {
+    pub network: String,
+    pub handle: String,
+    pub address: String,
+    pub nonce: String,
+    pub signature: String,
+}
+
+fn foreign_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("social");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("foreign.json"))
+}
+
+fn load_foreign(app: &tauri::AppHandle) -> Vec<ForeignBinding> {
+    match foreign_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
+        Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+fn save_foreign(app: &tauri::AppHandle, v: &[ForeignBinding]) -> Result<(), String> {
+    let p = foreign_path(app)?;
+    let bytes = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
+    std::fs::write(p, bytes).map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // LINK flow (public-client OAuth PKCE)
 // ---------------------------------------------------------------------------
@@ -455,7 +502,8 @@ pub struct ResolvedIdentity {
 pub fn social_resolve(app: tauri::AppHandle, addresses: Vec<String>) -> Result<Vec<ResolvedIdentity>, String> {
     let want: std::collections::HashSet<String> =
         addresses.iter().map(|a| a.to_lowercase()).collect();
-    let out = load_links(&app)
+    // Own verified + group-visible bindings (self-resolution).
+    let mut out: Vec<ResolvedIdentity> = load_links(&app)
         .iter()
         .filter_map(|l| {
             let b = l.binding.as_ref()?; // verified only (D3)
@@ -472,7 +520,72 @@ pub fn social_resolve(app: tauri::AppHandle, addresses: Vec<String>) -> Result<V
             })
         })
         .collect();
+    // Foreign bindings shared to us by group members (already recover-verified on ingest, D1).
+    for f in load_foreign(&app) {
+        if want.contains(&f.address.to_lowercase()) {
+            out.push(ResolvedIdentity {
+                address: f.address,
+                network: f.network,
+                handle: f.handle,
+            });
+        }
+    }
     Ok(out)
+}
+
+/// `social_export_binding` — the shareable payload for a verified, group-visible link (or null). The
+/// caller rides it over the ciphertext-only group relay (server-blind); it carries no token.
+#[tauri::command]
+pub fn social_export_binding(app: tauri::AppHandle, network: String) -> Result<Option<ExportedBinding>, String> {
+    let links = load_links(&app);
+    Ok(links.iter().find_map(|l| {
+        if l.network != network || l.visibility != "groups" {
+            return None;
+        }
+        let b = l.binding.as_ref()?;
+        Some(ExportedBinding {
+            network: l.network.clone(),
+            handle: l.handle.clone(),
+            address: b.address.clone(),
+            nonce: b.nonce.clone(),
+            signature: b.signature.clone(),
+        })
+    }))
+}
+
+/// `social_ingest_binding` — accept a peer's binding received over the relay. VERIFIES before
+/// trusting: the message `sender` must equal the claimed address AND the signature must recover to
+/// it (recover_personal over the exact binding message). Only then is the face stored. Returns
+/// whether it was accepted. This is the gate that stops anyone asserting a handle for an address
+/// they don't control.
+#[tauri::command]
+pub fn social_ingest_binding(
+    app: tauri::AppHandle,
+    sender: String,
+    binding: ExportedBinding,
+) -> Result<bool, String> {
+    // 1. the sharer must be the address they claim (the relay attributes the message to `sender`).
+    if sender.to_lowercase() != binding.address.to_lowercase() {
+        return Ok(false);
+    }
+    // 2. the signature must recover to that address over the EXACT binding message (D3).
+    let message = binding_message(&binding.network, &binding.handle, &binding.address, &binding.nonce);
+    let recovered = crate::wallet::recover_personal_hex(message.as_bytes(), &binding.signature)
+        .map_err(|e| e.to_string())?;
+    if recovered.to_lowercase() != binding.address.to_lowercase() {
+        return Ok(false);
+    }
+    // 3. accepted — upsert the foreign face (keyed by address+network).
+    let mut foreign = load_foreign(&app);
+    foreign.retain(|f| !(f.address.eq_ignore_ascii_case(&binding.address) && f.network == binding.network));
+    foreign.push(ForeignBinding {
+        network: binding.network,
+        handle: binding.handle,
+        address: binding.address,
+        seen_at: now_unix(),
+    });
+    save_foreign(&app, &foreign)?;
+    Ok(true)
 }
 
 #[cfg(test)]

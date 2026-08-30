@@ -35,5 +35,11 @@ export function simSocial(_host: SimHost): SocialDomain {
       // sim: no links, no faces (honest-empty; the address fallback renders).
       return [];
     },
+    async exportBinding() {
+      return null;
+    },
+    async ingestBinding() {
+      return false;
+    },
   };
 }
