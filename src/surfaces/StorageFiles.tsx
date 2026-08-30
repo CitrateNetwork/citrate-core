@@ -1,14 +1,12 @@
 // =====================================================================
-// citrate-core — Files (CX-S2.3, lane s2)
+// citrate-core — Files (CX-S2.3 + Pass-2 polish, lane s2)
 //
 // A drag-drop file store on IPFS over the S2.1 kubo seam: drop files to add them, pin them to
-// your node, retrieve by CID, unpin. Real data via bridge.storage folded through the storage
-// slice. Honest states throughout (Rule 1): empty when nothing, real error text on failure.
-//
-// Pinning keeps the file on this node's kubo AND places a real ceremony-gated staked-SALT bond
-// (S2.2: registerModel on the redeployed IPFSIncentivesV3, #170-sound CommD). The bond tx is
-// submitted as a PENDING SignatureCeremony — the human approves it in the signing surface; nothing
-// signs here (Rule 3). D-22/RT-4 subsidy framing per the honesty tripwire.
+// your node (ceremony-gated SALT bond), retrieve by CID, unpin. Real data via bridge.storage
+// through the storage slice. Honest states throughout (Rule 1): empty when nothing, and — when the
+// kubo daemon is unreachable — an honest "your file store isn't reachable · Retry" card instead of
+// a raw 500/transport dump. Add/pin/retrieve/unpin are disabled while it's down; your files stay
+// safe on disk.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
@@ -34,26 +32,26 @@ function humanBytes(n: number): string {
 }
 
 function shortCid(cid: string): string {
-  return cid.length > 18 ? `${cid.slice(0, 10)}…${cid.slice(-6)}` : cid;
+  return cid.length > 22 ? `${cid.slice(0, 12)}…${cid.slice(-6)}` : cid;
 }
 
 const STATE_COLOR: Record<PinRow["pinState"], string> = {
-  pinned: "var(--ok, #2e9e5b)",
+  pinned: "var(--ok)",
   pinning: "var(--tx-3)",
-  challenged: "var(--bad, #c0392b)",
+  challenged: "var(--danger)",
   unpinned: "var(--tx-3)",
 };
 
 export function StorageFiles({ store }: SurfaceProps) {
   const st = storageSlice.use();
   const [dragging, setDragging] = useState(false);
+  const down = st.kuboDown;
 
   useEffect(() => {
     void refreshPins();
   }, []);
 
-  // Native Tauri file drag-drop (gives real filesystem paths; no plugin needed). Sim/web builds
-  // have no webview drag-drop, so this only arms in tauri mode.
+  // Native Tauri file drag-drop (real filesystem paths). Sim/web has no webview drag-drop.
   useEffect(() => {
     if (bridge.mode !== "tauri") return;
     let unlisten: (() => void) | undefined;
@@ -64,14 +62,14 @@ export function StorageFiles({ store }: SurfaceProps) {
         const un = await getCurrentWebview().onDragDropEvent((event) => {
           const t = event.payload.type;
           setDragging(t === "over" || t === "enter");
-          if (t === "drop") {
+          if (t === "drop" && !storageSlice.get().kuboDown) {
             for (const path of event.payload.paths) void addFile(path);
           }
         });
         if (cancelled) un();
         else unlisten = un;
       } catch {
-        /* drag-drop unavailable — the surface still works via the list actions */
+        /* drag-drop unavailable — list actions still work */
       }
     })();
     return () => {
@@ -80,109 +78,122 @@ export function StorageFiles({ store }: SurfaceProps) {
     };
   }, []);
 
+  const browse = async () => {
+    if (down) return;
+    if (bridge.mode !== "tauri") {
+      store.toast("Adding files needs the desktop app.");
+      return;
+    }
+    const spec = ["@tauri-apps", "plugin-dialog"].join("/");
+    let open: ((o: unknown) => Promise<string | string[] | null>) | null = null;
+    try {
+      const mod = (await import(/* @vite-ignore */ spec)) as { open?: (o: unknown) => Promise<string | string[] | null> };
+      open = mod.open ?? null;
+    } catch {
+      open = null;
+    }
+    if (!open) {
+      store.toast("Drag files onto the box to add them.");
+      return;
+    }
+    try {
+      const picked = await open({ multiple: true });
+      const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      for (const p of paths) void addFile(p);
+    } catch {
+      store.toast("Couldn't open the file picker — drag files onto the box instead.");
+    }
+  };
+
   return (
-    <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 820 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+    <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 960 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Files</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--tx-3)" }}>
-          stored on IPFS, pinned to your node
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".06em", display: "inline-flex", alignItems: "center", gap: 6, color: "var(--tx-3)" }}>
+          <span style={{ width: 6, height: 6, borderRadius: 999, background: down ? "var(--danger)" : "var(--ok)" }}></span>
+          {down ? "file store unreachable" : "on IPFS · pinned to your node"}
         </span>
       </div>
 
-      {st.error && (
-        <div
-          className="surface"
-          role="alert"
-          style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--bad, #c0392b)", lineHeight: 1.5 }}
-        >
-          {st.error}
+      {/* honest backend-outage card (never a raw 500) */}
+      {down && (
+        <div className="surface" role="alert" style={{ padding: 18, display: "flex", alignItems: "center", gap: 14, borderColor: "var(--danger)" }}>
+          <span style={{ flex: 1 }}>
+            <span style={{ display: "block", fontSize: 13.5, fontWeight: 500, color: "var(--danger)" }}>Your file store isn't reachable right now.</span>
+            <span style={{ display: "block", fontSize: 12.5, color: "var(--tx-2)", marginTop: 3, lineHeight: 1.6 }}>
+              The local IPFS daemon didn't answer. Your files are safe on disk — nothing can be added or retrieved until it's back. This usually resolves with a retry.
+            </span>
+            <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 6 }}>{st.error || "kubo · 127.0.0.1:5001 · connection refused"}</span>
+          </span>
+          <button className="btn btn-primary btn-sm" onClick={() => void refreshPins()}>Retry connection</button>
         </div>
       )}
 
-      {/* ---- drop zone ---- */}
+      {/* drop zone */}
       <div
-        className="surface"
         style={{
-          padding: "28px 18px",
+          border: "1.5px dashed " + (dragging && !down ? "var(--accent)" : "var(--line-2)"),
+          background: dragging && !down ? "var(--accent-wash)" : "transparent",
+          borderRadius: "var(--r-2)",
+          padding: "26px 20px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 10,
           textAlign: "center",
-          border: dragging ? "2px dashed var(--ok, #2e9e5b)" : "2px dashed var(--ln, rgba(0,0,0,0.14))",
-          borderRadius: 12,
-          background: dragging ? "var(--bg-2, rgba(46,158,91,0.06))" : "transparent",
-          transition: "border-color .12s, background .12s",
+          opacity: down ? 0.55 : 1,
+          transition: "border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard)",
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 520 }}>
-          {st.adding ? "Adding…" : dragging ? "Drop to add" : "Drag files here to store them"}
-        </div>
-        <div style={{ fontSize: 11.5, color: "var(--tx-3)", marginTop: 6, lineHeight: 1.5 }}>
-          Files are added to IPFS and get a content address (CID). Pin one to keep it on your node.
-        </div>
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--tx-3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 16 V4 M7 9 L12 4 L17 9"></path>
+          <path d="M4 16 V19 A1 1 0 0 0 5 20 H19 A1 1 0 0 0 20 19 V16"></path>
+        </svg>
+        <span style={{ fontSize: 13.5, fontWeight: 500 }}>{st.adding ? "Adding…" : dragging && !down ? "Drop to add" : "Drop files here"}</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 12, color: "var(--tx-3)" }}>or</span>
+          <button className="btn btn-secondary btn-sm" onClick={() => void browse()} disabled={down}>Browse…</button>
+        </span>
+        <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6, maxWidth: 420 }}>
+          each file gets a CID in your local IPFS store — nothing leaves this machine until you pin or share it
+        </span>
       </div>
 
-      {/* ---- network-bond note (D-22 subsidy framing, RT-4; now live) ---- */}
-      <div style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
-        Pinning keeps a file on <em>your</em> node and places a staked SALT bond you approve, so the
-        network rewards pinners for keeping your data available. You approve the bond transaction in
-        the signing screen; nothing is signed for you.
-      </div>
-
-      {/* ---- the file store ---- */}
+      {/* the file store */}
       <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>Your store</span>
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
+            {st.pins.length} file{st.pins.length === 1 ? "" : "s"}
+          </span>
+        </div>
         {st.pins.length === 0 ? (
-          <div style={{ padding: "18px", fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
-            No files yet. Drag one onto the box above to store it.
-          </div>
+          <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
+            {down ? "Can't list your files while the store is unreachable — retry above." : "No files yet. Add one above — it returns a CID you can pin, share with a group's cluster, or retrieve anywhere."}
+          </p>
         ) : (
           st.pins.map((p) => {
             const busy = st.busyCid === p.cid;
             const isPinned = p.pinState === "pinned";
             return (
-              <div
-                key={p.cid}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "12px 16px",
-                  borderTop: "1px solid var(--ln, rgba(0,0,0,0.06))",
-                }}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
-                  <span className="mono" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {shortCid(p.cid)}
-                  </span>
-                  <span style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
+              <div key={p.cid} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderTop: "1px solid var(--line-1)" }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{shortCid(p.cid)}</span>
+                  <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 1 }}>
                     <span style={{ color: STATE_COLOR[p.pinState] }}>{p.pinState}</span>
                     {" · "}
                     {humanBytes(p.sizeBytes)}
                     {p.bondSalt === LOCAL_PIN_MARKER ? " · local" : p.bondSalt ? " · bonded" : ""}
                   </span>
-                </div>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => {
-                    void retrieveCid(p.cid);
-                    store.toast("Retrieving to your files…");
-                  }}
-                  disabled={busy}
-                >
-                  Retrieve
-                </button>
+                </span>
+                {p.bondSalt && p.bondSalt !== LOCAL_PIN_MARKER && (
+                  <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".06em", padding: "2px 8px", borderRadius: 999, border: "1px solid var(--ok)", color: "var(--ok)", background: "var(--ok-bg)" }}>bonded</span>
+                )}
+                <button className="btn btn-ghost btn-sm" onClick={() => { void retrieveCid(p.cid); store.toast("Retrieving to your files…"); }} disabled={busy || down}>Retrieve</button>
                 {isPinned ? (
-                  <button className="btn btn-ghost btn-sm" onClick={() => void unpinCid(p.cid)} disabled={busy}>
-                    {busy ? "…" : "Unpin"}
-                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => void unpinCid(p.cid)} disabled={busy || down} style={{ color: "var(--tx-3)" }}>{busy ? "…" : "Remove"}</button>
                 ) : (
-                  <button
-                    className="btn btn-sm"
-                    onClick={() => {
-                      void localPin(p.cid);
-                      store.toast("Bond submitted — approve the transaction in the signing screen");
-                    }}
-                    disabled={busy}
-                  >
-                    {busy ? "…" : "Pin"}
-                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => { void localPin(p.cid); store.toast("Bond submitted — approve the transaction in the signing screen."); }} disabled={busy || down}>{busy ? "…" : "Pin · bond"}</button>
                 )}
               </div>
             );
@@ -190,10 +201,12 @@ export function StorageFiles({ store }: SurfaceProps) {
         )}
       </div>
 
+      <p style={{ fontSize: 11, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
+        Pinning keeps a file on <em>your</em> node and places a staked SALT bond you approve, so the network rewards pinners for keeping your data available. You approve the bond transaction in the Signature Ceremony; nothing is signed for you. Unpinning a bonded file forfeits the remaining bond — you're told before it happens.
+      </p>
+
       {st.lastRetrievedPath && (
-        <div style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.5 }} className="mono">
-          Saved to {st.lastRetrievedPath}
-        </div>
+        <div className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.5 }}>Saved to {st.lastRetrievedPath}</div>
       )}
     </div>
   );

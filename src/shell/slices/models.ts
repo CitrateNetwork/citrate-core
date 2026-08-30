@@ -27,6 +27,8 @@ export interface ModelsState {
   downloadingId: string | null;
   /** The id currently being switched to, or null. */
   selectingId: string | null;
+  /** local() isn't wired/available yet — a pending WIRE, not a user-facing error. */
+  localPending: boolean;
   /** The last user-facing error (from any action), or null when clear. */
   error: string | null;
 }
@@ -38,6 +40,7 @@ const initial: ModelsState = {
   searching: false,
   downloadingId: null,
   selectingId: null,
+  localPending: false,
   error: null,
 };
 
@@ -50,10 +53,11 @@ const message = (e: unknown): string =>
 export async function refreshLocalModels(): Promise<void> {
   try {
     const local = await bridge.modelsCatalog.local();
-    modelsSlice.set({ local, error: null });
-  } catch (e) {
-    // `local` is not fatal to the surface — keep whatever we had, surface the reason.
-    modelsSlice.set({ error: message(e) });
+    modelsSlice.set({ local, localPending: false, error: null });
+  } catch {
+    // local() is not wired yet (CX-S1 resolver pending) — this is a pending WIRE, not a
+    // user-facing error. Keep the surface calm and honest; search/download/select still work.
+    modelsSlice.set({ localPending: true });
   }
 }
 

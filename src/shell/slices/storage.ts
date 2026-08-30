@@ -24,6 +24,8 @@ export interface StorageState {
   busyCid: string | null;
   /** The last retrieved file's local path (for a "saved to…" confirmation), or null. */
   lastRetrievedPath: string | null;
+  /** The IPFS (kubo) daemon is unreachable — a backend OUTAGE, shown as an honest card, not a raw dump. */
+  kuboDown: boolean;
   /** The last user-facing error, or null when clear. */
   error: string | null;
 }
@@ -33,6 +35,7 @@ const initial: StorageState = {
   adding: false,
   busyCid: null,
   lastRetrievedPath: null,
+  kuboDown: false,
   error: null,
 };
 
@@ -41,13 +44,20 @@ export const storageSlice = createSlice<StorageState>(initial);
 const message = (e: unknown): string =>
   e instanceof Error ? e.message : typeof e === "string" ? e : String(e);
 
+// A kubo/IPFS transport failure (daemon down, 500, refused) is a backend outage — the surface
+// shows an honest "unreachable · retry" card for it, never a raw 500/stack. Other errors keep
+// their specific text. Case-insensitive match on the shapes kubo failures actually produce.
+const isKuboDown = (msg: string): boolean =>
+  /\b500\b|transport|connection refused|econnrefused|fetch failed|:5001|refused|unreachable|timed?\s*out|network error|failed to fetch|kubo|ipfs/i.test(msg);
+
 /** Load the pinning file store. Honest-empty on a sim/down-daemon bridge. */
 export async function refreshPins(): Promise<void> {
   try {
     const pins = await bridge.storage.list();
-    storageSlice.set({ pins, error: null });
+    storageSlice.set({ pins, error: null, kuboDown: false });
   } catch (e) {
-    storageSlice.set({ error: message(e) });
+    const m = message(e);
+    storageSlice.set({ error: m, kuboDown: isKuboDown(m) });
   }
 }
 
@@ -59,7 +69,8 @@ export async function addFile(path: string): Promise<void> {
     storageSlice.set({ adding: false });
     await refreshPins();
   } catch (e) {
-    storageSlice.set({ adding: false, error: message(e) });
+    const m = message(e);
+    storageSlice.set({ adding: false, error: m, kuboDown: isKuboDown(m) });
   }
 }
 
@@ -71,7 +82,8 @@ export async function localPin(cid: string): Promise<void> {
     storageSlice.set({ busyCid: null });
     await refreshPins();
   } catch (e) {
-    storageSlice.set({ busyCid: null, error: message(e) });
+    const m = message(e);
+    storageSlice.set({ busyCid: null, error: m, kuboDown: isKuboDown(m) });
   }
 }
 
@@ -83,7 +95,8 @@ export async function unpinCid(cid: string): Promise<void> {
     storageSlice.set({ busyCid: null });
     await refreshPins();
   } catch (e) {
-    storageSlice.set({ busyCid: null, error: message(e) });
+    const m = message(e);
+    storageSlice.set({ busyCid: null, error: m, kuboDown: isKuboDown(m) });
   }
 }
 
@@ -94,6 +107,7 @@ export async function retrieveCid(cid: string): Promise<void> {
     const { path } = await bridge.storage.retrieve(cid);
     storageSlice.set({ busyCid: null, lastRetrievedPath: path });
   } catch (e) {
-    storageSlice.set({ busyCid: null, error: message(e) });
+    const m = message(e);
+    storageSlice.set({ busyCid: null, error: m, kuboDown: isKuboDown(m) });
   }
 }
