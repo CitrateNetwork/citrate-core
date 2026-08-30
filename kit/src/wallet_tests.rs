@@ -577,3 +577,38 @@ fn address_auto_unlocked_is_idempotent_on_an_already_open_vault() {
     let b = address_auto_unlocked(&v).expect("still open");
     assert_eq!(a.address, b.address);
 }
+
+// ADR-2026-08-30 (D1) — recover_personal is the inverse of sign_personal, used to verify a peer's
+// foreign identity binding: recover the signer and confirm it equals the claimed address.
+#[test]
+fn recover_personal_round_trips_and_resists_spoofing() {
+    let phrase = std::iter::repeat("abandon")
+        .take(11)
+        .chain(std::iter::once("about"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let key = secp256k1_from_mnemonic(&phrase, DEFAULT_ACCOUNT_INDEX).unwrap();
+    let addr = info_of(&key).address;
+    let sk = match &key {
+        UnifiedKey::Secp256k1(sk) => sk,
+        _ => panic!("secp256k1"),
+    };
+    let msg = b"Citrate identity binding\nNetwork: discord\nHandle: @dana\nAddress: 0xabc\nNonce: n";
+    let prehash = eip191_prehash(msg);
+    let (r, s, rec) = sign_recoverable(sk, &prehash).unwrap();
+    let mut sig = [0u8; 65];
+    sig[..32].copy_from_slice(&r);
+    sig[32..64].copy_from_slice(&s);
+    sig[64] = rec + 27;
+
+    // Genuine: recovers to the signer.
+    assert_eq!(
+        recover_personal(msg, &sig).unwrap().to_lowercase(),
+        addr.to_lowercase()
+    );
+    // Spoof resistance: the same signature over a DIFFERENT message recovers to a different address.
+    assert_ne!(
+        recover_personal(b"a different binding", &sig).unwrap().to_lowercase(),
+        addr.to_lowercase()
+    );
+}

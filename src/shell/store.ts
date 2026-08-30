@@ -2329,6 +2329,35 @@ export class Store {
     this.openWalletReview("social", "Verify your " + network + " identity", view, undefined, () => onDone?.());
   }
 
+  /**
+   * ADR-2026-08-30 (D1) — share your verified, group-visible identity bindings to every group you're
+   * in, over the ciphertext-only relay (server-blind). Each binding rides as a control message peers
+   * ingest + hide; they recover-verify it before showing your face. Best-effort; safe to call often.
+   */
+  async shareSocialBindings(): Promise<void> {
+    try {
+      const groups = await bridge.groups.list();
+      if (!groups.length) return;
+      const nets = ["discord", "x", "linkedin"] as const;
+      const payloads = (
+        await Promise.all(nets.map((n) => bridge.social.exportBinding(n).catch(() => null)))
+      ).filter((p): p is NonNullable<typeof p> => !!p);
+      if (!payloads.length) return;
+      const { SOCIAL_BINDING_MSG_PREFIX } = await import("../bridge/domains");
+      for (const g of groups) {
+        for (const p of payloads) {
+          try {
+            await bridge.groups.send(g.id, SOCIAL_BINDING_MSG_PREFIX + JSON.stringify(p));
+          } catch {
+            /* best-effort per group */
+          }
+        }
+      }
+    } catch {
+      /* best-effort: no groups / not linked / relay down */
+    }
+  }
+
   // ---------- Q-E.1 (@rule8, P0) — wallet review gate ----------
   /**
    * Set the pending wallet-review state from a freshly-built ceremony view and

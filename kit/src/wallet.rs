@@ -487,6 +487,40 @@ pub(crate) fn sign_personal(vault: &CustodyVault, message: &[u8]) -> Result<[u8;
     // `entropy` + `key` zeroize on drop here.
 }
 
+/// **Verify, don't sign.** Recover the Ethereum address that produced an EIP-191 `personal_sign`
+/// over `message` — the inverse of [`sign_personal`]. This is how a peer's *foreign* identity
+/// binding is checked: recover the signer and confirm it equals the address the binding claims,
+/// so nobody can assert a handle for an address they don't control. No key material, no vault —
+/// pure over the public signature. `sig` is `r ‖ s ‖ v` with `v` in {27, 28} (or {0, 1}).
+pub fn recover_personal(message: &[u8], sig: &[u8; 65]) -> Result<String> {
+    use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+    use sha3::{Digest, Keccak256};
+
+    let prehash = eip191_prehash(message);
+    let signature = Signature::from_slice(&sig[..64]).map_err(|_| WalletError::Derivation)?;
+    // Accept both the EIP-191 {27,28} offset and a bare {0,1} recovery id.
+    let raw_v = sig[64];
+    let v = if raw_v >= 27 { raw_v - 27 } else { raw_v };
+    let rec_id = RecoveryId::from_byte(v).ok_or(WalletError::Derivation)?;
+    let vk = VerifyingKey::recover_from_prehash(&prehash, &signature, rec_id)
+        .map_err(|_| WalletError::Derivation)?;
+    // address = last 20 bytes of keccak256(uncompressed_pubkey[1..]) (drop the 0x04 tag).
+    let enc = vk.to_encoded_point(false);
+    let pub_bytes = enc.as_bytes();
+    let mut h = Keccak256::new();
+    h.update(&pub_bytes[1..]);
+    let out = h.finalize();
+    Ok(format!("0x{}", hex::encode(&out[12..])))
+}
+
+/// Convenience: recover from a `0x`-prefixed (or bare) hex signature string.
+pub fn recover_personal_hex(message: &[u8], sig_hex: &str) -> Result<String> {
+    let clean = sig_hex.strip_prefix("0x").unwrap_or(sig_hex);
+    let bytes = hex::decode(clean).map_err(|_| WalletError::Derivation)?;
+    let sig: [u8; 65] = bytes.as_slice().try_into().map_err(|_| WalletError::Derivation)?;
+    recover_personal(message, &sig)
+}
+
 #[cfg(test)]
 mod tests {
     include!("wallet_tests.rs");

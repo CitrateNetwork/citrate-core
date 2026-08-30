@@ -5,14 +5,18 @@ import { bridge } from "../index";
 describe("CX bridge contract — social (ADR-2026-08-30)", () => {
   it("exposes the social domain with its methods", () => {
     expect(bridge.social).toBeDefined();
-    for (const m of ["status", "start", "verifyRequest", "verifyApprove", "verifyForget", "setVisibility", "disconnect", "resolve"] as const) {
+    for (const m of ["status", "start", "verifyRequest", "verifyApprove", "verifyForget", "setVisibility", "disconnect", "resolve", "exportBinding", "ingestBinding"] as const) {
       expect(typeof bridge.social[m]).toBe("function");
     }
   });
 
-  it("status() + resolve() are honest-empty — no fabricated links/faces (Rule 1)", async () => {
+  it("status() + resolve() are honest-empty; sim ingest never accepts a fabricated binding (Rule 1)", async () => {
     expect(await bridge.social.status()).toEqual([]);
     expect(await bridge.social.resolve(["0xabc"])).toEqual([]);
+    if (bridge.mode === "sim") {
+      expect(await bridge.social.exportBinding("discord")).toBeNull();
+      expect(await bridge.social.ingestBinding("0xabc", { network: "discord", handle: "x", address: "0xabc", nonce: "n", signature: "0x" })).toBe(false);
+    }
   });
 
   it("sim linking honestly requires the desktop app (never a fake link)", async () => {

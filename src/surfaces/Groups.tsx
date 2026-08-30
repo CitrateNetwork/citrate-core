@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import type { Group, GroupRole, ResolvedIdentity } from "../bridge/domains";
+import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import {
   groupsSlice,
   refreshGroups,
@@ -118,6 +119,40 @@ export function Groups({ store, s }: SurfaceProps) {
       cancelled = true;
     };
   }, [st.roster, cl.peers]);
+
+  // D1 — ingest binding-share control messages from the relay: recover-verify each peer's binding
+  // (Rust) and, if any land, re-resolve so their faces appear. Control messages are hidden from view.
+  useEffect(() => {
+    const ctrl = st.messages.filter((m) => m.body.startsWith(SOCIAL_BINDING_MSG_PREFIX));
+    if (ctrl.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      let accepted = false;
+      for (const m of ctrl) {
+        try {
+          const payload = JSON.parse(m.body.slice(SOCIAL_BINDING_MSG_PREFIX.length));
+          if (await bridge.social.ingestBinding(m.sender, payload)) accepted = true;
+        } catch {
+          /* ignore a malformed control message */
+        }
+      }
+      if (accepted && !cancelled) {
+        const addrs = Array.from(new Set([...st.roster.map((r) => r.address), ...cl.peers.map((p) => p.address)])).filter(Boolean);
+        const res = await bridge.social.resolve(addrs).catch(() => []);
+        if (!cancelled) {
+          const m: Record<string, ResolvedIdentity> = {};
+          for (const r of res) m[r.address.toLowerCase()] = r;
+          setFaces(m);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [st.messages]);
+
+  // Control messages never render in the conversation.
+  const visibleMessages = st.messages.filter((m) => !m.body.startsWith(SOCIAL_BINDING_MSG_PREFIX));
 
   // When the Cluster tab opens for a group, drive the cluster slice to that group + load files.
   useEffect(() => {
@@ -358,12 +393,12 @@ export function Groups({ store, s }: SurfaceProps) {
           {tab === "chat" && (
             <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "14px 24px 20px", gap: 12 }}>
               <div className="surface" style={{ flex: 1, minHeight: 280, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-                {st.messages.length === 0 ? (
+                {visibleMessages.length === 0 ? (
                   <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: "auto", textAlign: "center", maxWidth: 340 }}>
                     Nothing here yet. Say hello — messages are relayed to every member and readable by the roles you see in the roster.
                   </p>
                 ) : (
-                  st.messages.map((m) => {
+                  visibleMessages.map((m) => {
                     const rosterRole = st.roster.find((r) => r.address.toLowerCase() === m.sender.toLowerCase())?.role;
                     const isAgent = rosterRole === "agent";
                     const you = m.sender.toLowerCase() === myAddr;
