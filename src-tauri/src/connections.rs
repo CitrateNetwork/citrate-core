@@ -533,6 +533,32 @@ fn parse_callback_target(target: &str) -> std::result::Result<CallbackParams, Co
 }
 
 // ---------------------------------------------------------------------------
+// Reusable PUBLIC-client loopback-PKCE capture (social identity — ADR-2026-08-30)
+// ---------------------------------------------------------------------------
+
+/// Run the loopback + PKCE dance for a PUBLIC client (no client secret, none embedded): bind the
+/// fixed callback port, mint `state` + a fresh S256 PKCE pair, build + open the provider's authorize
+/// URL in the system browser, await exactly one callback, verify `state` constant-time, and return
+/// the authorization `code` + the PKCE `verifier`. The caller exchanges the code sending the
+/// verifier (a public client sends the verifier, never a secret). Blocking — run off the main
+/// thread. Reuses the same single-use listener the MCP flow uses (so the two never bind at once).
+pub(crate) fn capture_public_pkce(
+    build_authorize_url: impl FnOnce(&str, &str) -> String,
+    open: impl Fn(&str) -> std::result::Result<(), ConnError>,
+) -> std::result::Result<(String, Zeroizing<String>), ConnError> {
+    let listener = ConnectionListener::bind()?;
+    let state = random_state();
+    let pkce = Pkce::new();
+    let auth_url = build_authorize_url(&state, &pkce.challenge);
+    open(&auth_url)?;
+    let cb = listener.wait_for_callback(CALLBACK_TIMEOUT)?;
+    if !ct_eq(cb.state.as_bytes(), state.as_bytes()) {
+        return Err(ConnError::StateMismatch);
+    }
+    Ok((cb.code, pkce.verifier))
+}
+
+// ---------------------------------------------------------------------------
 // Token exchange response + stored record + public status
 // ---------------------------------------------------------------------------
 
