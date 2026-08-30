@@ -43,6 +43,10 @@ struct Addresses {
     liquid_staking_pool: String,
     #[serde(rename = "IPFSIncentivesV3")]
     ipfs_incentives_v3: String,
+    #[serde(rename = "PatronageLedger", default)]
+    patronage_ledger: String,
+    #[serde(rename = "ModelCooperative", default)]
+    model_cooperative: String,
 }
 
 fn book() -> &'static Book {
@@ -107,6 +111,17 @@ pub fn liquid_staking_pool() -> &'static str {
 /// update, not a code change + rebuild.
 pub fn ipfs_incentives_v3() -> &'static str {
     &book().addresses.ipfs_incentives_v3
+}
+
+/// `PatronageLedger` — the training-round commit/settle target (SETL-S3). eth_call reads:
+/// `roundMergedHash(bytes32)`, `units(address)`, `pendingDividendOf(address)`.
+pub fn patronage_ledger() -> &'static str {
+    &book().addresses.patronage_ledger
+}
+
+/// `ModelCooperative` — the member-callable, ceremony-gated `claimDividend()` target (SETL-S3).
+pub fn model_cooperative() -> &'static str {
+    &book().addresses.model_cooperative
 }
 
 #[cfg(test)]

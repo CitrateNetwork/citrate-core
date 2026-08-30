@@ -1,22 +1,22 @@
-// CX bridge impl — training (C-21), TAURI. Owned by lane s5 (CX-S5) after S0.
-// S0.2 stub: honest Unavailable. CX-S5 wires the round-coordinator + ceremony-gated settlement.
-import type { TrainingDomain } from "../domains";
-import { Unavailable } from "../types";
+// CX bridge impl — training (SETL-S3), TAURI. Real 40204 reads via eth_call to PatronageLedger;
+// contribute/claim are honestly gated (SETTLER-only recording + @rule8/gateSec on member SALT).
+import { invoke } from "@tauri-apps/api/core";
+import type { RewardInfo, RoundStatus, TrainingDomain } from "../domains";
 
 export const tauriTraining: TrainingDomain = {
-  async start() {
-    throw new Unavailable("training", "start");
+  async start(groupId: string): Promise<void> {
+    await invoke("training_start", { group: groupId });
   },
-  async status() {
-    throw new Unavailable("training", "status");
+  status(groupId: string): Promise<RoundStatus> {
+    return invoke<RoundStatus>("training_status", { group: groupId });
   },
-  async contribute() {
-    throw new Unavailable("training", "contribute");
+  async contribute(groupId: string): Promise<void> {
+    await invoke("training_contribute", { group: groupId });
   },
-  async reward() {
-    throw new Unavailable("training", "reward");
+  reward(groupId: string): Promise<RewardInfo> {
+    return invoke<RewardInfo>("training_reward", { group: groupId });
   },
-  async claim() {
-    throw new Unavailable("training", "claim");
+  async claim(groupId: string): Promise<void> {
+    await invoke("training_claim", { group: groupId });
   },
 };

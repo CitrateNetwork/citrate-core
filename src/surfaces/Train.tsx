@@ -1,13 +1,12 @@
 // =====================================================================
 // citrate-core — Train together (CX-S5 redesign, Pass 1)
 //
-// A group's federated-training round, built 1:1 from design/CitrateCore.dc.html. The full round
-// lifecycle is designed here — open → contributing → settling → claimable → claimed, plus a missed
-// state — but the settlement backend is SETL-S3 (citrate-settlement), so the surface calls
-// bridge.training and shows an HONEST "pending backend" banner where the daemon isn't wired yet
-// (Rule 1). It never fabricates a round, a balance, or a reward: real RoundStatus/RewardInfo when
-// the bridge answers, honest error/empty otherwise. A claim is ceremony-gated (D-18/D-23) — the
-// unsigned settlement intent stops at the Signature Ceremony.
+// A group's federated-training round, built 1:1 from design/CitrateCore.dc.html. SETL-S3 is landed:
+// status + reward are REAL eth_call reads of PatronageLedger on 40204 (round/phase + the member's
+// weight + claimable SALT). The WRITE paths stay honestly gated — recordContribution is SETTLER-only
+// and member SALT crediting is @rule8-gated (gateSec) — so contribute/claim report that plainly and
+// never fabricate a round, balance, or reward (Rule 1). A future claim is ceremony-gated (D-23): the
+// unsigned claimDividend intent stops at the Signature Ceremony.
 // =====================================================================
 import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
@@ -62,8 +61,8 @@ export function Train({ store }: SurfaceProps) {
         }
       }
     } catch (e) {
-      // The settlement daemon (SETL-S3) isn't wired in this build — say so plainly.
-      setPending(e instanceof Error ? e.message : "Training settlement isn't wired in this build yet (SETL-S3).");
+      // A read failure (RPC down / address unresolved) — say so plainly, never fabricate a round.
+      setPending(e instanceof Error ? e.message : "Couldn't reach 40204 to read the round.");
     }
   };
 
@@ -120,13 +119,13 @@ export function Train({ store }: SurfaceProps) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Train together</span>
         <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid var(--warn)", color: "var(--warn)", background: "var(--warn-bg)", flexShrink: 0 }}>
-          pending backend · SETL-S3
+          reads live · claims @rule8-gated
         </span>
         <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>settled through the ceremony · never double-paid</span>
       </div>
 
       <p style={{ fontSize: 12.5, color: "var(--tx-2)", lineHeight: 1.6, margin: 0, maxWidth: 660 }}>
-        Your group trains a model together: each member trains locally and contributes, the network aggregates the result, and contributors are settled in SALT for verified work. The round flow below is real; settlement lands with the citrate-settlement daemon.
+        Your group trains a model together: each member trains locally and contributes, the network aggregates the result, and contributors are settled in SALT for verified work. The round and your reward below are read live from 40204 (PatronageLedger); member SALT claims activate once revenue is credited, past the @rule8 money-surface sign-off (gateSec).
       </p>
 
       {groups.length === 0 ? (
@@ -149,15 +148,15 @@ export function Train({ store }: SurfaceProps) {
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--line-1)" }}>
               <span style={{ fontSize: 14, fontWeight: 500 }}>Live round</span>
               {ui && <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + ui.tone, color: ui.tone }}>{ui.label}</span>}
-              <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>{status ? `round ${status.round} · ${status.participants} participant${status.participants === 1 ? "" : "s"}` : ""}</span>
+              <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--tx-3)" }}>{status ? `round ${status.round}${status.participants > 0 ? ` · ${status.participants} participant${status.participants === 1 ? "" : "s"}` : ""}` : ""}</span>
             </div>
 
             {pending ? (
               <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 500 }}>Round data isn't available yet.</span>
+                <span style={{ fontSize: 13, fontWeight: 500 }}>Couldn't read the round from 40204.</span>
                 <p className="mono" style={{ fontSize: 11, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>{pending}</p>
                 <p style={{ fontSize: 12.5, color: "var(--tx-2)", margin: 0, lineHeight: 1.6 }}>
-                  The round lifecycle — open, contribute, settle, claim — is built and ready. It comes alive when this build wires the citrate-settlement daemon (SETL-S3). Nothing here is fabricated in the meantime.
+                  Reads are wired to the PatronageLedger on 40204. If this persists, the RPC or the settlement address is unavailable — nothing here is fabricated in the meantime.
                 </p>
               </div>
             ) : ui ? (
