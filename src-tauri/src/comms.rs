@@ -548,6 +548,41 @@ fn provision_comms_seed<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Result
     load_or_mint_comms_seed(&keyring)
 }
 
+/// Derive the EVM address (lowercase hex, **no** `0x`) of a secp256k1 secret hex — the member's
+/// device identity. This is the standard derivation `keccak256(uncompressed_pubkey[1..])[12..]`, the
+/// same one the comms member-daemon and the cluster libp2p transport use (`derive_address_from_secp256k1`
+/// / `address_from_public_key`), so the address this returns matches the one that appears in the group
+/// roster. Kept here as the ONE source of truth for the device identity (Rule 9).
+pub(crate) fn address_from_secret_hex(seed_hex: &str) -> std::result::Result<String, String> {
+    use sha3::{Digest, Keccak256};
+    let bytes = hex::decode(seed_hex.trim()).map_err(|_| "comms seed is not hex".to_string())?;
+    let sk = k256::ecdsa::SigningKey::from_slice(&bytes)
+        .map_err(|_| "comms seed is not a valid secp256k1 scalar".to_string())?;
+    let point = sk.verifying_key().to_encoded_point(false); // uncompressed: 0x04 || X(32) || Y(32)
+    let pub_bytes = &point.as_bytes()[1..]; // drop the 0x04 tag → 64 bytes
+    let digest = Keccak256::digest(pub_bytes);
+    Ok(hex::encode(&digest[12..]))
+}
+
+/// The device-sealed comms identity: the seed (ready to write to a daemon's 0600 seed file) **and**
+/// its derived address. This is the identity a member is known by in the group roster, so both the
+/// comms member-daemon and the cluster-daemon must use THIS key — the cluster's Noise/peer id and the
+/// address it announces on the mesh have to match the roster entries (which key on the comms address).
+/// One source of truth (Rule 9) — the cluster module consumes this rather than re-reading the keyring.
+pub(crate) struct DeviceIdentity {
+    pub seed_hex: Zeroizing<String>,
+    pub address: String,
+}
+
+/// Provision the comms device identity (seed + address). Fails CLOSED on an unreachable keyring.
+pub(crate) fn device_identity<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<DeviceIdentity, String> {
+    let seed_hex = provision_comms_seed(app).map_err(|e| e.to_string())?;
+    let address = address_from_secret_hex(&seed_hex)?;
+    Ok(DeviceIdentity { seed_hex, address })
+}
+
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton, so no
 /// managed state in the (s0-owned) lib.rs.
 fn ensure_started<R: tauri::Runtime>(

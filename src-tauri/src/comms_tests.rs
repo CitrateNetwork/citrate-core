@@ -243,3 +243,23 @@ fn add_member_request_serializes_and_added_response_parses() {
     .expect("parse Added");
     assert!(matches!(resp, Response::Added { .. }));
 }
+
+#[test]
+fn address_from_secret_hex_matches_known_evm_vector() {
+    // Standard EVM derivation vector: secp256k1 private key = 1 → address
+    // 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf. Proves the comms/cluster identity address this
+    // computes equals the daemon's `derive_address_from_secp256k1`, so it matches the roster.
+    let sk1 = format!("{:0>64}", "1");
+    let addr = address_from_secret_hex(&sk1).expect("derive");
+    assert_eq!(addr, "7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+    // No 0x prefix, lowercase, 40 hex chars.
+    assert_eq!(addr.len(), 40);
+    assert!(addr.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+}
+
+#[test]
+fn address_from_secret_hex_rejects_non_hex_and_bad_scalar() {
+    assert!(address_from_secret_hex("nothex").is_err());
+    // 32 zero bytes is not a valid secp256k1 scalar.
+    assert!(address_from_secret_hex(&"00".repeat(32)).is_err());
+}

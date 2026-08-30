@@ -12,8 +12,26 @@
 //! member-daemon via `comms::groups_roster`) with `setRoster`, and the daemon reconciles the mesh +
 //! enforces the RBAC boundary. ENV config (never argv — leaks to `ps`): `CITRATE_CLUSTER_SOCKET`,
 //! `CITRATE_CLUSTER_BEARER_FILE` (0600 token file), `CITRATE_CLUSTER_SELF_ADDR` (this member's addr).
-//! In-process transport by default (single node — real admission, no cross-machine fan-out); the
-//! libp2p mesh is a config flip (`CITRATE_CLUSTER_LISTEN` + a seed) enabled once soaked (CL-S3).
+//!
+//! ## Identity — cluster id = comms id (supersedes CL-2's `= wallet` clause)
+//! The mesh admits by **address ∈ roster**, and the roster (from the comms member-daemon) keys on the
+//! device-sealed **comms** address (Option A, comms.rs) — NOT the custody wallet address. citrate-cluster's
+//! locked decision CL-2 (`WalletAddress = comms id = cluster Noise id`) predates that split and is stale:
+//! comms mints a fresh, non-value per-device key, so wallet ≠ comms. So this node's cluster identity is
+//! its **comms** identity — self_addr = the comms address, and (for libp2p) the Noise seed = the comms
+//! key — which keeps Rule 3 intact (a non-value device key, never the wallet) and makes the address it
+//! announces on the wire match the roster. See `docs/adr/ADR-2026-08-30-cluster-identity-and-transport.md`.
+//! (The comms↔wallet on-chain binding is the deferred `wallet_link` attestation; nothing consumes it yet.)
+//!
+//! ## Transport — in-process by default, libp2p behind a soak-gated env flip (CL-S3)
+//! In-process transport by default (single node — real admission, no cross-machine fan-out). When
+//! citrate-core's own env carries `CITRATE_CLUSTER_LISTEN` (a listen multiaddr), we ALSO write the comms
+//! seed to a 0600 file and forward `CITRATE_CLUSTER_SEED_FILE` + optional `CITRATE_CLUSTER_BOOTSTRAP`, so
+//! the daemon runs the real cross-machine libp2p mesh. This is OFF by default and stays operator-only
+//! until the two-machine soak + the Rule-8 transport sign-off (citrate-cluster Rule 8) — it must not be
+//! flipped on for real partner traffic pre-audit. NOTE: the CL-S1 libp2p transport is one-group-per-daemon
+//! (a per-group swarm reading the same listen addr), so use an ephemeral `/tcp/0` or one group per soak run;
+//! multi-group cross-machine fan-out from this single daemon is a documented follow-on.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -35,6 +53,10 @@ pub const CLUSTER_DAEMON_BIN_ENV: &str = "CITRATE_CLUSTER_BIN";
 const ENV_SOCKET: &str = "CITRATE_CLUSTER_SOCKET";
 const ENV_BEARER_FILE: &str = "CITRATE_CLUSTER_BEARER_FILE";
 const ENV_SELF_ADDR: &str = "CITRATE_CLUSTER_SELF_ADDR";
+// libp2p transport knobs — only set when the operator opts in (CL-S3, soak-gated).
+const ENV_LISTEN: &str = "CITRATE_CLUSTER_LISTEN"; // listen multiaddr; its presence SELECTS libp2p
+const ENV_SEED_FILE: &str = "CITRATE_CLUSTER_SEED_FILE"; // 0600 file: the comms secp256k1 seed (Noise id)
+const ENV_BOOTSTRAP: &str = "CITRATE_CLUSTER_BOOTSTRAP"; // optional comma-sep peer multiaddrs to dial
 
 const TOKEN_LEN: usize = 32;
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -85,14 +107,30 @@ pub struct ClusterDaemonManager {
     socket_path: PathBuf,
     bearer_path: PathBuf,
     data_dir: PathBuf,
-    /// This node's member address (hex, its cluster identity). Empty until known (no wallet).
+    /// This node's member address (hex, its cluster identity = its comms address). Empty until known.
     self_addr: String,
     crash_record_path: PathBuf,
     health_interval: Duration,
+    /// Real cross-machine libp2p transport config, when the operator has opted in (CL-S3). `None` →
+    /// the single-node in-process transport (the default). Its `seed_hex` is the comms secp256k1 key.
+    libp2p: Option<Libp2pOpts>,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
     token: Mutex<Option<Zeroizing<String>>>,
     sup: Mutex<Option<Supervisor>>,
+}
+
+/// Opt-in libp2p transport config for the cluster daemon (CL-S3). Present only when the operator set
+/// `CITRATE_CLUSTER_LISTEN` — otherwise the daemon stays on the in-process transport.
+#[derive(Clone)]
+pub struct Libp2pOpts {
+    /// Listen multiaddr, e.g. `/ip4/0.0.0.0/tcp/0`. Its presence is what selects libp2p in the daemon.
+    pub listen: String,
+    /// Optional comma-separated peer multiaddrs to dial on startup.
+    pub bootstrap: Option<String>,
+    /// The comms secp256k1 seed hex — the Noise/peer identity binds to this key (never the wallet).
+    /// Written to a 0600 file at start; the daemon reads the PATH, so the secret never crosses env/argv.
+    pub seed_hex: Zeroizing<String>,
 }
 
 impl ClusterDaemonManager {
@@ -112,11 +150,25 @@ impl ClusterDaemonManager {
             self_addr: self_addr.into(),
             crash_record_path,
             health_interval: HEALTH_INTERVAL,
+            libp2p: None,
             #[cfg(test)]
             spawn_args_override: None,
             token: Mutex::new(None),
             sup: Mutex::new(None),
         }
+    }
+
+    /// Opt into the real cross-machine libp2p transport (CL-S3). Off unless called — the default is the
+    /// single-node in-process transport. Soak-gated: only the operator (env-driven) turns this on.
+    pub fn with_libp2p(mut self, opts: Libp2pOpts) -> Self {
+        self.libp2p = Some(opts);
+        self
+    }
+
+    /// The 0600 file the comms seed is written to at start (libp2p only). The daemon reads the PATH, so
+    /// the secret never crosses env/argv; derived from `data_dir` (the seed itself lives in the keyring).
+    fn seed_path(&self) -> PathBuf {
+        self.data_dir.join("cluster.seed")
     }
 
     #[cfg(test)]
@@ -154,6 +206,15 @@ impl ClusterDaemonManager {
             (ENV_BEARER_FILE.to_string(), self.bearer_path.to_string_lossy().to_string()),
             (ENV_SELF_ADDR.to_string(), self.self_addr.clone()),
         ];
+        // libp2p (opt-in): the LISTEN addr selects the real transport; the seed crosses as a 0600 file
+        // PATH (written in `start`), never inline; bootstrap is optional. Absent → in-process default.
+        if let Some(opts) = &self.libp2p {
+            spec.env.push((ENV_LISTEN.to_string(), opts.listen.clone()));
+            spec.env.push((ENV_SEED_FILE.to_string(), self.seed_path().to_string_lossy().to_string()));
+            if let Some(b) = &opts.bootstrap {
+                spec.env.push((ENV_BOOTSTRAP.to_string(), b.clone()));
+            }
+        }
         let sock = self.socket_path.clone();
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -184,6 +245,11 @@ impl ClusterDaemonManager {
         std::fs::create_dir_all(&self.data_dir).ok();
         let token = mint_bearer();
         persist_secret_0600(&self.bearer_path, &token)?;
+        // libp2p only: write the comms seed to its 0600 file — the daemon reads the PATH, so the
+        // secret never crosses env/argv. In-process mode needs no seed and writes nothing.
+        if let Some(opts) = &self.libp2p {
+            persist_secret_0600(&self.seed_path(), &opts.seed_hex)?;
+        }
         let spec = self.build_spec();
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         config.backoff = BackoffPolicy::new();
@@ -205,6 +271,8 @@ impl ClusterDaemonManager {
             drop(sup);
         }
         let _ = std::fs::remove_file(&self.bearer_path);
+        // Don't leave the comms seed on disk after teardown (libp2p only; a no-op otherwise).
+        let _ = std::fs::remove_file(self.seed_path());
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -383,16 +451,14 @@ pub struct ClusterPeerDto {
 
 static MANAGER: OnceLock<ClusterDaemonManager> = OnceLock::new();
 
-/// This node's member address = its wallet's public address (CL-2: the cluster id is the member
-/// identity). Read from custody; auto-unlocks the device-bound vault. No secret crosses this.
-fn self_address(app: &tauri::AppHandle) -> std::result::Result<String, String> {
-    use tauri::Manager;
-    let custody = app
-        .try_state::<crate::custody::CustodyState>()
-        .ok_or_else(|| "custody not initialized".to_string())?;
-    crate::wallet::address_auto_unlocked(&custody.0)
-        .map(|info| info.address)
-        .map_err(|e| e.to_string())
+/// The opt-in libp2p transport config, read from citrate-core's OWN env, paired with the comms seed.
+/// `CITRATE_CLUSTER_LISTEN` present → real cross-machine mesh (CL-S3, soak-gated); absent → `None` =
+/// in-process. Kept env-driven (not a UI toggle) so it cannot be flipped on for partner traffic before
+/// the two-machine soak + the Rule-8 transport sign-off.
+fn libp2p_opts_from_env(seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
+    let listen = std::env::var(ENV_LISTEN).ok().filter(|s| !s.trim().is_empty())?;
+    let bootstrap = std::env::var(ENV_BOOTSTRAP).ok().filter(|s| !s.trim().is_empty());
+    Some(Libp2pOpts { listen, bootstrap, seed_hex })
 }
 
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton.
@@ -405,16 +471,22 @@ fn ensure_started(app: &tauri::AppHandle) -> std::result::Result<&'static Cluste
         return Ok(m);
     }
     let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("cluster");
-    let self_addr = self_address(app)?;
+    // Identity = the device-sealed COMMS key (comms.rs), NOT the wallet — the roster keys on the comms
+    // address, so self_addr and (for libp2p) the Noise seed must be the comms identity to match it.
+    let identity = crate::comms::device_identity(app)?;
+    let libp2p = libp2p_opts_from_env(identity.seed_hex);
     let bin = resolve_cluster_daemon_bin(app)?;
-    let mgr = ClusterDaemonManager::new(
+    let mut mgr = ClusterDaemonManager::new(
         bin,
         data_root.join("cluster.sock"),
         data_root.join("cluster.bearer"),
         data_root.clone(),
-        self_addr,
+        identity.address,
         data_root.join("cluster-crash.jsonl"),
     );
+    if let Some(opts) = libp2p {
+        mgr = mgr.with_libp2p(opts);
+    }
     mgr.start().map_err(|e| e.to_string())?;
     Ok(MANAGER.get_or_init(|| mgr))
 }

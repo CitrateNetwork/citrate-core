@@ -114,6 +114,43 @@ fn double_start_is_rejected() {
     mgr.stop();
 }
 
+#[test]
+fn libp2p_env_absent_by_default() {
+    // Default = in-process transport: none of the libp2p knobs are set.
+    let (mgr, _dir) = stub_manager("nolibp2p");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert!(!env.contains_key(ENV_LISTEN));
+    assert!(!env.contains_key(ENV_SEED_FILE));
+    assert!(!env.contains_key(ENV_BOOTSTRAP));
+}
+
+#[test]
+fn with_libp2p_adds_listen_seedpath_bootstrap_never_inline_seed() {
+    let (mgr, dir) = stub_manager("libp2p");
+    let seed = "11".repeat(32); // 32-byte hex secp256k1 secret (test value)
+    let mgr = mgr.with_libp2p(Libp2pOpts {
+        listen: "/ip4/0.0.0.0/tcp/0".into(),
+        bootstrap: Some("/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWxyz".into()),
+        seed_hex: Zeroizing::new(seed.clone()),
+    });
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(env.get(ENV_LISTEN).map(String::as_str), Some("/ip4/0.0.0.0/tcp/0"));
+    // The seed crosses as a FILE PATH, never the secret value.
+    assert_eq!(
+        env.get(ENV_SEED_FILE).map(String::as_str),
+        Some(dir.join("cluster.seed").to_string_lossy().as_ref())
+    );
+    assert_eq!(env.get(ENV_BOOTSTRAP).map(String::as_str), Some("/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWxyz"));
+    // The raw seed hex must NEVER appear in any env value (Rule 4 / CLAUDE.md: secrets via file path).
+    assert!(
+        mgr.spec_env_for_test().iter().all(|(_, v)| !v.contains(&seed)),
+        "seed value must never cross env"
+    );
+    assert!(mgr.spec_env_for_test().iter().all(|(k, _)| k.starts_with("CITRATE_CLUSTER_")));
+}
+
 /// A SHORT socket path (UDS paths must be < SUN_LEN ~104 on macOS).
 fn short_sock(tag: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
