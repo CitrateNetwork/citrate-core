@@ -30,7 +30,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -433,10 +433,30 @@ enum Response {
     Error { message: String },
 }
 
+/// Connect to the member daemon's UDS, retrying briefly. The daemon spawns and binds `member.sock`
+/// a beat after the app launches, so a `Connection refused` on the first request is a startup RACE,
+/// not a fault — surfacing it makes a healthy first-open look broken. Retry with backoff for a short
+/// window before giving up (any real, persistent failure still surfaces honestly, Rule 1).
+fn connect_with_retry(socket_path: &Path) -> Result<UnixStream> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut delay = Duration::from_millis(40);
+    loop {
+        match UnixStream::connect(socket_path) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                if Instant::now() >= deadline {
+                    return Err(CommsError::Ipc(format!("connect {}: {e}", socket_path.display())));
+                }
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(400));
+            }
+        }
+    }
+}
+
 /// Connect to the daemon's UDS, authenticate with the bearer, send one request, read one response.
 fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
-    let stream = UnixStream::connect(socket_path)
-        .map_err(|e| CommsError::Ipc(format!("connect {}: {e}", socket_path.display())))?;
+    let stream = connect_with_retry(socket_path)?;
     let mut writer = stream
         .try_clone()
         .map_err(|e| CommsError::Ipc(e.to_string()))?;

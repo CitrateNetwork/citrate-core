@@ -61,9 +61,49 @@ mod training;
 
 use tauri::Manager;
 
+/// Kill orphaned sidecars left by a crashed previous instance (they'd hold the node LOCK / bound
+/// sockets). Matches ONLY processes whose command line references this bundle's binary directory,
+/// and never our own pid. Best-effort + macOS/Linux only (uses `pgrep`/`kill`); a no-op if `pgrep`
+/// is unavailable. Runs once at startup, before any sidecar is spawned, so there is nothing of ours
+/// to catch — every match is an orphan.
+fn sweep_orphan_sidecars() {
+    let dir = match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        Some(d) => d.to_string_lossy().to_string(),
+        None => return,
+    };
+    let self_pid = std::process::id();
+    let out = match std::process::Command::new("pgrep").arg("-f").arg(&dir).output() {
+        Ok(o) => o,
+        Err(_) => return, // no pgrep (or not Unix) — skip the sweep
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Ok(pid) = line.trim().parse::<u32>() {
+            if pid != self_pid {
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Single-instance FIRST (tauri requires it): a second launch focuses the running window
+        // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         // W2.1 — in-app auto-updates (signed GitHub Releases feed; pubkey pinned in
@@ -72,6 +112,13 @@ pub fn run() {
         // W2.4 — relaunch into the freshly-installed version.
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
+            // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
+            // (SIGKILL) can't run Drop — leaving an orphaned node that still holds the RocksDB LOCK,
+            // so the fresh node fails with "Resource temporarily unavailable". Single-instance (above)
+            // stops the double-LAUNCH case; this sweep stops the crash-orphan case. Only processes
+            // under THIS bundle's binary dir are touched, never us.
+            sweep_orphan_sidecars();
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.

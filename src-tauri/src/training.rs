@@ -34,6 +34,12 @@ fn round_key(group_id: &[u8; 32], n: u64) -> [u8; 32] {
 /// Map the app's group id to the on-chain `bytes32 groupId`. A 0x+64-hex id is used verbatim (the
 /// comms daemon's ids are already bytes32); anything else is `keccak256(id)` so it still resolves
 /// deterministically.
+///
+/// VERIFIED end-to-end against 40204 (SETL-S3): the comms member-daemon serializes a group id as
+/// `hex::encode(gid.0)` — bare 64-hex, no `0x` (comms-member-daemon/src/ipc.rs) — which this decodes
+/// verbatim. `roundMergedHash(0xa4402ca3 ++ round_key(groupId, 4))` for the golden group returned a
+/// non-zero merged hash on rpc.citrate.ai, confirming both the mapping and the round-key encoding are
+/// correct. Do not "fix" this to hash the hex string — that would break the verified read path.
 fn group_bytes32(group: &str) -> [u8; 32] {
     let stripped = group.strip_prefix("0x").unwrap_or(group);
     if stripped.len() == 64 {
