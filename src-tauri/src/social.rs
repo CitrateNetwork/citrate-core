@@ -438,6 +438,43 @@ pub fn social_verify_forget(bind: tauri::State<'_, SocialBindManaged>, id: Strin
     Ok(())
 }
 
+/// The face a viewer may see for an address — a verified, group-visible handle.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedIdentity {
+    pub address: String,
+    pub network: String,
+    pub handle: String,
+}
+
+/// `social_resolve` — given member addresses, return the verified, group-visible handles this
+/// device can resolve. TODAY that's the user's OWN binding(s); cross-member handles arrive when
+/// bindings are shared server-blind to groups (ADR D1 — the follow-up). PRIVATE links never resolve
+/// to anyone (D2), and only a verified binding (a wallet signature) ever produces a face (D3).
+#[tauri::command]
+pub fn social_resolve(app: tauri::AppHandle, addresses: Vec<String>) -> Result<Vec<ResolvedIdentity>, String> {
+    let want: std::collections::HashSet<String> =
+        addresses.iter().map(|a| a.to_lowercase()).collect();
+    let out = load_links(&app)
+        .iter()
+        .filter_map(|l| {
+            let b = l.binding.as_ref()?; // verified only (D3)
+            if l.visibility != "groups" {
+                return None; // private never resolves to others (D2)
+            }
+            if !want.contains(&b.address.to_lowercase()) {
+                return None;
+            }
+            Some(ResolvedIdentity {
+                address: b.address.clone(),
+                network: l.network.clone(),
+                handle: l.handle.clone(),
+            })
+        })
+        .collect();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

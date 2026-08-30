@@ -31,5 +31,9 @@ export function simSocial(_host: SimHost): SocialDomain {
     async disconnect(): Promise<void> {
       desktopOnly();
     },
+    async resolve() {
+      // sim: no links, no faces (honest-empty; the address fallback renders).
+      return [];
+    },
   };
 }

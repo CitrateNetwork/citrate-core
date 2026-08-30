@@ -220,6 +220,9 @@ pub fn run() {
             social::social_verify_request,
             social::social_verify_approve,
             social::social_verify_forget,
+            // Resolver: verified + group-visible addresses → faces (self today; cross-member when
+            // bindings are shared server-blind to groups).
+            social::social_resolve,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote

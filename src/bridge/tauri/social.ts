@@ -6,7 +6,7 @@
 // wallet-signed IdentityBinding through the ceremony, D3) is the follow-up — bindingChallenge/verify
 // stay honest Unavailable until then. Rule 3 holds: when wired, the WALLET signs; no sidecar signs.
 import { invoke } from "@tauri-apps/api/core";
-import type { LinkedIdentity, SocialDomain, SocialNetwork, SocialVisibility } from "../domains";
+import type { LinkedIdentity, ResolvedIdentity, SocialDomain, SocialNetwork, SocialVisibility } from "../domains";
 import type { CeremonyView } from "../types";
 
 export const tauriSocial: SocialDomain = {
@@ -30,5 +30,8 @@ export const tauriSocial: SocialDomain = {
   },
   async disconnect(network: SocialNetwork): Promise<void> {
     await invoke("social_disconnect", { network });
+  },
+  resolve(addresses: string[]): Promise<ResolvedIdentity[]> {
+    return invoke<ResolvedIdentity[]>("social_resolve", { addresses });
   },
 };

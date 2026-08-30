@@ -5,13 +5,14 @@ import { bridge } from "../index";
 describe("CX bridge contract — social (ADR-2026-08-30)", () => {
   it("exposes the social domain with its methods", () => {
     expect(bridge.social).toBeDefined();
-    for (const m of ["status", "start", "verifyRequest", "verifyApprove", "verifyForget", "setVisibility", "disconnect"] as const) {
+    for (const m of ["status", "start", "verifyRequest", "verifyApprove", "verifyForget", "setVisibility", "disconnect", "resolve"] as const) {
       expect(typeof bridge.social[m]).toBe("function");
     }
   });
 
-  it("status() is honest-empty — no fabricated links (Rule 1)", async () => {
+  it("status() + resolve() are honest-empty — no fabricated links/faces (Rule 1)", async () => {
     expect(await bridge.social.status()).toEqual([]);
+    expect(await bridge.social.resolve(["0xabc"])).toEqual([]);
   });
 
   it("sim linking honestly requires the desktop app (never a fake link)", async () => {

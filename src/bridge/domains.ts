@@ -769,6 +769,12 @@ export interface LinkedIdentity {
   visibility: SocialVisibility;
   linkedAt: number;
 }
+/** A face a viewer may see for an address — a verified, group-visible handle (resolver output). */
+export interface ResolvedIdentity {
+  address: string;
+  network: SocialNetwork;
+  handle: string;
+}
 export interface SocialDomain {
   /** The user's current linked identities (device-local). Honest-empty when none/unwired. */
   status(): Promise<LinkedIdentity[]>;
@@ -787,6 +793,9 @@ export interface SocialDomain {
   setVisibility(network: SocialNetwork, visibility: SocialVisibility): Promise<LinkedIdentity>;
   /** Forget a link — drop the local record + tombstone to group members (ADR revocation). */
   disconnect(network: SocialNetwork): Promise<void>;
+  /** Resolve member addresses → verified, group-visible faces this device knows. Self today;
+   *  cross-member when bindings are shared server-blind to groups (ADR D1 follow-up). */
+  resolve(addresses: string[]): Promise<ResolvedIdentity[]>;
 }
 
 /**
