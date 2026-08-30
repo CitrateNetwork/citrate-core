@@ -17,9 +17,9 @@
 import { useEffect, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
-import type { ConnectionInfo } from "../bridge/domains";
+import type { ConnectionInfo, LinkedIdentity, SocialNetwork, SocialVisibility } from "../bridge/domains";
 
-const SOCIALS: { id: string; name: string; glyph: string; sub: string }[] = [
+const SOCIALS: { id: SocialNetwork; name: string; glyph: string; sub: string }[] = [
   { id: "x", name: "X", glyph: "X", sub: "@handle · proves you own the account" },
   { id: "linkedin", name: "LinkedIn", glyph: "in", sub: "professional identity · verified badge" },
   { id: "discord", name: "Discord", glyph: "DC", sub: "username · reachable in your groups" },
@@ -41,8 +41,8 @@ const SAAS: { id: string; name: string; scope: string }[] = [
 export function Connections({ store }: SurfaceProps) {
   const [mcp, setMcp] = useState<ConnectionInfo[]>([]);
   const [mcpBusy, setMcpBusy] = useState<string | null>(null);
-  const [social, setSocial] = useState<Record<string, "off" | "verifying">>({});
-  const [socialVis, setSocialVis] = useState<"groups" | "private">("groups");
+  const [links, setLinks] = useState<LinkedIdentity[]>([]);
+  const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [hooks, setHooks] = useState<string[]>([]);
   const [hookUrl, setHookUrl] = useState("");
   const [mcpUrl, setMcpUrl] = useState("");
@@ -54,8 +54,16 @@ export function Connections({ store }: SurfaceProps) {
       /* honest-empty: connections seam unavailable in this build */
     }
   };
+  const loadSocial = async () => {
+    try {
+      setLinks(await bridge.social.status());
+    } catch {
+      /* honest-empty: no links wired yet (Rule 1) */
+    }
+  };
   useEffect(() => {
     void loadMcp();
+    void loadSocial();
   }, []);
 
   const toggleMcp = async (svc: string, connected: boolean) => {
@@ -71,11 +79,39 @@ export function Connections({ store }: SurfaceProps) {
     }
   };
 
-  const linkSocial = (id: string) => {
-    // NOT WIRED: proof-of-ownership + the address↔identity binding need a privacy ADR + backend.
-    setSocial((s) => ({ ...s, [id]: "verifying" }));
-    store.toast("Linking lands with Social discovery — it verifies you own the account, then binds it per your visibility setting. Pending backend.");
-    // Honest: no fabricated "verified" — it stays in the intended "verifying" affordance until wired.
+  // Social identity — wired to bridge.social (ADR-2026-08-30). start() runs the OAuth ownership
+  // proof (desktop); the wallet-signed IdentityBinding that makes it "verified" is the follow-up
+  // step. On the scaffold, start/setVisibility/disconnect report honest Unavailable ("pending
+  // backend") — no fake link is ever shown.
+  const linkOf = (network: SocialNetwork): LinkedIdentity | undefined => links.find((l) => l.network === network);
+  const linkSocial = async (network: SocialNetwork) => {
+    setLinkBusy(network);
+    try {
+      await bridge.social.start(network);
+      await loadSocial();
+      store.toast("Account linked — set its visibility, then verify it with your wallet signature.");
+    } catch (e) {
+      store.toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLinkBusy(null);
+    }
+  };
+  const setVis = async (network: SocialNetwork, visibility: SocialVisibility) => {
+    try {
+      await bridge.social.setVisibility(network, visibility);
+      await loadSocial();
+    } catch (e) {
+      store.toast(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const unlink = async (network: SocialNetwork) => {
+    try {
+      await bridge.social.disconnect(network);
+      await loadSocial();
+      store.toast("Unlinked — the binding is dropped and group members are tombstoned.");
+    } catch (e) {
+      store.toast(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const addHook = () => {
@@ -120,36 +156,41 @@ export function Connections({ store }: SurfaceProps) {
         </span>
       </div>
 
-      {/* ---- Social identity (NOT WIRED) ---- */}
+      {/* ---- Social identity (wired to bridge.social; verify + on-chain opt-in are the next step) ---- */}
       <Section title="Social identity" flag="pending backend">
         <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
           {SOCIALS.map((so) => {
-            const state = social[so.id] ?? "off";
+            const link = linkOf(so.id);
+            const busy = linkBusy === so.id;
             return (
               <div key={so.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                 <span className="mono" style={{ width: 28, height: 28, borderRadius: "var(--r-1)", border: "1px solid var(--line-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--tx-2)", flexShrink: 0 }}>{so.glyph}</span>
                 <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 500 }}>{so.name}</span>
-                    {state === "verifying" && <span className="mono" style={{ fontSize: 9, color: "var(--warn)" }}>verifying…</span>}
+                  <span style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>{link ? "@" + link.handle : so.name}</span>
+                    {link?.verified && <span className="mono" style={{ fontSize: 9, letterSpacing: ".06em", padding: "1px 7px", borderRadius: 999, border: "1px solid var(--ok)", color: "var(--ok)", background: "var(--ok-bg)" }}>verified · proof of ownership</span>}
+                    {link && !link.verified && <span className="mono" style={{ fontSize: 9, color: "var(--warn)" }}>unverified — sign to verify</span>}
                   </span>
-                  <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>{so.sub}</span>
+                  <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>{link ? so.name : so.sub}</span>
                 </span>
-                <button className="btn btn-ghost btn-sm" onClick={() => linkSocial(so.id)}>{state === "verifying" ? "Verifying…" : "Link"}</button>
+                {link ? (
+                  <>
+                    {(["private", "groups"] as const).map((v) => (
+                      <button key={v} className={"btn btn-sm " + (link.visibility === v ? "btn-secondary" : "btn-ghost")} onClick={() => void setVis(so.id, v)} title={v === "groups" ? "visible to people who share a group with you" : "visible to no one"}>
+                        {v === "groups" ? "Groups" : "Private"}
+                      </button>
+                    ))}
+                    <button className="btn btn-ghost btn-sm" onClick={() => void unlink(so.id)} style={{ color: "var(--tx-3)" }}>Unlink</button>
+                  </>
+                ) : (
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void linkSocial(so.id)}>{busy ? "…" : "Link"}</button>
+                )}
               </div>
             );
           })}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-            <span style={{ flex: 1, fontSize: 12, color: "var(--tx-2)", lineHeight: 1.55 }}>Who can see your linked identities</span>
-            {(["groups", "private"] as const).map((v) => (
-              <button key={v} className={"btn btn-sm " + (socialVis === v ? "btn-secondary" : "btn-ghost")} onClick={() => setSocialVis(v)}>
-                {v === "groups" ? "Groups only" : "Private"}
-              </button>
-            ))}
-          </div>
         </div>
         <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
-          links are opt-in, verified, and removable · your address-to-identity binding is visible only per the setting above — never published
+          opt-in · private by default · verified with your wallet signature · your address↔identity binding is device-local and shared only to your groups (server-blind), never published (ADR-2026-08-30)
         </p>
       </Section>
 
