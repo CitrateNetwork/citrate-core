@@ -819,6 +819,33 @@ export interface SocialDomain {
  * signature/DTO here requires a serialized spine-PR (01_SCOPE §5.2). Every entry is
  * additive — no existing interface above this block is modified.
  */
+// ── Group claimable invites (ADR-2026-08-30 D4). Invite by @handle without a directory: the owner
+// mints a claimable invite + shares its link over the platform DM; the invitee volunteers their
+// address in a claim (consent); the owner verifies the one-time token and adds them the normal way.
+// Citrate never resolves a handle to an address.
+export interface PendingInvite {
+  group: string;
+  token: string;
+  forHandle: string;
+  createdAt: number;
+}
+export interface InviteMinted {
+  token: string;
+  /** citrate://invite?g=<group>&t=<token> — the owner DMs this to the @handle on the platform. */
+  link: string;
+}
+export interface InvitesDomain {
+  /** Mint a claimable invite for a group (labelled for a handle). No address resolution. */
+  create(group: string, forHandle: string): Promise<InviteMinted>;
+  /** The owner's outstanding claimable invites for a group. */
+  list(group: string): Promise<PendingInvite[]>;
+  /** Verify + CONSUME a claim's one-time token against an outstanding invite. The caller then adds
+   *  the volunteered address the normal way. Returns whether the token was valid. */
+  verifyConsume(group: string, token: string): Promise<boolean>;
+  /** Drop an outstanding invite. */
+  revoke(group: string, token: string): Promise<void>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   storage: StorageDomain;
@@ -827,4 +854,5 @@ export interface CxBridge {
   training: TrainingDomain;
   agentHarness: AgentHarnessDomain;
   social: SocialDomain;
+  invites: InvitesDomain;
 }

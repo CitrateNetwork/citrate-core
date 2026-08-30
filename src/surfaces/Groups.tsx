@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
-import type { Group, GroupRole, ResolvedIdentity } from "../bridge/domains";
+import type { Group, GroupRole, PendingInvite, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import {
   groupsSlice,
@@ -81,6 +81,12 @@ export function Groups({ store, s }: SurfaceProps) {
   const cidRef = useRef<HTMLInputElement>(null);
   const [cidAdvanced, setCidAdvanced] = useState(false);
   const [dropOver, setDropOver] = useState(false);
+  // D4 claimable invites
+  const inviteHandleRef = useRef<HTMLInputElement>(null);
+  const claimRef = useRef<HTMLInputElement>(null);
+  const redeemRef = useRef<HTMLInputElement>(null);
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [redeemOpen, setRedeemOpen] = useState(false);
 
   const selected = st.groups.find((g) => g.id === st.selectedId) ?? null;
   const myWallet = typeof store.identity === "function" ? store.identity().wallet : "";
@@ -213,11 +219,100 @@ export function Groups({ store, s }: SurfaceProps) {
     const v = addrRef.current?.value.trim() ?? "";
     if (!v) return;
     if (v.startsWith("@")) {
-      store.toast("Handles resolve once Social discovery ships — add a 0x address for now.");
+      store.toast("To invite by @handle, use “Invite by @handle” below — Citrate never looks up an address from a handle.");
       return;
     }
     if (addrRef.current) addrRef.current.value = "";
     void addMemberToGroup(v);
+  };
+
+  // D4 claimable invites (owner side)
+  const refreshInvites = async () => {
+    if (!selected || !canManage) return;
+    try {
+      setPendingInvites(await bridge.invites.list(selected.id));
+    } catch {
+      /* honest: none / relay unavailable */
+    }
+  };
+  useEffect(() => {
+    if (tab === "roster" && selected && canManage) void refreshInvites();
+    else setPendingInvites([]);
+  }, [tab, selected?.id, canManage]);
+
+  const doMintInvite = async () => {
+    if (!selected) return;
+    const h = (inviteHandleRef.current?.value.trim() ?? "").replace(/^@/, "");
+    if (!h) {
+      store.toast("Enter the @handle you're inviting.");
+      return;
+    }
+    try {
+      const { link } = await bridge.invites.create(selected.id, h);
+      if (inviteHandleRef.current) inviteHandleRef.current.value = "";
+      try {
+        await navigator.clipboard?.writeText(link);
+      } catch {
+        /* clipboard may be unavailable */
+      }
+      store.toast(`Invite for @${h} copied — DM it to them on the platform. They open it, accept, and send you their claim to paste below.`);
+      await refreshInvites();
+    } catch (e) {
+      store.toast(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const doAddFromClaim = async () => {
+    const raw = claimRef.current?.value.trim() ?? "";
+    if (!raw || !selected) return;
+    let claim: { group?: string; token?: string; address?: string };
+    try {
+      claim = JSON.parse(raw);
+    } catch {
+      store.toast("That claim isn't valid — paste the whole claim they sent back.");
+      return;
+    }
+    if (claim.group !== selected.id || !claim.token || !claim.address) {
+      store.toast("That claim is for a different group or is incomplete.");
+      return;
+    }
+    try {
+      const ok = await bridge.invites.verifyConsume(selected.id, claim.token);
+      if (!ok) {
+        store.toast("That invite token is invalid or already used.");
+        return;
+      }
+      if (claimRef.current) claimRef.current.value = "";
+      void addMemberToGroup(claim.address);
+      store.toast("Invite accepted — adding them to the group.");
+      await refreshInvites();
+    } catch (e) {
+      store.toast(e instanceof Error ? e.message : String(e));
+    }
+  };
+  // D4 (invitee side): turn an invite link into a claim to send back.
+  const doRedeemLink = () => {
+    const link = redeemRef.current?.value.trim() ?? "";
+    if (!link) return;
+    const g = /[?&]g=([^&]*)/.exec(link)?.[1];
+    const t = /[?&]t=([^&]*)/.exec(link)?.[1];
+    if (!g || !t) {
+      store.toast("That doesn't look like an invite link.");
+      return;
+    }
+    const address = myWallet || s.walletAddr || "";
+    if (!address) {
+      store.toast("Your wallet isn't ready yet — try again once it's provisioned.");
+      return;
+    }
+    const claim = JSON.stringify({ group: g, token: t, address });
+    try {
+      void navigator.clipboard?.writeText(claim);
+    } catch {
+      /* clipboard may be unavailable */
+    }
+    if (redeemRef.current) redeemRef.current.value = "";
+    setRedeemOpen(false);
+    store.toast("Claim copied — DM it back to whoever invited you. They accept it and add you to the group.");
   };
   const doRole = (address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
@@ -359,6 +454,21 @@ export function Groups({ store, s }: SurfaceProps) {
             })}
           </ul>
         )}
+        {/* D4 (invitee) — turn an invite link you were DM'd into a claim to send back. */}
+        <div style={{ marginTop: "auto", borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
+          {!redeemOpen ? (
+            <button onClick={() => setRedeemOpen(true)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--tx-3)", background: "none", border: "none", cursor: "pointer", padding: "2px", textDecoration: "underline" }}>
+              Have an invite link?
+            </button>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span className="lbl">Redeem an invite</span>
+              <input ref={redeemRef} className="input mono" placeholder="citrate://invite?…" onKeyDown={(e) => e.key === "Enter" && doRedeemLink()} />
+              <button className="btn btn-secondary btn-sm" onClick={doRedeemLink}>Accept &amp; copy my claim</button>
+              <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)", lineHeight: 1.5 }}>copies a claim with your address to DM back — nobody looks up your address</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ---------- main ---------- */}
@@ -480,6 +590,37 @@ export function Groups({ store, s }: SurfaceProps) {
                   </p>
                 )}
               </div>
+
+              {/* D4 — claimable invite by @handle (owner/admin) */}
+              {canManage && (
+                <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+                  <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                    <span style={{ fontSize: 13.5, fontWeight: 500 }}>Invite by @handle</span>
+                    <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>no address lookup</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 10, padding: "12px 16px", alignItems: "center" }}>
+                    <input ref={inviteHandleRef} className="input" placeholder="@handle on X, Discord, …" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && void doMintInvite()} />
+                    <button className="btn btn-secondary btn-sm" onClick={() => void doMintInvite()}>Create invite</button>
+                  </div>
+                  {pendingInvites.map((pi) => (
+                    <div key={pi.token} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", borderTop: "1px solid var(--line-1)" }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{pi.forHandle}</span>
+                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>invite pending · claimable once</span>
+                      </span>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(`citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them."); }}>Copy link</button>
+                      <button className="btn btn-ghost btn-sm" style={{ color: "var(--tx-3)" }} onClick={() => void bridge.invites.revoke(pi.group, pi.token).then(refreshInvites)}>Revoke</button>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", gap: 10, padding: "12px 16px", alignItems: "center", borderTop: "1px solid var(--line-1)" }}>
+                    <input ref={claimRef} className="input mono" placeholder="Paste the claim they DM'd back" style={{ flex: 1 }} />
+                    <button className="btn btn-secondary btn-sm" onClick={() => void doAddFromClaim()}>Accept claim</button>
+                  </div>
+                  <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "0 16px 12px", lineHeight: 1.6 }}>
+                    Citrate never resolves a handle to an address. You DM the invite; they accept and send back a claim carrying their address (their consent); you accept it here and they join.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
