@@ -41,6 +41,15 @@ fn net_cfg(network: &str) -> Option<NetCfg> {
             // flag so the token exchange omits the secret when a PKCE code_verifier is supplied.
             client_id: "1543454988540444742",
         }),
+        "x" => Some(NetCfg {
+            authorize: "https://x.com/i/oauth2/authorize",
+            token: "https://api.twitter.com/2/oauth2/token",
+            userinfo: "https://api.twitter.com/2/users/me",
+            scope: "users.read tweet.read",
+            // PUBLIC client id (safe to commit). The X app must be a "Native App / public client"
+            // so the PKCE token exchange needs no secret.
+            client_id: "MlItYlVLZHFZTkVHMWptZ1QyQV86MTpjaQ",
+        }),
         _ => None,
     }
 }
@@ -221,13 +230,38 @@ struct DiscordUser {
     global_name: Option<String>,
 }
 
-fn fetch_handle(http: &impl HttpClient, cfg: &NetCfg, token: &str) -> Result<String, String> {
+/// X `/2/users/me` → `{ "data": { "username": "...", ... } }`.
+#[derive(Deserialize)]
+struct XUser {
+    data: XUserData,
+}
+#[derive(Deserialize)]
+struct XUserData {
+    #[serde(default)]
+    username: String,
+}
+
+fn fetch_handle(http: &impl HttpClient, network: &str, cfg: &NetCfg, token: &str) -> Result<String, String> {
     let body = http
         .get(cfg.userinfo, Some(token))
         .map_err(|_| "could not read your profile from the provider".to_string())?;
-    let u: DiscordUser =
-        serde_json::from_str(&body).map_err(|_| "profile response was unparsable".to_string())?;
-    Ok(u.global_name.filter(|s| !s.is_empty()).unwrap_or(u.username))
+    let handle = match network {
+        "x" => {
+            let u: XUser = serde_json::from_str(&body)
+                .map_err(|_| "profile response was unparsable".to_string())?;
+            u.data.username
+        }
+        // discord (and default): flat shape, prefer the display global_name.
+        _ => {
+            let u: DiscordUser = serde_json::from_str(&body)
+                .map_err(|_| "profile response was unparsable".to_string())?;
+            u.global_name.filter(|s| !s.is_empty()).unwrap_or(u.username)
+        }
+    };
+    if handle.is_empty() {
+        return Err("the provider returned no handle".to_string());
+    }
+    Ok(handle)
 }
 
 fn do_link(
@@ -279,7 +313,7 @@ fn do_link(
     bytes.zeroize();
     put.map_err(|_| "could not seal the token in the keyring".to_string())?;
 
-    let handle = fetch_handle(&http, &cfg, &tok.access_token)?;
+    let handle = fetch_handle(&http, network, &cfg, &tok.access_token)?;
     let mut links = load_links(app);
     links.retain(|l| l.network != network);
     let stored = StoredLink {
@@ -598,6 +632,14 @@ mod tests {
         assert_eq!(cfg.client_id, "1543454988540444742");
         assert_eq!(cfg.scope, "identify");
         assert!(cfg.token.starts_with("https://"));
+    }
+
+    #[test]
+    fn x_is_configured_public_no_secret() {
+        let cfg = net_cfg("x").expect("x configured");
+        assert_eq!(cfg.client_id, "MlItYlVLZHFZTkVHMWptZ1QyQV86MTpjaQ");
+        assert!(cfg.scope.contains("users.read"));
+        assert_eq!(cfg.userinfo, "https://api.twitter.com/2/users/me");
     }
 
     #[test]
