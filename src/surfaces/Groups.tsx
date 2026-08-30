@@ -92,7 +92,11 @@ export function Groups({ store, s }: SurfaceProps) {
   const myWallet = typeof store.identity === "function" ? store.identity().wallet : "";
   const myAddr = (myWallet || s.walletAddr || "").toLowerCase();
   const myRole = st.roster.find((r) => r.address.toLowerCase() === myAddr)?.role ?? (selected && selected.owner.toLowerCase() === myAddr ? "owner" : "member");
-  const canManage = myRole === "owner" || myRole === "admin";
+  // A group you created THIS session is yours to manage, even if the daemon keys your roster seat
+  // by a different address than your wallet (a known addressing seam). RBAC is still enforced at the
+  // relay — this only decides which controls the UI offers, never whether an action is authorized.
+  const iCreated = !!(selected && st.names[selected.id]);
+  const canManage = myRole === "owner" || myRole === "admin" || iCreated;
 
   // Verified, group-visible faces for the addresses on screen (ADR resolver). Self today;
   // cross-member when bindings are shared server-blind to groups. Fallback is the address avatar.
@@ -581,8 +585,8 @@ export function Groups({ store, s }: SurfaceProps) {
                   })
                 )}
                 <div style={{ display: "flex", gap: 10, padding: "12px 16px", alignItems: "center" }}>
-                  <input ref={addrRef} className="input" placeholder="0x address or @handle — handles resolve via Social discovery" style={{ flex: 1 }} disabled={!canManage} onKeyDown={(e) => e.key === "Enter" && canManage && doAdd()} />
-                  <button className="btn btn-secondary btn-sm" onClick={doAdd} disabled={!canManage}>Add member</button>
+                  <input ref={addrRef} className="input" placeholder="0x address — or use “Invite by @handle” below" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && doAdd()} />
+                  <button className="btn btn-secondary btn-sm" onClick={doAdd}>Add member</button>
                 </div>
                 {!canManage && (
                   <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "0 16px 12px" }}>
