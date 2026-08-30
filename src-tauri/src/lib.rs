@@ -115,6 +115,8 @@ pub fn run() {
             // address, which no key can spend from — so the membership money path
             // would bond-fund an address the member cannot reach.
             app.manage(wallet_link::build_link_state());
+            // Social verify (ADR-2026-08-30): the pending-verification table, keyed by ceremony id.
+            app.manage(social::build_social_bind_state());
             // CORE-C1.1 — the NodeManager: the real citrate-node under the
             // SidecarSupervisor with an encrypted data dir. @rule8: the 32-byte
             // storage master key lives in the OS keyring (never on disk clear)
@@ -213,6 +215,14 @@ pub fn run() {
             social::social_start,
             social::social_set_visibility,
             social::social_disconnect,
+            // Social verify (D3) — the wallet signs the IdentityBinding at the ceremony (Rule 3);
+            // request opens it, approve records the binding + flips verified, forget drops a reject.
+            social::social_verify_request,
+            social::social_verify_approve,
+            social::social_verify_forget,
+            // Resolver: verified + group-visible addresses → faces (self today; cross-member when
+            // bindings are shared server-blind to groups).
+            social::social_resolve,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote

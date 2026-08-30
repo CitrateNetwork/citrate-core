@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
-import type { Group, GroupRole } from "../bridge/domains";
+import type { Group, GroupRole, ResolvedIdentity } from "../bridge/domains";
 import {
   groupsSlice,
   refreshGroups,
@@ -87,9 +87,37 @@ export function Groups({ store, s }: SurfaceProps) {
   const myRole = st.roster.find((r) => r.address.toLowerCase() === myAddr)?.role ?? (selected && selected.owner.toLowerCase() === myAddr ? "owner" : "member");
   const canManage = myRole === "owner" || myRole === "admin";
 
+  // Verified, group-visible faces for the addresses on screen (ADR resolver). Self today;
+  // cross-member when bindings are shared server-blind to groups. Fallback is the address avatar.
+  const [faces, setFaces] = useState<Record<string, ResolvedIdentity>>({});
+  const faceOf = (addr: string): ResolvedIdentity | undefined => faces[(addr || "").toLowerCase()];
+
   useEffect(() => {
     void refreshGroups();
   }, []);
+
+  useEffect(() => {
+    const addrs = Array.from(new Set([...st.roster.map((r) => r.address), ...cl.peers.map((p) => p.address)])).filter(Boolean);
+    if (addrs.length === 0) {
+      setFaces({});
+      return;
+    }
+    let cancelled = false;
+    void bridge.social
+      .resolve(addrs)
+      .then((res) => {
+        if (cancelled) return;
+        const m: Record<string, ResolvedIdentity> = {};
+        for (const r of res) m[r.address.toLowerCase()] = r;
+        setFaces(m);
+      })
+      .catch(() => {
+        /* honest: no faces resolved — the address avatar renders */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [st.roster, cl.peers]);
 
   // When the Cluster tab opens for a group, drive the cluster slice to that group + load files.
   useEffect(() => {
@@ -346,7 +374,7 @@ export function Groups({ store, s }: SurfaceProps) {
                         </span>
                         <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
                           <span style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                            <span style={{ fontSize: 12, fontWeight: 500 }}>{you ? "You" : shortAddr(m.sender)}</span>
+                            <span style={{ fontSize: 12, fontWeight: 500 }}>{you ? "You" : faceOf(m.sender) ? "@" + faceOf(m.sender)!.handle : shortAddr(m.sender)}</span>
                             {isAgent && <span className="mono" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "1px 6px", borderRadius: 999, border: "1px dashed var(--info)", color: "var(--info)" }}>agent</span>}
                             <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)" }}>{m.ts ? new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
                           </span>
@@ -387,7 +415,8 @@ export function Groups({ store, s }: SurfaceProps) {
                         </span>
                         <span style={{ flex: 1, minWidth: 0 }}>
                           <span style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                            <span style={{ fontSize: 13, fontWeight: 500 }}>{shortAddr(r.address)}</span>
+                            <span style={{ fontSize: 13, fontWeight: 500 }}>{faceOf(r.address) ? "@" + faceOf(r.address)!.handle : shortAddr(r.address)}</span>
+                            {faceOf(r.address) && <span className="mono" style={{ fontSize: 8.5, letterSpacing: ".06em", padding: "1px 6px", borderRadius: 999, border: "1px solid var(--ok)", color: "var(--ok)" }}>{faceOf(r.address)!.network} ✓</span>}
                             {you && <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)" }}>you</span>}
                             {isAgent && <span className="mono" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "1px 6px", borderRadius: 999, border: "1px dashed var(--info)", color: "var(--info)" }}>agent · keyless</span>}
                           </span>
@@ -474,7 +503,7 @@ export function Groups({ store, s }: SurfaceProps) {
                             <span style={{ width: 7, height: 7, borderRadius: 999, background: p.online ? "var(--ok)" : "var(--tx-3)", flexShrink: 0 }}></span>
                             <span style={{ flex: 1, minWidth: 0 }}>
                               <span style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                                <span style={{ fontSize: 12.5, fontWeight: 500 }}>{shortAddr(p.address)}</span>
+                                <span style={{ fontSize: 12.5, fontWeight: 500 }}>{faceOf(p.address) ? "@" + faceOf(p.address)!.handle : shortAddr(p.address)}</span>
                                 {isAgent && <span className="mono" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "1px 6px", borderRadius: 999, border: "1px dashed var(--info)", color: "var(--info)" }}>agent</span>}
                               </span>
                               <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)" }}>{p.online ? "online" : "authorized · offline"}</span>

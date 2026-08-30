@@ -1,19 +1,25 @@
-//! Social identity OAuth link (Connections · social discovery) — ADR-2026-08-30.
+//! Social identity — OAuth link + wallet-signed verification (Connections · social discovery).
+//! Privacy model: ADR-2026-08-30.
 //!
-//! Device-local link store + keyring-sealed token; PUBLIC-client PKCE (no client secret, and NONE
-//! embedded — Discord's PUBLIC_OAUTH2_CLIENT flag lets the token exchange omit the secret when a
-//! `code_verifier` is present). Reuses the loopback-PKCE + keyring machinery from `connections.rs`.
-//!
-//! Privacy model (ADR): the binding is DEVICE-LOCAL (a JSON file in the app data dir); the OAuth
-//! token seals in the OS keyring and NEVER crosses the invoke boundary (I-2). Links start PRIVATE
-//! and UNVERIFIED — this module does the LINK (OAuth ownership proof) only. The wallet-signed
-//! IdentityBinding that flips `verified` (D3) lands in a follow-up. Rule 3 holds: nothing here signs.
+//! LINK (public-client PKCE, no secret): OAuth ownership proof → keyring-sealed token → a
+//! DEVICE-LOCAL, private, UNVERIFIED record. VERIFY (D3): the wallet signs an `IdentityBinding`
+//! challenge {network, handle, address, nonce} through the Signature Ceremony (Rule 3 — the vault
+//! key signs at `ceremony.approve`, nothing here); the resulting EIP-191 signature IS by the wallet
+//! address by construction, so recording it flips `verified` and gives group members something they
+//! can independently check. The OAuth token NEVER crosses the invoke boundary; the binding signature
+//! is device-local (shared server-blind to groups is a follow-up).
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use zeroize::Zeroize;
 
-use crate::connections::{capture_public_pkce, ConnError, OAUTH_REDIRECT_URI};
+use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
+use crate::connections::{capture_public_pkce, random_state, ConnError, OAUTH_REDIRECT_URI};
 use crate::oidc::HttpClient;
+
+const CHAIN_ID: u64 = 40204;
 
 /// A network's OAuth endpoints + PUBLIC client id (safe to embed — no secret).
 struct NetCfg {
@@ -35,20 +41,57 @@ fn net_cfg(network: &str) -> Option<NetCfg> {
             // flag so the token exchange omits the secret when a PKCE code_verifier is supplied.
             client_id: "1543454988540444742",
         }),
-        // "x" / "linkedin" land when their client ids are registered.
         _ => None,
     }
 }
 
-/// The device-local link record (mirrors the TS `LinkedIdentity`). Carries NO token.
+// ---------------------------------------------------------------------------
+// Storage: device-local link records (on-disk) + the wire shape (no signature)
+// ---------------------------------------------------------------------------
+
+/// The wallet-signed proof that binds a handle to an address (ADR D3). Device-local; shareable to
+/// groups later (server-blind). The signature is by the wallet address by construction.
 #[derive(Serialize, Deserialize, Clone)]
+struct Binding {
+    address: String,
+    nonce: String,
+    /// `0x`-prefixed EIP-191 signature over the binding message.
+    signature: String,
+    bound_at: u64,
+}
+
+/// The on-disk record (carries the binding). Never crosses the bridge as-is.
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredLink {
+    network: String,
+    handle: String,
+    visibility: String, // "private" | "groups"
+    linked_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<Binding>,
+}
+
+/// The claim-free record crossing the invoke boundary — `verified` is derived; NO signature.
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkedIdentity {
     pub network: String,
     pub handle: String,
     pub verified: bool,
-    pub visibility: String, // "private" | "groups"
+    pub visibility: String,
     pub linked_at: u64,
+}
+
+impl From<&StoredLink> for LinkedIdentity {
+    fn from(s: &StoredLink) -> Self {
+        LinkedIdentity {
+            network: s.network.clone(),
+            handle: s.handle.clone(),
+            verified: s.binding.is_some(),
+            visibility: s.visibility.clone(),
+            linked_at: s.linked_at,
+        }
+    }
 }
 
 fn now_unix() -> u64 {
@@ -68,14 +111,14 @@ fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join("links.json"))
 }
 
-fn load_links(app: &tauri::AppHandle) -> Vec<LinkedIdentity> {
+fn load_links(app: &tauri::AppHandle) -> Vec<StoredLink> {
     match store_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
         Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         None => Vec::new(),
     }
 }
 
-fn save_links(app: &tauri::AppHandle, links: &[LinkedIdentity]) -> Result<(), String> {
+fn save_links(app: &tauri::AppHandle, links: &[StoredLink]) -> Result<(), String> {
     let p = store_path(app)?;
     let bytes = serde_json::to_vec_pretty(links).map_err(|e| e.to_string())?;
     std::fs::write(p, bytes).map_err(|e| e.to_string())
@@ -86,7 +129,10 @@ fn keyring_slot(network: &str) -> String {
     format!("social.{network}")
 }
 
-/// Build the provider authorize URL (query values percent-encoded via the `url` crate).
+// ---------------------------------------------------------------------------
+// LINK flow (public-client OAuth PKCE)
+// ---------------------------------------------------------------------------
+
 fn authorize_url(cfg: &NetCfg, state: &str, challenge: &str) -> String {
     let enc = |s: &str| -> String { url::form_urlencoded::byte_serialize(s.as_bytes()).collect() };
     format!(
@@ -100,7 +146,6 @@ fn authorize_url(cfg: &NetCfg, state: &str, challenge: &str) -> String {
     )
 }
 
-/// The provider token response (public-client shape). Unknown fields dropped.
 #[derive(Deserialize)]
 struct TokenResp {
     access_token: String,
@@ -112,7 +157,6 @@ struct TokenResp {
     expires_in: Option<u64>,
 }
 
-/// The token record sealed in the keyring — JSON, zeroized after the put.
 #[derive(Serialize)]
 struct SealedToken<'a> {
     access_token: &'a str,
@@ -122,7 +166,6 @@ struct SealedToken<'a> {
     linked_at: u64,
 }
 
-/// Discord `/users/@me`: prefer the display `global_name`, else the `username`.
 #[derive(Deserialize)]
 struct DiscordUser {
     #[serde(default)]
@@ -135,17 +178,11 @@ fn fetch_handle(http: &impl HttpClient, cfg: &NetCfg, token: &str) -> Result<Str
     let body = http
         .get(cfg.userinfo, Some(token))
         .map_err(|_| "could not read your profile from the provider".to_string())?;
-    // Discord shape today; other networks parse their own userinfo when added.
     let u: DiscordUser =
         serde_json::from_str(&body).map_err(|_| "profile response was unparsable".to_string())?;
-    Ok(u
-        .global_name
-        .filter(|s| !s.is_empty())
-        .unwrap_or(u.username))
+    Ok(u.global_name.filter(|s| !s.is_empty()).unwrap_or(u.username))
 }
 
-/// The blocking link flow: OAuth (public PKCE) → seal token in the keyring → fetch handle → record
-/// the device-local, private, unverified link.
 fn do_link(
     app: &tauri::AppHandle,
     custody: &crate::custody::CustodyVault,
@@ -163,12 +200,11 @@ fn do_link(
             .map_err(|_| ConnError::Network)
     };
 
-    // 1. loopback + PKCE capture (public client — returns the code + the verifier, never a secret).
     let (code, verifier) =
         capture_public_pkce(|state, challenge| authorize_url(&cfg, state, challenge), open)
             .map_err(|e| e.to_string())?;
 
-    // 2. token exchange — PUBLIC client: send the verifier, NO client_secret.
+    // Public client: send the verifier, NO client_secret.
     let form: Vec<(&str, &str)> = vec![
         ("grant_type", "authorization_code"),
         ("client_id", cfg.client_id),
@@ -182,7 +218,6 @@ fn do_link(
     let tok: TokenResp =
         serde_json::from_str(&body).map_err(|_| "the token response was unparsable".to_string())?;
 
-    // 3. seal the token in the OS keyring (never crosses the invoke boundary).
     let linked_at = now_unix();
     let expires_at = tok.expires_in.map(|e| linked_at.saturating_add(e));
     let sealed = SealedToken {
@@ -197,35 +232,75 @@ fn do_link(
     bytes.zeroize();
     put.map_err(|_| "could not seal the token in the keyring".to_string())?;
 
-    // 4. read the handle (proves ownership), then 5. record the link — private + unverified (ADR).
     let handle = fetch_handle(&http, &cfg, &tok.access_token)?;
     let mut links = load_links(app);
     links.retain(|l| l.network != network);
-    let li = LinkedIdentity {
+    let stored = StoredLink {
         network: network.to_string(),
         handle,
-        verified: false,
         visibility: "private".to_string(),
         linked_at,
+        binding: None,
     };
-    links.push(li.clone());
+    let li = LinkedIdentity::from(&stored);
+    links.push(stored);
     save_links(app, &links)?;
     Ok(li)
 }
 
 // ---------------------------------------------------------------------------
-// Tauri command surface (I-2: none returns a token)
+// VERIFY flow (wallet-signed IdentityBinding via the ceremony) — mirrors wallet_link
 // ---------------------------------------------------------------------------
 
-/// `social_status` — the device-local linked identities (no token, honest-empty when none).
-#[tauri::command]
-pub fn social_status(app: tauri::AppHandle) -> Result<Vec<LinkedIdentity>, String> {
-    Ok(load_links(&app))
+/// One in-flight verification, held against its ceremony id.
+#[derive(Clone)]
+struct PendingBind {
+    network: String,
+    address: String,
+    nonce: String,
 }
 
-/// `social_start` — run the public-client OAuth link for a network in the SYSTEM browser (third-party
-/// OAuth forbids embedded webviews). Async so Tauri runs it off the main thread while the loopback
-/// blocks. Returns the unverified, private link; the token is sealed in the keyring.
+/// Process-wide pending-verification table (bounded by open ceremonies).
+#[derive(Default)]
+pub struct SocialBindState {
+    pending: Mutex<HashMap<String, PendingBind>>,
+}
+
+impl SocialBindState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, PendingBind>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Managed Tauri state wrapper.
+pub struct SocialBindManaged(pub SocialBindState);
+
+pub fn build_social_bind_state() -> SocialBindManaged {
+    SocialBindManaged(SocialBindState::new())
+}
+
+/// The EIP-191 message the human sees + signs — plain, verbatim at the ceremony.
+fn binding_message(network: &str, handle: &str, address: &str, nonce: &str) -> String {
+    format!(
+        "Citrate identity binding\nNetwork: {network}\nHandle: @{handle}\nAddress: {address}\nNonce: {nonce}\n\nSigning proves this wallet controls this social account. Shared only with your groups, never published."
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tauri command surface (I-2: none returns a token or a raw signature buffer)
+// ---------------------------------------------------------------------------
+
+/// `social_status` — the device-local linked identities (no token/signature; verified derived).
+#[tauri::command]
+pub fn social_status(app: tauri::AppHandle) -> Result<Vec<LinkedIdentity>, String> {
+    Ok(load_links(&app).iter().map(LinkedIdentity::from).collect())
+}
+
+/// `social_start` — run the public-client OAuth link in the SYSTEM browser (async: the loopback
+/// blocks off the main thread). Returns the unverified, private link; the token seals in the keyring.
 #[tauri::command]
 pub async fn social_start(
     app: tauri::AppHandle,
@@ -247,12 +322,12 @@ pub fn social_set_visibility(
     }
     let mut links = load_links(&app);
     let out = {
-        let li = links
+        let link = links
             .iter_mut()
             .find(|l| l.network == network)
             .ok_or_else(|| format!("{network} is not linked"))?;
-        li.visibility = visibility;
-        li.clone()
+        link.visibility = visibility;
+        LinkedIdentity::from(&*link)
     };
     save_links(&app, &links)?;
     Ok(out)
@@ -269,6 +344,135 @@ pub fn social_disconnect(
     let mut links = load_links(&app);
     links.retain(|l| l.network != network);
     save_links(&app, &links)
+}
+
+/// `social_verify_request` — open a ceremony over the exact binding message the wallet will sign.
+/// Returns the [`CeremonyView`] the approval UI renders — NEVER a signature (I-2). The address is
+/// read first so a locked vault fails before a one-time nonce is minted.
+#[tauri::command]
+pub fn social_verify_request(
+    app: tauri::AppHandle,
+    bind: tauri::State<'_, SocialBindManaged>,
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    network: String,
+) -> Result<CeremonyView, String> {
+    let handle = {
+        let links = load_links(&app);
+        let link = links
+            .iter()
+            .find(|l| l.network == network)
+            .ok_or_else(|| format!("{network} is not linked"))?;
+        if link.binding.is_some() {
+            return Err(format!("{network} is already verified"));
+        }
+        link.handle.clone()
+    };
+    let info = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?;
+    let nonce = random_state();
+    let message = binding_message(&network, &handle, &info.address, &nonce);
+    let view = ceremony.0.request(SignatureIntent {
+        origin: format!("social:{network}"),
+        kind: IntentKind::PersonalSign,
+        chain_id: CHAIN_ID,
+        raw: hex::encode(message.as_bytes()),
+    });
+    bind.0.lock().insert(
+        view.id.clone(),
+        PendingBind {
+            network,
+            address: info.address,
+            nonce,
+        },
+    );
+    Ok(view)
+}
+
+/// `social_verify_approve` — the human approved: sign the binding at the ceremony (the vault key
+/// signs; Rule 3), record the `IdentityBinding`, and flip `verified`. Returns the updated link. The
+/// signature is stored device-local, never returned as a raw buffer.
+#[tauri::command]
+pub fn social_verify_approve(
+    app: tauri::AppHandle,
+    bind: tauri::State<'_, SocialBindManaged>,
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    id: String,
+    raw_ack: bool,
+) -> Result<LinkedIdentity, String> {
+    // Read (do not remove) so a raw-ack refusal can be retried with the ack.
+    let pending = bind
+        .0
+        .lock()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| "no pending verification for that request".to_string())?;
+    let sig = ceremony
+        .0
+        .approve(&custody.0, &id, raw_ack)
+        .map_err(|e| e.to_string())?;
+    bind.0.lock().remove(&id);
+
+    let mut links = load_links(&app);
+    let out = {
+        let link = links
+            .iter_mut()
+            .find(|l| l.network == pending.network)
+            .ok_or_else(|| "the link was removed before verification completed".to_string())?;
+        link.binding = Some(Binding {
+            address: pending.address,
+            nonce: pending.nonce,
+            signature: format!("0x{}", sig.sig_hex),
+            bound_at: now_unix(),
+        });
+        LinkedIdentity::from(&*link)
+    };
+    save_links(&app, &links)?;
+    Ok(out)
+}
+
+/// `social_verify_forget` — drop a pending verification whose ceremony the human rejected.
+#[tauri::command]
+pub fn social_verify_forget(bind: tauri::State<'_, SocialBindManaged>, id: String) -> Result<(), String> {
+    bind.0.lock().remove(&id);
+    Ok(())
+}
+
+/// The face a viewer may see for an address — a verified, group-visible handle.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedIdentity {
+    pub address: String,
+    pub network: String,
+    pub handle: String,
+}
+
+/// `social_resolve` — given member addresses, return the verified, group-visible handles this
+/// device can resolve. TODAY that's the user's OWN binding(s); cross-member handles arrive when
+/// bindings are shared server-blind to groups (ADR D1 — the follow-up). PRIVATE links never resolve
+/// to anyone (D2), and only a verified binding (a wallet signature) ever produces a face (D3).
+#[tauri::command]
+pub fn social_resolve(app: tauri::AppHandle, addresses: Vec<String>) -> Result<Vec<ResolvedIdentity>, String> {
+    let want: std::collections::HashSet<String> =
+        addresses.iter().map(|a| a.to_lowercase()).collect();
+    let out = load_links(&app)
+        .iter()
+        .filter_map(|l| {
+            let b = l.binding.as_ref()?; // verified only (D3)
+            if l.visibility != "groups" {
+                return None; // private never resolves to others (D2)
+            }
+            if !want.contains(&b.address.to_lowercase()) {
+                return None;
+            }
+            Some(ResolvedIdentity {
+                address: b.address.clone(),
+                network: l.network.clone(),
+                handle: l.handle.clone(),
+            })
+        })
+        .collect();
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -296,9 +500,36 @@ mod tests {
         assert!(u.contains("code_challenge=chal"));
         assert!(u.contains("code_challenge_method=S256"));
         assert!(u.contains("client_id=1543454988540444742"));
-        // percent-encoded loopback redirect
         assert!(u.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8975%2Foauth%2Fcallback"));
-        // a public-client authorize URL never carries a secret
         assert!(!u.to_lowercase().contains("client_secret"));
+    }
+
+    #[test]
+    fn binding_message_names_all_fields() {
+        let m = binding_message("discord", "dana", "0xabc", "n0nce");
+        assert!(m.contains("Network: discord"));
+        assert!(m.contains("Handle: @dana"));
+        assert!(m.contains("Address: 0xabc"));
+        assert!(m.contains("Nonce: n0nce"));
+        assert!(m.contains("never published"));
+    }
+
+    #[test]
+    fn verified_is_derived_from_binding_presence() {
+        let mut s = StoredLink {
+            network: "discord".into(),
+            handle: "dana".into(),
+            visibility: "private".into(),
+            linked_at: 1,
+            binding: None,
+        };
+        assert!(!LinkedIdentity::from(&s).verified);
+        s.binding = Some(Binding {
+            address: "0xabc".into(),
+            nonce: "n".into(),
+            signature: "0xsig".into(),
+            bound_at: 2,
+        });
+        assert!(LinkedIdentity::from(&s).verified);
     }
 }

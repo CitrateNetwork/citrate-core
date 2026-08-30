@@ -769,20 +769,33 @@ export interface LinkedIdentity {
   visibility: SocialVisibility;
   linkedAt: number;
 }
+/** A face a viewer may see for an address — a verified, group-visible handle (resolver output). */
+export interface ResolvedIdentity {
+  address: string;
+  network: SocialNetwork;
+  handle: string;
+}
 export interface SocialDomain {
   /** The user's current linked identities (device-local). Honest-empty when none/unwired. */
   status(): Promise<LinkedIdentity[]>;
   /** Begin the OAuth ownership proof (opens the system browser, loopback-PKCE). Returns the resulting
    *  UNVERIFIED, private link (handle from OAuth). The token seals in the keyring, never returned. */
   start(network: SocialNetwork): Promise<LinkedIdentity>;
-  /** The challenge the wallet must sign to bind handle↔address (ADR D3). Signs nothing itself. */
-  bindingChallenge(network: SocialNetwork): Promise<{ message: string; nonce: string }>;
-  /** Record the wallet-signed IdentityBinding (from the ceremony) → the link becomes verified. */
-  verify(network: SocialNetwork, signature: string): Promise<LinkedIdentity>;
+  /** Open a ceremony over the wallet-signed IdentityBinding (ADR D3). Returns the CeremonyView the
+   *  approval UI renders; signs NOTHING (the wallet signs at approve). */
+  verifyRequest(network: SocialNetwork): Promise<CeremonyView>;
+  /** Approve a SPECIFIC pending verification id → the wallet signs the binding at the ceremony and it
+   *  is recorded; the link becomes verified. Never returns a signature. */
+  verifyApprove(id: string, rawAck: boolean): Promise<LinkedIdentity>;
+  /** Drop a pending verification the human rejected. */
+  verifyForget(id: string): Promise<void>;
   /** Set a link's visibility (private | groups). Narrowing takes effect immediately (ADR D2). */
   setVisibility(network: SocialNetwork, visibility: SocialVisibility): Promise<LinkedIdentity>;
   /** Forget a link — drop the local record + tombstone to group members (ADR revocation). */
   disconnect(network: SocialNetwork): Promise<void>;
+  /** Resolve member addresses → verified, group-visible faces this device knows. Self today;
+   *  cross-member when bindings are shared server-blind to groups (ADR D1 follow-up). */
+  resolve(addresses: string[]): Promise<ResolvedIdentity[]>;
 }
 
 /**

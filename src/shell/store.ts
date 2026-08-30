@@ -43,6 +43,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   claim: "Claim",
   "wallet-link": "Wallet link",
   agent: "Agent action",
+  social: "Verify identity",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -2311,6 +2312,23 @@ export class Store {
     this.openWalletReview("withdraw-claim", "Claim withdrawal", view);
   }
 
+  /**
+   * ADR-2026-08-30 (D3) — verify a linked social identity: open a ceremony over the wallet-signed
+   * IdentityBinding, show it at the review gate, and on approve record the binding (flips verified).
+   * Rule 3: the wallet signs at the ceremony; nothing signs here. `onDone` refreshes the surface
+   * after either outcome.
+   */
+  async verifySocial(network: "x" | "linkedin" | "discord", onDone?: () => void): Promise<void> {
+    let view: CeremonyView;
+    try {
+      view = await bridge.social.verifyRequest(network);
+    } catch (err) {
+      this.toast("Couldn't start verification — " + String((err as Error).message ?? err));
+      return;
+    }
+    this.openWalletReview("social", "Verify your " + network + " identity", view, undefined, () => onDone?.());
+  }
+
   // ---------- Q-E.1 (@rule8, P0) — wallet review gate ----------
   /**
    * Set the pending wallet-review state from a freshly-built ceremony view and
@@ -2437,6 +2455,27 @@ export class Store {
       }
       return;
     }
+    // A SOCIAL identity verification (ADR D3) is a personal_sign, not a tx: the wallet signs the
+    // IdentityBinding at the ceremony and the binding is recorded — it must never reach
+    // signing.broadcast. Route it to the dedicated command, which signs, records, and flips verified.
+    if (r.kind === "social") {
+      try {
+        const li = await bridge.social.verifyApprove(r.view.id, ack);
+        this.setState({ walletReview: null });
+        this.toast(`Verified — your ${li.network} identity is now bound to your wallet.`);
+        await r.onResolved?.(true);
+      } catch (err) {
+        try {
+          await bridge.social.verifyForget(r.view.id);
+        } catch {
+          /* best-effort cleanup */
+        }
+        this.setState({ walletReview: null });
+        this.toast("Not verified — " + String((err as Error).message ?? err));
+        await r.onResolved?.(false);
+      }
+      return;
+    }
     // In web-dev there is no key/chain; signing.broadcast throws honestly. Keep the
     // review open so the flow is truthful (no fabricated settlement, Rule 1).
     if (BRIDGE_MODE !== "tauri") {
@@ -2500,6 +2539,8 @@ export class Store {
       // nonce, so a declined link cannot be resumed with a stale nonce.
       if (r.kind === "wallet-link") await bridge.wallet.linkReject(r.view.id);
       else await bridge.signing.reject(r.view.id);
+      // A declined social verification also drops its pending-bind entry (nonce is one-time).
+      if (r.kind === "social") await bridge.social.verifyForget(r.view.id);
     } catch {
       /* best-effort — the ceremony may already be gone */
     }

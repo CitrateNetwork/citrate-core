@@ -175,6 +175,11 @@ export function Connections({ store }: SurfaceProps) {
                 </span>
                 {link ? (
                   <>
+                    {!link.verified && (
+                      <button className="btn btn-secondary btn-sm" onClick={() => void store.verifySocial(so.id, () => void loadSocial())} title="Sign a wallet challenge to prove you own this account">
+                        Verify
+                      </button>
+                    )}
                     {(["private", "groups"] as const).map((v) => (
                       <button key={v} className={"btn btn-sm " + (link.visibility === v ? "btn-secondary" : "btn-ghost")} onClick={() => void setVis(so.id, v)} title={v === "groups" ? "visible to people who share a group with you" : "visible to no one"}>
                         {v === "groups" ? "Groups" : "Private"}
