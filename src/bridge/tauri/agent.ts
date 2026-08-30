@@ -9,6 +9,7 @@
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill } from "../domains";
+import type { CeremonyView } from "../types";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
 // parses (an object/array/number), otherwise the raw text as a JSON string value; empty → {}.
@@ -42,5 +43,13 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   async stop() {
     await invoke("hermes_stop");
+  },
+  bridgePending(): Promise<CeremonyView | null> {
+    // Returns the CeremonyView for the head chain effect (also enqueues the pending ceremony that
+    // signing.broadcast will consume), or null for a code/shell head / nothing pending.
+    return invoke<CeremonyView | null>("hermes_bridge_pending");
+  },
+  async resolve(approve: boolean) {
+    await invoke("hermes_resolve", { approve });
   },
 };

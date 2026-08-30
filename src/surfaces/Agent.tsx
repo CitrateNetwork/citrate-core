@@ -20,7 +20,7 @@ import {
   attachRuntime,
   selectRuntime,
   runAgentSkill,
-  clearApproval,
+  rejectApproval,
   noteRun,
   RUNTIME_OPTIONS,
   type RuntimeId,
@@ -62,29 +62,14 @@ export function Agent({ store }: SurfaceProps) {
   const dotColor = (state: string) =>
     state === "running" ? "var(--ok)" : state === "error" ? "var(--danger)" : state === "starting" ? "var(--warn)" : "var(--tx-3)";
 
-  // ---- approvals: the human gate. Approve opens the ceremony; reject clears. ----
+  // ---- approvals: the human gate (CX-S6.3). A chain effect is bridged into the REAL Signature
+  // Ceremony and, on approve, signed/broadcast then released to the sidecar (hermes_resolve);
+  // code/shell effects are confirmed at the ceremony and released the same way. ----
   const approve = (ap: AgentApproval) => {
-    void store.requestSig({
-      origin: "agent:hermes",
-      requester: `agent:${sel.id} · skill runtime`,
-      title: ap.summary,
-      rows: [
-        { k: "Kind", v: ap.kind },
-        { k: "Proposed by", v: `agent:${sel.id}` },
-        { k: "Effect", v: ap.kind === "chain" ? "an on-chain transaction" : ap.kind === "code" ? "a code change on your machine" : "a shell command on your machine" },
-      ],
-      cost: ap.kind === "chain" ? "network gas" : "—",
-      sponsor: "you approve · exactly one action",
-      sponsorColor: "var(--ok)",
-      chainless: ap.kind !== "chain",
-      apply: () => {
-        clearApproval(ap.id);
-        store.toast("Approved — the agent's action was witnessed once.");
-      },
-    });
+    void store.reviewAgentApproval(ap, () => void refreshAgent());
   };
   const reject = (ap: AgentApproval) => {
-    clearApproval(ap.id);
+    void rejectApproval(ap.id);
     store.toast("Rejected — nothing happened, and it won't come back.");
   };
 

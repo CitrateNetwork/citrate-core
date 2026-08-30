@@ -741,6 +741,15 @@ export interface AgentHarnessDomain {
   runSkill(name: string, argsJson: string): Promise<{ ok: boolean }>;
   pendingApprovals(): Promise<AgentApproval[]>;
   stop(): Promise<void>;
+  /**
+   * CX-S6.3 — bridge the sidecar's head CHAIN effect into a PENDING ceremony (signs nothing) and
+   * return the decoded CeremonyView to show at the Signature Ceremony, or null when the head is a
+   * code/shell effect or nothing is pending. The human then approves via signing.broadcast and the
+   * caller must call `resolve(true)` to let the capsule proceed.
+   */
+  bridgePending(): Promise<CeremonyView | null>;
+  /** CX-S6.3 — resolve the sidecar's head effect after the human decided: true proceeds, false aborts. */
+  resolve(approve: boolean): Promise<void>;
 }
 
 /**

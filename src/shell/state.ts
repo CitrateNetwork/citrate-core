@@ -196,12 +196,18 @@ export interface CerSpec {
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link";
+  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "agent";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
   /** True once the user has ticked the raw-mode ack (undecodable calldata). */
   rawAck: boolean;
+  /**
+   * Called after the review resolves (approved=true on a successful broadcast, false on
+   * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
+   * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
+   */
+  onResolved?: (approved: boolean) => void | Promise<void>;
 }
 
 export interface AppState {

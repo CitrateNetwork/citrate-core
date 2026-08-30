@@ -197,6 +197,17 @@ export function clearApproval(approvalId: string): void {
   agentSlice.set((s) => ({ approvals: s.approvals.filter((a) => a.id !== approvalId) }));
 }
 
+/** Reject the head effect (hermes_resolve(false)), drop it locally, and re-read the real state. */
+export async function rejectApproval(approvalId: string): Promise<void> {
+  try {
+    await bridge.agentHarness.resolve(false);
+  } catch {
+    /* best-effort — the sidecar head unblocks on its own timeout if this fails */
+  }
+  clearApproval(approvalId);
+  await refreshAgent();
+}
+
 /** Record a session run row (e.g. a contract deploy handed to the ceremony). */
 export function noteRun(name: string, detail: string, status: AgentRun["status"]): void {
   agentSlice.set((s) => ({ runs: [{ id: nextId(), name, detail, status, ts: 0 }, ...s.runs].slice(0, 12) }));

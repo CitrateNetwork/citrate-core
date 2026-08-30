@@ -42,6 +42,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   "withdraw-claim": "Withdrawal claim",
   claim: "Claim",
   "wallet-link": "Wallet link",
+  agent: "Agent action",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -2298,8 +2299,59 @@ export class Store {
    * or broadcasts here. Undecodable calldata (view.requiresRawAck) starts with
    * rawAck=false so Approve is blocked until the explicit raw-mode ack.
    */
-  openWalletReview(kind: WalletReview["kind"], label: string, view: CeremonyView, spendSummary?: string): void {
-    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false } });
+  openWalletReview(kind: WalletReview["kind"], label: string, view: CeremonyView, spendSummary?: string, onResolved?: WalletReview["onResolved"]): void {
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved } });
+  }
+
+  /**
+   * CX-S6.3 — the human gate for an agent-proposed action. A CHAIN effect is bridged into a real
+   * pending ceremony (hermes_bridge_pending) and shown at the Signature Ceremony (WalletReviewModal);
+   * on approve it signs+broadcasts, then releases the sidecar via hermes_resolve(true). A code/shell
+   * effect (or a chain head that didn't bridge) is gated by the review ceremony and released the same
+   * way. Nothing signs here (Rule 3); the sidecar holds no key.
+   */
+  async reviewAgentApproval(ap: { id: string; kind: "code" | "chain" | "shell"; summary: string }, onDone?: () => void): Promise<void> {
+    if (ap.kind === "chain") {
+      let view: CeremonyView | null = null;
+      try {
+        view = await bridge.agentHarness.bridgePending();
+      } catch (err) {
+        this.toast("Couldn't prepare the agent's action for review — " + String((err as Error).message ?? err));
+        return;
+      }
+      if (view) {
+        this.openWalletReview("agent", ap.summary, view, undefined, async (approved) => {
+          try {
+            await bridge.agentHarness.resolve(approved);
+          } catch {
+            /* best-effort: the sidecar head unblocks on its own timeout if this fails */
+          }
+          onDone?.();
+        });
+        return;
+      }
+      // No bridged view (head wasn't a chain effect) — fall through to the confirm gate.
+    }
+    // code / shell (or an unbridged chain head): confirm at the ceremony, then release the sidecar.
+    const outcome = await this.requestSig({
+      origin: "agent:hermes",
+      requester: "agent runtime",
+      title: ap.summary,
+      rows: [
+        { k: "Kind", v: ap.kind },
+        { k: "Effect", v: ap.kind === "code" ? "a code change on your machine" : ap.kind === "shell" ? "a shell command on your machine" : "an on-chain action" },
+      ],
+      cost: "—",
+      sponsor: "you approve · one action",
+      sponsorColor: "var(--ok)",
+      chainless: true,
+    });
+    try {
+      await bridge.agentHarness.resolve(outcome === "approved");
+    } catch {
+      /* best-effort */
+    }
+    onDone?.();
   }
 
   /** Toggle the raw-mode ack for an undecodable-calldata review (gates Approve). */
@@ -2380,6 +2432,8 @@ export class Store {
         /* best-effort — sim broadcast already consumed it */
       }
       this.setState({ walletReview: null });
+      // Nothing settled in the web preview → the sidecar effect does not proceed.
+      await r.onResolved?.(false);
       return;
     }
     // Tauri: sign + broadcast the real 40204 tx, then re-read balances from chain.
@@ -2397,6 +2451,8 @@ export class Store {
       if (r.kind === "withdraw-request" || r.kind === "withdraw-claim") await this.refreshPendingWithdrawals();
       await this.refreshActivity();
       this.save();
+      // CX-S6.3 — an agent-originated chain effect: release the sidecar now that it's broadcast.
+      await r.onResolved?.(true);
     } catch (err) {
       // Honest failure — release the pending ceremony so it isn't left dangling.
       try {
@@ -2406,6 +2462,8 @@ export class Store {
       }
       this.setState({ walletReview: null });
       this.toast(r.label + " not settled — " + String((err as Error).message ?? err));
+      // The tx didn't settle → tell the sidecar to abort, not proceed.
+      await r.onResolved?.(false);
     }
   }
 
@@ -2426,6 +2484,8 @@ export class Store {
       /* best-effort — the ceremony may already be gone */
     }
     this.toast(r.label + " declined — nothing was signed.");
+    // CX-S6.3 — an agent-originated effect the human declined: tell the sidecar to abort.
+    await r.onResolved?.(false);
   }
 
   /**

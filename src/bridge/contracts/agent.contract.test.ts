@@ -20,4 +20,13 @@ describe("CX bridge contract — agentHarness (frozen CX-S0.2)", () => {
     expect(bridge.agent).toBeDefined(); // legacy GPU-market agent still present
     expect(bridge.agentHarness).not.toBe(bridge.agent);
   });
+  it("exposes the S6.3 ceremony-bridge methods; sim is honest (no sidecar effect)", async () => {
+    expect(typeof bridge.agentHarness.bridgePending).toBe("function");
+    expect(typeof bridge.agentHarness.resolve).toBe("function");
+    if (bridge.mode === "sim") {
+      // No sidecar in sim → nothing to bridge (Rule 1) and resolve is a safe no-op.
+      expect(await bridge.agentHarness.bridgePending()).toBeNull();
+      await expect(bridge.agentHarness.resolve(false)).resolves.toBeUndefined();
+    }
+  });
 });

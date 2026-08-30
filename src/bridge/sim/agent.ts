@@ -22,5 +22,12 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async stop() {
       /* sim: no-op */
     },
+    async bridgePending() {
+      // sim: no sidecar, so no chain effect to bridge — honest null (Rule 1).
+      return null;
+    },
+    async resolve() {
+      /* sim: no sidecar effect to release */
+    },
   };
 }
