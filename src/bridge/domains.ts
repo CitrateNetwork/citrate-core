@@ -752,6 +752,39 @@ export interface AgentHarnessDomain {
   resolve(approve: boolean): Promise<void>;
 }
 
+// ── Social identity (Connections · social discovery). Privacy model: ADR-2026-08-30. ──
+// The address↔identity binding is device-local + shared server-blind; NEVER on-chain by default;
+// private by default; "verified" requires OAuth ownership + a wallet-signed IdentityBinding through
+// the Signature Ceremony (Rule 3). The OAuth token seals in the OS keyring and NEVER crosses this
+// bridge — only the LinkedIdentity connect facts do.
+export type SocialNetwork = "x" | "linkedin" | "discord";
+export type SocialVisibility = "private" | "groups";
+export interface LinkedIdentity {
+  network: SocialNetwork;
+  /** The display handle from the verified OAuth account (e.g. "dana"). */
+  handle: string;
+  /** verified = OAuth ownership + wallet-signed IdentityBinding via the ceremony (ADR D3). */
+  verified: boolean;
+  /** private (default) | groups-only. Never public unless the explicit on-chain opt-in is taken (ADR D2). */
+  visibility: SocialVisibility;
+  linkedAt: number;
+}
+export interface SocialDomain {
+  /** The user's current linked identities (device-local). Honest-empty when none/unwired. */
+  status(): Promise<LinkedIdentity[]>;
+  /** Begin the OAuth ownership proof (opens the system browser, loopback-PKCE). Returns the resulting
+   *  UNVERIFIED, private link (handle from OAuth). The token seals in the keyring, never returned. */
+  start(network: SocialNetwork): Promise<LinkedIdentity>;
+  /** The challenge the wallet must sign to bind handle↔address (ADR D3). Signs nothing itself. */
+  bindingChallenge(network: SocialNetwork): Promise<{ message: string; nonce: string }>;
+  /** Record the wallet-signed IdentityBinding (from the ceremony) → the link becomes verified. */
+  verify(network: SocialNetwork, signature: string): Promise<LinkedIdentity>;
+  /** Set a link's visibility (private | groups). Narrowing takes effect immediately (ADR D2). */
+  setVisibility(network: SocialNetwork, visibility: SocialVisibility): Promise<LinkedIdentity>;
+  /** Forget a link — drop the local record + tombstone to group members (ADR revocation). */
+  disconnect(network: SocialNetwork): Promise<void>;
+}
+
 /**
  * The CX domain surface, composed onto the bridge alongside the legacy domains.
  * FROZEN (CX-S0.2): each domain's impl lives in its own lane-owned file; changing a
@@ -765,4 +798,5 @@ export interface CxBridge {
   cluster: ClusterDomain;
   training: TrainingDomain;
   agentHarness: AgentHarnessDomain;
+  social: SocialDomain;
 }
