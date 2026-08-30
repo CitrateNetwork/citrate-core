@@ -24,6 +24,7 @@ export const NAVI: [string, string, string, string][] = [
   ["train", "Train", "M4 18 L9 12 L13 15 L20 6", "M4 20 H20 M4 4 V20"],
   ["agent", "Agent", "M8 4 H16 V10 A4 4 0 0 1 8 10 Z M6 20 A6 6 0 0 1 18 20", "M10 7 H10.01 M14 7 H14.01"],
   ["connections", "Connections", "M8 8 A4 4 0 0 0 8 16 H10 M16 8 A4 4 0 0 1 16 16 H14", "M8.5 12 H15.5"],
+  ["community", "Community", "M12 3 L14.5 8.5 L20.5 9.2 L16 13.3 L17.3 19.2 L12 16.1 L6.7 19.2 L8 13.3 L3.5 9.2 L9.5 8.5 Z", "M0 0"],
 ];
 
 // CX-S7.1 — the grandma-proof IA (gS-ia): the app is organized around YOU + YOUR GROUPS, not a flat
@@ -32,7 +33,7 @@ export const NAVI: [string, string, string, string][] = [
 // navigates by.
 export const SECTIONS: { title: string; ids: string[] }[] = [
   { title: "You", ids: ["dashboard", "wallet", "storage", "files", "models", "agent", "connections", "journal"] },
-  { title: "Your Groups", ids: ["groups", "comms", "cluster", "train"] },
+  { title: "Your Groups", ids: ["groups", "comms", "cluster", "train", "community"] },
   { title: "Your Node", ids: ["node"] },
   { title: "More", ids: ["commissary", "settings"] },
 ];

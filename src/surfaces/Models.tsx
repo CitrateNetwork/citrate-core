@@ -52,8 +52,8 @@ export function Models({ store }: SurfaceProps) {
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 18, maxWidth: 820 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Models</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--tx-3)" }}>
-          local models + downloads from Hugging Face and GitHub
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".06em", color: "var(--tx-3)" }}>
+          the local model powers chat and your agent
         </span>
       </div>
 
@@ -61,20 +61,54 @@ export function Models({ store }: SurfaceProps) {
         <div
           className="surface"
           role="alert"
-          style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--bad, #c0392b)", lineHeight: 1.5 }}
+          style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--danger)", lineHeight: 1.5 }}
         >
           {st.error}
         </div>
       )}
 
+      {/* ---- active model ---- */}
+      {(() => {
+        const active = st.local.find((m) => m.id === st.activeId) ?? null;
+        return (
+          <div className="surface" style={{ padding: "16px 18px", display: "flex", alignItems: "center", gap: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: active ? "var(--ok)" : "var(--tx-3)", flexShrink: 0 }}></span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span className="mono" style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{active ? active.file : "No active model selected"}</span>
+              <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
+                {active ? `${active.repo || active.source} · ${humanBytes(active.sizeBytes)}` : "pick a model below to power chat and your agent"}
+              </span>
+            </span>
+            <span className="eyebrow">{active ? "in use" : "idle"}</span>
+          </div>
+        );
+      })()}
+
       {/* ---- your models ---- */}
       <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 520 }}>Your models</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 520 }}>On this machine</span>
+          {st.localPending && (
+            <span
+              className="mono"
+              title="modelsCatalog.local() isn't wired yet — this list can't be read"
+              style={{ fontSize: 9, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 999, border: "1px solid var(--warn)", color: "var(--warn)", background: "var(--warn-bg)" }}
+            >
+              pending wire · local()
+            </span>
+          )}
+        </div>
         <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
           {st.local.length === 0 ? (
-            <div style={{ padding: "18px", fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
-              No models installed yet. Search below and download one to run it on this machine.
-            </div>
+            st.localPending ? (
+              <div style={{ padding: "18px", fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                Reading your installed models isn't wired in this build yet. When it lands, the models already on this machine show here — nothing is invented in the meantime. You can still search and download below.
+              </div>
+            ) : (
+              <div style={{ padding: "18px", fontSize: 12.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                No models installed yet. Search below and download one to run it on this machine.
+              </div>
+            )
           ) : (
             st.local.map((m) => (
               <ModelRow
