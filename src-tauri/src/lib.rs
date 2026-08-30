@@ -53,6 +53,7 @@ mod validator;
 mod cluster;
 mod comms;
 mod hermes;
+mod invites;
 mod model_catalog;
 mod social;
 mod storage;
@@ -226,6 +227,11 @@ pub fn run() {
             // peer's (recover-verified before trusting) so cross-member faces resolve.
             social::social_export_binding,
             social::social_ingest_binding,
+            // Group claimable invites (ADR D4) — mint / list / verify-consume / revoke.
+            invites::group_invite_create,
+            invites::group_invites,
+            invites::group_invite_verify_consume,
+            invites::group_invite_revoke,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
