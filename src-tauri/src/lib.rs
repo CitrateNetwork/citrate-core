@@ -54,6 +54,7 @@ mod cluster;
 mod comms;
 mod hermes;
 mod model_catalog;
+mod social;
 mod storage;
 mod training;
 
@@ -205,6 +206,13 @@ pub fn run() {
             connections::connection_start,
             connections::connection_status,
             connections::connection_disconnect,
+            // Social identity (Connections · social discovery, ADR-2026-08-30). Public-client PKCE
+            // link; token seals in the keyring, device-local binding store; NO command returns a
+            // token. `verified` (the wallet-signed IdentityBinding) is a follow-up.
+            social::social_status,
+            social::social_start,
+            social::social_set_visibility,
+            social::social_disconnect,
             // membership — the D3.C checkout popup (@rule8 money seam). Opens the
             // REAL core-membership checkout ({coreMembershipUrl}/checkout) in an
             // in-app popup with the SAME isolation as the auth popup (a remote
