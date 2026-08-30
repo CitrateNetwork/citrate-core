@@ -7,7 +7,7 @@
 // stay honest Unavailable until then. Rule 3 holds: when wired, the WALLET signs; no sidecar signs.
 import { invoke } from "@tauri-apps/api/core";
 import type { LinkedIdentity, SocialDomain, SocialNetwork, SocialVisibility } from "../domains";
-import { Unavailable } from "../types";
+import type { CeremonyView } from "../types";
 
 export const tauriSocial: SocialDomain = {
   status(): Promise<LinkedIdentity[]> {
@@ -16,11 +16,14 @@ export const tauriSocial: SocialDomain = {
   start(network: SocialNetwork): Promise<LinkedIdentity> {
     return invoke<LinkedIdentity>("social_start", { network });
   },
-  async bindingChallenge(): Promise<{ message: string; nonce: string }> {
-    throw new Unavailable("social", "bindingChallenge");
+  verifyRequest(network: SocialNetwork): Promise<CeremonyView> {
+    return invoke<CeremonyView>("social_verify_request", { network });
   },
-  async verify(): Promise<LinkedIdentity> {
-    throw new Unavailable("social", "verify");
+  verifyApprove(id: string, rawAck: boolean): Promise<LinkedIdentity> {
+    return invoke<LinkedIdentity>("social_verify_approve", { id, rawAck });
+  },
+  async verifyForget(id: string): Promise<void> {
+    await invoke("social_verify_forget", { id });
   },
   setVisibility(network: SocialNetwork, visibility: SocialVisibility): Promise<LinkedIdentity> {
     return invoke<LinkedIdentity>("social_set_visibility", { network, visibility });

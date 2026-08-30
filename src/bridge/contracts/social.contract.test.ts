@@ -5,7 +5,7 @@ import { bridge } from "../index";
 describe("CX bridge contract — social (ADR-2026-08-30)", () => {
   it("exposes the social domain with its methods", () => {
     expect(bridge.social).toBeDefined();
-    for (const m of ["status", "start", "bindingChallenge", "verify", "setVisibility", "disconnect"] as const) {
+    for (const m of ["status", "start", "verifyRequest", "verifyApprove", "verifyForget", "setVisibility", "disconnect"] as const) {
       expect(typeof bridge.social[m]).toBe("function");
     }
   });

@@ -16,11 +16,14 @@ export function simSocial(_host: SimHost): SocialDomain {
     async start(): Promise<LinkedIdentity> {
       return desktopOnly();
     },
-    async bindingChallenge(): Promise<{ message: string; nonce: string }> {
+    async verifyRequest() {
       return desktopOnly();
     },
-    async verify(): Promise<LinkedIdentity> {
+    async verifyApprove(): Promise<LinkedIdentity> {
       return desktopOnly();
+    },
+    async verifyForget(): Promise<void> {
+      /* sim: nothing pending */
     },
     async setVisibility(): Promise<LinkedIdentity> {
       return desktopOnly();
