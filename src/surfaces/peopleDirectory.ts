@@ -66,6 +66,14 @@ export function buildPeopleDirectory(
   });
 }
 
+/** CONNECT-S2 — people you could add to a group/cluster: your directory minus anyone already in that
+ *  group's roster (keyed on the comms address). This is what the one-click add-member picker offers,
+ *  so the owner never pastes a raw address for someone they already share a group with. */
+export function addablePeople(people: Person[], rosterAddresses: string[]): Person[] {
+  const inGroup = new Set(rosterAddresses.map((a) => a.toLowerCase()));
+  return people.filter((p) => !inGroup.has(p.address.toLowerCase()));
+}
+
 /** Client-side filter over the derived directory: matches a person by @handle, address, or a shared
  *  group name. Empty query returns the list unchanged. */
 export function filterPeople(people: Person[], query: string): Person[] {

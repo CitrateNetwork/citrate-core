@@ -1,7 +1,7 @@
 // CONNECT-S0 acceptance — the People directory aggregation is real (derived from group rosters + faces),
 // excludes self, dedups across shared groups, and never fabricates a name or a person (Rule 1).
 import { describe, it, expect } from "vitest";
-import { buildPeopleDirectory, filterPeople } from "./peopleDirectory";
+import { addablePeople, buildPeopleDirectory, filterPeople } from "./peopleDirectory";
 
 const SELF = "0x00000000000000000000000000000000000000me";
 const groups = [
@@ -60,5 +60,19 @@ describe("CONNECT-S0 — People directory aggregation", () => {
     expect(filterPeople(people, "0xbb").map((p) => p.address.toLowerCase())).toEqual(["0xbb"]);
     expect(filterPeople(people, "ops").map((p) => p.address.toLowerCase())).toEqual(["0xaa"]); // only 0xAA is in Ops
     expect(filterPeople(people, "")).toHaveLength(2); // empty query = unchanged
+  });
+});
+
+describe("CONNECT-S2 — addable people (directory minus current roster)", () => {
+  const people = buildPeopleDirectory(groups, rosterByGroup, faces, SELF);
+  it("excludes anyone already in the target group's roster", () => {
+    // 0xAA is already in this group; 0xBB is not.
+    const addable = addablePeople(people, ["0xAA"]);
+    const addrs = addable.map((p) => p.address.toLowerCase());
+    expect(addrs).not.toContain("0xaa");
+    expect(addrs).toContain("0xbb");
+  });
+  it("offers the whole directory when the roster shares no one", () => {
+    expect(addablePeople(people, []).length).toBe(people.length);
   });
 });

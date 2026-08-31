@@ -13,6 +13,7 @@ import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import type { Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
+import { addablePeople, filterPeople } from "./peopleDirectory";
 import {
   groupsSlice,
   refreshGroups,
@@ -88,6 +89,7 @@ export function Groups({ store, s }: SurfaceProps) {
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [requests, setRequests] = useState<InviteClaim[]>([]);
   const [redeemOpen, setRedeemOpen] = useState(false);
+  const [pickerQ, setPickerQ] = useState(""); // CONNECT-S2 — add-member people-picker search
 
   const selected = st.groups.find((g) => g.id === st.selectedId) ?? null;
   const myWallet = typeof store.identity === "function" ? store.identity().wallet : "";
@@ -265,8 +267,10 @@ export function Groups({ store, s }: SurfaceProps) {
     }
   };
   useEffect(() => {
-    if (tab === "roster" && selected && canManage) void refreshInvites();
-    else setPendingInvites([]);
+    if (tab === "roster" && selected && canManage) {
+      void refreshInvites();
+      void store.refreshPeople(); // CONNECT-S2 — keep the add-member picker's people fresh
+    } else setPendingInvites([]);
   }, [tab, selected?.id, canManage]);
 
   const doMintInvite = async () => {
@@ -625,10 +629,51 @@ export function Groups({ store, s }: SurfaceProps) {
                     );
                   })
                 )}
-                <div style={{ display: "flex", gap: 10, padding: "12px 16px", alignItems: "center" }}>
-                  <input ref={addrRef} className="input" placeholder="0x address — or use “Invite by @handle” below" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && doAdd()} />
-                  <button className="btn btn-secondary btn-sm" onClick={doAdd}>Add member</button>
-                </div>
+                {/* CONNECT-S2 — the people-picker: add someone you already share a group with, one click,
+                    no address to paste. Sourced from your People directory minus this group's roster. */}
+                {canManage && (() => {
+                  const candidates = filterPeople(addablePeople(s.people, st.roster.map((r) => r.address)), pickerQ);
+                  return (
+                    <div style={{ borderTop: "1px solid var(--line-1)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 13.5, fontWeight: 500 }}>Add someone you know</span>
+                        <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>from your people · one click</span>
+                      </div>
+                      <input className="input" placeholder="Search your people to add…" value={pickerQ} onChange={(e) => setPickerQ(e.target.value)} />
+                      {candidates.length === 0 ? (
+                        <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                          {s.people.length === 0 ? "No people yet — someone appears here once you share a group with them." : "Everyone you share a group with is already in this one."}
+                        </span>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 220, overflowY: "auto" }}>
+                          {candidates.slice(0, 40).map((p) => {
+                            const face = faceOf(p.address);
+                            return (
+                              <div key={p.address} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: "var(--r-1)" }}>
+                                <span style={{ width: 26, height: 26, borderRadius: 999, background: "var(--srf-1)", border: "1px solid var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--tx-2)", flexShrink: 0 }}>{initialsOf(face ? face.handle : p.address)}</span>
+                                <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                                  <span style={{ fontSize: 12.5, fontWeight: 500 }}>{face ? `@${face.handle}` : shortAddr(p.address)}</span>
+                                  {p.groups.length > 0 && <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)" }}>{p.groups.map((g) => g.name).slice(0, 2).join(", ")}</span>}
+                                </span>
+                                <button className="btn btn-secondary btn-sm" onClick={() => { void addMemberToGroup(p.address); store.toast(`Adding ${face ? "@" + face.handle : shortAddr(p.address)} to the group…`); }}>Add</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+                {/* Advanced fallback — add by raw comms address (for someone not yet in your people). */}
+                {canManage && (
+                  <details style={{ borderTop: "1px solid var(--line-1)" }}>
+                    <summary className="mono" style={{ fontSize: 10, color: "var(--tx-3)", padding: "10px 16px", cursor: "pointer" }}>Add by address (advanced)</summary>
+                    <div style={{ display: "flex", gap: 10, padding: "0 16px 12px", alignItems: "center" }}>
+                      <input ref={addrRef} className="input" placeholder="0x comms address" style={{ flex: 1 }} onKeyDown={(e) => e.key === "Enter" && doAdd()} />
+                      <button className="btn btn-secondary btn-sm" onClick={doAdd}>Add</button>
+                    </div>
+                  </details>
+                )}
                 {!canManage && (
                   <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "0 16px 12px" }}>
                     adding members needs the owner or an admin — the relay enforces this, not the UI
