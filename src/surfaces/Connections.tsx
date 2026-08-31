@@ -3,8 +3,11 @@
 //
 // Everything the node + agent can reach, in one place — built 1:1 from design/CitrateCore.dc.html.
 // Five sections, each honest about its backing (Rule 1):
-//   • Social identity (X / LinkedIn / Discord) — NOT WIRED; needs a privacy ADR + proof-of-ownership
-//     backend. The rows show the intended opt-in → verify → visibility flow and say so plainly.
+//   • Social identity (X / LinkedIn / Discord) — WIRED via bridge.social (ADR-2026-08-30):
+//     loopback-PKCE OAuth ownership proof → keyring-sealed token → wallet-signed IdentityBinding via
+//     the ceremony (Rule 3: the wallet signs). CONNECT-S3 repositions it to its REAL job — a verified
+//     handle is your FACE to people you share a group with, and the reachability for invite-by-@handle.
+//     It is NOT a friend/follower import (X/Discord OAuth doesn't expose that) and the copy says so.
 //   • MCP servers — WIRED via bridge.connections (GitHub / Google Drive / Notion over OAuth PKCE;
 //     tokens sealed in the OS keyring), the same seam Settings uses. Real connect/disconnect state.
 //   • Foundational models — routes to the real Models + Settings surfaces (no duplicate wiring).
@@ -19,10 +22,12 @@ import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
 import type { ConnectionInfo, LinkedIdentity, SocialNetwork, SocialVisibility } from "../bridge/domains";
 
+// CONNECT-S3 — subcopy states the REAL payoff of linking a network: it becomes your face to people
+// you share a group with, and the channel people use to invite you by @handle. Not a friend import.
 const SOCIALS: { id: SocialNetwork; name: string; glyph: string; sub: string }[] = [
-  { id: "x", name: "X", glyph: "X", sub: "@handle · proves you own the account" },
-  { id: "linkedin", name: "LinkedIn", glyph: "in", sub: "professional identity · verified badge" },
-  { id: "discord", name: "Discord", glyph: "DC", sub: "username · reachable in your groups" },
+  { id: "x", name: "X", glyph: "X", sub: "your @handle becomes your face in groups · invite-by-@handle" },
+  { id: "linkedin", name: "LinkedIn", glyph: "in", sub: "professional face in groups · verified you own it" },
+  { id: "discord", name: "Discord", glyph: "DC", sub: "username as your face in groups · invite-by-@handle" },
 ];
 
 const MCP_LABEL: Record<string, { name: string; scope: string }> = {
@@ -158,8 +163,15 @@ export function Connections({ store }: SurfaceProps) {
         </span>
       </div>
 
-      {/* ---- Social identity (wired to bridge.social; verify + on-chain opt-in are the next step) ---- */}
-      <Section title="Social identity" flag="pending backend">
+      {/* ---- Social identity (CONNECT-S3 — wired to bridge.social; repositioned to face + reachability) ---- */}
+      <Section title="Social identity">
+        <p style={{ fontSize: 12.5, lineHeight: 1.65, color: "var(--tx-2)", margin: "-2px 0 2px" }}>
+          Link an account to give yourself a <strong>face</strong>: a verified <span className="mono">@handle</span> that people
+          you share a group with can recognize, and the channel they use to <strong>invite you by @handle</strong> instead of a raw address.
+        </p>
+        <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
+          this does <strong>not</strong> import your followers, friends, or contacts — X and Discord don't share those. Linking only proves the handle is yours.
+        </p>
         <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
           {SOCIALS.map((so) => {
             const link = linkOf(so.id);
@@ -197,7 +209,7 @@ export function Connections({ store }: SurfaceProps) {
           })}
         </div>
         <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, lineHeight: 1.6 }}>
-          opt-in · private by default · verified with your wallet signature · your address↔identity binding is device-local and shared only to your groups (server-blind), never published (ADR-2026-08-30)
+          opt-in · private by default · verified with your wallet signature · set a handle to <strong>Groups</strong> and it becomes your face in the People directory and the add-member picker · the address↔identity binding is device-local and shared only to your groups (server-blind), never published (ADR-2026-08-30)
         </p>
       </Section>
 
