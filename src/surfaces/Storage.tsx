@@ -155,8 +155,12 @@ export function Storage({ store, s }: SurfaceProps) {
     void (async () => {
       const state = await store.refreshMemoryStatus();
       if (cancelled) return;
-      if (state === "running") await store.refreshConstellation();
-      else store.setState({ memGraph: undefined, memGraphState: "unavailable" });
+      if (state === "running") {
+        await store.refreshConstellation();
+        // Seed real network/node/stake facts if the graph is still empty (idempotent in Rust), so an
+        // already-running daemon shows content on open — not only after a manual Start.
+        void store.seedMemoryGraph();
+      } else store.setState({ memGraph: undefined, memGraphState: "unavailable" });
     })();
     return () => {
       cancelled = true;

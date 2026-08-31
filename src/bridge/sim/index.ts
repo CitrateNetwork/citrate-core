@@ -604,6 +604,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("memory.ingestDocs");
         return { docs: 0, chunks: 0, skipped: "not-running" };
       },
+      // No mem daemon in the web preview: honest no-op (nothing authored), never a fabricated seed.
+      async seedContext() {
+        assertSimAllowed("memory.seedContext");
+        return { authored: 0, skipped: "not-running" };
+      },
     },
 
     // CORE-AI1 — the web preview has NO OS keyring and reaches no provider, so

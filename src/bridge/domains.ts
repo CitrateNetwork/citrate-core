@@ -354,6 +354,24 @@ export interface DocsIngestReport {
   /** "not-semantic" | "not-running" | "already-seeded" | "empty-corpus" when nothing ran. */
   skipped?: string;
 }
+
+/** Live values the seed composes real facts from (structured, never free-form text). */
+export interface SeedFacts {
+  chainId: number;
+  nodeState: string;
+  height: number;
+  peers: number;
+  walletAddr: string;
+  hasGrant: boolean;
+  grantStakedSalt: number;
+  bondStatus: string;
+  hasSbt: boolean;
+}
+export interface SeedReport {
+  authored: number;
+  /** "not-semantic" | "not-running" | "already-seeded" when nothing was authored. */
+  skipped?: string;
+}
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
@@ -367,6 +385,8 @@ export interface MemoryDomain {
   /** W3.2 — idempotent first-run preload of the bundled Citrate docs into the
    *  citrate-docs tenant. Gated in Rust (semantic + running + empty tenant). */
   ingestDocs(): Promise<DocsIngestReport>;
+  /** Seed the constellation tenants with real network/node/stake facts on daemon-connect. */
+  seedContext(facts: SeedFacts): Promise<SeedReport>;
 }
 
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the

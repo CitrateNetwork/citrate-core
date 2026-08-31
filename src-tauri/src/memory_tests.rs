@@ -488,3 +488,144 @@ fn live_real_daemon_recall_and_chain_ingest() {
     // the transformer/bge semantic path is an S7 model-bundle item. Not fabricated
     // (Rule 1) — this is a captured real run, re-runnable via the proof script.
 }
+
+// ---------------------------------------------------------------------------
+// seed_context — real network/node/stake facts into the constellation tenants
+// ---------------------------------------------------------------------------
+
+/// A stateful stub: records every `memory.assert` and reflects the per-repo count back through
+/// `memory.recall`'s tenant-total header, so idempotency (skip a non-empty tenant) is exercised.
+struct SeedStub {
+    asserts: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+impl MemoryTransport for SeedStub {
+    fn call_tool(&self, tool: &str, args: Value) -> Result<String> {
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        match tool {
+            "memory.recall" => {
+                let n = self.asserts.lock().unwrap().iter().filter(|(r, _)| *r == repo).count();
+                Ok(format!(
+                    "freshness: HEAD x (0 commits) ingested @ 0ms\ntenant '{repo}' — {n} nodes, showing 0:\n"
+                ))
+            }
+            "memory.assert" => {
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                self.asserts.lock().unwrap().push((repo, content));
+                Ok("node abcd1234ef authored".to_string())
+            }
+            other => Err(MemoryError::Decode(format!("stub: unknown tool {other}"))),
+        }
+    }
+}
+
+fn seed_facts() -> super::SeedFacts {
+    super::SeedFacts {
+        chain_id: 40204,
+        node_state: "syncing".into(),
+        height: 93127,
+        peers: 4,
+        wallet_addr: "0x99a464c84cff26f4910646dd1b24e36e706d5635".into(),
+        has_grant: true,
+        grant_staked_salt: 32000,
+        bond_status: "Staked · unlocks at block 500,000".into(),
+        has_sbt: true,
+    }
+}
+
+#[test]
+fn seed_context_skips_when_not_semantic() {
+    // No BGE model dir → lexical only → seeding would author invisible nodes, so it must skip (Rule 1).
+    let (mgr, _fake, _dir) = stub_manager("seed-nosem");
+    let r = mgr.seed_context(&seed_facts()).expect("gated ok");
+    assert_eq!(r.authored, 0);
+    assert_eq!(r.skipped.as_deref(), Some("not-semantic"));
+}
+
+#[test]
+fn seed_context_skips_when_not_running() {
+    // Semantic but the daemon isn't running → skip (never author against a dead socket).
+    let dir = tmp_dir("seed-norun");
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(SeedStub { asserts: recorded }),
+    )
+    .with_model_dir(Some(dir.join("bge")));
+    let r = mgr.seed_context(&seed_facts()).expect("gated ok");
+    assert_eq!(r.skipped.as_deref(), Some("not-running"));
+}
+
+#[test]
+fn seed_context_authors_network_node_stake_facts_then_is_idempotent() {
+    let dir = tmp_dir("seed-author");
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(SeedStub { asserts: recorded.clone() }),
+    )
+    .with_model_dir(Some(dir.join("bge")));
+    mgr.start().expect("stub daemon starts");
+    for _ in 0..40 {
+        if mgr.is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(mgr.is_running(), "stub daemon must reach Running before seeding");
+
+    let r = mgr.seed_context(&seed_facts()).expect("seed ok");
+    // chain-state: 5 facts; personal: SBT + stake + bond-status = 3.
+    assert_eq!(r.authored, 8, "skipped={:?}", r.skipped);
+    let rec = recorded.lock().unwrap();
+    let chain = rec.iter().filter(|(t, _)| t == "chain-state").count();
+    let personal = rec.iter().filter(|(t, _)| t == "personal").count();
+    assert_eq!(chain, 5, "network + node facts land in chain-state");
+    assert_eq!(personal, 3, "membership + stake facts land in personal");
+    // The stake fact carries the real figure + the ~1yr lock framing (Rule 1).
+    assert!(rec.iter().any(|(t, c)| t == "personal" && c.contains("32000") && c.contains("locked") || c.contains("one-year")));
+    drop(rec);
+
+    // Second run: both tenants now non-empty → idempotent skip, no duplicate authoring.
+    let r2 = mgr.seed_context(&seed_facts()).expect("seed ok");
+    assert_eq!(r2.authored, 0);
+    assert_eq!(r2.skipped.as_deref(), Some("already-seeded"));
+    mgr.stop();
+}
+
+#[test]
+fn seed_context_skips_personal_when_no_grant() {
+    // A member without a reconciled grant: seed the network/node facts, but NOT a false stake figure.
+    let dir = tmp_dir("seed-nogrant");
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(SeedStub { asserts: recorded.clone() }),
+    )
+    .with_model_dir(Some(dir.join("bge")));
+    mgr.start().expect("start");
+    for _ in 0..40 {
+        if mgr.is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(mgr.is_running(), "stub daemon must reach Running");
+    let mut f = seed_facts();
+    f.has_grant = false;
+    let r = mgr.seed_context(&f).expect("seed ok");
+    assert_eq!(r.authored, 5, "only the network/node facts");
+    assert_eq!(recorded.lock().unwrap().iter().filter(|(t, _)| t == "personal").count(), 0);
+    mgr.stop();
+}

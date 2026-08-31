@@ -27,6 +27,8 @@ import type {
   MemoryResult,
   MemoryNeighbor,
   DocsIngestReport,
+  SeedFacts,
+  SeedReport,
   PendingWithdrawal,
   AiProviderStatus,
   GrantStatus,
@@ -348,6 +350,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // W3.2 — idempotent first-run docs preload (gated in Rust).
       async ingestDocs() {
         return invoke<DocsIngestReport>("memory_ingest_docs");
+      },
+      // Seed the constellation tenants with real network/node/stake facts (gated + idempotent in Rust).
+      async seedContext(facts: SeedFacts) {
+        return invoke<SeedReport>("memory_seed_context", { facts });
       },
     },
     // ---- chat: REAL OpenAI-compatible inference, key sealed in Rust (AI1) ----

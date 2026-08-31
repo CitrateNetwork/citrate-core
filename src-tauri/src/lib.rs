@@ -414,6 +414,9 @@ pub fn run() {
             // W3.2 — first-run docs preload into the citrate-docs tenant (gated +
             // idempotent; no-op until the corpus is curated + BGE is wired).
             memory::memory_ingest_docs,
+            // Seed the constellation tenants (chain-state + personal) with real network/node/stake
+            // facts on daemon-connect, so the graph has content on open (gated + idempotent).
+            memory::memory_seed_context,
             memory::memory_constellation,
             // seam domains — honest Unavailable until each later phase (A1.3).
             // memory_assert stays a seam stub: the assert WRITE path routes

@@ -416,6 +416,11 @@ export class Store {
         if (this.state.node !== "off" && this.state.node !== "error") return;
         this.startNode();
       }, 1500);
+      // AUTOCONNECT the memory daemon on launch (like the node) so the knowledge graph is live +
+      // SEEDED on open, not only after the member clicks Start on the Storage surface. startMemoryDaemon
+      // is idempotent + honest (an offline daemon surfaces its error) and seeds the constellation once
+      // connected. Deferred so the node/wallet vitals it seeds from are already folded.
+      setTimeout(() => void this.startMemoryDaemon(), 2500);
       // RESUME S3 FROM CHAIN TRUTH. `s3` is not persisted, so every launch re-enters
       // S3 as `idle` — a screen whose only control is "Check out · $48". A member
       // whose grant landed while the app was closed would therefore be invited to
@@ -546,19 +551,45 @@ export class Store {
     const state = await this.refreshMemoryStatus();
     if (state === "running") {
       await this.refreshConstellation();
-      // W3.2 — first-run docs preload into the citrate-docs tenant. Idempotent +
-      // gated in Rust (skips once seeded, when lexical-only, or when the corpus is
-      // empty), so calling on every start is safe. Fire-and-forget; if it actually
-      // ingested, refresh the constellation so the docs tenant shows up.
-      void bridge.memory
-        .ingestDocs()
-        .then((r) => {
-          if (!r.skipped && r.chunks > 0) void this.refreshConstellation();
-        })
-        .catch(() => {
-          /* honest no-op: ingest unavailable (web preview / daemon race) */
-        });
+      void this.seedMemoryGraph();
     }
+  }
+
+  /**
+   * Populate the memory graph the moment the daemon connects, so the constellation has REAL content
+   * on open instead of an empty canvas: seed network/node/stake facts into the constellation tenants
+   * (`chain-state` + `personal`) AND preload the bundled Citrate docs (`citrate-docs`). Both are gated
+   * + idempotent in Rust (skip a tenant that is already seeded, or when the daemon is lexical-only), so
+   * this is safe to call on every connect. Refreshes the constellation if anything was authored. Every
+   * fact is composed Rust-side from real app state — never fabricated (Rule 1).
+   */
+  async seedMemoryGraph(): Promise<void> {
+    const s = this.state;
+    const facts = {
+      chainId: 40204,
+      nodeState: s.node,
+      height: s.height,
+      peers: s.peers,
+      walletAddr: s.walletAddr,
+      hasGrant: !!s.hasGrant,
+      grantStakedSalt: s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0,
+      bondStatus: s.s5BondStatus || "",
+      hasSbt: !!s.hasSbt,
+    };
+    let changed = false;
+    try {
+      const r = await bridge.memory.seedContext(facts);
+      if (r.authored > 0) changed = true;
+    } catch {
+      /* honest no-op: daemon race / unavailable (web preview) — never a fabricated node */
+    }
+    try {
+      const r = await bridge.memory.ingestDocs();
+      if (!r.skipped && r.chunks > 0) changed = true;
+    } catch {
+      /* honest no-op */
+    }
+    if (changed) await this.refreshConstellation();
   }
 
   /**
@@ -911,6 +942,9 @@ export class Store {
       };
       // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
       // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
+      // The grant surfaces THIS tick if grantPatch sets hasGrant and it wasn't set before — the
+      // launch-time memory seed ran before the grant reconciled, so re-seed the personal/stake facts.
+      const grantJustSurfaced = !!grantPatch && !this.state.hasGrant;
       if (grantPatch) Object.assign(patch, grantPatch);
       // While a start is in flight, a transient "stopped" poll (supervisor not
       // yet registered during spawn) must NOT demote the optimistic "prov" back
@@ -948,6 +982,9 @@ export class Store {
         /* honest no-op: keep the last real log tail, never a fabricated one */
       }
       this.setState(patch);
+      // Re-seed the memory graph's personal/stake facts the moment the grant first surfaces (the
+      // launch-time seed ran before the grant reconciled, so the personal tenant was skipped then).
+      if (grantJustSurfaced && this.state.memDaemon === "running") void this.seedMemoryGraph();
       // W1.3 — auto-initiate the validator bond activation during onboarding S6 once
       // the node is running (proposer.key minted) and the member is granted + linked
       // but not yet activated. Rule 3 forbids auto-approve, so this only OPENS the

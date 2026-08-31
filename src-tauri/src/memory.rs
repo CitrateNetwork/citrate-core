@@ -718,6 +718,85 @@ impl MemoryManager {
         })
     }
 
+    /// Seed the constellation's tenants (`chain-state` + `personal`) with REAL starter facts about the
+    /// network, the member's node, and their stake — so the graph has meaningful content the moment the
+    /// daemon connects, not an empty canvas. Same gates + write path as the docs preload: skips unless
+    /// semantic (else nodes are invisible), skips when not running, and is idempotent per tenant (only
+    /// seeds a tenant that is still empty). Every fact is composed HERE from structured live values
+    /// (never free-form frontend text) and is true at seed time (Rule 1). Personal/stake facts seed only
+    /// once the grant is real (`has_grant`), so a not-yet-granted member is never told a false figure.
+    pub fn seed_context(&self, f: &SeedFacts) -> std::result::Result<SeedReport, String> {
+        if self.model_dir.is_none() {
+            return Ok(SeedReport { authored: 0, skipped: Some("not-semantic".into()) });
+        }
+        if !self.is_running() {
+            return Ok(SeedReport { authored: 0, skipped: Some("not-running".into()) });
+        }
+        let mut authored = 0usize;
+
+        // chain-state — network + node facts (seed once, when the tenant is still empty).
+        let chain_empty = self
+            .recall(CHAIN_STATE_TENANT, 1)
+            .map(|r| r.total_in_tenant == 0)
+            .map_err(|e| e.to_string())?;
+        if chain_empty {
+            let facts = [
+                format!(
+                    "Citrate is an AI-native BlockDAG network — chain ID {}, native token SALT.",
+                    f.chain_id
+                ),
+                "Citrate uses GhostDAG consensus: a block references multiple parents, forming a DAG rather than a single linear chain.".to_string(),
+                "Member transactions on Citrate are gasless — they are relayed (EIP-2771); there is no native paymaster.".to_string(),
+                "Your node is a Citrate full node: it syncs the chain, serves a local JSON-RPC endpoint, and can produce blocks once you activate a validator bond.".to_string(),
+                format!(
+                    "Node snapshot at seeding: state \"{}\", block height {}, {} peer(s) connected.",
+                    f.node_state, f.height, f.peers
+                ),
+            ];
+            for fact in facts {
+                self.assert(CHAIN_STATE_TENANT, &fact, "reference").map_err(|e| e.to_string())?;
+                authored += 1;
+            }
+        }
+
+        // personal — membership + stake facts. Only when the grant is genuinely reconciled, so the
+        // numbers are real; seed once (when the tenant is still empty).
+        if f.has_grant {
+            let personal_empty = self
+                .recall(PERSONAL_TENANT, 1)
+                .map(|r| r.total_in_tenant == 0)
+                .map_err(|e| e.to_string())?;
+            if personal_empty {
+                let mut facts: Vec<String> = Vec::new();
+                if f.has_sbt {
+                    facts.push(format!(
+                        "Your Citrate membership is held as a soulbound token (SBT) at address {} on chain 40204.",
+                        f.wallet_addr
+                    ));
+                }
+                facts.push(format!(
+                    "Your membership grant staked {} SALT into a time-locked, recoverable validator bond (about a one-year lock).",
+                    f.grant_staked_salt
+                ));
+                if !f.bond_status.trim().is_empty() {
+                    facts.push(format!(
+                        "Stake status: {}. The staked SALT is locked and not spendable; it begins validating once you approve the activation ceremony.",
+                        f.bond_status
+                    ));
+                }
+                for fact in facts {
+                    self.assert(PERSONAL_TENANT, &fact, "reference").map_err(|e| e.to_string())?;
+                    authored += 1;
+                }
+            }
+        }
+
+        Ok(SeedReport {
+            authored,
+            skipped: if authored == 0 { Some("already-seeded".into()) } else { None },
+        })
+    }
+
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
     pub fn search(&self, tenant: &str, query: &str, budget: usize) -> Result<MemoryResult> {
         let text = self.transport.call_tool(
@@ -880,6 +959,41 @@ pub fn memory_ingest_docs<R: tauri::Runtime>(
         None => Vec::new(),
     };
     state.0.ingest_docs_corpus(&docs)
+}
+
+/// The live values the frontend hands to [`memory_seed_context`] — structured data only (the fact
+/// SENTENCES are composed in Rust, never accepted as free-form text, so this is not a user-write
+/// surface). All fields are non-secret app state the member already sees.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedFacts {
+    pub chain_id: u64,
+    pub node_state: String,
+    pub height: u64,
+    pub peers: u64,
+    pub wallet_addr: String,
+    pub has_grant: bool,
+    pub grant_staked_salt: u64,
+    pub bond_status: String,
+    pub has_sbt: bool,
+}
+
+/// What [`MemoryManager::seed_context`] authored (or why it was skipped).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedReport {
+    pub authored: usize,
+    pub skipped: Option<String>,
+}
+
+/// Seed the constellation tenants with real network/node/stake facts when the daemon connects. Same
+/// author identity + gates as the docs preload (a local mem-dag write, NOT a Rule-3 signature).
+#[tauri::command]
+pub fn memory_seed_context(
+    state: State<'_, MemoryState>,
+    facts: SeedFacts,
+) -> std::result::Result<SeedReport, String> {
+    state.0.seed_context(&facts)
 }
 
 #[tauri::command]
