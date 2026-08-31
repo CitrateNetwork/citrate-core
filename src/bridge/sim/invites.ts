@@ -17,5 +17,11 @@ export function simInvites(_host: SimHost): InvitesDomain {
     async revoke(): Promise<void> {
       /* no-op */
     },
+    async submitClaim(): Promise<void> {
+      /* sim: no relay claims-inbox — honest no-op (nothing submitted), never a fake "sent" */
+    },
+    async pollClaims() {
+      return []; // sim: no relay — honest-empty, never a fabricated request
+    },
   };
 }

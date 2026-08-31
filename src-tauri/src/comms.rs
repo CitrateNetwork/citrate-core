@@ -394,6 +394,10 @@ enum Request {
     Offboard { group: String, member: String },
     Send { group: String, text: String },
     Poll { group: String },
+    /// CONNECT-S1 — submit a sealed claim to the relay's server-blind claims-inbox (invitee side).
+    SubmitClaim { token_hash: String, ciphertext: String },
+    /// CONNECT-S1 — poll the claims-inbox by invite token hash (owner side).
+    PollClaims { token_hash: String },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -430,6 +434,8 @@ enum Response {
     },
     Messages { messages: Vec<MsgView> },
     Roster { members: Vec<RosterEntry> },
+    /// CONNECT-S1 — polled claim ciphertexts (hex; opaque). The owner opens them with the invite key.
+    Claims { ciphertexts: Vec<String> },
     Error { message: String },
 }
 
@@ -688,6 +694,34 @@ pub fn groups_add_member(
 }
 
 /// **groups_roster** — the (address, role) roster.
+#[tauri::command]
+/// CONNECT-S1 — submit a sealed claim (hex ciphertext) to the relay's server-blind claims-inbox, keyed
+/// by the invite `token_hash` (hex). Invitee side. `pub(crate)` — driven by the invites module.
+pub(crate) fn submit_claim<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    token_hash: String,
+    ciphertext: String,
+) -> std::result::Result<(), String> {
+    match route(app, Request::SubmitClaim { token_hash, ciphertext })? {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// CONNECT-S1 — poll the relay's claims-inbox by invite `token_hash` (hex). Returns the opaque hex
+/// ciphertexts; the owner opens them with the invite's private key. `pub(crate)`.
+pub(crate) fn poll_claims<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    token_hash: String,
+) -> std::result::Result<Vec<String>, String> {
+    match route(app, Request::PollClaims { token_hash })? {
+        Response::Claims { ciphertexts } => Ok(ciphertexts),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
 #[tauri::command]
 pub fn groups_roster(
     app: tauri::AppHandle,

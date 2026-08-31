@@ -54,6 +54,7 @@ mod cluster;
 mod comms;
 mod hermes;
 mod invites;
+mod invite_seal;
 mod model_catalog;
 mod social;
 mod storage;
@@ -276,6 +277,8 @@ pub fn run() {
             social::social_ingest_binding,
             // Group claimable invites (ADR D4) — mint / list / verify-consume / revoke.
             invites::group_invite_create,
+            invites::group_invite_submit_claim,
+            invites::group_invite_poll_claims,
             invites::group_invites,
             invites::group_invite_verify_consume,
             invites::group_invite_revoke,

@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
-import type { Group, GroupRole, PendingInvite, ResolvedIdentity } from "../bridge/domains";
+import type { Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import {
   groupsSlice,
@@ -86,6 +86,7 @@ export function Groups({ store, s }: SurfaceProps) {
   const claimRef = useRef<HTMLInputElement>(null);
   const redeemRef = useRef<HTMLInputElement>(null);
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [requests, setRequests] = useState<InviteClaim[]>([]);
   const [redeemOpen, setRedeemOpen] = useState(false);
 
   const selected = st.groups.find((g) => g.id === st.selectedId) ?? null;
@@ -238,6 +239,30 @@ export function Groups({ store, s }: SurfaceProps) {
     } catch {
       /* honest: none / relay unavailable */
     }
+    // CONNECT-S1 — poll the server-blind claims-inbox for incoming requests (no DM-back). Honest-empty
+    // if the relay/daemon can't be reached; never a fabricated request (Rule 1).
+    try {
+      setRequests(await bridge.invites.pollClaims(selected.id));
+    } catch {
+      setRequests([]);
+    }
+  };
+  // CONNECT-S1 — approve an incoming request: consume the one-time token, then add via the normal path.
+  const approveRequest = async (req: { group: string; token: string; address: string }) => {
+    if (!selected) return;
+    try {
+      const ok = await bridge.invites.verifyConsume(selected.id, req.token);
+      if (!ok) {
+        store.toast("That request's invite is invalid or already used.");
+        await refreshInvites();
+        return;
+      }
+      void addMemberToGroup(req.address);
+      store.toast("Request approved — adding them to the group.");
+      await refreshInvites();
+    } catch (e) {
+      store.toast(e instanceof Error ? e.message : String(e));
+    }
   };
   useEffect(() => {
     if (tab === "roster" && selected && canManage) void refreshInvites();
@@ -293,16 +318,32 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast(e instanceof Error ? e.message : String(e));
     }
   };
-  // D4 (invitee side): turn an invite link into a claim to send back.
-  const doRedeemLink = () => {
+  // Invitee side: turn an invite link into a request. CONNECT-S1 — a link with a `k=` key seals the
+  // claim and submits it to the owner over the server-blind relay (one click, no DM-back). An older
+  // link (no key) falls back to the copy-the-claim path so it still works.
+  const doRedeemLink = async () => {
     const link = redeemRef.current?.value.trim() ?? "";
     if (!link) return;
     const g = /[?&]g=([^&]*)/.exec(link)?.[1];
     const t = /[?&]t=([^&]*)/.exec(link)?.[1];
+    const k = /[?&]k=([^&]*)/.exec(link)?.[1];
     if (!g || !t) {
       store.toast("That doesn't look like an invite link.");
       return;
     }
+    if (k) {
+      // CONNECT-S1 one-click: seal + submit the request to the relay's inbox.
+      try {
+        await bridge.invites.submitClaim(link);
+        if (redeemRef.current) redeemRef.current.value = "";
+        setRedeemOpen(false);
+        store.toast("Request sent — the person who invited you will see it and approve you. No copy-paste needed.");
+      } catch (e) {
+        store.toast("Couldn't send the request — " + (e instanceof Error ? e.message : String(e)));
+      }
+      return;
+    }
+    // Pre-S1 link (no key): fall back to the manual claim.
     const address = myWallet || s.walletAddr || "";
     if (!address) {
       store.toast("Your wallet isn't ready yet — try again once it's provisioned.");
@@ -316,7 +357,7 @@ export function Groups({ store, s }: SurfaceProps) {
     }
     if (redeemRef.current) redeemRef.current.value = "";
     setRedeemOpen(false);
-    store.toast("Claim copied — DM it back to whoever invited you. They accept it and add you to the group.");
+    store.toast("This is an older invite — claim copied; DM it back to whoever invited you.");
   };
   const doRole = (address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
@@ -612,16 +653,41 @@ export function Groups({ store, s }: SurfaceProps) {
                         <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{pi.forHandle}</span>
                         <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>invite pending · claimable once</span>
                       </span>
-                      <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(`citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them."); }}>Copy link</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(pi.link || `citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them."); }}>Copy link</button>
                       <button className="btn btn-ghost btn-sm" style={{ color: "var(--tx-3)" }} onClick={() => void bridge.invites.revoke(pi.group, pi.token).then(refreshInvites)}>Revoke</button>
                     </div>
                   ))}
-                  <div style={{ display: "flex", gap: 10, padding: "12px 16px", alignItems: "center", borderTop: "1px solid var(--line-1)" }}>
-                    <input ref={claimRef} className="input mono" placeholder="Paste the claim they DM'd back" style={{ flex: 1 }} />
-                    <button className="btn btn-secondary btn-sm" onClick={() => void doAddFromClaim()}>Accept claim</button>
-                  </div>
+                  {/* CONNECT-S1 — incoming requests (server-blind inbox): approve in one click, no paste. */}
+                  {requests.length > 0 && (
+                    <div style={{ borderTop: "1px solid var(--line-1)" }}>
+                      <div style={{ padding: "10px 16px 4px", fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--accent-text)" }}>
+                        Requests · {requests.length}
+                      </div>
+                      {requests.map((req) => {
+                        const face = faceOf(req.address);
+                        return (
+                          <div key={req.token + req.address} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px" }}>
+                            <span style={{ width: 28, height: 28, borderRadius: 999, background: "var(--srf-1)", border: "1px solid var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 600, color: "var(--tx-2)", flexShrink: 0 }}>{initialsOf(face ? face.handle : req.address)}</span>
+                            <span style={{ flex: 1, minWidth: 0 }}>
+                              <span style={{ fontSize: 12.5, fontWeight: 500 }}>{face ? `@${face.handle}` : shortAddr(req.address)}</span>
+                              <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>wants to join · {shortAddr(req.address)}</span>
+                            </span>
+                            <button className="btn btn-primary btn-sm" onClick={() => void approveRequest(req)}>Approve</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Fallback for older invite links (no sealed key): the manual claim paste. */}
+                  <details style={{ borderTop: "1px solid var(--line-1)" }}>
+                    <summary className="mono" style={{ fontSize: 10, color: "var(--tx-3)", padding: "10px 16px", cursor: "pointer" }}>Older invite? Paste a claim manually</summary>
+                    <div style={{ display: "flex", gap: 10, padding: "0 16px 12px", alignItems: "center" }}>
+                      <input ref={claimRef} className="input mono" placeholder="Paste the claim they DM'd back" style={{ flex: 1 }} />
+                      <button className="btn btn-secondary btn-sm" onClick={() => void doAddFromClaim()}>Accept claim</button>
+                    </div>
+                  </details>
                   <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "0 16px 12px", lineHeight: 1.6 }}>
-                    Citrate never resolves a handle to an address. You DM the invite; they accept and send back a claim carrying their address (their consent); you accept it here and they join.
+                    Citrate never resolves a handle to an address. You DM the invite link; when they open it their client sends you a request here (server-blind) — you approve it and they join. Their address is their consent.
                   </p>
                 </div>
               )}

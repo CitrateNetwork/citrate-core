@@ -108,7 +108,7 @@ hex = "0.4"
 # scalar before it is handed to the member-daemon (whose EthWallet::from_secret_key would reject
 # 0 / >= n). ALREADY in the tree transitively (citrate-wallet-core → bip32 → k256, and the kit),
 # so naming it direct adds NO new compiled crate. Was a dev-dep (ecrecover test); promoted here.
-k256 = { version = "0.13", features = ["ecdsa"] }
+k256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
 
 # CORE-C1.0 — SidecarSupervisor process-signalling. `libc` is used ONLY for the
 # Unix `kill(pid, SIGTERM|SIGKILL|0)` on the graceful-stop / liveness path

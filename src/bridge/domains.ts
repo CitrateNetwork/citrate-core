@@ -850,6 +850,8 @@ export interface PendingInvite {
   token: string;
   forHandle: string;
   createdAt: number;
+  /** CONNECT-S1 — the full share link (with the sealed-invite key); "" for pre-S1 invites. */
+  link?: string;
 }
 export interface InviteMinted {
   token: string;
@@ -866,6 +868,18 @@ export interface InvitesDomain {
   verifyConsume(group: string, token: string): Promise<boolean>;
   /** Drop an outstanding invite. */
   revoke(group: string, token: string): Promise<void>;
+  /** CONNECT-S1 — INVITEE: seal + submit a claim for an invite link to the relay's server-blind
+   *  inbox (kills the DM-back). The owner then sees it via `pollClaims`. */
+  submitClaim(link: string): Promise<void>;
+  /** CONNECT-S1 — OWNER: poll + open the sealed claims for a group's outstanding invites. */
+  pollClaims(group: string): Promise<InviteClaim[]>;
+}
+
+/** A volunteered claim recovered from the server-blind inbox (owner-side). */
+export interface InviteClaim {
+  group: string;
+  token: string;
+  address: string;
 }
 
 export interface CxBridge {

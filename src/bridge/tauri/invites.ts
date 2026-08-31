@@ -1,6 +1,6 @@
 // CX bridge impl — group claimable invites (ADR D4), TAURI.
 import { invoke } from "@tauri-apps/api/core";
-import type { InviteMinted, InvitesDomain, PendingInvite } from "../domains";
+import type { InviteClaim, InviteMinted, InvitesDomain, PendingInvite } from "../domains";
 
 export const tauriInvites: InvitesDomain = {
   create(group: string, forHandle: string): Promise<InviteMinted> {
@@ -14,5 +14,11 @@ export const tauriInvites: InvitesDomain = {
   },
   async revoke(group: string, token: string): Promise<void> {
     await invoke("group_invite_revoke", { group, token });
+  },
+  async submitClaim(link: string): Promise<void> {
+    await invoke("group_invite_submit_claim", { link });
+  },
+  pollClaims(group: string): Promise<InviteClaim[]> {
+    return invoke<InviteClaim[]>("group_invite_poll_claims", { group });
   },
 };
