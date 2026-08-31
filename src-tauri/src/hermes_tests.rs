@@ -553,6 +553,12 @@ fn resolve_head_posts_to_the_right_endpoint() {
 }
 
 #[test]
+fn shutdown_is_a_safe_noop_when_never_started() {
+    // HERMES singleton uninitialized in tests → graceful-teardown shutdown() is a clean no-op.
+    super::shutdown();
+}
+
+#[test]
 fn capsules_env_absent_by_default_but_set_when_configured() {
     // Default manager: no capsules dir → CITRATE_HERMES_CAPSULES is not passed (unchanged behavior).
     let (mgr, dir) = stub_manager("capsdefault");

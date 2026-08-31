@@ -110,7 +110,7 @@ export function fmtSaltFromWei(wei: string | null | undefined): string {
 }
 export function nodeLabel(n: string): string {
   return (
-    { off: "off", prov: "provisioning", syncing: "syncing", synced: "synced", paused: "paused", validating: "validating", error: "error" } as Record<string, string>
+    { off: "off", prov: "provisioning", syncing: "syncing", synced: "synced", paused: "paused", validating: "validating", stalled: "sync stalled", error: "error" } as Record<string, string>
   )[n] || n;
 }
 
@@ -310,7 +310,7 @@ export interface AppState {
   peers: number;
   lastCp: number;
   finAge: number;
-  node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "error";
+  node: "off" | "prov" | "syncing" | "synced" | "paused" | "validating" | "stalled" | "error";
   /**
    * What the MEMBER wants the node to do, as distinct from what it is doing.
    *

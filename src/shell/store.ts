@@ -331,6 +331,15 @@ export class Store {
   private nodeOutageNotified = false;
   private modelTimer: ReturnType<typeof setInterval> | null = null;
   private nodeStarting = false;
+  /** Sync-stall detection: the highest height we've seen advance, and when it last froze (0 = not
+   *  frozen). A frozen height while still behind the tip, with peers connected, means the node's
+   *  import pipeline has stalled — surfaced as the honest "stalled" state instead of a stuck "syncing". */
+  private nodeStallLastHeight = -1;
+  private nodeStallSince = 0;
+  /** Bounded auto-recovery budget for a stalled sync. Only reset on reaching FULL sync, so we can't
+   *  restart-loop forever against a chain-side wedge that advances only a few blocks per restart. */
+  private nodeStallCycles = 0;
+  private nodeStalledNotified = false;
   // W1.x — true once the producer has been armed this session (the node respawns
   // with --mine and mints proposer.key). Gate for `maybeAutoBond` step 1.
   private validatorArmed = false;
@@ -891,7 +900,29 @@ export class Store {
       // While a start is in flight, a transient "stopped" poll (supervisor not
       // yet registered during spawn) must NOT demote the optimistic "prov" back
       // to "off" — that caused a prov→off→prov flicker. Still fold height/peers.
-      if (!this.nodeStarting) patch.node = mapNodeState(st.state, st.syncPct, staked);
+      // Sync-stall overlay (honest, Rule 1): the node can report "running" while its block-import
+      // pipeline is wedged — height FROZEN, still behind the tip, peers connected (a known chain-side
+      // wedge). Surface a distinct "stalled" state rather than a "syncing…" that never advances.
+      // Detection lives here (we own the per-tick height); recovery is in the 30s watchdog. Peers==0
+      // is a connectivity problem, not a stall — left as syncing.
+      let nextNode = mapNodeState(st.state, st.syncPct, staked);
+      if (nextNode === "syncing") {
+        if (st.height > this.nodeStallLastHeight) {
+          this.nodeStallLastHeight = st.height; // advanced — reset the freeze window
+          this.nodeStallSince = 0;
+        } else if (st.peers > 0) {
+          const NODE_STALL_MS = 60_000; // height frozen this long while behind + peered = stalled
+          if (this.nodeStallSince === 0) this.nodeStallSince = Date.now();
+          else if (Date.now() - this.nodeStallSince >= NODE_STALL_MS) nextNode = "stalled";
+        }
+      } else if (nextNode === "synced" || nextNode === "validating") {
+        // Fully caught up — clear the entire stall budget (a fresh session on any later dip).
+        this.nodeStallLastHeight = -1;
+        this.nodeStallSince = 0;
+        this.nodeStallCycles = 0;
+        this.nodeStalledNotified = false;
+      }
+      if (!this.nodeStarting) patch.node = nextNode;
       // Q-A.2/Q-B.2 — fold the REAL streamed node log tail. Best-effort: a failed
       // logs read must not clobber the vitals fold above, so it is caught
       // separately (the last real tail stands). NEVER a fabricated template here.
@@ -1779,6 +1810,32 @@ export class Store {
     if (BRIDGE_MODE !== "tauri") return;
     if (this.state.nodeIntent !== "run") return; // member stopped it deliberately
     if (this.nodeStarting) return; // a spawn is already in flight
+    // Stalled sync (running but frozen below the tip): bounded auto-recovery, then honest surrender.
+    // Each cycle stops + respawns the node (keeping nodeIntent "run" so it comes back). The budget
+    // resets only on FULL sync, so a chain-side wedge that advances a few blocks per restart can't
+    // spin here forever — after the budget we stop restarting and tell the truth.
+    if (this.state.node === "stalled") {
+      const NODE_STALL_MAX_CYCLES = 3;
+      if (this.nodeStallCycles < NODE_STALL_MAX_CYCLES) {
+        this.nodeStallCycles++;
+        this.toast(`Sync stalled — restarting the node (${this.nodeStallCycles}/${NODE_STALL_MAX_CYCLES})…`);
+        try {
+          await bridge.node.stop();
+        } catch {
+          /* honest no-op: proceed to respawn regardless of the stop result */
+        }
+        this.setState({ node: "off" }); // reflect the stop so the idempotent startNode proceeds
+        this.nodeStallSince = 0; // fresh detection window for the restarted node
+        this.nodeStallLastHeight = -1;
+        this.startNode();
+      } else if (!this.nodeStalledNotified) {
+        this.nodeStalledNotified = true;
+        this.toast(
+          "Sync is stuck and restarting hasn't helped — this is a known network-side issue the team is addressing. The node stays up and keeps retrying.",
+        );
+      }
+      return;
+    }
     const down = this.state.node === "off" || this.state.node === "error";
     if (!down) {
       this.nodeOutageNotified = false; // recovered — re-arm the warning

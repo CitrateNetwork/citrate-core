@@ -35,6 +35,7 @@ const nodeColors: Record<string, string> = {
   synced: "#8ecc09",
   paused: "#ffbd10",
   validating: "#8ecc09",
+  stalled: "#e8843c",
   error: "#dd7259",
 };
 

@@ -451,6 +451,14 @@ pub struct ClusterPeerDto {
 
 static MANAGER: OnceLock<ClusterDaemonManager> = OnceLock::new();
 
+/// Stop the cluster-daemon if this session started it (called on graceful app teardown). Removes the
+/// seed file and drops the mesh cleanly. Idempotent and a no-op if the daemon was never started.
+pub fn shutdown() {
+    if let Some(m) = MANAGER.get() {
+        m.stop();
+    }
+}
+
 /// The opt-in libp2p transport config, read from citrate-core's OWN env, paired with the comms seed.
 /// `CITRATE_CLUSTER_LISTEN` present → real cross-machine mesh (CL-S3, soak-gated); absent → `None` =
 /// in-process. Kept env-driven (not a UI toggle) so it cannot be flipped on for partner traffic before

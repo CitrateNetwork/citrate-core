@@ -776,6 +776,14 @@ use std::sync::OnceLock;
 /// binary + the 0600 bearer/crash paths); one instance for the process lifetime.
 static HERMES: OnceLock<HermesManager> = OnceLock::new();
 
+/// Stop the hermes sidecar if this session started it (called on graceful app teardown). Idempotent
+/// and a no-op if it was never started.
+pub fn shutdown() {
+    if let Some(m) = HERMES.get() {
+        m.stop();
+    }
+}
+
 /// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
 /// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
 /// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).

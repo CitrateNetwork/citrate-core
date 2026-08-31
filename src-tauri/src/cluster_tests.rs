@@ -198,3 +198,9 @@ fn cluster_ipc_authenticates_and_parses_status_defaulting_sharedfiles() {
     }
     let _ = handle.join();
 }
+
+#[test]
+fn shutdown_is_a_safe_noop_when_never_started() {
+    // MANAGER singleton uninitialized in tests → graceful-teardown shutdown() is a clean no-op.
+    super::shutdown();
+}

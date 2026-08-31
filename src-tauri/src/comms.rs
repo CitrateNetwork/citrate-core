@@ -490,6 +490,15 @@ fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Respons
 
 static MANAGER: OnceLock<CommsMemberManager> = OnceLock::new();
 
+/// Stop the comms member-daemon if this session started it (called on graceful app teardown). Releases
+/// the MLS store LOCK so the next launch reopens cleanly instead of racing an orphan. Idempotent and a
+/// no-op if the daemon was never started.
+pub fn shutdown() {
+    if let Some(m) = MANAGER.get() {
+        m.stop();
+    }
+}
+
 /// Load the device-sealed comms key from the OS keyring, minting a fresh secp256k1 key on first use
 /// (Option A). Returned as hex [`Zeroizing`] ready to write to the daemon's 0600 seed file. The key
 /// is a scoped, non-value per-device identity (NOT the custody wallet); it leaves this process only

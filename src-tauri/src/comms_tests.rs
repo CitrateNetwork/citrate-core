@@ -263,3 +263,10 @@ fn address_from_secret_hex_rejects_non_hex_and_bad_scalar() {
     // 32 zero bytes is not a valid secp256k1 scalar.
     assert!(address_from_secret_hex(&"00".repeat(32)).is_err());
 }
+
+#[test]
+fn shutdown_is_a_safe_noop_when_never_started() {
+    // The process-wide MANAGER singleton is only set via ensure_started (needs an app handle), so in
+    // the unit-test binary it stays uninitialized and shutdown() must be a clean no-op (never panics).
+    super::shutdown();
+}

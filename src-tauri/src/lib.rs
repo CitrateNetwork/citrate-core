@@ -504,8 +504,48 @@ pub fn run() {
             seam::commissary_catalog,
             seam::comms_connections,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Graceful sidecar teardown on quit. Without this, a hard quit orphaned the `citrate`
+            // node (and ipfs/memory), which kept holding their RocksDB LOCKs — so the NEXT launch
+            // failed to reopen the data dir ("Resource temporarily unavailable") and sync never
+            // resumed. On exit we SIGTERM→grace→SIGKILL every supervised sidecar so their locks are
+            // released and reopen is clean. (Belt-and-suspenders with the startup orphan sweep.)
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                shutdown_all_sidecars(app_handle);
+            }
+        });
+}
+
+/// Stop every supervised sidecar so none is orphaned across an app quit. Managed states expose the
+/// SidecarSupervisor via `.0.stop()`; the lazily-started daemons expose a module `shutdown()`. Every
+/// stop is idempotent and a no-op when that sidecar was never started, so this is safe to call once
+/// on exit regardless of what the session actually launched.
+fn shutdown_all_sidecars(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(s) = app.try_state::<node::NodeState>() {
+        s.0.stop();
+    }
+    if let Some(s) = app.try_state::<agent::AgentState>() {
+        s.0.stop();
+    }
+    if let Some(s) = app.try_state::<memory::MemoryState>() {
+        s.0.stop();
+    }
+    if let Some(s) = app.try_state::<serve::ServeState>() {
+        s.0.stop();
+    }
+    if let Some(s) = app.try_state::<ipfs::IpfsState>() {
+        s.0.stop();
+    }
+    // Lazily-started daemons (not managed state) — stop only if this session started them.
+    comms::shutdown();
+    cluster::shutdown();
+    hermes::shutdown();
 }
 
 #[cfg(test)]
