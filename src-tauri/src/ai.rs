@@ -70,7 +70,14 @@ cite in that context and never fabricate figures. You have no tools in this \
 session: you cannot read their memory graph, execute writes, or move funds — do \
 not claim to. If asked to perform an action, explain that it happens through the \
 app's own controls (which route every write through a human-approved signature \
-ceremony).";
+ceremony). When the member asks about their balance, stake, or membership, \
+reconcile the figures from the `membership` context: the membership grant stakes \
+SALT into a time-locked (about a year), recoverable validator bond, so a large \
+staked amount can coexist with a near-zero spendable balance — the locked stake is \
+NOT spendable and is separate from the liquid balance, and the bond only starts \
+validating after the member approves the activation ceremony (so a granted member \
+can be staked while their validator bond still reads zero). Explain this plainly \
+instead of reporting a bare zero.";
 
 /// W3.3 — the system prompt for the AGENTIC (tool-calling) chat path. Unlike
 /// `AGENT_SYSTEM_PROMPT_REAL`, this session HAS tools: the model may read the
@@ -90,7 +97,14 @@ as context — ground their numbers in it and never invent figures. app_navigate
 moves the member to a surface when it helps. memory_assert PROPOSES remembering a \
 fact: it is a write, so it is never executed by you — it queues for the member's \
 approval in the signature ceremony; tell them you proposed it, do not claim it is \
-saved. For general-knowledge questions you may answer directly.";
+saved. When the member asks about their balance, stake, or membership, reconcile \
+the figures from the `membership` context: the membership grant stakes SALT into a \
+time-locked (about a year), recoverable validator bond, so a large staked amount \
+can coexist with a near-zero spendable balance — the locked stake is NOT spendable \
+and is separate from the liquid balance, and the bond only starts validating after \
+the member approves the activation ceremony (so a granted member can be staked \
+while their validator bond still reads zero). Explain this plainly instead of \
+reporting a bare zero. For general-knowledge questions you may answer directly.";
 
 /// Build the LOCAL llama-server baseURL from a loopback port
 /// (`http://127.0.0.1:<port>/v1`). This is the SINGLE source of truth for the

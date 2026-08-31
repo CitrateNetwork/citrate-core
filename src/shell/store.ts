@@ -855,13 +855,25 @@ export class Store {
       // fast LOCAL node RPC (~0.3 ms), so height/peers/sync stay live.
       const BOND_READ_MS = 15_000;
       const dueForBondRead = Date.now() - this.lastBondReadAt >= BOND_READ_MS;
-      if (st.state === "running" && bonded < 32000 && dueForBondRead) {
+      // Read grantStatus (public 40204 RPC, node-independent) when we still need the validator bond
+      // OR when the attributed grant hasn't been reconciled yet. The latter is the fix for a grant
+      // signed THIS session: the launch-time reconcile (reconcileOnboardingFromChain) ran BEFORE the
+      // grant existed, and this was the only other read — but it folded ONLY the validator bond (0
+      // pre-activation), so the 32k attributed stake never surfaced until a relaunch.
+      let grantPatch: Partial<AppState> | null = null;
+      const needBond = st.state === "running" && bonded < 32000;
+      const needGrant = !this.state.hasGrant; // attributed grant not yet reconciled this session
+      if ((needBond || needGrant) && dueForBondRead) {
         this.lastBondReadAt = Date.now();
         try {
           const g = await bridge.membership.grantStatus(this.identity().wallet);
           bonded = g.bondedStakeWei ? Number(BigInt(g.bondedStakeWei)) / 1e18 : 0;
+          // Surface the ATTRIBUTED grant (hasGrant + s5StakeWei=32k + bond status incl. the unlock
+          // block), DISTINCT from the validator bond above — so a granted-but-not-yet-activated member
+          // sees their locked 32k, not "0 staked". Null when the grant isn't genuinely on chain (Rule 1).
+          grantPatch = reconciledGrantPatch(g);
         } catch {
-          /* honest no-op: keep the last real bond value, never fabricate */
+          /* honest no-op: keep the last real values, never fabricate */
         }
       }
       const staked = bonded + this.state.selfStake;
@@ -897,6 +909,9 @@ export class Store {
         // leaving the fabricated seed value — displays render "—" (Rule 1).
         finAge: -1,
       };
+      // Merge the reconciled grant (hasGrant + s5StakeWei + s5BondStatus) so the 32k attributed
+      // stake surfaces on the Dashboard/Wallet tiles + the model context live, without a relaunch.
+      if (grantPatch) Object.assign(patch, grantPatch);
       // While a start is in flight, a transient "stopped" poll (supervisor not
       // yet registered during spawn) must NOT demote the optimistic "prov" back
       // to "off" — that caused a prov→off→prov flicker. Still fold height/peers.
@@ -1352,17 +1367,32 @@ export class Store {
 
   snapshot() {
     const s = this.state;
+    // The membership grant stakes SALT into a time-locked (≈1yr), recoverable validator bond. That
+    // stake is REAL and locked but is NOT the same as the validator bond (which is 0 until the member
+    // approves the activation ceremony). The model must be able to reconcile "0 spendable but staked",
+    // so expose both figures + the human-readable bond status (which carries the unlock block), rather
+    // than the old single `staked` that only reflected the validator bond and read 0 for a fresh member.
+    const grantStakedSalt = s.hasGrant && s.s5StakeWei ? Math.round(Number(BigInt(s.s5StakeWei)) / 1e18) : 0;
     return {
       height: s.height,
       peers: s.peers,
       finalityAge: Math.round(s.finAge),
       nodeState: nodeLabelLocal(s.node),
-      staked: s.bondedStake + s.selfStake,
+      // "staked" now reflects the locked membership grant (falling back to the validator bond), so the
+      // model no longer sees 0 for a granted member.
+      staked: (grantStakedSalt || s.bondedStake) + s.selfStake,
       liquid: s.liquid,
       claimable: s.claimable,
       earningsToday: s.earnToday,
       walletAddr: s.walletAddr,
       tier: s.tier,
+      membership: {
+        grantStakedSalt, // the recoverable grant, locked (e.g. 32000)
+        bondStatus: s.s5BondStatus || (s.hasGrant ? "granted" : "none"), // e.g. "Staked · unlocks at block N"
+        validatorBondedSalt: s.bondedStake, // 0 until the member approves the activation ceremony
+        locked: grantStakedSalt > 0 && s.bondedStake < grantStakedSalt,
+        note: "The membership grant stakes SALT into a time-locked (about a year), recoverable validator bond. Locked stake is not spendable and is separate from the liquid balance; the bond only starts validating after the member approves the activation ceremony.",
+      },
     };
   }
 
