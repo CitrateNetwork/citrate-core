@@ -43,6 +43,10 @@ export function simGroups(_host: SimHost): GroupsDomain {
     async list() {
       return [...groups.values()].map(view);
     },
+    async selfAddress() {
+      // sim: the single dev user's stable address (honest-empty persona; no real comms daemon).
+      return "0x0000000000000000000000000000000000000dev";
+    },
     async join() {
       /* sim: single dev user; join is a no-op */
     },

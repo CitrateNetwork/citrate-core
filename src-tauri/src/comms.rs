@@ -657,6 +657,15 @@ pub fn groups_list(app: tauri::AppHandle) -> std::result::Result<Vec<(String, St
     }
 }
 
+/// **groups_self_address** — THIS member's own comms address (the identity the rosters key on — the
+/// device-sealed comms key, NOT the wallet). Read-only, non-secret (the address only). The People
+/// directory uses it to exclude yourself from your own roster overlap; it also gives the CONNECT arc a
+/// coherent "who am I" that the wallet-address heuristic (the `iCreated` seam) can't reliably provide.
+#[tauri::command]
+pub fn groups_self_address(app: tauri::AppHandle) -> std::result::Result<String, String> {
+    device_identity(&app).map(|d| d.address)
+}
+
 /// **groups_join** — join a group this member was added to on a shared relay.
 #[tauri::command]
 pub fn groups_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {

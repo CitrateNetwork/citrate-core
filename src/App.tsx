@@ -13,7 +13,7 @@ import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from ".
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
 // CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
-import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community } from "./surfaces";
+import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
 
 const queryClient = new QueryClient();
 
@@ -91,6 +91,8 @@ function Shell({ s }: { s: AppState }) {
         return <Models store={store} s={s} />;
       case "files":
         return <StorageFiles store={store} s={s} />;
+      case "people":
+        return <People store={store} s={s} />;
       case "groups":
         return <Groups store={store} s={s} />;
       case "cluster":

@@ -33,6 +33,7 @@ import type { GrantStatus, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
+import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
@@ -1446,6 +1447,52 @@ export class Store {
     }
     this.toast(note || "Copied");
   }
+  /**
+   * CONNECT-S0 — build the People directory from LIVE data: every group's roster + verified faces,
+   * excluding your own comms address. Pure aggregation (`buildPeopleDirectory`) over real bridge reads
+   * — never fabricated. Honest states: "loading" while reading, "ready" with the derived list (possibly
+   * empty), "unavailable" if groups can't be read. A face read failure degrades to addresses, not fake
+   * names.
+   */
+  async refreshPeople(): Promise<void> {
+    if (this.state.peopleState !== "ready") this.setState({ peopleState: "loading" });
+    try {
+      const groups = await bridge.groups.list();
+      const rosterByGroup: Record<string, { address: string; role: string }[]> = {};
+      const addrs = new Set<string>();
+      for (const g of groups) {
+        try {
+          const roster = await bridge.groups.roster(g.id);
+          rosterByGroup[g.id] = roster.map((m) => ({ address: m.address, role: m.role }));
+          roster.forEach((m) => addrs.add(m.address));
+        } catch {
+          rosterByGroup[g.id] = []; // a group whose roster won't read contributes nothing, honestly
+        }
+      }
+      let self = "";
+      try {
+        self = await bridge.groups.selfAddress();
+      } catch {
+        self = (this.identity().wallet || this.state.walletAddr || "").toLowerCase(); // seam fallback (S5 closes it)
+      }
+      let faces: { address: string; network: string; handle: string }[] = [];
+      try {
+        faces = await bridge.social.resolve([...addrs]);
+      } catch {
+        /* faces unavailable → people render as addresses, never invented names */
+      }
+      const people = buildPeopleDirectory(
+        groups.map((g) => ({ id: g.id, name: g.name })),
+        rosterByGroup,
+        faces,
+        self,
+      );
+      this.setState({ people, peopleState: "ready" });
+    } catch {
+      this.setState({ people: [], peopleState: "unavailable" });
+    }
+  }
+
   go(route: string): void {
     this.setState({ route });
     try {

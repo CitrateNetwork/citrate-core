@@ -31,6 +31,9 @@ export const tauriGroups: GroupsDomain = {
     const rows = await invoke<Pair[]>("groups_list"); // (id, name)
     return rows.map(([id, name]) => ({ id, name, owner: "", kind: "channel" as Group["kind"], members: [] }));
   },
+  async selfAddress(): Promise<string> {
+    return invoke<string>("groups_self_address");
+  },
   async join(groupId) {
     await invoke("groups_join", { group: groupId });
   },

@@ -325,6 +325,7 @@ pub fn run() {
             storage::storage_unpin,
             comms::groups_create,
             comms::groups_list,
+            comms::groups_self_address,
             comms::groups_join,
             comms::groups_add_member,
             comms::groups_roster,

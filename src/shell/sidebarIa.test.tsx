@@ -26,3 +26,12 @@ describe("Sidebar IA — organized around You + Your Groups (gS-ia)", () => {
     expect(new Set(sectionIds).size).toBe(sectionIds.length);
   });
 });
+
+describe("CONNECT-S0 — People directory entry (AC6)", () => {
+  it("adds a People entry to Your Groups, wired into NAVI", () => {
+    const yourGroups = SECTIONS.find((s) => s.title === "Your Groups");
+    expect(yourGroups?.ids).toContain("people");
+    const naviIds = NAVI.map((n) => n[0]);
+    expect(naviIds).toContain("people");
+  });
+});

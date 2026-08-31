@@ -679,6 +679,8 @@ export interface GroupMessage {
 export interface GroupsDomain {
   create(kind: Group["kind"], name: string): Promise<Group>;
   list(): Promise<Group[]>;
+  /** This member's own comms address (what the rosters key on) — used to exclude self from the People directory. */
+  selfAddress(): Promise<string>;
   join(groupId: string): Promise<void>;
   /**
    * Owner-invite: add a member who has published a key package to the shared relay. The daemon

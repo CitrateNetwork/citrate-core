@@ -11,6 +11,7 @@
 // =====================================================================
 
 import type { PendingWithdrawal } from "../bridge/domains";
+import type { Person } from "../surfaces/peopleDirectory";
 import type { CeremonyView } from "../bridge/types";
 import { BRIDGE_MODE } from "../bridge/mode";
 
@@ -468,6 +469,14 @@ export interface AppState {
   memGraph?: MemGraph;
   memGraphState: "idle" | "loading" | "ready" | "unavailable";
   /**
+   * CONNECT-S0 — the People directory: everyone you share a group with, derived live from your group
+   * rosters + verified faces (never fabricated — Rule 1). `peopleState` reflects the fetch honestly:
+   * "loading" before/while reading, "ready" once the real aggregation lands, "unavailable" if groups
+   * can't be read (the UI shows an honest empty/offline state, never invented people).
+   */
+  people: Person[];
+  peopleState: "loading" | "ready" | "unavailable";
+  /**
    * Q-A.4a runtime memory-daemon status (NOT persisted, never fabricated). Read
    * from the REAL `memory_status()` on Storage mount / after a Start. `memDaemon`
    * is the honest supervisor state ("idle" before the first read, "running" when
@@ -659,6 +668,8 @@ export function freshState(pid: string): AppState {
     graphQ: "",
     dataReady: true,
     memGraphState: "idle",
+    people: [],
+    peopleState: "loading",
     memDaemon: "idle",
     memDaemonError: null,
     memSocketPath: null,

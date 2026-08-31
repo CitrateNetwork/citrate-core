@@ -16,4 +16,5 @@ export { Train } from "./Train";
 export { Agent } from "./Agent";
 export { Connections } from "./Connections";
 export { Community } from "./Community";
+export { People } from "./People";
 export type { SurfaceProps } from "./shared";
