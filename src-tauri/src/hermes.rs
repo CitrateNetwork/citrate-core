@@ -46,6 +46,10 @@ pub const HERMES_CONTROL_ADDR: &str = "127.0.0.1:19700";
 const HERMES_ADDR_ENV: &str = "CITRATE_HERMES_ADDR";
 /// Env the Hermes child reads its bearer-token FILE PATH from (the file is the IPC channel).
 const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
+/// Env the Hermes child reads its capsule (skill) directory from. Without it the child defaults to
+/// `./capsules` relative to its cwd — which is empty — so the agent boots with zero skills and can run
+/// nothing. citrate-core points it at the per-session capsule dir it seeds from the bundled starters.
+const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
 
@@ -241,6 +245,10 @@ pub struct HermesManager {
     control_addr: String,
     token_path: PathBuf,
     crash_record_path: PathBuf,
+    /// The per-session capsule (skill) directory passed to the child as `CITRATE_HERMES_CAPSULES`.
+    /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
+    /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
+    capsules_dir: Option<PathBuf>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -266,6 +274,7 @@ impl HermesManager {
             control_addr: HERMES_CONTROL_ADDR.to_string(),
             token_path,
             crash_record_path,
+            capsules_dir: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -274,6 +283,14 @@ impl HermesManager {
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Point the child at a capsule (skill) directory (`CITRATE_HERMES_CAPSULES`). Prod calls this
+    /// with the seeded per-session dir so the agent starts with runnable skills instead of an empty
+    /// catalog. Absent → the env is not set (unchanged default behavior).
+    pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
+        self.capsules_dir = Some(dir);
+        self
     }
 
     /// Test hook: inject a mock control transport so the command wiring is verified without a real
@@ -331,6 +348,13 @@ impl HermesManager {
                 self.token_path.to_string_lossy().to_string(),
             ),
         ];
+        // Point the child at the seeded capsule dir so it boots with skills, not an empty catalog.
+        if let Some(dir) = &self.capsules_dir {
+            spec.env.push((
+                HERMES_CAPSULES_ENV.to_string(),
+                dir.to_string_lossy().to_string(),
+            ));
+        }
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -640,6 +664,38 @@ fn http_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Seed the per-session capsule dir from the bundled starter capsules (first run only). Each bundled
+/// skill dir is copied into `dest` ONLY if a skill of that name is absent — a user's own capsules are
+/// never clobbered. Best-effort: a missing bundled dir or a copy error is skipped, never fatal — the
+/// agent still starts, honestly reporting however many skills it actually has (Rule 1). Returns the
+/// number of skill dirs present in `dest` afterwards (0 is a legitimate, honest outcome).
+fn seed_starter_capsules(bundled: &Path, dest: &Path) -> usize {
+    let _ = std::fs::create_dir_all(dest);
+    if let Ok(entries) = std::fs::read_dir(bundled) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let target = dest.join(entry.file_name());
+            if target.exists() {
+                continue; // never overwrite an existing (possibly user-added) skill
+            }
+            if std::fs::create_dir_all(&target).is_ok() {
+                if let Ok(files) = std::fs::read_dir(entry.path()) {
+                    for f in files.flatten() {
+                        if f.path().is_file() {
+                            let _ = std::fs::copy(f.path(), target.join(f.file_name()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::fs::read_dir(dest)
+        .map(|e| e.flatten().filter(|x| x.path().is_dir()).count())
+        .unwrap_or(0)
+}
+
 /// Resolve the bundled `hermes` binary (env override → resource dir), honest error if absent.
 pub fn resolve_hermes_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -738,8 +794,16 @@ fn manager<R: tauri::Runtime>(
         .join("hermes");
     let token_path = base.join("bearer.token");
     let crash_path = base.join("crashes.log");
+    // Seed the capsule (skill) dir from the bundled starters so the agent boots with runnable skills
+    // instead of an empty catalog (the "running but does nothing" bug). Best-effort; a resolve/copy
+    // failure just means fewer skills, honestly reported — never a start failure.
+    let capsules_dir = base.join("capsules");
+    if let Ok(res) = app.path().resource_dir() {
+        let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
+    }
+    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
-    let _ = HERMES.set(HermesManager::new(bin, token_path, crash_path));
+    let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
 }
 

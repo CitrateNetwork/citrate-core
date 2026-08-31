@@ -551,3 +551,58 @@ fn resolve_head_posts_to_the_right_endpoint() {
         .unwrap()
         .ends_with("/approvals/reject"));
 }
+
+#[test]
+fn capsules_env_absent_by_default_but_set_when_configured() {
+    // Default manager: no capsules dir → CITRATE_HERMES_CAPSULES is not passed (unchanged behavior).
+    let (mgr, dir) = stub_manager("capsdefault");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert!(!env.contains_key(HERMES_CAPSULES_ENV), "no capsules env by default");
+
+    // With a capsules dir → the env carries its PATH so the child loads skills from it.
+    let caps = dir.join("hermes").join("capsules");
+    let mgr = mgr.with_capsules_dir(caps.clone());
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(
+        env.get(HERMES_CAPSULES_ENV).map(String::as_str),
+        Some(caps.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
+fn seed_starter_capsules_copies_absent_skills_and_never_clobbers() {
+    let root = tmp_dir("seed");
+    let bundled = root.join("bundled");
+    let dest = root.join("dest");
+    // A bundled starter skill "hello" with the runnable files.
+    let hello = bundled.join("hello");
+    std::fs::create_dir_all(&hello).unwrap();
+    std::fs::write(hello.join("manifest.toml"), b"name = \"hello\"\n").unwrap();
+    std::fs::write(hello.join("hello.cps"), b"CPSFAKE").unwrap();
+
+    // First seed: hello is copied over.
+    let n = seed_starter_capsules(&bundled, &dest);
+    assert_eq!(n, 1, "one skill dir seeded");
+    assert!(dest.join("hello").join("hello.cps").exists());
+    assert!(dest.join("hello").join("manifest.toml").exists());
+
+    // A user edits their copy; a re-seed must NOT clobber it (existing skill is left alone).
+    std::fs::write(dest.join("hello").join("hello.cps"), b"USER_EDITED").unwrap();
+    let n2 = seed_starter_capsules(&bundled, &dest);
+    assert_eq!(n2, 1);
+    assert_eq!(
+        std::fs::read(dest.join("hello").join("hello.cps")).unwrap(),
+        b"USER_EDITED",
+        "existing skill must never be overwritten"
+    );
+}
+
+#[test]
+fn seed_starter_capsules_missing_bundled_dir_is_honest_zero() {
+    let root = tmp_dir("seedmissing");
+    // No bundled dir at all → best-effort, zero skills, never a panic.
+    let n = seed_starter_capsules(&root.join("nope"), &root.join("dest"));
+    assert_eq!(n, 0);
+}
