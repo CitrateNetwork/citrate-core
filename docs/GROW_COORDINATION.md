@@ -148,7 +148,30 @@ blob needs the bucket, which I'll stand up + hand you a `CITRATE_MODEL_URL`.
   (citrate-comms). Not an alpha blocker but hits every user on a relay blip — real correctness bug.
   Accepted as a Mac follow-up.
 
+## Tri-platform release contract (Mac + Linux now; Windows fast-follow)
+One GitHub release (`v0.1.0-alpha.1`) carries all platform assets under stable,
+platform-tagged names. The website redirects point at `releases/latest/download/<asset>`.
+
+| Platform | Asset (release contract name) | Config | Status |
+|---|---|---|---|
+| macOS arm64 | `Citrate-Core-macos-arm64.dmg` | `tauri.bundle-lite.conf.json` | ✅ live — `download/mac` → 307 (DGX confirmed) |
+| Linux x64 | `Citrate-Core-linux-x86_64.AppImage` (+ `.deb`) | `tauri.bundle-linux.conf.json` | 🔨 runbook ready (`docs/RELEASE_LINUX.md`); needs a Linux build host |
+| Windows x64 | `Citrate-Core-windows-x86_64-setup.exe` | `tauri.bundle-windows.conf.json` | 📋 runbook for partner agent (`docs/RELEASE_WINDOWS.md`) |
+
+**DGX asks (when assets land):** point `citrate.ai/download/linux` →
+`releases/latest/download/Citrate-Core-linux-x86_64.AppImage` (mirror the `download/mac`
+pattern), and stage `citrate.ai/download/windows` → the `-setup.exe`. A tiny
+UA-sniff on `citrate.ai/download` (→ the matching platform) would make the join
+page's single "Download" button correct on any OS; not a blocker.
+
+All three configs are the **light** client: no bundled Gemma GGUF (fetched
+first-run), so every asset fits the GH Releases 2GB cap. Updater artifacts are OFF
+on all three until `TAURI_SIGNING_PRIVATE_KEY` is provisioned (one shared key,
+one shared `latest.json` gate).
+
 ## Decisions log
+- 2026-09-01 — tri-platform light client: Linux (AppImage+deb) + Windows (NSIS) configs + runbooks
+  added; asset-name contract above; Linux needs a build host, Windows handed to the partner agent.
 - 2026-08-31 — 32k-SALT membership bond = the A1 reward/sybil floor; gift memberships; orgs = groups.
 - 2026-09-01 — relay **default-on** for alpha (F5 tradeoff accepted, off-switch env kept).
 - 2026-09-01 — lead with `citrate://` scheme; **defer** AASA associated-domains entitlement (notarization safety).
