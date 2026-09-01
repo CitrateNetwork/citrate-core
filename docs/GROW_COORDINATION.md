@@ -169,7 +169,25 @@ first-run), so every asset fits the GH Releases 2GB cap. Updater artifacts are O
 on all three until `TAURI_SIGNING_PRIVATE_KEY` is provisioned (one shared key,
 one shared `latest.json` gate).
 
+## ⚠ ACTION FOR DGX — re-mirror the rebuilt Mac DMG (2026-09-01)
+The `v0.1.0-alpha.1` Mac asset was **rebuilt from current `main`** (includes #221 short-codes,
+#225 Flag-A, **#226 model-URL → vanity redirect**) and re-notarized (liblzma leak fixed + stapled;
+Gatekeeper: Notarized Developer ID). The GitHub release asset is updated, but **the live download
+serves from the DO Space, which still holds the OLD bytes** — so please re-run the mirror:
+
+| | old (mirrored) | NEW (re-mirror this) |
+|---|---|---|
+| sha256 | `83f8ae9a…` | **`086533d8fc440fe3e0f4ffa7b1ea023ab5911099a668b4a18dca30447db10591`** |
+| size | 371,975,352 | **372,022,974** |
+
+Same asset name `Citrate-Core-macos-arm64.dmg` → `downloads/`. Pull the release asset via authed `gh`,
+verify == `086533d8…`, upload (clobber), done — no landing change, `DOWNLOAD_BASE` unchanged. Why it
+matters: the OLD DMG defaults `CITRATE_MODEL_URL` to the bare HF URL, so it bypasses your model mirror;
+the rebuilt one routes through `citrate.ai/download/model`.
+
 ## Decisions log
+- 2026-09-01 — Mac DMG REBUILT from main + re-notarized (liblzma-fixed, stapled). New sha256
+  `086533d8…` / 372,022,974 B uploaded to `v0.1.0-alpha.1`. DGX action: re-mirror (see above).
 - 2026-09-01 — tri-platform light client: Linux (AppImage+deb) + Windows (NSIS) configs + runbooks
   added; asset-name contract above; Linux needs a build host, Windows handed to the partner agent.
 - 2026-08-31 — 32k-SALT membership bond = the A1 reward/sybil floor; gift memberships; orgs = groups.
