@@ -5,7 +5,7 @@
 // record) / setVisibility / disconnect. The token NEVER crosses this boundary. `verified` (the
 // wallet-signed IdentityBinding through the ceremony, D3) is the follow-up — bindingChallenge/verify
 // stay honest Unavailable until then. Rule 3 holds: when wired, the WALLET signs; no sidecar signs.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import type { ExportedBinding, LinkedIdentity, ResolvedIdentity, SocialDomain, SocialNetwork, SocialVisibility } from "../domains";
 import type { CeremonyView } from "../types";
 

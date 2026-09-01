@@ -1,5 +1,5 @@
 // CX bridge impl — group claimable invites (ADR D4), TAURI.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import type { InviteClaim, InviteMinted, InvitesDomain, PendingInvite } from "../domains";
 
 export const tauriInvites: InvitesDomain = {

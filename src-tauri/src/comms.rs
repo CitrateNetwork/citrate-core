@@ -480,12 +480,28 @@ fn connect_with_retry(socket_path: &Path) -> Result<UnixStream> {
     }
 }
 
+/// Read/write deadline on the member-daemon socket. BOUNDS every IPC so a wedged daemon (accepts the
+/// connection but never replies — e.g. a stalled MLS store) can NEVER block the caller forever. The
+/// UI-thread pinwheel came from an unbounded `read_line` here; on timeout the call returns an honest
+/// `Ipc` error and the surface falls to its empty/error state instead of beachballing.
+const COMMS_IPC_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Connect to the daemon's UDS, authenticate with the bearer, send one request, read one response.
 fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
     let stream = connect_with_retry(socket_path)?;
+    // Bound both directions before any read/write (SO_RCVTIMEO/SO_SNDTIMEO). Applied to the clone too
+    // so neither the read nor the write side can hang indefinitely.
+    stream
+        .set_read_timeout(Some(COMMS_IPC_TIMEOUT))
+        .map_err(|e| CommsError::Ipc(e.to_string()))?;
+    stream
+        .set_write_timeout(Some(COMMS_IPC_TIMEOUT))
+        .map_err(|e| CommsError::Ipc(e.to_string()))?;
     let mut writer = stream
         .try_clone()
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
+    let _ = writer.set_write_timeout(Some(COMMS_IPC_TIMEOUT));
+    let _ = writer.set_read_timeout(Some(COMMS_IPC_TIMEOUT));
     let mut reader = BufReader::new(stream);
 
     // bearer handshake

@@ -8,7 +8,7 @@
 // it never shows sim data dressed as live. Each later phase replaces one of
 // these throws with a real invoke, copying the config shape exactly.
 // =====================================================================
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import type {
   AppConfig,
   KeyringStatus,

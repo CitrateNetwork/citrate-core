@@ -7,7 +7,7 @@
 // is AgentSkill; `PendingApproval` is AgentApproval (+ optional to/data the ceremony bridge uses,
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill } from "../domains";
 import type { CeremonyView } from "../types";
 

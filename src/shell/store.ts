@@ -334,6 +334,12 @@ export class Store {
   private nodeOutageNotified = false;
   private modelTimer: ReturnType<typeof setInterval> | null = null;
   private nodeStarting = false;
+  // In-flight guards — a slow daemon/RPC call must not let the 2s pollers or a re-mounted surface
+  // stack concurrent calls that queue behind a blocked one (a pinwheel amplifier). Each async loop
+  // skips its tick while the previous is still running.
+  private peopleRefreshing = false;
+  private nodeRefreshing = false;
+  private modelRefreshing = false;
   /** Sync-stall detection: the highest height we've seen advance, and when it last froze (0 = not
    *  frozen). A frozen height while still behind the tip, with peers connected, means the node's
    *  import pipeline has stalled — surfaced as the honest "stalled" state instead of a stuck "syncing". */
@@ -869,6 +875,8 @@ export class Store {
    */
   async refreshNode(): Promise<void> {
     if (this.state.node === "paused") return; // respect an explicit pause
+    if (this.nodeRefreshing) return; // in-flight guard — skip this 2s tick if the last is still running
+    this.nodeRefreshing = true;
     try {
       const st = await bridge.node.status();
       // REAL validator bond (SALT) from the ValidatorRegistry (pubkeyOfStaker(bond)
@@ -995,6 +1003,8 @@ export class Store {
       this.maybeAutoBond();
     } catch {
       /* honest no-op: a failed poll keeps the last real values, never a sim number */
+    } finally {
+      this.nodeRefreshing = false;
     }
   }
 
@@ -1457,19 +1467,27 @@ export class Store {
    * names.
    */
   async refreshPeople(): Promise<void> {
+    if (this.peopleRefreshing) return; // in-flight guard — don't stack concurrent refreshes
+    this.peopleRefreshing = true;
     if (this.state.peopleState !== "ready") this.setState({ peopleState: "loading" });
     try {
       const groups = await bridge.groups.list();
       const rosterByGroup: Record<string, { address: string; role: GroupRole }[]> = {};
       const addrs = new Set<string>();
-      for (const g of groups) {
-        try {
-          const roster = await bridge.groups.roster(g.id);
-          rosterByGroup[g.id] = roster.map((m) => ({ address: m.address, role: m.role }));
-          roster.forEach((m) => addrs.add(m.address));
-        } catch {
-          rosterByGroup[g.id] = []; // a group whose roster won't read contributes nothing, honestly
-        }
+      // Read every group's roster IN PARALLEL, not one-after-another — a group whose roster won't
+      // read contributes nothing, honestly. This turns (1 + N) serial daemon round-trips into 1 + N
+      // concurrent, so many groups or a slow daemon can't serialize into a long stall.
+      const rosters = await Promise.all(
+        groups.map((g) =>
+          bridge.groups
+            .roster(g.id)
+            .then((roster) => ({ id: g.id, roster: roster.map((m) => ({ address: m.address, role: m.role })) }))
+            .catch(() => ({ id: g.id, roster: [] as { address: string; role: GroupRole }[] })),
+        ),
+      );
+      for (const r of rosters) {
+        rosterByGroup[r.id] = r.roster;
+        r.roster.forEach((m) => addrs.add(m.address));
       }
       let self = "";
       try {
@@ -1503,6 +1521,8 @@ export class Store {
       this.setState({ people, myGroups, peopleState: "ready" });
     } catch {
       this.setState({ people: [], myGroups: [], peopleState: "unavailable" });
+    } finally {
+      this.peopleRefreshing = false;
     }
   }
 
@@ -2071,6 +2091,8 @@ export class Store {
    * only by a real verify (Rule 1) — the bridge never fabricates it. A failed
    * poll keeps the last honest values. */
   async refreshModel(): Promise<void> {
+    if (this.modelRefreshing) return; // in-flight guard — skip this 2s tick if the last is still running
+    this.modelRefreshing = true;
     try {
       const st = await bridge.model.status();
       const patch: Partial<AppState> = { modelState: st.state, modelError: null };
@@ -2099,6 +2121,8 @@ export class Store {
       }
     } catch {
       /* honest no-op: a failed poll keeps the last real status, never a sim number */
+    } finally {
+      this.modelRefreshing = false;
     }
   }
 

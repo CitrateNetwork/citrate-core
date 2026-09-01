@@ -99,9 +99,17 @@ impl HttpTransport {
     }
 }
 
+/// RPC calls are BOUNDED so a slow/wedged node or public RPC can never hang the caller forever —
+/// critical because `node_status` polls this on a timer and a blocking call freezes the UI thread.
+/// On timeout the call returns `RpcError::Transport` and the surface falls to its honest state.
+const RPC_TIMEOUT_SECS: u64 = 6;
+
 impl RpcTransport for HttpTransport {
     fn call(&self, body: Value) -> Result<Value, RpcError> {
         let resp = ureq::post(&self.url)
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(RPC_TIMEOUT_SECS)))
+            .build()
             .send_json(&body)
             .map_err(|e| RpcError::Transport(e.to_string()))?;
         let mut resp = resp;

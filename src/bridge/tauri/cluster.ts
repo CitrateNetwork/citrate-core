@@ -5,7 +5,7 @@
 // cluster-core) + the co-pinned shared-file set, feeding on the group roster (from the comms daemon).
 // status/peers return REAL daemon state; `online` reflects live mesh connectivity (0 until peers are
 // actually connected — no fabricated peers, Rule 1). shareFile announces a co-pin over the mesh.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import type { ClusterDomain, ClusterPeer, ClusterStatus } from "../domains";
 
 export const tauriCluster: ClusterDomain = {

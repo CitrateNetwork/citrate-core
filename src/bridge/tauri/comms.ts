@@ -9,7 +9,7 @@
 //   1. `Group` has no `name`; the daemon stores one and `list` returns it, but the DTO can't carry
 //      it — so persistent channel names need an S0 `name` field. The slice keeps session names.
 //   2. the domain has no `addMember`; owner-invite (the daemon's add_member) needs an S0 command.
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 import type { Group, GroupMember, GroupMessage, GroupRole, GroupsDomain } from "../domains";
 
 /** (address, role) rows as the Rust groups_roster / groups_list tuples arrive in JS. */

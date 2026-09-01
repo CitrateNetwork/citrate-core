@@ -402,11 +402,25 @@ enum Response {
     },
 }
 
+/// Read/write deadline on the cluster-daemon socket. BOUNDS every IPC so a daemon that accepts the
+/// connection but stalls (e.g. a soak-gated libp2p transport that isn't ready) can never block the
+/// caller forever — the UI-thread pinwheel on the Cluster tab came from an unbounded `read_line`
+/// here. On timeout the call returns an honest `Ipc` error and the surface shows its empty state.
+const CLUSTER_IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Connect to the daemon's UDS, authenticate with the bearer, send one request, read one response.
 fn cluster_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
     let stream = UnixStream::connect(socket_path)
         .map_err(|e| ClusterError::Ipc(format!("connect {}: {e}", socket_path.display())))?;
+    stream
+        .set_read_timeout(Some(CLUSTER_IPC_TIMEOUT))
+        .map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    stream
+        .set_write_timeout(Some(CLUSTER_IPC_TIMEOUT))
+        .map_err(|e| ClusterError::Ipc(e.to_string()))?;
     let mut w = stream.try_clone().map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    let _ = w.set_write_timeout(Some(CLUSTER_IPC_TIMEOUT));
+    let _ = w.set_read_timeout(Some(CLUSTER_IPC_TIMEOUT));
     let mut r = BufReader::new(stream);
 
     // Auth handshake: {"token":"..."} → {"type":"ready"}.
