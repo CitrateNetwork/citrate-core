@@ -85,3 +85,53 @@ export function whaleMember(stakeMultiples: number, work: number): Member {
   const id = uid("whale");
   return { id, controllerId: uid("whalectrl"), assurance: "A1", stake: stakeMultiples * MEMBERSHIP_BOND, externalWork: work, active: true };
 }
+
+import type { Referral, ReferralParams } from "./model";
+
+/** Candidate referral params: a small flat bounty, capped, so recruitment can never be the money. */
+export const REFERRAL_PARAMS: ReferralParams = { bounty: 500, welcome: 500, capPerEpoch: 10 };
+
+let rseq = 0;
+const ruid = (p: string) => `${p}-r${rseq++}`;
+
+/** A real activated invitee (staked A1 + real work) under a distinct controller. */
+function activatedInvitee(work = 5): Member {
+  return { id: ruid("inv"), controllerId: ruid("ctrl"), assurance: "A1", stake: MEMBERSHIP_BOND, externalWork: work, active: true };
+}
+
+/** A referral FARM: one attacker controls the inviter + `n` invitee seats, each 32k-staked with a
+ *  sliver of work so they "activate". Returns the members + the direct referral pairs. The attacker
+ *  pays `n × 32k` locked to collect a capped flat bounty — the invariant proves that ROI is terrible. */
+export function referralFarm(n: number): { inviterId: string; members: Member[]; referrals: Referral[] } {
+  const inviterId = ruid("farmer-inviter");
+  const inviter: Member = { id: inviterId, controllerId: "FARMER", assurance: "A1", stake: MEMBERSHIP_BOND, externalWork: 5, active: true };
+  const invitees: Member[] = Array.from({ length: n }, () => ({
+    id: ruid("fake"),
+    controllerId: "FARMER",
+    assurance: "A1" as const,
+    stake: MEMBERSHIP_BOND,
+    externalWork: 0.01, // just enough to "activate" — real external demand a farmer can't fake
+    active: true,
+  }));
+  const referrals: Referral[] = invitees.map((iv) => ({ inviterId, inviteeId: iv.id }));
+  return { inviterId, members: [inviter, ...invitees], referrals };
+}
+
+/** A 2-hop chain A→B→C, to prove single-level: A is credited for B (if activated), NEVER for C. */
+export function referralChain(): { a: string; b: string; c: Member; members: Member[]; referrals: Referral[] } {
+  const A = activatedInvitee();
+  const B = activatedInvitee();
+  const C = activatedInvitee();
+  return {
+    a: A.id,
+    b: B.id,
+    c: C,
+    members: [A, B, C],
+    referrals: [
+      { inviterId: A.id, inviteeId: B.id },
+      { inviterId: B.id, inviteeId: C.id },
+    ],
+  };
+}
+
+export { activatedInvitee };

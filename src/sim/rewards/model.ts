@@ -147,3 +147,48 @@ export function rewardPerLocked(clusters: Cluster[], controllerId: string, p: Re
   const reward = controllerReward(clusters, controllerId, p);
   return locked > 0 ? reward / (locked / MEMBERSHIP_BOND) : reward; // reward per 32k-seat locked
 }
+
+// ---------------------------------------------------------------------------
+// GROW-S1b — the referral SPARK (separate from Score): a flat, one-time,
+// single-level, capped bounty paid ONLY when an invitee ACTIVATES (staked A1+ and
+// did real work). Structurally un-pyramidable: only direct (inviter, invitee)
+// pairs are credited — an A→B→C chain never credits A for C.
+// ---------------------------------------------------------------------------
+
+export interface ReferralParams {
+  /** Flat bounty to the inviter per ACTIVATED invitee (SALT). */
+  bounty: number;
+  /** One-time welcome grant to the invitee on activation (SALT). */
+  welcome: number;
+  /** Max activated invitees an inviter is paid for per epoch (anti-farm cap). */
+  capPerEpoch: number;
+}
+
+export interface Referral {
+  inviterId: string;
+  inviteeId: string;
+}
+
+/** An invitee "activates" when they're a real staked member (A1+) AND produced verified work — NOT on
+ *  signup. This is what makes the bounty reward a real participant, never headcount. */
+export function isActivated(m: Member): boolean {
+  return m.assurance !== "A0" && m.stake > 0 && m.externalWork > 0;
+}
+
+/** Referral income per inviter this epoch: count ACTIVATED direct invitees, cap it, × bounty. SINGLE
+ *  LEVEL — a referral is a direct pair; nothing credits an inviter for their invitee's invitees. */
+export function referralIncome(
+  referrals: Referral[],
+  members: Member[],
+  rp: ReferralParams,
+): Map<string, number> {
+  const byId = new Map(members.map((m) => [m.id, m]));
+  const activated = new Map<string, number>();
+  for (const r of referrals) {
+    const invitee = byId.get(r.inviteeId);
+    if (invitee && isActivated(invitee)) activated.set(r.inviterId, (activated.get(r.inviterId) ?? 0) + 1);
+  }
+  const out = new Map<string, number>();
+  for (const [inviter, n] of activated) out.set(inviter, Math.min(n, rp.capPerEpoch) * rp.bounty);
+  return out;
+}
