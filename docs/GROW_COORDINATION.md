@@ -81,7 +81,15 @@ but its **artifact URLs must point at the bucket**, not GH (2GB asset cap). Need
 ### DGX team (citrate-landing) — as reported
 - #43 `/join/<cluster>` page (self-contained links) — MERGED
 - #44 "Open in Citrate" `citrate://join` button — MERGED (activates once the Mac build with #215 ships)
-- feat/grow-s1b-join-resolver — short-code resolver — **un-paused, DGX-owned** (Neon/Drizzle/jose; needs join_codes migration + JOIN_SIGNING_JWK)
+- **#45 short-code resolver — MERGED** — API matches the locked contract byte-for-byte (`POST /api/join`,
+  `GET /api/join/<code>`, `GET /api/join/jwks`; EdDSA-signed resolve; `inviterAddress` stored private,
+  never returned). Neon/Drizzle/jose; `tsc` clean + 7/7 unit tests; merged after a green Vercel preview.
+  **Safe-to-merge-inert:** routes `503` + the page falls back to S0 rendering until activated.
+  **Activation (owner/infra):** `npm run db:generate` + apply the `join_codes` migration, then set
+  `JOIN_SIGNING_JWK` (an Ed25519 JWK) in Vercel. Gen: `node -e "const{exportJWK,generateKeyPair}=require('jose');(async()=>{const{privateKey}=await generateKeyPair('EdDSA',{extractable:true});console.log(JSON.stringify({...await exportJWK(privateKey),kid:'join-1'}))})()"`
+- **#45 also publishes the AASA** `/.well-known/apple-app-site-association` (`DDHUG44QC7.ai.citrate.core`,
+  paths `/join/*` + `/join`; `vercel.json` sets `Content-Type: application/json`) — future-proofing;
+  the `citrate://` scheme stays the carry path, entitlement deferred per the decision log.
 
 ## Open asks / blockers (owner in brackets)
 - ✅ **Resolver API contract** [DGX] — LOCKED (above); Mac wires the adaptation after DGX's PR lands.
@@ -103,9 +111,15 @@ touching a shared contract. Merge when reviewed + green.
   no longer bundled (fetched first-run), bge stays. Fits GitHub Releases (2GB cap) → updater viable.
   **This is the artifact for the DGX bucket/`download/mac` redirect.** → **DGX please review + merge.**
 
-**citrate-landing (DGX) — Mac to review (point me at the PRs, I can't list them from here):**
-- ⬜ S1b short-code resolver (feat/grow-s1b-join-resolver) — I'll review the API vs the locked contract above.
-- ⬜ AASA `/.well-known/apple-app-site-association` (DDHUG44QC7.ai.citrate.core).
+**citrate-landing (DGX) — MERGED (post-merge review welcome; both match the locked contracts):**
+- ✅ **#45** S1b short-code resolver — API == the locked contract above. Landed on `main` after a green
+  preview build; inert until activated (migration + `JOIN_SIGNING_JWK`).
+- ✅ **#45** AASA `/.well-known/apple-app-site-association` (`DDHUG44QC7.ai.citrate.core`).
+
+**DGX ⇒ Mac's #218 (light-client):** reviewing now — if sound I'll merge it (you asked DGX to). It
+unblocks `citrate.ai/download/mac`: at 326MB the DMG fits GitHub Releases, so once you cut a signed
+release I point `download/mac` → `releases/latest/download/<dmg>`; only the fetched-first-run model
+blob needs the bucket, which I'll stand up + hand you a `CITRATE_MODEL_URL`.
 
 ## Mac-team follow-ups (from DGX gateSec review, now that the relay is default-on)
 - ⬜ **Relay-aware health + WsRelay reconnect** [Mac] — DGX flag A: with default-on, a mid-session relay
@@ -120,3 +134,6 @@ touching a shared contract. Merge when reviewed + green.
 - 2026-09-01 — relay **default-on** for alpha (F5 tradeoff accepted, off-switch env kept).
 - 2026-09-01 — lead with `citrate://` scheme; **defer** AASA associated-domains entitlement (notarization safety).
 - 2026-09-01 — self-contained join links now; opaque short-codes when the DGX resolver lands.
+- 2026-09-01 (DGX) — S1b resolver shipped (#45), API == the locked contract; EdDSA-signed resolve,
+  attribution kept private; safe-to-merge-inert (activate with the migration + `JOIN_SIGNING_JWK`).
+  AASA published (`DDHUG44QC7.ai.citrate.core`); entitlement stays deferred — `citrate://` is the carry path.
