@@ -145,6 +145,51 @@ pub struct CommsStatus {
     pub state: String,
     pub socket_path: String,
     pub healthy: bool,
+    /// Flag-A — the networked relay-link health, distinct from process liveness (`healthy`). One of
+    /// `"n/a"` (in-process relay), `"connected"`, `"degraded"` (relay down — ops failing), `"unknown"`
+    /// (not running / daemon didn't answer). Reported for honesty; NOT a restart trigger.
+    pub relay: String,
+}
+
+/// Flag-A — the relay-link health of the member daemon, distinct from PROCESS liveness (which the
+/// supervisor's socket probe already covers AND recovers via restart). This is REPORTED, never acted
+/// on: a relay drop must not restart the daemon — a flapping relay would restart-loop it to terminal
+/// `Failed` and fight the daemon's own WsRelay reconnect (citrate-comms) — so the app surfaces
+/// "degraded" while the daemon reconnects, and the socket probe keeps recovering a dead PROCESS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayHealth {
+    /// No networked relay configured — the in-process relay is always local-fine.
+    NotApplicable,
+    /// The daemon reports its relay link up.
+    Connected,
+    /// Relay configured but the daemon reports the link DOWN — relayed ops will fail until it
+    /// reconnects. This is exactly the state the old socket-only probe mislabelled "healthy".
+    Degraded,
+    /// Can't tell right now: daemon not running, didn't answer within the probe timeout, or is an
+    /// older build with no `relayStatus` op. Never reported as a hard failure (fail-open on ambiguity).
+    Unknown,
+}
+
+/// Pure mapping from a `relayStatus` IPC result to [`RelayHealth`]. Split out so the classification is
+/// unit-testable without a live supervisor/daemon. Fails OPEN to `Unknown` on an `Error` (an older
+/// daemon that doesn't know the op), any unexpected shape, or an IPC error — never a false "degraded".
+fn classify_relay(resp: Result<Response>) -> RelayHealth {
+    match resp {
+        Ok(Response::RelayStatus { connected: true }) => RelayHealth::Connected,
+        Ok(Response::RelayStatus { connected: false }) => RelayHealth::Degraded,
+        _ => RelayHealth::Unknown,
+    }
+}
+
+impl RelayHealth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RelayHealth::NotApplicable => "n/a",
+            RelayHealth::Connected => "connected",
+            RelayHealth::Degraded => "degraded",
+            RelayHealth::Unknown => "unknown",
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -342,6 +387,10 @@ impl CommsMemberManager {
             state: state.to_string(),
             socket_path: self.socket_path.to_string_lossy().to_string(),
             healthy: matches!(sup_state, Some(SupervisorState::Running)),
+            // Flag-A: also report the RELAY link, not just the process. `relay_status` is bounded +
+            // non-retrying (and a no-op fast path unless a networked relay is configured AND running),
+            // so it never reintroduces the unbounded-IPC UI stall.
+            relay: self.relay_status().as_str().to_string(),
         }
     }
 
@@ -356,6 +405,33 @@ impl CommsMemberManager {
     /// The session bearer (for the IPC). None until started.
     fn bearer(&self) -> Option<Zeroizing<String>> {
         self.token.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// True when a NETWORKED relay transport is configured (vs the local in-process relay). Only then
+    /// is relay-link health a meaningful question.
+    fn relay_configured(&self) -> bool {
+        self.relay_url
+            .as_deref()
+            .map(|u| !u.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Flag-A — the daemon's networked relay-link health (see [`RelayHealth`]). Bounded + non-retrying
+    /// (sub-second worst case), so it is safe to call alongside [`Self::status`] without risking the
+    /// UI-thread stall that unbounded IPC caused before. Reported for honesty; NEVER a restart trigger
+    /// (the supervisor's socket probe recovers a dead PROCESS; a relay drop is left to the daemon's own
+    /// WsRelay reconnect). Fails OPEN to `Unknown` on any ambiguity so it can't false-alarm.
+    pub fn relay_status(&self) -> RelayHealth {
+        if !self.relay_configured() {
+            return RelayHealth::NotApplicable;
+        }
+        if !self.is_running() {
+            return RelayHealth::Unknown;
+        }
+        let Some(bearer) = self.bearer() else {
+            return RelayHealth::Unknown;
+        };
+        classify_relay(member_ipc_quick(&self.socket_path, &bearer, &Request::RelayStatus))
     }
 
     /// Send one request to the daemon over its UDS socket and return the response.
@@ -452,6 +528,10 @@ enum Request {
     SubmitClaim { token_hash: String, ciphertext: String },
     /// CONNECT-S1 — poll the claims-inbox by invite token hash (owner side).
     PollClaims { token_hash: String },
+    /// Flag-A — ask the daemon whether its networked relay link is currently up. Cheap in-memory
+    /// read on the daemon side; used by [`CommsMemberManager::relay_status`] so the app can report a
+    /// relay DROP instead of showing "healthy" (the UDS socket stays up while every relayed op fails).
+    RelayStatus,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -490,6 +570,9 @@ enum Response {
     Roster { members: Vec<RosterEntry> },
     /// CONNECT-S1 — polled claim ciphertexts (hex; opaque). The owner opens them with the invite key.
     Claims { ciphertexts: Vec<String> },
+    /// Flag-A — the daemon's networked relay-link state (answer to [`Request::RelayStatus`]).
+    /// `connected: false` = configured but the link is down (ops will fail until it reconnects).
+    RelayStatus { connected: bool },
     Error { message: String },
 }
 
@@ -520,22 +603,48 @@ fn connect_with_retry(socket_path: &Path) -> Result<UnixStream> {
 /// `Ipc` error and the surface falls to its empty/error state instead of beachballing.
 const COMMS_IPC_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Connect to the daemon's UDS, authenticate with the bearer, send one request, read one response.
+/// Flag-A — short, single-attempt timeout for the relay-health probe. It must never add UI latency,
+/// so it does NOT use `connect_with_retry` (that window is for first-open races) and caps the whole
+/// round-trip well under a second. A wedged daemon is already the supervisor's job; this probe only
+/// asks "is the relay link up right now?" and fails-open (→ `Unknown`) on any ambiguity.
+const RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+
+/// Connect to the daemon's UDS (retrying briefly through the first-open race), authenticate, send one
+/// request, read one response — the normal command path.
 fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
     let stream = connect_with_retry(socket_path)?;
+    ipc_round_trip(stream, COMMS_IPC_TIMEOUT, bearer, req)
+}
+
+/// Flag-A — a bounded, NON-retrying round-trip for the relay-health probe: one connect attempt and a
+/// sub-second timeout so a health check can never stall a caller. Used only by `relay_status`.
+fn member_ipc_quick(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
+    let stream = UnixStream::connect(socket_path).map_err(|e| CommsError::Ipc(e.to_string()))?;
+    ipc_round_trip(stream, RELAY_PROBE_TIMEOUT, bearer, req)
+}
+
+/// The shared post-connect half of the IPC: bound both directions by `timeout`, do the bearer
+/// handshake, then one request → one response. Factored out so the normal (retry-connect) path and
+/// the relay-health probe (single-connect, short timeout) share identical framing.
+fn ipc_round_trip(
+    stream: UnixStream,
+    timeout: Duration,
+    bearer: &str,
+    req: &Request,
+) -> Result<Response> {
     // Bound both directions before any read/write (SO_RCVTIMEO/SO_SNDTIMEO). Applied to the clone too
     // so neither the read nor the write side can hang indefinitely.
     stream
-        .set_read_timeout(Some(COMMS_IPC_TIMEOUT))
+        .set_read_timeout(Some(timeout))
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
     stream
-        .set_write_timeout(Some(COMMS_IPC_TIMEOUT))
+        .set_write_timeout(Some(timeout))
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
     let mut writer = stream
         .try_clone()
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
-    let _ = writer.set_write_timeout(Some(COMMS_IPC_TIMEOUT));
-    let _ = writer.set_read_timeout(Some(COMMS_IPC_TIMEOUT));
+    let _ = writer.set_write_timeout(Some(timeout));
+    let _ = writer.set_read_timeout(Some(timeout));
     let mut reader = BufReader::new(stream);
 
     // bearer handshake

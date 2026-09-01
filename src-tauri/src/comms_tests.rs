@@ -378,3 +378,84 @@ fn shutdown_is_a_safe_noop_when_never_started() {
     // the unit-test binary it stays uninitialized and shutdown() must be a clean no-op (never panics).
     super::shutdown();
 }
+
+// ---- Flag-A: relay-aware health (report a relay DROP instead of a socket-only "healthy") ----
+
+#[test]
+fn classify_relay_maps_each_response() {
+    // The core of the fix: connected → Connected, DISCONNECTED → Degraded (the state the old
+    // socket-only probe called "healthy"), and anything ambiguous fails OPEN to Unknown so it can
+    // never false-alarm the UI.
+    assert_eq!(classify_relay(Ok(Response::RelayStatus { connected: true })), RelayHealth::Connected);
+    assert_eq!(classify_relay(Ok(Response::RelayStatus { connected: false })), RelayHealth::Degraded);
+    // Older daemon that doesn't know the op → Error → Unknown (not a hard failure).
+    assert_eq!(
+        classify_relay(Ok(Response::Error { message: "unknown op".into() })),
+        RelayHealth::Unknown
+    );
+    // A transport error → Unknown too (the socket probe, not this, owns process liveness).
+    assert_eq!(classify_relay(Err(CommsError::Ipc("boom".into()))), RelayHealth::Unknown);
+}
+
+#[test]
+fn relay_status_request_serializes_and_response_parses() {
+    // Wire-format parity with the daemon: op "relayStatus"; response type "relayStatus" + connected.
+    let req = serde_json::to_string(&Request::RelayStatus).expect("serialize");
+    assert!(req.contains("\"op\":\"relayStatus\""), "op tag: {req}");
+    let resp: Response =
+        serde_json::from_str("{\"type\":\"relayStatus\",\"connected\":false}").expect("parse");
+    assert!(matches!(resp, Response::RelayStatus { connected: false }));
+}
+
+#[test]
+fn member_ipc_quick_round_trips_relay_status_against_a_stub() {
+    // The bounded probe path speaks the same handshake + framing as the normal client, and a daemon
+    // reporting its link DOWN classifies as Degraded.
+    let sock = short_sock("relayq");
+    let _ = std::fs::remove_file(&sock);
+    let bearer = "b".repeat(64);
+    let (sock_srv, bearer_srv) = (sock.clone(), bearer.clone());
+    let handle = std::thread::spawn(move || {
+        let listener = std::os::unix::net::UnixListener::bind(&sock_srv).expect("bind");
+        let (stream, _) = listener.accept().expect("accept");
+        let mut w = stream.try_clone().unwrap();
+        let mut r = BufReader::new(stream);
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap(); // auth
+        assert!(line.contains(&bearer_srv), "auth carried the bearer");
+        writeln!(w, "{{\"type\":\"ready\"}}").unwrap();
+        line.clear();
+        r.read_line(&mut line).unwrap();
+        assert!(line.contains("relayStatus"), "got the relay-status request: {line}");
+        writeln!(w, "{{\"type\":\"relayStatus\",\"connected\":false}}").unwrap();
+    });
+    for _ in 0..100 {
+        if sock.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let resp = member_ipc_quick(&sock, &bearer, &Request::RelayStatus).expect("probe ipc");
+    assert_eq!(classify_relay(Ok(resp)), RelayHealth::Degraded);
+    let _ = handle.join();
+}
+
+#[test]
+fn relay_status_is_not_applicable_without_a_networked_relay() {
+    // In-process relay (no CITRATE_MEMBER_RELAY_URL): relay-link health is meaningless → n/a, and
+    // status() reports it WITHOUT any IPC (fast path), so it never stalls.
+    let (mgr, _dir) = stub_manager("relaynone");
+    assert_eq!(mgr.relay_status(), RelayHealth::NotApplicable);
+    assert_eq!(mgr.status().relay, "n/a");
+}
+
+#[test]
+fn relay_status_is_unknown_when_configured_but_not_running() {
+    // A networked relay IS configured but the daemon isn't running → we genuinely can't tell, so
+    // Unknown (never a false "degraded"), and again no IPC is attempted.
+    let (mgr, _dir) = stub_manager("relayoff");
+    let mgr = mgr.with_relay_url(CLUSTER_RELAY_URL);
+    assert!(!mgr.is_running());
+    assert_eq!(mgr.relay_status(), RelayHealth::Unknown);
+    assert_eq!(mgr.status().relay, "unknown");
+}
