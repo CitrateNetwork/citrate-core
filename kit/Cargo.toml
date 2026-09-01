@@ -30,6 +30,10 @@ ureq = { version = "3", features = ["json"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 url = "2"
 sha2 = "0.10"
+# HKDF-SHA256 for wallet::derive_scoped_secret (CONNECT-S5 portable comms identity): a scoped,
+# deterministic secret from the sealed entropy, NOT a signature. Already compiled transitively
+# (hkdf/hmac are in Cargo.lock) — promoting to a direct dep adds no new compiled crate.
+hkdf = "0.12"
 base64 = "0.22"
 sha3 = "0.10"
 bip39 = { version = "1.2", features = ["std", "zeroize"] }

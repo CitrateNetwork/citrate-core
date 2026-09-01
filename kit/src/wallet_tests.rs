@@ -612,3 +612,50 @@ fn recover_personal_round_trips_and_resists_spoofing() {
         addr.to_lowercase()
     );
 }
+
+// =========================================================================
+// CONNECT-S5 — wallet-derived scoped secret (portable comms identity)
+// =========================================================================
+
+#[test]
+fn derive_scoped_secret_is_deterministic_domain_separated_and_valid() {
+    const INFO: &[u8] = b"citrate-comms-member-identity-v1";
+    // Two independent vaults holding the SAME wallet (the cross-device reinstall scenario) must
+    // derive the SAME scoped secret — this is exactly what makes the comms identity portable.
+    let (v1, _p1) = init_and_unlock();
+    import(&v1, CANONICAL_MNEMONIC).expect("import v1");
+    let (v2, _p2) = init_and_unlock();
+    import(&v2, CANONICAL_MNEMONIC).expect("import v2");
+
+    let a = derive_scoped_secret(&v1, INFO).expect("derive v1");
+    let b = derive_scoped_secret(&v2, INFO).expect("derive v2");
+    assert_eq!(&a[..], &b[..], "same wallet -> same scoped secret on every device");
+
+    // Stable across repeated calls on the same vault.
+    let a2 = derive_scoped_secret(&v1, INFO).expect("derive v1 again");
+    assert_eq!(&a[..], &a2[..], "stable across calls");
+
+    // Domain separation: a different info yields a different secret from the same wallet.
+    let other = derive_scoped_secret(&v1, b"citrate-other-domain-v1").expect("derive other domain");
+    assert_ne!(&a[..], &other[..], "different domain -> different secret");
+
+    // The output is directly usable as a secp256k1 key.
+    assert!(
+        k256::ecdsa::SigningKey::from_slice(&a[..]).is_ok(),
+        "derived secret is a valid secp256k1 scalar"
+    );
+
+    // A DIFFERENT wallet yields a different identity (bound to the wallet, not the device).
+    let (v3, _p3) = init_and_unlock();
+    create(&v3).expect("fresh random wallet");
+    let c = derive_scoped_secret(&v3, INFO).expect("derive v3");
+    assert_ne!(&a[..], &c[..], "different wallet -> different comms identity");
+}
+
+#[test]
+fn derive_scoped_secret_fails_closed_when_no_wallet_or_locked() {
+    // A vault with no wallet (never initialized/unlocked) must error, never return a value — the
+    // comms provisioner turns this into WalletNotReady rather than a throwaway identity.
+    let (v, _p) = vault();
+    assert!(derive_scoped_secret(&v, b"x").is_err(), "no wallet -> fail closed");
+}

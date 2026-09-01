@@ -11,20 +11,26 @@
 //! daemon binds + we connect to), `CITRATE_MEMBER_BEARER_FILE` (a 0600 token file, the IPC gate),
 //! `CITRATE_MEMBER_SEED_FILE` (a 0600 file holding the signing seed — never inline), `CITRATE_MEMBER_DOMAIN`.
 //!
-//! ## Identity — Option A: device-sealed comms key (confirmed 2026-08-27)
-//! The daemon needs a signing seed but Rule 3 forbids exporting the main custody wallet. Decision: a
-//! FRESH, scoped secp256k1 comms key, sealed in the OS keyring (account `comms-member-key`, legacy
-//! custody service) and NEVER exported — the same custody pattern as the node storage key + mem-mcp
-//! store key. It holds NO value (not funds, not the SBT): a per-device identity, so
-//! `member address = comms key`. Loss → re-mint; deliberately no backup (don't spread a non-value
-//! key). [`provision_comms_seed`] mints-or-loads it; [`CommsMemberManager::start`] writes it to a
-//! 0600 file and passes the PATH (`CITRATE_MEMBER_SEED_FILE`), so the secret never crosses env/argv.
-//! An unreachable keyring fails CLOSED (never a fake/absent identity — Rule 1).
+//! ## Identity — CONNECT-S5: WALLET-DERIVED comms key (supersedes "Option A", 2026-08-31)
+//! The daemon needs a signing seed but Rule 3 forbids exporting the main custody wallet. Original
+//! decision (Option A, 2026-08-27) was a FRESH RANDOM per-device key — but that made identity
+//! non-portable: reinstalling on another Mac minted a different comms address, so the member fell out
+//! of every group they were in (rosters key on the comms address). CONNECT-S5 fixes that: the comms
+//! key is now DERIVED DETERMINISTICALLY from the custody wallet via `wallet::derive_scoped_secret`
+//! (HKDF over the sealed BIP39 entropy, domain `COMMS_IDENTITY_INFO`). The SAME wallet yields the
+//! SAME comms address on every device, so membership follows the human across installs — "sign in on
+//! any Mac and you're in your groups." The derivation is NOT a signature (one-way KDF), so it needs
+//! no interactive ceremony and can run on the lazy daemon start; the wallet key never leaves the
+//! vault — only this scoped, one-way-derived key does, into a 0600 file (`CITRATE_MEMBER_SEED_FILE`).
+//! It still holds NO value (not funds, not the SBT). [`provision_comms_seed`] loads-or-derives it,
+//! cached in the OS keyring under `comms-member-key-v2` (the legacy random `comms-member-key` is no
+//! longer read — a versioned, observable migration; existing installs get a new address once and
+//! need a single re-invite). Fails CLOSED: unreachable keyring → hard fault; locked/absent wallet →
+//! `WalletNotReady` (never a random throwaway identity — Rule 1).
 //!
-//! A wallet<->comms off-chain attestation (the "roster == wallet" property, via `wallet_link`) is a
-//! deferred follow-on: nothing consumes it yet (the relay keys the roster on the comms address via
-//! SIWE). On-chain anchoring is deferred further. The whole comms-identity path is reroll-insensitive
-//! — SIWE / sign_binding sign over {domain, address, nonce, chain_id} and never touch chain state.
+//! A separate wallet<->comms on-chain/attestation anchor (via `wallet_link`) remains a deferred
+//! follow-on. The comms-identity path is reroll-insensitive — SIWE / sign_binding sign over
+//! {domain, address, nonce, chain_id} and never touch chain state.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -51,9 +57,17 @@ const ENV_BEARER_FILE: &str = "CITRATE_MEMBER_BEARER_FILE";
 const ENV_SEED_FILE: &str = "CITRATE_MEMBER_SEED_FILE";
 const ENV_DOMAIN: &str = "CITRATE_MEMBER_DOMAIN";
 
-/// OS keyring account for the device-sealed comms member key (Option A). A distinct account under
-/// the legacy custody service — the same namespacing the mem-mcp store key uses.
+/// OS keyring account for the LEGACY random device-sealed comms key (Option A, pre CONNECT-S5). No
+/// longer read — kept only as a name so the migration is observable/reversible. See `_V2` below.
+#[allow(dead_code)]
 const KEYRING_COMMS_ACCOUNT: &str = "comms-member-key";
+/// OS keyring account for the CONNECT-S5 wallet-derived comms key. A distinct account so the
+/// migration from the old random key is observable and reversible (we never overwrite the old slot
+/// in place). First start under v2 derives-and-caches; every later start is a cheap keyring read.
+const KEYRING_COMMS_ACCOUNT_V2: &str = "comms-member-key-v2";
+/// HKDF `info` (domain) that scopes the comms identity out of the wallet entropy. Fixed forever —
+/// changing it changes every member's comms address. Paired with `wallet::SCOPED_SECRET_SALT`.
+const COMMS_IDENTITY_INFO: &[u8] = b"citrate-comms-member-identity-v1";
 /// secp256k1 secret length.
 const COMMS_SEED_LEN: usize = 32;
 
@@ -83,6 +97,11 @@ pub enum CommsError {
     /// The OS keyring is unreachable / a stored comms key is corrupt — fail closed (never mint or
     /// run under a random/absent identity). No key material carried.
     Keyring(String),
+    /// CONNECT-S5: the comms identity is derived from the wallet, but the wallet isn't ready yet
+    /// (custody vault locked, or no wallet created) — fail closed with an honest, actionable signal
+    /// (the caller/UI says "finish sign-in first") rather than minting a throwaway identity. No key
+    /// material carried.
+    WalletNotReady(String),
 }
 
 impl std::fmt::Display for CommsError {
@@ -94,6 +113,7 @@ impl std::fmt::Display for CommsError {
             CommsError::AlreadyRunning => write!(f, "comms-member-daemon already running"),
             CommsError::Ipc(m) => write!(f, "comms ipc error: {m}"),
             CommsError::Keyring(m) => write!(f, "comms keyring error: {m}"),
+            CommsError::WalletNotReady(m) => write!(f, "comms identity needs your wallet: {m}"),
         }
     }
 }
@@ -505,15 +525,25 @@ pub fn shutdown() {
     }
 }
 
-/// Load the device-sealed comms key from the OS keyring, minting a fresh secp256k1 key on first use
-/// (Option A). Returned as hex [`Zeroizing`] ready to write to the daemon's 0600 seed file. The key
-/// is a scoped, non-value per-device identity (NOT the custody wallet); it leaves this process only
-/// into that 0600 file. Stable across restarts (persistent member identity). An unreachable keyring,
-/// or a stored key that is the wrong length or not a valid secp256k1 scalar, is a HARD FAULT — we
-/// never run the daemon under a random/absent identity (fail closed).
-fn load_or_mint_comms_seed(keyring: &dyn crate::custody::Keyring) -> Result<Zeroizing<String>> {
+/// Load the wallet-derived comms key from the OS keyring (account `_V2`), deriving it on first use
+/// via `derive` (CONNECT-S5). Returned as hex [`Zeroizing`] ready to write to the daemon's 0600 seed
+/// file. The key is a scoped identity (NOT the custody wallet, and never carries value); it leaves
+/// this process only into that 0600 file. It is DETERMINISTIC in the wallet, so the same wallet
+/// produces the same comms address on every device — membership follows the human across installs.
+///
+/// Fail-closed contract (Rule 1) — we NEVER run the daemon under a random/absent identity:
+///   - an unreachable keyring, or a cached key of the wrong length / not a valid secp256k1 scalar,
+///     is a `Keyring` hard fault;
+///   - if the key isn't cached and `derive` can't produce it (wallet locked / not created), that is
+///     a `WalletNotReady` fault — no throwaway identity is minted.
+///
+/// `derive` is injected (not called inline) so this stays a pure, keyring-only unit under test.
+fn load_or_derive_comms_seed(
+    keyring: &dyn crate::custody::Keyring,
+    derive: impl FnOnce() -> std::result::Result<Zeroizing<[u8; COMMS_SEED_LEN]>, String>,
+) -> Result<Zeroizing<String>> {
     match keyring
-        .get(KEYRING_COMMS_ACCOUNT)
+        .get(KEYRING_COMMS_ACCOUNT_V2)
         .map_err(|e| CommsError::Keyring(e.to_string()))?
     {
         Some(bytes) => {
@@ -535,32 +565,42 @@ fn load_or_mint_comms_seed(keyring: &dyn crate::custody::Keyring) -> Result<Zero
             Ok(hex)
         }
         None => {
-            // Mint a fresh valid secp256k1 secret via rejection sampling (OsRng bytes → validate),
-            // so we depend only on rand's OsRng + k256 validation, not their rng-trait versions.
-            use rand::rngs::OsRng;
-            use rand::RngCore;
-            let mut raw = Zeroizing::new([0u8; COMMS_SEED_LEN]);
-            loop {
-                OsRng.fill_bytes(raw.as_mut());
-                if k256::ecdsa::SigningKey::from_slice(raw.as_ref()).is_ok() {
-                    break;
-                }
-            }
+            // First start under v2: derive from the wallet (deterministic, portable) and cache it.
+            let raw = derive().map_err(CommsError::WalletNotReady)?;
+            // `derive_scoped_secret` already guarantees a valid scalar; re-validate as defense in
+            // depth before it ever reaches the daemon.
+            k256::ecdsa::SigningKey::from_slice(raw.as_ref()).map_err(|_| {
+                CommsError::Keyring("derived comms key is not a valid secp256k1 scalar".into())
+            })?;
             keyring
-                .set(KEYRING_COMMS_ACCOUNT, raw.as_ref())
+                .set(KEYRING_COMMS_ACCOUNT_V2, raw.as_ref())
                 .map_err(|e| CommsError::Keyring(e.to_string()))?;
             Ok(Zeroizing::new(hex::encode(raw.as_ref())))
         }
     }
 }
 
-/// Provision the member's signing seed (Option A — device-sealed comms key, confirmed 2026-08-27).
-/// Mints-or-loads a fresh scoped secp256k1 key sealed in the OS keyring (never exported), the same
-/// custody pattern as the node/mem storage keys. Reroll-insensitive. Fails CLOSED on an unreachable
-/// keyring — never a fake identity (Rule 1).
-fn provision_comms_seed<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Result<Zeroizing<String>> {
+/// Provision the member's signing seed (CONNECT-S5 — wallet-derived comms identity). Loads the
+/// cached key, or on first use derives it deterministically from the custody wallet via
+/// `wallet::derive_scoped_secret` so the SAME wallet yields the SAME comms address on every device
+/// (membership is portable across reinstalls). The wallet key itself never leaves the vault — only
+/// this one-way-derived scoped key does, into the daemon's 0600 seed file. Fails CLOSED: an
+/// unreachable keyring is a hard fault, and a locked/absent wallet surfaces `WalletNotReady` rather
+/// than a throwaway identity (Rule 1).
+fn provision_comms_seed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Zeroizing<String>> {
+    use tauri::Manager;
     let keyring = crate::custody::OsKeyring::legacy();
-    load_or_mint_comms_seed(&keyring)
+    let custody = app.state::<crate::custody::CustodyState>();
+    load_or_derive_comms_seed(&keyring, || {
+        // Device-bound auto-unlock (no user passphrase in the beta model), then derive. A locked or
+        // absent wallet surfaces as an honest error string → WalletNotReady.
+        custody
+            .0
+            .ensure_auto_unlocked()
+            .map_err(|e| format!("custody vault unavailable: {e}"))?;
+        crate::wallet::derive_scoped_secret(&custody.0, COMMS_IDENTITY_INFO)
+            .map_err(|e| e.to_string())
+    })
 }
 
 /// Derive the EVM address (lowercase hex, **no** `0x`) of a secp256k1 secret hex — the member's

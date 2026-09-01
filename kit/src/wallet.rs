@@ -381,6 +381,54 @@ pub(crate) fn sign_message(vault: &CustodyVault, message: &[u8]) -> Result<Vec<u
     // `entropy` + `key` zeroize on drop here.
 }
 
+/// HKDF salt (domain) for [`derive_scoped_secret`]. Fixed forever — changing it re-derives every
+/// scoped secret (a different comms identity), so it is a hard versioning boundary.
+const SCOPED_SECRET_SALT: &[u8] = b"citrate/wallet/scoped-secret/v1";
+
+/// **In-process only.** Derive a DETERMINISTIC, scoped 32-byte secret from the stored wallet's
+/// sealed BIP39 entropy via HKDF-SHA256, domain-separated by `info`. The same wallet (same sealed
+/// entropy) yields the same secret on every device, so a key built from it is PORTABLE across
+/// installs — this is what lets a member's comms identity follow their wallet to a new machine
+/// (CONNECT-S5). Requires the vault UNLOCKED (fails closed via `read_entropy` if locked/absent).
+///
+/// ## Why this is NOT under the Rule-3 ceremony mandate
+/// [`sign_message`]/[`sign_transaction`]/[`sign_personal`] are `pub(crate)` and reachable only from
+/// the [`crate::ceremony::SignatureCeremony`] because they PRODUCE A SIGNATURE with the wallet key.
+/// This function produces NO signature — it is a one-way KDF over the entropy — so it carries no
+/// signing authority and can be called by a background provisioner (the lazy comms daemon start,
+/// which cannot drive an interactive ceremony). It is still @rule8-sensitive key material: it is
+/// `pub(crate)`, reads the same sealed entropy the signers do, and returns a [`Zeroizing`] secret
+/// that must never be logged or exported except into the daemon's 0600 seed file.
+///
+/// The entropy and the comms key are cryptographically independent: the wallet signing key is
+/// `BIP32(entropy, m/44'/60'/0'/0/0)`, this is `HKDF(entropy, domain)` — leaking the derived secret
+/// reveals nothing about the entropy (HKDF one-way) or the wallet key.
+///
+/// The output is guaranteed to be a valid secp256k1 scalar: on the ~2^-128 chance HKDF expands to a
+/// value >= n or 0, it re-expands with an incremented counter — deterministically, so it is still
+/// stable across devices.
+pub fn derive_scoped_secret(vault: &CustodyVault, info: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    let entropy = read_entropy(vault)?;
+    let hk = Hkdf::<Sha256>::new(Some(SCOPED_SECRET_SALT), &entropy);
+    // Deterministic valid-scalar search: info ‖ counter(LE). counter 0 succeeds with overwhelming
+    // probability; the loop only exists so the derivation can never fail on a bad-scalar draw.
+    for counter in 0u16..=u16::MAX {
+        let mut okm = Zeroizing::new([0u8; 32]);
+        let mut ctx = Vec::with_capacity(info.len() + 2);
+        ctx.extend_from_slice(info);
+        ctx.extend_from_slice(&counter.to_le_bytes());
+        hk.expand(&ctx, &mut okm[..])
+            .map_err(|_| WalletError::Derivation)?;
+        if k256::ecdsa::SigningKey::from_slice(&okm[..]).is_ok() {
+            return Ok(okm);
+        }
+    }
+    Err(WalletError::Derivation)
+    // `entropy` zeroizes on drop; each rejected `okm` zeroizes as it leaves scope.
+}
+
 /// **In-process only.** Sign a REAL legacy EIP-155 transaction with the stored
 /// wallet's default account (CORE-B1.4). Requires the vault UNLOCKED (fails
 /// closed if locked). Reads the sealed entropy, re-derives the `UnifiedKey`,

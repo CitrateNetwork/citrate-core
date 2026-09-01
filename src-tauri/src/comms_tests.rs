@@ -121,27 +121,51 @@ impl crate::custody::Keyring for FakeKeyring {
     }
 }
 
+// A fixed VALID secp256k1 scalar standing in for wallet::derive_scoped_secret (which is deterministic
+// in the wallet). Distinct from B so we can prove the cache wins over a second derive.
+const DERIVED_A: [u8; COMMS_SEED_LEN] = [7u8; COMMS_SEED_LEN];
+const DERIVED_B: [u8; COMMS_SEED_LEN] = [9u8; COMMS_SEED_LEN];
+
 #[test]
-fn comms_seed_is_minted_sealed_and_stable_across_restarts() {
+fn comms_seed_is_derived_sealed_and_stable_across_restarts() {
     let kr = FakeKeyring::new();
-    let first = load_or_mint_comms_seed(&kr).expect("mint");
-    // 32 bytes hex, and a VALID secp256k1 scalar — the daemon's EthWallet::from_secret_key accepts it.
+    // First start under v2: derive from the (fake) wallet + seal it.
+    let first =
+        load_or_derive_comms_seed(&kr, || Ok(zeroize::Zeroizing::new(DERIVED_A))).expect("derive");
+    // 32 bytes hex, a VALID secp256k1 scalar — the daemon's EthWallet::from_secret_key accepts it.
     assert_eq!(first.len(), COMMS_SEED_LEN * 2);
     let bytes = hex::decode(&*first).expect("hex");
-    assert!(k256::ecdsa::SigningKey::from_slice(&bytes).is_ok(), "minted key is a valid secp256k1 scalar");
-    // Sealed under the comms account.
-    assert!(kr.0.lock().unwrap().contains_key(KEYRING_COMMS_ACCOUNT));
-    // Stable: a second load returns the SAME sealed key (persistent member identity, never re-minted).
-    let second = load_or_mint_comms_seed(&kr).expect("load");
-    assert_eq!(&*first, &*second);
+    assert!(k256::ecdsa::SigningKey::from_slice(&bytes).is_ok(), "derived key is a valid secp256k1 scalar");
+    assert_eq!(bytes, DERIVED_A, "the sealed key is exactly what derive produced");
+    // Sealed under the CONNECT-S5 v2 account (not the legacy random one).
+    assert!(kr.0.lock().unwrap().contains_key(KEYRING_COMMS_ACCOUNT_V2));
+    assert!(!kr.0.lock().unwrap().contains_key(KEYRING_COMMS_ACCOUNT), "legacy account untouched");
+    // Stable across restarts: a second load returns the CACHED key and does NOT re-derive — proven by
+    // handing it a derive that would return a DIFFERENT key; the cached one must still win.
+    let second =
+        load_or_derive_comms_seed(&kr, || Ok(zeroize::Zeroizing::new(DERIVED_B))).expect("load");
+    assert_eq!(&*first, &*second, "cached key wins; derive is not re-invoked once sealed");
 }
 
 #[test]
 fn comms_seed_rejects_a_corrupt_stored_key() {
     let kr = FakeKeyring::new();
-    // Wrong length → hard fault (never hand a bad key to the daemon).
-    kr.set(KEYRING_COMMS_ACCOUNT, &[1, 2, 3]).unwrap();
-    assert!(matches!(load_or_mint_comms_seed(&kr), Err(CommsError::Keyring(_))));
+    // Wrong length in the v2 slot → hard fault (never hand a bad key to the daemon). derive unused.
+    kr.set(KEYRING_COMMS_ACCOUNT_V2, &[1, 2, 3]).unwrap();
+    assert!(matches!(
+        load_or_derive_comms_seed(&kr, || Ok(zeroize::Zeroizing::new(DERIVED_A))),
+        Err(CommsError::Keyring(_))
+    ));
+}
+
+#[test]
+fn comms_seed_fails_closed_when_wallet_not_ready() {
+    let kr = FakeKeyring::new();
+    // No cached key and the wallet can't derive (locked / not created) → WalletNotReady, NEVER a
+    // random throwaway identity (Rule 1). Nothing is sealed.
+    let r = load_or_derive_comms_seed(&kr, || Err("custody vault unavailable: locked".to_string()));
+    assert!(matches!(r, Err(CommsError::WalletNotReady(_))));
+    assert!(kr.0.lock().unwrap().is_empty(), "no identity sealed on a fail-closed derive");
 }
 
 #[test]
