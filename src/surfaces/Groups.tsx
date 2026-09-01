@@ -14,6 +14,7 @@ import { bridge } from "../bridge";
 import type { Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { addablePeople, filterPeople } from "./peopleDirectory";
+import { buildJoinLink } from "./referral";
 import {
   groupsSlice,
   refreshGroups,
@@ -589,6 +590,37 @@ export function Groups({ store, s }: SurfaceProps) {
           {/* ---- Roster ---- */}
           {tab === "roster" && (
             <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "14px 24px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* GROW-S0 — "Grow this cluster": the shareable web invite link. Any member can share it
+                  (the join still needs owner/admin approval at the relay). The link carries display data
+                  + your address for referral credit (name, cluster, address) — never a key or sealed
+                  token — the dignity rule (D-7). */}
+              {selected && (() => {
+                const face = faceOf(myAddr);
+                const link = buildJoinLink({
+                  clusterId: selected.id,
+                  clusterName: groupLabel(st, selected),
+                  inviter: myAddr,
+                  inviterHandle: face ? face.handle : undefined,
+                });
+                return (
+                  <div className="surface" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "14px 16px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 13.5, fontWeight: 500 }}>Grow this cluster</span>
+                      <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>share your invite link</span>
+                    </div>
+                    <p style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 }}>
+                      Post this link anywhere — once the web join page is live (GROW-S1), whoever opens it will see your invite and can ask to join. You approve who comes in. This is how you build your cluster to work on the network together: storage, training, inference, or shipping Dapps.
+                    </p>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", background: "var(--srf-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{link}</span>
+                      <button className="btn btn-secondary btn-sm" onClick={() => { const p = navigator.clipboard?.writeText(link); if (p) { p.then(() => store.toast("Invite link copied — post it to bring people into this cluster.")).catch(() => store.toast("Couldn't copy — the link is " + link)); } else { store.toast("Couldn't copy — the link is " + link); } }}>Copy link</button>
+                    </div>
+                    <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
+                      the web join page + one-tap install-and-join land with the join service (GROW-S1); the link carries your name, this cluster, and your address for referral credit — nothing more
+                    </span>
+                  </div>
+                );
+              })()}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>Roster</span>

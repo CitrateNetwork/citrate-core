@@ -11,6 +11,7 @@
 // The whole surface carries a "pending backend · illustrative" flag.
 // =====================================================================
 import { SurfaceProps } from "./shared";
+import { buildJoinLink } from "./referral";
 
 const STATS: { label: string; sub: string }[] = [
   { label: "Nodes online", sub: "counted by the network indexer" },
@@ -25,21 +26,19 @@ const MILESTONES: { at: string; reward: string }[] = [
   { at: "2,000", reward: "the full 2,000-run reward, settled to every member" },
 ];
 
-function shortAddr(a: string): string {
-  if (!a) return "your-wallet";
-  return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
-}
-
 export function Community({ store, s }: SurfaceProps) {
   const wallet = typeof store.identity === "function" ? store.identity().wallet : "";
-  const ref = shortAddr(wallet || s.walletAddr || "");
-  const refLink = `citrate.ai/join?ref=${ref}`;
+  // GROW-S0 — a REAL referral link (full address for attribution; a general network invite, no
+  // specific cluster). Replaces the earlier lossy `?ref=<shortAddr>` (a truncated address can't be
+  // attributed). The web join page (GROW-S1) renders the CTA; joins route through the relay + ceremony.
+  const refLink = buildJoinLink({ inviter: wallet || s.walletAddr || "" });
 
   const copyRef = () => {
-    try {
-      void navigator.clipboard?.writeText(refLink);
-      store.toast("Invite link copied — joins through it land in your group's roster as signed assertions.");
-    } catch {
+    const p = navigator.clipboard?.writeText(refLink);
+    if (p) {
+      p.then(() => store.toast("Invite link copied — share it to bring people onto the network under your referral."))
+        .catch(() => store.toast("Couldn't copy — the link is " + refLink));
+    } else {
       store.toast("Couldn't copy — the link is " + refLink);
     }
   };
