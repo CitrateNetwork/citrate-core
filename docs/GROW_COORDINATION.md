@@ -183,3 +183,23 @@ one shared `latest.json` gate).
   (`citrate.ai/download/model` → HF Gemma, landing #47, LIVE + size-verified). Chosen over a bare HF URL so
   the backing store can move HF → DO Space with a redirect flip, no app rebuild; sha256 pin makes it safe.
   Dedicated DO Space mirror deferred to an owner Spaces-key drop (not an alpha blocker).
+- 2026-09-01 — DOWNLOAD ROOT CAUSE: citrate-core is a PRIVATE repo → its GitHub release assets 404 for
+  anonymous users, so the `/download/{mac,linux,windows}` → `releases/latest/…` redirects could never
+  serve public downloads (the model worked only via public HF). Fix: dynamic OS-detecting `/download`
+  route (landing #49) → a PUBLIC DO Spaces mirror via `DOWNLOAD_BASE`; phones → `/download/desktop`
+  handoff; never a 404. Static `/download/*` redirects removed; `/download/model` kept.
+- 2026-09-01 — DO Spaces installer mirror LIVE (owner minted the Spaces key). Space `citrate-cdn` (nyc3),
+  public-read + CDN; `DOWNLOAD_BASE = https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads`. Mac
+  verified end-to-end: `citrate.ai/download` (Mac UA) → CDN `Citrate-Core-macos-arm64.dmg` → 200
+  (371,975,352 B, sha256 `83f8ae9a…`). Linux/Windows = upload to `downloads/` + flip `built:true` in
+  `src/lib/download.ts` (one line each) when the assets build; no landing change.
+- 2026-09-01 — NOTARIZATION + MIRROR (clarification): serving the DMG from the DO Space needs NO
+  re-notarization and nothing handed back. Notarization is STAPLED INTO the `.dmg` bytes; the mirror
+  serves the exact sha256-verified bytes DGX pulled from the private release, so Gatekeeper is satisfied
+  wherever it's hosted. Re-notarization is only ever needed if the BYTES change (re-sign / re-bundle /
+  new build) — not for a byte-identical rehost.
+- 2026-09-01 — MODEL MIRROR = GO (owner): mirror the Gemma GGUF into the Space's `models/` prefix and
+  flip `/download/model` → the Space (drop the HF dependency). DGX self-serve — the integrity pins are on
+  `main`: `MODEL_SHA256 = a555b900…`, `MODEL_SIZE_BYTES = 4_590_807_392` (model.rs). `CITRATE_MODEL_URL`
+  stays `https://citrate.ai/download/model` (the #226 default is untouched); the app re-verifies sha256 on
+  fetch and quarantines on mismatch, so a byte-identical mirror is safe. No app change, no rebuild.
