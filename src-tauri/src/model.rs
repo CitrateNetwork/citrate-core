@@ -65,10 +65,15 @@ pub const MODEL_SIZE_BYTES: u64 = 4_590_807_392;
 /// `ggml-org/gemma-4-E4B-it-GGUF` Q4_0 sha256 — also the bundled/seeded model.)
 pub const MODEL_SHA256: &str = "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2";
 
-/// The default source URL (the grounded HF resolve path). Overridable via the
-/// `CITRATE_MODEL_URL` env (a config seam — a Citrate CDN mirror can override it).
-pub const DEFAULT_MODEL_URL: &str =
-    "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf";
+/// The default source URL: a Citrate-controlled 307 vanity redirect to the model blob (today it
+/// hops to the HF `ggml-org/gemma-4-E4B-it-GGUF` Q4_0 resolve path; our reqwest downloader follows
+/// the redirect chain transparently). The indirection is deliberate — the backing store can move
+/// (HF → a DO Spaces mirror) with a one-line redirect flip and ZERO app rebuild (307 = uncached).
+/// Safe because the download is integrity-gated regardless of source: the first bytes must be the
+/// GGUF magic, the total must equal [`MODEL_SIZE_BYTES`], and the stream must hash to
+/// [`MODEL_SHA256`] or the file is quarantined (never Ready). Overridable via `CITRATE_MODEL_URL`.
+/// (Verified end-to-end 2026-09-01: /download/model → 307 → HF → 200, content-length == MODEL_SIZE_BYTES.)
+pub const DEFAULT_MODEL_URL: &str = "https://citrate.ai/download/model";
 
 /// The env var that overrides [`DEFAULT_MODEL_URL`] (the config seam).
 pub const MODEL_URL_ENV: &str = "CITRATE_MODEL_URL";
@@ -130,7 +135,10 @@ pub struct ModelDescriptor {
 impl ModelDescriptor {
     /// The HTTP URL the bytes are fetched from — DERIVED from the descriptor, never stored.
     /// `None` for a bundled model (seeded from the app, not downloaded from a catalog source).
-    /// The HF form is exactly [`DEFAULT_MODEL_URL`] for the default Gemma descriptor.
+    /// This derives the DIRECT source for an HF/GitHub catalog descriptor; the app's own default
+    /// download instead goes through [`DEFAULT_MODEL_URL`] (a Citrate vanity redirect), which is a
+    /// separate config seam — the two are intentionally decoupled so the default's backing store can
+    /// move without touching catalog descriptors.
     pub fn download_url(&self) -> Option<String> {
         let rev = self.revision.as_deref().unwrap_or("main");
         match self.source {
@@ -149,8 +157,9 @@ impl ModelDescriptor {
 
 /// The default Gemma descriptor — the single model the app has always shipped, now expressed
 /// as a descriptor so the catalog can add more alongside it. Its values are the existing pins
-/// ([`MODEL_FILE`]/[`MODEL_SIZE_BYTES`]/[`MODEL_SHA256`]); `download_url()` reproduces
-/// [`DEFAULT_MODEL_URL`]. `source` is `Bundled` (it is the app's built-in default), while the
+/// ([`MODEL_FILE`]/[`MODEL_SIZE_BYTES`]/[`MODEL_SHA256`]); its HF `download_url()` derives the direct
+/// Hugging Face resolve path (the vanity [`DEFAULT_MODEL_URL`] currently redirects there). `source` is
+/// `Bundled` (it is the app's built-in default), while the
 /// repo/revision still point at the real HF resolve path so a re-download resolves correctly.
 pub fn default_descriptor() -> ModelDescriptor {
     ModelDescriptor {
