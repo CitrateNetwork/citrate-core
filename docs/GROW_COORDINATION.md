@@ -66,7 +66,21 @@ GET  /api/join/jwks   → { keys: [publicJwk] }   (verify `sig` on the resolve)
 Release** asset (no bucket needed). Point `citrate.ai/download/mac` →
 `https://github.com/CitrateNetwork/citrate-core/releases/latest/download/Citrate-Core-macos-arm64.dmg`
 (stable asset name; survives re-cuts). Release: `v0.1.0-alpha.1` (prerelease), notarized + stapled.
-Only the fetched-first-run **model blob** still wants a bucket + a `CITRATE_MODEL_URL` (DGX to stand up).
+
+**Model blob + `CITRATE_MODEL_URL` (✅ DGX stood up the seam 2026-09-01 — LIVE):**
+```
+CITRATE_MODEL_URL = https://citrate.ai/download/model
+   → 307 → huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf
+   verified end-to-end: final content-length = 4,590,807,392 = model.rs MODEL_SIZE_BYTES ✓
+```
+A stable, Citrate-controlled URL for the first-run Gemma fetch — the `model.rs` config seam
+("a Citrate CDN mirror can override" the default). **Mac: bake `CITRATE_MODEL_URL=https://citrate.ai/download/model`
+into the light-client build** (or set it as the `model.rs` default). Safe because the app pins the
+sha256 (`a555b900…`) + quarantines on mismatch → any backing store must serve byte-identical bytes.
+`307` (temporary) so DGX can flip the backing store HF → a DO Spaces mirror later with **zero app rebuild**.
+The 4.28GB blob exceeds the 2GB GitHub-Releases cap, which is why it lives off-Releases. The dedicated
+DO Space mirror is an owner-gated follow-up (needs Spaces access keys — DO API token can't mint them);
+not an alpha blocker, HF is the byte source today.
 
 **Updater feed (WO-2):** `releases/latest/download/latest.json` on GitHub Releases (tiny, fine on GH),
 but its **artifact URLs must point at the bucket**, not GH (2GB asset cap). Needs `TAURI_SIGNING_PRIVATE_KEY`.
@@ -97,9 +111,12 @@ but its **artifact URLs must point at the bucket**, not GH (2GB asset cap). Need
 - ✅ **Resolver API contract** [DGX] — LOCKED (above); Mac wires the adaptation after DGX's PR lands.
 - ⬜ **Light-client go/no-go** [owner] → the pivotal unblock for download+updates+funnel (Mac builds it).
   Determines the artifact size the bucket must hold (5GB full vs ~few-hundred-MB light + a model blob).
-- ⬜ **Object-storage bucket** — DGX OFFERED to stand it up (R2/DO Spaces/S3). PLAN: Mac ships the
-  **light** DMG (GitHub Releases-hostable) + hands DGX the **model blob** URL to place in the bucket +
-  a `CITRATE_MODEL_URL`; DGX points `citrate.ai/download/mac` at the DMG. Confirm once light-client is a go.
+- 🟡 **Object-storage bucket** — model-fetch UNBLOCKED via the `CITRATE_MODEL_URL` seam
+  (`citrate.ai/download/model`, HF-backed, LIVE — see Interface contracts). The dedicated **DO Spaces
+  mirror** is the remaining, owner-gated piece: needs **Spaces access keys** (S3-style key/secret) created
+  in the DO console — the DO API token can't mint them and `doctl` has no `spaces` command. When keys land:
+  DGX creates the Space, uploads the blob (verifying sha256 == `a555b900…`), flips the `/download/model`
+  redirect target — no app change. **Not blocking alpha.** (`download/mac` already points at the DMG.)
 - ⬜ **`TAURI_SIGNING_PRIVATE_KEY`** [owner/infra] + latest.json artifacts → bucket (WO-2).
 - ⬜ **Relay at scale** (F5 sharding/DDoS posture) [DGX/infra] — not blocking alpha, don't single-home silently.
 - ⬜ **X/Discord prod OAuth creds + Discord bot** [owner/DGX] — social-readiness workstream (its own planset).
@@ -139,3 +156,7 @@ blob needs the bucket, which I'll stand up + hand you a `CITRATE_MODEL_URL`.
 - 2026-09-01 (DGX) — S1b resolver shipped (#45), API == the locked contract; EdDSA-signed resolve,
   attribution kept private; safe-to-merge-inert (activate with the migration + `JOIN_SIGNING_JWK`).
   AASA published (`DDHUG44QC7.ai.citrate.core`); entitlement stays deferred — `citrate://` is the carry path.
+- 2026-09-01 (DGX) — `CITRATE_MODEL_URL` stood up as a Citrate-controlled vanity redirect
+  (`citrate.ai/download/model` → HF Gemma, landing #47, LIVE + size-verified). Chosen over a bare HF URL so
+  the backing store can move HF → DO Space with a redirect flip, no app rebuild; sha256 pin makes it safe.
+  Dedicated DO Space mirror deferred to an owner Spaces-key drop (not an alpha blocker).
