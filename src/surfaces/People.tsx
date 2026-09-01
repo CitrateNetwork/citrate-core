@@ -11,6 +11,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { filterPeople, Person } from "./peopleDirectory";
+import { managedGroups, navigatorSummary, type GroupRoleRow } from "./groupsNavigator";
+import { selectGroup } from "../shell/slices/groups";
+import { selectClusterGroup } from "../shell/slices/cluster";
+import type { GroupRole } from "../bridge/domains";
+
+// CONNECT-S4 — role badge styling. owner/admin read as "you manage this"; member/guest/agent are muted.
+const ROLE_STYLE: Record<GroupRole, { fg: string; bd: string }> = {
+  owner: { fg: "var(--accent-text)", bd: "var(--accent)" },
+  admin: { fg: "var(--info)", bd: "var(--info)" },
+  member: { fg: "var(--tx-3)", bd: "var(--line-2)" },
+  guest: { fg: "var(--tx-3)", bd: "var(--line-2)" },
+  agent: { fg: "var(--tx-3)", bd: "var(--line-2)" },
+};
 
 function shortAddr(a: string): string {
   return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
@@ -24,6 +37,7 @@ const NET_LABEL: Record<string, string> = { x: "X", discord: "Discord", linkedin
 
 export function People({ store, s }: SurfaceProps) {
   const [q, setQ] = useState("");
+  const [adminOnly, setAdminOnly] = useState(false); // CONNECT-S4 — "where I'm admin" filter
 
   useEffect(() => {
     void store.refreshPeople();
@@ -33,6 +47,13 @@ export function People({ store, s }: SurfaceProps) {
   const shown = useMemo(() => filterPeople(s.people, q), [s.people, q]);
   const loading = s.peopleState === "loading";
   const unavailable = s.peopleState === "unavailable";
+
+  // CONNECT-S4 — the role navigator (derived live in store.refreshPeople, s.myGroups). One click jumps
+  // you to a group (Groups surface, that group selected) or its cluster (Cluster surface, selected).
+  const navSum = navigatorSummary(s.myGroups);
+  const navRows: GroupRoleRow[] = adminOnly ? managedGroups(s.myGroups) : s.myGroups;
+  const jumpToGroup = (id: string) => { void selectGroup(id); store.go("groups"); };
+  const jumpToCluster = (id: string) => { void selectClusterGroup(id); store.go("cluster"); };
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 900 }}>
@@ -50,6 +71,56 @@ export function People({ store, s }: SurfaceProps) {
         Everyone you share a group with, in one place — shown by their verified handle when they have one.
         This is your starting point for connecting people into groups and clusters.
       </p>
+
+      {/* CONNECT-S4 — the groups & clusters role navigator: your role in each, "where I'm admin",
+          one-click jump. Derived live (s.myGroups); honest when empty or a role hasn't loaded. */}
+      <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: navRows.length ? "1px solid var(--line-1)" : "none" }}>
+          <span className="eyebrow">Your groups &amp; clusters</span>
+          {s.peopleState === "ready" && (
+            <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)" }}>
+              {navSum.managed} you run · {navSum.total} total
+            </span>
+          )}
+          {navSum.managed > 0 && (
+            <button
+              className={"btn btn-sm " + (adminOnly ? "btn-secondary" : "btn-ghost")}
+              style={{ marginLeft: "auto" }}
+              onClick={() => setAdminOnly((v) => !v)}
+              title="Show only the groups you own or admin"
+            >
+              {adminOnly ? "Showing where I'm admin" : "Where I'm admin"}
+            </button>
+          )}
+        </div>
+        {s.myGroups.length === 0 ? (
+          <p style={{ fontSize: 12, color: "var(--tx-3)", lineHeight: 1.6, margin: 0, padding: "12px 16px" }}>
+            {loading ? "Loading your groups…" : "You're not in any groups yet — create or join one in Groups and it shows up here."}
+          </p>
+        ) : navRows.length === 0 ? (
+          <p style={{ fontSize: 12, color: "var(--tx-3)", margin: 0, padding: "12px 16px" }}>You don't own or admin any groups yet.</p>
+        ) : (
+          navRows.map((g) => {
+            const rs = g.myRole ? ROLE_STYLE[g.myRole] : null;
+            return (
+              <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderTop: "1px solid var(--line-1)" }}>
+                <span className="mono" style={{ width: 26, height: 26, borderRadius: "var(--r-1)", border: "1px solid var(--line-2)", background: "var(--srf-1)", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>
+                  {g.name.replace(/^0x/, "").slice(0, 2).toUpperCase()}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.name}</span>
+                  <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)" }}>{g.kind}</span>
+                </span>
+                <span className="mono" style={{ fontSize: 9, letterSpacing: ".06em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 999, border: `1px solid ${rs ? rs.bd : "var(--line-2)"}`, color: rs ? rs.fg : "var(--tx-3)" }}>
+                  {g.myRole ?? "—"}
+                </span>
+                <button className="btn btn-ghost btn-sm" onClick={() => jumpToGroup(g.id)}>Open</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => jumpToCluster(g.id)}>Cluster</button>
+              </div>
+            );
+          })
+        )}
+      </div>
 
       <input
         className="input"
@@ -105,14 +176,15 @@ export function People({ store, s }: SurfaceProps) {
                   ))}
                 </span>
               </div>
-              {/* S0 affordances — visibly next-step, not live no-ops */}
+              {/* CONNECT-S2 shipped the one-click add in the group roster's people-picker; from here we
+                  route the user there (they pick the target group + Add), rather than a dead no-op. */}
               <span style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                <button className="btn btn-secondary btn-sm" disabled title="One-click add lands in the next step (CONNECT-S2)">Add to group</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => store.go("groups")} title="Open Groups, then add them from a group's people-picker">Add to a group</button>
               </span>
             </div>
           ))}
           <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", marginTop: 2 }}>
-            one-click “Add to group / cluster” + messaging arrive in the next step — this list is the foundation
+            “Add to a group” opens Groups, where a group's people-picker adds them in one click (CONNECT-S2)
           </span>
         </div>
       )}

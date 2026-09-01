@@ -14,6 +14,8 @@ import {
   loadClusterGroups,
   selectClusterGroup,
   clusterGroupLabel,
+  joinCluster,
+  leaveCluster,
 } from "../shell/slices/cluster";
 
 function shortAddr(a: string): string {
@@ -77,6 +79,26 @@ export function Cluster(_props: SurfaceProps) {
 
       {st.selectedId && (
         <>
+          {/* CONNECT-S4 — Join / Leave the selected group's cluster mesh. Joining contributes your
+              storage and keeps you in sync; membership in the group is what authorizes it (RBAC at the
+              daemon). `joined` is this session's truth; an un-provisioned daemon surfaces an honest
+              error above, never a fake "joined". */}
+          {(() => {
+            const joined = st.joined.includes(st.selectedId);
+            return (
+              <div className="surface" style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: "var(--tx-2)" }}>
+                  {joined ? "You're in this cluster — contributing storage and staying in sync." : "Join to contribute your storage and sync files across the mesh."}
+                </span>
+                {joined ? (
+                  <button className="btn btn-ghost btn-sm" disabled={st.joining} onClick={() => st.selectedId && void leaveCluster(st.selectedId)}>Leave cluster</button>
+                ) : (
+                  <button className="btn btn-primary btn-sm" disabled={st.joining} onClick={() => st.selectedId && void joinCluster(st.selectedId)}>{st.joining ? "Joining…" : "Join cluster"}</button>
+                )}
+              </div>
+            );
+          })()}
+
           {/* status */}
           <div className="surface" style={{ padding: "14px 16px", display: "flex", gap: 24 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>

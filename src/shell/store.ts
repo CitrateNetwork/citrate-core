@@ -29,11 +29,13 @@ import {
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
-import type { GrantStatus, MemoryResult } from "../bridge/domains";
+import type { GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
+import { buildRoleNavigator } from "../surfaces/groupsNavigator";
+import { groupsSlice } from "./slices/groups";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
@@ -1458,7 +1460,7 @@ export class Store {
     if (this.state.peopleState !== "ready") this.setState({ peopleState: "loading" });
     try {
       const groups = await bridge.groups.list();
-      const rosterByGroup: Record<string, { address: string; role: string }[]> = {};
+      const rosterByGroup: Record<string, { address: string; role: GroupRole }[]> = {};
       const addrs = new Set<string>();
       for (const g of groups) {
         try {
@@ -1487,9 +1489,20 @@ export class Store {
         faces,
         self,
       );
-      this.setState({ people, peopleState: "ready" });
+      // CONNECT-S4 — the role navigator is derived in the SAME pass from the same rosters + self.
+      // Session names (groups created/renamed this session) win over the DTO name to match the Groups
+      // rail; those ids are also manage-capable pre-roster (the iCreated seam), keyed on comms self.
+      const names = groupsSlice.get().names;
+      const myGroups = buildRoleNavigator(
+        groups.map((g) => ({ id: g.id, name: g.name, kind: g.kind })),
+        rosterByGroup,
+        self,
+        names,
+        Object.keys(names),
+      );
+      this.setState({ people, myGroups, peopleState: "ready" });
     } catch {
-      this.setState({ people: [], peopleState: "unavailable" });
+      this.setState({ people: [], myGroups: [], peopleState: "unavailable" });
     }
   }
 

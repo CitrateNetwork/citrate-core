@@ -12,6 +12,7 @@
 
 import type { PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
+import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
 import { BRIDGE_MODE } from "../bridge/mode";
 
@@ -477,6 +478,13 @@ export interface AppState {
   people: Person[];
   peopleState: "loading" | "ready" | "unavailable";
   /**
+   * CONNECT-S4 — the groups & clusters role navigator: every group you're in, badged with your role,
+   * derived in the SAME pass as `people` (shares `peopleState`). Manage-capable groups sort first so
+   * "where I'm admin" is one glance. Never fabricated (Rule 1) — a group whose roster hasn't loaded
+   * carries a null role.
+   */
+  myGroups: GroupRoleRow[];
+  /**
    * Q-A.4a runtime memory-daemon status (NOT persisted, never fabricated). Read
    * from the REAL `memory_status()` on Storage mount / after a Start. `memDaemon`
    * is the honest supervisor state ("idle" before the first read, "running" when
@@ -670,6 +678,7 @@ export function freshState(pid: string): AppState {
     memGraphState: "idle",
     people: [],
     peopleState: "loading",
+    myGroups: [],
     memDaemon: "idle",
     memDaemonError: null,
     memSocketPath: null,
