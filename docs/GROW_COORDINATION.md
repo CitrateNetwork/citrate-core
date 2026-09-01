@@ -169,6 +169,26 @@ first-run), so every asset fits the GH Releases 2GB cap. Updater artifacts are O
 on all three until `TAURI_SIGNING_PRIVATE_KEY` is provisioned (one shared key,
 one shared `latest.json` gate).
 
+## 📦 Standing procedure — refreshing a mirrored download (do this EVERY rebuild)
+Whenever a release asset is rebuilt (Mac/Linux/Windows), the DO Space + its CDN must be refreshed or the
+public keeps getting the OLD bytes. Four steps — **step 4 is the one that bites** (DO Spaces CDN does NOT
+auto-purge on overwrite, so a re-upload alone leaves the edge serving the stale object until TTL):
+
+```bash
+# 1. Pull the CURRENT release asset (authed — private repo)
+gh release download <tag> --repo CitrateNetwork/citrate-core \
+  --pattern '<Asset-Name>' --clobber
+# 2. Verify sha256 == the release asset's digest (never mirror unverified bytes)
+shasum -a 256 <Asset-Name>
+# 3. Overwrite the object (public-read)
+aws s3 cp <Asset-Name> s3://citrate-cdn/downloads/<Asset-Name> \
+  --endpoint-url https://nyc3.digitaloceanspaces.com --acl public-read --content-type <mime>
+# 4. PURGE the Spaces CDN cache for that path (DO console → Spaces → citrate-cdn → Purge Cache →
+#    downloads/<Asset-Name>). WITHOUT THIS the edge serves the old file until the cache TTL expires.
+```
+Verify live: `curl -sI https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/<Asset-Name>` →
+`content-length` must equal the new build's size. The Mac team can re-check `/download` end-to-end on request.
+
 ## ⚠ ACTION FOR DGX — re-mirror the rebuilt Mac DMG (2026-09-01)
 The `v0.1.0-alpha.1` Mac asset was **rebuilt from current `main`** (includes #221 short-codes,
 #225 Flag-A, **#226 model-URL → vanity redirect**) and re-notarized (liblzma leak fixed + stapled;
