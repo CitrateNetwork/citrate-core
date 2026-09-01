@@ -94,6 +94,19 @@ but its **artifact URLs must point at the bucket**, not GH (2GB asset cap). Need
 - ⬜ **Relay at scale** (F5 sharding/DDoS posture) [DGX/infra] — not blocking alpha, don't single-home silently.
 - ⬜ **X/Discord prod OAuth creds + Discord bot** [owner/DGX] — social-readiness workstream (its own planset).
 
+## Open PR review + merge queue (both teams clear this together)
+Cross-review protocol: DGX reviews Mac PRs touching a shared contract; Mac reviews DGX landing PRs
+touching a shared contract. Merge when reviewed + green.
+
+**citrate-core (Mac):**
+- **#218 feat(light-client)** — ✅ built + verified: **326MB DMG / 620MB .app** (was 4.2GB/4.9GB); Gemma
+  no longer bundled (fetched first-run), bge stays. Fits GitHub Releases (2GB cap) → updater viable.
+  **This is the artifact for the DGX bucket/`download/mac` redirect.** → **DGX please review + merge.**
+
+**citrate-landing (DGX) — Mac to review (point me at the PRs, I can't list them from here):**
+- ⬜ S1b short-code resolver (feat/grow-s1b-join-resolver) — I'll review the API vs the locked contract above.
+- ⬜ AASA `/.well-known/apple-app-site-association` (DDHUG44QC7.ai.citrate.core).
+
 ## Mac-team follow-ups (from DGX gateSec review, now that the relay is default-on)
 - ⬜ **Relay-aware health + WsRelay reconnect** [Mac] — DGX flag A: with default-on, a mid-session relay
   drop currently reports "healthy" (the daemon health probe only checks the UDS socket) while every op
