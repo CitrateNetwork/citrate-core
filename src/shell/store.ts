@@ -35,6 +35,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
+import { parseJoinLink } from "../surfaces/referral";
 import { groupsSlice } from "./slices/groups";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
@@ -1534,6 +1535,35 @@ export class Store {
       /* ignore */
     }
     this.save();
+  }
+
+  /**
+   * GROW-S1 — handle a `citrate://join/...` deep-link handed to the app by the OS (the one-tap
+   * cold-start hand-off from the web join page). Parses the display context, stashes it as
+   * `pendingInvite`, and routes to Groups, which surfaces it and — for a full invite-token link —
+   * redeems it. Tolerant of a `citrate://` OR `https://citrate.ai/join/...` URL (parseJoinLink handles
+   * both). A malformed URL is ignored (no crash, no fabricated invite — Rule 1).
+   */
+  handleDeepLink(url: string): void {
+    if (!url) return;
+    const parts = parseJoinLink(url);
+    // Only act on a join-shaped link (has a cluster or a referrer); otherwise ignore quietly.
+    if (!parts.clusterId && !parts.inviter && !parts.inviterHandle) return;
+    this.setState({
+      pendingInvite: {
+        url,
+        clusterId: parts.clusterId,
+        clusterName: parts.clusterName,
+        inviterHandle: parts.inviterHandle,
+        goal: parts.goal,
+      },
+    });
+    this.go("groups");
+  }
+
+  /** Clear the pending deep-link invite once Groups has consumed it. */
+  clearPendingInvite(): void {
+    this.setState({ pendingInvite: null });
   }
 
   // ---------- sim tick (verbatim logic) ----------

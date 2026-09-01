@@ -22,6 +22,7 @@
     }
   },
   "plugins": {
+    "deep-link": { "desktop": { "schemes": ["citrate"] } },
     "updater": {
       "endpoints": [
         "https://github.com/CitrateNetwork/citrate-core/releases/latest/download/latest.json"

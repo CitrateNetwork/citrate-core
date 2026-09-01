@@ -154,6 +154,10 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_opener::init())
+        // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
+        // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).
+        // The frontend listens via @tauri-apps/plugin-deep-link's onOpenUrl → parseJoinLink → Groups.
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         // W2.1 — in-app auto-updates (signed GitHub Releases feed; pubkey pinned in
         // tauri.conf.json). The JS API drives check/download/install via this plugin.

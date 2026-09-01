@@ -485,6 +485,13 @@ export interface AppState {
    */
   myGroups: GroupRoleRow[];
   /**
+   * GROW-S1 — an invite handed to the app via the `citrate://join/...` deep-link (the one-tap
+   * cold-start hand-off from the web join page). Carries the display context (cluster + inviter +
+   * goal) and the raw link; Groups renders a banner and, for a full invite-token link, redeems it.
+   * Cleared once consumed. Null when no deep-link is pending.
+   */
+  pendingInvite: { url: string; clusterId?: string; clusterName?: string; inviterHandle?: string; goal?: string } | null;
+  /**
    * Q-A.4a runtime memory-daemon status (NOT persisted, never fabricated). Read
    * from the REAL `memory_status()` on Storage mount / after a Start. `memDaemon`
    * is the honest supervisor state ("idle" before the first read, "running" when
@@ -679,6 +686,7 @@ export function freshState(pid: string): AppState {
     people: [],
     peopleState: "loading",
     myGroups: [],
+    pendingInvite: null,
     memDaemon: "idle",
     memDaemonError: null,
     memSocketPath: null,

@@ -3,6 +3,7 @@ import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { wagmiConfig } from "./wagmi";
 import { store, useStore } from "./shell/store";
+import { wireDeepLinks } from "./shell/deepLink";
 import { AppState } from "./shell/state";
 import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
@@ -212,6 +213,8 @@ function Root() {
         .catch(() => {
           /* honest: a failed read leaves defaults; no fabricated values */
         });
+      // GROW-S1 — catch a `citrate://join/...` deep-link (cold-start or while running) → Groups.
+      void wireDeepLinks(store);
     }
     const onHash = () => {
       const r = (location.hash || "").replace(/^#\//, "");

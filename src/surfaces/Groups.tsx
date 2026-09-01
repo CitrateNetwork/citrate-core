@@ -438,6 +438,42 @@ export function Groups({ store, s }: SurfaceProps) {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "248px minmax(0,1fr)", minHeight: "100%", boxSizing: "border-box" }}>
+      {/* GROW-S1 — the deep-link invite banner: a `citrate://join/...` link opened the app and handed
+          us this invite (from the web join page). Show who invited you + to what; a full invite-token
+          link gets a one-click "Request to join" (server-blind claim → owner approves). A token-less
+          referral shows context only (joining still needs the owner to add you — no fake action). */}
+      {s.pendingInvite && (() => {
+        const pi = s.pendingInvite;
+        const hasToken = /[?&]t=/.test(pi.url) && /[?&]k=/.test(pi.url);
+        return (
+          <div style={{ gridColumn: "1 / -1", background: "var(--accent-wash)", borderBottom: "1px solid var(--accent)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13.5 }}>
+              {pi.inviterHandle ? <strong>@{pi.inviterHandle}</strong> : "Someone"} invited you to <strong>{pi.clusterName || pi.clusterId || "a cluster"}</strong>
+              {pi.goal ? <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", marginLeft: 8 }}>· {pi.goal}</span> : null}
+            </span>
+            <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              {hasToken && (
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={async () => {
+                    try {
+                      await bridge.invites.submitClaim(pi.url);
+                      store.toast("Request sent — they'll approve you and you'll join. No copy-paste needed.");
+                    } catch (e) {
+                      store.toast("Couldn't send the request — " + (e instanceof Error ? e.message : String(e)));
+                    } finally {
+                      store.clearPendingInvite();
+                    }
+                  }}
+                >
+                  Request to join
+                </button>
+              )}
+              <button className="btn btn-ghost btn-sm" onClick={() => store.clearPendingInvite()} style={{ color: "var(--tx-3)" }}>Dismiss</button>
+            </span>
+          </div>
+        );
+      })()}
       {/* ---------- left rail ---------- */}
       <div style={{ borderRight: "1px solid var(--line-1)", background: "var(--srf-1)", padding: "18px 14px", display: "flex", flexDirection: "column", gap: 12, minHeight: 0, overflow: "auto" }}>
         <div style={{ display: "flex", alignItems: "center" }}>
