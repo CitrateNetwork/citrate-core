@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "externalBin": [
+      "binaries/citrate",
+      "binaries/node-agent",
+      "binaries/mem-mcp",
+      "binaries/llama-server",
+      "binaries/ipfs",
+      "binaries/comms-member-daemon",
+      "binaries/cluster-daemon",
+      "binaries/hermes"
+    ],
+    "resources": [
+      "llama/*",
+      "models/bge-base-en-v1.5/*",
+      "docs-corpus/*",
+      "capsules/hello/*",
+      "capsules/echo-chain/*"
+    ],
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Larry Klosowski (DDHUG44QC7)",
+      "hardenedRuntime": true
+    }
+  }
+}
