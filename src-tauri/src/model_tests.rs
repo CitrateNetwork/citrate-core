@@ -148,9 +148,12 @@ fn pinned_model_consts_match_grounded_facts() {
     assert!(MODEL_SHA256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     // GGUF magic "GGUF".
     assert_eq!(&GGUF_MAGIC, b"GGUF");
-    // The default source URL points at the grounded HF resolve path.
+    // The default source URL is the Citrate-controlled vanity redirect (a 307 to the real blob). It
+    // is HTTPS and Citrate-owned; it deliberately does NOT embed the filename — the redirect can point
+    // anywhere, and integrity is enforced by MODEL_SHA256 + MODEL_SIZE_BYTES + the GGUF magic, not by
+    // the URL shape. (CITRATE_MODEL_URL still overrides it — covered by model_url_is_env_overridable.)
     assert!(DEFAULT_MODEL_URL.starts_with("https://"));
-    assert!(DEFAULT_MODEL_URL.ends_with(MODEL_FILE));
+    assert!(DEFAULT_MODEL_URL.contains("citrate.ai"));
 }
 
 /// The URL is overridable via CITRATE_MODEL_URL (a config seam), else defaults.
@@ -503,11 +506,15 @@ fn model_descriptor_default_and_per_file_isolation() {
     assert_eq!(json["sha256"], MODEL_SHA256);
     assert!(json.get("url").is_none(), "url is derived, never serialized");
 
-    // download_url() derives the HF resolve path — for an Hf descriptor at the default's
-    // repo/rev/file it reproduces DEFAULT_MODEL_URL exactly; a Bundled one has no URL.
+    // download_url() derives the DIRECT HF resolve path from the descriptor's repo/rev/file (a
+    // Bundled one has no URL). This is intentionally decoupled from DEFAULT_MODEL_URL — the app's
+    // default download goes through the Citrate vanity redirect, while this is the catalog source.
     assert_eq!(d.download_url(), None);
     let hf = ModelDescriptor { source: ModelSource::Hf, ..default_descriptor() };
-    assert_eq!(hf.download_url().as_deref(), Some(DEFAULT_MODEL_URL));
+    assert_eq!(
+        hf.download_url().as_deref(),
+        Some("https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf")
+    );
     let gh = ModelDescriptor {
         source: ModelSource::Github,
         repo: "owner/repo".to_string(),
