@@ -695,21 +695,33 @@ pub(crate) fn device_identity<R: tauri::Runtime>(
 /// host == the relay's domain, which the cluster relay satisfies), else [`CLUSTER_RELAY_DOMAIN`] as a
 /// last resort. Downgrade to plaintext is refused later by `WsRelay::connect` (non-loopback `ws://`
 /// is rejected).
+/// Resolve the comms transport. **DEFAULT-ON for the alpha (owner 2026-09-01):** with no override the
+/// daemon uses the shared rendezvous relay ([`CLUSTER_RELAY_URL`]) so two machines connect out of the
+/// box — a partner who just opens the DMG is on the network, no env/config. `CITRATE_MEMBER_RELAY_URL`
+/// overrides: an explicit `wss://`/`ws://` URL points elsewhere; an explicit OFF-switch
+/// (`off`/`disabled`/`none`/`local`/`in-process`/`0`/`false`, case-insensitive) drops back to the
+/// in-process relay (single node, no remote dependency — the escape hatch). Trade-off acknowledged:
+/// default-on makes the relay a dependency for cluster comms (red-team F5), accepted for the soak-test
+/// alpha with sharding/DDoS on the roadmap.
 fn resolve_relay_transport(
     relay_env: Option<String>,
     domain_env: Option<String>,
 ) -> (Option<String>, String) {
-    match relay_env.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) {
-        None => (None, COMMS_DOMAIN.to_string()),
-        Some(url) => {
-            let domain = domain_env
-                .map(|d| d.trim().to_string())
-                .filter(|d| !d.is_empty())
-                .or_else(|| host_of(&url))
-                .unwrap_or_else(|| CLUSTER_RELAY_DOMAIN.to_string());
-            (Some(url), domain)
-        }
+    let raw = relay_env.map(|u| u.trim().to_string()).unwrap_or_default();
+    let off = matches!(
+        raw.to_ascii_lowercase().as_str(),
+        "off" | "disabled" | "none" | "local" | "in-process" | "0" | "false"
+    );
+    if off {
+        return (None, COMMS_DOMAIN.to_string()); // escape hatch → in-process, no remote box
     }
+    let url = if raw.is_empty() { CLUSTER_RELAY_URL.to_string() } else { raw };
+    let domain = domain_env
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .or_else(|| host_of(&url))
+        .unwrap_or_else(|| CLUSTER_RELAY_DOMAIN.to_string());
+    (Some(url), domain)
 }
 
 /// Extract the host from a `ws://`|`wss://` URL: `wss://comms.citrate.ai:443/ws` → `comms.citrate.ai`.
@@ -737,10 +749,10 @@ fn ensure_started<R: tauri::Runtime>(
     let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("comms");
     let seed = provision_comms_seed(app).map_err(|e| e.to_string())?; // GATED — errors until the decision
     let bin = resolve_comms_member_bin(app)?;
-    // GROW-S2 transport (OPT-IN): run the local in-process relay unless CITRATE_MEMBER_RELAY_URL names
-    // a networked relay (the shared rendezvous, CLUSTER_RELAY_URL) — set by the connect/cluster flow.
-    // Keeping it opt-in means non-cluster users' comms never depend on a remote box. The domain rule
-    // lives in `resolve_relay_transport` (unit-tested).
+    // GROW-S2 transport (DEFAULT-ON for the alpha): use the shared rendezvous relay (CLUSTER_RELAY_URL)
+    // so a partner who just opens the DMG connects out of the box. CITRATE_MEMBER_RELAY_URL overrides
+    // (another URL, or an off-switch → in-process). The default + domain rule live in
+    // `resolve_relay_transport` (unit-tested).
     let (relay_url, domain) =
         resolve_relay_transport(std::env::var(ENV_RELAY_URL).ok(), std::env::var(ENV_DOMAIN).ok());
     let mut mgr = CommsMemberManager::new(

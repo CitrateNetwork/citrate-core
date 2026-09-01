@@ -117,13 +117,32 @@ fn empty_relay_url_stays_in_process() {
     assert_eq!(env.get(ENV_DOMAIN).map(String::as_str), Some(COMMS_DOMAIN));
 }
 
-// ---- resolve_relay_transport (pure) — GROW-S2 opt-in transport + SIWE-domain rule ----
+// ---- resolve_relay_transport (pure) — GROW-S2 DEFAULT-ON transport + SIWE-domain rule ----
 
 #[test]
-fn resolve_transport_defaults_to_in_process() {
-    // Unset OR whitespace-only ⇒ local in-process relay under COMMS_DOMAIN (no remote dependency).
-    assert_eq!(resolve_relay_transport(None, None), (None, COMMS_DOMAIN.to_string()));
-    assert_eq!(resolve_relay_transport(Some("  ".into()), Some("ignored".into())), (None, COMMS_DOMAIN.to_string()));
+fn resolve_transport_defaults_ON_to_the_shared_relay() {
+    // DEFAULT-ON (alpha): unset OR whitespace-only ⇒ the shared rendezvous relay under its domain, so a
+    // partner opening the DMG connects out of the box (no env/config).
+    assert_eq!(
+        resolve_relay_transport(None, None),
+        (Some(CLUSTER_RELAY_URL.to_string()), CLUSTER_RELAY_DOMAIN.to_string())
+    );
+    assert_eq!(
+        resolve_relay_transport(Some("   ".into()), None),
+        (Some(CLUSTER_RELAY_URL.to_string()), CLUSTER_RELAY_DOMAIN.to_string())
+    );
+}
+
+#[test]
+fn resolve_transport_explicit_off_switch_falls_back_to_in_process() {
+    // The escape hatch: an explicit off-value (case-insensitive) drops to the local in-process relay.
+    for off in ["off", "OFF", "disabled", "none", "local", "in-process", "0", "false"] {
+        assert_eq!(
+            resolve_relay_transport(Some(off.into()), Some("ignored".into())),
+            (None, COMMS_DOMAIN.to_string()),
+            "'{off}' must select in-process"
+        );
+    }
 }
 
 #[test]
