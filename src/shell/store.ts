@@ -35,7 +35,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
-import { parseJoinLink } from "../surfaces/referral";
+import { parseJoinLink, resolveJoinCode } from "../surfaces/referral";
 import { groupsSlice } from "./slices/groups";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
@@ -1547,7 +1547,21 @@ export class Store {
   handleDeepLink(url: string): void {
     if (!url) return;
     const parts = parseJoinLink(url);
-    // Only act on a join-shaped link (has a cluster or a referrer); otherwise ignore quietly.
+    // GROW-S1b — an opaque short code: resolve + VERIFY the EdDSA signature before trusting anything,
+    // then show the invite. Land on Groups immediately with a "resolving…" banner so it's responsive.
+    if (parts.code) {
+      this.setState({ pendingInvite: { url, resolving: true } });
+      this.go("groups");
+      void resolveJoinCode(parts.code)
+        .then((r) =>
+          this.setState({
+            pendingInvite: { url, clusterId: r.clusterId, clusterName: r.clusterName, inviterHandle: r.inviterHandle, goal: r.goal },
+          }),
+        )
+        .catch(() => this.setState({ pendingInvite: { url, unresolved: true } }));
+      return;
+    }
+    // Self-contained link — act only if it's join-shaped (has a cluster or referrer); else ignore.
     if (!parts.clusterId && !parts.inviter && !parts.inviterHandle) return;
     this.setState({
       pendingInvite: {

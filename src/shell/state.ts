@@ -490,7 +490,17 @@ export interface AppState {
    * goal) and the raw link; Groups renders a banner and, for a full invite-token link, redeems it.
    * Cleared once consumed. Null when no deep-link is pending.
    */
-  pendingInvite: { url: string; clusterId?: string; clusterName?: string; inviterHandle?: string; goal?: string } | null;
+  pendingInvite: {
+    url: string;
+    clusterId?: string;
+    clusterName?: string;
+    inviterHandle?: string;
+    goal?: string;
+    /** GROW-S1b — an opaque code is being resolved+verified (show a "resolving…" banner). */
+    resolving?: boolean;
+    /** GROW-S1b — the code couldn't be verified (bad sig / expired / resolver down) — honest error. */
+    unresolved?: boolean;
+  } | null;
   /**
    * Q-A.4a runtime memory-daemon status (NOT persisted, never fabricated). Read
    * from the REAL `memory_status()` on Storage mount / after a Start. `memDaemon`

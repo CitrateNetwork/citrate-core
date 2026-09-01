@@ -445,6 +445,23 @@ export function Groups({ store, s }: SurfaceProps) {
       {s.pendingInvite && (() => {
         const pi = s.pendingInvite;
         const hasToken = /[?&]t=/.test(pi.url) && /[?&]k=/.test(pi.url);
+        // GROW-S1b states: resolving a short code, or it failed to verify — show honestly, no fake invite.
+        if (pi.resolving) {
+          return (
+            <div style={{ gridColumn: "1 / -1", background: "var(--srf-2)", borderBottom: "1px solid var(--line-1)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14 }}>
+              <span style={{ fontSize: 13 }}>Resolving your invite…</span>
+              <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto", color: "var(--tx-3)" }} onClick={() => store.clearPendingInvite()}>Dismiss</button>
+            </div>
+          );
+        }
+        if (pi.unresolved) {
+          return (
+            <div style={{ gridColumn: "1 / -1", background: "var(--warn-bg)", borderBottom: "1px solid var(--warn)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14 }}>
+              <span style={{ fontSize: 13 }}>That invite link couldn't be verified — it may be expired or the invite service is unavailable. Ask for a fresh link.</span>
+              <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto", color: "var(--tx-3)" }} onClick={() => store.clearPendingInvite()}>Dismiss</button>
+            </div>
+          );
+        }
         return (
           <div style={{ gridColumn: "1 / -1", background: "var(--accent-wash)", borderBottom: "1px solid var(--accent)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13.5 }}>

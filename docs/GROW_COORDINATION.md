@@ -62,9 +62,11 @@ GET  /api/join/jwks   → { keys: [publicJwk] }   (verify `sig` on the resolve)
   accept an opaque `/join/<code>` and verify `sig` against `/api/join/jwks`. Self-contained links keep
   working in parallel (back-compat).
 
-**Download redirect (⬜ needs bucket URL):** `citrate.ai/download/mac` → the placed `.dmg` in object
-storage (R2/DO Spaces/S3). DGX wires the redirect once the Mac team supplies the bucket URL (or the
-GitHub Release URL if we ship the light client).
+**Download redirect (✅ DMG URL ready — DGX wire the redirect):** the light DMG (355MB) is a **GitHub
+Release** asset (no bucket needed). Point `citrate.ai/download/mac` →
+`https://github.com/CitrateNetwork/citrate-core/releases/latest/download/Citrate-Core-macos-arm64.dmg`
+(stable asset name; survives re-cuts). Release: `v0.1.0-alpha.1` (prerelease), notarized + stapled.
+Only the fetched-first-run **model blob** still wants a bucket + a `CITRATE_MODEL_URL` (DGX to stand up).
 
 **Updater feed (WO-2):** `releases/latest/download/latest.json` on GitHub Releases (tiny, fine on GH),
 but its **artifact URLs must point at the bucket**, not GH (2GB asset cap). Needs `TAURI_SIGNING_PRIVATE_KEY`.
