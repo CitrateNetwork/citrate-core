@@ -1749,3 +1749,39 @@ fn a_zero_op_budget_covers_nothing() {
     );
     assert!(!b.covers(&intent("local-user", IntentKind::Transaction, 40204), 5_000));
 }
+
+// =========================================================================
+// CORE-G2 tripwire (gateSec / @rule8) — SessionBudget auto-approve stays DORMANT.
+// =========================================================================
+
+/// `SessionBudget` is a vetted-but-dormant auto-approve primitive (`ceremony.rs`): it is defined and
+/// unit-tested, but it must NOT be consulted by any production signer path (`request` / `approve` /
+/// `approve_and_broadcast`) until ADR-2026-08-29 lands AND a fresh @rule8 security sign-off approves
+/// the budget semantics. Wiring it would relax the per-transaction human-in-the-ceremony property
+/// (Rule 3) into a scoped "one approval covers N" budget — the single largest Rule-3 regression
+/// surface (citrate-core gateSec finding CORE-G2, 2026-08-30).
+///
+/// This guard fails if a `covers(` or `consume(` CALL appears in the NON-TEST source of `ceremony.rs`
+/// (the definitions are `fn covers` / `fn consume`, no leading `.`, so they do not match). Scoped to
+/// `ceremony.rs` on purpose: that is the only module from which the gated `pub(crate)` signer is
+/// reachable, so it is the only place wiring the budget into auto-approve can take effect — and
+/// scoping avoids false positives from unrelated `.consume(` calls elsewhere. To lift this gate,
+/// wire the budget AND update this test in the same reviewed change.
+#[test]
+fn core_g2_session_budget_is_not_wired_into_the_production_signer() {
+    let ceremony_non_test = strip_test_module(include_str!("ceremony.rs"));
+    // Assemble the needles from parts so this guard's own text can never be what trips it.
+    let covers_call = [".", "covers", "("].concat();
+    let consume_call = [".", "consume", "("].concat();
+    assert!(
+        !ceremony_non_test.contains(&covers_call),
+        "CORE-G2 tripwire: SessionBudget::covers is CALLED from production ceremony code. \
+         Auto-approve must stay unwired until ADR-2026-08-29 + a fresh @rule8 sign-off. \
+         (If this is a test helper, move it into `mod tests`.)"
+    );
+    assert!(
+        !ceremony_non_test.contains(&consume_call),
+        "CORE-G2 tripwire: SessionBudget::consume is CALLED from production ceremony code. \
+         Auto-approve must stay unwired until ADR-2026-08-29 + a fresh @rule8 sign-off."
+    );
+}
