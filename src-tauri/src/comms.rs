@@ -47,8 +47,21 @@ use crate::supervisor::{
 
 /// Env override for the bundled `comms-member-daemon` binary path (dev/tests).
 pub const COMMS_MEMBER_BIN_ENV: &str = "CITRATE_MEMBER_BIN";
-/// The relay/SIWE domain the member authenticates under.
+/// The in-process relay/SIWE domain (local, single-machine — no networked relay).
 pub const COMMS_DOMAIN: &str = "relay.citrate.internal";
+
+/// GROW-S2 — the shared server-blind rendezvous relay (deployed on DO, Caddy TLS). Setting
+/// `CITRATE_MEMBER_RELAY_URL` to this lets two machines form a cluster over the relay's claims-inbox +
+/// KeyPackage directory + MLS delivery, with no p2p (the libp2p mesh stays soak/@rule8-gated).
+/// Clustering is OPT-IN: unset ⇒ the local in-process relay. The relay VERIFIES the SIWE `domain`, so
+/// [`CLUSTER_RELAY_DOMAIN`] equals the relay's own `CITRATE_COMMS_DOMAIN` (and its host).
+///
+/// The canonical value the app's connect/cluster flow sets as `CITRATE_MEMBER_RELAY_URL` (and the
+/// tests pin). Not consumed by the lib itself — the transport is env-selected — so it reads as
+/// "unused" in a non-test build until that flow lands.
+#[allow(dead_code)]
+pub const CLUSTER_RELAY_URL: &str = "wss://comms.citrate.ai";
+pub const CLUSTER_RELAY_DOMAIN: &str = "comms.citrate.ai";
 
 // The daemon's env knobs (comms-member-daemon/src/main.rs).
 const ENV_SOCKET: &str = "CITRATE_MEMBER_SOCKET";
@@ -56,6 +69,8 @@ const ENV_BEARER_FILE: &str = "CITRATE_MEMBER_BEARER_FILE";
 /// The seed crosses as a 0600 FILE PATH, never inline (env/argv leak to `ps`).
 const ENV_SEED_FILE: &str = "CITRATE_MEMBER_SEED_FILE";
 const ENV_DOMAIN: &str = "CITRATE_MEMBER_DOMAIN";
+/// Set → the daemon uses a networked `WsRelay` at this `wss://`|`ws://` URL; empty/unset → in-process.
+const ENV_RELAY_URL: &str = "CITRATE_MEMBER_RELAY_URL";
 
 /// OS keyring account for the LEGACY random device-sealed comms key (Option A, pre CONNECT-S5). No
 /// longer read — kept only as a name so the migration is observable/reversible. See `_V2` below.
@@ -157,6 +172,9 @@ pub struct CommsMemberManager {
     /// The member's signing seed (hex). Empty until provisioned (the identity decision). ENV, never argv.
     seed_hex: Zeroizing<String>,
     domain: String,
+    /// If set, the daemon connects a networked `WsRelay` at this URL instead of the in-process relay
+    /// (GROW-S2 cluster rendezvous). Its host's SIWE domain MUST equal `domain`.
+    relay_url: Option<String>,
     crash_record_path: PathBuf,
     health_interval: Duration,
     #[cfg(test)]
@@ -183,6 +201,7 @@ impl CommsMemberManager {
             data_dir,
             seed_hex: Zeroizing::new(seed_hex.into()),
             domain: domain.into(),
+            relay_url: None,
             crash_record_path,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
@@ -190,6 +209,16 @@ impl CommsMemberManager {
             token: Mutex::new(None),
             sup: Mutex::new(None),
         }
+    }
+
+    /// Point the daemon at a networked relay (`wss://…`, or `ws://` loopback for dev) instead of the
+    /// in-process one — the GROW-S2 cluster rendezvous. An empty URL is ignored (stays in-process).
+    /// The `domain` passed to [`Self::new`] MUST equal that relay's SIWE domain or the login is
+    /// rejected (`DomainMismatch`).
+    pub fn with_relay_url(mut self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        self.relay_url = if url.trim().is_empty() { None } else { Some(url) };
+        self
     }
 
     #[cfg(test)]
@@ -235,6 +264,11 @@ impl CommsMemberManager {
             (ENV_SEED_FILE.to_string(), self.seed_path().to_string_lossy().to_string()),
             (ENV_DOMAIN.to_string(), self.domain.clone()),
         ];
+        // GROW-S2: when a networked relay is configured, the daemon selects the WsRelay transport.
+        // Public data only (a URL) — no secret. Unset ⇒ the daemon runs its in-process relay.
+        if let Some(url) = self.relay_url.as_deref().filter(|u| !u.is_empty()) {
+            spec.env.push((ENV_RELAY_URL.to_string(), url.to_string()));
+        }
         let sock = self.socket_path.clone();
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -654,6 +688,40 @@ pub(crate) fn device_identity<R: tauri::Runtime>(
     Ok(DeviceIdentity { seed_hex, address })
 }
 
+/// Decide the daemon's relay transport + SIWE domain from env (pure — unit-tested). GROW-S2 is
+/// OPT-IN: `None` relay ⇒ the local in-process relay under [`COMMS_DOMAIN`]. When a networked relay is
+/// set, the relay verifies the SIWE `domain`, so the domain must equal THAT relay's — taken from
+/// `CITRATE_MEMBER_DOMAIN` if given, else derived from the relay URL's host (correct whenever
+/// host == the relay's domain, which the cluster relay satisfies), else [`CLUSTER_RELAY_DOMAIN`] as a
+/// last resort. Downgrade to plaintext is refused later by `WsRelay::connect` (non-loopback `ws://`
+/// is rejected).
+fn resolve_relay_transport(
+    relay_env: Option<String>,
+    domain_env: Option<String>,
+) -> (Option<String>, String) {
+    match relay_env.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) {
+        None => (None, COMMS_DOMAIN.to_string()),
+        Some(url) => {
+            let domain = domain_env
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .or_else(|| host_of(&url))
+                .unwrap_or_else(|| CLUSTER_RELAY_DOMAIN.to_string());
+            (Some(url), domain)
+        }
+    }
+}
+
+/// Extract the host from a `ws://`|`wss://` URL: `wss://comms.citrate.ai:443/ws` → `comms.citrate.ai`.
+/// `None` if there is no `//authority`. (Domain hosts only — not intended for bracketed IPv6.)
+fn host_of(url: &str) -> Option<String> {
+    let after_scheme = url.split("://").nth(1)?;
+    let authority = after_scheme.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?; // strip any userinfo
+    let host = host.split(':').next()?; // strip any port
+    (!host.is_empty()).then(|| host.to_string())
+}
+
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton, so no
 /// managed state in the (s0-owned) lib.rs.
 fn ensure_started<R: tauri::Runtime>(
@@ -669,15 +737,24 @@ fn ensure_started<R: tauri::Runtime>(
     let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("comms");
     let seed = provision_comms_seed(app).map_err(|e| e.to_string())?; // GATED — errors until the decision
     let bin = resolve_comms_member_bin(app)?;
-    let mgr = CommsMemberManager::new(
+    // GROW-S2 transport (OPT-IN): run the local in-process relay unless CITRATE_MEMBER_RELAY_URL names
+    // a networked relay (the shared rendezvous, CLUSTER_RELAY_URL) — set by the connect/cluster flow.
+    // Keeping it opt-in means non-cluster users' comms never depend on a remote box. The domain rule
+    // lives in `resolve_relay_transport` (unit-tested).
+    let (relay_url, domain) =
+        resolve_relay_transport(std::env::var(ENV_RELAY_URL).ok(), std::env::var(ENV_DOMAIN).ok());
+    let mut mgr = CommsMemberManager::new(
         bin,
         data_root.join("member.sock"),
         data_root.join("member.bearer"),
         data_root.clone(),
         seed.to_string(),
-        COMMS_DOMAIN,
+        domain,
         data_root.join("member-crash.jsonl"),
     );
+    if let Some(url) = relay_url {
+        mgr = mgr.with_relay_url(url);
+    }
     mgr.start().map_err(|e| e.to_string())?;
     Ok(MANAGER.get_or_init(|| mgr))
 }

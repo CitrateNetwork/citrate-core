@@ -91,6 +91,71 @@ fn spec_env_carries_socket_bearerpath_seedpath_domain_never_inline() {
     assert!(mgr.spec_env_for_test().iter().all(|(k, _)| k.starts_with("CITRATE_MEMBER_")));
 }
 
+#[test]
+fn relay_url_selects_ws_transport_in_daemon_env() {
+    // GROW-S2: with a networked relay configured, the daemon env carries CITRATE_MEMBER_RELAY_URL —
+    // a public URL, no secret — so the daemon selects the WsRelay transport (cluster rendezvous).
+    let (mgr, _dir) = stub_manager("relay");
+    let mgr = mgr.with_relay_url(CLUSTER_RELAY_URL);
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(env.get(ENV_RELAY_URL).map(String::as_str), Some(CLUSTER_RELAY_URL));
+    // Still all CITRATE_MEMBER_* keys; still no inline secret.
+    assert!(env.keys().all(|k| k.starts_with("CITRATE_MEMBER_")));
+    assert!(!env.values().any(|v| v.contains(&*mgr_seed_hex())), "no env value carries the seed bytes");
+}
+
+#[test]
+fn empty_relay_url_stays_in_process() {
+    // An empty/whitespace URL is ignored — no CITRATE_MEMBER_RELAY_URL, so the daemon runs its
+    // in-process relay (local single-machine); the in-process SIWE domain is unchanged.
+    let (mgr, _dir) = stub_manager("norelay");
+    let mgr = mgr.with_relay_url("   ");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert!(!env.contains_key(ENV_RELAY_URL), "an empty relay url must not set the transport env");
+    assert_eq!(env.get(ENV_DOMAIN).map(String::as_str), Some(COMMS_DOMAIN));
+}
+
+// ---- resolve_relay_transport (pure) — GROW-S2 opt-in transport + SIWE-domain rule ----
+
+#[test]
+fn resolve_transport_defaults_to_in_process() {
+    // Unset OR whitespace-only ⇒ local in-process relay under COMMS_DOMAIN (no remote dependency).
+    assert_eq!(resolve_relay_transport(None, None), (None, COMMS_DOMAIN.to_string()));
+    assert_eq!(resolve_relay_transport(Some("  ".into()), Some("ignored".into())), (None, COMMS_DOMAIN.to_string()));
+}
+
+#[test]
+fn resolve_transport_cluster_url_derives_matching_domain() {
+    // Setting JUST the cluster URL derives the correct SIWE domain from the host — the relay would
+    // reject a mismatch, so this must equal CLUSTER_RELAY_DOMAIN (guards that consistency too).
+    assert_eq!(
+        resolve_relay_transport(Some(CLUSTER_RELAY_URL.into()), None),
+        (Some(CLUSTER_RELAY_URL.to_string()), CLUSTER_RELAY_DOMAIN.to_string())
+    );
+    assert_eq!(host_of(CLUSTER_RELAY_URL).as_deref(), Some(CLUSTER_RELAY_DOMAIN));
+}
+
+#[test]
+fn resolve_transport_custom_url_derives_host_domain() {
+    // A custom relay with no explicit domain derives the host (port/path/userinfo stripped) — not the
+    // cluster domain, so it won't silently mismatch (F2 footgun fixed).
+    assert_eq!(
+        resolve_relay_transport(Some("wss://other.example:443/ws".into()), None),
+        (Some("wss://other.example:443/ws".to_string()), "other.example".to_string())
+    );
+}
+
+#[test]
+fn resolve_transport_explicit_domain_overrides_the_host() {
+    // For the rare host != relay-domain case, CITRATE_MEMBER_DOMAIN wins.
+    assert_eq!(
+        resolve_relay_transport(Some("wss://h.example".into()), Some("d.example".into())),
+        (Some("wss://h.example".to_string()), "d.example".to_string())
+    );
+}
+
 /// The dummy seed value stub_manager configures — used to assert it never appears inline in env.
 fn mgr_seed_hex() -> String {
     "deadbeef".repeat(8)
