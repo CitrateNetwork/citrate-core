@@ -778,7 +778,7 @@ fn parse_ok(r: Response) -> std::result::Result<(), String> {
 
 /// **groups_create** — create a Group; returns its id.
 #[tauri::command]
-pub fn groups_create(app: tauri::AppHandle, name: String) -> std::result::Result<String, String> {
+pub async fn groups_create(app: tauri::AppHandle, name: String) -> std::result::Result<String, String> {
     match route(&app, Request::CreateGroup { name })? {
         Response::GroupCreated { id } => Ok(id),
         Response::Error { message } => Err(message),
@@ -788,7 +788,7 @@ pub fn groups_create(app: tauri::AppHandle, name: String) -> std::result::Result
 
 /// **groups_list** — the member's groups.
 #[tauri::command]
-pub fn groups_list(app: tauri::AppHandle) -> std::result::Result<Vec<(String, String)>, String> {
+pub async fn groups_list(app: tauri::AppHandle) -> std::result::Result<Vec<(String, String)>, String> {
     match route(&app, Request::ListGroups)? {
         Response::Groups { groups } => Ok(groups.into_iter().map(|g| (g.id, g.name)).collect()),
         Response::Error { message } => Err(message),
@@ -801,20 +801,20 @@ pub fn groups_list(app: tauri::AppHandle) -> std::result::Result<Vec<(String, St
 /// directory uses it to exclude yourself from your own roster overlap; it also gives the CONNECT arc a
 /// coherent "who am I" that the wallet-address heuristic (the `iCreated` seam) can't reliably provide.
 #[tauri::command]
-pub fn groups_self_address(app: tauri::AppHandle) -> std::result::Result<String, String> {
+pub async fn groups_self_address(app: tauri::AppHandle) -> std::result::Result<String, String> {
     device_identity(&app).map(|d| d.address)
 }
 
 /// **groups_join** — join a group this member was added to on a shared relay.
 #[tauri::command]
-pub fn groups_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
+pub async fn groups_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::JoinGroup { group })?)
 }
 
 /// **groups_add_member** — owner-invite a member (who has published a key package to the relay).
 /// The daemon produces + publishes the MLS welcome; the invitee then joins. Post-S0 amendment.
 #[tauri::command]
-pub fn groups_add_member(
+pub async fn groups_add_member(
     app: tauri::AppHandle,
     group: String,
     member: String,
@@ -856,7 +856,7 @@ pub(crate) fn poll_claims<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub fn groups_roster(
+pub async fn groups_roster(
     app: tauri::AppHandle,
     group: String,
 ) -> std::result::Result<Vec<(String, String)>, String> {
@@ -869,7 +869,7 @@ pub fn groups_roster(
 
 /// **groups_assign_role** — owner-signed role grant.
 #[tauri::command]
-pub fn groups_assign_role(
+pub async fn groups_assign_role(
     app: tauri::AppHandle,
     group: String,
     member: String,
@@ -880,7 +880,7 @@ pub fn groups_assign_role(
 
 /// **groups_offboard** — atomic offboard (MLS remove + relay roster/tree drop).
 #[tauri::command]
-pub fn groups_offboard(
+pub async fn groups_offboard(
     app: tauri::AppHandle,
     group: String,
     member: String,
@@ -890,7 +890,7 @@ pub fn groups_offboard(
 
 /// **groups_send** — post an encrypted message to a group.
 #[tauri::command]
-pub fn groups_send(
+pub async fn groups_send(
     app: tauri::AppHandle,
     group: String,
     text: String,
@@ -900,7 +900,7 @@ pub fn groups_send(
 
 /// **groups_messages** — drain + decrypt the member's mailbox for a group.
 #[tauri::command]
-pub fn groups_messages(
+pub async fn groups_messages(
     app: tauri::AppHandle,
     group: String,
 ) -> std::result::Result<Vec<(String, String)>, String> {

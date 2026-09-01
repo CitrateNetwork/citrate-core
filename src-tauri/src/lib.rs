@@ -67,27 +67,75 @@ use tauri::Manager;
 /// and never our own pid. Best-effort + macOS/Linux only (uses `pgrep`/`kill`); a no-op if `pgrep`
 /// is unavailable. Runs once at startup, before any sidecar is spawned, so there is nothing of ours
 /// to catch — every match is an orphan.
+/// The sidecar binaries we own. An orphan of ANY of these holds a data-dir LOCK (RocksDB node store,
+/// ipfs datastore, mem-mcp store) or a UDS socket, so a fresh launch can't open its own → the pinwheel
+/// / "Resource temporarily unavailable" seen when a previous copy crashed or was run from a mounted DMG.
+const OWNED_SIDECARS: &[&str] =
+    &["citrate", "ipfs", "mem-mcp", "comms-member-daemon", "cluster-daemon", "hermes"];
+
+/// Reap orphaned sidecars from a PREVIOUS/other instance before we spawn our own. The supervisor kills
+/// its children on graceful teardown, but a crash (SIGKILL) can't run Drop — leaving an orphan that
+/// holds the store LOCK. Single-instance stops the double-LAUNCH; this stops the crash-orphan case.
+///
+/// TWO passes:
+///   1. Anything under THIS bundle's binary dir (covers a plain crash-restart, incl. dev builds).
+///   2. Any process whose executable is one of OUR sidecars launched from *any* `Citrate Core.app`
+///      bundle — INCLUDING a different path such as a still-mounted `/Volumes/Citrate Core*` DMG. Pass 1
+///      missed those (they don't share our dir), so a DMG-run copy's orphaned node/ipfs/mem kept the
+///      locks and the /Applications launch pinwheeled. We target only the known sidecar BASENAMES under
+///      a Citrate bundle, so unrelated processes (and foreign MAIN-app processes — single-instance's
+///      job) are never touched. At startup our own sidecars aren't spawned yet, so every match is an
+///      orphan. Never kills self.
 fn sweep_orphan_sidecars() {
-    let dir = match std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    {
-        Some(d) => d.to_string_lossy().to_string(),
-        None => return,
-    };
     let self_pid = std::process::id();
-    let out = match std::process::Command::new("pgrep").arg("-f").arg(&dir).output() {
-        Ok(o) => o,
-        Err(_) => return, // no pgrep (or not Unix) — skip the sweep
-    };
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let Ok(pid) = line.trim().parse::<u32>() {
-            if pid != self_pid {
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid.to_string())
-                    .status();
+    let mut victims: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+
+    // Pass 1 — processes under our own binary dir.
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        if let Ok(out) = std::process::Command::new("pgrep").arg("-f").arg(dir.to_string_lossy().as_ref()).output() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    victims.insert(pid);
+                }
             }
+        } else {
+            return; // no pgrep (or not Unix) — skip the sweep entirely
+        }
+    }
+
+    // Pass 2 — our sidecars launched from ANY Citrate bundle (foreign path / mounted DMG). Match the
+    // sidecar running under a `Citrate Core.app/Contents/MacOS/<sidecar>` path, then confirm the
+    // process's executable basename is one we own (so a foreign MAIN-app binary is left alone).
+    if let Ok(out) = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg("Citrate Core.app/Contents/MacOS/")
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let pid = match line.trim().parse::<u32>() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            // The process's own executable name (argv[0] basename), not its arguments.
+            let comm = std::process::Command::new("ps")
+                .args(["-o", "comm=", "-p", &pid.to_string()])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            let base = std::path::Path::new(&comm)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or(comm);
+            if OWNED_SIDECARS.iter().any(|s| base == *s) {
+                victims.insert(pid);
+            }
+        }
+    }
+
+    for pid in victims {
+        if pid != self_pid {
+            let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
         }
     }
 }

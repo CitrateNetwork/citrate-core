@@ -520,8 +520,8 @@ fn route(app: &tauri::AppHandle, req: Request) -> std::result::Result<Response, 
 
 /// Push the group's current roster (from the comms member-daemon) to the cluster daemon so it
 /// reconciles the mesh. The cluster is a Group's cluster — no group/roster means no cluster.
-fn feed_roster(app: &tauri::AppHandle, group: &str) -> std::result::Result<(), String> {
-    let roster = crate::comms::groups_roster(app.clone(), group.to_string())?;
+async fn feed_roster(app: &tauri::AppHandle, group: &str) -> std::result::Result<(), String> {
+    let roster = crate::comms::groups_roster(app.clone(), group.to_string()).await?;
     match route(app, Request::SetRoster { group: group.to_string(), roster })? {
         Response::Reconciled { .. } | Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -543,8 +543,8 @@ fn parse_ok(r: Response) -> std::result::Result<(), String> {
 
 /// **cluster_status** — the group's cluster status (connected / authorized + shared files).
 #[tauri::command]
-pub fn cluster_status(app: tauri::AppHandle, group: String) -> std::result::Result<ClusterStatusDto, String> {
-    feed_roster(&app, &group)?;
+pub async fn cluster_status(app: tauri::AppHandle, group: String) -> std::result::Result<ClusterStatusDto, String> {
+    feed_roster(&app, &group).await?;
     match route(&app, Request::Status { group: group.clone() })? {
         Response::Status { online, total, shared_files } => {
             Ok(ClusterStatusDto { group_id: group, online, total, shared_files })
@@ -556,8 +556,8 @@ pub fn cluster_status(app: tauri::AppHandle, group: String) -> std::result::Resu
 
 /// **cluster_peers** — the group's authorized peers with live connection state.
 #[tauri::command]
-pub fn cluster_peers(app: tauri::AppHandle, group: String) -> std::result::Result<Vec<ClusterPeerDto>, String> {
-    feed_roster(&app, &group)?;
+pub async fn cluster_peers(app: tauri::AppHandle, group: String) -> std::result::Result<Vec<ClusterPeerDto>, String> {
+    feed_roster(&app, &group).await?;
     match route(&app, Request::Peers { group })? {
         Response::Peers { peers } => {
             Ok(peers.into_iter().map(|p| ClusterPeerDto { address: p.address, online: p.online }).collect())
@@ -569,20 +569,20 @@ pub fn cluster_peers(app: tauri::AppHandle, group: String) -> std::result::Resul
 
 /// **cluster_join** — this node joins the group's mesh.
 #[tauri::command]
-pub fn cluster_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
-    feed_roster(&app, &group)?;
+pub async fn cluster_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
+    feed_roster(&app, &group).await?;
     parse_ok(route(&app, Request::Join { group })?)
 }
 
 /// **cluster_share_file** — announce a co-pinned CID to the group over the mesh.
 #[tauri::command]
-pub fn cluster_share_file(app: tauri::AppHandle, group: String, cid: String) -> std::result::Result<(), String> {
+pub async fn cluster_share_file(app: tauri::AppHandle, group: String, cid: String) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::ShareFile { group, cid })?)
 }
 
 /// **cluster_leave** — this node leaves the group's mesh.
 #[tauri::command]
-pub fn cluster_leave(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
+pub async fn cluster_leave(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::Leave { group })?)
 }
 

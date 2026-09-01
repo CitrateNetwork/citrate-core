@@ -73,7 +73,7 @@ fn save(app: &tauri::AppHandle, v: &[PendingInvite]) -> Result<(), String> {
 
 /// `group_invite_create` — mint a claimable invite for a group + share link. No address resolution.
 #[tauri::command]
-pub fn group_invite_create(
+pub async fn group_invite_create(
     app: tauri::AppHandle,
     group: String,
     for_handle: String,
@@ -111,7 +111,7 @@ pub struct ClaimView {
 /// submit it to the relay's server-blind claims-inbox keyed by the token hash. Replaces the manual
 /// "copy the claim and DM it back" round-trip. Honest error if the daemon/relay is unreachable.
 #[tauri::command]
-pub fn group_invite_submit_claim(app: tauri::AppHandle, link: String) -> Result<(), String> {
+pub async fn group_invite_submit_claim(app: tauri::AppHandle, link: String) -> Result<(), String> {
     let group = link_param(&link, "g").ok_or("invite link missing group")?;
     let token = link_param(&link, "t").ok_or("invite link missing token")?;
     let key = link_param(&link, "k")
@@ -128,7 +128,7 @@ pub fn group_invite_submit_claim(app: tauri::AppHandle, link: String) -> Result<
 /// Returns the volunteered claims (deduped by address) for the Requests inbox. Sealed blobs that don't
 /// open (wrong invite / tampered) are skipped silently — never surfaced as a claim (Rule 1).
 #[tauri::command]
-pub fn group_invite_poll_claims(app: tauri::AppHandle, group: String) -> Result<Vec<ClaimView>, String> {
+pub async fn group_invite_poll_claims(app: tauri::AppHandle, group: String) -> Result<Vec<ClaimView>, String> {
     let invites: Vec<PendingInvite> = load(&app).into_iter().filter(|i| i.group == group).collect();
     let mut out: Vec<ClaimView> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -171,7 +171,7 @@ fn link_param(link: &str, key: &str) -> Option<String> {
 
 /// `group_invites` — the owner's outstanding claimable invites for a group.
 #[tauri::command]
-pub fn group_invites(app: tauri::AppHandle, group: String) -> Result<Vec<PendingInvite>, String> {
+pub async fn group_invites(app: tauri::AppHandle, group: String) -> Result<Vec<PendingInvite>, String> {
     Ok(load(&app).into_iter().filter(|i| i.group == group).collect())
 }
 
@@ -179,7 +179,7 @@ pub fn group_invites(app: tauri::AppHandle, group: String) -> Result<Vec<Pending
 /// the group; consume it (single-use) on success. The caller then adds the volunteered address via
 /// the normal roster path. Returns whether the token was valid.
 #[tauri::command]
-pub fn group_invite_verify_consume(
+pub async fn group_invite_verify_consume(
     app: tauri::AppHandle,
     group: String,
     token: String,
@@ -196,7 +196,7 @@ pub fn group_invite_verify_consume(
 
 /// `group_invite_revoke` — drop an outstanding invite the owner no longer wants claimable.
 #[tauri::command]
-pub fn group_invite_revoke(app: tauri::AppHandle, group: String, token: String) -> Result<(), String> {
+pub async fn group_invite_revoke(app: tauri::AppHandle, group: String, token: String) -> Result<(), String> {
     let mut invites = load(&app);
     invites.retain(|i| !(i.group == group && i.token == token));
     save(&app, &invites)
