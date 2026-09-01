@@ -47,13 +47,20 @@ bundle id `ai.citrate.core`. This is the primary hand-off for a .dmg install.
   inconsistent for a Developer-ID .dmg and an unauthorized entitlement can break notarization. DGX may
   publish the AASA as future-proofing, but the **custom scheme is what carries the join** on a .dmg.
 
-**Short-code resolver (DGX-owned, ⬜ contract TBD):** when live, replaces the self-contained link with
-opaque codes. DGX to fill in:
+**Short-code resolver (DGX-owned, ✅ CONTRACT LOCKED 2026-09-01 — DGX shipping on citrate-landing):**
 ```
-POST /api/join         → { code }                 (mint; body: { clusterId, inviter, goal? })
-GET  /api/join/<code>  → { cluster, inviter, goal } (signed resolve; rate-limited; private attribution)
+POST /api/join        → { code, url }
+    body: { clusterId?, clusterName?, inviter, inviterAddress?, goal? }
+    (inviter = display handle; inviterAddress = attribution, stored PRIVATE — never returned)
+GET  /api/join/<code> → { cluster, clusterName, inviter, goal, exp, sig }   (rate-limited; EdDSA-signed)
+GET  /api/join/jwks   → { keys: [publicJwk] }   (verify `sig` on the resolve)
 ```
-- Mac follow-up (mine, after contract lands): mint via `POST /api/join`; teach `parseJoinLink` to accept `/join/<code>`.
+- Mac ✅ confirms the contract as-is (no tweaks). Attribution kept server-side/private = respects
+  red-team F4. Field mapping app↔API: `by`↔`inviter`, `c`↔`clusterName`, `g`↔`goal`, `ref`↔`inviterAddress`,
+  path `<clusterId>`↔`clusterId`.
+- **Mac follow-up (mine, after the DGX PR lands):** mint via `POST /api/join`; teach `parseJoinLink` to
+  accept an opaque `/join/<code>` and verify `sig` against `/api/join/jwks`. Self-contained links keep
+  working in parallel (back-compat).
 
 **Download redirect (⬜ needs bucket URL):** `citrate.ai/download/mac` → the placed `.dmg` in object
 storage (R2/DO Spaces/S3). DGX wires the redirect once the Mac team supplies the bucket URL (or the
@@ -77,12 +84,23 @@ but its **artifact URLs must point at the bucket**, not GH (2GB asset cap). Need
 - feat/grow-s1b-join-resolver — short-code resolver — **un-paused, DGX-owned** (Neon/Drizzle/jose; needs join_codes migration + JOIN_SIGNING_JWK)
 
 ## Open asks / blockers (owner in brackets)
-- ⬜ **Object-storage bucket + public .dmg URL** [DGX/infra] → unblocks `citrate.ai/download/mac`.
-- ⬜ **Resolver API contract** [DGX] → Mac wires the mint/short-code adaptation.
-- ⬜ **`TAURI_SIGNING_PRIVATE_KEY`** [owner/infra] + latest.json artifacts → bucket (WO-2).
+- ✅ **Resolver API contract** [DGX] — LOCKED (above); Mac wires the adaptation after DGX's PR lands.
 - ⬜ **Light-client go/no-go** [owner] → the pivotal unblock for download+updates+funnel (Mac builds it).
+  Determines the artifact size the bucket must hold (5GB full vs ~few-hundred-MB light + a model blob).
+- ⬜ **Object-storage bucket** — DGX OFFERED to stand it up (R2/DO Spaces/S3). PLAN: Mac ships the
+  **light** DMG (GitHub Releases-hostable) + hands DGX the **model blob** URL to place in the bucket +
+  a `CITRATE_MODEL_URL`; DGX points `citrate.ai/download/mac` at the DMG. Confirm once light-client is a go.
+- ⬜ **`TAURI_SIGNING_PRIVATE_KEY`** [owner/infra] + latest.json artifacts → bucket (WO-2).
 - ⬜ **Relay at scale** (F5 sharding/DDoS posture) [DGX/infra] — not blocking alpha, don't single-home silently.
-- ⬜ **X/Discord prod OAuth creds + Discord bot** [owner/DGX] — for the social-readiness workstream (its own planset).
+- ⬜ **X/Discord prod OAuth creds + Discord bot** [owner/DGX] — social-readiness workstream (its own planset).
+
+## Mac-team follow-ups (from DGX gateSec review, now that the relay is default-on)
+- ⬜ **Relay-aware health + WsRelay reconnect** [Mac] — DGX flag A: with default-on, a mid-session relay
+  drop currently reports "healthy" (the daemon health probe only checks the UDS socket) while every op
+  fails, and WsRelay has no reconnect. Fix = (1) relay-aware health probe in `comms.rs` (report degraded
+  when the relay link is down, not just the socket), (2) WsRelay auto-reconnect in the daemon
+  (citrate-comms). Not an alpha blocker but hits every user on a relay blip — real correctness bug.
+  Accepted as a Mac follow-up.
 
 ## Decisions log
 - 2026-08-31 — 32k-SALT membership bond = the A1 reward/sybil floor; gift memberships; orgs = groups.
