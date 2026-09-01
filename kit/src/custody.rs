@@ -1711,8 +1711,12 @@ pub fn custody_unlock(
 /// address) — stays locked and the wallet appears broken. Returns the fresh status
 /// so the UI reflects the unlocked state at once. Fails closed on a reset keychain
 /// (same policy as `ensure_auto_unlocked`).
+/// ASYNC so Tauri runs it OFF the main thread: `ensure_auto_unlocked` reads OS-keyring items and runs
+/// Argon2id (64 MiB), and on a machine whose keychain items were created by a differently-signed build
+/// it can trigger a BLOCKING macOS keychain-authorization prompt. On the main thread that beachballs
+/// the webview (often behind the window); off it, the UI stays live and the prompt can surface.
 #[tauri::command]
-pub fn custody_ensure_unlocked(
+pub async fn custody_ensure_unlocked(
     state: State<'_, CustodyState>,
 ) -> std::result::Result<CustodyStatus, String> {
     let v = &state.0;

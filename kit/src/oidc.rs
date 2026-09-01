@@ -73,6 +73,12 @@ const CODE_CHALLENGE_METHOD: &str = "S256";
 /// How long the loopback listener waits for the browser callback before failing
 /// closed and releasing the port (ADV-10).
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
+/// Per-request deadline for the OIDC HTTP client (discovery / token / userinfo). The chain RPC got a
+/// timeout in #206 but this client did not, so a stale/rotated refresh token or a slow authority made
+/// `auth_refresh`/`auth_userinfo` hang with no bound. Bound them so they fail fast instead — critical
+/// now that these run at launch (a returning user's silent refresh). Generous enough that a real,
+/// slightly-slow authority still completes.
+const OIDC_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Read cap on the single callback request so a malicious/oversized request
 /// cannot exhaust memory. A real OIDC callback line is a few hundred bytes.
@@ -805,7 +811,10 @@ pub struct UreqClient;
 
 impl HttpClient for UreqClient {
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<String> {
-        let mut req = ureq::get(url);
+        let mut req = ureq::get(url)
+            .config()
+            .timeout_global(Some(OIDC_HTTP_TIMEOUT))
+            .build();
         if let Some(tok) = bearer {
             req = req.header("Authorization", &format!("Bearer {tok}"));
         }
@@ -823,6 +832,9 @@ impl HttpClient for UreqClient {
         // then rejects (Commons CX-S1.2). Every OAuth2 token endpoint we call returns JSON when
         // asked, so this is universally safe (OIDC/Google/Notion/HF already do; GitHub needs it).
         let mut resp = ureq::post(url)
+            .config()
+            .timeout_global(Some(OIDC_HTTP_TIMEOUT))
+            .build()
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Accept", "application/json")
             .send(&body)
@@ -833,7 +845,11 @@ impl HttpClient for UreqClient {
     }
 
     fn post_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String> {
-        let mut req = ureq::post(url).header("Content-Type", "application/json");
+        let mut req = ureq::post(url)
+            .config()
+            .timeout_global(Some(OIDC_HTTP_TIMEOUT))
+            .build()
+            .header("Content-Type", "application/json");
         if let Some(tok) = bearer {
             req = req.header("Authorization", &format!("Bearer {tok}"));
         }
@@ -1832,14 +1848,20 @@ pub async fn auth_login(
 }
 
 /// `auth_userinfo` — live `/userinfo` entitlement re-check. Claim-derived only.
+/// ASYNC so Tauri runs it OFF the main thread (like `auth_login`): the body makes blocking HTTP
+/// round-trips to the authority (discovery + userinfo), which on the main thread would freeze the
+/// webview. The OIDC client is bounded by `OIDC_HTTP_TIMEOUT`, so a slow authority fails fast.
 #[tauri::command]
-pub fn auth_userinfo(auth: State<'_, AuthState>) -> std::result::Result<AuthStatus, String> {
+pub async fn auth_userinfo(auth: State<'_, AuthState>) -> std::result::Result<AuthStatus, String> {
     auth.0.userinfo().map_err(err_str)
 }
 
 /// `auth_refresh` — silent refresh from the vaulted token. Claim-derived only.
+/// ASYNC so Tauri runs it OFF the main thread. This runs at launch for a returning user (a vaulted
+/// refresh token exists) and makes up to three blocking HTTP round-trips (discovery + token +
+/// userinfo); on the main thread that was the login pinwheel. Bounded by `OIDC_HTTP_TIMEOUT`.
 #[tauri::command]
-pub fn auth_refresh(
+pub async fn auth_refresh(
     auth: State<'_, AuthState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<AuthStatus, String> {

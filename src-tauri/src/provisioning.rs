@@ -67,8 +67,11 @@ fn ensure_ready_inner(
 /// ensure the wallet exists, returning its public address. Safe to call on every
 /// launch: an already-provisioned, already-unlocked device short-circuits to a
 /// cheap read. Registered in `lib.rs`'s invoke handler.
+/// ASYNC so Tauri runs it OFF the main thread: it auto-unlocks the vault (keychain reads + Argon2)
+/// and may create/derive the wallet. This is on the launch burst; on the main thread the keychain
+/// work froze the webview.
 #[tauri::command]
-pub fn wallet_ensure_ready(
+pub async fn wallet_ensure_ready(
     custody: tauri::State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<WalletReady, String> {
     ensure_ready_inner(&custody.0)
@@ -96,8 +99,11 @@ mod tests {
 /// This is a device IDENTIFIER, not attestation: it proves nothing about hardware.
 /// The "hardware-backed attestation is not available in this build" line stays
 /// truthful and must remain until real attestation ships.
+/// ASYNC so Tauri runs it OFF the main thread: `address_auto_unlocked` auto-unlocks the vault
+/// (keychain reads + Argon2), the first main-thread touch of existing keychain items on the launch
+/// burst — a blocking keychain prompt here beachballed the webview.
 #[tauri::command]
-pub fn device_id(custody: tauri::State<'_, crate::custody::CustodyState>) -> Result<String, String> {
+pub async fn device_id(custody: tauri::State<'_, crate::custody::CustodyState>) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let info = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let mut h = Sha256::new();

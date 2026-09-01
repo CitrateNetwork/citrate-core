@@ -1364,9 +1364,13 @@ fn adv8_no_auth_invoke_command_returns_a_token() {
     // — after the kit extraction the real generate_handler! registry lives in the
     // app crate, not the kit. This test keeps the oidc.rs SOURCE assertions below.
     // Their #[tauri::command] signatures return AuthStatus or ().
+    // Signatures assert the SECURITY property (return type is AuthStatus/(), never a token). Note
+    // auth_userinfo/auth_refresh are `async fn` (run off the main thread — the login-pinwheel fix);
+    // async changes the threading, NOT the return type, so the token-boundary proof is intact.
     for sig in [
         "pub fn auth_status(state: State<'_, AuthState>) -> std::result::Result<AuthStatus, String>",
-        "pub fn auth_userinfo(auth: State<'_, AuthState>) -> std::result::Result<AuthStatus, String>",
+        "pub async fn auth_userinfo(auth: State<'_, AuthState>) -> std::result::Result<AuthStatus, String>",
+        "pub async fn auth_refresh(",
     ] {
         assert!(src.contains(sig), "expected command signature: {sig}");
     }
