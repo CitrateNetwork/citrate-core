@@ -191,3 +191,32 @@ the tri-platform download contract.
   primary Linux artefact.
 - **Model CDN.** When the DGX model bucket is live, set `CITRATE_MODEL_URL` in the
   build env so first-run pulls from the Citrate mirror instead of Hugging Face.
+
+## Troubleshooting — black screen / "took over the whole screen" on first launch
+
+A Tauri app on Linux renders through **WebKitGTK**, and on many GPU/driver combos
+(and on servers / VMs / remote desktops) its default compositing or DMABUF path
+produces a **black window** — which on a bare/headless box can look like the app
+"grabbed the whole screen." This is a WebKitGTK/environment issue, **not** an app
+window-config problem: the window is a normal 1100×720 bordered window (no
+fullscreen/kiosk/always-on-top — verified in `tauri.conf.json`). Fixes, in order:
+
+```bash
+# 1. The usual one-liner — disable WebKit compositing (fixes most black screens):
+WEBKIT_DISABLE_COMPOSITING_MODE=1 ./Citrate-Core-linux-x86_64.AppImage
+# 2. If still black, also disable the DMABUF renderer (newer WebKitGTK):
+WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 ./Citrate-Core-linux-x86_64.AppImage
+# 3. Software rendering as a last resort (slow, but proves it's a GPU-path issue):
+LIBGL_ALWAYS_SOFTWARE=1 ./Citrate-Core-linux-x86_64.AppImage
+```
+
+Also confirm you're launching into a **real desktop session** (X11 or Wayland with
+a compositor) — Citrate Core is a GUI app and cannot render on a headless server or
+a plain SSH session without a display server. If a specific env var reliably fixes
+it, we can bake it into the AppImage's `AppRun` wrapper so end users never see the
+black screen; report which one worked (and the distro / GPU / driver) so we pin the
+right default.
+
+NB: none of the bundled **sidecars** touch the display — the node, ipfs, mem-mcp,
+llama-server, and the comms/cluster/hermes daemons are all headless CLI processes.
+A screen takeover is the WebView, not a sidecar.
