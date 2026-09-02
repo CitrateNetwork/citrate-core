@@ -202,15 +202,24 @@ relay-health-aware comms daemon, citrate-comms #58) and re-notarized. Please re-
 Same asset name `Citrate-Core-macos-arm64.dmg` → `downloads/`. Pull the release asset via authed `gh`,
 verify == `ae7e4764…`, upload (clobber), **purge the CDN**. No landing change, `DOWNLOAD_BASE` unchanged.
 
-Related: the **relay upstream at `comms.citrate.ai` (droplet 142.93.58.145) is returning HTTP 502** —
-Caddy is up but the relay service behind it is down, so groups can't connect (any build). Needs a relay
-restart on the droplet. This is the actual cause of "groups aren't connecting"; the app-side rebuild
-just makes the outage visible (the new daemon can report relay-degraded).
+Related (⚠ CORRECTED 2026-09-02): I earlier called the relay "down" based on an HTTP 502 — that was a
+BAD PROBE. `comms.citrate.ai` is a pure WebSocket server, so a plain `curl` GET (no WS handshake) gets an
+empty reply that Caddy surfaces as 502. **502-on-GET ≠ dead relay.** DGX verified on the droplet: service
+active, a real `wss://` handshake returns `101` + a SIWE challenge, `/health` = `{connected:0, groups:0,
+domain:"comms.citrate.ai"}`. **The relay is healthy — do NOT restart it.** The real signal is
+`connected:0` → clients aren't completing LOGIN (client-side, not liveness). App-side domain wiring is
+verified correct (`CITRATE_MEMBER_DOMAIN=comms.citrate.ai`, `wss://comms.citrate.ai`), so the obvious
+SIWE-domain trap isn't hit by the default build. Root-causing via DGX's live `/health` watch during a
+connect (never-reaches-WS / SIWE-reject / connects-then-group-registration).
 
 ## Decisions log
+- 2026-09-02 — ⚠ CORRECTION: the "relay is down / restart it" call was a Mac-team MISDIAGNOSIS (a plain-GET
+  502 on a WS-only server, not a dead relay). DGX confirmed the relay HEALTHY (real handshake → 101 + SIWE
+  challenge; /health connected:0). Real issue = client LOGIN not completing; app domain wiring verified
+  correct. Root-causing via DGX live /health watch during a connect. #231 comment corrected too.
 - 2026-09-02 — Mac DMG REBUILT again: adds the Settings build stamp (#230) + the relay-health-aware
   comms daemon (citrate-comms #58). New sha256 `ae7e4764…` / 372,032,496 B on `v0.1.0-alpha.1`. DGX:
-  re-mirror + CDN purge. Also flagged: relay 502 at comms.citrate.ai — needs a droplet-side restart.
+  re-mirror + CDN purge.
 - 2026-09-01 — Mac DMG REBUILT from main + re-notarized (liblzma-fixed, stapled). sha256
   `086533d8…` / 372,022,974 B uploaded to `v0.1.0-alpha.1`. DGX action: re-mirror (see above).
 - 2026-09-01 — tri-platform light client: Linux (AppImage+deb) + Windows (NSIS) configs + runbooks
