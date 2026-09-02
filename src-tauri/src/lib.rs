@@ -142,6 +142,24 @@ fn sweep_orphan_sidecars() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux + NVIDIA black-screen fix. WebKitGTK's GPU-accelerated compositing / DMABUF renderer
+    // hangs the display on NVIDIA drivers — observed on an NVIDIA GB10 (driver 580): launching the
+    // app blacked out the ENTIRE screen and crashed the X session (not just the app window; the
+    // window isn't even fullscreen). Forcing WebKit to software compositing avoids the GPU path
+    // entirely. This runs before the webview is created, and only sets each var when unset so a user
+    // whose stack renders fine can re-enable GPU compositing via the environment. macOS/Windows are
+    // unaffected (WebKit env vars are Linux-only). Bakes in the manual workaround from
+    // docs/RELEASE_LINUX.md (#236 "black screen" troubleshooting) so no user needs to set it by hand.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     tauri::Builder::default()
         // Single-instance FIRST (tauri requires it): a second launch focuses the running window
         // instead of spawning a duplicate app + duplicate sidecars that fight over the node LOCK.
