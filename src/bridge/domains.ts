@@ -506,6 +506,18 @@ export interface GrantStatus {
 }
 
 
+/** The qualifying fields the Enterprise contact form collects. `org` + `email` are required; the rest
+ *  help sales prep the call. No card/money fields — this is a lead, not a purchase. */
+export interface EnterpriseLeadInput {
+  org: string;
+  email: string;
+  contact?: string;
+  seats?: string;
+  workload?: string;
+  timeline?: string;
+  notes?: string;
+}
+
 export interface MembershipDomain {
   entitlement(): Promise<{ status: "active" | "expiring" | "grace" | "lapsed"; tier: string; expiresAt: string }>;
   /**
@@ -529,6 +541,13 @@ export interface MembershipDomain {
    * impl is guarded out of packaged builds (web-dev keeps its fake settle).
    */
   checkout(): Promise<void>;
+  /**
+   * Enterprise · Contact us — POST a QUALIFIED sales lead to core-membership's `/api/enterprise/lead`
+   * (NOT the money path: never grants, charges, or signs). Contact PII is validated + field-encrypted
+   * server-side. Resolves on success; REJECTS with an honest message on a validation/availability
+   * failure (Rule 1 — never a fabricated "received"). The Tauri impl invokes `membership_enterprise_lead`.
+   */
+  enterpriseLead(lead: EnterpriseLeadInput): Promise<void>;
   /**
    * BC-5.3 (T1 identity READ) — read the member's AUTHORITATIVE wholly-on-chain
    * SBT emblem for their OIDC `sub`. The post-reroll CitrateMemberSBT generates the

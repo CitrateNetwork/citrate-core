@@ -1,3 +1,4 @@
+import { useState, type CSSProperties } from "react";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
 import { Store } from "../shell/store";
@@ -6,7 +7,7 @@ import { AppState, fmtSaltFromWei } from "../shell/state";
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 const short = (h: string) => (h ? h.slice(0, 6) + "…" + h.slice(-4) : "—");
 
-const eyebrow: React.CSSProperties = {
+const eyebrow: CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: 11,
   fontWeight: 500,
@@ -14,15 +15,15 @@ const eyebrow: React.CSSProperties = {
   textTransform: "uppercase",
   color: "var(--tx-3)",
 };
-const h1: React.CSSProperties = {
+const h1: CSSProperties = {
   fontFamily: "var(--font-display)",
   fontWeight: 420,
   fontSize: 32,
   lineHeight: 1.12,
   letterSpacing: "-0.011em",
 };
-const body: React.CSSProperties = { fontSize: 15, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 };
-const dataSrc: React.CSSProperties = {
+const body: CSSProperties = { fontSize: 15, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 };
+const dataSrc: CSSProperties = {
   fontSize: 10,
   letterSpacing: ".1em",
   textTransform: "uppercase",
@@ -355,7 +356,111 @@ function S2({ store, s }: { store: Store; s: AppState }) {
   );
 }
 
+/** Enterprise · Contact us — a qualifying lead form (built to convert + prep the sales call). Org +
+ *  work email are required; the rest help sales. Submits to core-membership via
+ *  store.submitEnterpriseLead (server-side validate + encrypt + audit). Honest states only (Rule 1). */
+function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => void }) {
+  const [f, setF] = useState({ org: "", email: "", contact: "", seats: "", workload: "", timeline: "", notes: "" });
+  const [st, setSt] = useState<{ kind: "idle" | "sending" | "done" | "error"; msg?: string }>({ kind: "idle" });
+  const validEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email.trim());
+  const canSend = f.org.trim().length > 0 && validEmail && st.kind !== "sending";
+  const inputStyle: CSSProperties = {
+    width: "100%", padding: "9px 11px", fontSize: 13, borderRadius: "var(--r-1, 6px)",
+    border: "1px solid var(--line-1)", background: "var(--srf-2)", color: "var(--tx-1)",
+  };
+  const labelStyle: CSSProperties = { fontSize: 11.5, color: "var(--tx-2)", marginBottom: 4, display: "block" };
+
+  async function send() {
+    setSt({ kind: "sending" });
+    const res = await store.submitEnterpriseLead({
+      org: f.org.trim(),
+      email: f.email.trim(),
+      contact: f.contact.trim() || undefined,
+      seats: f.seats.trim() || undefined,
+      workload: f.workload || undefined,
+      timeline: f.timeline || undefined,
+      notes: f.notes.trim() || undefined,
+    });
+    if (res.ok) setSt({ kind: "done" });
+    else setSt({ kind: "error", msg: res.error });
+  }
+
+  if (st.kind === "done") {
+    return (
+      <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 17 }}>Thanks — your request is in.</div>
+        <p style={{ fontSize: 13, color: "var(--tx-2)", margin: 0, lineHeight: 1.55 }}>
+          Our team will reach out to <strong>{f.email.trim()}</strong> about {f.org.trim()} — seats, topology, compliance, and volume pricing. You can start on the Free tier in the meantime.
+        </p>
+        <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+          <button className="btn btn-primary btn-sm" onClick={() => store.onS3Free()}>Continue free for now</button>
+          <button className="btn btn-ghost btn-sm" onClick={onDone}>Close</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={eyebrow}>Enterprise · tell us what you need</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div>
+          <label style={labelStyle}>Organization *</label>
+          <input style={inputStyle} value={f.org} placeholder="Acme Corp" onChange={(e) => setF((p) => ({ ...p, org: e.currentTarget.value }))} />
+        </div>
+        <div>
+          <label style={labelStyle}>Work email *</label>
+          <input style={inputStyle} value={f.email} placeholder="you@acme.com" onChange={(e) => setF((p) => ({ ...p, email: e.currentTarget.value }))} />
+        </div>
+        <div>
+          <label style={labelStyle}>Your name</label>
+          <input style={inputStyle} value={f.contact} placeholder="Dana Okafor" onChange={(e) => setF((p) => ({ ...p, contact: e.currentTarget.value }))} />
+        </div>
+        <div>
+          <label style={labelStyle}>Seats / nodes</label>
+          <input style={inputStyle} value={f.seats} placeholder="e.g. 50 or 100+" onChange={(e) => setF((p) => ({ ...p, seats: e.currentTarget.value }))} />
+        </div>
+        <div>
+          <label style={labelStyle}>Primary workload</label>
+          <select style={inputStyle} value={f.workload} onChange={(e) => setF((p) => ({ ...p, workload: e.currentTarget.value }))}>
+            <option value="">Select…</option>
+            <option value="storage">Data storage</option>
+            <option value="training">Model training</option>
+            <option value="inference">Inference</option>
+            <option value="apps">Building apps</option>
+            <option value="mixed">Mixed</option>
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Timeline</label>
+          <select style={inputStyle} value={f.timeline} onChange={(e) => setF((p) => ({ ...p, timeline: e.currentTarget.value }))}>
+            <option value="">Select…</option>
+            <option value="evaluating">Just evaluating</option>
+            <option value="1-3mo">1–3 months</option>
+            <option value="now">Ready now</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style={labelStyle}>Anything else? (compliance needs, topology, use case)</label>
+        <textarea style={{ ...inputStyle, minHeight: 66, resize: "vertical" }} value={f.notes} onChange={(e) => setF((p) => ({ ...p, notes: e.currentTarget.value }))} />
+      </div>
+      {st.kind === "error" && (
+        <p role="alert" style={{ fontSize: 12.5, color: "var(--danger, #dd7259)", margin: 0 }}>{st.msg || "Could not send your request. Please try again."}</p>
+      )}
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button className="btn btn-primary btn-sm" disabled={!canSend} onClick={send}>
+          {st.kind === "sending" ? "Sending…" : "Send request"}
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={onDone}>Cancel</button>
+        <span style={{ fontSize: 11, color: "var(--tx-3)", marginLeft: "auto" }}>Your details are encrypted. No card, no charge.</span>
+      </div>
+    </div>
+  );
+}
+
 export function S3({ store, s }: { store: Store; s: AppState }) {
+  const [entOpen, setEntOpen] = useState(false);
   const items = [
     "Tier features across the app — chat on the gateway, docs at member tier, gated downloads",
     "32,000 SALT staked to your validator — the grant covers your stake for validation work",
@@ -387,9 +492,15 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
         <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={eyebrow}>Enterprise</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>Custom</div>
-          <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0 }}>Org seats, on-prem topology, custom compliance plane. Contact us.</p>
+          <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0, flex: 1 }}>Org seats, on-prem topology, custom compliance plane, volume pricing.</p>
+          {s.s3 === "idle" && (
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 8, alignSelf: "flex-start" }} onClick={() => setEntOpen((v) => !v)}>
+              {entOpen ? "Close" : "Contact sales →"}
+            </button>
+          )}
         </div>
       </div>
+      {entOpen && s.s3 === "idle" && <EnterpriseContactForm store={store} onDone={() => setEntOpen(false)} />}
       <div className="surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={eyebrow}>What membership carries</div>
         {items.map((text, i) => (

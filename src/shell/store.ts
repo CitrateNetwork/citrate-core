@@ -2869,6 +2869,25 @@ export class Store {
     this.toast("You're on the Free tier — wallet, agent, chain reads, and marketplace view. Upgrade to membership anytime in Settings → Billing.");
     this.save();
   }
+  /** Enterprise · Contact us — submit a qualified sales lead to core-membership. Returns `{ ok }`, or
+   *  `{ ok: false, error }` with the backend's honest message (Rule 1 — never a fabricated "received").
+   *  No money, no grant; the record just prepares sales for the call. */
+  async submitEnterpriseLead(lead: {
+    org: string;
+    email: string;
+    contact?: string;
+    seats?: string;
+    workload?: string;
+    timeline?: string;
+    notes?: string;
+  }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await bridge.membership.enterpriseLead(lead);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error)?.message ?? err) };
+    }
+  }
   onS1Start(): void {
     this.setState({ s1: "waiting" });
     // Tauri: drive the REAL loopback-PKCE sign-in. The system browser opens; on

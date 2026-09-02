@@ -66,6 +66,63 @@ pub async fn membership_checkout<R: tauri::Runtime>(
     open_checkout_in_browser(&app, &url)
 }
 
+/// A qualified enterprise sales lead from the step-3 "Enterprise · Contact us" form. NOT the money
+/// path — no grant, charge, or signature. Deserialized from the frontend; serialized to the
+/// core-membership `/api/enterprise/lead` endpoint (both use the same field names).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnterpriseLead {
+    pub org: String,
+    pub email: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seats: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// `membership_enterprise_lead` — POST a qualified enterprise lead to core-membership's
+/// `/api/enterprise/lead`. Server-side `reqwest` POST (avoids webview CORS/CSP). @rule8 / Rule 1: this
+/// carries NO money, signature, or secret — just the form fields (PII is validated + field-encrypted
+/// SERVER-side). Returns `()` on 2xx; an honest error string otherwise (never a fabricated "received").
+#[tauri::command]
+pub async fn membership_enterprise_lead<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    lead: EnterpriseLead,
+) -> std::result::Result<(), String> {
+    let cfg = crate::config::config_read(app.clone())?;
+    let url = cfg.enterprise_lead_url();
+    // ureq is BLOCKING (the crate's chosen light HTTP client — lean tree); run it off the async
+    // runtime so it never stalls the event loop.
+    tauri::async_runtime::spawn_blocking(move || post_enterprise_lead(&url, &lead))
+        .await
+        .map_err(|e| format!("membership: contact task failed: {e}"))?
+}
+
+fn post_enterprise_lead(url: &str, lead: &EnterpriseLead) -> std::result::Result<(), String> {
+    match ureq::post(url)
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .send_json(lead)
+    {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::StatusCode(400)) => {
+            Err("Please check the form — an organization and a valid work email are required.".to_string())
+        }
+        Err(ureq::Error::StatusCode(503)) => {
+            Err("The contact service isn't available yet — please try again shortly.".to_string())
+        }
+        Err(ureq::Error::StatusCode(code)) => Err(format!("membership: contact request failed ({code})")),
+        Err(_) => Err("membership: could not reach the contact service.".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("membership_tests.rs");

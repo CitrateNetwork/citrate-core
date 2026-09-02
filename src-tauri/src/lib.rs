@@ -341,6 +341,7 @@ pub fn run() {
             // membership — the money + grant are server-side; the store polls
             // /userinfo and only advances S3 when the REAL entitlement lands.
             membership::membership_checkout,
+            membership::membership_enterprise_lead,
             // membership grant status — BC-1.3 (@rule8 · T1 money-path READ). Reads
             // the REAL on-chain grant: MembershipStakeVault.attributedStake +
             // attributedShares(member) and CitrateMemberSBT.balanceOf(member) via
