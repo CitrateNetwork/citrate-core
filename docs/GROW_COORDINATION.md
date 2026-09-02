@@ -189,24 +189,29 @@ aws s3 cp <Asset-Name> s3://citrate-cdn/downloads/<Asset-Name> \
 Verify live: `curl -sI https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/<Asset-Name>` →
 `content-length` must equal the new build's size. The Mac team can re-check `/download` end-to-end on request.
 
-## ⚠ ACTION FOR DGX — re-mirror the rebuilt Mac DMG (2026-09-01)
-The `v0.1.0-alpha.1` Mac asset was **rebuilt from current `main`** (includes #221 short-codes,
-#225 Flag-A, **#226 model-URL → vanity redirect**) and re-notarized (liblzma leak fixed + stapled;
-Gatekeeper: Notarized Developer ID). The GitHub release asset is updated, but **the live download
-serves from the DO Space, which still holds the OLD bytes** — so please re-run the mirror:
+## ⚠ ACTION FOR DGX — re-mirror the rebuilt Mac DMG (2026-09-02, SUPERSEDES the 09-01 rebuild)
+The `v0.1.0-alpha.1` Mac asset was **rebuilt again** (adds a visible build stamp in Settings + the
+relay-health-aware comms daemon, citrate-comms #58) and re-notarized. Please re-run the mirror
+(standing procedure above — **remember step 4, purge the CDN**):
 
 | | old (mirrored) | NEW (re-mirror this) |
 |---|---|---|
-| sha256 | `83f8ae9a…` | **`086533d8fc440fe3e0f4ffa7b1ea023ab5911099a668b4a18dca30447db10591`** |
-| size | 371,975,352 | **372,022,974** |
+| sha256 | `086533d8…` (09-01) | **`ae7e47648915d85b225bb6272d405a948deb7b573d88da611217777fbf562f3e`** |
+| size | 372,022,974 | **372,032,496** |
 
 Same asset name `Citrate-Core-macos-arm64.dmg` → `downloads/`. Pull the release asset via authed `gh`,
-verify == `086533d8…`, upload (clobber), done — no landing change, `DOWNLOAD_BASE` unchanged. Why it
-matters: the OLD DMG defaults `CITRATE_MODEL_URL` to the bare HF URL, so it bypasses your model mirror;
-the rebuilt one routes through `citrate.ai/download/model`.
+verify == `ae7e4764…`, upload (clobber), **purge the CDN**. No landing change, `DOWNLOAD_BASE` unchanged.
+
+Related: the **relay upstream at `comms.citrate.ai` (droplet 142.93.58.145) is returning HTTP 502** —
+Caddy is up but the relay service behind it is down, so groups can't connect (any build). Needs a relay
+restart on the droplet. This is the actual cause of "groups aren't connecting"; the app-side rebuild
+just makes the outage visible (the new daemon can report relay-degraded).
 
 ## Decisions log
-- 2026-09-01 — Mac DMG REBUILT from main + re-notarized (liblzma-fixed, stapled). New sha256
+- 2026-09-02 — Mac DMG REBUILT again: adds the Settings build stamp (#230) + the relay-health-aware
+  comms daemon (citrate-comms #58). New sha256 `ae7e4764…` / 372,032,496 B on `v0.1.0-alpha.1`. DGX:
+  re-mirror + CDN purge. Also flagged: relay 502 at comms.citrate.ai — needs a droplet-side restart.
+- 2026-09-01 — Mac DMG REBUILT from main + re-notarized (liblzma-fixed, stapled). sha256
   `086533d8…` / 372,022,974 B uploaded to `v0.1.0-alpha.1`. DGX action: re-mirror (see above).
 - 2026-09-01 — tri-platform light client: Linux (AppImage+deb) + Windows (NSIS) configs + runbooks
   added; asset-name contract above; Linux needs a build host, Windows handed to the partner agent.
