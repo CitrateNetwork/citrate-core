@@ -189,18 +189,19 @@ aws s3 cp <Asset-Name> s3://citrate-cdn/downloads/<Asset-Name> \
 Verify live: `curl -sI https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/<Asset-Name>` →
 `content-length` must equal the new build's size. The Mac team can re-check `/download` end-to-end on request.
 
-## ⚠ ACTION FOR DGX — re-mirror the GROUPS-FIX Mac DMG (2026-09-02, SUPERSEDES all prior rebuilds)
+## ⚠ ACTION FOR DGX — re-mirror the Mac DMG — chip build (2026-09-02, SUPERSEDES all prior rebuilds)
 The `v0.1.0-alpha.1` Mac asset was **rebuilt with the actual groups fix** (rustls CryptoProvider,
 citrate-comms #59 — see below) and re-notarized. Please re-run the mirror (standing procedure above —
 **remember step 4, purge the CDN**):
 
 | | old (mirrored) | NEW (re-mirror this) |
 |---|---|---|
-| sha256 | `ae7e4764…` | **`b95816383bc5f9d2575667051cadfe4a709151626df00ce23e03a8f2dd4e9170`** |
-| size | 372,032,496 | **372,318,559** |
+| sha256 | `b9581638…` | **`55a680b1789120005d85eec424eb47d7ebd9bd561b787dd21cbeb44603eb38d3`** |
+| size | 372,318,559 | **372,393,769** |
 
 Same asset name `Citrate-Core-macos-arm64.dmg` → `downloads/`. Pull the release asset via authed `gh`,
-verify == `b9581638…`, upload (clobber), **purge the CDN**. No landing change, `DOWNLOAD_BASE` unchanged.
+verify == `55a680b1…`, upload (clobber), **purge the CDN**. No landing change, `DOWNLOAD_BASE` unchanged.
+Adds the visible relay-status chip (Groups + Comms headers) on top of the groups fix.
 
 ### ROOT CAUSE FOUND + FIXED — "groups aren't connecting" / app freeze
 It was NOT the relay (that was my 502 misdiagnosis — the relay is healthy, thanks for catching it). The
@@ -214,6 +215,8 @@ the session HOLDS — your `/health` `connected` went **0 → 1** at ~06:21Z. So
 DMG is the first build where a real launch actually connects.
 
 ## Decisions log
+- 2026-09-02 — chip DMG: adds the visible relay-status chip (Groups + Comms headers, #234) on top of
+  the rustls groups fix. New sha `55a680b1…` / 372,393,769 B on `v0.1.0-alpha.1`. DGX: re-mirror + purge.
 - 2026-09-02 — ROOT CAUSE of "groups aren't connecting"/freeze = comms daemon panicked on the first
   wss:// dial (rustls 0.23 CryptoProvider ambiguity). Fixed in citrate-comms #59 (install `ring` once
   before dial); verified headless against the live relay (connected 0→1). New DMG sha `b9581638…` /
