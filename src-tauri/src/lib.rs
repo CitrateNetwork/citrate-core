@@ -379,6 +379,7 @@ pub fn run() {
             storage::storage_retrieve,
             storage::storage_unpin,
             comms::groups_create,
+            comms::comms_relay_status,
             comms::groups_list,
             comms::groups_self_address,
             comms::groups_join,

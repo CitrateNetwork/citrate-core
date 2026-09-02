@@ -694,6 +694,12 @@ export interface GroupsDomain {
   offboard(groupId: string, address: string): Promise<void>;
   send(groupId: string, body: string): Promise<void>;
   messages(groupId: string): Promise<GroupMessage[]>;
+  /**
+   * Flag-A — the networked relay-link health for the status chip. One of:
+   * `"idle"` (daemon not started) · `"local"` (in-process relay) · `"connecting"` (up, unconfirmed) ·
+   * `"connected"` · `"degraded"` (link down, ops failing). Reported, never a fake — a bounded read.
+   */
+  relayStatus(): Promise<string>;
 }
 
 // ── C-20 group clusters: private P2P + shared files/compute (lane s4) ──
