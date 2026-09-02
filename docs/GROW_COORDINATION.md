@@ -189,30 +189,35 @@ aws s3 cp <Asset-Name> s3://citrate-cdn/downloads/<Asset-Name> \
 Verify live: `curl -sI https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/<Asset-Name>` →
 `content-length` must equal the new build's size. The Mac team can re-check `/download` end-to-end on request.
 
-## ⚠ ACTION FOR DGX — re-mirror the rebuilt Mac DMG (2026-09-02, SUPERSEDES the 09-01 rebuild)
-The `v0.1.0-alpha.1` Mac asset was **rebuilt again** (adds a visible build stamp in Settings + the
-relay-health-aware comms daemon, citrate-comms #58) and re-notarized. Please re-run the mirror
-(standing procedure above — **remember step 4, purge the CDN**):
+## ⚠ ACTION FOR DGX — re-mirror the GROUPS-FIX Mac DMG (2026-09-02, SUPERSEDES all prior rebuilds)
+The `v0.1.0-alpha.1` Mac asset was **rebuilt with the actual groups fix** (rustls CryptoProvider,
+citrate-comms #59 — see below) and re-notarized. Please re-run the mirror (standing procedure above —
+**remember step 4, purge the CDN**):
 
 | | old (mirrored) | NEW (re-mirror this) |
 |---|---|---|
-| sha256 | `086533d8…` (09-01) | **`ae7e47648915d85b225bb6272d405a948deb7b573d88da611217777fbf562f3e`** |
-| size | 372,022,974 | **372,032,496** |
+| sha256 | `ae7e4764…` | **`b95816383bc5f9d2575667051cadfe4a709151626df00ce23e03a8f2dd4e9170`** |
+| size | 372,032,496 | **372,318,559** |
 
 Same asset name `Citrate-Core-macos-arm64.dmg` → `downloads/`. Pull the release asset via authed `gh`,
-verify == `ae7e4764…`, upload (clobber), **purge the CDN**. No landing change, `DOWNLOAD_BASE` unchanged.
+verify == `b9581638…`, upload (clobber), **purge the CDN**. No landing change, `DOWNLOAD_BASE` unchanged.
 
-Related (⚠ CORRECTED 2026-09-02): I earlier called the relay "down" based on an HTTP 502 — that was a
-BAD PROBE. `comms.citrate.ai` is a pure WebSocket server, so a plain `curl` GET (no WS handshake) gets an
-empty reply that Caddy surfaces as 502. **502-on-GET ≠ dead relay.** DGX verified on the droplet: service
-active, a real `wss://` handshake returns `101` + a SIWE challenge, `/health` = `{connected:0, groups:0,
-domain:"comms.citrate.ai"}`. **The relay is healthy — do NOT restart it.** The real signal is
-`connected:0` → clients aren't completing LOGIN (client-side, not liveness). App-side domain wiring is
-verified correct (`CITRATE_MEMBER_DOMAIN=comms.citrate.ai`, `wss://comms.citrate.ai`), so the obvious
-SIWE-domain trap isn't hit by the default build. Root-causing via DGX's live `/health` watch during a
-connect (never-reaches-WS / SIWE-reject / connects-then-group-registration).
+### ROOT CAUSE FOUND + FIXED — "groups aren't connecting" / app freeze
+It was NOT the relay (that was my 502 misdiagnosis — the relay is healthy, thanks for catching it). The
+`comms-member-daemon` **panicked on the FIRST `wss://` dial**, before the WS handshake and before SIWE
+login — so the relay never saw a connection (that's why `/health` showed `connected:0` on every build,
+and why the app froze). Cause: rustls 0.23 dropped the automatic default `CryptoProvider`, and with both
+`ring` and `aws-lc-rs` in the tree it can't pick one → panic at TLS setup. Fix: install the `ring`
+provider once before any dial (**citrate-comms #59, merged**). **Verified headless against the LIVE relay**
+(`wss://comms.citrate.ai`): before → panic; after → connect + SIWE login + key-package publish succeed and
+the session HOLDS — your `/health` `connected` went **0 → 1** at ~06:21Z. So no relay change needed; this
+DMG is the first build where a real launch actually connects.
 
 ## Decisions log
+- 2026-09-02 — ROOT CAUSE of "groups aren't connecting"/freeze = comms daemon panicked on the first
+  wss:// dial (rustls 0.23 CryptoProvider ambiguity). Fixed in citrate-comms #59 (install `ring` once
+  before dial); verified headless against the live relay (connected 0→1). New DMG sha `b9581638…` /
+  372,318,559 B. DGX: re-mirror + purge. Supersedes the ae7e4764 build.
 - 2026-09-02 — ⚠ CORRECTION: the "relay is down / restart it" call was a Mac-team MISDIAGNOSIS (a plain-GET
   502 on a WS-only server, not a dead relay). DGX confirmed the relay HEALTHY (real handshake → 101 + SIWE
   challenge; /health connected:0). Real issue = client LOGIN not completing; app domain wiring verified
