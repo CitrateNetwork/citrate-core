@@ -419,9 +419,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
 
   // ---------- app ----------
   // The updater has no backend in this build, so we never assert "current"
-  // (unverifiable). Show the real running version + channel; the Check-for-updates
-  // control is an honest DISABLED state below (not a fake "current" toast).
-  const updText = "citrate-core 0.1.0-proto · " + s.channel + " channel";
+  // (unverifiable). Show the real running version + a BUILD STAMP (git sha + build time, baked at
+  // build time by vite.config define) + channel. The build stamp is the only way to tell two installs
+  // apart — the app version (0.1.0) is identical across rebuilds. The Check-for-updates control is an
+  // honest DISABLED state below (not a fake "current" toast).
+  const buildSha = typeof __BUILD_SHA__ === "string" ? __BUILD_SHA__ : "dev";
+  const buildTime = typeof __BUILD_TIME__ === "string" ? __BUILD_TIME__ : "";
+  const appVer = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.0.0";
+  const buildDay = buildTime ? buildTime.slice(0, 10) : "";
+  const updText =
+    "citrate-core " + appVer + " · build " + buildSha + (buildDay ? " (" + buildDay + ")" : "") + " · " + s.channel + " channel";
 
   const setSec = (id: string) => {
     store.setState({ sSec: id });
