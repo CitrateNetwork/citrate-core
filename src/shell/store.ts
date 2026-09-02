@@ -2860,6 +2860,15 @@ export class Store {
     this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
     this.save();
   }
+  /** S3 — choose the FREE tier: enter the app WITHOUT a paid membership (no stake, no SBT). Mirrors
+   *  onExplore (the S0 free path) so a user who reached the membership step can still decline the paid
+   *  seat instead of being funneled into it. The paid membership stays available later (Settings →
+   *  Billing → Renew opens the same checkout). No payment, no fabricated grant (Rule 1). */
+  onS3Free(): void {
+    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
+    this.toast("You're on the Free tier — wallet, agent, chain reads, and marketplace view. Upgrade to membership anytime in Settings → Billing.");
+    this.save();
+  }
   onS1Start(): void {
     this.setState({ s1: "waiting" });
     // Tauri: drive the REAL loopback-PKCE sign-in. The system browser opens; on

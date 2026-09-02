@@ -370,7 +370,12 @@ export function S3({ store, s }: { store: Store; s: AppState }) {
         <div style={{ border: "1px solid var(--line-1)", background: "var(--srf-1)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={eyebrow}>Free</div>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 420 }}>$0</div>
-          <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0 }}>Wallet, agent harness, chain reads, marketplace view. No staking, no grant.</p>
+          <p style={{ fontSize: 12, lineHeight: 1.5, color: "var(--tx-2)", margin: 0, flex: 1 }}>Wallet, agent harness, chain reads, marketplace view. No staking, no grant.</p>
+          {s.s3 === "idle" && (
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 8, alignSelf: "flex-start" }} onClick={() => store.onS3Free()}>
+              Continue free →
+            </button>
+          )}
         </div>
         <div style={{ border: "2px solid var(--tx-1)", background: "var(--srf-2)", borderRadius: "var(--r-2)", padding: 16, display: "flex", flexDirection: "column", gap: 6, position: "relative" }}>
           <div style={{ ...eyebrow, color: "var(--accent-text)" }}>Pilot · selected</div>
