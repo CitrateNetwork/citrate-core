@@ -15,6 +15,7 @@ import type { Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } f
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
+import { RelayStatusChip } from "./RelayStatusChip";
 import {
   groupsSlice,
   refreshGroups,
@@ -493,8 +494,9 @@ export function Groups({ store, s }: SurfaceProps) {
       })()}
       {/* ---------- left rail ---------- */}
       <div style={{ borderRight: "1px solid var(--line-1)", background: "var(--srf-1)", padding: "18px 14px", display: "flex", flexDirection: "column", gap: 12, minHeight: 0, overflow: "auto" }}>
-        <div style={{ display: "flex", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 19 }}>Groups</span>
+          <RelayStatusChip />
           <button className="btn btn-ghost btn-sm" onClick={() => setCreateOpen((v) => !v)} style={{ marginLeft: "auto" }}>
             {createOpen ? "Close" : "New"}
           </button>

@@ -77,5 +77,9 @@ export function simGroups(_host: SimHost): GroupsDomain {
     async messages(groupId): Promise<GroupMessage[]> {
       return groups.get(groupId)?.msgs.map((m) => ({ ...m })) ?? [];
     },
+    async relayStatus(): Promise<string> {
+      // Web-dev sim has no networked relay — honest "local" (in-process), never a fake "connected".
+      return "local";
+    },
   };
 }

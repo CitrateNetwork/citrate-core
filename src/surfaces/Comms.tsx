@@ -10,6 +10,7 @@
 // not the UI (Rule 1). No message bodies ever pass through this surface.
 // =====================================================================
 import { SurfaceProps } from "./shared";
+import { RelayStatusChip } from "./RelayStatusChip";
 import { PINGS } from "../data/seed";
 
 export function Comms({ store, s }: SurfaceProps) {
@@ -31,8 +32,9 @@ export function Comms({ store, s }: SurfaceProps) {
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 760 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Ping center</span>
+        <RelayStatusChip />
         <span className="mono tabular" style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--tx-3)" }}>
           next poll in {pollStr}
         </span>

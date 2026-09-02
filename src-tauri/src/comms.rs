@@ -926,6 +926,28 @@ pub async fn groups_self_address(app: tauri::AppHandle) -> std::result::Result<S
     device_identity(&app).map(|d| d.address)
 }
 
+/// **comms_relay_status** — the networked relay-link health for the status chip (Flag-A). Read-only,
+/// non-secret; NEVER force-starts the daemon (reads `MANAGER` if the comms surface already started it,
+/// else `idle`). Maps [`RelayHealth`] to the chip vocabulary the UI renders:
+///   idle       — daemon not started yet (no comms activity this session)
+///   local      — in-process relay (networked relay disabled via the off-switch)
+///   connected  — the daemon reports its relay link up
+///   degraded   — configured but the link is DOWN (ops failing until it reconnects)
+///   connecting — daemon up but the relay state isn't confirmed yet (or an older daemon)
+/// Bounded (the underlying probe is ≤750ms, non-retrying) so polling it can't stall the UI.
+#[tauri::command]
+pub async fn comms_relay_status() -> String {
+    match MANAGER.get() {
+        None => "idle".to_string(),
+        Some(m) => match m.relay_status() {
+            RelayHealth::NotApplicable => "local".to_string(),
+            RelayHealth::Connected => "connected".to_string(),
+            RelayHealth::Degraded => "degraded".to_string(),
+            RelayHealth::Unknown => "connecting".to_string(),
+        },
+    }
+}
+
 /// **groups_join** — join a group this member was added to on a shared relay.
 #[tauri::command]
 pub async fn groups_join(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {

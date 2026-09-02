@@ -58,4 +58,8 @@ export const tauriGroups: GroupsDomain = {
     // not wall-clock — an honest limitation until the daemon surfaces timestamps).
     return rows.map(([sender, body], i) => ({ id: `${groupId}:${i}`, groupId, sender, body, ts: 0 }));
   },
+  async relayStatus(): Promise<string> {
+    // Bounded read; never force-starts the daemon (the command reads MANAGER or returns "idle").
+    return invoke<string>("comms_relay_status");
+  },
 };
