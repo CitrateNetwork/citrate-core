@@ -67,8 +67,20 @@ fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
 
 fn save(app: &tauri::AppHandle, v: &[PendingInvite]) -> Result<(), String> {
     let p = store_path(app)?;
+    write_pending(&p, v)
+}
+
+/// Serialize the pending invites and write them owner-only (`0600`).
+///
+/// CORE-B-006: `pending.json` holds the plaintext ECIES PRIVATE keys of every
+/// outstanding invite (`PendingInvite::priv_key`). The old `fs::write` created it
+/// at the process umask (`0644`), so another local user could read those keys and
+/// open the sealed relay claims they protect. Route through the shared
+/// [`citrate_core_kit::fsutil`] writer, which creates the file `0600` in the
+/// `open(2)` call itself.
+fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?;
-    std::fs::write(p, bytes).map_err(|e| e.to_string())
+    citrate_core_kit::fsutil::write_secret_file(path, &bytes).map_err(|e| e.to_string())
 }
 
 /// `group_invite_create` — mint a claimable invite for a group + share link. No address resolution.
@@ -211,5 +223,34 @@ mod tests {
         assert!(link.starts_with("citrate://invite?"));
         assert!(link.contains("g=grp_abc"));
         assert!(link.contains("t=tok123"));
+    }
+
+    /// CORE-B-006 tripwire: the pending-invite store — which holds the plaintext
+    /// ECIES private keys of outstanding invites — must be written owner-only
+    /// (no group/other read bits). Fails on the old `fs::write` (umask `0644`).
+    #[cfg(unix)]
+    #[test]
+    fn pending_invites_are_written_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("citrate-invites-b006-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pending.json");
+        let invites = vec![super::PendingInvite {
+            group: "grp_abc".into(),
+            token: "tok123".into(),
+            for_handle: "@alice".into(),
+            created_at: 1000,
+            priv_key: "deadbeef".into(),
+            link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+        }];
+        super::write_pending(&path, &invites).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "pending.json holds invite private keys — must not be group/other-readable (mode {mode:o})"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

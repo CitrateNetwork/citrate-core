@@ -149,6 +149,45 @@ fn retrieve_roundtrips_the_bytes_to_a_local_file() {
     assert_eq!(std::fs::read(&path).unwrap(), content);
 }
 
+/// CORE-B-005 tripwire: `retrieve` must reject a `cid` that is not a single normal
+/// path component — an absolute path (discards the base dir), a `..` traversal, or
+/// an embedded separator — BEFORE it is joined onto the retrieval dir. The fake
+/// kubo is seeded so `cat` succeeds for the hostile strings, isolating the path
+/// guard as the only thing standing between this and an arbitrary-location write.
+#[test]
+fn retrieve_rejects_path_traversal_and_absolute_cids() {
+    let fake = FakeKubo::new();
+    let (mgr, dir) = manager("traversal", Arc::clone(&fake));
+    let escape = dir.parent().unwrap().join("agentb-escape");
+
+    for evil in [
+        "/tmp/agentb-pwned",
+        "../../../agentb-escape",
+        "../agentb-escape",
+        "a/b",
+        "..",
+        "",
+    ] {
+        // Make `cat` succeed for the hostile cid so the path guard is the gate.
+        fake.blobs
+            .lock()
+            .unwrap()
+            .insert(evil.to_string(), b"pwned".to_vec());
+        let r = mgr.retrieve(evil);
+        assert!(
+            r.is_err(),
+            "retrieve must reject a non-single-component cid: {evil:?}"
+        );
+    }
+    // Nothing escaped the retrieval dir.
+    assert!(!escape.exists(), "no file was written outside the base dir");
+    assert!(!Path::new("/tmp/agentb-pwned").exists());
+
+    // A legitimate single-component cid still round-trips.
+    let out = mgr.add_file(&temp_file(&dir, "ok.txt", b"legit")).unwrap();
+    assert!(mgr.retrieve(&out.cid).is_ok(), "a normal cid still retrieves");
+}
+
 #[test]
 fn list_surfaces_a_live_pin_the_app_never_tracked() {
     let fake = FakeKubo::new();

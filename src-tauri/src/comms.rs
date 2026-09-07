@@ -452,40 +452,13 @@ fn mint_bearer() -> Zeroizing<String> {
 }
 
 /// Write a secret (bearer token or seed hex) to a 0600 file under a 0700 dir. Fail closed.
+///
+/// CORE-B-001: routed through the shared [`citrate_core_kit::fsutil`] writer, which
+/// creates the file `0600` in the `open(2)` call itself — the seed/bearer is never
+/// world-readable in the window a `fs::write`-then-`chmod` left open.
 fn persist_secret_0600(path: &Path, secret: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
-        harden_dir_perms(parent).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
-    }
-    std::fs::write(path, secret.as_bytes()).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
-    harden_perms(path).map_err(|e| CommsError::Ipc(e.kind().to_string()))?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn harden_perms(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    std::fs::set_permissions(path, perms)
-}
-#[cfg(not(unix))]
-fn harden_perms(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-#[cfg(unix)]
-fn harden_dir_perms(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    if dir.as_os_str().is_empty() {
-        return Ok(());
-    }
-    let mut perms = std::fs::metadata(dir)?.permissions();
-    perms.set_mode(0o700);
-    std::fs::set_permissions(dir, perms)
-}
-#[cfg(not(unix))]
-fn harden_dir_perms(_dir: &Path) -> std::io::Result<()> {
-    Ok(())
+    citrate_core_kit::fsutil::write_secret_file(path, secret.as_bytes())
+        .map_err(|e| CommsError::Ipc(e.kind().to_string()))
 }
 
 /// Resolve the bundled `comms-member-daemon` binary (env override → resource dir).

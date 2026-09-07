@@ -43,6 +43,37 @@ fn default_core_membership_url() -> String {
     "https://core-membership.vercel.app".into()
 }
 
+/// CORE-B-004 — validate a `coreMembershipUrl` before it is persisted and, later,
+/// loaded into an app-branded in-app checkout window titled "Citrate Membership".
+///
+/// The value drives the money step of the onboarding path (the popup where the
+/// member enters card details), so an unvalidated field let the renderer (or any
+/// same-user process writing `config.json`) point that window at attacker content
+/// PERSISTENTLY. We require:
+///   * the `https` scheme (never `http`/`file`/`javascript:` — mirrors
+///     `shell::open_external` and `ai::validate_https_base_url`), and
+///   * a host on the core-membership allowlist: exactly `core-membership.vercel.app`
+///     (prod) OR a `core-membership-*.vercel.app` Vercel preview deploy.
+///
+/// Any other value is rejected so `apply` keeps the previous (trusted) value
+/// rather than persisting a hostile one. The OIDC authority uses the same
+/// pin-don't-trust discipline (`oidc::AuthorityConfig::production`).
+pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(candidate) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    match parsed.host_str() {
+        Some(host) => {
+            host == "core-membership.vercel.app"
+                || (host.starts_with("core-membership-") && host.ends_with(".vercel.app"))
+        }
+        None => false,
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
@@ -106,7 +137,12 @@ impl AppConfig {
             self.sig_policy = v;
         }
         if let Some(v) = p.core_membership_url {
-            self.core_membership_url = v;
+            // CORE-B-004: only accept an https URL on the core-membership allowlist.
+            // A rejected value leaves the previous (trusted) URL in place rather
+            // than persisting attacker-controlled checkout content.
+            if is_valid_core_membership_url(&v) {
+                self.core_membership_url = v;
+            }
         }
         self
     }
@@ -275,5 +311,54 @@ mod tests {
         // round-trips back to an equal value
         let back: AppConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    /// CORE-B-004 tripwire: a hostile `coreMembershipUrl` patch (non-https scheme,
+    /// or an off-allowlist host) must be REJECTED — `apply` keeps the previous
+    /// trusted value rather than persisting attacker checkout content. Before the
+    /// fix, `apply` assigned the field unchecked and these would all take effect.
+    #[test]
+    fn hostile_core_membership_url_is_rejected_and_previous_kept() {
+        let base = AppConfig::default();
+        let prev = base.core_membership_url.clone();
+        for hostile in [
+            "http://core-membership.vercel.app",             // cleartext
+            "https://core-membershlp.example",               // look-alike host
+            "https://evil.example/checkout",                 // arbitrary host
+            "file:///etc/passwd",                            // file scheme
+            "javascript:alert(1)",                           // js scheme
+            "https://attacker.core-membership.vercel.app.evil.com", // suffix trick
+            "not a url",
+        ] {
+            let merged = base.clone().apply(AppConfigPatch {
+                core_membership_url: Some(hostile.to_string()),
+                ..Default::default()
+            });
+            assert_eq!(
+                merged.core_membership_url, prev,
+                "hostile url {hostile:?} must be rejected, previous value kept"
+            );
+        }
+    }
+
+    /// CORE-B-004: legitimate prod + Vercel preview hosts are still accepted, and
+    /// the derived checkout URL always starts with `https://`.
+    #[test]
+    fn allowlisted_core_membership_urls_are_accepted_and_checkout_is_https() {
+        for ok in [
+            "https://core-membership.vercel.app",
+            "https://core-membership-preview.vercel.app",
+            "https://core-membership-git-main-citrate.vercel.app",
+        ] {
+            let merged = AppConfig::default().apply(AppConfigPatch {
+                core_membership_url: Some(ok.to_string()),
+                ..Default::default()
+            });
+            assert_eq!(merged.core_membership_url, ok, "allowlisted url {ok:?} accepted");
+            assert!(
+                merged.checkout_url().starts_with("https://"),
+                "checkout url must always be https"
+            );
+        }
     }
 }

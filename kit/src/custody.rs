@@ -716,7 +716,11 @@ impl CustodyVault {
         let bytes = serde_json::to_vec(env).map_err(|e| CustodyError::Io(e.to_string()))?;
         let tmp = self.path.with_extension("enc.tmp");
         {
-            let mut f = std::fs::File::create(&tmp).map_err(|e| CustodyError::Io(e.to_string()))?;
+            // CORE-B-006: create the temp envelope 0600 in the open(2) call itself
+            // (was `File::create`, i.e. umask 0644), so the sealed vault is never
+            // world-readable even for the window before the atomic rename.
+            let mut f = crate::fsutil::create_secret_file(&tmp)
+                .map_err(|e| CustodyError::Io(e.to_string()))?;
             f.write_all(&bytes)
                 .map_err(|e| CustodyError::Io(e.to_string()))?;
             f.sync_all().map_err(|e| CustodyError::Io(e.to_string()))?;
