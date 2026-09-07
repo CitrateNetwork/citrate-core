@@ -98,7 +98,8 @@ fn contract_creation_with_initcode_decodes() {
 #[test]
 fn calldata_with_no_gas_cannot_finalize() {
     // A contract CALL (calldata present) without a supplied gas limit: we must
-    // NOT guess execution gas. It decodes for display but finalize returns None.
+    // NOT guess execution gas. It parses for the broadcast path but finalize
+    // returns None.
     let raw = serde_json::json!({
         "from": "0x98a32D944e9138B14A35b5D4dcE53339570F371A",
         "to": "0x3535353535353535353535353535353535353535",
@@ -106,6 +107,8 @@ fn calldata_with_no_gas_cannot_finalize() {
     })
     .to_string();
     let (parsed, display) = decode_transaction(&raw).expect("call decodes for display");
+    // `transfer(...)` is a KNOWN selector (CORE-B-003 allowlist), so it stays
+    // legible — the action names the call. finalize still returns None (no gas).
     assert!(display.action.contains("Call"), "action: {}", display.action);
     assert!(parsed.finalize(0, 1).is_none(), "no gas for a call → cannot finalize");
 }

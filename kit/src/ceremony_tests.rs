@@ -1006,6 +1006,102 @@ fn adv5_tx_path_true_origin_and_undecodable_raw_gated_end_to_end() {
 }
 
 // =========================================================================
+// CORE-B-003 tripwire — a contract call is legible (one-click) ONLY when its
+// selector is on the known-ABI allowlist. The B1.4 decoder made the tx ENVELOPE
+// decodable and silently re-scoped "calldata" to mean the envelope, so ANY
+// well-formed tx got a one-click "N bytes calldata" summary that decoded neither
+// selector, spender, nor amount. This asserts (a) an UNKNOWN selector is now
+// raw-ack gated, and (b) the named regression vector — ERC-20
+// `approve(spender, 2^256-1)` — is no longer a blind approve: its decode surfaces
+// the spender AND flags the amount UNLIMITED. A plain value transfer stays legible.
+// =========================================================================
+
+#[test]
+fn opaque_contract_calldata_gate_and_erc20_decode() {
+    let c = SignatureCeremony::new();
+    let token = "0x1111111111111111111111111111111111111111";
+    let spender = "2222222222222222222222222222222222222222";
+
+    // (a) An arbitrary UNKNOWN selector must be raw-ack gated (no benign summary).
+    let unknown = SignatureIntent {
+        origin: "agent:hermes".to_string(),
+        kind: IntentKind::Transaction,
+        chain_id: 40204,
+        raw: serde_json::json!({
+            "from": canonical_addr_lower(),
+            "to": token,
+            "value": "0x0",
+            "data": "0xdeadbeef00112233",
+        })
+        .to_string(),
+    };
+    let uview = c.request(unknown);
+    assert_eq!(
+        uview.decoded.action, UNRECOGNIZED_ACTION,
+        "an unknown-selector contract call must not surface a benign action"
+    );
+    assert!(
+        uview.requires_raw_ack,
+        "an unknown-selector contract call must require an explicit raw ack"
+    );
+
+    // (b) ERC-20 approve(spender, MAX) — the named regression vector. It is a KNOWN
+    // selector, so it stays one-click, but it is NO LONGER blind: the decode names
+    // the spender and flags the amount UNLIMITED (was an opaque "68 bytes calldata").
+    let approve_data = format!("0x095ea7b3{:0>64}{}", spender, "f".repeat(64));
+    let approve = SignatureIntent {
+        origin: "agent:hermes".to_string(),
+        kind: IntentKind::Transaction,
+        chain_id: 40204,
+        raw: serde_json::json!({
+            "from": canonical_addr_lower(),
+            "to": token,
+            "value": "0x0",
+            "data": approve_data,
+        })
+        .to_string(),
+    };
+    let aview = c.request(approve);
+    assert_ne!(
+        aview.decoded.action, UNRECOGNIZED_ACTION,
+        "a known ERC-20 approve is decoded, not raw-gated"
+    );
+    assert!(
+        aview.decoded.action.to_lowercase().contains("approve"),
+        "approve decode names the operation: {}",
+        aview.decoded.action
+    );
+    assert!(
+        aview.decoded.action.to_lowercase().contains(spender),
+        "approve decode surfaces the spender (no longer blind): {}",
+        aview.decoded.action
+    );
+    assert!(
+        aview.decoded.action.contains("UNLIMITED"),
+        "an infinite (max-uint) approval must be flagged UNLIMITED: {}",
+        aview.decoded.action
+    );
+
+    // A plain value transfer (empty calldata) stays legible — no false positive.
+    let transfer = SignatureIntent {
+        origin: "app.citrate.ai".to_string(),
+        kind: IntentKind::Transaction,
+        chain_id: 40204,
+        raw: serde_json::json!({
+            "from": canonical_addr_lower(),
+            "to": token,
+            "value": "0xde0b6b3a7640000",
+            "data": "0x",
+        })
+        .to_string(),
+    };
+    assert!(
+        !c.request(transfer).requires_raw_ack,
+        "a plain value transfer with empty calldata remains legible (no raw ack)"
+    );
+}
+
+// =========================================================================
 // CORE-B1.4 — the transaction path: request decodes a REAL legacy tx, approve
 // signs it with the vault key via `sign_eip155_legacy_tx`, broadcasts over a
 // MOCK RPC (CI-safe), and the signer ecrecovers to the wallet address. All B1.2

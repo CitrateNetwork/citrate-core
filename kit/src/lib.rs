@@ -25,6 +25,7 @@
 pub mod ceremony;
 pub mod config;
 pub mod custody;
+pub mod fsutil;
 pub mod oidc;
 pub mod rpc;
 pub mod supervisor;

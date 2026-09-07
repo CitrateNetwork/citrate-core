@@ -112,7 +112,95 @@ pub fn decode_transaction(raw: &str) -> Option<(ParsedTx, TxDisplay)> {
     ))
 }
 
+/// The state-changing calls citrate-core itself builds and routes through the
+/// ceremony, plus the two ERC-20 money ops, keyed by 4-byte selector → label.
+///
+/// CORE-B-003: a contract call is "understood" (legible, one-click) ONLY if its
+/// selector is on this list. The old decoder narrowed the ADV-5 raw-ack gate out
+/// of existence by treating ANY well-formed tx envelope as decodable, so an
+/// `approve(attacker, 2^256-1)` read as a routine "68 bytes calldata" one-click.
+/// Selectors are DERIVED by keccak from the canonical signatures (see
+/// [`selector_of`]) so this table cannot drift from the on-chain ABI — it mirrors
+/// the pinned selector consts proven in `staking.rs` / `earnings.rs` /
+/// `validator.rs`. Anything NOT on this list is raw-ack gated.
+const KNOWN_CALL_SIGNATURES: &[(&str, &str)] = &[
+    ("deposit()", "deposit"),
+    ("requestWithdrawal(uint256)", "requestWithdrawal"),
+    ("claimWithdrawal(uint256)", "claimWithdrawal"),
+    ("claimRewards()", "claimRewards"),
+    (
+        "registerModel(bytes32,bytes32,bytes32,bytes32,string)",
+        "registerModel",
+    ),
+    ("registerValidator(bytes32,bytes)", "registerValidator"),
+    ("activate(bytes32,bytes)", "activate"),
+    ("transfer(address,uint256)", "transfer"),
+    ("approve(address,uint256)", "approve"),
+];
+
+/// The 4-byte selector for a canonical function signature: `keccak256(sig)[..4]`.
+fn selector_of(sig: &str) -> [u8; 4] {
+    use sha3::{Digest, Keccak256};
+    let h = Keccak256::digest(sig.as_bytes());
+    [h[0], h[1], h[2], h[3]]
+}
+
+/// If `calldata`'s leading 4-byte selector is a known citrate-core / ERC-20 call,
+/// return its human label; otherwise `None` (→ raw-ack gated).
+fn known_call_label(data: &[u8]) -> Option<&'static str> {
+    if data.len() < 4 {
+        return None;
+    }
+    let sel = &data[..4];
+    KNOWN_CALL_SIGNATURES
+        .iter()
+        .find(|(sig, _)| selector_of(sig) == sel)
+        .map(|(_, label)| *label)
+}
+
+/// For an ERC-20 `transfer`/`approve` (`selector ++ 32-byte address ++ 32-byte
+/// amount`, 68 bytes total), surface the recipient/spender AND the amount (flagged
+/// `UNLIMITED` for the max-uint infinite-approval vector). Returns `None` if the
+/// calldata is not the exact 68-byte shape (falls back to the generic label).
+fn decode_erc20_transfer_or_approve(label: &str, dest: &str, data: &[u8]) -> Option<String> {
+    if data.len() != 68 {
+        return None;
+    }
+    // arg0 = address, right-aligned in a 32-byte word: bytes [16..36).
+    let party = format!("0x{}", hex::encode(&data[16..36]));
+    let amount_word = &data[36..68];
+    let amount = if amount_word.iter().all(|b| *b == 0xff) {
+        "UNLIMITED".to_string()
+    } else {
+        // Show a legible decimal when it fits u128, else the full hex word.
+        let mut buf = [0u8; 16];
+        if amount_word[..16].iter().all(|b| *b == 0) {
+            buf.copy_from_slice(&amount_word[16..]);
+            u128::from_be_bytes(buf).to_string()
+        } else {
+            format!("0x{}", hex::encode(amount_word))
+        }
+    };
+    match label {
+        "approve" => Some(format!(
+            "Approve {party} to spend {amount} of token {dest} (approve calldata)"
+        )),
+        "transfer" => Some(format!(
+            "Transfer {amount} to {party} via token {dest} (transfer calldata)"
+        )),
+        _ => None,
+    }
+}
+
 /// Build the human-readable action/cost/destination for the approval UI.
+///
+/// CORE-B-003: a contract call is surfaced as a legible one-click action ONLY when
+/// its selector is on [`KNOWN_CALL_SIGNATURES`] (a call the app itself builds, or a
+/// standard ERC-20 transfer/approve whose spender + amount we decode). Any other
+/// non-empty calldata yields [`crate::ceremony::UNRECOGNIZED_ACTION`], so the
+/// ceremony forces an explicit raw-mode acknowledgement instead of a blind
+/// one-click approve. Plain value transfers (empty calldata) and contract creation
+/// remain legible.
 fn build_display(to: &Option<[u8; 20]>, value: u128, data: &[u8]) -> TxDisplay {
     let destination = match to {
         Some(addr) => format!("0x{}", hex::encode(addr)),
@@ -122,10 +210,18 @@ fn build_display(to: &Option<[u8; 20]>, value: u128, data: &[u8]) -> TxDisplay {
     let action = match to {
         None => format!("Deploy contract ({} bytes init code)", data.len()),
         Some(_) if data.is_empty() => format!("Send {value} wei to {destination}"),
-        Some(_) => format!(
-            "Call {destination} with {} bytes calldata (value {value} wei)",
-            data.len()
-        ),
+        Some(_) => match known_call_label(data) {
+            Some(label) => decode_erc20_transfer_or_approve(label, &destination, data)
+                .unwrap_or_else(|| {
+                    format!(
+                        "Call {label}() on {destination} — {} bytes calldata (value {value} wei)",
+                        data.len()
+                    )
+                }),
+            // Unknown selector → not understood → raw-ack gated (the human sees the
+            // selector + full calldata on the raw surface, never a benign summary).
+            None => crate::ceremony::UNRECOGNIZED_ACTION.to_string(),
+        },
     };
     TxDisplay {
         action,

@@ -275,6 +275,22 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// CORE-B-005: a `cid` is safe to use as a path component iff it is exactly one
+/// `Normal` path component — no root/prefix (an absolute string discards the base
+/// dir), no `..`/`.` traversal, and no embedded separator. This gates the
+/// renderer-supplied cid before it is joined onto the retrieval dir.
+fn is_safe_cid_component(cid: &str) -> bool {
+    use std::path::Component;
+    if cid.is_empty() {
+        return false;
+    }
+    let mut comps = Path::new(cid).components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(Component::Normal(_)), None)
+    )
+}
+
 impl StorageManager {
     /// Build a manager over an explicit ipfs dir + transport (production wall-clock).
     pub fn new(transport: Box<dyn KuboTransport>, dir: PathBuf) -> Self {
@@ -343,7 +359,15 @@ impl StorageManager {
     }
 
     /// Retrieve a CID's bytes to `<dir>/retrieved/<cid>` and return that path.
+    ///
+    /// CORE-B-005: `cid` is renderer-supplied and used as a path component, so it
+    /// is validated FIRST to a single normal component — an absolute string (which
+    /// discards the base dir) or one carrying `..`/separators is rejected before it
+    /// reaches the filesystem, closing the path-traversal write sink.
     pub fn retrieve(&self, cid: &str) -> Result<PathBuf> {
+        if !is_safe_cid_component(cid) {
+            return Err(StorageError::Io(format!("unsafe cid path component: {cid:?}")));
+        }
         let bytes = self.transport.cat(cid)?;
         let out_dir = self.dir.join("retrieved");
         std::fs::create_dir_all(&out_dir).map_err(|e| StorageError::Io(e.to_string()))?;
