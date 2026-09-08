@@ -342,7 +342,7 @@ export function DemoPanel({ store, s }: { store: Store; s: AppState }) {
   return (
     <>
       {showProto && s.demoOpen && (
-        <div data-register="charter" style={{ position: "fixed", right: 18, bottom: 64, width: 320, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", zIndex: 70, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div data-register="charter" className="sim-proto-affordance" style={{ position: "fixed", right: 18, bottom: 64, width: 320, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", zIndex: 70, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
             <span className="mono" style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "var(--tx-2)" }}>
               Prototype controls
@@ -450,6 +450,7 @@ export function DemoPanel({ store, s }: { store: Store; s: AppState }) {
         <button
           onClick={() => store.setState({ demoOpen: !s.demoOpen })}
           data-register="charter"
+          className="sim-proto-affordance"
           style={{ position: "fixed", right: 18, bottom: 18, zIndex: 70, fontFamily: "var(--font-mono)", fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", padding: "8px 14px", borderRadius: 999, border: "1px solid var(--line-2)", background: "#ffffff", color: "var(--tx-2)", cursor: "pointer", boxShadow: "var(--shadow-2)" }}
         >
           Prototype
