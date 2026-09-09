@@ -171,20 +171,17 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     };
     assert_eq!(get(NODE_STORAGE_KEY_ENV), Some("00"), "storage key still passed");
     assert_eq!(get(NODE_BLOCK_V2_ENV), Some("1"), "v2 execute-on-receive explicit");
-    // @rule8 / OPEN 2026-09-09: this pin is KNOWN NOT to match the fleet on the
-    // chain re-rolled 2026-09-07, and is left at 2000 deliberately so the value
-    // stays visible rather than being quietly "fixed" to something inferred.
-    // Proven by A/B cold sync (one binary, one chain, only this value differing):
-    // at 2000 the node rejects block 2000 forever with a state-root mismatch; with
-    // settlement parked above the tip it syncs clean. On-chain,
-    // ValidatorRegistry.emittedInEpoch is 0 for every epoch through the tip, so
-    // the fleet settles no rewards at all. The correct value must be READ off the
-    // fleet's systemd unit, not guessed — see
-    // docs/FLEET_CONSENSUS_ENV_QUERY_2026-09-09.md. Update both this pin and
-    // NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE together when DGX answers.
+    // RESOLVED 2026-09-09: `1000000`, the literal on the live citrate-node.service
+    // (rpc-1), confirmed against both the running process env and the systemd
+    // unit — docs/FLEET_CONSENSUS_ENV_QUERY_2026-09-09.md. Was 2000, which forked
+    // every fresh install on the 2026-09-07 re-roll (rejected empty block 2000
+    // forever on a state-root mismatch). Re-verified by a clean cold sync to fleet
+    // head with 0 mismatches. Keep this and NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE
+    // in lockstep, and re-read the fleet on any future re-roll — the failure mode
+    // is a silent fork.
     assert_eq!(
         get(NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV),
-        Some("2000"),
+        Some("1000000"),
         "validator activation height must match the fleet",
     );
     // Re-earned for the 2026-09-07 re-roll (was `0x61d44d8a…`). ValidatorRegistry

@@ -2,8 +2,48 @@
 created: 2026-09-09
 branch: build/reroll-rebuild-2026-09-09
 author: Claude Opus 5 (1M context), directed by @SaulBuilds
-status: active
+status: resolved
 ---
+
+# Mac team ⇒ DGX: what is the fleet's §R' consensus env on the re-rolled 40204?
+
+## RESOLVED 2026-09-09 (answer from DGX, live citrate-node.service on rpc-1)
+
+Literal, confirmed from BOTH the running process env and the systemd unit:
+
+| var | fleet value | citrate-core action |
+|---|---|---|
+| `CITRATE_VALIDATOR_ACTIVATION_HEIGHT` | **`1000000`** | set in `node.rs` (was 2000) |
+| `CITRATE_VALIDATOR_REGISTRY` | `0x2655d9fbbe599e75ff6e53790f99ebc9a20c93bf` | already matched ✓ |
+| `CITRATE_BLOCK_V2` | `1` | already matched ✓ |
+| `CITRATE_DAG_PRUNE_RETAIN` | `10000` | **intentionally NOT set** — see below |
+
+`1000000` sits far above the current tip (~78.6k), so §R' reward settlement is
+dormant on the live chain (`emittedInEpoch == 0` everywhere), which is exactly the
+"parked" behaviour my A/B run proved syncs clean. Supersedes the older A001 commit
+message that said 300000 — the live producer runs 1000000.
+
+**Fleet binary provenance:** `citrate-chain` branch `fleet-build @ 5ddbe0401`
+(A001 genesis-identity binding `eba5d3e5c` + 1T supply + EIP-161 nonce
+persistence `ece71b53b` + reroll address book). The shipped sidecar is
+`citrate-chain@e68af83` (main). DGX confirms e68af83 is consensus-compatible for
+the current tip range; the A/B cold sync corroborates (0 state-root mismatches to
+fleet head). Byte-exact fleet parity would mean building from `fleet-build@5ddbe0401`
+instead of main — deferred, not required for this release.
+
+**On `CITRATE_DAG_PRUNE_RETAIN=10000`:** the fleet prunes; citrate-core deliberately
+does NOT set this (`NODE_DAG_PRUNE_RETAIN_ENV`, node.rs), so a member keeps full
+history and can serve peers. Pruning is local storage policy, not a consensus rule —
+it does not affect the state root, so a full-history follower stays in agreement with
+a pruning producer. This is an existing, tripwire-pinned choice (`node_tests.rs`);
+left unchanged here. Re-enabling it on the desktop is its own deliberate change.
+
+Release proceeds: set 1000000 → re-run cold-sync gate (pass = 0 `state root
+mismatch` lines to head) → DMG → sign/notarize → GitHub Release.
+
+---
+
+# Original query (below, for the record)
 
 # Mac team ⇒ DGX: what is the fleet's §R' consensus env on the re-rolled 40204?
 
