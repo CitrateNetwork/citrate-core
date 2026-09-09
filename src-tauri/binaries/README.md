@@ -127,13 +127,19 @@ that target no longer exists — it was promoted to a real bin in
 citrate-memories#15. The old command fails with "no example target named
 `mcp_serve`".
 
-**Build it from `ff12cab` (`feat/bge-bundle-and-fresh-store-bootstrap`), not from
-`main`.** `memory.rs` spawns the daemon with `CITRATE_BGE_MODEL_DIR` (load the
-bundled BGE weights offline) and `CITRATE_MEM_EMBED=bge` (force BGE on a store
-with no embedder yet). Both env vars exist only on that branch. A `main` build
-ignores them, silently falls back to the `HashingEmbedder`, and a fresh store is
-then **permanently** locked to lexical vectors — semantic recall is dead and
-nothing reports an error. Re-check this once that branch merges.
+**RESOLVED 2026-09-09 — build from `main`.** This used to say "build from
+`ff12cab` (`feat/bge-bundle-and-fresh-store-bootstrap`), not from `main`", because
+`memory.rs` spawns the daemon with `CITRATE_BGE_MODEL_DIR` (load the bundled BGE
+weights offline) and `CITRATE_MEM_EMBED=bge` (force BGE on a store with no
+embedder yet), and both existed only on that branch. That branch has merged: both
+are present on `main` (`crates/mem-index/src/transformer.rs`,
+`crates/mem-mcp/src/main.rs`), verified at `citrate-memories@440a7c3`.
+
+The hazard it guarded against is still real, so keep the check in the loop: a
+build that ignores those vars silently falls back to the `HashingEmbedder`, and a
+fresh store is then **permanently** locked to lexical vectors — semantic recall is
+dead and nothing reports an error. Grep for both symbols before shipping a
+mem-mcp built from an unfamiliar revision.
 
 ## Running without a bundle (dev + tests)
 

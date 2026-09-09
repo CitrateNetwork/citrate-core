@@ -170,6 +170,33 @@ equal to the fleet's, **0 state-root mismatches**, ~1.25 GB RSS. Genesis
 `0xd1a1941e…` / state root `0xd703e8c6…`. The earlier Linux/aarch64 run measured
 5,646 blocks in ~6 minutes at ~4.2 GB RSS.
 
+> **Those genesis values are the PRE-September chain.** 40204 re-rolled again on
+> 2026-09-07 (1 trillion SALT supply + solc 0.8.36 + A001 genesis-identity
+> binding). The current genesis is
+> `0x98e0d72f422049606a6b29ca0a9bcfd2300753fd36526d2c8e9f9a2531b70c73`, state root
+> `0x3d37893e1d0e03dc762511c2260c2f3703b9e984998c399919b564de4637b5dc` (verified
+> against `rpc.citrate.ai` on 2026-09-09). Check block 0, not a height — a node on
+> the wrong chain can still reach a large height.
+
+### The env must match the FLEET, not this document
+
+The three variables above are only correct if the fleet is running the same
+values. They are not a property of the binary; they are a shared consensus
+parameter, and the app hardcodes its side in `src-tauri/src/node.rs`.
+
+`CITRATE_VALIDATOR_ACTIVATION_HEIGHT=2000` was verified against the fleet on the
+pre-September chain. On the chain re-rolled 2026-09-07 it is **wrong**: a node
+that settles §R' rewards at 2000 rejects block 2000 forever, while the live fleet
+settles nothing at all (`ValidatorRegistry.emittedInEpoch` is 0 for every epoch
+through the tip). Same binary, same chain, activation moved above the tip: syncs
+clean. See `docs/FLEET_CONSENSUS_ENV_QUERY_2026-09-09.md`.
+
+The lesson is that `build-sidecar.sh`'s lineage gate cannot catch this — it reads
+the citrate-chain *source*, and the source is fine. **Only a full cold sync past
+the activation height proves agreement.** Before any release, re-verify the env
+against the fleet's systemd unit rather than trusting this file; a re-roll can
+move it, and the failure presents as a sync that simply never finishes.
+
 ## Running tests
 
 ```bash
