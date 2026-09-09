@@ -171,14 +171,29 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     };
     assert_eq!(get(NODE_STORAGE_KEY_ENV), Some("00"), "storage key still passed");
     assert_eq!(get(NODE_BLOCK_V2_ENV), Some("1"), "v2 execute-on-receive explicit");
+    // @rule8 / OPEN 2026-09-09: this pin is KNOWN NOT to match the fleet on the
+    // chain re-rolled 2026-09-07, and is left at 2000 deliberately so the value
+    // stays visible rather than being quietly "fixed" to something inferred.
+    // Proven by A/B cold sync (one binary, one chain, only this value differing):
+    // at 2000 the node rejects block 2000 forever with a state-root mismatch; with
+    // settlement parked above the tip it syncs clean. On-chain,
+    // ValidatorRegistry.emittedInEpoch is 0 for every epoch through the tip, so
+    // the fleet settles no rewards at all. The correct value must be READ off the
+    // fleet's systemd unit, not guessed — see
+    // docs/FLEET_CONSENSUS_ENV_QUERY_2026-09-09.md. Update both this pin and
+    // NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE together when DGX answers.
     assert_eq!(
         get(NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV),
         Some("2000"),
         "validator activation height must match the fleet",
     );
+    // Re-earned for the 2026-09-07 re-roll (was `0x61d44d8a…`). ValidatorRegistry
+    // moves with the deployer nonce like the other CREATE deploys. Taken from the
+    // address book synced at `2d88191`; live `eth_getCode` is 26,054 bytes here
+    // and `0x` at the previous pin.
     assert_eq!(
         get(NODE_VALIDATOR_REGISTRY_ENV),
-        Some("0x61d44d8a14443646b756905410be951e6ece95a6"),
+        Some("0x2655d9fbbe599e75ff6e53790f99ebc9a20c93bf"),
         "ValidatorRegistry must be the live 40204 address the fleet runs",
     );
     // INVERTED 2026-07-30. This previously asserted the retain window MUST be

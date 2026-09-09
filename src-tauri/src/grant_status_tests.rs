@@ -92,30 +92,39 @@ const BOND_WORD: &str = "0x00000000000000000000000000000000000000000000000000000
 /// The vault address MUST be the canonical 40204.json value. A paste error here
 /// would read grant state from the wrong contract (@rule8 — a mis-settled S5).
 ///
-/// Updated for the 2026-08-04 re-roll (was `0x61e324cf…`). MembershipStakeVault
-/// is deployed with plain CREATE, so its address is deployer-nonce-derived and
-/// MOVES on every re-roll — unlike the CREATE2 contracts in this book, which
-/// reproduced byte-identically. This tripwire firing on a re-roll is it working:
-/// update it from `contracts/addresses/40204.json`, never from a runbook's
-/// projection (the 2026-08-04 orchestrator projected `0x61E324cF…` and was wrong,
-/// because the dry-run's deploy ORDER differed from the real one).
+/// Updated for the 2026-09-07 re-roll (was `0x04c32967…`, and `0x61e324cf…`
+/// before that). MembershipStakeVault is deployed with plain CREATE, so its
+/// address is deployer-nonce-derived and MOVES on every re-roll — unlike the
+/// CREATE2 contracts in this book, which reproduced byte-identically. This
+/// tripwire firing on a re-roll is it working: update it from
+/// `contracts/addresses/40204.json`, never from a runbook's projection (the
+/// 2026-08-04 orchestrator projected `0x61E324cF…` and was wrong, because the
+/// dry-run's deploy ORDER differed from the real one).
+///
+/// Re-earned 2026-09-09: taken from the address book synced at `2d88191`, and
+/// confirmed against the live chain — `eth_getCode` on this address is non-empty
+/// (220 bytes) while the previous pin `0x04c32967…` returns `0x`.
 #[test]
 fn membership_stake_vault_is_the_canonical_40204_value() {
     assert_eq!(
         membership_stake_vault(),
-        "0x04c32967816187b2efdcd4937dbba59e051f99db"
+        "0x53fb4badffaceedd575d47d0e74bb721504f786e"
     );
 }
 
 /// The SBT address MUST be the canonical 40204.json value.
 ///
-/// Updated for the 2026-08-04 re-roll (was `0x4ce39f89…`) — plain CREATE, so
-/// nonce-derived and it moves on every re-roll. See the vault pin above.
+/// Updated for the 2026-09-07 re-roll (was `0xad826d04…`, and `0x4ce39f89…`
+/// before that) — plain CREATE, so nonce-derived and it moves on every re-roll.
+/// See the vault pin above.
+///
+/// Re-earned 2026-09-09: address book at `2d88191`; live `eth_getCode` is 20,440
+/// bytes here, `0x` at the previous pin.
 #[test]
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0xad826d0439f7ad5a3512a8927b632cbca2840e10"
+        "0xf0badd9eed5a81871a2f0d309b1f0a225646448a"
     );
 }
 
