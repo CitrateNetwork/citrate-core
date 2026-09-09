@@ -70,6 +70,30 @@ Refresh this release whenever a sidecar or the model changes (e.g. a DGX node re
    check interval (or on next launch), downloads with real byte progress, and
    restarts into the new version.
 
+### Distribution — the DO Space is the public origin (this repo is PRIVATE)
+
+The updater endpoint is a **DigitalOcean Space**, not a GitHub URL, because
+citrate-core is private and `releases/…/download/…` 404s for end users
+(`src-tauri/tauri.conf.json` → `plugins.updater.endpoints`, primary =
+`https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/latest.json`,
+GitHub kept only as an authed fallback). The pinned Ed25519 pubkey verifies the
+payload, so serving it from a public CDN is safe by construction.
+
+The GitHub Release is the signed **source**; DGX mirrors it to the public Space.
+Per release (owner-gated — needs DO Spaces keys), after step 3:
+
+1. **Member DMG:** upload `Citrate-Core-macos-arm64.dmg` to
+   `downloads/Citrate-Core-macos-arm64.dmg`, **verify sha256 == the release asset**,
+   flush the CDN. `citrate.ai/download/mac` 307s to it.
+2. **Updater feed:** upload `Citrate-Core.app.tar.gz` (+`.sig`) to
+   `downloads/updater/`, then **rewrite `latest.json`'s
+   `platforms.darwin-aarch64.url`** from the GitHub asset URL to the Space URL
+   (the inlined signature is unchanged), upload `latest.json` to
+   `downloads/updater/latest.json`, flush the CDN for those paths.
+
+First run of this path: v0.1.0 (2026-09-09), verified live — public DMG 200 at the
+release sha256, Space `latest.json` carrying the byte-identical signed tarball.
+
 ## Marking a patch critical
 Put `[critical]` (or a leading `critical:`) in the release body/notes. The app then
 **auto-downloads** that update (still an explicit **Restart now** — the app is never
