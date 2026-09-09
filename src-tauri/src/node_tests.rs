@@ -171,14 +171,26 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     };
     assert_eq!(get(NODE_STORAGE_KEY_ENV), Some("00"), "storage key still passed");
     assert_eq!(get(NODE_BLOCK_V2_ENV), Some("1"), "v2 execute-on-receive explicit");
+    // RESOLVED 2026-09-09: `1000000`, the literal on the live citrate-node.service
+    // (rpc-1), confirmed against both the running process env and the systemd
+    // unit — docs/FLEET_CONSENSUS_ENV_QUERY_2026-09-09.md. Was 2000, which forked
+    // every fresh install on the 2026-09-07 re-roll (rejected empty block 2000
+    // forever on a state-root mismatch). Re-verified by a clean cold sync to fleet
+    // head with 0 mismatches. Keep this and NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE
+    // in lockstep, and re-read the fleet on any future re-roll — the failure mode
+    // is a silent fork.
     assert_eq!(
         get(NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV),
-        Some("2000"),
+        Some("1000000"),
         "validator activation height must match the fleet",
     );
+    // Re-earned for the 2026-09-07 re-roll (was `0x61d44d8a…`). ValidatorRegistry
+    // moves with the deployer nonce like the other CREATE deploys. Taken from the
+    // address book synced at `2d88191`; live `eth_getCode` is 26,054 bytes here
+    // and `0x` at the previous pin.
     assert_eq!(
         get(NODE_VALIDATOR_REGISTRY_ENV),
-        Some("0x61d44d8a14443646b756905410be951e6ece95a6"),
+        Some("0x2655d9fbbe599e75ff6e53790f99ebc9a20c93bf"),
         "ValidatorRegistry must be the live 40204 address the fleet runs",
     );
     // INVERTED 2026-07-30. This previously asserted the retain window MUST be
