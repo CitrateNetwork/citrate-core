@@ -1,26 +1,16 @@
 // CORE-D3.C — membership_checkout plumbing tests.
 //
-// The `WebviewWindow` itself is NOT unit-testable in Rust (it needs a live
-// event loop + webview host — flagged here, exercised only in a packaged
-// build / live test). What IS testable is the command's real decision: which
-// URL the popup navigates to. That is `AppConfig::checkout_url()`, proven in
-// config.rs; here we assert the D3.C-specific plumbing: the popup label is the
-// isolated `checkout-popup` (no capability), the command is registered, and the
-// checkout URL is exactly `{coreMembershipUrl}/checkout` off the config base.
+// The OS opener call itself is NOT unit-testable in Rust (it hands off to the
+// system browser — flagged here, exercised only in a packaged build / live
+// test). What IS testable is the command's real decision: which URL it opens.
+// That is `AppConfig::checkout_url()`, proven in config.rs; here we assert the
+// D3.C-specific plumbing: the checkout URL is exactly `{coreMembershipUrl}/checkout`
+// off the config base (opened in the SYSTEM BROWSER, so the OIDC SSO session
+// authenticates it — the CORE-D3.C fix).
 
 use crate::config::{AppConfig, AppConfigPatch};
 
-/// The popup uses the dedicated `checkout-popup` label — a remote HTTPS page
-/// with NO Tauri capability/IPC, isolated exactly like the A3 `auth-popup`.
-#[test]
-fn checkout_popup_label_is_the_isolated_checkout_window() {
-    assert_eq!(super::CHECKOUT_POPUP_LABEL, "checkout-popup");
-    // It is NOT the auth popup nor the main window (distinct isolation).
-    assert_ne!(super::CHECKOUT_POPUP_LABEL, "auth-popup");
-    assert_ne!(super::CHECKOUT_POPUP_LABEL, "main");
-}
-
-/// The command navigates the popup to `{coreMembershipUrl}/checkout`, taking the
+/// The command navigates the checkout to `{coreMembershipUrl}/checkout`, taking the
 /// base from the persisted config (overridable to a preview/prod domain). This
 /// is the exact URL `membership_checkout` resolves before opening the popup.
 #[test]

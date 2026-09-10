@@ -156,6 +156,15 @@ impl AppConfig {
             self.core_membership_url.trim_end_matches('/')
         )
     }
+
+    /// The enterprise-lead capture endpoint (`{core_membership_url}/api/enterprise/lead`) — where the
+    /// step-3 "Enterprise · Contact us" form POSTs a qualified sales lead. Same base as checkout.
+    pub fn enterprise_lead_url(&self) -> String {
+        format!(
+            "{}/api/enterprise/lead",
+            self.core_membership_url.trim_end_matches('/')
+        )
+    }
 }
 
 /// Store file name inside the app data dir. This is the real on-disk file the

@@ -2860,6 +2860,34 @@ export class Store {
     this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
     this.save();
   }
+  /** S3 — choose the FREE tier: enter the app WITHOUT a paid membership (no stake, no SBT). Mirrors
+   *  onExplore (the S0 free path) so a user who reached the membership step can still decline the paid
+   *  seat instead of being funneled into it. The paid membership stays available later (Settings →
+   *  Billing → Renew opens the same checkout). No payment, no fabricated grant (Rule 1). */
+  onS3Free(): void {
+    this.setState({ stage: "done", tier: "free", coachDone: true, chatMsgs: [greeting({ ...this.persona(), name: this.identity().real ? this.identity().name : "" })] });
+    this.toast("You're on the Free tier — wallet, agent, chain reads, and marketplace view. Upgrade to membership anytime in Settings → Billing.");
+    this.save();
+  }
+  /** Enterprise · Contact us — submit a qualified sales lead to core-membership. Returns `{ ok }`, or
+   *  `{ ok: false, error }` with the backend's honest message (Rule 1 — never a fabricated "received").
+   *  No money, no grant; the record just prepares sales for the call. */
+  async submitEnterpriseLead(lead: {
+    org: string;
+    email: string;
+    contact?: string;
+    seats?: string;
+    workload?: string;
+    timeline?: string;
+    notes?: string;
+  }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await bridge.membership.enterpriseLead(lead);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error)?.message ?? err) };
+    }
+  }
   onS1Start(): void {
     this.setState({ s1: "waiting" });
     // Tauri: drive the REAL loopback-PKCE sign-in. The system browser opens; on

@@ -411,6 +411,11 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async checkout(): Promise<void> {
         await invoke("membership_checkout");
       },
+      // Enterprise · Contact us — POST a qualified lead server-side (reqwest→core-membership). Rejects
+      // with the backend's honest message on a 400/503 (Rule 1); never a fabricated "received".
+      async enterpriseLead(lead): Promise<void> {
+        await invoke("membership_enterprise_lead", { lead });
+      },
       // BC-1.3 (@rule8) — read the member's REAL on-chain grant status from 40204
       // (MembershipStakeVault.attributedStake/attributedShares + CitrateMemberSBT
       // .balanceOf). A PURE READ; signs nothing. S5 settles the grant leg ONLY from

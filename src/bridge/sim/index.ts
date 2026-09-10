@@ -674,6 +674,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       async checkout(): Promise<void> {
         assertSimAllowed("membership.checkout");
       },
+      // SIM: no real backend in web-dev — resolve so the enterprise form flow proceeds (guarded out of
+      // packaged builds). The real POST is the Tauri path.
+      async enterpriseLead(): Promise<void> {
+        assertSimAllowed("membership.enterpriseLead");
+      },
       // BC-1.3 — SIM: there is NO real chain in the web preview, so this NEVER
       // fabricates a real 40204 read. It derives an HONEST stand-in from the
       // persona/AppState: a granted status (32,000-SALT attributedStake + SBT) ONLY
