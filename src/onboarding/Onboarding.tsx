@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
 import { Store } from "../shell/store";
@@ -136,6 +136,7 @@ export function Onboarding({ store, s }: { store: Store; s: AppState }) {
         {/* stage content */}
         <div style={{ minHeight: 0, overflow: "auto", display: "flex", justifyContent: "center", padding: "56px 32px" }}>
           <div style={{ width: "100%", maxWidth: 620, display: "flex", flexDirection: "column", gap: 22 }}>
+            <ClaimBanner store={store} s={s} />
             {s.stage === "s1" && <S1 store={store} s={s} />}
             {s.stage === "s2" && <S2 store={store} s={s} />}
             {s.stage === "s3" && <S3 store={store} s={s} />}
@@ -264,6 +265,58 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
         {k}
       </span>
       {v}
+    </div>
+  );
+}
+
+/**
+ * PHONEPAY-S4 — the claim banner. Rendered above every onboarding stage when a
+ * `citrate://claim` link is pending. It (a) tells the buyer which account they paid
+ * with and (b) hard-flags a wrong-account mismatch (paid as X, signed in as Y) with a
+ * one-tap switch. It is DISPLAY ONLY — it grants nothing; the authority sign-in and the
+ * server-side sub↔order reconciler are the sole gates (A8/A2).
+ */
+function ClaimBanner({ store, s }: { store: Store; s: AppState }) {
+  const claim = s.pendingClaim;
+  if (!claim?.email) return null;
+  const mismatch = store.claimAccountMismatch();
+  if (mismatch) {
+    return (
+      <div className="cc-fade-up" style={{ border: "1px solid var(--danger)", background: "var(--danger-bg)", borderRadius: "var(--r-2)", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--danger)" }}>Wrong account for this membership</div>
+        <p style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-1)", margin: 0 }}>
+          This membership was purchased as <strong>{mismatch.paidAs}</strong>, but you&rsquo;re signed in as <strong>{mismatch.signedInAs}</strong>. Sign in with the account you paid with so your seat binds to the right identity. Nothing here grants access — the authority is the gate.
+        </p>
+        <div>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              store.setState({ stage: "s1", s1: "idle" });
+              store.save();
+              void store.authLogout();
+            }}
+          >
+            Sign out &amp; switch account
+          </button>
+        </div>
+      </div>
+    );
+  }
+  const matched = s.signedIn && (s.authEmail ?? "").trim().toLowerCase() === claim.email.trim().toLowerCase();
+  return (
+    <div className="cc-fade-up surface" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ fontSize: 13.5, fontWeight: 500 }}>{matched ? "Claiming your membership" : "Claim your membership"}</div>
+      <p style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)", margin: 0 }}>
+        {matched ? (
+          <>
+            You paid as <strong>{claim.email}</strong>. Your seat (SBT + 32,000 SALT stake) lands on chain once the grant settles — it will appear here.
+          </>
+        ) : (
+          <>
+            Paid as <strong>{claim.email}</strong>. Sign in with that account so your membership binds to the right identity.
+          </>
+        )}
+      </p>
     </div>
   );
 }
@@ -461,6 +514,19 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
 
 export function S3({ store, s }: { store: Store; s: AppState }) {
   const [entOpen, setEntOpen] = useState(false);
+  // PHONEPAY-S10 — auto-advance to S4 once the grant settles, so there is no extra
+  // "Continue" click after checkout. We hold ~1.2s so the "Payment settled" stamp is
+  // seen, then move on. The manual button below stays as a fallback (e.g. if a
+  // background timer is throttled). Guarded on stage so it fires only while S3 is live.
+  useEffect(() => {
+    if (s.s3 === "settled" && s.stage === "s3") {
+      const t = setTimeout(() => {
+        store.setState({ stage: "s4" });
+        store.save();
+      }, 1200);
+      return () => clearTimeout(t);
+    }
+  }, [s.s3, s.stage, store]);
   const items = [
     "Tier features across the app — chat on the gateway, docs at member tier, gated downloads",
     "32,000 SALT staked to your validator — the grant covers your stake for validation work",

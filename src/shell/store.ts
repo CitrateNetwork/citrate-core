@@ -35,7 +35,7 @@ import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
-import { parseJoinLink, resolveJoinCode } from "../surfaces/referral";
+import { parseJoinLink, resolveJoinCode, parseClaimLink } from "../surfaces/referral";
 import { groupsSlice } from "./slices/groups";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
@@ -1546,6 +1546,34 @@ export class Store {
    */
   handleDeepLink(url: string): void {
     if (!url) return;
+    // PHONEPAY-S4 — a `citrate://claim?…` onboarding link takes precedence over the
+    // join/invite handling below. The params are untrusted HINTS ONLY (A8): we stash
+    // the email + order hint to steer sign-in and detect a wrong-account mismatch, land
+    // the buyer in onboarding, and let the authority re-auth + server reconciler do the
+    // actual admission. NOTHING here grants a membership.
+    const claim = parseClaimLink(url);
+    if (claim) {
+      this.setState({ pendingClaim: { email: claim.email ?? null, orderHint: claim.order ?? null, raw: url } });
+      if (!this.state.signedIn) {
+        // Land at sign-in so the seat binds to the right identity. The App auth-gate
+        // permits s0/s1 for a signed-out session; anything past sign-in still requires
+        // a live authority session, so a claim link can never skip auth.
+        this.setState({ stage: "s1", s1: "idle" });
+        this.go("onboarding");
+      } else {
+        // Already signed in: don't move a member backward. If the paid-with email
+        // doesn't match this session, say so plainly; otherwise reassure that the
+        // grant lands server-side. The mismatch banner also renders in onboarding.
+        const mm = this.claimAccountMismatch();
+        if (mm) {
+          this.toast(`You paid as ${mm.paidAs}, but you're signed in as ${mm.signedInAs}. Sign in with the account you paid with to claim this membership.`);
+        } else {
+          this.toast("Signed in — your membership will appear here once the grant lands on chain.");
+        }
+      }
+      this.save();
+      return;
+    }
     const parts = parseJoinLink(url);
     // GROW-S1b — an opaque short code: resolve + VERIFY the EdDSA signature before trusting anything,
     // then show the invite. Land on Groups immediately with a "resolving…" banner so it's responsive.
@@ -1578,6 +1606,26 @@ export class Store {
   /** Clear the pending deep-link invite once Groups has consumed it. */
   clearPendingInvite(): void {
     this.setState({ pendingInvite: null });
+  }
+
+  /** Clear the pending claim hint once onboarding has surfaced it (or on sign-out). */
+  clearPendingClaim(): void {
+    this.setState({ pendingClaim: null });
+  }
+
+  /**
+   * PHONEPAY-S4 — the wrong-account guard. When a claim link carried a paid-with email
+   * and the user is signed in as a DIFFERENT identity, return the two emails so the UI
+   * can say "you paid as X, you're signed in as Y". Null when there's no claim, no email
+   * hint, we're not signed in yet, or the accounts match (case/space-insensitive). This
+   * is a DISPLAY safeguard only — it never blocks the authority, which is the real gate.
+   */
+  claimAccountMismatch(): { paidAs: string; signedInAs: string } | null {
+    const paid = this.state.pendingClaim?.email?.trim().toLowerCase();
+    if (!paid || !this.state.signedIn) return null;
+    const here = (this.state.authEmail ?? "").trim().toLowerCase();
+    if (!here || here === paid) return null;
+    return { paidAs: this.state.pendingClaim!.email!.trim(), signedInAs: this.state.authEmail!.trim() };
   }
 
   // ---------- sim tick (verbatim logic) ----------
