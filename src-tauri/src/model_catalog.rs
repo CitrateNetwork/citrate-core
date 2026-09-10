@@ -314,42 +314,52 @@ pub fn model_catalog_search(
 /// sha256/size), builds the transport from `descriptor.download_url()`, and runs the streamed
 /// resumable download + verify into `models/<file>`. Resolves only once the file is verified-Ready
 /// (the download path quarantines on hash/size mismatch — no unverified model lands).
+/// ASYNC + `spawn_blocking` — a multi-GB catalog download + SHA-256 verify MUST NOT run
+/// on the main thread. As a synchronous `#[tauri::command]` Tauri ran the whole download
+/// on the UI thread, beach-balling the window (observed 2026-09-10; same class as
+/// `membership_grant_status`). Progress is still emitted (throttled to whole-percent
+/// changes) FROM the blocking thread — `AppHandle::emit` is thread-safe — so the bar
+/// updates while the UI stays responsive.
 #[tauri::command]
-pub fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    use tauri::{Emitter, Manager};
-    let desc = resolve_by_id(&crate::oidc::UreqClient, &id, None)?;
-    let url = desc
-        .download_url()
-        .ok_or_else(|| format!("model '{id}' is bundled and has no catalog download URL"))?;
-    let models_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("models");
-    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
-    let transport = Box::new(crate::model::UreqModelTransport::new(url));
-    let mgr = crate::model::ModelManager::from_descriptor(models_dir, transport, &desc);
-    // Stream progress to the UI (a multi-GB GGUF is otherwise a silent minutes-long block that
-    // reads as a stuck download). Emit only on a whole-percent change to avoid flooding.
-    let emit_id = id.clone();
-    let mut last_pct: i64 = -1;
-    mgr.download_with_progress(|downloaded, total| {
-        let pct = if total > 0 { ((downloaded as u128 * 100) / total as u128) as i64 } else { 0 };
-        if pct != last_pct {
-            last_pct = pct;
-            let _ = app.emit(
-                "model://download-progress",
-                serde_json::json!({ "id": emit_id, "downloaded": downloaded, "total": total, "pct": pct }),
-            );
-        }
+pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        use tauri::{Emitter, Manager};
+        let desc = resolve_by_id(&crate::oidc::UreqClient, &id, None)?;
+        let url = desc
+            .download_url()
+            .ok_or_else(|| format!("model '{id}' is bundled and has no catalog download URL"))?;
+        let models_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("models");
+        std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+        let transport = Box::new(crate::model::UreqModelTransport::new(url));
+        let mgr = crate::model::ModelManager::from_descriptor(models_dir, transport, &desc);
+        // Stream progress to the UI (a multi-GB GGUF is otherwise a silent minutes-long block that
+        // reads as a stuck download). Emit only on a whole-percent change to avoid flooding.
+        let emit_id = id.clone();
+        let mut last_pct: i64 = -1;
+        mgr.download_with_progress(|downloaded, total| {
+            let pct = if total > 0 { ((downloaded as u128 * 100) / total as u128) as i64 } else { 0 };
+            if pct != last_pct {
+                last_pct = pct;
+                let _ = app.emit(
+                    "model://download-progress",
+                    serde_json::json!({ "id": emit_id, "downloaded": downloaded, "total": total, "pct": pct }),
+                );
+            }
+        })
+        .map_err(|e| e.to_string())?;
+        mgr.verify().map_err(|e| e.to_string())?;
+        let _ = app.emit(
+            "model://download-progress",
+            serde_json::json!({ "id": id, "pct": 100, "done": true }),
+        );
+        Ok(())
     })
-    .map_err(|e| e.to_string())?;
-    mgr.verify().map_err(|e| e.to_string())?;
-    let _ = app.emit(
-        "model://download-progress",
-        serde_json::json!({ "id": id, "pct": 100, "done": true }),
-    );
-    Ok(())
+    .await
+    .map_err(|e| format!("model download: background task failed: {e}"))?
 }
 
 /// Switch the active local model (restart `llama-server -m`). Gates on the TARGET file being
