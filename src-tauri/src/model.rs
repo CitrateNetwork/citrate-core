@@ -747,20 +747,53 @@ pub fn model_status(state: State<'_, ModelState>) -> std::result::Result<ModelSt
     Ok(state.0.status())
 }
 
+/// The app-data `models/` dir + resolved Gemma URL, for rebuilding a bare manager
+/// off the main thread. We rebuild (rather than move the managed `State`) because the
+/// manager holds a `Box<dyn ModelTransport>` that is not `Send`-cloneable across
+/// `spawn_blocking`, and `build_model_state` has a first-run seed side effect we must
+/// not repeat here. The pins are the same process-wide Gemma constants.
+fn gemma_dir_and_url(app: &tauri::AppHandle) -> std::result::Result<(PathBuf, String), String> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    let url = resolve_model_url(std::env::var(MODEL_URL_ENV).ok());
+    Ok((dir, url))
+}
+
 /// **Command — model_download.** Stream + resume the pinned Gemma GGUF into
 /// app-data, checking the GGUF magic and the pinned length. Returns () on a
 /// completed download; an honest error otherwise (never a fake completion).
+///
+/// ASYNC + `spawn_blocking` — a multi-GB streamed download MUST NOT run on the main
+/// thread. As a synchronous `#[tauri::command]` Tauri ran it on the UI thread, so the
+/// whole download (minutes) beach-balled the window (observed 2026-09-10, same class as
+/// the `membership_grant_status` fix). The blocking pool keeps the UI responsive; the
+/// verify/quarantine honesty guarantees are unchanged.
 #[tauri::command]
-pub fn model_download(state: State<'_, ModelState>) -> std::result::Result<(), String> {
-    state.0.download().map(|_| ()).map_err(|e| e.to_string())
+pub async fn model_download(app: tauri::AppHandle) -> std::result::Result<(), String> {
+    let (dir, url) = gemma_dir_and_url(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mgr = ModelManager::new(dir, Box::new(UreqModelTransport::new(url)), MODEL_SHA256.to_string(), MODEL_SIZE_BYTES);
+        mgr.download().map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("model download: background task failed: {e}"))?
 }
 
 /// **Command — model_verify.** Stream the downloaded file through SHA-256 and
 /// compare to the pinned hash. On a match the model becomes `Ready`; on a
 /// mismatch the file is quarantined and an honest error returned (never Ready).
+///
+/// ASYNC + `spawn_blocking` — hashing a ~4.6 GB file is seconds of blocking I/O that
+/// must not run on the main thread (see `model_download`).
 #[tauri::command]
-pub fn model_verify(state: State<'_, ModelState>) -> std::result::Result<(), String> {
-    state.0.verify().map_err(|e| e.to_string())
+pub async fn model_verify(app: tauri::AppHandle) -> std::result::Result<(), String> {
+    let (dir, url) = gemma_dir_and_url(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mgr = ModelManager::new(dir, Box::new(UreqModelTransport::new(url)), MODEL_SHA256.to_string(), MODEL_SIZE_BYTES);
+        mgr.verify().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("model verify: background task failed: {e}"))?
 }
 
 #[cfg(test)]
