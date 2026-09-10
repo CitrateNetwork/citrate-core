@@ -408,8 +408,8 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // CORE-D3.C — open the REAL core-membership checkout popup. Resolves once
       // the popup is opened; the money + grant are server-side. The store then
       // polls auth.userinfo() until the entitlement lands (no fabricated settle).
-      async checkout(): Promise<void> {
-        await invoke("membership_checkout");
+      async checkout(loginHint?: string): Promise<void> {
+        await invoke("membership_checkout", { loginHint });
       },
       // Enterprise · Contact us — POST a qualified lead server-side (reqwest→core-membership). Rejects
       // with the backend's honest message on a 400/503 (Rule 1); never a fabricated "received".

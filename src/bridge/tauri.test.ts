@@ -792,7 +792,14 @@ describe("tauri adapter — membership.checkout opens the real checkout popup (D
     const bridge = createTauriBridge();
     invokeMock.mockClear();
     await expect(bridge.membership.checkout()).resolves.toBeUndefined();
-    expect(invokeMock).toHaveBeenCalledWith("membership_checkout", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("membership_checkout", { loginHint: undefined });
+  });
+
+  it("forwards the login_hint (account handoff) to the command", async () => {
+    const bridge = createTauriBridge();
+    invokeMock.mockClear();
+    await bridge.membership.checkout("buyer@corp.com");
+    expect(invokeMock).toHaveBeenCalledWith("membership_checkout", { loginHint: "buyer@corp.com" });
   });
 
   it("membership.entitlement is still honestly Unavailable (only checkout is wired)", async () => {

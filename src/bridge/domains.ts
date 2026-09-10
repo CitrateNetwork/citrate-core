@@ -540,7 +540,7 @@ export interface MembershipDomain {
    * `kycStart`/`pollKyc`). The Tauri impl invokes `membership_checkout`; the sim
    * impl is guarded out of packaged builds (web-dev keeps its fake settle).
    */
-  checkout(): Promise<void>;
+  checkout(loginHint?: string): Promise<void>;
   /**
    * Enterprise · Contact us — POST a QUALIFIED sales lead to core-membership's `/api/enterprise/lead`
    * (NOT the money path: never grants, charges, or signs). Contact PII is validated + field-encrypted

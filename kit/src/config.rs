@@ -40,7 +40,10 @@ pub struct AppConfig {
 /// The prod core-membership base URL default (also the serde backfill for a
 /// pre-D3.C persisted config.json that lacks the field).
 fn default_core_membership_url() -> String {
-    "https://core-membership.vercel.app".into()
+    // Canonical host: the OIDC redirect_uri + session + Stripe URLs all live on
+    // membership.citrate.ai. Opening the checkout there directly (not the raw vercel
+    // alias) keeps the app→browser handoff on ONE origin.
+    "https://membership.citrate.ai".into()
 }
 
 /// CORE-B-004 — validate a `coreMembershipUrl` before it is persisted and, later,
@@ -67,7 +70,8 @@ pub(crate) fn is_valid_core_membership_url(candidate: &str) -> bool {
     }
     match parsed.host_str() {
         Some(host) => {
-            host == "core-membership.vercel.app"
+            host == "membership.citrate.ai"
+                || host == "core-membership.vercel.app"
                 || (host.starts_with("core-membership-") && host.ends_with(".vercel.app"))
         }
         None => false,
