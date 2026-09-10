@@ -502,6 +502,19 @@ export interface AppState {
     unresolved?: boolean;
   } | null;
   /**
+   * PHONEPAY-S4 — a pending `citrate://claim` onboarding link (transient, NOT persisted).
+   * Set from the emailed claim link; carries only untrusted DISPLAY HINTS (the email the
+   * buyer paid with + an order id) so onboarding can (a) tell the user which account to
+   * sign in with and (b) flag a wrong-account mismatch after sign-in. It grants NOTHING —
+   * admission is the authority re-auth + server-side sub↔order reconciliation (A8). Null
+   * when no claim is pending; cleared once onboarding has surfaced it.
+   */
+  pendingClaim: {
+    email: string | null;
+    orderHint: string | null;
+    raw: string;
+  } | null;
+  /**
    * Q-A.4a runtime memory-daemon status (NOT persisted, never fabricated). Read
    * from the REAL `memory_status()` on Storage mount / after a Start. `memDaemon`
    * is the honest supervisor state ("idle" before the first read, "running" when
@@ -697,6 +710,7 @@ export function freshState(pid: string): AppState {
     peopleState: "loading",
     myGroups: [],
     pendingInvite: null,
+    pendingClaim: null,
     memDaemon: "idle",
     memDaemonError: null,
     memSocketPath: null,
