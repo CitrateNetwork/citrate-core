@@ -316,7 +316,7 @@ pub fn model_catalog_search(
 /// (the download path quarantines on hash/size mismatch — no unverified model lands).
 #[tauri::command]
 pub fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
     let desc = resolve_by_id(&crate::oidc::UreqClient, &id, None)?;
     let url = desc
         .download_url()
@@ -329,8 +329,26 @@ pub fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result<(), S
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
     let transport = Box::new(crate::model::UreqModelTransport::new(url));
     let mgr = crate::model::ModelManager::from_descriptor(models_dir, transport, &desc);
-    mgr.download().map_err(|e| e.to_string())?;
+    // Stream progress to the UI (a multi-GB GGUF is otherwise a silent minutes-long block that
+    // reads as a stuck download). Emit only on a whole-percent change to avoid flooding.
+    let emit_id = id.clone();
+    let mut last_pct: i64 = -1;
+    mgr.download_with_progress(|downloaded, total| {
+        let pct = if total > 0 { ((downloaded as u128 * 100) / total as u128) as i64 } else { 0 };
+        if pct != last_pct {
+            last_pct = pct;
+            let _ = app.emit(
+                "model://download-progress",
+                serde_json::json!({ "id": emit_id, "downloaded": downloaded, "total": total, "pct": pct }),
+            );
+        }
+    })
+    .map_err(|e| e.to_string())?;
     mgr.verify().map_err(|e| e.to_string())?;
+    let _ = app.emit(
+        "model://download-progress",
+        serde_json::json!({ "id": id, "pct": 100, "done": true }),
+    );
     Ok(())
 }
 

@@ -650,8 +650,9 @@ export interface ModelsCatalogDomain {
   local(): Promise<ModelDescriptor[]>;
   /** Search downloadable models from a connected source (HF Hub / GitHub Releases). */
   search(source: "hf" | "github", query: string): Promise<ModelDescriptor[]>;
-  /** Download + verify a descriptor; resolves on Ready. */
-  download(id: string): Promise<void>;
+  /** Download + verify a descriptor; resolves on Ready. `onProgress` (0–100) fires as the
+   *  bytes stream, so a multi-GB GGUF shows a real progress bar instead of a silent block. */
+  download(id: string, onProgress?: (pct: number) => void): Promise<void>;
   /** Switch the active local model (restarts llama-server -m). */
   select(id: string): Promise<void>;
 }
