@@ -1,0 +1,105 @@
+# CX file-ownership map (planset citrate-core-social, 02_ARCHITECTURE §3.3).
+# Each lane owns a disjoint set of files. `cx-ownership-check.sh <lane>` fails a branch whose
+# diff touches a file outside its lane's set — the mechanical guarantee against races to main
+# (01_SCOPE §5.1). Format: one line per allowed glob:  <lane> <glob>
+# Globs are shell patterns matched against repo-relative paths. `**` = any depth.
+#
+# ALWAYS-ALLOWED (any lane): its own sprint file + the planset are process artifacts, not code.
+* .agentile/sprints/active/**
+* .agentile/cx-ownership.map
+
+# --- s0: the scaffold. The ONLY lane permitted to touch the shared spine (01 §4.1). ---
+s0 src/bridge/**
+s0 src/shell/**
+s0 src/surfaces/**
+s0 src/App.tsx
+s0 src-tauri/src/**
+s0 src-tauri/tauri.bundle-node.conf.json
+s0 src-tauri/tauri.local-run.conf.json
+s0 src-tauri/binaries/README.md
+s0 scripts/**
+s0 .agentile/**
+s0 kit/src/**
+
+# --- s1: models (Lane A). Owns the model/inference/oauth host files + its slice/surface. ---
+s1 src-tauri/src/model.rs
+s1 src-tauri/src/model_catalog.rs
+s1 src-tauri/src/serve.rs
+s1 src-tauri/src/ai.rs
+s1 src-tauri/src/connections.rs
+s1 src-tauri/src/oidc.rs
+s1 src-tauri/src/model_tests.rs
+s1 src-tauri/src/model_catalog_tests.rs
+s1 src-tauri/src/serve_tests.rs
+s1 src-tauri/src/connections_tests.rs
+s1 src-tauri/src/oidc_tests.rs
+# oidc lives in the shared kit, not src-tauri (map corrected in CX-S1.2). The GitHub Accept
+# fix touches it; no other lane owns it, so granting to s1 creates no cross-lane race.
+s1 kit/src/oidc.rs
+s1 kit/src/oidc_tests.rs
+s1 src/bridge/tauri/models.ts
+s1 src/bridge/sim/models.ts
+s1 src/bridge/contracts/models.contract.test.ts
+s1 src/shell/slices/models.ts
+s1 src/surfaces/Models.tsx
+
+# --- s2: storage (Lane B). ---
+s2 src-tauri/src/storage.rs
+s2 src-tauri/src/storage_tests.rs
+s2 src/bridge/tauri/storage.ts
+s2 src/bridge/sim/storage.ts
+s2 src/bridge/contracts/storage.contract.test.ts
+s2 src/shell/slices/storage.ts
+s2 src/surfaces/StorageFiles.tsx
+s2 src/surfaces/storageFilesHonesty.test.tsx
+
+# --- s3: groups/comms (Lane C). ---
+s3 src-tauri/src/comms.rs
+s3 src-tauri/src/group.rs
+s3 src-tauri/src/comms_tests.rs
+s3 src-tauri/src/seam.rs
+s3 src/bridge/tauri/comms.ts
+s3 src/bridge/sim/comms.ts
+s3 src/bridge/contracts/comms.contract.test.ts
+s3 src/shell/slices/groups.ts
+s3 src/surfaces/Groups.tsx
+s3 src/surfaces/groupsHonesty.test.tsx
+
+# --- s4: cluster (Lane E). ---
+s4 src-tauri/src/cluster.rs
+s4 src-tauri/src/cluster_tests.rs
+s4 src/bridge/tauri/cluster.ts
+s4 src/bridge/sim/cluster.ts
+s4 src/bridge/contracts/cluster.contract.test.ts
+s4 src/shell/slices/cluster.ts
+s4 src/surfaces/Cluster.tsx
+s4 scripts/cx-cluster-soak.sh
+
+# --- s5: training (Lane F). ---
+s5 src-tauri/src/training.rs
+s5 src-tauri/src/training_tests.rs
+s5 src/bridge/tauri/training.ts
+s5 src/bridge/sim/training.ts
+s5 src/bridge/contracts/training.contract.test.ts
+s5 src/shell/slices/training.ts
+s5 src/surfaces/Train.tsx
+
+# --- s6: hermes/agent (Lane D). ---
+s6 src-tauri/src/hermes.rs
+s6 src-tauri/src/agent_tools.rs
+s6 src-tauri/src/hermes_tests.rs
+s6 src/bridge/tauri/agent.ts
+s6 src/bridge/sim/agent.ts
+s6 src/bridge/contracts/agent.contract.test.ts
+s6 src/shell/slices/agent.ts
+s6 src/surfaces/Agent.tsx
+
+# --- s7: cohesion (serial back). Permitted to touch spine as a SERIALIZED spine-PR only. ---
+s7 src/App.tsx
+s7 src/shell/Sidebar.tsx
+s7 src/shell/sidebarIa.test.tsx
+s7 src/onboarding/**
+s7 kit/src/ceremony.rs
+s7 src/shell/slices/ceremony.ts
+s7 scripts/cx-copy-lint.sh
+s7 src/surfaces/**
