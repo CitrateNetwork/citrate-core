@@ -60,9 +60,24 @@ fn open_checkout_in_browser<R: tauri::Runtime>(
 #[tauri::command]
 pub async fn membership_checkout<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
+    login_hint: Option<String>,
 ) -> std::result::Result<(), String> {
     let cfg = crate::config::config_read(app.clone())?;
-    let url = cfg.checkout_url();
+    let mut url = cfg.checkout_url();
+    // Hand the signed-in account to the browser as an OIDC login_hint, so the browser
+    // checkout SSO/pre-fills THE SAME account and the resulting order keys to that sub
+    // (i.e. the membership applies to this app's account). Validated to an email shape;
+    // properly query-encoded. Advisory — the authority still authenticates.
+    if let Some(hint) = login_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty() && h.len() <= 254 && h.contains('@') && h.contains('.') && !h.contains(char::is_whitespace))
+    {
+        if let Ok(mut parsed) = url::Url::parse(&url) {
+            parsed.query_pairs_mut().append_pair("login_hint", hint);
+            url = parsed.to_string();
+        }
+    }
     open_checkout_in_browser(&app, &url)
 }
 

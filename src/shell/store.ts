@@ -1315,7 +1315,8 @@ export class Store {
       return;
     }
     try {
-      await bridge.membership.checkout();
+      // Pass the signed-in email as login_hint so the browser checkout targets THIS account.
+      await bridge.membership.checkout(this.state.authEmail ?? undefined);
     } catch (err) {
       this.toast("Could not open checkout — " + String((err as Error).message ?? err));
     }
@@ -3035,7 +3036,8 @@ export class Store {
       void (async () => {
         if (await this.settleS3IfAlreadyGranted()) return;
         this.setState({ s3: "paying" });
-        void bridge.membership.checkout().catch(() => {
+        // login_hint = the signed-in email → the browser checkout binds to THIS account.
+        void bridge.membership.checkout(this.state.authEmail ?? undefined).catch(() => {
           // Popup open failed (headless / user cancel at OS level) — stay "paying";
           // the poll below simply never settles. The user can retry (S3 re-enterable).
         });

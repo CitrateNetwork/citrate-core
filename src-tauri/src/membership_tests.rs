@@ -15,10 +15,10 @@ use crate::config::{AppConfig, AppConfigPatch};
 /// is the exact URL `membership_checkout` resolves before opening the popup.
 #[test]
 fn checkout_url_is_base_plus_checkout_path() {
-    // Prod default base.
+    // Prod default base — the canonical membership host (OIDC + Stripe + session share it).
     assert_eq!(
         AppConfig::default().checkout_url(),
-        "https://core-membership.vercel.app/checkout"
+        "https://membership.citrate.ai/checkout"
     );
     // Override to a preview domain — the popup would navigate there instead.
     let preview = AppConfig::default().apply(AppConfigPatch {
