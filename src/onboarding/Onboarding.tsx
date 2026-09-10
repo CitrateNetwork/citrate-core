@@ -459,23 +459,23 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <div>
           <label style={labelStyle}>Organization *</label>
-          <input style={inputStyle} value={f.org} placeholder="Acme Corp" onChange={(e) => setF((p) => ({ ...p, org: e.currentTarget.value }))} />
+          <input style={inputStyle} value={f.org} placeholder="Acme Corp" onChange={(e) => { const v = e.currentTarget.value; setF((p) => ({ ...p, org: v })); }} />
         </div>
         <div>
           <label style={labelStyle}>Work email *</label>
-          <input style={inputStyle} value={f.email} placeholder="you@acme.com" onChange={(e) => setF((p) => ({ ...p, email: e.currentTarget.value }))} />
+          <input style={inputStyle} value={f.email} placeholder="you@acme.com" onChange={(e) => { const v = e.currentTarget.value; setF((p) => ({ ...p, email: v })); }} />
         </div>
         <div>
           <label style={labelStyle}>Your name</label>
-          <input style={inputStyle} value={f.contact} placeholder="Dana Okafor" onChange={(e) => setF((p) => ({ ...p, contact: e.currentTarget.value }))} />
+          <input style={inputStyle} value={f.contact} placeholder="Dana Okafor" onChange={(e) => { const v = e.currentTarget.value; setF((p) => ({ ...p, contact: v })); }} />
         </div>
         <div>
           <label style={labelStyle}>Seats / nodes</label>
-          <input style={inputStyle} value={f.seats} placeholder="e.g. 50 or 100+" onChange={(e) => setF((p) => ({ ...p, seats: e.currentTarget.value }))} />
+          <input style={inputStyle} value={f.seats} placeholder="e.g. 50 or 100+" onChange={(e) => { const v = e.currentTarget.value; setF((p) => ({ ...p, seats: v })); }} />
         </div>
         <div>
           <label style={labelStyle}>Primary workload</label>
-          <select style={inputStyle} value={f.workload} onChange={(e) => setF((p) => ({ ...p, workload: e.currentTarget.value }))}>
+          <select style={inputStyle} value={f.workload} onChange={(e) => { const v = e.currentTarget.value; setF((p) => ({ ...p, workload: v })); }}>
             <option value="">Select…</option>
             <option value="storage">Data storage</option>
             <option value="training">Model training</option>
@@ -486,7 +486,7 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
         </div>
         <div>
           <label style={labelStyle}>Timeline</label>
-          <select style={inputStyle} value={f.timeline} onChange={(e) => setF((p) => ({ ...p, timeline: e.currentTarget.value }))}>
+          <select style={inputStyle} value={f.timeline} onChange={(e) => { const v = e.currentTarget.value; setF((p) => ({ ...p, timeline: v })); }}>
             <option value="">Select…</option>
             <option value="evaluating">Just evaluating</option>
             <option value="1-3mo">1–3 months</option>
@@ -496,7 +496,7 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
       </div>
       <div>
         <label style={labelStyle}>Anything else? (compliance needs, topology, use case)</label>
-        <textarea style={{ ...inputStyle, minHeight: 66, resize: "vertical" }} value={f.notes} onChange={(e) => setF((p) => ({ ...p, notes: e.currentTarget.value }))} />
+        <textarea style={{ ...inputStyle, minHeight: 66, resize: "vertical" }} value={f.notes} onChange={(e) => { const v = e.currentTarget.value; setF((p) => ({ ...p, notes: v })); }} />
       </div>
       {st.kind === "error" && (
         <p role="alert" style={{ fontSize: 12.5, color: "var(--danger, #dd7259)", margin: 0 }}>{st.msg || "Could not send your request. Please try again."}</p>
