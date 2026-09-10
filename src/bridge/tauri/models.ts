@@ -4,6 +4,7 @@
 // The command NAMES are the ones frozen in lib.rs (S0.3); arg keys are camelCase matching the
 // Rust command params. Descriptors cross the boundary already shaped as the ModelDescriptor DTO
 // (Rust serializes camelCase), so nothing is reshaped here.
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "./invoke";
 import type { ModelDescriptor, ModelsCatalogDomain } from "../domains";
 
@@ -14,8 +15,19 @@ export const tauriModelsCatalog: ModelsCatalogDomain = {
   search(source, query) {
     return invoke<ModelDescriptor[]>("model_catalog_search", { source, query });
   },
-  async download(id) {
-    await invoke("model_catalog_download", { id });
+  async download(id, onProgress) {
+    // Subscribe to byte-progress events for THIS id before invoking; the Rust command emits
+    // `model://download-progress` on each whole-percent change. Always unlisten when done.
+    const unlisten = onProgress
+      ? await listen<{ id: string; pct: number }>("model://download-progress", (ev) => {
+          if (ev.payload?.id === id && typeof ev.payload.pct === "number") onProgress(ev.payload.pct);
+        })
+      : null;
+    try {
+      await invoke("model_catalog_download", { id });
+    } finally {
+      unlisten?.();
+    }
   },
   async select(id) {
     await invoke("model_catalog_select", { id });

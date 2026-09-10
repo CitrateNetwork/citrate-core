@@ -170,7 +170,15 @@ export function Models({ store }: SurfaceProps) {
                   model={m}
                   active={false}
                   busy={downloading}
-                  actionLabel={installed ? "Installed" : downloading ? "Downloading…" : "Download"}
+                  actionLabel={
+                    installed
+                      ? "Installed"
+                      : downloading
+                        ? st.downloadPct != null
+                          ? `Downloading… ${st.downloadPct}%`
+                          : "Downloading…"
+                        : "Download"
+                  }
                   actionDisabled={installed || downloading || st.downloadingId != null}
                   onAction={() => void downloadModel(m.id)}
                 />

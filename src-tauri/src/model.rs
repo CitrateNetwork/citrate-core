@@ -497,6 +497,16 @@ impl ModelManager {
     /// A fresh download starts a NEW `.part` (any bad-magic body aborts before a
     /// final file exists). A resume of an existing `.part` continues its bytes.
     pub fn download(&self) -> Result<Vec<u64>> {
+        self.download_with_progress(|_, _| {})
+    }
+
+    /// Like [`Self::download`] but reports byte progress via `on_progress(downloaded, total)`
+    /// after each 1 MiB chunk (and once at the resume offset). A multi-GB catalog download can
+    /// then drive a real progress bar instead of a silent, multi-minute block that looks stuck.
+    pub fn download_with_progress(
+        &self,
+        mut on_progress: impl FnMut(u64, u64),
+    ) -> Result<Vec<u64>> {
         std::fs::create_dir_all(&self.dir).map_err(|e| ModelError::Io(e.to_string()))?;
         let part = self.part_path();
 
@@ -508,6 +518,7 @@ impl ModelManager {
             let _ = std::fs::remove_file(&part);
         }
 
+        on_progress(have, self.expected_size); // initial (resume offset, or 0)
         let offsets = vec![have];
         let mut reader = self.transport.get_from(have)?;
 
@@ -573,6 +584,7 @@ impl ModelManager {
                     });
                 }
             }
+            on_progress(written, self.expected_size);
         }
         file.flush().map_err(|e| ModelError::Io(e.to_string()))?;
         drop(file);

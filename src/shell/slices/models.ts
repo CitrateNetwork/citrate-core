@@ -25,6 +25,8 @@ export interface ModelsState {
   searching: boolean;
   /** The id currently downloading, or null. One at a time keeps the UX legible. */
   downloadingId: string | null;
+  /** Download progress 0–100 for `downloadingId` (null when not downloading / unknown). */
+  downloadPct: number | null;
   /** The id currently being switched to, or null. */
   selectingId: string | null;
   /** local() isn't wired/available yet — a pending WIRE, not a user-facing error. */
@@ -39,6 +41,7 @@ const initial: ModelsState = {
   activeId: null,
   searching: false,
   downloadingId: null,
+  downloadPct: null,
   selectingId: null,
   localPending: false,
   error: null,
@@ -80,13 +83,16 @@ export async function searchModels(source: ModelSourceId, query: string): Promis
 /** Download + verify a catalog model by id, then refresh the local list so it appears. */
 export async function downloadModel(id: string): Promise<void> {
   if (modelsSlice.get().downloadingId) return; // one at a time
-  modelsSlice.set({ downloadingId: id, error: null });
+  modelsSlice.set({ downloadingId: id, downloadPct: 0, error: null });
   try {
-    await bridge.modelsCatalog.download(id);
-    modelsSlice.set({ downloadingId: null });
+    await bridge.modelsCatalog.download(id, (pct) => {
+      // Guard against a late event after another download started.
+      if (modelsSlice.get().downloadingId === id) modelsSlice.set({ downloadPct: pct });
+    });
+    modelsSlice.set({ downloadingId: null, downloadPct: null });
     await refreshLocalModels();
   } catch (e) {
-    modelsSlice.set({ downloadingId: null, error: message(e) });
+    modelsSlice.set({ downloadingId: null, downloadPct: null, error: message(e) });
   }
 }
 
