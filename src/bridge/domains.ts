@@ -965,6 +965,28 @@ export interface InviteClaim {
   address: string;
 }
 
+/** The fields a contract-creation deploy needs (Hermes P3 / WP3.2). The bytecode is
+ *  caller-supplied + compiled — the app never fabricates contract code (Rule 1). */
+export interface ContractDeployInput {
+  /** Compiled deploy bytecode (`0x`-hex or bare hex). Required. */
+  bytecodeHex: string;
+  /** ABI-encoded constructor args (`0x`-hex), or omit for a no-arg constructor. */
+  constructorArgsHex?: string;
+  /** Wei to send with the creation (decimal string), or omit for 0. */
+  valueWei?: string;
+  /** Gas limit (from a fork-sim estimate), or omit for the default. */
+  gas?: number;
+}
+
+export interface ContractsDomain {
+  /** Hermes P3 / WP3.2 — propose deploying a compiled contract. Assembles the init code
+   *  and submits a PENDING SignatureCeremony carrying the `to`-less creation tx (Rule 3 —
+   *  the human approves + broadcasts via signing.broadcast(view.id); nothing signs here).
+   *  Returns the decoded CeremonyView (a "contract creation") for the review modal. Empty
+   *  bytecode rejects. */
+  deploy(input: ContractDeployInput): Promise<CeremonyView>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   storage: StorageDomain;
@@ -972,6 +994,7 @@ export interface CxBridge {
   cluster: ClusterDomain;
   training: TrainingDomain;
   agentHarness: AgentHarnessDomain;
+  contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
 }

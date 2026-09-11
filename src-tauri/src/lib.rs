@@ -37,6 +37,7 @@ mod grant_status;
 mod ipfs;
 mod membership;
 mod memory;
+mod contract_deploy;
 mod model;
 mod model_register;
 mod model_registry;
@@ -397,6 +398,7 @@ pub fn run() {
             model_catalog::model_catalog_select,
             model_registry::models_registry_list,
             model_register::models_registry_register,
+            contract_deploy::contract_deploy,
             skill_registry::skills_registry_list,
             storage::storage_add,
             storage::storage_pin,

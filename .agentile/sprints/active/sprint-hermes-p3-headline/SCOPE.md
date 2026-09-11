@@ -20,9 +20,13 @@ ceremony-gated (Rule 3 — the agent proposes, the human signs).
   `ModelRegistry.registerModel` calldata builder + a `models_registry_register` command
   that submits a PENDING SignatureCeremony, exposed through `modelsCatalog.register()`.
   Closes the loop with the P2/WP0.2b registry READ.
-- **WP3.2 — contract-deploy.** Reuse the Agent-tab deploy ceremony (fork-sim → decode →
-  approve → broadcast). Ceremony skeleton exists in `Agent.tsx`; the remaining piece is
-  real template bytecode (treasury/erc20/pin-vault) — deferred to a follow-on.
+- **WP3.2 — contract-deploy.** DONE: a REAL contract-creation ceremony. The Agent-tab
+  deploy now assembles caller-supplied compiled bytecode (+ optional constructor args)
+  into a `to`-less creation tx and submits a pending SignatureCeremony; `txdecode` renders
+  it "Deploy contract", the human approves, `signing.broadcast` signs + sends the real
+  40204 creation tx (B1.4). The app never ships/fabricates bespoke bytecode (Rule 1) —
+  bundling audited template bytecode (treasury/erc20/pin-vault) as one-click presets is a
+  follow-on; fork-sim gas estimation is a follow-on (a gas param + default today).
 
 ## What shipped this sprint (WP3.1 register half)
 - `model_register.rs` — `register_model_calldata(...)` (recursive head/tail ABI encoder
