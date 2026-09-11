@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useBlockNumber } from "wagmi";
 import { LoaderMark } from "../components/LoaderMark";
 import { ModelPicker } from "../components/ModelPicker";
 import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
+import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
 import { Store } from "../shell/store";
 import { AppState, nodeLabel } from "../shell/state";
 import { citrate } from "../chain";
@@ -169,6 +170,34 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
 
   const onSend = () => store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");
 
+  // WP4.1 — voice-to-text. On-device browser dictation (Chrome/Edge); honest fallback
+  // elsewhere. Finalized fragments append to the chat input; interim shows as a hint.
+  const dictation = useRef<Dictation | null>(null);
+  const [micOn, setMicOn] = useState(false);
+  const [micInterim, setMicInterim] = useState("");
+  useEffect(() => () => dictation.current?.stop(), []); // stop on unmount
+  const toggleMic = () => {
+    if (!dictation.current) {
+      dictation.current = createDictation({
+        onFinal: (frag) => {
+          const el = store.chatInputEl;
+          if (el) el.value = appendFinal(el.value, frag);
+          setMicInterim("");
+        },
+        onInterim: (t) => setMicInterim(t),
+        onError: (m) => { setMicOn(false); setMicInterim(""); store.toast(m); },
+        onEnd: () => setMicInterim(""),
+      });
+    }
+    const d = dictation.current;
+    if (!d.supported) {
+      store.toast("Dictation needs Chrome or Edge here — typing works everywhere");
+      return;
+    }
+    if (micOn) { d.stop(); setMicOn(false); setMicInterim(""); }
+    else { d.start(); setMicOn(true); }
+  };
+
   // Auto-scroll the agent chat as responses stream (Luke 2026-09-11). The store's
   // imperative scrollChat() runs in an rAF that fires BEFORE React commits the new
   // token, so it perpetually lagged one token behind and never reached the true
@@ -285,19 +314,30 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
               ))}
             </div>
           )}
-          <div style={{ display: "flex", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--line-1)" }}>
-            <input
-              ref={(el) => { store.chatInputEl = el; }}
-              className="input"
-              placeholder="Ask about your node, wallet, or memory…"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  store.sendChat((e.target as HTMLInputElement).value);
-                }
-              }}
-              style={{ flex: 1 }}
-            />
+          <div style={{ display: "flex", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--line-1)", alignItems: "center" }}>
+            <span style={{ flex: 1, position: "relative", display: "flex" }}>
+              <input
+                ref={(el) => { store.chatInputEl = el; }}
+                className="input"
+                placeholder={micOn ? (micInterim || "Listening…") : "Ask about your node, wallet, or memory…"}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    store.sendChat((e.target as HTMLInputElement).value);
+                  }
+                }}
+                style={{ flex: 1 }}
+              />
+            </span>
+            <button
+              className={"btn " + (micOn ? "btn-secondary" : "btn-ghost")}
+              onClick={toggleMic}
+              title={micOn ? "Stop dictation" : "Dictate (on-device)"}
+              aria-pressed={micOn}
+              style={micOn ? { color: "var(--ok)", borderColor: "var(--ok)" } : undefined}
+            >
+              {micOn ? "● Mic" : "Mic"}
+            </button>
             <button className="btn btn-primary" onClick={onSend} disabled={chatBusy}>
               Send
             </button>
