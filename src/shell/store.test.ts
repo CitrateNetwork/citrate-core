@@ -4,7 +4,8 @@
 // the frontend half of the entitlement engine; the Rust id_token `exp` guard is
 // the hard backstop (oidc::tests).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, describeBond, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, reconciledGrantPatch, store } from "./store";
+import { isExpiredClaim, isPaidEntitlementActive, isGrantOnChain, describeBond, deriveIdentityFromEmail, mapNodeState, mergeActivity, pickChatProviderKind, foldNodeLogs, reconciledGrantPatch, entitlementSafeguardFromChain, store } from "./store";
+import type { GrantStatus } from "../bridge/domains";
 import { PERSIST_KEYS, freshState } from "./state";
 import { bridge } from "../bridge";
 import type { CeremonyView, AuthStatus } from "../bridge/types";
@@ -34,6 +35,73 @@ describe("isExpiredClaim — A3-03 entitlement-expiry enforcement", () => {
   it("an unparseable expiry FAILS CLOSED (treated as expired — T1 gating)", () => {
     expect(isExpiredClaim("not-a-date")).toBe(true);
     expect(isExpiredClaim("2026-13-45")).toBe(true);
+  });
+
+  it("epoch-MILLISECONDS (the authority's real format) is scaled correctly, not ×1000", () => {
+    // The authority nests entitlement expiry as epoch-ms; the old `Number(x)*1000`
+    // mis-scaled a real ms value to ~year 58000 and NEVER expired (Luke 2026-09-11).
+    const pastMs = String(Date.now() - 3_600_000); // 13-digit ms, one hour ago
+    const futureMs = String(Date.now() + 3_600_000); // 13-digit ms, one hour ahead
+    expect(isExpiredClaim(pastMs)).toBe(true);
+    expect(isExpiredClaim(futureMs)).toBe(false);
+    // A 1-year-out ms expiry (the real grant term) must read as NOT expired.
+    expect(isExpiredClaim(String(Date.now() + 365 * 24 * 3600 * 1000))).toBe(false);
+  });
+});
+
+// Membership-renew SAFEGUARD (Luke 2026-09-11). A real on-chain membership SBT must
+// never be overridden by a thin/transient /userinfo claim into a false "renew" — but
+// a GENUINE expiry must still lapse. Decided by a pure fn so it is testable without a
+// chain/bridge; the launch reconcile applies exactly this.
+describe("entitlementSafeguardFromChain — on-chain SBT vs a thin claim", () => {
+  const onChain = (over: Partial<GrantStatus> = {}): GrantStatus =>
+    ({
+      attributedStakeWei: "32000000000000000000000", // 32,000 SALT — a real grant
+      attributedPrincipalWei: "32000000000000000000000",
+      hasSbt: true,
+      bondAddress: "0xbond",
+      ...over,
+    }) as GrantStatus;
+
+  it("RESTORES active from a real on-chain SBT when the lapse is a thin claim (no expiry)", () => {
+    const patch = entitlementSafeguardFromChain(
+      { tier: "free", entitlement: "lapsed", authExpiresAt: null },
+      onChain(),
+    );
+    expect(patch).toEqual({ tier: "commercial", entitlement: "active" });
+  });
+
+  it("does NOT override a GENUINE expiry (past authExpiresAt) — a real lapse still shows renew", () => {
+    expect(
+      entitlementSafeguardFromChain(
+        { tier: "free", entitlement: "lapsed", authExpiresAt: "2000-01-01" },
+        onChain(),
+      ),
+    ).toBeNull();
+  });
+
+  it("does NOT elevate a never-paid free account (no on-chain SBT / no stake)", () => {
+    expect(
+      entitlementSafeguardFromChain(
+        { tier: "free", entitlement: "lapsed", authExpiresAt: null },
+        onChain({ hasSbt: false }),
+      ),
+    ).toBeNull();
+    expect(
+      entitlementSafeguardFromChain(
+        { tier: "free", entitlement: "lapsed", authExpiresAt: null },
+        onChain({ attributedStakeWei: "0" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("is a no-op when the entitlement is not lapsed (nothing to correct)", () => {
+    expect(
+      entitlementSafeguardFromChain(
+        { tier: "commercial.kyc", entitlement: "active", authExpiresAt: null },
+        onChain(),
+      ),
+    ).toBeNull();
   });
 });
 
