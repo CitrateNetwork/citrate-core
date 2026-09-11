@@ -7,7 +7,10 @@
   "scripts": {
     "capture": "playwright test",
     "capture:headed": "playwright test --headed",
-    "install-browser": "playwright install chromium"
+    "install-browser": "playwright install chromium",
+    "postinstall": "playwright install chromium",
+    "precapture": "playwright install chromium",
+    "precapture:headed": "playwright install chromium"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"
