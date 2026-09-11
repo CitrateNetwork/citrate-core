@@ -14,6 +14,7 @@ import type { PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
+import type { UserSkill } from "../agent/userSkills";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
@@ -439,6 +440,8 @@ export interface AppState {
   deviceId: string;
   s1c: number;
   pins: Pin[];
+  /** Hermes P5 — the member's own prompt-skills (persisted locally, run against the active model). */
+  userSkills: UserSkill[];
   jPages: JournalPage[];
   jSel: string | null;
   jEditing: boolean;
@@ -694,6 +697,7 @@ export function freshState(pid: string): AppState {
     deviceId: "dev_" + makeAddr(P.name + "::device").slice(2, 12),
     s1c: 0,
     pins: [],
+    userSkills: [],
     jPages: [],
     jSel: null,
     jEditing: false,
@@ -848,7 +852,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "jPages", "jSel", "connections", "aiDefault", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {

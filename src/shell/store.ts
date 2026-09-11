@@ -31,6 +31,7 @@ import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import type { GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -371,6 +372,7 @@ export class Store {
   private snap: AppState;
   private cid = 0;
   private mid = 0;
+  private uskSeq = 0;
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
@@ -1990,6 +1992,46 @@ export class Store {
       chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? { ...m, chips: m.chips.concat([{ label, status }]) } : m)),
     }));
     return result;
+  }
+
+  // ---------- Hermes P5 — user skills (prompt-skills) ----------
+  /**
+   * Add a member-authored prompt-skill (validated + normalized by the pure core).
+   * Persists in local state (PERSIST_KEYS) like the journal — no chain, no key. On a
+   * validation failure it toasts the honest reason and adds nothing (Rule 1).
+   * Returns whether it was added, so a form can clear itself only on success.
+   */
+  addUserSkill(name: string, instruction: string, description = ""): boolean {
+    const r = validateNewSkill(name, instruction, description, this.state.userSkills);
+    if (!r.ok) {
+      this.toast(r.error);
+      return false;
+    }
+    const id = "usk-" + ++this.uskSeq + "-" + this.state.userSkills.length;
+    this.setState((s) => ({ userSkills: s.userSkills.concat([{ id, ...r.skill }]) }));
+    this.save();
+    this.toast(`Added your "${r.skill.name}" skill.`);
+    return true;
+  }
+
+  /** Remove a user skill by id. */
+  removeUserSkill(id: string): void {
+    this.setState((s) => ({ userSkills: s.userSkills.filter((k) => k.id !== id) }));
+    this.save();
+  }
+
+  /**
+   * Run a user skill: send its instruction to the chat against the ACTIVE model
+   * (the router's Gemma / gateway / local backend). It is a prompt, not code — any
+   * chain action the model then proposes still stops at the SignatureCeremony
+   * (Rule 3 holds by construction; nothing here signs). Navigates to the dashboard
+   * chat so the member sees the run.
+   */
+  runUserSkill(id: string): void {
+    const skill = this.state.userSkills.find((k) => k.id === id);
+    if (!skill) return;
+    if (this.state.route !== "dashboard") this.go("dashboard");
+    void this.sendChat(runPrompt(skill));
   }
 
   // ---------- journal capture ----------
