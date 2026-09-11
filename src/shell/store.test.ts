@@ -1145,3 +1145,28 @@ describe("reconciledGrantPatch — settle from chain after a restart", () => {
     }
   });
 });
+
+// Hermes ModelRouter (P0/WP0.4) — the store's selection primitive. Phantom-safe persist +
+// the resolve that never serves a not-ready model.
+describe("store.selectModel / routerActive — router selection primitive", () => {
+  const choices = [
+    { id: "loc1", label: "L", source: "local" as const, ready: true },
+    { id: "reg1", label: "R", source: "registry" as const, ready: false },
+    { id: "gateway", label: "GW", source: "gateway" as const, ready: true },
+  ];
+  it("persists a valid selection and resolves it when ready", () => {
+    store.selectModel("loc1", choices);
+    expect(store.state.activeModelId).toBe("loc1");
+    expect(store.routerActive(choices).id).toBe("loc1");
+  });
+  it("IGNORES a phantom id (INV-Router-3) — active is unchanged", () => {
+    store.selectModel("loc1", choices);
+    store.selectModel("does-not-exist", choices);
+    expect(store.state.activeModelId).toBe("loc1");
+  });
+  it("resolves a not-ready pick to the gateway terminal (INV-Router-2)", () => {
+    store.selectModel("reg1", choices);
+    expect(store.state.activeModelId).toBe("reg1");
+    expect(store.routerActive(choices).id).toBe("gateway");
+  });
+});

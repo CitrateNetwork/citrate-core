@@ -51,3 +51,20 @@ sprint: sprint-hermes-p0-router
 - The picker is deliberately presentational so the Models section + the agent chat can feed it
   ONE source of truth; it is MOUNTED into the agent chat surface, wired to the live
   modelsSlice + gateway, and the selection persisted in **WP0.4**.
+
+## WP0.4 — the router in the real chat ✅
+- `activeModelId` added to AppState (persisted; default null ⇒ gateway).
+- `store.selectModel(id, choices)` — phantom-safe persist (canSelect gate, INV-Router-3);
+  `store.routerActive(choices)` — resolveActive (INV-Router-2, never a not-ready backend).
+- Mounted `ModelPicker` in the Dashboard coach chat (the REAL working chat): a header model
+  chip shows the RESOLVED backend + toggles the picker, fed by the LIVE `modelsSlice.local` +
+  gateway (one source of truth with the Models section). Selecting a LOCAL model calls the
+  shared `modelsSlice.selectModel` (switches the served model / restarts llama-server);
+  gateway is the always-ready default. Selection persists.
+- Tests: store selection primitive (persist valid, ignore phantom, resolve not-ready→gateway)
+  + the existing picker/router/sources tests. Full frontend suite 479 green; typecheck clean.
+- NOTE: the router is delivered in the existing coach chat (already a real chat). Making the
+  Agent WORKSPACE tab also a chat surface on the same component is a small follow-on; the P0
+  goal (a real chat on the model router) is met.
+
+## P0 remaining: WP0.2b (on-chain registry READ, issue #30).

@@ -1,6 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useBlockNumber } from "wagmi";
 import { LoaderMark } from "../components/LoaderMark";
+import { ModelPicker } from "../components/ModelPicker";
+import { modelsSlice, selectModel as sliceSelectModel } from "../shell/slices/models";
+import { choicesFromSources } from "../agent/modelRouterSources";
 import { Store } from "../shell/store";
 import { AppState, nodeLabel } from "../shell/state";
 import { citrate } from "../chain";
@@ -143,6 +146,19 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   // progress here so a member who moved straight to the dashboard can see the pull.
   const modelDownloading = s.modelState === "downloading" || s.modelState === "verifying";
   const modelPct = s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 100)) : 0;
+  // WP0.4 — the ModelRouter picker over the LIVE sources (local models from the shared
+  // modelsSlice + the always-ready gateway terminal). The chat + the Models section read one
+  // source of truth (modelsSlice.local). The resolved active is what the send path serves.
+  const models = modelsSlice.use();
+  const routerChoices = choicesFromSources(models.local);
+  const activeModel = store.routerActive(routerChoices);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const onPickModel = (id: string) => {
+    store.selectModel(id, routerChoices); // persist the router selection (phantom-safe)
+    const chosen = routerChoices.find((c) => c.id === id);
+    if (chosen?.source === "local") void sliceSelectModel(id); // switch the SERVED local model (restarts llama-server)
+    setPickerOpen(false);
+  };
   const suggestions = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
 
   const onSend = () => store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");
@@ -195,7 +211,25 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
                 {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
               </span>
             )}
+            {/* WP0.4 — the model chip: shows the RESOLVED backend (never a not-ready one) and
+                toggles the router picker. One click to change which model the agent runs on. */}
+            <button
+              className="mono"
+              data-testid="model-chip"
+              aria-expanded={pickerOpen}
+              onClick={() => setPickerOpen((v) => !v)}
+              style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "var(--srf-2)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }} aria-hidden></span>
+              {activeModel.label}
+              <span aria-hidden style={{ color: "var(--tx-3)" }}>{pickerOpen ? "▴" : "▾"}</span>
+            </button>
           </div>
+          {pickerOpen && (
+            <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
+              <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />
+            </div>
+          )}
           <div ref={(el) => { store.chatScrollEl = el; }} style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
             {s.chatMsgs.map((m) => (
               <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 5 }}>

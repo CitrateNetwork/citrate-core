@@ -29,6 +29,7 @@ import {
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
+import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import type { GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -2316,6 +2317,29 @@ export class Store {
       this.stopModelPoll();
     }
     this.save();
+  }
+
+  /**
+   * Hermes ModelRouter (P0/WP0.4) — persist the member's model selection. `choices` is the
+   * live router list the surface built (local + gateway [+ registry]). Fail-closed on a
+   * phantom id (INV-Router-3): a selection that is not an enumerated choice is ignored, so
+   * the active can never point at a fabricated model. The caller (the chat surface) also
+   * switches the SERVED local model for a local pick (modelsSlice.selectModel restarts
+   * llama-server); the gateway is the always-ready default, so picking it needs no restart.
+   */
+  selectModel(id: string, choices: ModelChoice[]): void {
+    if (!canSelect(id, choices)) return; // phantom id — never persist a non-choice
+    this.setState({ activeModelId: id });
+    this.save();
+  }
+
+  /**
+   * The model the send path actually resolves (INV-Router-2): the active choice iff it is
+   * READY, else the always-ready gateway terminal. Pure over the passed `choices` so the
+   * chat never routes to a not-ready (still-downloading / not-pulled) model.
+   */
+  routerActive(choices: ModelChoice[]): ModelChoice {
+    return resolveActive(this.state.activeModelId, choices);
   }
 
   /** Honestly SKIP the local model: chat routes to the gateway/demo. This is an
