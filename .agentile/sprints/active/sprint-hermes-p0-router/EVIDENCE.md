@@ -68,3 +68,18 @@ sprint: sprint-hermes-p0-router
   goal (a real chat on the model router) is met.
 
 ## P0 remaining: WP0.2b (on-chain registry READ, issue #30).
+
+## WP0.2b — on-chain ModelRegistry READ ✅
+- `src-tauri/src/model_registry.rs` — reads the on-chain ModelRegistry (addresses::model_registry(),
+  0xba36fa0d… on 40204): getAllModelHashes() → bytes32[], getModel(hash) → (owner, name, ipfsCID).
+  Pure ABI decoders (be_usize bounds-checked; dynamic bytes32[] + string tuple); async
+  `models_registry_list` command runs OFF the main thread (spawn_blocking — the v0.2.3 lesson).
+  Rule 1: honest error on RPC/decode failure, never a fabricated list.
+- `model_registry_tests.rs` — 6 tests green (round-trip encode→decode of bytes32[] + getModel
+  owner/name/cid, empty + multi-word strings, short-return errors). Registered in lib.rs.
+- Bridge: `modelsCatalog.registry()` (tauri invoke; sim honest-empty) + RegistryModel DTO.
+- Slice: `registry` state + `refreshRegistryModels()`; wired into the Dashboard router picker as
+  the downloadable third source (registryModelsToChoiceInput → not-ready "download to use").
+- typecheck clean; frontend 480 green; cargo model_registry 6 green.
+
+P0 COMPLETE: WP0.1 (spec+core) · WP0.2 (local+gateway) · WP0.2b (registry read) · WP0.3 (picker) · WP0.4 (router in chat).

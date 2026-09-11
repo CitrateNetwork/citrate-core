@@ -19,5 +19,8 @@ export function simModelsCatalog(_host: SimHost): ModelsCatalogDomain {
     async select() {
       /* sim: no-op (no real llama-server) */
     },
+    async registry() {
+      return []; // honest-empty: web/dev has no chain to read the ModelRegistry from
+    },
   };
 }
