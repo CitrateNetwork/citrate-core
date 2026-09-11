@@ -12,7 +12,7 @@ import { tauriModelsCatalog } from "../tauri/models";
 describe("CX bridge contract — modelsCatalog (frozen CX-S0.2)", () => {
   it("exposes the modelsCatalog domain with exactly its frozen methods", () => {
     expect(bridge.modelsCatalog).toBeDefined();
-    for (const m of ["local", "search", "download", "select"] as const) {
+    for (const m of ["local", "search", "download", "select", "registry", "register"] as const) {
       expect(typeof bridge.modelsCatalog[m]).toBe("function");
     }
   });
@@ -59,5 +59,37 @@ describe("CX bridge — tauri modelsCatalog invokes the frozen commands (CX-S1.6
     invokeMock.mockResolvedValueOnce(undefined);
     await tauriModelsCatalog.select("github:owner/repo/m.gguf@v1.0");
     expect(invokeMock).toHaveBeenCalledWith("model_catalog_select", { id: "github:owner/repo/m.gguf@v1.0" });
+  });
+
+  it("registry → models_registry_list (no args)", async () => {
+    invokeMock.mockResolvedValueOnce([]);
+    await tauriModelsCatalog.registry();
+    expect(invokeMock).toHaveBeenCalledWith("models_registry_list");
+  });
+
+  it("register → models_registry_register with the camelCase arg keys (P3/WP3.1)", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await tauriModelsCatalog.register({
+      name: "gemma",
+      framework: "gguf",
+      version: "1.0",
+      ipfsCid: "QmTest",
+      sizeBytes: 1000,
+      inferencePrice: 0,
+      description: "A model",
+      license: "MIT",
+      tags: ["nlp", "chat"],
+    });
+    expect(invokeMock).toHaveBeenCalledWith("models_registry_register", {
+      name: "gemma",
+      framework: "gguf",
+      version: "1.0",
+      ipfsCid: "QmTest",
+      sizeBytes: 1000,
+      inferencePrice: 0,
+      description: "A model",
+      license: "MIT",
+      tags: ["nlp", "chat"],
+    });
   });
 });
