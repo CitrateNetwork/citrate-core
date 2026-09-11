@@ -105,3 +105,30 @@ test("app surfaces", async ({ page }) => {
     await page.screenshot({ path: join(OUT, `app-${route}.png`) });
   }
 });
+
+// Sub-states that a bare surface shot misses — the Hermes agent's tabbed panels.
+// The tab is component-local state (not the store seam), so we click it; the button
+// always renders in sim mode, keeping this deterministic. Best-effort per tab: a
+// missing tab is logged, never a hard failure, so adding/renaming tabs never breaks
+// the docs build.
+const AGENT_TABS = ["Overview", "Contracts"];
+
+test("agent surface tabs", async ({ page }) => {
+  await bootApp(page);
+  await patchStore(page, { stage: "done", signedIn: true });
+  await page.evaluate(() => {
+    window.location.hash = "#/agent";
+  });
+  await settle(page);
+  for (const tab of AGENT_TABS) {
+    const btn = page.getByRole("button", { name: tab, exact: true }).first();
+    if ((await btn.count()) === 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[capture] agent tab "${tab}" not found — skipping`);
+      continue;
+    }
+    await btn.click();
+    await settle(page, 500);
+    await page.screenshot({ path: join(OUT, `app-agent-${tab.toLowerCase()}.png`) });
+  }
+});

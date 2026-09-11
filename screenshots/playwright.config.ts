@@ -26,11 +26,14 @@ export default defineConfig({
     channel: undefined,
   },
   webServer: {
-    command: "npm run dev",
+    // Out-of-box: ensure the parent app's deps exist before starting Vite, so a fresh
+    // clone runs with just `npm install && npm run capture` here (no separate root
+    // install, no separate `playwright install`). Idempotent — a warm tree skips it.
+    command: "(test -d node_modules || npm install --no-audit --no-fund) && npm run dev",
     cwd: "..",
     url: "http://localhost:1420",
     reuseExistingServer: true,
-    timeout: 120_000,
+    timeout: 180_000,
     // Vite prints to stdout; surface it if the server fails to boot.
     stdout: "pipe",
     stderr: "pipe",

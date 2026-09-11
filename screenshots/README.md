@@ -18,25 +18,21 @@ ever loads the browser build, so:
 
 It captures the same screens on Linux, macOS, or in CI.
 
-## Prerequisites
+## Run (out-of-box)
 
-- Node 20+ and the Citrate Core dependencies installed once in the repo root:
-  ```sh
-  cd .. && npm install
-  ```
-- Playwright's Chromium (downloaded once):
-  ```sh
-  npm install
-  npm run install-browser   # playwright install chromium
-  ```
-
-## Run
+From a fresh clone, two commands — no separate browser install, no separate root
+`npm install`:
 
 ```sh
 cd screenshots
-npm run capture            # headless; starts the vite dev server for you
+npm install                # also installs Playwright's Chromium (postinstall)
+npm run capture            # headless; installs the browser if missing (precapture),
+                           # installs the parent app's deps if missing, starts Vite
 npm run capture:headed     # watch it drive the app in a real window
 ```
+
+Node 20+ is the only prerequisite. `npm run capture` is idempotent — a warm tree
+skips the browser + parent-deps installs and goes straight to Vite.
 
 PNGs land in `screenshots/out/` (gitignored):
 
@@ -45,6 +41,8 @@ PNGs land in `screenshots/out/` (gitignored):
 - `app-00-shell.png` + `app-<route>.png` — the shell and all 17 surfaces
   (dashboard, wallet, node, models, storage, files, journal, groups, comms,
   cluster, train, agent, connections, community, commissary, settings, alf).
+- `app-agent-<tab>.png` — the Hermes agent's tabbed panels (overview · contracts),
+  which a bare surface shot doesn't reach (the tab is component-local state).
 
 Shots are 1440×900 at 2× (retina-crisp) in the dark theme.
 
