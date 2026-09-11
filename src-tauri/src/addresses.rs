@@ -47,6 +47,8 @@ struct Addresses {
     patronage_ledger: String,
     #[serde(rename = "ModelCooperative", default)]
     model_cooperative: String,
+    #[serde(rename = "ModelRegistry", default)]
+    model_registry: String,
 }
 
 fn book() -> &'static Book {
@@ -69,6 +71,7 @@ fn book() -> &'static Book {
         b.addresses.citrate_wallet_factory = b.addresses.citrate_wallet_factory.to_ascii_lowercase();
         b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
         b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
+        b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
         b
     })
 }
@@ -104,6 +107,14 @@ pub fn citrate_wallet_factory() -> &'static str {
 #[allow(dead_code)]
 pub fn liquid_staking_pool() -> &'static str {
     &book().addresses.liquid_staking_pool
+}
+
+/// `ModelRegistry` — the on-chain model registry (a backbone of the app layer): models are
+/// registered + identified here (`getAllModelHashes`/`getModel`, `ModelRegistered` event).
+/// Read by the Hermes ModelRouter's registry source (Hermes WP0.2b).
+#[allow(dead_code)]
+pub fn model_registry() -> &'static str {
+    &book().addresses.model_registry
 }
 
 /// `IPFSIncentivesV3` — the model-storage bond contract (CX-S2.2 `registerModel`). REROLL-SENSITIVE:
