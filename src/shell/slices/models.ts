@@ -10,7 +10,7 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import type { ModelDescriptor } from "../../bridge/domains";
+import type { ModelDescriptor, RegistryModel } from "../../bridge/domains";
 
 export type ModelSourceId = "hf" | "github";
 
@@ -19,6 +19,8 @@ export interface ModelsState {
   local: ModelDescriptor[];
   /** Results of the last catalog search. */
   results: ModelDescriptor[];
+  /** Models registered on-chain in the ModelRegistry (Hermes WP0.2b). Not-yet-local. */
+  registry: RegistryModel[];
   /** The id of the active local model, or null if unknown/none selected. */
   activeId: string | null;
   /** A search is in flight. */
@@ -38,6 +40,7 @@ export interface ModelsState {
 const initial: ModelsState = {
   local: [],
   results: [],
+  registry: [],
   activeId: null,
   searching: false,
   downloadingId: null,
@@ -51,6 +54,17 @@ export const modelsSlice = createSlice<ModelsState>(initial);
 
 const message = (e: unknown): string =>
   e instanceof Error ? e.message : typeof e === "string" ? e : String(e);
+
+/** Hermes WP0.2b — load the on-chain ModelRegistry models. Honest-empty on a sim/failed
+ *  read (never fabricated); the router surfaces them as downloadable ("download to use"). */
+export async function refreshRegistryModels(): Promise<void> {
+  try {
+    const registry = await bridge.modelsCatalog.registry();
+    modelsSlice.set({ registry });
+  } catch {
+    modelsSlice.set({ registry: [] }); // unwired/failed read → honest empty, not a fake list
+  }
+}
 
 /** Load the locally-present verified models. Honest-empty on a not-wired/sim bridge. */
 export async function refreshLocalModels(): Promise<void> {

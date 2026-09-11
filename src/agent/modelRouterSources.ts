@@ -10,8 +10,15 @@
 // (storage.rs register_model_calldata); there is no READ command yet, so `registry` is
 // empty until a `models_registry_list` chain-read lands. Local + gateway are wired to live
 // data now. The mapping is pure so it is unit-testable without a bridge.
-import type { ModelDescriptor, AiProviderStatus } from "../bridge/domains";
+import type { ModelDescriptor, AiProviderStatus, RegistryModel } from "../bridge/domains";
 import { enumerateChoices, type EnumerateInput, type ModelChoice } from "./modelRouter";
+
+/** Map on-chain ModelRegistry models (WP0.2b) onto the router's downloadable third-source
+ *  input: id = the modelHash, label = the human name. They are NOT-ready (the router marks
+ *  them "download to use") until also present + verified locally. */
+export function registryModelsToChoiceInput(models: RegistryModel[]): { id: string; label: string }[] {
+  return models.map((m) => ({ id: m.id, label: m.name || m.id }));
+}
 
 /** A human label for a local model: the GGUF filename, else the repo, else the id. */
 export function modelLabel(m: ModelDescriptor): string {

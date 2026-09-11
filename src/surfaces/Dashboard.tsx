@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useBlockNumber } from "wagmi";
 import { LoaderMark } from "../components/LoaderMark";
 import { ModelPicker } from "../components/ModelPicker";
-import { modelsSlice, selectModel as sliceSelectModel } from "../shell/slices/models";
-import { choicesFromSources } from "../agent/modelRouterSources";
+import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
+import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
 import { Store } from "../shell/store";
 import { AppState, nodeLabel } from "../shell/state";
 import { citrate } from "../chain";
@@ -150,7 +150,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   // modelsSlice + the always-ready gateway terminal). The chat + the Models section read one
   // source of truth (modelsSlice.local). The resolved active is what the send path serves.
   const models = modelsSlice.use();
-  const routerChoices = choicesFromSources(models.local);
+  const routerChoices = choicesFromSources(models.local, registryModelsToChoiceInput(models.registry));
   const activeModel = store.routerActive(routerChoices);
   const [pickerOpen, setPickerOpen] = useState(false);
   const onPickModel = (id: string) => {
@@ -159,6 +159,12 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     if (chosen?.source === "local") void sliceSelectModel(id); // switch the SERVED local model (restarts llama-server)
     setPickerOpen(false);
   };
+  // Fetch the router's live sources once on mount: local verified models + the on-chain
+  // ModelRegistry (WP0.2b). Honest-empty on a sim/failed read; the gateway is always present.
+  useEffect(() => {
+    void refreshLocalModels();
+    void refreshRegistryModels();
+  }, []);
   const suggestions = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
 
   const onSend = () => store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");

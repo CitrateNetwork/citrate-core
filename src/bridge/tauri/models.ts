@@ -6,7 +6,7 @@
 // (Rust serializes camelCase), so nothing is reshaped here.
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "./invoke";
-import type { ModelDescriptor, ModelsCatalogDomain } from "../domains";
+import type { ModelDescriptor, ModelsCatalogDomain, RegistryModel } from "../domains";
 
 export const tauriModelsCatalog: ModelsCatalogDomain = {
   local() {
@@ -31,5 +31,8 @@ export const tauriModelsCatalog: ModelsCatalogDomain = {
   },
   async select(id) {
     await invoke("model_catalog_select", { id });
+  },
+  registry() {
+    return invoke<RegistryModel[]>("models_registry_list");
   },
 };

@@ -655,6 +655,22 @@ export interface ModelsCatalogDomain {
   download(id: string, onProgress?: (pct: number) => void): Promise<void>;
   /** Switch the active local model (restarts llama-server -m). */
   select(id: string): Promise<void>;
+  /** Hermes WP0.2b — the models registered on-chain in the ModelRegistry (40204). A PURE
+   *  read (getAllModelHashes + getModel); NOT-yet-local, so the router marks them
+   *  "download to use". Honest empty list on an unwired/failed read (never fabricated). */
+  registry(): Promise<RegistryModel[]>;
+}
+
+/** A model from the on-chain ModelRegistry (Hermes WP0.2b). Mirrors the Rust RegistryModel. */
+export interface RegistryModel {
+  /** The `0x`-hex modelHash — the stable id. */
+  id: string;
+  /** Human name. */
+  name: string;
+  /** `0x`-hex owner address. */
+  owner: string;
+  /** IPFS CID of the model weights. */
+  ipfsCid: string;
 }
 
 // ── C-17 storage & pinning file store (lane s2) ──

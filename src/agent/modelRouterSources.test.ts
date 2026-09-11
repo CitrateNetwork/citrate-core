@@ -59,3 +59,19 @@ describe("liveEnumerateInput / choicesFromSources — wire local + gateway (regi
     expect(resolved.ready).toBe(true);
   });
 });
+
+describe("registryModelsToChoiceInput — on-chain ModelRegistry → router input (WP0.2b)", () => {
+  it("maps registry models (name→label) into not-ready downloadable choices", async () => {
+    const { registryModelsToChoiceInput } = await import("./modelRouterSources");
+    const input = registryModelsToChoiceInput([
+      { id: "0xabc", name: "Gemma On-Chain", owner: "0xowner", ipfsCid: "Qm123" },
+      { id: "0xdef", name: "", owner: "0xowner", ipfsCid: "Qm456" }, // empty name → falls back to id
+    ]);
+    expect(input).toEqual([
+      { id: "0xabc", label: "Gemma On-Chain" },
+      { id: "0xdef", label: "0xdef" },
+    ]);
+    const choices = choicesFromSources([], input);
+    expect(choices.find((c) => c.id === "0xabc")).toMatchObject({ source: "registry", ready: false, label: "Gemma On-Chain" });
+  });
+});
