@@ -394,6 +394,9 @@ export interface AppState {
   modelTotalBytes: number;
   modelError: string | null;
   modelSkipped: boolean;
+  /** Hermes ModelRouter (P0/WP0.4): the member's chosen model id (a local model, a registry
+   *  id, or the gateway). null ⇒ the always-ready gateway default. Persisted. */
+  activeModelId: string | null;
   sel: string | null;
   panX: number;
   panY: number;
@@ -659,6 +662,7 @@ export function freshState(pid: string): AppState {
     storageMode: "lexical",
     modelPct: 0,
     modelState: "notPresent",
+    activeModelId: null,
     modelDownloadedBytes: 0,
     modelTotalBytes: 5_335_289_824,
     modelError: null,
@@ -840,7 +844,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "socketPath",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
