@@ -659,6 +659,27 @@ export interface ModelsCatalogDomain {
    *  read (getAllModelHashes + getModel); NOT-yet-local, so the router marks them
    *  "download to use". Honest empty list on an unwired/failed read (never fabricated). */
   registry(): Promise<RegistryModel[]>;
+  /** Hermes P3 / WP3.1 — propose registering a pulled+verified+pinned model on-chain
+   *  (ModelRegistry.registerModel). Builds the calldata and submits a PENDING
+   *  SignatureCeremony (Rule 3 — the human approves + broadcasts); nothing signs here.
+   *  `ipfsCid` MUST be a real pinned CID (the contract requires it) — an empty CID
+   *  rejects up-front. On confirm, the model appears in `registry()`. */
+  register(input: RegisterModelInput): Promise<void>;
+}
+
+/** The fields ModelRegistry.registerModel needs (Hermes P3 / WP3.1). */
+export interface RegisterModelInput {
+  name: string;
+  framework: string;
+  version: string;
+  /** A real pinned IPFS CID for the weights — required by the contract. */
+  ipfsCid: string;
+  sizeBytes: number;
+  /** Per-inference price in wei (0 for free). */
+  inferencePrice: number;
+  description: string;
+  license: string;
+  tags: string[];
 }
 
 /** A model from the on-chain ModelRegistry (Hermes WP0.2b). Mirrors the Rust RegistryModel. */

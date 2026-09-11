@@ -6,7 +6,7 @@
 // (Rust serializes camelCase), so nothing is reshaped here.
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "./invoke";
-import type { ModelDescriptor, ModelsCatalogDomain, RegistryModel } from "../domains";
+import type { ModelDescriptor, ModelsCatalogDomain, RegisterModelInput, RegistryModel } from "../domains";
 
 export const tauriModelsCatalog: ModelsCatalogDomain = {
   local() {
@@ -34,5 +34,19 @@ export const tauriModelsCatalog: ModelsCatalogDomain = {
   },
   registry() {
     return invoke<RegistryModel[]>("models_registry_list");
+  },
+  async register(input: RegisterModelInput) {
+    // camelCase arg keys — Tauri v2 maps them to the Rust command's snake_case params.
+    await invoke("models_registry_register", {
+      name: input.name,
+      framework: input.framework,
+      version: input.version,
+      ipfsCid: input.ipfsCid,
+      sizeBytes: input.sizeBytes,
+      inferencePrice: input.inferencePrice,
+      description: input.description,
+      license: input.license,
+      tags: input.tags,
+    });
   },
 };

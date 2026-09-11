@@ -38,6 +38,7 @@ mod ipfs;
 mod membership;
 mod memory;
 mod model;
+mod model_register;
 mod model_registry;
 mod skill_registry;
 mod node;
@@ -395,6 +396,7 @@ pub fn run() {
             model_catalog::model_catalog_download,
             model_catalog::model_catalog_select,
             model_registry::models_registry_list,
+            model_register::models_registry_register,
             skill_registry::skills_registry_list,
             storage::storage_add,
             storage::storage_pin,

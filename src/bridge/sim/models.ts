@@ -22,5 +22,9 @@ export function simModelsCatalog(_host: SimHost): ModelsCatalogDomain {
     async registry() {
       return []; // honest-empty: web/dev has no chain to read the ModelRegistry from
     },
+    async register() {
+      // sim: no chain + no ceremony to submit into — honest no-op (Rule 1).
+      throw new Error("registering a model needs the desktop node (no chain in web/dev)");
+    },
   };
 }
