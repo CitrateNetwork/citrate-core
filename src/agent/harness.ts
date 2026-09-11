@@ -268,6 +268,23 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "journal_read",
+      description:
+        "Read the member's local journal (daily notes + named pages). Omit `page` for an index of pages plus today's note; pass a page title (or a fragment of one) to read that page's bullets. Read-only. Returns real content or an honest 'empty' — never invents entries.",
+      parameters: {
+        type: "object",
+        properties: {
+          page: {
+            type: "string",
+            description: "a page title or fragment to read; omit to list pages + today's daily note",
+          },
+        },
+      },
+    },
+  },
 ] as const;
 
 /// Max model↔tool round-trips before we stop (a misbehaving model can't loop

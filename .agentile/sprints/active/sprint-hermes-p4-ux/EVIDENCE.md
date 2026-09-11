@@ -21,11 +21,18 @@ sprint: sprint-hermes-p4-ux
   stream with a near-bottom post-commit scroll (gated so a user reading history isn't
   yanked down).
 
-## Follow-ons (see SCOPE)
+## WP4.2 — journal integration (Hermes reads/writes the journal)
+- `journal_append` (write, confirm-gated) already existed in `handleTool`.
+- Added `journal_read` (read-only): `src/agent/journalRead.ts` `formatJournalForAgent(pages,
+  query, today)` — index of pages + today's note, or a page by title fragment; strips
+  `@agent`/`@prompt` markers to a provenance tag; honest-empty / no-match (Rule 1). Declared
+  in `AGENT_TOOLS`, wired in `store.handleTool`, and the tool-aware system prompt (`ai.rs`)
+  tells Hermes to read the journal to ground answers and never fabricate entries.
+- Tests: `journalRead.test.ts` 6 passed; `cargo test --lib ai::` 21 passed (prompt change).
+
+## Follow-on
 - WP4.1 upgrade: whisper sidecar / gateway `POST /v1/audio/transcriptions` behind the same
   Mic UI (bundle the sidecar binary + merge the gateway STT branch).
-- WP4.2 deeper journal integration (recall journal pages into context; ceremony-gated
-  journal writes).
 
 ## Suite
 - typecheck clean; `npx vitest run` full suite green (see PR).
