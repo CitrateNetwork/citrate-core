@@ -66,10 +66,11 @@ describe("S6.5 ModelStep — the ready state only appears from a real verify (ne
       modelTotalBytes: 5_335_289_824,
     });
     const html = renderToStaticMarkup(<ModelStep store={noopStore} s={s} />);
-    // Even at 100% downloaded, presence is NOT ready — no "verified" badge.
+    // Even at 100% downloaded, presence is NOT ready — no "verified" badge (Rule 1:
+    // ready is earned only from a real verify). #30 (Luke): entering the dashboard is
+    // NO LONGER gated on the download — the model finishes in the background — so this
+    // no longer asserts a disabled button; the negative control is the absent badge.
     expect(html).not.toContain("chat runs on-device");
-    // The Enter button is DISABLED until a real verify (or a skip).
-    expect(html).toContain("disabled");
   });
 
   it("shows the verified/ready badge ONLY when the state is a real 'ready'", () => {
@@ -85,9 +86,10 @@ describe("S6.5 ModelStep — the ready state only appears from a real verify (ne
     const html = renderToStaticMarkup(<ModelStep store={noopStore} s={s} />);
     expect(html).toContain("Retry download");
     expect(html).toContain("checksum mismatch");
+    // An error never yields a usable local model — no fabricated "ready" badge (Rule 1).
+    // #30: Enter is no longer disabled here (chat falls back to the gateway); the
+    // negative control is the absent ready badge + the retry affordance above.
     expect(html).not.toContain("chat runs on-device");
-    // Enter is still gated (disabled) — an error never yields a usable local model.
-    expect(html).toContain("disabled");
   });
 });
 

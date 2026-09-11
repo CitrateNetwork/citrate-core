@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
 import { Store } from "../shell/store";
@@ -514,6 +514,20 @@ function EnterpriseContactForm({ store, onDone }: { store: Store; onDone: () => 
 
 export function S3({ store, s }: { store: Store; s: AppState }) {
   const [entOpen, setEntOpen] = useState(false);
+  // #31 (Luke 2026-09-11) — auto-open checkout once the wallet is LINKED, so the member
+  // doesn't hunt for a second button. The "Link your wallet" click is the explicit intent
+  // signal (or the wallet was linked in a prior session); once linked + idle on S3 we open
+  // the Stripe checkout automatically. The settle→S4 effect below then finishes the flow
+  // when the grant poll lands (the approved "auto-open + auto-advance on poll" shape).
+  // Fires ONCE (ref-guarded); onS3Pay itself still enforces the link-first ordering guard,
+  // and the tier cards + "Continue free" stay, so the browser can be closed without paying.
+  const autoCheckoutRef = useRef(false);
+  useEffect(() => {
+    if (s.stage === "s3" && s.s3 === "idle" && store.walletIsLinked() && !autoCheckoutRef.current) {
+      autoCheckoutRef.current = true;
+      store.onS3Pay();
+    }
+  }, [s.stage, s.s3, s.walletAddr, s.custodyAddr, store]);
   // PHONEPAY-S10 — auto-advance to S4 once the grant settles, so there is no extra
   // "Continue" click after checkout. We hold ~1.2s so the "Payment settled" stamp is
   // seen, then move on. The manual button below stays as a fallback (e.g. if a
@@ -979,7 +993,21 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
   const pct =
     s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 1000) / 10) : 0;
   const gb = (bytes: number) => (bytes / 1e9).toFixed(2);
-  const canEnter = s.modelState === "ready" || s.modelSkipped;
+  // #30 (Luke 2026-09-11) — don't make the member watch the 5 GB meter. Auto-START the
+  // Gemma download in the background as soon as the model step is reached (no "Download"
+  // click), and let them ENTER the dashboard immediately — chat runs on the gateway until
+  // the local model verifies, and the dashboard shows the download + node-sync progress.
+  // The download runs off the main thread (v0.2.3 fix), so it never blocks the UI.
+  const autoDlRef = useRef(false);
+  useEffect(() => {
+    if (autoDlRef.current) return;
+    autoDlRef.current = true;
+    if (s.modelState === "notPresent" && !s.modelSkipped) store.startModelDownload();
+  }, [store, s.modelState, s.modelSkipped]);
+  // Never gate entry on the download finishing (the old trap: a stalled multi-GB pull
+  // left "Enter your dashboard" greyed out). It is always available; the model keeps
+  // downloading in the background.
+  const canEnter = true;
   const sha = "90ce9812…e0313e9f"; // the pinned SHA-256 (abbreviated for display)
 
   return (

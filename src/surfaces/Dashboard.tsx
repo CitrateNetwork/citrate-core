@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useBlockNumber } from "wagmi";
 import { LoaderMark } from "../components/LoaderMark";
 import { Store } from "../shell/store";
@@ -138,9 +139,26 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
   const showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === "ready";
+  // #30 — the Gemma model downloads in the background after onboarding; surface its
+  // progress here so a member who moved straight to the dashboard can see the pull.
+  const modelDownloading = s.modelState === "downloading" || s.modelState === "verifying";
+  const modelPct = s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 100)) : 0;
   const suggestions = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
 
   const onSend = () => store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");
+
+  // Auto-scroll the agent chat as responses stream (Luke 2026-09-11). The store's
+  // imperative scrollChat() runs in an rAF that fires BEFORE React commits the new
+  // token, so it perpetually lagged one token behind and never reached the true
+  // bottom. This effect runs POST-COMMIT (keyed on chatMsgs, a fresh array each
+  // token), so scrollHeight is current — the reliable follow. Gated on near-bottom
+  // so a user who scrolled up to read history is never yanked back down.
+  useEffect(() => {
+    const el = store.chatScrollEl;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 160) el.scrollTop = el.scrollHeight;
+  }, [s.chatMsgs, store]);
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: "100%", boxSizing: "border-box" }}>
@@ -171,6 +189,12 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
               <span style={{ width: 6, height: 6, borderRadius: 999, background: chatDotColor }}></span>
               {chatBackendLabel}
             </span>
+            {modelDownloading && (
+              <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--accent-text)", display: "inline-flex", alignItems: "center", gap: 5 }} data-testid="dash-model-dl">
+                <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }}></span>
+                {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
+              </span>
+            )}
           </div>
           <div ref={(el) => { store.chatScrollEl = el; }} style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
             {s.chatMsgs.map((m) => (
