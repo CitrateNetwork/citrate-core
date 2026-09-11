@@ -39,3 +39,15 @@ sprint: sprint-hermes-p0-router
 - **WP0.2b (tracked, follow-up):** the on-chain model registry has only a WRITE path
   (storage.rs register_model_calldata); a `models_registry_list` chain-read command is needed
   before the registry source lights up. `registry` stays empty until then.
+
+## WP0.3 — model picker UI ✅ (component; mount+persist in WP0.4)
+- `src/components/ModelPicker.tsx` — presentational + source-of-truth-agnostic picker over the
+  router's ModelChoice[]: source badge (on-device/registry/gateway), ready dot, honest
+  not-ready hint ("download to use" / "pull to use"), active highlighting, null-active ⇒
+  gateway default. `isSelectedChoice` is a pure exported helper.
+- `src/components/modelPicker.test.tsx` — 7 tests green (lists all choices, exactly-one
+  aria-selected, gateway default when active is null, not-ready registry hint, onSelect fires
+  with the id on click). typecheck clean.
+- The picker is deliberately presentational so the Models section + the agent chat can feed it
+  ONE source of truth; it is MOUNTED into the agent chat surface, wired to the live
+  modelsSlice + gateway, and the selection persisted in **WP0.4**.
