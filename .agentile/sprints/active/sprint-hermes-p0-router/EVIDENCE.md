@@ -25,3 +25,17 @@ sprint: sprint-hermes-p0-router
   typecheck clean; frontend suite unaffected.
 
 ## WP0.2–0.4 — pending (wire the three sources, picker UI, agent chat on the router).
+
+## WP0.2 — wire the live sources ✅ (local + gateway; registry split to WP0.2b)
+- `src/agent/modelRouterSources.ts` — `liveEnumerateInput` maps `bridge.modelsCatalog.local()`
+  (ModelDescriptor → ready local choices, labeled by GGUF filename) and the always-serve
+  gateway/demo terminal (gatewayReady=true so INV-Router-2's fallback is never a dead end)
+  onto the pure router; `choicesFromSources` returns the full list. `gatewayConfigured()` is a
+  label hint (WP0.3), never the fallback readiness.
+- `src/agent/modelRouterSources.test.ts` — 6 tests green (label precedence, gateway-configured
+  hint, local→ready mapping + always-ready terminal, empty registry default, registry choices
+  surface not-ready, and INV-Router-2 end-to-end: a not-ready registry pick resolves to the
+  ready gateway terminal). typecheck clean.
+- **WP0.2b (tracked, follow-up):** the on-chain model registry has only a WRITE path
+  (storage.rs register_model_calldata); a `models_registry_list` chain-read command is needed
+  before the registry source lights up. `registry` stays empty until then.
