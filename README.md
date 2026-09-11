@@ -1,5 +1,7 @@
 # citrate-core
 
+*Part of the **[Citrate Network](https://citrate.ai)** — own the means of computation. · [Docs](https://docs.citrate.ai) · [Run a node](https://citrate.ai/download) · [Contribute → free membership](https://github.com/CitrateNetwork/.github/blob/main/CONTRIBUTING.md)*
+
 > The Citrate federation desktop app — a Tauri client that runs a full chain-40204 node as a bundled sidecar, so a member's laptop joins and helps run the network.
 
 ## What it is
