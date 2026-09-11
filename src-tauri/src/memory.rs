@@ -695,7 +695,7 @@ impl MemoryManager {
         &self,
         docs: &[(String, String)],
     ) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
-        use crate::docs_ingest::{ingest_docs, IngestReport, DOCS_TENANT, MAX_CHUNK_CHARS};
+        use crate::docs_ingest::{ingest_docs_incremental, IngestReport, DOCS_TENANT, MAX_CHUNK_CHARS};
         if self.model_dir.is_none() {
             return Ok(IngestReport::skipped("not-semantic"));
         }
@@ -705,17 +705,64 @@ impl MemoryManager {
         if docs.is_empty() {
             return Ok(IngestReport::skipped("empty-corpus"));
         }
-        // Idempotent: a non-empty tenant means we already seeded it on a prior run.
-        match self.recall(DOCS_TENANT, 1) {
-            Ok(r) if r.total_in_tenant > 0 => return Ok(IngestReport::skipped("already-seeded")),
-            Ok(_) => {}
-            Err(e) => return Err(format!("docs-tenant probe failed: {e}")),
-        }
-        ingest_docs(docs, MAX_CHUNK_CHARS, |c| {
+        // Monotone, no-dupes ingest (WP1.1-hardening). Instead of the old blanket
+        // "non-empty tenant → skip everything" gate (which froze the corpus forever,
+        // so a version that ADDED reference packs would never pack them), we track the
+        // sha256 of every authored chunk in a sidecar seen-set next to the store. Only
+        // chunks whose hash is NOT already seen get authored — so a corpus that grows
+        // across versions re-packs only the new chunks (TLA+ `MemoryPack`).
+        let tenant_total = self
+            .recall(DOCS_TENANT, 1)
+            .map(|r| r.total_in_tenant)
+            .map_err(|e| format!("docs-tenant probe failed: {e}"))?;
+        // An EMPTY tenant is authoritative: whatever the sidecar file says, nothing is
+        // actually seeded, so start from an empty set (handles a wiped store whose
+        // sidecar lingered — never trust the file over the live tenant).
+        let mut seen = if tenant_total == 0 {
+            std::collections::BTreeSet::new()
+        } else {
+            self.load_seeded_chunks()
+        };
+        let report = ingest_docs_incremental(docs, MAX_CHUNK_CHARS, &mut seen, |c| {
             self.assert(DOCS_TENANT, &c.content, "reference")
                 .map(|_| ())
                 .map_err(|e| e.to_string())
-        })
+        })?;
+        // Persist the seen-set (best-effort: a write failure is not fatal — the worst
+        // case is a re-probe next run, and the empty-tenant guard prevents dupes).
+        let _ = self.save_seeded_chunks(&seen);
+        if report.chunks == 0 {
+            return Ok(IngestReport::skipped("already-seeded"));
+        }
+        Ok(report)
+    }
+
+    /// Path of the sidecar seen-set (authored chunk hashes), co-located with the
+    /// encrypted store so a factory-reset that wipes `memory/` clears it too.
+    fn seeded_chunks_path(&self) -> PathBuf {
+        self.store_path
+            .parent()
+            .map(|d| d.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("docs-corpus.seeded")
+    }
+
+    /// Load the set of already-authored chunk hashes (newline-delimited hex). A
+    /// missing/unreadable file is an empty set (honest: nothing seeded yet).
+    fn load_seeded_chunks(&self) -> std::collections::BTreeSet<String> {
+        std::fs::read_to_string(self.seeded_chunks_path())
+            .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
+            .unwrap_or_default()
+    }
+
+    /// Persist the seen-set atomically (write to a temp file then rename), sorted for
+    /// a stable on-disk form. Returns an error string on I/O failure (caller ignores).
+    fn save_seeded_chunks(&self, seen: &std::collections::BTreeSet<String>) -> std::result::Result<(), String> {
+        let path = self.seeded_chunks_path();
+        let tmp = path.with_extension("seeded.tmp");
+        let body = seen.iter().cloned().collect::<Vec<_>>().join("\n");
+        std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
     }
 
     /// Seed the constellation's tenants (`chain-state` + `personal`) with REAL starter facts about the

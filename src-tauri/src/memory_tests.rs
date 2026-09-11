@@ -629,3 +629,28 @@ fn seed_context_skips_personal_when_no_grant() {
     assert_eq!(recorded.lock().unwrap().iter().filter(|(t, _)| t == "personal").count(), 0);
     mgr.stop();
 }
+
+// ---------------------------------------------------------------------------
+// WP1.1-hardening — the docs-corpus seen-set sidecar (monotone re-pack)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn seeded_chunks_sidecar_round_trips_next_to_the_store() {
+    // The seen-set persists the sha256 of every authored chunk so a corpus that grows
+    // across app versions re-packs only new chunks. Prove the sidecar lives beside the
+    // store and survives a save→load round-trip (the persistence half of the gate; the
+    // skip-already-seen algorithm itself is covered in docs_ingest unit tests).
+    let (mgr, _fake, dir) = stub_manager("seeded-sidecar");
+    std::fs::create_dir_all(&dir).expect("mkdir store dir");
+    // Sidecar sits next to store.bge.memdag.
+    assert_eq!(mgr.seeded_chunks_path(), dir.join("docs-corpus.seeded"));
+    // A missing file loads as the empty set (nothing seeded yet — honest).
+    assert!(mgr.load_seeded_chunks().is_empty());
+    // Save a set, load it back verbatim.
+    let mut set = std::collections::BTreeSet::new();
+    set.insert("deadbeefcafef00ddeadbeefcafef00d".to_string());
+    set.insert("0123456789abcdef0123456789abcdef".to_string());
+    mgr.save_seeded_chunks(&set).expect("save seen-set");
+    assert_eq!(mgr.load_seeded_chunks(), set);
+    let _ = std::fs::remove_dir_all(&dir);
+}
