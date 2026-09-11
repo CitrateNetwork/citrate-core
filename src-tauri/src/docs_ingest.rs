@@ -144,6 +144,51 @@ where
     })
 }
 
+/// A stable content hash for a chunk (sha256 hex, first 16 bytes) — the idempotence
+/// key. Stable across app versions and rebuilds (sha256, not `DefaultHasher`), so a
+/// chunk already authored on a prior run — or in a prior app version's corpus — is
+/// NEVER re-asserted. This is what makes a corpus that GROWS across versions
+/// (WP1.2's reference packs added to WP1.1's Almanac docs) re-pack only the *new*
+/// chunks: monotone, no duplicates (TLA+ `MemoryPack`).
+pub fn chunk_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(content.as_bytes());
+    hex::encode(&digest[..16])
+}
+
+/// Incremental variant of [`ingest_docs`]: author only the chunks whose content hash
+/// is NOT already in `seen`, inserting each newly-authored hash. Re-running with the
+/// same corpus authors nothing (every hash is already seen); adding docs authors only
+/// the new chunks. `author` aborts the run on error WITHOUT recording that chunk's
+/// hash, so a failed write is retried on the next run (never silently lost).
+pub fn ingest_docs_incremental<F>(
+    docs: &[(String, String)],
+    max_chars: usize,
+    seen: &mut std::collections::BTreeSet<String>,
+    mut author: F,
+) -> Result<IngestReport, String>
+where
+    F: FnMut(&DocChunk) -> Result<(), String>,
+{
+    let mut chunks = 0usize;
+    for (title, md) in docs {
+        for chunk in chunk_markdown(title, md, max_chars) {
+            let h = chunk_hash(&chunk.content);
+            if seen.contains(&h) {
+                continue; // already authored on a prior run — no dupe
+            }
+            author(&chunk)?; // on error: abort, do NOT mark seen (retried next run)
+            seen.insert(h);
+            chunks += 1;
+        }
+    }
+    Ok(IngestReport {
+        docs: docs.len(),
+        chunks,
+        skipped: None,
+    })
+}
+
 fn is_heading(trimmed: &str) -> bool {
     let hashes = trimmed.chars().take_while(|&c| c == '#').count();
     (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ')
@@ -366,11 +411,108 @@ mod tests {
     }
 
     #[test]
+    fn the_reference_packs_ship_and_are_ingestable() {
+        // WP1.2: the corpus must ship the reference knowledge Hermes pre-packs — solc,
+        // EVM, Rust, front-end, business-admin, legal — as memory nodes (procedural
+        // how-tos stay P3 skills). Each reference doc lives under docs-corpus/reference/
+        // and chunks to authorable pieces so first-run ingest packs it.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs-corpus");
+        let docs = read_corpus_dir(&dir).expect("read shipped corpus");
+        let titles: Vec<String> = docs.iter().map(|(t, _)| t.to_lowercase()).collect();
+        for topic in ["solidity", "evm", "rust", "front-end", "business", "legal"] {
+            assert!(
+                titles.iter().any(|t| t.contains(topic)),
+                "reference pack for {topic:?} must ship; titles = {titles:?}"
+            );
+        }
+        // The reference docs alone chunk to real content (not empty stubs).
+        let ref_dir = dir.join("reference");
+        let ref_docs = read_corpus_dir(&ref_dir).expect("read reference packs");
+        assert!(ref_docs.len() >= 6, "six reference packs ship; got {}", ref_docs.len());
+        for (title, md) in &ref_docs {
+            assert!(!chunk_markdown(title, md, MAX_CHUNK_CHARS).is_empty(), "{title:?} chunks");
+        }
+    }
+
+    #[test]
     fn skipped_report_carries_a_reason_and_zero_counts() {
         let r = IngestReport::skipped("not-semantic");
         assert_eq!(r.docs, 0);
         assert_eq!(r.chunks, 0);
         assert_eq!(r.skipped.as_deref(), Some("not-semantic"));
+    }
+
+    #[test]
+    fn chunk_hash_is_stable_and_content_addressed() {
+        // Same content → same hash (stable across runs/versions); different → different.
+        assert_eq!(chunk_hash("A › S1\n\nbody"), chunk_hash("A › S1\n\nbody"));
+        assert_ne!(chunk_hash("A › S1\n\nbody"), chunk_hash("A › S1\n\nother"));
+        // 16 bytes → 32 hex chars.
+        assert_eq!(chunk_hash("x").len(), 32);
+    }
+
+    #[test]
+    fn incremental_skips_already_seen_chunks_on_a_second_run() {
+        let docs = vec![("A".to_string(), "## S1\nbody one\n\n## S2\nbody two".to_string())];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut authored: Vec<String> = Vec::new();
+        // First run: both chunks authored, both hashes recorded.
+        let r1 = ingest_docs_incremental(&docs, MAX_CHUNK_CHARS, &mut seen, |c| {
+            authored.push(c.content.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(r1.chunks, 2);
+        assert_eq!(seen.len(), 2);
+        // Second run over the SAME corpus: nothing authored (monotone, no dupes).
+        let before = authored.len();
+        let r2 = ingest_docs_incremental(&docs, MAX_CHUNK_CHARS, &mut seen, |c| {
+            authored.push(c.content.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(r2.chunks, 0);
+        assert_eq!(authored.len(), before, "no chunk re-authored on the second run");
+    }
+
+    #[test]
+    fn incremental_authors_only_the_new_docs_when_the_corpus_grows() {
+        // WP1.2: a later app version ADDS reference packs to the shipped corpus. Only
+        // the new docs' chunks are authored; the original docs are not re-packed.
+        let v1 = vec![("Almanac".to_string(), "## Intro\nwelcome".to_string())];
+        let mut seen = std::collections::BTreeSet::new();
+        let r1 = ingest_docs_incremental(&v1, MAX_CHUNK_CHARS, &mut seen, |_c| Ok(())).unwrap();
+        assert_eq!(r1.chunks, 1);
+
+        let v2 = vec![
+            ("Almanac".to_string(), "## Intro\nwelcome".to_string()), // unchanged
+            ("Solidity".to_string(), "## solc\nthe compiler".to_string()), // NEW reference pack
+        ];
+        let mut newly: Vec<String> = Vec::new();
+        let r2 = ingest_docs_incremental(&v2, MAX_CHUNK_CHARS, &mut seen, |c| {
+            newly.push(c.breadcrumb.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(r2.chunks, 1, "only the new Solidity chunk is authored");
+        assert_eq!(newly, vec!["Solidity › solc"]);
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn incremental_does_not_mark_a_chunk_seen_when_its_author_fails() {
+        // A failed write must be RETRIED next run — never silently dropped. So the
+        // failing chunk's hash is not recorded, and the run aborts at it.
+        let docs = vec![("A".to_string(), "## S1\nx\n\n## S2\ny".to_string())];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut n = 0;
+        let err = ingest_docs_incremental(&docs, MAX_CHUNK_CHARS, &mut seen, |_c| {
+            n += 1;
+            if n == 2 { Err("daemon write failed".to_string()) } else { Ok(()) }
+        })
+        .unwrap_err();
+        assert_eq!(err, "daemon write failed");
+        assert_eq!(seen.len(), 1, "only the successfully-authored chunk is marked seen");
     }
 
     #[test]

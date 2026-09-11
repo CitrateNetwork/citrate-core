@@ -19,7 +19,7 @@
       "llama/*",
       "models/gemma-4-E4B-it-Q4_0.gguf",
       "models/bge-base-en-v1.5/*",
-      "docs-corpus/*",
+      "docs-corpus/**/*",
       "capsules/hello/*",
       "capsules/echo-chain/*"
     ],

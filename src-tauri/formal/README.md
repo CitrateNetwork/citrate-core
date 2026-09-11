@@ -87,3 +87,35 @@ counterexample trace reaching Failed — the exact bug the example tests missed.
 Note: the `crashes` counter is bounded by `MaxCrashes` (a `CONSTRAINT` in the
 primary cfg) purely to keep the state space finite; it does not weaken the
 invariants (INV-1..4 are inductive on `state`/`failures`).
+
+---
+
+# MemoryPack formal model (Hermes P1 / WP1.1)
+
+TLA+ model of the docs-corpus packer (`docs_ingest::ingest_docs_incremental` +
+`memory::ingest_docs_corpus`). Pins the "monotone, no dupes" property the
+content-hash seen-set provides, so a corpus that GROWS across app versions
+(WP1.2's reference packs added to the Almanac docs) re-packs only the new chunks.
+
+## Files
+- `MemoryPack.tla` — states (`corpus`, `packed`, `seen`, `lastRun`) + actions
+  (`Ingest`, `GrowCorpus`, `WipeStore`).
+- `MemoryPack.cfg` — a 4-hash universe; checks TypeOK + NoDupes + Integrity and
+  the `MonotoneUnderIngest` action property.
+
+## Invariants and the code they mirror
+- **INV-Pack-1 (monotone)** — `MonotoneUnderIngest`: an `Ingest` step only grows
+  `packed`. Mirrors `ingest_docs_incremental` unioning `corpus \ seen`. `WipeStore`
+  is the one intentional exception (a wiped store), modeled explicitly.
+- **INV-Pack-2 (no dupes)** — `packed`/`seen` are sets and `Ingest` only adds
+  `corpus \ seen`, disjoint from `seen`. Mirrors the sha256 seen-set skip.
+- **INV-Pack-3 (integrity)** — `Integrity`: `packed \subseteq corpus`; the packer
+  never invents a node (Rule 1).
+
+## Run result (2026-09-11)
+Run headless with TLC (`tla2tools.jar`, same harness as above):
+- `MemoryPack.cfg` — **No error found** (221 distinct states; TypeOK + NoDupes +
+  Integrity + the MonotoneUnderIngest property hold).
+
+Also present: `ModelRouter.tla`/`.cfg` (Hermes P0 / WP0.1 — the model-router
+selection invariants).
