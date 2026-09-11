@@ -49,6 +49,8 @@ struct Addresses {
     model_cooperative: String,
     #[serde(rename = "ModelRegistry", default)]
     model_registry: String,
+    #[serde(rename = "SkillRegistry", default)]
+    skill_registry: String,
 }
 
 fn book() -> &'static Book {
@@ -72,6 +74,7 @@ fn book() -> &'static Book {
         b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
         b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
         b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
+        b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
         b
     })
 }
@@ -115,6 +118,13 @@ pub fn liquid_staking_pool() -> &'static str {
 #[allow(dead_code)]
 pub fn model_registry() -> &'static str {
     &book().addresses.model_registry
+}
+
+/// `SkillRegistry` — the on-chain skill/capsule registry (Hermes P2): skills are registered +
+/// identified here (`getAllSkillHashes`/`getSkill`), so Hermes ships WITH skills from the chain.
+#[allow(dead_code)]
+pub fn skill_registry() -> &'static str {
+    &book().addresses.skill_registry
 }
 
 /// `IPFSIncentivesV3` — the model-storage bond contract (CX-S2.2 `registerModel`). REROLL-SENSITIVE:

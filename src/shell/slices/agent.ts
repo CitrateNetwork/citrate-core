@@ -12,7 +12,7 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import type { AgentSkill, AgentApproval, AgentHarnessStatus } from "../../bridge/domains";
+import type { AgentSkill, AgentApproval, AgentHarnessStatus, RegistrySkill } from "../../bridge/domains";
 
 export type RuntimeId = "hermes" | "openclaw" | "grok";
 
@@ -43,6 +43,8 @@ export interface AgentState {
   /** The Hermes harness status (running / skills count / pending approvals). */
   status: AgentHarnessStatus;
   skills: AgentSkill[];
+  /** Skills read from the on-chain SkillRegistry (0x896cd293… on 40204) — Hermes ships WITH these. */
+  registrySkills: RegistrySkill[];
   approvals: AgentApproval[];
   /** Session run-log (newest first). */
   runs: AgentRun[];
@@ -70,6 +72,7 @@ const HERMES: AttachedRuntime = { ...RUNTIME_OPTIONS[0], state: "off", error: nu
 const initial: AgentState = {
   status: { running: false, skills: 0, pendingApprovals: 0 },
   skills: [],
+  registrySkills: [],
   approvals: [],
   runs: [],
   attached: [HERMES],
@@ -109,6 +112,21 @@ export async function refreshAgent(): Promise<void> {
     // Honest: a build that hasn't wired the tauri harness seam throws Unavailable.
     agentSlice.set({ loading: false, error: message(e), skills: [], approvals: [] });
     setHermes({ state: "off", error: message(e) });
+  }
+  // The on-chain SkillRegistry is a live chain read, independent of the sidecar's run-state —
+  // Hermes ships WITH these skills whether or not the harness is running. A read failure is
+  // isolated (its own catch) so an RPC hiccup never clobbers the harness state above.
+  await refreshRegistrySkills();
+}
+
+/** Read the on-chain SkillRegistry (chain read; independent of the running sidecar). */
+export async function refreshRegistrySkills(): Promise<void> {
+  try {
+    const registrySkills = await bridge.agentHarness.registrySkills();
+    agentSlice.set({ registrySkills });
+  } catch {
+    // Honest-empty on an RPC/decode failure — never fabricate a skill (Rule 1).
+    agentSlice.set({ registrySkills: [] });
   }
 }
 

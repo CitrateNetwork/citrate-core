@@ -39,6 +39,7 @@ mod membership;
 mod memory;
 mod model;
 mod model_registry;
+mod skill_registry;
 mod node;
 mod provisioning;
 mod sbt_art;
@@ -394,6 +395,7 @@ pub fn run() {
             model_catalog::model_catalog_download,
             model_catalog::model_catalog_select,
             model_registry::models_registry_list,
+            skill_registry::skills_registry_list,
             storage::storage_add,
             storage::storage_pin,
             storage::storage_list,

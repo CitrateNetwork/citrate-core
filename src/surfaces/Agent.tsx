@@ -268,6 +268,41 @@ export function Agent({ store }: SurfaceProps) {
                 )}
               </div>
 
+              {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
+                  These are the skills published on-chain (SkillRegistry 0x896cd293…); Hermes ships
+                  WITH them. Rule 1: read straight from the registry, honest-empty on RPC failure. */}
+              <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Skill registry</span>
+                  <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
+                    {st.registrySkills.length} on-chain
+                  </span>
+                </div>
+                {st.registrySkills.length === 0 ? (
+                  <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
+                    Nothing published on-chain yet, or the registry couldn't be read. Skills registered to 40204 (SkillRegistry) appear here — every node sees the same list.
+                  </p>
+                ) : (
+                  st.registrySkills.map((rs) => (
+                    <div key={rs.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{rs.name}</span>
+                          <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".04em", color: "var(--tx-3)" }}>v{rs.version}</span>
+                          <span className="mono" style={{ fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "1px 7px", borderRadius: 999, border: "1px solid " + (rs.manifestCid ? "var(--ok)" : "var(--line-2)"), color: rs.manifestCid ? "var(--ok)" : "var(--tx-3)" }}>
+                            {rs.manifestCid ? "published" : "no capsule"}
+                          </span>
+                        </span>
+                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 3, lineHeight: 1.5 }}>{rs.description || "—"}</span>
+                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          owner {rs.owner}{rs.manifestCid ? ` · ${rs.manifestCid}` : ""}
+                        </span>
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
               {/* recent runs */}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Recent runs</div>

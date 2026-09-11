@@ -5,7 +5,7 @@ import { bridge } from "../index";
 describe("CX bridge contract — agentHarness (frozen CX-S0.2)", () => {
   it("exposes the agentHarness domain with its frozen methods", () => {
     expect(bridge.agentHarness).toBeDefined();
-    for (const m of ["start", "status", "skills", "runSkill", "pendingApprovals", "stop"] as const) {
+    for (const m of ["start", "status", "skills", "registrySkills", "runSkill", "pendingApprovals", "stop"] as const) {
       expect(typeof bridge.agentHarness[m]).toBe("function");
     }
   });
@@ -14,6 +14,8 @@ describe("CX bridge contract — agentHarness (frozen CX-S0.2)", () => {
       const s = await bridge.agentHarness.status();
       expect(s.running).toBe(false);
       expect(await bridge.agentHarness.skills()).toEqual([]);
+      // The on-chain SkillRegistry read is honest-empty in sim (no chain to read — Rule 1).
+      expect(await bridge.agentHarness.registrySkills()).toEqual([]);
     }
   });
   it("agentHarness is distinct from the legacy node-agent `agent` domain", () => {

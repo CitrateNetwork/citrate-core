@@ -11,6 +11,7 @@
     "IPFSIncentivesV3": "0xc27a867b8d076d77cf17981f235c64a0d0203a68",
     "PatronageLedger": "0x726f2c8a0bfa4145dca7c154577705803c8dafa3",
     "ModelCooperative": "0x54b70368373b0b22ac8ad9882961228d790133bf",
-    "ModelRegistry": "0xba36fa0da9327030bd14351db968c8c43c5a67e4"
+    "ModelRegistry": "0xba36fa0da9327030bd14351db968c8c43c5a67e4",
+    "SkillRegistry": "0x896cd29369cd08e5343cf89fa90db92f7f316313"
   }
 }

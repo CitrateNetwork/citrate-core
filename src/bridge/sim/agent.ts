@@ -13,6 +13,9 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async skills() {
       return [];
     },
+    async registrySkills() {
+      return []; // honest-empty: web/dev has no chain to read the SkillRegistry from
+    },
     async runSkill() {
       return { ok: false };
     },
