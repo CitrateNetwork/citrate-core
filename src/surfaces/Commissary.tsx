@@ -3,7 +3,7 @@
 // Ported 1:1 from design/CitrateCore.dc.html (COMMISSARY section + inline
 // script: cTabs / appCards / sdkCards / docCards / svcCards; tier gating via
 // RANK compare against effTier (FAIL-CLOSED — see rankOf); org-scoped cards
-// HIDE on org mismatch — never shown as locked (Atlas doctrine).
+// HIDE on org mismatch — never shown as locked (Almanac doctrine).
 //
 // Data source — data/seed.ts CATALOG, a LOCAL SEED. It is not yet the signed
 // manifest: the live fetch + JWKS verification is WS-G / CM-3, unbuilt.
@@ -369,7 +369,7 @@ export function Commissary({ store, s }: SurfaceProps) {
                   onClick={() => void store.openExternal(federationUrl("atlas/docs/" + d.id))}
                   style={{ fontSize: 11, color: "var(--accent-text)", cursor: "pointer", whiteSpace: "nowrap", background: "none", border: "none", padding: 0 }}
                 >
-                  open in Atlas ↗
+                  open in Almanac ↗
                 </button>
               )}
             </div>

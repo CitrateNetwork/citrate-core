@@ -171,7 +171,7 @@ describe("createDemoProvider — no fabricated recall/docs claims (Rule 1)", () 
 
   it("a 'how do i' docs prompt does NOT falsely claim it linked guides", async () => {
     const { text, toolNames } = await ask("how do i run a validator? show me the guide");
-    expect(text).not.toMatch(/I linked the closest Atlas guides/i);
+    expect(text).not.toMatch(/I linked the closest Almanac guides/i);
     expect(text.toLowerCase()).toContain("docs linking isn't available in demo mode");
     expect(toolNames).not.toContain("docs_link");
   });

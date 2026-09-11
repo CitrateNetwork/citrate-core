@@ -1,7 +1,7 @@
 // =====================================================================
 // citrate-core — seed data
 // In production these arrive from named sources (Rule 11): the signed
-// Commissary catalog manifest (core-membership), Atlas, the comms
+// Commissary catalog manifest (core-membership), Almanac, the comms
 // notifications API, and the local memory MCP socket. Shapes match the
 // spec so wiring replaces this module, not the UI.
 // =====================================================================
