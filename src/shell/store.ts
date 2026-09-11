@@ -1303,7 +1303,7 @@ export class Store {
   }
 
   /**
-   * Open an external federation link (Atlas docs/tutorials, CitrateScan, a service
+   * Open an external federation link (Almanac docs/tutorials, CitrateScan, a service
    * webapp) in the system browser. `url` must be https. The destination RP runs
    * its own OIDC login today; a real signed-in handoff (shared-authority SSO) is
    * work-order WO-6. Honest toast on failure — never a silent dead click.

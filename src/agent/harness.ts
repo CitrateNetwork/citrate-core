@@ -440,7 +440,7 @@ function routeIntent(t: string): Plan {
       // guides." The demo agent links nothing — say so honestly.
       toolCalls: [],
       compose: () =>
-        "Docs linking isn't available in demo mode — I can't add anything to the tutorials rail from here. The Atlas guides open from the tutorials rail on the Dashboard; the validator operations handbook is a good starting point for sync, heartbeat, and slashing protection.",
+        "Docs linking isn't available in demo mode — I can't add anything to the tutorials rail from here. The Almanac guides open from the tutorials rail on the Dashboard; the validator operations handbook is a good starting point for sync, heartbeat, and slashing protection.",
     };
   }
   if (has("go to", "open ", "take me", "navigate")) {
