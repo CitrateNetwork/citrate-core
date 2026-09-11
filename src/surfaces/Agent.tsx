@@ -42,7 +42,7 @@ const CONTRACT_KINDS: { id: string; name: string; desc: string }[] = [
   { id: "custom", name: "Custom bytecode", desc: "Bring your own compiled contract. The agent simulates it on a fork; the raw deploy is decoded (or flagged raw) at the ceremony." },
 ];
 
-export function Agent({ store }: SurfaceProps) {
+export function Agent({ store, s }: SurfaceProps) {
   const st = agentSlice.use();
   const [tab, setTab] = useState<Tab>("overview");
   const [attachOpen, setAttachOpen] = useState(false);
@@ -52,6 +52,18 @@ export function Agent({ store }: SurfaceProps) {
   const ctName = useRef<HTMLInputElement>(null);
   const ctBytecode = useRef<HTMLTextAreaElement>(null);
   const ctArgs = useRef<HTMLInputElement>(null);
+  // P5 — the member's own prompt-skills (form refs + open/close).
+  const [addSkillOpen, setAddSkillOpen] = useState(false);
+  const uskName = useRef<HTMLInputElement>(null);
+  const uskInstr = useRef<HTMLTextAreaElement>(null);
+  const addUserSkill = () => {
+    const ok = store.addUserSkill(uskName.current?.value ?? "", uskInstr.current?.value ?? "");
+    if (ok) {
+      if (uskName.current) uskName.current.value = "";
+      if (uskInstr.current) uskInstr.current.value = "";
+      setAddSkillOpen(false);
+    }
+  };
 
   useEffect(() => {
     void refreshAgent();
@@ -301,6 +313,49 @@ export function Agent({ store }: SurfaceProps) {
                           owner {rs.owner}{rs.manifestCid ? ` · ${rs.manifestCid}` : ""}
                         </span>
                       </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* your skills (P5) — member-authored prompt-skills, run against the active
+                  model (router → Gemma/gateway/local). Persist locally; any chain action a
+                  run proposes still stops at the ceremony. */}
+              <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Your skills</span>
+                  <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)", marginRight: 10 }}>
+                    {s.userSkills.length} yours
+                  </span>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setAddSkillOpen((v) => !v)}>
+                    {addSkillOpen ? "Close" : "Add skill"}
+                  </button>
+                </div>
+                {addSkillOpen && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
+                    <input ref={uskName} className="input" placeholder="Skill name — e.g. Daily node digest" />
+                    <textarea ref={uskInstr} className="input" placeholder="Instruction — what the skill should do (runs against your active model)" spellCheck style={{ minHeight: 66, resize: "vertical" }} />
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <span className="mono" style={{ flex: 1, fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                        runs against your active model — any chain action it proposes stops at your ceremony
+                      </span>
+                      <button className="btn btn-primary btn-sm" onClick={addUserSkill}>Save skill</button>
+                    </div>
+                  </div>
+                )}
+                {s.userSkills.length === 0 && !addSkillOpen ? (
+                  <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
+                    None yet. Add a prompt-skill — a named instruction you run against your active model. It's saved on this device and lists here.
+                  </p>
+                ) : (
+                  s.userSkills.map((sk) => (
+                    <div key={sk.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{sk.name}</span>
+                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sk.description || sk.instruction}</span>
+                      </span>
+                      <button className="btn btn-primary btn-sm" onClick={() => store.runUserSkill(sk.id)}>Run</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => store.removeUserSkill(sk.id)} title="Remove skill">✕</button>
                     </div>
                   ))
                 )}
