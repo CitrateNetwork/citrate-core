@@ -654,3 +654,50 @@ fn seeded_chunks_sidecar_round_trips_next_to_the_store() {
     assert_eq!(mgr.load_seeded_chunks(), set);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- Adversarial F1: a non-empty docs tenant with NO seen-set must NOT re-author ---
+#[test]
+fn ingest_skips_when_tenant_is_nonempty_but_the_sidecar_seen_set_is_missing() {
+    // Simulate a store whose citrate-docs tenant already has content but whose
+    // docs-corpus.seeded sidecar was never persisted (best-effort write failed / a
+    // pre-sidecar build / a manual delete). Blindly re-authoring would duplicate the
+    // whole corpus every launch — the bug F1 flags. The guard must SKIP instead.
+    let dir = tmp_dir("f1-nonempty-no-sidecar");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // Pre-seed the tenant so recall reports it non-empty, WITHOUT creating the sidecar.
+    let recorded = Arc::new(std::sync::Mutex::new(vec![(
+        "citrate-docs".to_string(),
+        "a chunk authored by a prior build".to_string(),
+    )]));
+    let mgr = MemoryManager::new(
+        Box::new(SharedFake(Arc::new(FakeKeyring::default()))),
+        stub_daemon_bin(),
+        dir.join("store.bge.memdag"),
+        dir.join("memdag.sock"),
+        dir.join("crash.jsonl"),
+        Box::new(SeedStub { asserts: recorded.clone() }),
+    )
+    .with_model_dir(Some(dir.join("bge")));
+    mgr.start().expect("start");
+    for _ in 0..40 {
+        if mgr.is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(mgr.is_running(), "stub daemon must reach Running");
+
+    // The sidecar must genuinely be absent for this scenario.
+    assert!(!dir.join("docs-corpus.seeded").exists());
+    let before = recorded.lock().unwrap().len();
+
+    let report = mgr
+        .ingest_docs_corpus(&[("Doc".to_string(), "## S\nbody one\n\n## T\nbody two".to_string())])
+        .expect("ingest ok");
+
+    assert_eq!(report.skipped.as_deref(), Some("already-seeded"), "must skip, not re-author");
+    assert_eq!(report.chunks, 0, "no chunks authored");
+    assert_eq!(recorded.lock().unwrap().len(), before, "nothing re-authored (no dupes)");
+    mgr.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}

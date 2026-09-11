@@ -108,3 +108,46 @@ fn get_model_handles_empty_and_long_strings() {
 fn get_model_short_return_errors() {
     assert!(decode_get_model(&[0u8; 32 * 3]).is_err()); // fewer than 8 head words
 }
+
+// --- Adversarial F2: hostile eth_call returns must be an honest Err, never a panic ---
+
+/// A word whose value is 0xFFFF…FFFF in the low 8 bytes (max u64) — the offset that
+/// wraps `off + 32` on a 64-bit usize if the add is unchecked.
+fn max_u64_word() -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[24..32].copy_from_slice(&u64::MAX.to_be_bytes());
+    w
+}
+
+#[test]
+fn read_string_at_rejects_a_wrapping_offset_without_panicking() {
+    // 64 bytes of data; an offset of u64::MAX would wrap to a small number if unchecked.
+    let ret = vec![0u8; 64];
+    let off = u64::MAX as usize;
+    assert!(read_string_at(&ret, off).is_err(), "wrapping offset → honest Err, not panic");
+}
+
+#[test]
+fn decode_bytes32_array_rejects_a_wrapping_offset() {
+    // The head offset word is u64::MAX → offset+32 must not wrap past the length guard.
+    let ret = max_u64_word().to_vec(); // 32 bytes, offset = u64::MAX
+    let mut padded = ret;
+    padded.extend_from_slice(&[0u8; 32]); // 64 bytes so the initial length check passes
+    assert!(decode_bytes32_array(&padded).is_err(), "wrapping array offset → Err");
+}
+
+#[test]
+fn decode_bytes32_array_rejects_a_length_that_would_overflow() {
+    // Valid offset (0x20) but a length of u64::MAX → start + len*32 must not wrap.
+    let mut ret = word(0x20).to_vec();
+    ret.extend_from_slice(&max_u64_word()); // length = u64::MAX at the array head
+    assert!(decode_bytes32_array(&ret).is_err(), "overflowing length → Err, not OOM/panic");
+}
+
+#[test]
+fn read_string_at_rejects_a_length_past_the_end() {
+    // Offset 0 points at a length word claiming a huge string the buffer can't hold.
+    let mut ret = word(1_000_000).to_vec(); // len = 1e6 at offset 0
+    ret.extend_from_slice(&[0u8; 32]); // only 64 bytes total
+    assert!(read_string_at(&ret, 0).is_err(), "length past end → Err");
+}
