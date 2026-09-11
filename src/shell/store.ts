@@ -30,6 +30,7 @@ import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
+import { formatJournalForAgent } from "../agent/journalRead";
 import type { GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -1972,6 +1973,11 @@ export class Store {
       } catch (e) {
         result = "memory recall unavailable: " + (e instanceof Error ? e.message : String(e));
       }
+    } else if (call.name === "journal_read") {
+      // WP4.2 — READ the local journal (read-only, immediate). Honest-empty on no
+      // pages / no match; never fabricates entries (Rule 1).
+      const today = new Date().toISOString().slice(0, 10);
+      result = formatJournalForAgent(this.state.jPages || [], args.page, today);
     } else if (call.name === "docs_link") {
       result = "ok";
     }
