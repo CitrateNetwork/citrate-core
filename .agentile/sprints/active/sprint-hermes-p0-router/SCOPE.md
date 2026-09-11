@@ -2,7 +2,7 @@
 created: 2026-09-11
 branch: (unstarted)
 author: (assign at start)
-status: backlog
+status: active
 sprint: sprint-hermes-p0-router
 planset: 2026-09-11-hermes-agent
 tier: T1
