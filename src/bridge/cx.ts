@@ -16,6 +16,7 @@ import { tauriGroups } from "./tauri/comms";
 import { tauriCluster } from "./tauri/cluster";
 import { tauriTraining } from "./tauri/training";
 import { tauriAgentHarness } from "./tauri/agent";
+import { tauriContracts } from "./tauri/contracts";
 import { tauriSocial } from "./tauri/social";
 import { tauriInvites } from "./tauri/invites";
 
@@ -25,6 +26,7 @@ import { simGroups } from "./sim/comms";
 import { simCluster } from "./sim/cluster";
 import { simTraining } from "./sim/training";
 import { simAgentHarness } from "./sim/agent";
+import { simContracts } from "./sim/contracts";
 import { simSocial } from "./sim/social";
 import { simInvites } from "./sim/invites";
 
@@ -37,6 +39,7 @@ export function cxTauri(): CxBridge {
     cluster: tauriCluster,
     training: tauriTraining,
     agentHarness: tauriAgentHarness,
+    contracts: tauriContracts,
     social: tauriSocial,
     invites: tauriInvites,
   };
@@ -51,6 +54,7 @@ export function cxSim(host: SimHost): CxBridge {
     cluster: simCluster(host),
     training: simTraining(host),
     agentHarness: simAgentHarness(host),
+    contracts: simContracts(host),
     social: simSocial(host),
     invites: simInvites(host),
   };

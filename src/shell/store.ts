@@ -49,6 +49,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   "wallet-link": "Wallet link",
   agent: "Agent action",
   social: "Verify identity",
+  deploy: "Deploy contract",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -2518,6 +2519,31 @@ export class Store {
     }
     // Q-E.1 (@rule8, P0) — STOP: surface the decoded deposit for human approval.
     this.openWalletReview("stake", "Add stake", view);
+  }
+
+  /**
+   * Hermes P3 / WP3.2 — deploy a compiled contract. Builds the pending creation-tx
+   * ceremony (bridge.contracts.deploy → contract_deploy), then STOPS at the human gate:
+   * the decoded "Deploy contract" intent shows at the WalletReviewModal and only on
+   * approve does signing.broadcast sign + send the real 40204 creation tx (B1.4). The
+   * bytecode is caller-supplied + compiled — nothing fabricates contract code (Rule 1),
+   * nothing signs from code (Rule 3). `input` mirrors ContractDeployInput.
+   */
+  async deployContract(input: {
+    bytecodeHex: string;
+    constructorArgsHex?: string;
+    valueWei?: string;
+    gas?: number;
+  }): Promise<void> {
+    let view: Awaited<ReturnType<typeof bridge.contracts.deploy>>;
+    try {
+      view = await bridge.contracts.deploy(input);
+    } catch (err) {
+      this.toast("Deploy unavailable — " + String((err as Error).message ?? err));
+      return;
+    }
+    // STOP: a human sees the decoded creation tx (raw init code) and approves it.
+    this.openWalletReview("deploy", "Deploy contract", view);
   }
 
   /**

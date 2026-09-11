@@ -30,5 +30,19 @@ approves + broadcasts via the signing surface. Identical pattern to `storage_pin
   method set, and a tauri-invoke arg-shape test for `models_registry_register`).
 - Full suites: `cargo test --lib` 403 passed / 5 ignored; `npx vitest run` 482 passed.
 
+## WP3.2 — contract-deploy (real creation-tx ceremony)
+- `contract_deploy.rs`: `deploy_initcode(bytecode ++ ctor_args)` → a `to`-less creation
+  tx JSON; `contract_deploy` command returns the decoded `CeremonyView` (Rule 3 — nothing
+  signs; the human approves via `signing.broadcast(view.id)`). Empty bytecode rejected.
+- `txdecode` renders the `to`-less tx as "Deploy contract (N bytes init code)" — recognized
+  action, approvable (not raw-gated), proven by
+  `deploy_tx_json_is_a_to_less_creation_the_decoder_renders_honestly`.
+- Bridge: `contracts` domain (`deploy() → CeremonyView`; sim throws honestly). Store
+  `deployContract()` opens the WalletReviewModal (new `deploy` review kind). Agent Contracts
+  tab: paste compiled bytecode (+ optional ctor args) → real deploy; no fabricated bytecode.
+- Tests: `cargo test --lib contract_deploy` 4 passed; `contracts.contract.test.ts` 4 passed.
+
 ## Follow-ons (see SCOPE)
-- CID acquisition via `ipfs add` on the pull path; fee funding; WP3.2 template bytecode.
+- WP3.1: CID via `ipfs add` on the pull path; fee funding.
+- WP3.2: bundle audited template bytecode (treasury/erc20/pin-vault) as one-click presets;
+  fork-sim gas estimation (a gas param + default today).

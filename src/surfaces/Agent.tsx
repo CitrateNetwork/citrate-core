@@ -50,6 +50,8 @@ export function Agent({ store }: SurfaceProps) {
   const skillArg = useRef<HTMLInputElement>(null);
   const [ctKind, setCtKind] = useState<string>("treasury");
   const ctName = useRef<HTMLInputElement>(null);
+  const ctBytecode = useRef<HTMLTextAreaElement>(null);
+  const ctArgs = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void refreshAgent();
@@ -94,23 +96,24 @@ export function Agent({ store }: SurfaceProps) {
       store.toast("Name the contract first.");
       return;
     }
+    // We deploy the COMPILED bytecode you provide — the app never ships or fabricates
+    // contract code (Rule 1). Paste the deploy bytecode from `forge`/`solc` (and the
+    // ABI-encoded constructor args, if any). The unsigned creation tx stops at the ceremony.
+    const bytecode = (ctBytecode.current?.value ?? "").trim();
+    if (!bytecode || bytecode.replace(/^0x/, "").length === 0) {
+      store.toast("Paste the compiled deploy bytecode (0x…) before deploying.");
+      return;
+    }
+    const argsHex = (ctArgs.current?.value ?? "").trim();
     const kind = CONTRACT_KINDS.find((k) => k.id === ctKind)!;
-    if (ctName.current) ctName.current.value = "";
     noteRun(`deploy ${kind.name}`, name, "awaiting");
-    void store.requestSig({
-      origin: "agent:hermes",
-      requester: `agent:${sel.id} · contract.deploy`,
-      title: `Deploy “${name}” to 40204`,
-      rows: [
-        { k: "Template", v: kind.name },
-        { k: "Name", v: name },
-        { k: "Prepared by", v: `agent:${sel.id} (simulated on a fork)` },
-      ],
-      cost: "network gas · deployments are never sponsored",
-      sponsor: "you approve · one deploy",
-      sponsorColor: "var(--ok)",
-      apply: () => store.toast("Deploy handed to the network — it appears under Your contracts once confirmed."),
-    });
+    void store
+      .deployContract({ bytecodeHex: bytecode, constructorArgsHex: argsHex || undefined })
+      .then(() => {
+        if (ctName.current) ctName.current.value = "";
+        if (ctBytecode.current) ctBytecode.current.value = "";
+        if (ctArgs.current) ctArgs.current.value = "";
+      });
   };
 
   const pillTone = running
@@ -341,13 +344,21 @@ export function Agent({ store }: SurfaceProps) {
                   ))}
                 </div>
                 <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>{CONTRACT_KINDS.find((k) => k.id === ctKind)!.desc}</span>
+                <input ref={ctName} className="input" placeholder="Contract name — e.g. GuildTreasury" />
+                <textarea
+                  ref={ctBytecode}
+                  className="input"
+                  placeholder="Compiled deploy bytecode (0x…) — from forge/solc, or your agent after it compiles"
+                  spellCheck={false}
+                  style={{ minHeight: 66, fontFamily: "var(--font-mono)", fontSize: 11, resize: "vertical" }}
+                />
+                <input ref={ctArgs} className="input" placeholder="ABI-encoded constructor args (0x…) — optional" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }} />
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input ref={ctName} className="input" placeholder="Contract name — e.g. GuildTreasury" style={{ flex: 1 }} />
-                  <button className="btn btn-primary btn-sm" onClick={deploy} disabled={!running} title={running ? undefined : "start an agent to prepare a deploy"}>Prepare &amp; deploy</button>
+                  <span className="mono" style={{ flex: 1, fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                    the unsigned creation tx stops at your ceremony — you review the init code and approve
+                  </span>
+                  <button className="btn btn-primary btn-sm" onClick={deploy}>Deploy</button>
                 </div>
-                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
-                  {running ? "your agent prepares the bytecode and simulates it — the unsigned deploy stops at your ceremony" : "start an agent above to prepare and simulate a deploy"}
-                </span>
               </div>
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
@@ -355,7 +366,7 @@ export function Agent({ store }: SurfaceProps) {
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>owned by your wallet</span>
                 </div>
                 <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-                  Nothing deployed yet. Pick a template above — your agent prepares the bytecode and the unsigned transaction stops at your ceremony. Confirmed deployments appear here.
+                  Nothing deployed yet. Paste compiled deploy bytecode above — the unsigned creation transaction stops at your ceremony, and confirmed deployments appear here.
                 </p>
               </div>
             </>
