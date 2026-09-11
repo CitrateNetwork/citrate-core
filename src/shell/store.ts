@@ -60,11 +60,22 @@ type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
  * - PRESENT but UNPARSEABLE → treated as EXPIRED (fail-closed): a malformed
  *   expiry on a T1 gating surface is an anomaly, not a licence to keep the tier.
  * - PRESENT + in the past → expired.
- * Accepts an ISO date/datetime or a unix-seconds string.
+ * Accepts an ISO date/datetime OR a unix-epoch numeric string. The authority nests
+ * the entitlement expiry as epoch-MILLISECONDS (citrate-identity: `new Date(row).
+ * getTime()`), and the Rust seam forwards it verbatim as a digit string — so a bare
+ * `Number(x) * 1000` (assuming seconds) mis-scaled a real ms expiry to ~year 58000
+ * and NEVER expired. Disambiguate by magnitude: a value already in ms range
+ * (>= 1e12, i.e. any time after 2001) is used as-is; a smaller value is seconds.
  */
 export function isExpiredClaim(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false;
-  const ms = /^\d+$/.test(expiresAt) ? Number(expiresAt) * 1000 : Date.parse(expiresAt);
+  let ms: number;
+  if (/^\d+$/.test(expiresAt)) {
+    const n = Number(expiresAt);
+    ms = n >= 1e12 ? n : n * 1000; // ms already vs unix-seconds
+  } else {
+    ms = Date.parse(expiresAt); // ISO date/datetime
+  }
   if (!Number.isFinite(ms)) return true; // fail-closed on an unparseable value
   return ms < Date.now();
 }
@@ -190,6 +201,38 @@ export function reconciledGrantPatch(g: GrantStatus): Partial<AppState> | null {
     hasGrant: true,
     hasSbt: g.hasSbt,
   };
+}
+
+/**
+ * Membership-renew SAFEGUARD (Luke, 2026-09-11). A paid member reopened the app and
+ * was wrongly shown "renew": the `/userinfo` entitlement re-check on reopen came back
+ * THIN for their session (signed in, but no tier claim), so `applyAuthStatus` folded
+ * `tier:free + entitlement:lapsed` — even though their on-chain membership SBT and
+ * staked grant were fully present. The on-chain SBT is the AUTHORITATIVE membership
+ * proof (the `/userinfo` entitlement is a *derived mirror* of it, per
+ * citrate-identity/src/entitlements.ts), so a real member must never be pushed to
+ * renew because of a transient claim.
+ *
+ * Returns a patch restoring an ACTIVE paid membership from the on-chain grant, or
+ * `null`. Regression guards (all must hold):
+ *  - the current entitlement is `lapsed` — nothing to correct otherwise;
+ *  - the lapse is NOT from an explicit PAST expiry (`isExpiredClaim(authExpiresAt)`):
+ *    a genuinely elapsed year is a REAL lapse and MUST still show renew — this only
+ *    rescues the missing/thin-claim case;
+ *  - the grant is genuinely on chain AND the SBT is minted (`isGrantOnChain && hasSbt`)
+ *    — a live 40204 read, never a client assertion, so a never-paid free account
+ *    (no SBT) is never elevated.
+ * The restored tier is the paid-member baseline `commercial` (rank > free); a
+ * commercial.kyc upgrade still arrives from the next live claim.
+ */
+export function entitlementSafeguardFromChain(
+  st: { tier: string; entitlement: string; authExpiresAt: string | null },
+  g: GrantStatus,
+): Partial<AppState> | null {
+  if (st.entitlement !== "lapsed") return null;
+  if (isExpiredClaim(st.authExpiresAt)) return null; // a real expiry — honor the lapse
+  if (!isGrantOnChain(g) || !g.hasSbt) return null; // no on-chain membership proof
+  return { tier: "commercial", entitlement: "active" };
 }
 
 
@@ -847,13 +890,22 @@ export class Store {
     if (BRIDGE_MODE !== "tauri") return; // web-dev sim has no chain to reconcile against
     const member = this.identity().wallet;
     if (!member) return; // not signed in / no claim yet
-    if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
     let grant: Awaited<ReturnType<typeof bridge.membership.grantStatus>>;
     try {
       grant = await bridge.membership.grantStatus(member);
     } catch {
       return; // transient RPC error — keep the last honest state, never fabricate
     }
+    // Membership-renew safeguard FIRST — a real on-chain SBT must not be overridden by
+    // a thin /userinfo claim into a false "renew". This runs even when onboarding is
+    // already settled, because the wrongful lapse happens post-onboarding, on reopen.
+    const guard = entitlementSafeguardFromChain(this.state, grant);
+    if (guard) {
+      this.setState(guard);
+      this.save();
+    }
+    // Onboarding-step reconcile: only needed while the flow is not already settled.
+    if (this.state.hasGrant && this.state.s3 === "settled" && this.state.s5 === "settled") return;
     const patch = reconciledGrantPatch(grant);
     if (!patch) return; // no real grant: leave the flow exactly as it was
     this.setState(patch);
