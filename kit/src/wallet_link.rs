@@ -285,48 +285,63 @@ pub fn wallet_link_approve(
         .0
         .approve(&custody.0, &ceremony.0, &id, raw_ack)
         .map_err(|e| e.to_string())?;
-    auth.0
-        .wallet_link_submit(&proof.address, &proof.signature, &proof.nonce)
-        .map_err(|e| LinkError::Authority(e.to_string()).to_string())?;
 
-    // Make THIS device's wallet the canonical one — the address the authority
-    // serves as `wallet_address`, and therefore the address the treasury pays.
-    //
-    // The authority defaults canonical to FIRST-linked so a stray second link can
-    // never silently move a member's pay-to address. That protects against an
-    // AUTOMATIC link; this one is neither automatic nor stray — the human just
-    // approved a ceremony binding this specific wallet, and the desktop's own
-    // invariant (`walletIsLinked`: claim == this device's custody address) says
-    // this is the address that must be served. Without the promotion, a member
-    // whose custody vault was replaced links successfully and stays blocked
-    // forever, with no error anywhere (observed live 2026-08-04).
-    //
-    // Idempotent: on a first link the address is already canonical and the call
-    // is a no-op at the authority.
-    //
-    // NOT fatal. The link is already durable and proven; failing the whole
-    // command here would tell the member their wallet was not linked when it
-    // was — the same reasoning the authority uses for its own canonical hook.
-    // The outcome is REPORTED instead, so the UI can tell the truth rather than
-    // claim a success the claim does not reflect.
-    let canonical = match auth.0.wallet_set_canonical(&proof.address) {
+    // Submit the proof, then promote this wallet to canonical. Both authority
+    // outcomes are interpreted by `finish_link` (pure, unit-tested) — see its doc
+    // for the 409 re-link disambiguation (issue #11).
+    let submit = auth
+        .0
+        .wallet_link_submit(&proof.address, &proof.signature, &proof.nonce);
+    let addr = proof.address.clone();
+    finish_link(proof.address, submit, || auth.0.wallet_set_canonical(&addr))
+}
+
+/// Interpret the authority's link-submit + set-canonical outcomes into a
+/// [`WalletLinkResult`] (or an honest error). Pure over the two authority calls so it
+/// is unit-tested without a live authority.
+///
+/// - **submit Ok** — a fresh link. Canonical promotion is NOT fatal: the link is
+///   already durable and proven, so a failed promotion is logged and REPORTED via
+///   `canonical=false` rather than telling the member their wallet was not linked
+///   (the same reasoning the authority uses for its own canonical hook). The
+///   promotion exists because canonical defaults to FIRST-linked at the authority, so
+///   a device whose custody vault was rebuilt would link successfully yet stay blocked
+///   forever without it (observed live 2026-08-04).
+/// - **submit 409** — the wallet is ALREADY linked. On a RE-LINK (re-running
+///   onboarding; a vault rebuilt to the same key) that is the desired end state, not a
+///   failure. We do NOT trust it blindly: `set_canonical` is honored by the authority
+///   ONLY for an address already proven to THIS sub, so it disambiguates —
+///   canonical Ok ⇒ this sub's wallet ⇒ idempotent success; canonical refused ⇒ the
+///   wallet belongs to a DIFFERENT identity ⇒ an honest conflict error.
+/// - **any other non-2xx** — a hard failure.
+fn finish_link<F>(
+    address: String,
+    submit: std::result::Result<(), crate::oidc::AuthError>,
+    set_canonical: F,
+) -> std::result::Result<WalletLinkResult, String>
+where
+    F: FnOnce() -> std::result::Result<(), crate::oidc::AuthError>,
+{
+    let already_linked = match submit {
+        Ok(()) => false,
+        Err(crate::oidc::AuthError::Rejected(409)) => true,
+        Err(e) => return Err(LinkError::Authority(e.to_string()).to_string()),
+    };
+    let canonical = match set_canonical() {
         Ok(()) => true,
         Err(e) => {
-            // Logged, never returned across the bridge: the authority's error
-            // text is diagnostic, not something the UI should render.
-            eprintln!(
-                "[wallet-link] linked {} but could not make it canonical: {e}",
-                proof.address
-            );
+            if already_linked {
+                return Err(
+                    "this wallet is already linked to a different Citrate identity".to_string(),
+                );
+            }
+            // Logged, never returned across the bridge (the authority's error text is
+            // diagnostic, not UI copy); the truth is REPORTED via `canonical`.
+            eprintln!("[wallet-link] linked {address} but could not make it canonical: {e}");
             false
         }
     };
-
-    Ok(WalletLinkResult {
-        address: proof.address,
-        linked: true,
-        canonical,
-    })
+    Ok(WalletLinkResult { address, linked: true, canonical })
 }
 
 /// **Command — wallet_link_reject.** Drop a pending link the human declined.

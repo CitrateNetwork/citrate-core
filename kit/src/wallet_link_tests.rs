@@ -296,3 +296,52 @@ fn recover_personal_sign(message: &str, signature_0x: &str) -> String {
     let hash = Keccak256::digest(&uncompressed.as_bytes()[1..]);
     format!("0x{}", hex::encode(&hash[12..]))
 }
+
+// --- issue #11: 409 re-link disambiguation (finish_link, pure) ---------------
+use crate::oidc::AuthError;
+
+#[test]
+fn fresh_link_then_canonical_ok_is_linked_and_canonical() {
+    let r = finish_link("0xabc".into(), Ok(()), || Ok(())).expect("ok");
+    assert!(r.linked && r.canonical);
+    assert_eq!(r.address, "0xabc");
+}
+
+#[test]
+fn fresh_link_canonical_failure_is_non_fatal_and_reported() {
+    // A fresh link whose canonical promotion fails still linked — reported, not fatal.
+    let r = finish_link("0xabc".into(), Ok(()), || Err(AuthError::Rejected(500))).expect("ok");
+    assert!(r.linked);
+    assert!(!r.canonical, "canonical promotion failure is reported, not thrown");
+}
+
+#[test]
+fn relink_409_then_canonical_ok_is_idempotent_success() {
+    // The wallet was already linked to THIS sub — set_canonical succeeds → success.
+    let r = finish_link("0xabc".into(), Err(AuthError::Rejected(409)), || Ok(())).expect("ok");
+    assert!(r.linked && r.canonical, "re-linking my own wallet succeeds idempotently");
+}
+
+#[test]
+fn relink_409_but_canonical_refused_is_an_honest_conflict() {
+    // 409 + the authority refuses canonical → the wallet belongs to ANOTHER identity.
+    let err = finish_link("0xabc".into(), Err(AuthError::Rejected(409)), || {
+        Err(AuthError::Rejected(403))
+    })
+    .unwrap_err();
+    assert!(err.contains("different Citrate identity"), "honest conflict, got: {err}");
+}
+
+#[test]
+fn other_submit_error_stays_a_hard_failure() {
+    // A non-409 non-2xx (e.g. 500) must NOT be swallowed as idempotent — canonical is
+    // never even attempted.
+    let mut canonical_called = false;
+    let err = finish_link("0xabc".into(), Err(AuthError::Rejected(500)), || {
+        canonical_called = true;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(!canonical_called, "canonical not attempted on a hard submit failure");
+    assert!(err.contains("authority"), "surfaces the authority failure, got: {err}");
+}
