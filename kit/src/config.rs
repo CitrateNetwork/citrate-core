@@ -244,8 +244,9 @@ mod tests {
         assert_eq!(d.channel, "stable");
         assert!(!d.telemetry);
         assert_eq!(d.sig_policy, "hitl");
-        // CORE-D3.C — the core-membership base URL default (prod).
-        assert_eq!(d.core_membership_url, "https://core-membership.vercel.app");
+        // CORE-D3.C — the core-membership base URL default (prod). PHONEPAY moved this to the
+        // canonical host membership.citrate.ai (not the raw vercel domain).
+        assert_eq!(d.core_membership_url, "https://membership.citrate.ai");
     }
 
     /// CORE-D3.C — the checkout URL is `{coreMembershipUrl}/checkout`, and an
@@ -255,7 +256,7 @@ mod tests {
     fn checkout_url_derives_from_base_and_is_overridable() {
         assert_eq!(
             AppConfig::default().checkout_url(),
-            "https://core-membership.vercel.app/checkout"
+            "https://membership.citrate.ai/checkout"
         );
         let preview = AppConfig::default().apply(AppConfigPatch {
             core_membership_url: Some("https://core-membership-preview.vercel.app/".into()),
@@ -284,10 +285,7 @@ mod tests {
             "sigPolicy": "hitl"
         });
         let cfg: AppConfig = serde_json::from_value(legacy).unwrap();
-        assert_eq!(
-            cfg.core_membership_url,
-            "https://core-membership.vercel.app"
-        );
+        assert_eq!(cfg.core_membership_url, "https://membership.citrate.ai");
     }
 
     /// A sparse patch merges over defaults — the round-trip merge logic the

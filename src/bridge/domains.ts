@@ -796,11 +796,31 @@ export interface AgentHarnessStatus {
   skills: number;
   pendingApprovals: number;
 }
+/** A skill registered on-chain in the SkillRegistry (Hermes P2). Mirrors the Rust RegistrySkill. */
+export interface RegistrySkill {
+  /** The `0x`-hex skillHash — the stable id. */
+  id: string;
+  /** Human name (e.g. "hf-model-register"). */
+  name: string;
+  /** Semver. */
+  version: string;
+  /** IPFS CID of the WASM capsule manifest (empty for a not-yet-published skill). */
+  manifestCid: string;
+  /** Short description. */
+  description: string;
+  /** `0x`-hex owner address. */
+  owner: string;
+}
+
 export interface AgentHarnessDomain {
   /** Sidecar a Hermes agent (keyless; every chain effect stays ceremony-gated). */
   start(): Promise<void>;
   status(): Promise<AgentHarnessStatus>;
   skills(): Promise<AgentSkill[]>;
+  /** Hermes P2 — the skills registered on-chain in the SkillRegistry (40204). A PURE read
+   *  (getAllSkillHashes + getSkill); this is what Hermes "ships with" instead of an empty set.
+   *  Honest empty list on an unwired/failed read (never fabricated). */
+  registrySkills(): Promise<RegistrySkill[]>;
   /** Run a skill/code task behind the mandatory HITL approval flow. */
   runSkill(name: string, argsJson: string): Promise<{ ok: boolean }>;
   pendingApprovals(): Promise<AgentApproval[]>;

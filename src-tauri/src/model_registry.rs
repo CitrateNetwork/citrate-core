@@ -20,7 +20,7 @@ use sha3::{Digest as _, Keccak256};
 use crate::rpc::{RpcClient, RpcTransport};
 
 /// 4-byte selector = keccak256(signature)[..4].
-fn selector(sig: &str) -> [u8; 4] {
+pub(crate) fn selector(sig: &str) -> [u8; 4] {
     let mut h = Keccak256::new();
     h.update(sig.as_bytes());
     let out = h.finalize();
@@ -55,7 +55,7 @@ fn call_obj(sel: [u8; 4], tail: &[u8]) -> serde_json::Value {
 
 /// A 32-byte big-endian word → usize (bounds-checked: the high 24 bytes must be zero, so an
 /// absurd offset/length from a malformed return errors instead of truncating).
-fn be_usize(word: &[u8]) -> Result<usize, String> {
+pub(crate) fn be_usize(word: &[u8]) -> Result<usize, String> {
     if word.len() != 32 {
         return Err("abi word: not 32 bytes".into());
     }
@@ -93,7 +93,7 @@ pub fn decode_bytes32_array(ret: &[u8]) -> Result<Vec<[u8; 32]>, String> {
 }
 
 /// Read a dynamic `string` at head-relative offset `off`.
-fn read_string_at(ret: &[u8], off: usize) -> Result<String, String> {
+pub(crate) fn read_string_at(ret: &[u8], off: usize) -> Result<String, String> {
     if off + 32 > ret.len() {
         return Err("abi string: offset past end".into());
     }
