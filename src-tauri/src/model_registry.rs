@@ -74,17 +74,24 @@ pub fn decode_bytes32_array(ret: &[u8]) -> Result<Vec<[u8; 32]>, String> {
         return Err("bytes32[]: short return".into());
     }
     let offset = be_usize(&ret[0..32])?;
-    if offset + 32 > ret.len() {
+    // Checked throughout: a hostile/MITM'd return can carry an offset/len up to u64::MAX,
+    // and `offset + 32` would WRAP on 64-bit (usize==u64), slipping past a `> len` guard
+    // into a slice panic. Every add/mul is checked → an honest Err, never a panic. (F2.)
+    let start = offset.checked_add(32).ok_or("bytes32[]: offset overflow")?;
+    if start > ret.len() {
         return Err("bytes32[]: offset past end".into());
     }
-    let len = be_usize(&ret[offset..offset + 32])?;
-    let start = offset + 32;
-    if start + len.saturating_mul(32) > ret.len() {
+    let len = be_usize(&ret[offset..start])?;
+    let need = len
+        .checked_mul(32)
+        .and_then(|n| start.checked_add(n))
+        .ok_or("bytes32[]: length overflow")?;
+    if need > ret.len() {
         return Err("bytes32[]: length exceeds data".into());
     }
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
-        let s = start + i * 32;
+        let s = start + i * 32; // < need <= ret.len(), safe
         let mut h = [0u8; 32];
         h.copy_from_slice(&ret[s..s + 32]);
         out.push(h);
@@ -94,15 +101,18 @@ pub fn decode_bytes32_array(ret: &[u8]) -> Result<Vec<[u8; 32]>, String> {
 
 /// Read a dynamic `string` at head-relative offset `off`.
 pub(crate) fn read_string_at(ret: &[u8], off: usize) -> Result<String, String> {
-    if off + 32 > ret.len() {
+    // Checked adds: a hostile offset near u64::MAX must not wrap `off + 32` past the
+    // `> len` guard into a slice panic — return an honest Err instead. (Adversarial F2.)
+    let s = off.checked_add(32).ok_or("abi string: offset overflow")?;
+    if s > ret.len() {
         return Err("abi string: offset past end".into());
     }
-    let len = be_usize(&ret[off..off + 32])?;
-    let s = off + 32;
-    if s + len > ret.len() {
+    let len = be_usize(&ret[off..s])?;
+    let end = s.checked_add(len).ok_or("abi string: length overflow")?;
+    if end > ret.len() {
         return Err("abi string: length exceeds data".into());
     }
-    String::from_utf8(ret[s..s + len].to_vec()).map_err(|_| "abi string: invalid utf-8".into())
+    String::from_utf8(ret[s..end].to_vec()).map_err(|_| "abi string: invalid utf-8".into())
 }
 
 /// Decode `getModel`'s return head → (owner, name, ipfsCID). Head = 8 words:

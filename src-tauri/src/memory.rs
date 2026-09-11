@@ -718,10 +718,20 @@ impl MemoryManager {
         // An EMPTY tenant is authoritative: whatever the sidecar file says, nothing is
         // actually seeded, so start from an empty set (handles a wiped store whose
         // sidecar lingered — never trust the file over the live tenant).
+        let sidecar = self.load_seeded_chunks();
         let mut seen = if tenant_total == 0 {
             std::collections::BTreeSet::new()
+        } else if sidecar.is_empty() {
+            // Non-empty tenant but NO seen-set — the store was seeded by a build that
+            // didn't persist one, or a prior `save_seeded_chunks` failed (best-effort),
+            // or the sidecar was deleted. We cannot tell which chunks are already there,
+            // and blindly re-authoring would DUPLICATE the whole corpus on every launch
+            // (breaking MemoryPack's monotone/no-dupes). Treat the tenant as already
+            // seeded: recall still works on what's present, and a later corpus growth is
+            // picked up once a seen-set persists. Honest skip, no dupes. (Adversarial F1.)
+            return Ok(IngestReport::skipped("already-seeded"));
         } else {
-            self.load_seeded_chunks()
+            sidecar
         };
         let report = ingest_docs_incremental(docs, MAX_CHUNK_CHARS, &mut seen, |c| {
             self.assert(DOCS_TENANT, &c.content, "reference")

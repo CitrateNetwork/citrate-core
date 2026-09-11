@@ -96,9 +96,14 @@ export function createDictation(cb: DictationCallbacks): Dictation {
     cb.onInterim?.(interim);
   };
   r.onerror = (e) => {
+    // A permission denial is terminal. Any OTHER error (network, service failure) must
+    // NOT silently auto-restart — that spins a tight error→onend→start loop. Stop the
+    // session and report honestly; the member can re-toggle the mic. (Adversarial F3.)
+    on = false;
     if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      on = false;
       cb.onError?.("Microphone permission denied — typing still works");
+    } else if (e.error && e.error !== "no-speech" && e.error !== "aborted") {
+      cb.onError?.(`Dictation stopped (${e.error}) — typing still works`);
     }
   };
   r.onend = () => {
