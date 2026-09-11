@@ -34,6 +34,7 @@ mod connections;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
+mod ipc_name;
 mod ipfs;
 mod membership;
 mod memory;

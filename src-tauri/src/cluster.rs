@@ -34,8 +34,14 @@
 //! multi-group cross-machine fan-out from this single daemon is a documented follow-on.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+
+// Issue #46 — cross-platform local IPC. `Stream` supplies `set_recv_timeout`/
+// `set_send_timeout` (-> `UnixStream::set_read_timeout`/`set_write_timeout` on unix)
+// and `TryClone` supplies `try_clone` (-> `UnixStream::try_clone` on unix), so the
+// UDS framing below stays byte-identical to the pre-port path.
+use interprocess::local_socket::traits::Stream as _;
+use interprocess::TryClone as _;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -219,7 +225,9 @@ impl ClusterDaemonManager {
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
             grace: CLUSTER_START_GRACE,
-            probe: std::sync::Arc::new(move || UnixStream::connect(&sock).is_ok()),
+            probe: std::sync::Arc::new(move || {
+                crate::ipc_name::connect(&sock.to_string_lossy()).is_ok()
+            }),
         });
         spec
     }
@@ -382,17 +390,17 @@ const CLUSTER_IPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 /// Connect to the daemon's UDS, authenticate with the bearer, send one request, read one response.
 fn cluster_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
-    let stream = UnixStream::connect(socket_path)
+    let stream = crate::ipc_name::connect(&socket_path.to_string_lossy())
         .map_err(|e| ClusterError::Ipc(format!("connect {}: {e}", socket_path.display())))?;
     stream
-        .set_read_timeout(Some(CLUSTER_IPC_TIMEOUT))
+        .set_recv_timeout(Some(CLUSTER_IPC_TIMEOUT))
         .map_err(|e| ClusterError::Ipc(e.to_string()))?;
     stream
-        .set_write_timeout(Some(CLUSTER_IPC_TIMEOUT))
+        .set_send_timeout(Some(CLUSTER_IPC_TIMEOUT))
         .map_err(|e| ClusterError::Ipc(e.to_string()))?;
     let mut w = stream.try_clone().map_err(|e| ClusterError::Ipc(e.to_string()))?;
-    let _ = w.set_write_timeout(Some(CLUSTER_IPC_TIMEOUT));
-    let _ = w.set_read_timeout(Some(CLUSTER_IPC_TIMEOUT));
+    let _ = w.set_send_timeout(Some(CLUSTER_IPC_TIMEOUT));
+    let _ = w.set_recv_timeout(Some(CLUSTER_IPC_TIMEOUT));
     let mut r = BufReader::new(stream);
 
     // Auth handshake: {"token":"..."} → {"type":"ready"}.

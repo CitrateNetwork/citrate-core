@@ -110,6 +110,12 @@ hex = "0.4"
 # 0 / >= n). ALREADY in the tree transitively (citrate-wallet-core → bip32 → k256, and the kit),
 # so naming it direct adds NO new compiled crate. Was a dev-dep (ecrecover test); promoted here.
 k256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+# Issue #46 — cross-platform local IPC. The sidecar clients (memory/cluster/comms) used
+# `std::os::unix::net::UnixStream`, which does not exist on Windows. `interprocess` gives one
+# local-socket `Stream` that wraps a `UnixStream` on Unix (byte-identical: GenericFilePath name =
+# the same AF_UNIX path) and a named pipe on Windows. Sync API only (default features); the naming
+# rule both ends share lives in `src/ipc_name.rs`. RUSTSEC clean at 2.4.x.
+interprocess = "2"
 
 # CORE-C1.0 — SidecarSupervisor process-signalling. `libc` is used ONLY for the
 # Unix `kill(pid, SIGTERM|SIGKILL|0)` on the graceful-stop / liveness path

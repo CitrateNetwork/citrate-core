@@ -9,15 +9,40 @@
 use super::*;
 use std::path::PathBuf;
 
-/// Resolve a coreutil that exists on macOS + Linux (long-lived child for spawn).
+/// A long-lived stub child binary that exists on the host (issue #47). Unix:
+/// `/bin/sleep` (a coreutil on macOS + Linux). Windows: `ping.exe` (always present
+/// in System32; kept alive by [`long_lived_args`]). The Windows path is verified by
+/// the team; only the Unix path is built/run here.
 fn sleep_bin() -> PathBuf {
-    for c in ["/bin/sleep", "/usr/bin/sleep"] {
-        let p = PathBuf::from(c);
-        if p.exists() {
-            return p;
+    #[cfg(unix)]
+    {
+        for c in ["/bin/sleep", "/usr/bin/sleep"] {
+            let p = PathBuf::from(c);
+            if p.exists() {
+                return p;
+            }
         }
+        panic!("no sleep binary");
     }
-    panic!("no sleep binary");
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        PathBuf::from(root).join("System32").join("ping.exe")
+    }
+}
+
+/// The argv that keeps [`sleep_bin`] alive for a lifecycle test. Unix: `sleep 3600`.
+/// Windows: `ping 127.0.0.1 -n 999` (~999s of pings). Paired with [`sleep_bin`] so
+/// the binary and its keep-alive args always match on each platform.
+fn long_lived_args() -> Vec<String> {
+    #[cfg(unix)]
+    {
+        vec!["3600".to_string()]
+    }
+    #[cfg(windows)]
+    {
+        vec!["127.0.0.1".to_string(), "-n".to_string(), "999".to_string()]
+    }
 }
 
 /// A fresh unique temp dir.
@@ -102,7 +127,7 @@ fn start_reaches_running_then_stop_is_clean() {
     // The health-driven restart itself keeps its own dedicated coverage elsewhere.
     let (mgr, _dir) = stub_manager("wiring");
     let mgr = mgr
-        .with_spawn_args(vec!["3600".to_string()])
+        .with_spawn_args(long_lived_args())
         .with_health_interval(std::time::Duration::from_secs(3600));
     mgr.start_if_ready(true).expect("stub llama-server starts");
     // Poll status until Running.
@@ -295,7 +320,7 @@ fn select_model_rejects_a_not_ready_target_without_swapping() {
 fn select_model_repoints_the_m_flag_and_respawns() {
     let (mgr, dir) = stub_manager("select-swap");
     let mgr = mgr
-        .with_spawn_args(vec!["3600".to_string()])
+        .with_spawn_args(long_lived_args())
         .with_health_interval(std::time::Duration::from_secs(3600));
     // A second, present model to switch onto.
     let new_model = dir.join("model2.gguf");

@@ -14,7 +14,13 @@
 
 use super::*;
 use crate::custody::CustodyError;
-use std::os::unix::net::UnixListener;
+// Issue #46 — the in-process stub daemon listens on the cross-platform interprocess
+// local socket (a `UnixListener` on unix, a named pipe on Windows), matching the
+// client's transport. `endpoint_name` gives both ends the same name from the socket
+// path; `prelude::*` brings the `Listener`/`Stream` traits and `TryClone` brings
+// `try_clone`.
+use crate::ipc_name::endpoint_name;
+use interprocess::local_socket::{prelude::*, ListenerOptions};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
@@ -378,11 +384,15 @@ fn unix_socket_transport_round_trips_a_real_socket() {
     let dir = std::env::temp_dir().join(format!("cc3-{nanos:x}"));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("m.sock");
-    let listener = UnixListener::bind(&sock).expect("bind stub socket");
+    let name = endpoint_name(&sock.to_string_lossy()).expect("endpoint name");
+    let listener = ListenerOptions::new()
+        .name(name)
+        .create_sync()
+        .expect("bind stub socket");
     let payload = fixture_chain_recall_text();
     let handle = std::thread::spawn(move || {
         // Serve exactly one connection.
-        if let Ok((mut stream, _)) = listener.accept() {
+        if let Ok(mut stream) = listener.accept() {
             use std::io::{BufRead, BufReader, Write};
             let reader = BufReader::new(stream.try_clone().unwrap());
             // Read one request line, ignore its content, answer with a result frame.
