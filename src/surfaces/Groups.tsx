@@ -299,7 +299,7 @@ export function Groups({ store, s }: SurfaceProps) {
       const { link } = await bridge.invites.create(selected.id, "shared link");
       try {
         await navigator.clipboard?.writeText(link);
-        store.toast("Invite link copied — send it to someone. They open it, tap Request to join, and you approve them. One-time link.");
+        store.toast("Invite link copied — send it to someone. They open it, tap Join, and they're in. One-time link; you can be offline.");
       } catch {
         store.toast("Invite link: " + link);
       }
@@ -326,7 +326,7 @@ export function Groups({ store, s }: SurfaceProps) {
       } catch {
         /* clipboard may be unavailable */
       }
-      store.toast(`Invite for @${h} copied — DM it to them on the platform. They open it, accept, and send you their claim to paste below.`);
+      store.toast(`Invite for @${h} copied — DM it to them on the platform. They open it, tap Join, and they're in. No approval needed.`);
       await refreshInvites();
     } catch (e) {
       store.toast(e instanceof Error ? e.message : String(e));
@@ -360,9 +360,10 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast(e instanceof Error ? e.message : String(e));
     }
   };
-  // Invitee side: turn an invite link into a request. CONNECT-S1 — a link with a `k=` key seals the
-  // claim and submits it to the owner over the server-blind relay (one click, no DM-back). An older
-  // link (no key) falls back to the copy-the-claim path so it still works.
+  // Invitee side: turn an invite link into membership. INVITE-S2 — SELF-ADMIT: open the link, click
+  // Join, and you're in, in one click (external commit; no owner approval, even if the owner is
+  // offline). If self-admit fails (an older invite, or the invite wasn't published), fall back to the
+  // CONNECT-S1 claim-back path (seal a request to the owner) so older links still work.
   const doRedeemLink = async () => {
     const link = redeemRef.current?.value.trim() ?? "";
     if (!link) return;
@@ -373,33 +374,31 @@ export function Groups({ store, s }: SurfaceProps) {
       store.toast("That doesn't look like an invite link.");
       return;
     }
-    if (k) {
-      // CONNECT-S1 one-click: seal + submit the request to the relay's inbox.
-      try {
-        await bridge.invites.submitClaim(link);
-        if (redeemRef.current) redeemRef.current.value = "";
-        setRedeemOpen(false);
-        store.toast("Request sent — the person who invited you will see it and approve you. No copy-paste needed.");
-      } catch (e) {
-        store.toast("Couldn't send the request — " + (e instanceof Error ? e.message : String(e)));
-      }
-      return;
-    }
-    // Pre-S1 link (no key): fall back to the manual claim.
-    const address = myWallet || s.walletAddr || "";
-    if (!address) {
-      store.toast("Your wallet isn't ready yet — try again once it's provisioned.");
-      return;
-    }
-    const claim = JSON.stringify({ group: g, token: t, address });
+    // Primary: one-click self-admit.
     try {
-      void navigator.clipboard?.writeText(claim);
-    } catch {
-      /* clipboard may be unavailable */
+      await bridge.invites.redeem(link);
+      if (redeemRef.current) redeemRef.current.value = "";
+      setRedeemOpen(false);
+      await refreshGroups();
+      store.toast("You're in — welcome to the group.");
+      return;
+    } catch (e) {
+      // Self-admit didn't take (spent/expired/revoked, or an older unpublished invite). If the link
+      // carries a claims key, fall back to the claim-back request rather than dead-ending.
+      if (!k) {
+        store.toast("Couldn't join with that invite — " + (e instanceof Error ? e.message : String(e)));
+        return;
+      }
     }
-    if (redeemRef.current) redeemRef.current.value = "";
-    setRedeemOpen(false);
-    store.toast("This is an older invite — claim copied; DM it back to whoever invited you.");
+    // Fallback (older link with a claims key): seal + submit a request to the owner.
+    try {
+      await bridge.invites.submitClaim(link);
+      if (redeemRef.current) redeemRef.current.value = "";
+      setRedeemOpen(false);
+      store.toast("Request sent — the person who invited you will see it and approve you.");
+    } catch (e) {
+      store.toast("Couldn't join or request — " + (e instanceof Error ? e.message : String(e)));
+    }
   };
   const doRole = (address: string, role: GroupRole) => {
     const next: GroupRole = role === "admin" ? "member" : "admin";
@@ -481,7 +480,10 @@ export function Groups({ store, s }: SurfaceProps) {
           referral shows context only (joining still needs the owner to add you — no fake action). */}
       {s.pendingInvite && (() => {
         const pi = s.pendingInvite;
-        const hasToken = /[?&]t=/.test(pi.url) && /[?&]k=/.test(pi.url);
+        // INVITE-S2 — a token (`t=`) is all a one-click self-admit needs; a `k=` claims key only
+        // matters for the older claim-back fallback. A tokenless (public referral) link shows context only.
+        const hasToken = /[?&]t=/.test(pi.url);
+        const hasClaimsKey = /[?&]k=/.test(pi.url);
         // GROW-S1b states: resolving a short code, or it failed to verify — show honestly, no fake invite.
         if (pi.resolving) {
           return (
@@ -508,7 +510,7 @@ export function Groups({ store, s }: SurfaceProps) {
                   its own. Say so honestly instead of dead-ending at Dismiss (Rule 1). */}
               {!hasToken && (
                 <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 4, lineHeight: 1.5 }}>
-                  This link just shows who invited you — ask {pi.inviterHandle ? `@${pi.inviterHandle}` : "them"} to send you a direct invite link so you can request to join.
+                  This link just shows who invited you — ask {pi.inviterHandle ? `@${pi.inviterHandle}` : "them"} to send you a direct invite link so you can join in one click.
                 </span>
               )}
             </span>
@@ -517,17 +519,32 @@ export function Groups({ store, s }: SurfaceProps) {
                 <button
                   className="btn btn-primary btn-sm"
                   onClick={async () => {
+                    // INVITE-S2 — one-click self-admit. Falls back to a claim-back request only for an
+                    // older link (with a `k=` key) whose self-admit didn't take.
+                    try {
+                      await bridge.invites.redeem(pi.url);
+                      await refreshGroups();
+                      store.toast("You're in — welcome to the group.");
+                      store.clearPendingInvite();
+                      return;
+                    } catch (e) {
+                      if (!hasClaimsKey) {
+                        store.toast("Couldn't join with that invite — " + (e instanceof Error ? e.message : String(e)));
+                        store.clearPendingInvite();
+                        return;
+                      }
+                    }
                     try {
                       await bridge.invites.submitClaim(pi.url);
-                      store.toast("Request sent — they'll approve you and you'll join. No copy-paste needed.");
+                      store.toast("Request sent — the person who invited you will approve you.");
                     } catch (e) {
-                      store.toast("Couldn't send the request — " + (e instanceof Error ? e.message : String(e)));
+                      store.toast("Couldn't join or request — " + (e instanceof Error ? e.message : String(e)));
                     } finally {
                       store.clearPendingInvite();
                     }
                   }}
                 >
-                  Request to join
+                  Join
                 </button>
               )}
               <button className="btn btn-ghost btn-sm" onClick={() => store.clearPendingInvite()} style={{ color: "var(--tx-3)" }}>Dismiss</button>
@@ -841,9 +858,9 @@ export function Groups({ store, s }: SurfaceProps) {
                     <div key={pi.token} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", borderTop: "1px solid var(--line-1)" }}>
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{pi.forHandle}</span>
-                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>invite pending · claimable once</span>
+                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>invite pending · self-admit · one use</span>
                       </span>
-                      <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(pi.link || `citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them."); }}>Copy link</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { void navigator.clipboard?.writeText(pi.link || `citrate://invite?g=${pi.group}&t=${pi.token}`); store.toast("Invite link copied — DM it to them. They tap Join and they're in."); }}>Copy link</button>
                       <button className="btn btn-ghost btn-sm" style={{ color: "var(--tx-3)" }} onClick={() => void bridge.invites.revoke(pi.group, pi.token).then(refreshInvites)}>Revoke</button>
                     </div>
                   ))}
@@ -877,8 +894,31 @@ export function Groups({ store, s }: SurfaceProps) {
                     </div>
                   </details>
                   <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "0 16px 12px", lineHeight: 1.6 }}>
-                    Citrate never resolves a handle to an address. You DM the invite link; when they open it their client sends you a request here (server-blind) — you approve it and they join. Their address is their consent.
+                    Citrate never resolves a handle to an address. You DM the one-time invite link; when they open it they self-admit in one click — no approval, and you can be offline. Their joining is their consent. (Older links still send a request here to approve.)
                   </p>
+                  {/* #73 — the member's own audit copy of invites minted / groups joined via invite. The
+                      relay keeps the authoritative referral tally for airdrop scoring; this is exportable. */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderTop: "1px solid var(--line-1)" }}>
+                    <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", flex: 1, lineHeight: 1.5 }}>
+                      Your invite activity is logged locally as your audit copy.
+                    </span>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={async () => {
+                        try {
+                          const json = await bridge.invites.exportReferralLog();
+                          const n = (JSON.parse(json) as unknown[]).length;
+                          if (n === 0) { store.toast("No invite activity yet."); return; }
+                          await navigator.clipboard?.writeText(json);
+                          store.toast(`Invite activity copied — ${n} event${n === 1 ? "" : "s"} (your audit copy).`);
+                        } catch (e) {
+                          store.toast("Couldn't export invite activity — " + (e instanceof Error ? e.message : String(e)));
+                        }
+                      }}
+                    >
+                      Export invite activity
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

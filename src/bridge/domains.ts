@@ -941,21 +941,48 @@ export interface InviteMinted {
   /** citrate://invite?g=<group>&t=<token> — the owner DMs this to the @handle on the platform. */
   link: string;
 }
+/** #73 — one entry in the device-local referral audit ledger. Mirrors the Rust `ReferralEvent`.
+ *  The member's own copy of "invites I minted / groups I joined via one"; the relay's referral tally
+ *  is authoritative for airdrop scoring. `tokenHash` (BLAKE3(token) hex) ties a row to that record. */
+export interface ReferralEvent {
+  /** `inviter` (I minted an invite) | `joiner` (I self-admitted via one). */
+  role: string;
+  /** `invited` | `joined` | `revoked`. */
+  event: string;
+  group: string;
+  groupName: string;
+  tokenHash: string;
+  /** The handle the invite was labelled for (inviter rows only). */
+  forHandle: string;
+  /** Unix seconds. */
+  ts: number;
+}
+
 export interface InvitesDomain {
-  /** Mint a claimable invite for a group (labelled for a handle). No address resolution. */
+  /** Mint a single-use, group-bound invite (labelled for a handle) + share link. No address
+   *  resolution. INVITE-S2: publishes BLAKE3(token) + expiry to the relay so the invitee can
+   *  self-admit; fails closed if the relay is unreachable. */
   create(group: string, forHandle: string): Promise<InviteMinted>;
-  /** The owner's outstanding claimable invites for a group. */
+  /** INVITE-S2 — INVITEE: SELF-ADMIT into the group from an invite link, in one click. Joins by MLS
+   *  external commit with no owner action (even if the owner is offline). Honest error on a spent/
+   *  expired/revoked token or an unreachable relay. */
+  redeem(link: string): Promise<void>;
+  /** The owner's outstanding invites for a group. */
   list(group: string): Promise<PendingInvite[]>;
   /** Verify + CONSUME a claim's one-time token against an outstanding invite. The caller then adds
-   *  the volunteered address the normal way. Returns whether the token was valid. */
+   *  the volunteered address the normal way. Returns whether the token was valid. (Claim-back path.) */
   verifyConsume(group: string, token: string): Promise<boolean>;
-  /** Drop an outstanding invite. */
+  /** Drop an outstanding invite — also revokes it on the relay so a leaked link can no longer redeem. */
   revoke(group: string, token: string): Promise<void>;
   /** CONNECT-S1 — INVITEE: seal + submit a claim for an invite link to the relay's server-blind
-   *  inbox (kills the DM-back). The owner then sees it via `pollClaims`. */
+   *  inbox (the claim-back fallback). The owner then sees it via `pollClaims`. */
   submitClaim(link: string): Promise<void>;
   /** CONNECT-S1 — OWNER: poll + open the sealed claims for a group's outstanding invites. */
   pollClaims(group: string): Promise<InviteClaim[]>;
+  /** #73 — the device-local referral audit ledger (newest last). The member's own copy. */
+  referralLog(): Promise<ReferralEvent[]>;
+  /** #73 — the referral ledger as pretty JSON, for the member to save as their audit copy. */
+  exportReferralLog(): Promise<string>;
 }
 
 /** A volunteered claim recovered from the server-blind inbox (owner-side). */
