@@ -7,14 +7,44 @@
 
 use super::*;
 
+// Issue #46 — the in-process stub daemon listens on the cross-platform interprocess
+// local socket (a `UnixListener` on unix, a named pipe on Windows), matching the
+// client's transport. `endpoint_name` gives both ends the same name from the path.
+use crate::ipc_name::endpoint_name;
+use interprocess::local_socket::{prelude::*, ListenerOptions};
+
+/// A long-lived stub child binary that exists on the host (issue #47). Unix:
+/// `/bin/sleep`. Windows: `ping.exe` (always present; kept alive by
+/// [`long_lived_args`]). The Windows path is verified by the team.
 fn sleep_bin() -> PathBuf {
-    for c in ["/bin/sleep", "/usr/bin/sleep"] {
-        let p = PathBuf::from(c);
-        if p.exists() {
-            return p;
+    #[cfg(unix)]
+    {
+        for c in ["/bin/sleep", "/usr/bin/sleep"] {
+            let p = PathBuf::from(c);
+            if p.exists() {
+                return p;
+            }
         }
+        panic!("no sleep binary");
     }
-    panic!("no sleep binary");
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        PathBuf::from(root).join("System32").join("ping.exe")
+    }
+}
+
+/// The argv that keeps [`sleep_bin`] alive for a lifecycle test. Unix: `sleep 3600`.
+/// Windows: `ping 127.0.0.1 -n 999`. Paired with [`sleep_bin`].
+fn long_lived_args() -> Vec<String> {
+    #[cfg(unix)]
+    {
+        vec!["3600".to_string()]
+    }
+    #[cfg(windows)]
+    {
+        vec!["127.0.0.1".to_string(), "-n".to_string(), "999".to_string()]
+    }
 }
 
 fn tmp_dir(tag: &str) -> PathBuf {
@@ -88,7 +118,7 @@ fn spec_env_carries_socket_bearerpath_selfaddr_never_inline_token() {
 fn start_reaches_running_then_stop_is_clean() {
     let (mgr, _dir) = stub_manager("wiring");
     let mgr = mgr
-        .with_spawn_args(vec!["3600".to_string()])
+        .with_spawn_args(long_lived_args())
         .with_health_interval(std::time::Duration::from_secs(3600));
     mgr.start().expect("stub daemon starts");
     let mut running = false;
@@ -107,7 +137,7 @@ fn start_reaches_running_then_stop_is_clean() {
 #[test]
 fn double_start_is_rejected() {
     let (mgr, _dir) = stub_manager("double");
-    let mgr = mgr.with_spawn_args(vec!["3600".to_string()]);
+    let mgr = mgr.with_spawn_args(long_lived_args());
     mgr.start().expect("first start");
     std::thread::sleep(std::time::Duration::from_millis(150));
     assert!(matches!(mgr.start(), Err(ClusterError::AlreadyRunning)));
@@ -168,8 +198,9 @@ fn cluster_ipc_authenticates_and_parses_status_defaulting_sharedfiles() {
     let sock_srv = sock.clone();
     let bearer_srv = bearer.clone();
     let handle = std::thread::spawn(move || {
-        let listener = std::os::unix::net::UnixListener::bind(&sock_srv).expect("bind");
-        let (stream, _) = listener.accept().expect("accept");
+        let name = endpoint_name(&sock_srv.to_string_lossy()).expect("endpoint name");
+        let listener = ListenerOptions::new().name(name).create_sync().expect("bind");
+        let stream = listener.accept().expect("accept");
         let mut w = stream.try_clone().unwrap();
         let mut r = BufReader::new(stream);
         let mut line = String::new();

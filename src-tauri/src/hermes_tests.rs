@@ -7,14 +7,40 @@
 
 use super::*;
 
+/// A long-lived stub child binary that exists on the host (issue #47). Unix:
+/// `/bin/sleep`. Windows: `ping.exe` (always present in System32; kept alive by
+/// [`long_lived_args`]). The Windows path is verified by the team; only the Unix
+/// path is built/run here.
 fn sleep_bin() -> PathBuf {
-    for c in ["/bin/sleep", "/usr/bin/sleep"] {
-        let p = PathBuf::from(c);
-        if p.exists() {
-            return p;
+    #[cfg(unix)]
+    {
+        for c in ["/bin/sleep", "/usr/bin/sleep"] {
+            let p = PathBuf::from(c);
+            if p.exists() {
+                return p;
+            }
         }
+        panic!("no sleep binary");
     }
-    panic!("no sleep binary");
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        PathBuf::from(root).join("System32").join("ping.exe")
+    }
+}
+
+/// The argv that keeps [`sleep_bin`] alive for a lifecycle test. Unix: `sleep 3600`.
+/// Windows: `ping 127.0.0.1 -n 999`. Paired with [`sleep_bin`] so the binary and its
+/// keep-alive args always match on each platform.
+fn long_lived_args() -> Vec<String> {
+    #[cfg(unix)]
+    {
+        vec!["3600".to_string()]
+    }
+    #[cfg(windows)]
+    {
+        vec!["127.0.0.1".to_string(), "-n".to_string(), "999".to_string()]
+    }
 }
 
 fn tmp_dir(tag: &str) -> PathBuf {
@@ -91,7 +117,7 @@ fn control_url_is_loopback_http() {
 fn start_mints_a_0600_bearer_file_then_reaches_running_and_stops() {
     let (mgr, dir) = stub_manager("wiring");
     let mgr = mgr
-        .with_spawn_args(vec!["3600".to_string()])
+        .with_spawn_args(long_lived_args())
         .with_health_interval(std::time::Duration::from_secs(3600));
     mgr.start().expect("stub hermes starts");
 
@@ -128,7 +154,7 @@ fn start_mints_a_0600_bearer_file_then_reaches_running_and_stops() {
 #[test]
 fn double_start_is_rejected() {
     let (mgr, _dir) = stub_manager("double");
-    let mgr = mgr.with_spawn_args(vec!["3600".to_string()]);
+    let mgr = mgr.with_spawn_args(long_lived_args());
     mgr.start().expect("first start");
     std::thread::sleep(std::time::Duration::from_millis(150));
     let r = mgr.start();

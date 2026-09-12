@@ -33,8 +33,16 @@
 //! {domain, address, nonce, chain_id} and never touch chain state.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+
+// Issue #46 — cross-platform local IPC. `IpcStream` is the cross-platform local
+// socket (a `UnixStream` on unix); the `Stream` trait supplies `set_recv_timeout`/
+// `set_send_timeout` (-> `UnixStream::set_read_timeout`/`set_write_timeout` on unix)
+// and `TryClone` supplies `try_clone` (-> `UnixStream::try_clone` on unix), so the
+// member-daemon framing stays byte-identical to the pre-port path.
+use crate::ipc_name::IpcStream;
+use interprocess::local_socket::traits::Stream as _;
+use interprocess::TryClone as _;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -318,7 +326,9 @@ impl CommsMemberManager {
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
             grace: COMMS_START_GRACE,
-            probe: std::sync::Arc::new(move || UnixStream::connect(&sock).is_ok()),
+            probe: std::sync::Arc::new(move || {
+                crate::ipc_name::connect(&sock.to_string_lossy()).is_ok()
+            }),
         });
         spec
     }
@@ -553,11 +563,11 @@ enum Response {
 /// a beat after the app launches, so a `Connection refused` on the first request is a startup RACE,
 /// not a fault — surfacing it makes a healthy first-open look broken. Retry with backoff for a short
 /// window before giving up (any real, persistent failure still surfaces honestly, Rule 1).
-fn connect_with_retry(socket_path: &Path) -> Result<UnixStream> {
+fn connect_with_retry(socket_path: &Path) -> Result<IpcStream> {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut delay = Duration::from_millis(40);
     loop {
-        match UnixStream::connect(socket_path) {
+        match crate::ipc_name::connect(&socket_path.to_string_lossy()) {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 if Instant::now() >= deadline {
@@ -592,7 +602,8 @@ fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Respons
 /// Flag-A — a bounded, NON-retrying round-trip for the relay-health probe: one connect attempt and a
 /// sub-second timeout so a health check can never stall a caller. Used only by `relay_status`.
 fn member_ipc_quick(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {
-    let stream = UnixStream::connect(socket_path).map_err(|e| CommsError::Ipc(e.to_string()))?;
+    let stream = crate::ipc_name::connect(&socket_path.to_string_lossy())
+        .map_err(|e| CommsError::Ipc(e.to_string()))?;
     ipc_round_trip(stream, RELAY_PROBE_TIMEOUT, bearer, req)
 }
 
@@ -600,7 +611,7 @@ fn member_ipc_quick(socket_path: &Path, bearer: &str, req: &Request) -> Result<R
 /// handshake, then one request → one response. Factored out so the normal (retry-connect) path and
 /// the relay-health probe (single-connect, short timeout) share identical framing.
 fn ipc_round_trip(
-    stream: UnixStream,
+    stream: IpcStream,
     timeout: Duration,
     bearer: &str,
     req: &Request,
@@ -608,16 +619,16 @@ fn ipc_round_trip(
     // Bound both directions before any read/write (SO_RCVTIMEO/SO_SNDTIMEO). Applied to the clone too
     // so neither the read nor the write side can hang indefinitely.
     stream
-        .set_read_timeout(Some(timeout))
+        .set_recv_timeout(Some(timeout))
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
     stream
-        .set_write_timeout(Some(timeout))
+        .set_send_timeout(Some(timeout))
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
     let mut writer = stream
         .try_clone()
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
-    let _ = writer.set_write_timeout(Some(timeout));
-    let _ = writer.set_read_timeout(Some(timeout));
+    let _ = writer.set_send_timeout(Some(timeout));
+    let _ = writer.set_recv_timeout(Some(timeout));
     let mut reader = BufReader::new(stream);
 
     // bearer handshake
