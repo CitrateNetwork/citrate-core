@@ -287,6 +287,30 @@ export function Groups({ store, s }: SurfaceProps) {
     } else setPendingInvites([]);
   }, [tab, selected?.id, canManage]);
 
+  // #57 — mint a one-time SEALABLE invite link (citrate://invite?g=&t=&k=) that isn't tied to a
+  // specific @handle. Whoever opens it gets a real "Request to join" (server-blind claim → owner
+  // approves) — unlike the tokenless public referral link, which dead-ends at "Dismiss" until the
+  // GROW-S1 web join page is live. `for_handle` is a display label only; "shared link" marks it.
+  const [minting, setMinting] = useState(false);
+  const doCreateShareLink = async () => {
+    if (!selected || minting) return;
+    setMinting(true);
+    try {
+      const { link } = await bridge.invites.create(selected.id, "shared link");
+      try {
+        await navigator.clipboard?.writeText(link);
+        store.toast("Invite link copied — send it to someone. They open it, tap Request to join, and you approve them. One-time link.");
+      } catch {
+        store.toast("Invite link: " + link);
+      }
+      if (canManage) await refreshInvites();
+    } catch (e) {
+      store.toast("Couldn't create an invite link — " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setMinting(false);
+    }
+  };
+
   const doMintInvite = async () => {
     if (!selected) return;
     const h = (inviteHandleRef.current?.value.trim() ?? "").replace(/^@/, "");
@@ -480,6 +504,13 @@ export function Groups({ store, s }: SurfaceProps) {
             <span style={{ fontSize: 13.5 }}>
               {pi.inviterHandle ? <strong>@{pi.inviterHandle}</strong> : "Someone"} invited you to <strong>{pi.clusterName || pi.clusterId || "a cluster"}</strong>
               {pi.goal ? <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", marginLeft: 8 }}>· {pi.goal}</span> : null}
+              {/* #57 — a tokenless (public referral) link only shows context; it can't request access on
+                  its own. Say so honestly instead of dead-ending at Dismiss (Rule 1). */}
+              {!hasToken && (
+                <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 4, lineHeight: 1.5 }}>
+                  This link just shows who invited you — ask {pi.inviterHandle ? `@${pi.inviterHandle}` : "them"} to send you a direct invite link so you can request to join.
+                </span>
+              )}
             </span>
             <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
               {hasToken && (
@@ -673,10 +704,23 @@ export function Groups({ store, s }: SurfaceProps) {
                   <div className="surface" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "14px 16px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{ fontSize: 13.5, fontWeight: 500 }}>Grow this cluster</span>
-                      <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>share your invite link</span>
+                      <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>invite people</span>
                     </div>
                     <p style={{ fontSize: 12, color: "var(--tx-2)", lineHeight: 1.6, margin: 0 }}>
-                      Post this link anywhere — once the web join page is live (GROW-S1), whoever opens it will see your invite and can ask to join. You approve who comes in. This is how you build your cluster to work on the network together: storage, training, inference, or shipping Dapps.
+                      Send someone an invite link they can act on: they open it, tap <strong>Request to join</strong>, and you approve them. This is how you build your cluster to work on the network together: storage, training, inference, or shipping Dapps.
+                    </p>
+                    {/* #57 — the acceptable path: a one-time sealable invite the receiver can actually
+                        request-to-join with, no web page required. */}
+                    <button className="btn btn-primary btn-sm" onClick={doCreateShareLink} disabled={minting} style={{ alignSelf: "flex-start" }}>
+                      {minting ? "Creating…" : "Create an invite link"}
+                    </button>
+                    <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
+                      one-time, sealable link — whoever opens it gets a Request-to-join button and you approve them (server-blind)
+                    </span>
+                    <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
+                    <span style={{ fontSize: 11.5, fontWeight: 500, color: "var(--tx-2)" }}>Or post a public referral link</span>
+                    <p style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.6, margin: 0 }}>
+                      Post this anywhere for referral credit. It carries only your name, this cluster, and your address — no token — so acting on it needs the web join page (GROW-S1), coming soon.
                     </p>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--tx-2)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: "8px 10px", background: "var(--srf-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{link}</span>
