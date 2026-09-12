@@ -83,7 +83,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
 
   const vitals = [
     { label: "Height", value: heightValue, sub: heightSub, color: "var(--tx-1)", tip: "eth_blockNumber", vsize: "21px" },
-    { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "net_peerCount", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "net_peerCount", vsize: "21px" },
+    { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "direct P2P", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "Direct P2P peers your node is dialed into (bootnodes + sequencer + discovered members) — not the whole network's node count (net_peerCount)", vsize: "21px" },
     { label: "Finality", value: s.finAge < 0 ? "—" : Math.round(s.finAge) + "s", sub: s.finAge < 0 ? "no source yet" : "checkpoint age", color: "var(--tx-1)", tip: "BFT checkpoint every ~50 blocks", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "LiquidStakingPool shares", vsize: "21px" },
