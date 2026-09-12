@@ -199,6 +199,18 @@ export function Connections({ store }: SurfaceProps) {
                         {v === "groups" ? "Groups" : "Private"}
                       </button>
                     ))}
+                    {/* #61 — opt-in find-via-X: publish a VERIFIED handle↔address binding so people can
+                        find you by handle. Self-published + revocable; a signed, human-approved action.
+                        Only x/discord are directory platforms. */}
+                    {link.verified && so.id !== "linkedin" && (
+                      <button
+                        className={"btn btn-sm " + (link.directoryPublished ? "btn-secondary" : "btn-ghost")}
+                        onClick={() => void store.setDirectoryPublish(so.id, !link.directoryPublished, () => void loadSocial())}
+                        title={link.directoryPublished ? "In the find-via-X directory — click to remove" : "Publish so people can find you by this handle (opt-in, revocable)"}
+                      >
+                        {link.directoryPublished ? "In directory ✓" : "Find-via-X"}
+                      </button>
+                    )}
                     <button className="btn btn-ghost btn-sm" onClick={() => void unlink(so.id)} style={{ color: "var(--tx-3)" }}>Unlink</button>
                   </>
                 ) : (

@@ -52,6 +52,8 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   agent: "Agent action",
   social: "Verify identity",
   deploy: "Deploy contract",
+  "directory-publish": "Publish to directory",
+  "directory-revoke": "Remove from directory",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -2787,6 +2789,31 @@ export class Store {
   }
 
   /**
+   * #61 — opt-in PUBLISH a verified social link to the find-via-X directory (a deliberate D-7
+   * exception, self-published only). Opens a ceremony over the directory-scoped statement the wallet
+   * signs; on approve the binding POSTs to the authority with the member's Bearer. Requires a verified
+   * link. `publish=false` REVOKES (unpublishes) instead.
+   */
+  async setDirectoryPublish(network: "x" | "linkedin" | "discord", publish: boolean, onDone?: () => void): Promise<void> {
+    let view: CeremonyView;
+    try {
+      view = publish
+        ? await bridge.social.directoryPublishRequest(network)
+        : await bridge.social.directoryUnpublishRequest(network);
+    } catch (err) {
+      this.toast("Couldn't start — " + String((err as Error).message ?? err));
+      return;
+    }
+    this.openWalletReview(
+      publish ? "directory-publish" : "directory-revoke",
+      publish ? `Publish your ${network} handle to the directory` : `Remove your ${network} handle from the directory`,
+      view,
+      undefined,
+      () => onDone?.(),
+    );
+  }
+
+  /**
    * ADR-2026-08-30 (D1) — share your verified, group-visible identity bindings to every group you're
    * in, over the ciphertext-only relay (server-blind). Each binding rides as a control message peers
    * ingest + hide; they recover-verify it before showing your face. Best-effort; safe to call often.
@@ -2962,6 +2989,34 @@ export class Store {
       }
       return;
     }
+    // A DIRECTORY publish/revoke (#61) is a personal_sign, not a tx: the wallet signs the
+    // directory-scoped statement and the binding is POSTed/tombstoned at the authority with the
+    // member's Bearer — it must never reach signing.broadcast. Route to the dedicated commands.
+    if (r.kind === "directory-publish" || r.kind === "directory-revoke") {
+      const publishing = r.kind === "directory-publish";
+      try {
+        const li = publishing
+          ? await bridge.social.directoryPublishApprove(r.view.id, ack)
+          : await bridge.social.directoryUnpublishApprove(r.view.id, ack);
+        this.setState({ walletReview: null });
+        this.toast(
+          publishing
+            ? `Published — people can now find you by your ${li.network} handle.`
+            : `Removed — your ${li.network} handle is no longer in the directory.`,
+        );
+        await r.onResolved?.(true);
+      } catch (err) {
+        try {
+          await bridge.social.directoryForget(r.view.id);
+        } catch {
+          /* best-effort cleanup */
+        }
+        this.setState({ walletReview: null });
+        this.toast((publishing ? "Not published — " : "Not removed — ") + String((err as Error).message ?? err));
+        await r.onResolved?.(false);
+      }
+      return;
+    }
     // In web-dev there is no key/chain; signing.broadcast throws honestly. Keep the
     // review open so the flow is truthful (no fabricated settlement, Rule 1).
     if (BRIDGE_MODE !== "tauri") {
@@ -3027,6 +3082,8 @@ export class Store {
       else await bridge.signing.reject(r.view.id);
       // A declined social verification also drops its pending-bind entry (nonce is one-time).
       if (r.kind === "social") await bridge.social.verifyForget(r.view.id);
+      // A declined directory publish/revoke drops its pending directory ceremony.
+      if (r.kind === "directory-publish" || r.kind === "directory-revoke") await bridge.social.directoryForget(r.view.id);
     } catch {
       /* best-effort — the ceremony may already be gone */
     }

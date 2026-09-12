@@ -6,7 +6,7 @@
 // wallet-signed IdentityBinding through the ceremony, D3) is the follow-up — bindingChallenge/verify
 // stay honest Unavailable until then. Rule 3 holds: when wired, the WALLET signs; no sidecar signs.
 import { invoke } from "./invoke";
-import type { ExportedBinding, LinkedIdentity, ResolvedIdentity, SocialDomain, SocialNetwork, SocialVisibility } from "../domains";
+import type { DirectoryHit, DirectorySearchHit, ExportedBinding, LinkedIdentity, ResolvedIdentity, SocialDomain, SocialNetwork, SocialVisibility } from "../domains";
 import type { CeremonyView } from "../types";
 
 export const tauriSocial: SocialDomain = {
@@ -39,5 +39,26 @@ export const tauriSocial: SocialDomain = {
   },
   ingestBinding(sender: string, binding: ExportedBinding): Promise<boolean> {
     return invoke<boolean>("social_ingest_binding", { sender, binding });
+  },
+  directoryPublishRequest(network: SocialNetwork): Promise<CeremonyView> {
+    return invoke<CeremonyView>("directory_publish_request", { network });
+  },
+  directoryPublishApprove(id: string, rawAck: boolean): Promise<LinkedIdentity> {
+    return invoke<LinkedIdentity>("directory_publish_approve", { id, rawAck });
+  },
+  directoryUnpublishRequest(network: SocialNetwork): Promise<CeremonyView> {
+    return invoke<CeremonyView>("directory_unpublish_request", { network });
+  },
+  directoryUnpublishApprove(id: string, rawAck: boolean): Promise<LinkedIdentity> {
+    return invoke<LinkedIdentity>("directory_unpublish_approve", { id, rawAck });
+  },
+  async directoryForget(id: string): Promise<void> {
+    await invoke("directory_forget", { id });
+  },
+  directoryLookup(platform: SocialNetwork, handle: string): Promise<DirectoryHit | null> {
+    return invoke<DirectoryHit | null>("directory_lookup", { platform, handle });
+  },
+  directorySearch(platform: SocialNetwork, query: string): Promise<DirectorySearchHit[]> {
+    return invoke<DirectorySearchHit[]>("directory_search", { platform, query });
   },
 };

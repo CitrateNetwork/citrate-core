@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
-import type { Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
+import type { DirectorySearchHit, Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
@@ -92,6 +92,11 @@ export function Groups({ store, s }: SurfaceProps) {
   const [requests, setRequests] = useState<InviteClaim[]>([]);
   const [redeemOpen, setRedeemOpen] = useState(false);
   const [pickerQ, setPickerQ] = useState(""); // CONNECT-S2 — add-member people-picker search
+  // #61 find-via-X — search the opt-in directory for someone by their social handle.
+  const [dirPlatform, setDirPlatform] = useState<"x" | "discord">("x");
+  const [dirQ, setDirQ] = useState("");
+  const [dirHits, setDirHits] = useState<DirectorySearchHit[]>([]);
+  const [dirSearching, setDirSearching] = useState(false);
 
   const selected = st.groups.find((g) => g.id === st.selectedId) ?? null;
   const myWallet = typeof store.identity === "function" ? store.identity().wallet : "";
@@ -245,6 +250,22 @@ export function Groups({ store, s }: SurfaceProps) {
     }
     if (addrRef.current) addrRef.current.value = "";
     void addMemberToGroup(v);
+  };
+
+  // #61 find-via-X — resolve a social handle to its published address via the opt-in directory. Only
+  // returns people who explicitly opted in (self-published, revocable); honest-empty otherwise (D-7).
+  const doDirectorySearch = async () => {
+    const q = dirQ.trim().replace(/^@/, "");
+    if (!q) { setDirHits([]); return; }
+    setDirSearching(true);
+    try {
+      setDirHits(await bridge.social.directorySearch(dirPlatform, q));
+    } catch (e) {
+      setDirHits([]);
+      store.toast("Couldn't search the directory — " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setDirSearching(false);
+    }
   };
 
   // D4 claimable invites (owner side)
@@ -827,6 +848,34 @@ export function Groups({ store, s }: SurfaceProps) {
                 )}
                 {/* Add-someone-you-know moved up into the prominent "Add people" card (#59). */}
                 {/* Advanced fallback — add by raw comms address (for someone not yet in your people). */}
+                {/* #61 find-via-X — find someone by their social handle (only people who opted into the
+                     directory; self-published + revocable — a deliberate, consented D-7 exception). */}
+                {canManage && (
+                  <details style={{ borderTop: "1px solid var(--line-1)" }}>
+                    <summary className="mono" style={{ fontSize: 10, color: "var(--tx-3)", padding: "10px 16px", cursor: "pointer" }}>Find someone by their X / Discord handle</summary>
+                    <div style={{ display: "flex", gap: 8, padding: "0 16px 6px", alignItems: "center" }}>
+                      {(["x", "discord"] as const).map((p) => (
+                        <button key={p} className={"btn btn-sm " + (dirPlatform === p ? "btn-secondary" : "btn-ghost")} onClick={() => { setDirPlatform(p); setDirHits([]); }}>
+                          {p === "x" ? "X" : "Discord"}
+                        </button>
+                      ))}
+                      <input className="input" value={dirQ} placeholder={dirPlatform === "x" ? "@handle on X" : "username on Discord"} style={{ flex: 1 }} onChange={(e) => setDirQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void doDirectorySearch()} />
+                      <button className="btn btn-secondary btn-sm" disabled={dirSearching} onClick={() => void doDirectorySearch()}>{dirSearching ? "…" : "Search"}</button>
+                    </div>
+                    {dirHits.map((h) => (
+                      <div key={h.address} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px" }}>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ fontSize: 12.5, fontWeight: 500 }}>@{h.handle}{h.displayName ? <span style={{ color: "var(--tx-3)", fontWeight: 400 }}> · {h.displayName}</span> : null}</span>
+                          <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>{shortAddr(h.address)} · self-published</span>
+                        </span>
+                        <button className="btn btn-primary btn-sm" onClick={() => { void addMemberToGroup(h.address); store.toast(`Adding @${h.handle} to the group.`); }}>Add</button>
+                      </div>
+                    ))}
+                    <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "4px 16px 12px", lineHeight: 1.5 }}>
+                      Only shows people who opted in to being found by handle. Nobody else is ever resolved from a handle (D-7).
+                    </p>
+                  </details>
+                )}
                 {canManage && (
                   <details style={{ borderTop: "1px solid var(--line-1)" }}>
                     <summary className="mono" style={{ fontSize: 10, color: "var(--tx-3)", padding: "10px 16px", cursor: "pointer" }}>Add by address (advanced)</summary>
