@@ -1,4 +1,17 @@
 import React from "react";
+import { recordUiError } from "./shell/errorRing";
+import { STORAGE_KEY } from "./shell/state";
+import { DiagnosticReport } from "./components/DiagnosticReport";
+
+/** Read the persisted telemetry consent without the store (we're in a crashed subtree). */
+function telemetryConsented(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? Boolean(JSON.parse(raw).telemetry) : false;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Top-level error boundary. Before this, ANY uncaught render/lifecycle error unmounted the
@@ -25,6 +38,9 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
     // Surface to the console (visible in the webview inspector) so the exact throw + the
     // component stack can be read off a packaged build during triage.
     console.error("[citrate-core] uncaught UI error:", error, info.componentStack);
+    // WP-T.2 — record into the local error ring so a diagnostic report (only ever sent on
+    // explicit consent, WP-T.4) can include it. Local only; nothing egresses here.
+    recordUiError(`${error.message || String(error)}\n${info.componentStack ?? ""}`);
   }
 
   render() {
@@ -72,6 +88,13 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
               Reload
             </button>
           </div>
+          {/* WP-T.4 — on-crash prompt, gated on the telemetry toggle (default off). The crash is
+              already shown above; this lets the member review + send the full scrubbed bundle. */}
+          {telemetryConsented() && (
+            <div style={{ borderTop: "1px solid var(--line-1, #22302a)", paddingTop: 12 }}>
+              <DiagnosticReport enabled={true} />
+            </div>
+          )}
         </div>
       </div>
     );

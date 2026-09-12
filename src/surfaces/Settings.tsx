@@ -28,6 +28,7 @@ import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
+import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 
@@ -1118,13 +1119,11 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Diagnostics</span>
-              {/* Q-A.1 (Rule 1) — no diagnostics-bundle backend in this build; honest
-                  DISABLED state. The deep-link-scheme claim is dropped (unverified). */}
-              <span>
-                <DisabledControl label="Export diagnostics bundle" note="diagnostics export not available in this build" />
-              </span>
+              {/* WP-T.4 — the real review + send flow (gated on the telemetry toggle above).
+                  Assembled + scrubbed locally; sent only on explicit review + click. */}
+              <DiagnosticReport enabled={s.telemetry} toast={(m) => store.toast(m)} />
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                would bundle logs + config + crash records · scrubbed of keys and tokens
+                bundles app version + OS + crash/log tail + recent UI errors · scrubbed of paths, keys, addresses, and tokens · nothing is sent without your review
               </span>
             </div>
           </div>

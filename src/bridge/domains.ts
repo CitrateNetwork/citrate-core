@@ -987,8 +987,29 @@ export interface ContractsDomain {
   deploy(input: ContractDeployInput): Promise<CeremonyView>;
 }
 
+/** A scrubbed diagnostic bundle (Telemetry WP-T.2/T.3). Mirrors the Rust DiagnosticBundle. */
+export interface DiagnosticBundle {
+  reportId: string;
+  appVersion: string;
+  os: string;
+  crashTail: string;
+  nodeLogTail: string;
+  uiErrors: string[];
+}
+
+export interface TelemetryDomain {
+  /** WP-T.2/T.3 — assemble the SCRUBBED bundle locally for review. No network. `uiErrors` is
+   *  the frontend error ring. Returns already-scrubbed content the member can inspect. */
+  bundle(uiErrors: string[]): Promise<DiagnosticBundle>;
+  /** WP-T.4 — the ONE pinned HTTPS POST. Call ONLY after the member reviewed + consented
+   *  (ConsentGate, WP-T.1). Sends exactly the reviewed bundle JSON. Honest error if the
+   *  ingest service (WP-T.5) isn't live. */
+  send(bundleJson: string): Promise<void>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
+  telemetry: TelemetryDomain;
   storage: StorageDomain;
   groups: GroupsDomain;
   cluster: ClusterDomain;

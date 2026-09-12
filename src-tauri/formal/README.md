@@ -119,3 +119,32 @@ Run headless with TLC (`tla2tools.jar`, same harness as above):
 
 Also present: `ModelRouter.tla`/`.cfg` (Hermes P0 / WP0.1 — the model-router
 selection invariants).
+
+---
+
+# ConsentGate formal model (Telemetry WP-T.1)
+
+TLA+ model of the telemetry consent gate — the property `telemetry_send` (the one pinned
+HTTPS POST, `telemetry.rs`) must satisfy: **nothing egresses except a bundle the member
+reviewed AND consented to, and only while the telemetry toggle is on.**
+
+## Files
+- `ConsentGate.tla` — states (`toggle`, `reviewed`, `consented`, `egressed`, `reviewedBody`,
+  `sentBody`) + actions (`ToggleOn`/`ToggleOff`, `Review`, `Consent`, `Egress`).
+- `ConsentGate.cfg` — a 2-bundle universe; checks TypeOK + INV_Consent_1 + INV_Consent_3 and
+  the INV_Consent_2 action property.
+
+## Invariants
+- **INV-Consent-1** — every egressed bundle was consented (`egressed ⊆ consented`). Mirrors
+  `telemetry_send` being called only from the consented review flow (WP-T.4).
+- **INV-Consent-2** — no egress step occurs while the toggle is off (`Egress` guards on
+  `toggle = TRUE`). Toggle-off keeps the historical consent record; it doesn't erase it.
+- **INV-Consent-3** — what was sent equals what was reviewed (`sentBody = reviewedBody`, nonzero)
+  — the UI sends exactly the bundle it displayed.
+
+## Run result (2026-09-11)
+Run headless with TLC (`tla2tools.jar`): **No error found** (32 distinct states; TypeOK +
+INV_Consent_1 + INV_Consent_3 + the INV_Consent_2 property hold). Negative control (the model
+has teeth): an earlier draft cleared `consented` on `ToggleOff`, and TLC produced a concrete
+counterexample violating INV-Consent-1 (a legitimately-sent bundle no longer showed as
+consented) — fixed by keeping consent as a historical record.
