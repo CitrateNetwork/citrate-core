@@ -167,6 +167,10 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
               {tierText}
             </span>
           </span>
+          {/* Build version — dim + unobtrusive, tucked beside the profile so it never crowds. */}
+          <span className="mono tabular" title="App version" style={{ fontSize: 9, letterSpacing: ".04em", color: "rgba(205,231,214,.4)", flexShrink: 0, alignSelf: "flex-end" }}>
+            v{typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.0.0"}
+          </span>
         </div>
       </div>
     </aside>
