@@ -1,5 +1,7 @@
 //! Hermes P2 — read the on-chain **SkillRegistry** (`addresses::skill_registry()`,
-//! 0x896cd293… on 40204) so Hermes ships WITH skills from the chain instead of empty. PURE
+//! 0x2B6878…97c on 40204 after the 2026-09-12 `srp-s5-diskfix` reroll — the reproducible
+//! CREATE2 deploy, was the plain-create 0x896cd293…) so Hermes ships WITH skills from the chain
+//! instead of empty. `totalSkills()=3` (hello, hf-model-register, contract-deploy). PURE
 //! `eth_call` reads via the shared RpcClient (Rule 1: never fabricates a skill; an RPC/decode
 //! failure is an honest error). Mirrors `model_registry.rs` and reuses its ABI decoders.
 //!
