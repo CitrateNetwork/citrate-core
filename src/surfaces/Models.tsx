@@ -31,6 +31,15 @@ const SOURCE_LABEL: Record<ModelSourceId, string> = {
   github: "GitHub",
 };
 
+// #64 — discoverability: clickable starter searches so the boxes aren't a blank prompt.
+// These are SEARCH TERMS (they run the real HF search), not asserted repos — so nothing is
+// fabricated (Rule 1). GitHub needs an exact `owner/repo`, so it has no curated chips (we
+// won't suggest a slug that might not exist).
+const SEARCH_SUGGESTIONS: Record<ModelSourceId, string[]> = {
+  hf: ["gemma gguf", "Qwen2.5 gguf", "Llama-3.1 gguf", "Phi-3 gguf", "Mistral gguf", "TheBloke"],
+  github: [],
+};
+
 export function Models({ store }: SurfaceProps) {
   const st = modelsSlice.use();
   const [source, setSource] = useState<ModelSourceId>("hf");
@@ -146,12 +155,32 @@ export function Models({ store }: SurfaceProps) {
             }}
             placeholder={source === "github" ? "owner/repo (e.g. TheBloke/Llama-2-7B-GGUF)" : "search models (e.g. gemma gguf)"}
             aria-label="model search"
+            list={source === "hf" ? "model-search-suggestions" : undefined}
             style={{ flex: 1, minWidth: 220, padding: "7px 10px", fontSize: 12.5 }}
           />
+          {source === "hf" && (
+            <datalist id="model-search-suggestions">
+              {SEARCH_SUGGESTIONS.hf.map((s) => (
+                <option key={s} value={s} />
+              ))}
+            </datalist>
+          )}
           <button className="btn btn-sm" onClick={runSearch} disabled={st.searching}>
             {st.searching ? "Searching…" : "Search"}
           </button>
         </div>
+
+        {/* #64 — starter search chips (HF): one click sets the query + runs the real search. */}
+        {SEARCH_SUGGESTIONS[source].length > 0 && st.results.length === 0 && !st.searching && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <span className="mono" style={{ fontSize: 10, letterSpacing: ".06em", color: "var(--tx-3)" }}>try</span>
+            {SEARCH_SUGGESTIONS[source].map((sug) => (
+              <button key={sug} className="btn btn-ghost btn-sm" onClick={() => { setQuery(sug); void searchModels(source, sug); }}>
+                {sug}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
           {st.results.length === 0 ? (
