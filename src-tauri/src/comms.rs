@@ -511,6 +511,17 @@ enum Request {
     SubmitClaim { token_hash: String, ciphertext: String },
     /// CONNECT-S1 — poll the claims-inbox by invite token hash (owner side).
     PollClaims { token_hash: String },
+    /// INVITE-S2 — owner publishes a single-use, group-bound invite. `token_hash` is
+    /// `BLAKE3(token)` hex (32 bytes); the RAW token stays in the share link and never reaches
+    /// the relay. `expires_at` is Unix **ms**. After this the owner may go offline — a
+    /// token-holder self-admits with no further owner action.
+    PublishInvite { group: String, token_hash: String, expires_at: u64 },
+    /// INVITE-S2 — owner revokes a published invite by its token hash (`BLAKE3(token)` hex).
+    RevokeInvite { token_hash: String },
+    /// INVITE-S2 — invitee SELF-ADMITS by external commit using the RAW invite `token` (hex).
+    /// `name` is the local display name to record the joined group under. No owner action needed;
+    /// the relay records the referral attribution (inviter→joiner) automatically on success.
+    RedeemInvite { group: String, token: String, name: String },
     /// Flag-A — ask the daemon whether its networked relay link is currently up. Cheap in-memory
     /// read on the daemon side; used by [`CommsMemberManager::relay_status`] so the app can report a
     /// relay DROP instead of showing "healthy" (the UDS socket stays up while every relayed op fails).
@@ -980,6 +991,37 @@ pub(crate) fn poll_claims<R: tauri::Runtime>(
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
+}
+
+/// INVITE-S2 — OWNER: publish a single-use, group-bound invite to the relay. `token_hash` is
+/// `BLAKE3(raw_token)` hex; the raw token stays in the share link (never crosses to the relay).
+/// `expires_at` is Unix ms. After this the owner can go offline — the invitee self-admits. `pub(crate)`.
+pub(crate) fn publish_invite<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+    token_hash: String,
+    expires_at: u64,
+) -> std::result::Result<(), String> {
+    parse_ok(route(app, Request::PublishInvite { group, token_hash, expires_at })?)
+}
+
+/// INVITE-S2 — OWNER: revoke a published invite by its token hash (`BLAKE3(token)` hex). `pub(crate)`.
+pub(crate) fn revoke_invite<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    token_hash: String,
+) -> std::result::Result<(), String> {
+    parse_ok(route(app, Request::RevokeInvite { token_hash })?)
+}
+
+/// INVITE-S2 — INVITEE: self-admit into `group` with the RAW invite `token` (hex), recording it
+/// locally under `name`. No owner action; the relay records the referral attribution. `pub(crate)`.
+pub(crate) fn redeem_invite<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    group: String,
+    token: String,
+    name: String,
+) -> std::result::Result<(), String> {
+    parse_ok(route(app, Request::RedeemInvite { group, token, name })?)
 }
 
 #[tauri::command]

@@ -63,6 +63,10 @@ base64 = "0.22"
 #   already-present hasher directly nameable. (The selector drift tests use the same
 #   crate via dev-deps; this promotes it to a runtime dep for the one dynamic hash.)
 sha3 = "0.10"
+# INVITE-S2 (#72) — BLAKE3 for the group-invite token hash. The comms relay matches a redeemed
+#   raw token against the published `BLAKE3(token)` (comms-relay), so the owner-side publish MUST
+#   compute the SAME hash. Same crate the comms daemon uses; keeps the two sides byte-identical.
+blake3 = "1"
 # CORE-B1 — the wallet keystore crypto library (Option A / D-B1.1-1). Used ONLY
 #   for BIP39 create/import + BIP44 secp256k1 HD derivation (m/44'/60'/0'/0/i) +
 #   UnifiedKey signing/address derivation. We do NOT use its KeyManager /

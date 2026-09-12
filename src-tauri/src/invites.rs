@@ -1,18 +1,29 @@
-//! Group claimable invites (ADR-2026-08-30 D4).
+//! Group invites — INVITE-S2 self-admit (#72) + the CONNECT-S1 claim-back fallback (ADR-2026-08-30 D4).
 //!
-//! Invite-by-@handle without a directory: the owner mints a claimable invite (group + one-time
-//! token), stored device-local, and shares its link to the person over the social platform (the
-//! rendezvous is the DM — exactly where the @handle relationship lives). Citrate NEVER resolves a
-//! handle to an address. The invitee opens the link and, on accept, VOLUNTEERS their address in a
-//! claim (consent, D4); the owner verifies the one-time token and adds them via the normal
-//! roster path — the invitee's address becomes known only because they joined.
+//! Invite-by-@handle without a directory: the owner mints a one-time, group-bound token, stored
+//! device-local, and shares its link over the social platform (the rendezvous is the DM — exactly
+//! where the @handle relationship lives). Citrate NEVER resolves a handle to an address.
 //!
-//! (A fully-automated redemption — the invitee self-claiming at the relay — needs a relay
-//! claims-inbox in the comms daemon; this is the client-side flow that works today.)
+//! ## INVITE-S2 — self-admit (the primary path, owner 2026-09-12)
+//! On mint, the owner PUBLISHES `BLAKE3(token)` + an expiry to the relay (`comms::publish_invite`);
+//! the RAW token stays in the share link and never reaches the relay. The invitee opens the link and
+//! **self-admits in one click** (`group_invite_redeem` → `RedeemInvite`): a token-holder joins by MLS
+//! external commit with NO owner action, even if the owner is offline. The token is single-use / TTL /
+//! revocable, so a leaked link admits exactly one join. The relay records the referral attribution
+//! (inviter→joiner) automatically on a successful redeem; this module ALSO keeps a device-local audit
+//! copy (#73) the member can export — the relay tally is authoritative for airdrop scoring.
+//!
+//! ## CONNECT-S1 — claim-back (fallback)
+//! Retained: the invitee VOLUNTEERS their address in a sealed claim (consent, D4) and the owner
+//! approves it via the normal roster path. Used when self-admit isn't wanted (e.g. the owner prefers
+//! to vet each joiner). Both paths go through the same relay.
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::connections::random_state;
+
+/// INVITE-S2 default time-to-live for a published invite: 14 days (Unix ms are added at publish).
+const INVITE_TTL_MS: u64 = 14 * 24 * 60 * 60 * 1000;
 
 /// A one-time claimable invite the owner minted for a group. `for_handle` is a label only.
 #[derive(Serialize, Deserialize, Clone)]
@@ -46,6 +57,29 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// INVITE-S2 — the token hash the owner publishes to the relay. MUST be `BLAKE3(raw_token)` (hex) so
+/// it matches what `comms-relay::redeem_invite` computes from the invitee's raw token — otherwise the
+/// self-admit never matches. Distinct from `invite_seal::token_hash` (SHA-256), which keys the
+/// CONNECT-S1 claims-inbox (both sides client-computed there, so that one need not match the relay).
+fn blake3_token_hash(token: &str) -> String {
+    hex::encode(blake3::hash(token.as_bytes()).as_bytes())
+}
+
+/// Look up a group's human name from the owner's own group list (best-effort). Used to label the
+/// invitee's joined group; `None` if the daemon is unreachable or the group isn't listed. `async`
+/// (the daemon IPC is async) — a hiccup here is non-fatal, the invitee just gets a generic label.
+async fn group_name_of(app: &tauri::AppHandle, group: &str) -> Option<String> {
+    let names = crate::comms::groups_list(app.clone()).await.ok()?;
+    names.into_iter().find(|(id, _)| id == group).map(|(_, name)| name)
 }
 
 fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -83,7 +117,13 @@ fn write_pending(path: &std::path::Path, v: &[PendingInvite]) -> Result<(), Stri
     citrate_core_kit::fsutil::write_secret_file(path, &bytes).map_err(|e| e.to_string())
 }
 
-/// `group_invite_create` — mint a claimable invite for a group + share link. No address resolution.
+/// `group_invite_create` — mint a single-use, group-bound invite + share link. No address resolution.
+///
+/// INVITE-S2: publishes `BLAKE3(token)` + a 14-day expiry to the relay so a token-holder can
+/// SELF-ADMIT (`group_invite_redeem`) with no owner action — the raw token rides the link and never
+/// reaches the relay. The link ALSO carries the CONNECT-S1 ephemeral public key (`k=`) so the
+/// claim-back fallback still works. Fails CLOSED if the publish can't reach the relay (Rule 1 — a
+/// link nobody can redeem is not handed out as if it worked). Records a device-local audit event (#73).
 #[tauri::command]
 pub async fn group_invite_create(
     app: tauri::AppHandle,
@@ -94,18 +134,152 @@ pub async fn group_invite_create(
     // CONNECT-S1 — mint an ephemeral keypair; the public half rides the link so the invitee can seal
     // their claim to it (relay stays blind), the private half stays with the owner to open claims.
     let (priv_key, pub_key) = crate::invite_seal::new_invite_keypair();
-    let link = format!("citrate://invite?g={group}&t={token}&k={pub_key}");
+    // INVITE-S2 — publish the token HASH (never the raw token) + expiry so the invitee self-admits.
+    let token_hash = blake3_token_hash(&token);
+    let expires_at = now_unix_ms().saturating_add(INVITE_TTL_MS);
+    crate::comms::publish_invite(&app, group.clone(), token_hash.clone(), expires_at)?;
+    // Label the invitee's joined group with the real name when we can read it (best-effort).
+    let name_hex = match group_name_of(&app, &group).await {
+        Some(n) if !n.is_empty() => hex::encode(n.as_bytes()),
+        _ => String::new(),
+    };
+    let link = if name_hex.is_empty() {
+        format!("citrate://invite?g={group}&t={token}&k={pub_key}")
+    } else {
+        format!("citrate://invite?g={group}&t={token}&k={pub_key}&n={name_hex}")
+    };
     let mut invites = load(&app);
     invites.push(PendingInvite {
-        group,
+        group: group.clone(),
         token: token.clone(),
-        for_handle,
+        for_handle: for_handle.clone(),
         created_at: now_unix(),
         priv_key,
         link: link.clone(),
     });
     save(&app, &invites)?;
+    // #73 — the inviter's audit copy (provable intent; the relay tally is authoritative for scoring).
+    append_referral(&app, ReferralEvent {
+        role: "inviter".into(),
+        event: "invited".into(),
+        group,
+        group_name: group_name_hex_decode(&name_hex),
+        token_hash,
+        for_handle,
+        ts: now_unix(),
+    });
     Ok(InviteMinted { token, link })
+}
+
+/// `group_invite_redeem` — INVITEE self-admit (INVITE-S2). Parse the link (`g`, `t`, optional `n`),
+/// then self-admit into the group by external commit with the RAW token — no owner action, even if
+/// the owner is offline. Honest error if the daemon/relay is unreachable, the token is spent/expired,
+/// or the invite was revoked (Rule 1 — never a fabricated "joined"). Records the joiner's audit copy (#73).
+#[tauri::command]
+pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<(), String> {
+    let group = link_param(&link, "g").ok_or("invite link missing group")?;
+    let token = link_param(&link, "t").ok_or("invite link missing token")?;
+    let name = link_param(&link, "n")
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Invited group".to_string());
+    crate::comms::redeem_invite(&app, group.clone(), token.clone(), name.clone())?;
+    append_referral(&app, ReferralEvent {
+        role: "joiner".into(),
+        event: "joined".into(),
+        group,
+        group_name: name,
+        token_hash: blake3_token_hash(&token),
+        for_handle: String::new(),
+        ts: now_unix(),
+    });
+    Ok(())
+}
+
+/// Decode a hex-encoded group name back to a display string (empty on any failure).
+fn group_name_hex_decode(name_hex: &str) -> String {
+    if name_hex.is_empty() {
+        return String::new();
+    }
+    hex::decode(name_hex)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// #73 — the device-local referral audit log.
+//
+// The comms RELAY records the authoritative referral attribution (inviter→joiner) on every
+// successful redeem — that is the source of truth for first-airdrop scoring (server-blind, addresses
+// only). This is the MEMBER's own audit copy: what invites *I* minted, and which groups *I* joined via
+// an invite. It is a personal ledger (provable intent + the same `token_hash` the relay keys on), not
+// a competing tally — so it never fabricates a "someone joined" the owner's device can't actually
+// observe (Rule 1). Exportable so the member can hand over their own record during distribution.
+// ---------------------------------------------------------------------------
+
+/// One entry in the local referral ledger.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferralEvent {
+    /// This device's part: `inviter` (I minted an invite) | `joiner` (I self-admitted via one).
+    pub role: String,
+    /// `invited` | `joined` | `revoked`.
+    pub event: String,
+    /// The group id the invite is for.
+    pub group: String,
+    /// The group's human name when known (may be empty).
+    pub group_name: String,
+    /// `BLAKE3(token)` hex — ties this row to the relay's authoritative attribution record.
+    pub token_hash: String,
+    /// The handle the invite was labelled for (inviter rows only; a label, never a resolved address).
+    pub for_handle: String,
+    /// Unix seconds.
+    pub ts: u64,
+}
+
+fn referral_log_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("invites");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("referral-log.json"))
+}
+
+fn load_referrals(app: &tauri::AppHandle) -> Vec<ReferralEvent> {
+    match referral_log_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
+        Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+/// Append one audit event (best-effort — a logging hiccup must never fail the invite/redeem itself).
+/// Owner-only (`0600`): the log carries the labelled @handle and group ids.
+fn append_referral(app: &tauri::AppHandle, ev: ReferralEvent) {
+    let mut log = load_referrals(app);
+    log.push(ev);
+    if let Ok(path) = referral_log_path(app) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(&log) {
+            let _ = citrate_core_kit::fsutil::write_secret_file(&path, &bytes);
+        }
+    }
+}
+
+/// `group_referral_log` — the device-local referral ledger (newest last). The member's own audit copy;
+/// the relay's `referral_tally()` is authoritative for airdrop scoring.
+#[tauri::command]
+pub async fn group_referral_log(app: tauri::AppHandle) -> Result<Vec<ReferralEvent>, String> {
+    Ok(load_referrals(&app))
+}
+
+/// `group_referral_export` — the referral ledger as pretty JSON, for the member to save (audit copy).
+/// Honest empty array `[]` when nothing has been recorded (never a fabricated row, Rule 1).
+#[tauri::command]
+pub async fn group_referral_export(app: tauri::AppHandle) -> Result<String, String> {
+    serde_json::to_string_pretty(&load_referrals(&app)).map_err(|e| e.to_string())
 }
 
 /// A claim recovered from the server-blind inbox: the invitee volunteered this address under the
@@ -206,9 +380,13 @@ pub async fn group_invite_verify_consume(
     Ok(consumed)
 }
 
-/// `group_invite_revoke` — drop an outstanding invite the owner no longer wants claimable.
+/// `group_invite_revoke` — drop an outstanding invite the owner no longer wants redeemable. Revokes
+/// it on the RELAY too (INVITE-S2 `RevokeInvite`) so a leaked link can no longer self-admit — then
+/// drops the local record. If the relay revoke fails (daemon down), the call errors honestly and the
+/// local record is KEPT (Rule 1 — we don't report "revoked" while the link still redeems).
 #[tauri::command]
 pub async fn group_invite_revoke(app: tauri::AppHandle, group: String, token: String) -> Result<(), String> {
+    crate::comms::revoke_invite(&app, blake3_token_hash(&token))?;
     let mut invites = load(&app);
     invites.retain(|i| !(i.group == group && i.token == token));
     save(&app, &invites)
@@ -223,6 +401,40 @@ mod tests {
         assert!(link.starts_with("citrate://invite?"));
         assert!(link.contains("g=grp_abc"));
         assert!(link.contains("t=tok123"));
+    }
+
+    /// INVITE-S2 parity: the token hash the owner publishes MUST be `BLAKE3(token)` (hex, 32 bytes),
+    /// byte-for-byte what `comms-relay::redeem_invite` recomputes from the invitee's raw token —
+    /// otherwise self-admit never matches. This pins the algorithm + shape.
+    #[test]
+    fn blake3_token_hash_matches_relay() {
+        let h = super::blake3_token_hash("tok-abc");
+        assert_eq!(h.len(), 64, "32 bytes as hex");
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(h, hex::encode(blake3::hash(b"tok-abc").as_bytes()));
+        assert_eq!(super::blake3_token_hash("tok-abc"), super::blake3_token_hash("tok-abc"));
+        assert_ne!(super::blake3_token_hash("tok-abc"), super::blake3_token_hash("tok-abd"));
+    }
+
+    /// The publish token hash (BLAKE3) is deliberately DISTINCT from the CONNECT-S1 claims-inbox key
+    /// (`invite_seal::token_hash`, SHA-256) — mixing them would make self-admit silently fail to match.
+    #[test]
+    fn publish_hash_differs_from_claims_inbox_hash() {
+        assert_ne!(
+            super::blake3_token_hash("same-token"),
+            hex::encode(crate::invite_seal::token_hash("same-token"))
+        );
+    }
+
+    /// The group-name hex label round-trips (owner encodes it into the link; the invitee decodes it
+    /// as the local group label), and any garbage decodes to empty rather than panicking.
+    #[test]
+    fn group_name_hex_round_trips() {
+        let name = "Aperture Science 🧪";
+        let encoded = hex::encode(name.as_bytes());
+        assert_eq!(super::group_name_hex_decode(&encoded), name);
+        assert_eq!(super::group_name_hex_decode(""), "");
+        assert_eq!(super::group_name_hex_decode("zznothex"), "");
     }
 
     /// CORE-B-006 tripwire: the pending-invite store — which holds the plaintext
