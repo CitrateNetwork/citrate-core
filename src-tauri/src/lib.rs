@@ -39,6 +39,7 @@ mod ipfs;
 mod membership;
 mod memory;
 mod contract_deploy;
+mod telemetry;
 mod model;
 mod model_register;
 mod model_registry;
@@ -196,6 +197,9 @@ pub fn run() {
             // stops the double-LAUNCH case; this sweep stops the crash-orphan case. Only processes
             // under THIS bundle's binary dir are touched, never us.
             sweep_orphan_sidecars();
+            // WP-T.2 — install the local panic hook (appends crash context to a local file the
+            // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
+            telemetry::install_panic_hook(&app.handle().clone());
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
@@ -401,6 +405,8 @@ pub fn run() {
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
+            telemetry::diagnostics_bundle,
+            telemetry::telemetry_send,
             skill_registry::skills_registry_list,
             storage::storage_add,
             storage::storage_pin,
