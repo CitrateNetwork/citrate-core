@@ -84,24 +84,15 @@ export function StorageFiles({ store }: SurfaceProps) {
       store.toast("Adding files needs the desktop app.");
       return;
     }
-    const spec = ["@tauri-apps", "plugin-dialog"].join("/");
-    let open: ((o: unknown) => Promise<string | string[] | null>) | null = null;
+    // #65 — open the native macOS file picker via the Tauri dialog plugin (now installed +
+    // allowlisted `dialog:default`). Drag-and-drop still works as the alternative.
     try {
-      const mod = (await import(/* @vite-ignore */ spec)) as { open?: (o: unknown) => Promise<string | string[] | null> };
-      open = mod.open ?? null;
-    } catch {
-      open = null;
-    }
-    if (!open) {
-      store.toast("Drag files onto the box to add them.");
-      return;
-    }
-    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({ multiple: true });
       const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
       for (const p of paths) void addFile(p);
-    } catch {
-      store.toast("Couldn't open the file picker — drag files onto the box instead.");
+    } catch (e) {
+      store.toast("Couldn't open the file picker — drag files onto the box instead. (" + (e instanceof Error ? e.message : String(e)) + ")");
     }
   };
 
