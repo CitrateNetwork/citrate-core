@@ -680,9 +680,50 @@ export function Groups({ store, s }: SurfaceProps) {
             </div>
           )}
 
-          {/* ---- Roster ---- */}
+          {/* ---- People ---- */}
           {tab === "roster" && (
             <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "14px 24px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* #59 — Add people, front and center: the primary connect action. Search the people you
+                  already know (from any of your groups) → one-click add; or invite someone new. */}
+              {canManage && (() => {
+                const candidates = filterPeople(addablePeople(s.people, st.roster.map((r) => r.address)), pickerQ);
+                return (
+                  <div className="surface" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "14px 16px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 13.5, fontWeight: 500 }}>Add people</span>
+                      <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>search your people · one click</span>
+                    </div>
+                    <input className="input" placeholder="Search people you know to add…" value={pickerQ} onChange={(e) => setPickerQ(e.target.value)} />
+                    {candidates.length === 0 ? (
+                      <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                        {s.people.length === 0 ? "No one in your people yet — someone appears here once you share a group with them. Invite a new person below." : pickerQ ? "No match in your people. Invite them below, or add by address." : "Everyone you share a group with is already in this one — invite someone new below."}
+                      </span>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 220, overflowY: "auto" }}>
+                        {candidates.slice(0, 40).map((p) => {
+                          const face = faceOf(p.address);
+                          return (
+                            <div key={p.address} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: "var(--r-1)" }}>
+                              <span style={{ width: 26, height: 26, borderRadius: 999, background: "var(--srf-1)", border: "1px solid var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--tx-2)", flexShrink: 0 }}>{initialsOf(face ? face.handle : p.address)}</span>
+                              <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                                <span style={{ fontSize: 12.5, fontWeight: 500 }}>{face ? `@${face.handle}` : shortAddr(p.address)}</span>
+                                {p.groups.length > 0 && <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)" }}>{p.groups.map((g) => g.name).slice(0, 2).join(", ")}</span>}
+                              </span>
+                              <button className="btn btn-secondary btn-sm" onClick={() => { void addMemberToGroup(p.address); store.toast(`Adding ${face ? "@" + face.handle : shortAddr(p.address)} to the group…`); }}>Add</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div style={{ height: 1, background: "var(--line-1)", margin: "2px 0" }} />
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, color: "var(--tx-2)" }}>Someone new?</span>
+                      <button className="btn btn-primary btn-sm" onClick={doCreateShareLink} disabled={minting}>{minting ? "Creating…" : "Create an invite link"}</button>
+                      <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)" }}>one-time link · they tap Request to join · you approve</span>
+                    </div>
+                  </div>
+                );
+              })()}
               {/* GROW-S0 — "Grow this cluster": the shareable web invite link. Any member can share it
                   (the join still needs owner/admin approval at the relay). The link carries display data
                   + your address for referral credit (name, cluster, address) — never a key or sealed
@@ -767,41 +808,7 @@ export function Groups({ store, s }: SurfaceProps) {
                     );
                   })
                 )}
-                {/* CONNECT-S2 — the people-picker: add someone you already share a group with, one click,
-                    no address to paste. Sourced from your People directory minus this group's roster. */}
-                {canManage && (() => {
-                  const candidates = filterPeople(addablePeople(s.people, st.roster.map((r) => r.address)), pickerQ);
-                  return (
-                    <div style={{ borderTop: "1px solid var(--line-1)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 13.5, fontWeight: 500 }}>Add someone you know</span>
-                        <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>from your people · one click</span>
-                      </div>
-                      <input className="input" placeholder="Search your people to add…" value={pickerQ} onChange={(e) => setPickerQ(e.target.value)} />
-                      {candidates.length === 0 ? (
-                        <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", lineHeight: 1.6 }}>
-                          {s.people.length === 0 ? "No people yet — someone appears here once you share a group with them." : "Everyone you share a group with is already in this one."}
-                        </span>
-                      ) : (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 220, overflowY: "auto" }}>
-                          {candidates.slice(0, 40).map((p) => {
-                            const face = faceOf(p.address);
-                            return (
-                              <div key={p.address} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderRadius: "var(--r-1)" }}>
-                                <span style={{ width: 26, height: 26, borderRadius: 999, background: "var(--srf-1)", border: "1px solid var(--line-2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, color: "var(--tx-2)", flexShrink: 0 }}>{initialsOf(face ? face.handle : p.address)}</span>
-                                <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-                                  <span style={{ fontSize: 12.5, fontWeight: 500 }}>{face ? `@${face.handle}` : shortAddr(p.address)}</span>
-                                  {p.groups.length > 0 && <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)" }}>{p.groups.map((g) => g.name).slice(0, 2).join(", ")}</span>}
-                                </span>
-                                <button className="btn btn-secondary btn-sm" onClick={() => { void addMemberToGroup(p.address); store.toast(`Adding ${face ? "@" + face.handle : shortAddr(p.address)} to the group…`); }}>Add</button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                {/* Add-someone-you-know moved up into the prominent "Add people" card (#59). */}
                 {/* Advanced fallback — add by raw comms address (for someone not yet in your people). */}
                 {canManage && (
                   <details style={{ borderTop: "1px solid var(--line-1)" }}>
