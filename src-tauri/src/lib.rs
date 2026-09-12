@@ -175,6 +175,7 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // GROW-S1 — register the `citrate://` scheme so a join link opens the app and hands off the
         // invite (the reliable one-tap path for a .dmg; the web half shipped in citrate-landing #44).

@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 citrate-core-kit = { path = "../kit" }
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-store = "2"
 # W2.1 — in-app remote auto-updates. Fetches a signed release feed (GitHub Releases
