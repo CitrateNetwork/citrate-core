@@ -99,20 +99,25 @@ const NODE_VALIDATOR_REGISTRY_ENV: &str = "CITRATE_VALIDATOR_REGISTRY";
 const NODE_BLOCK_V2_VALUE: &str = "1";
 /// The fleet's validator activation height (fleet systemd env).
 ///
-/// `1000000`, confirmed 2026-09-09 from the live `citrate-node.service` on rpc-1
-/// (both the running process env and the systemd unit) via
-/// docs/FLEET_CONSENSUS_ENV_QUERY_2026-09-09.md. It sits FAR above the current
-/// tip (~78.6k), so §R' reward settlement is dormant — matching the on-chain
-/// truth that `ValidatorRegistry.emittedInEpoch` is 0 for every epoch.
+/// `2000`, read live from rpc-1 (142.93.58.145) on 2026-09-12 — both the running
+/// `citrate-node` process env and the `citrate-node.service.d/reroll.conf` drop-in —
+/// after the **`srp-s5-diskfix` reroll** recovered a disk-full halt. That reroll RESET
+/// the fleet activation to `2000` (the chain crossed 2000 without the producer halting).
 ///
-/// This was `2000` (correct on the pre-September chain) and WEDGED every fresh
-/// install on the 2026-09-07 re-roll: the node rejected empty block 2000 forever
-/// on a state-root mismatch, because it settled a reward the fleet does not. An
-/// A/B cold sync (one binary, one chain, only this value differing) proved 2000
-/// forks and an above-tip value syncs clean. Supersedes the older A001 commit
-/// message that said 300000. This value is READ from the fleet, never guessed —
-/// a re-roll can move it, and the failure mode is a silent fork.
-const NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE: &str = "1000000";
+/// CONSENSUS-CRITICAL: this MUST equal the fleet's `CITRATE_VALIDATOR_ACTIVATION_HEIGHT`
+/// exactly, or the app node computes a different state root once §R' reward settlement
+/// bites and SILENTLY FORKS. On THIS chain:
+///   - app node at `2000`     → settles §R' from block 2000, matches the fleet → syncs clean.
+///   - app node at `1000000`  → does NOT settle the reward the fleet settles from 2000
+///                              → forks at block 2000. This is exactly why **v0.2.6
+///                              (which shipped `1000000`) is SUPERSEDED and cannot sync
+///                              this chain.**
+///
+/// History: was `1000000` for the 2026-09-07 chain (where the fleet ran `1000000`, so a
+/// bundled `2000` forked); the sign flipped with the 2026-09-12 reroll. This value is
+/// READ from the fleet, never guessed — a re-roll can move it and the failure mode is a
+/// silent fork, so re-verify against the fleet after ANY future reroll.
+const NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE: &str = "2000";
 /// The live ValidatorRegistry on chain 40204 — canonical
 /// `citrate-chain/contracts/addresses/40204.json` (`ValidatorRegistry`), the same
 /// address the fleet producer runs.
