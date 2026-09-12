@@ -873,6 +873,21 @@ export interface LinkedIdentity {
   /** private (default) | groups-only. Never public unless the explicit on-chain opt-in is taken (ADR D2). */
   visibility: SocialVisibility;
   linkedAt: number;
+  /** #61 — published to the opt-in find-via-X directory (a separate, more public opt-in than visibility). */
+  directoryPublished: boolean;
+}
+
+/** #61 — a live directory binding for an exact handle (find-via-X lookup). Mirrors the Rust DirectoryHit. */
+export interface DirectoryHit {
+  address: string;
+  boundAt: number;
+}
+
+/** #61 — one directory search (typeahead) row. Mirrors the Rust DirectorySearchHit. */
+export interface DirectorySearchHit {
+  handle: string;
+  address: string;
+  displayName?: string;
 }
 /** A face a viewer may see for an address — a verified, group-visible handle (resolver output). */
 export interface ResolvedIdentity {
@@ -916,6 +931,23 @@ export interface SocialDomain {
   /** Accept a peer's binding from the relay. VERIFIES (sender==address + signature recovers) before
    *  storing; returns whether it was accepted. */
   ingestBinding(sender: string, binding: ExportedBinding): Promise<boolean>;
+  /** #61 — opt-in PUBLISH a verified link to the find-via-X directory. Opens a ceremony over the
+   *  directory-scoped statement the wallet signs (ADR D-7 exception; self-published only). Returns the
+   *  CeremonyView; signs NOTHING (approve at directoryPublishApprove). Requires a verified link. */
+  directoryPublishRequest(network: SocialNetwork): Promise<CeremonyView>;
+  /** #61 — approve a pending publish → the wallet signs, the binding POSTs to the authority with the
+   *  member's Bearer, and the link is marked published. Returns the updated link. Never a signature. */
+  directoryPublishApprove(id: string, rawAck: boolean): Promise<LinkedIdentity>;
+  /** #61 — open a ceremony to REVOKE (unpublish) a directory binding. Returns the CeremonyView. */
+  directoryUnpublishRequest(network: SocialNetwork): Promise<CeremonyView>;
+  /** #61 — approve a pending revoke → sign, tombstone at the authority, mark unpublished. */
+  directoryUnpublishApprove(id: string, rawAck: boolean): Promise<LinkedIdentity>;
+  /** #61 — drop a pending directory ceremony the human rejected. */
+  directoryForget(id: string): Promise<void>;
+  /** #61 — resolve an EXACT social handle to its published address, or null if nobody opted in. */
+  directoryLookup(platform: SocialNetwork, handle: string): Promise<DirectoryHit | null>;
+  /** #61 — typeahead over published handles (find-via-X). Honest-empty on no match. */
+  directorySearch(platform: SocialNetwork, query: string): Promise<DirectorySearchHit[]>;
 }
 
 /**

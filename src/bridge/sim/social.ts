@@ -41,5 +41,27 @@ export function simSocial(_host: SimHost): SocialDomain {
     async ingestBinding() {
       return false;
     },
+    async directoryPublishRequest() {
+      return desktopOnly();
+    },
+    async directoryPublishApprove(): Promise<LinkedIdentity> {
+      return desktopOnly();
+    },
+    async directoryUnpublishRequest() {
+      return desktopOnly();
+    },
+    async directoryUnpublishApprove(): Promise<LinkedIdentity> {
+      return desktopOnly();
+    },
+    async directoryForget(): Promise<void> {
+      /* sim: nothing pending */
+    },
+    async directoryLookup() {
+      // sim: no authority session — honest null (never a fabricated address, D-7 / Rule 1).
+      return null;
+    },
+    async directorySearch() {
+      return [];
+    },
   };
 }

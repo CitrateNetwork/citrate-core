@@ -246,6 +246,8 @@ pub fn run() {
             app.manage(wallet_link::build_link_state());
             // Social verify (ADR-2026-08-30): the pending-verification table, keyed by ceremony id.
             app.manage(social::build_social_bind_state());
+            // #61 — in-flight directory publish/revoke ceremonies (bounded by open ceremonies).
+            app.manage(social::build_directory_pending_state());
             // CORE-C1.1 — the NodeManager: the real citrate-node under the
             // SidecarSupervisor with an encrypted data dir. @rule8: the 32-byte
             // storage master key lives in the OS keyring (never on disk clear)
@@ -355,6 +357,15 @@ pub fn run() {
             // peer's (recover-verified before trusting) so cross-member faces resolve.
             social::social_export_binding,
             social::social_ingest_binding,
+            // #61 — self-published bindings directory (find-via-X): opt-in publish/revoke go through
+            // the SignatureCeremony (request → approve); lookup/search are Bearer-gated authority reads.
+            social::directory_publish_request,
+            social::directory_publish_approve,
+            social::directory_unpublish_request,
+            social::directory_unpublish_approve,
+            social::directory_forget,
+            social::directory_lookup,
+            social::directory_search,
             // Group claimable invites (ADR D4) — mint / list / verify-consume / revoke.
             invites::group_invite_create,
             invites::group_invite_redeem,

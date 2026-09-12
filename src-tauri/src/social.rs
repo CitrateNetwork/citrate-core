@@ -78,6 +78,11 @@ struct StoredLink {
     linked_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     binding: Option<Binding>,
+    /// #61 — whether this verified link is currently published to the opt-in find-via-X directory
+    /// (`auth.citrate.ai/directory`). Separate, MORE public opt-in than `visibility` (which is
+    /// group-scoped). Set true after a successful `directory_publish_approve`; false after revoke.
+    #[serde(default)]
+    directory_published: bool,
 }
 
 /// The claim-free record crossing the invoke boundary — `verified` is derived; NO signature.
@@ -89,6 +94,8 @@ pub struct LinkedIdentity {
     pub verified: bool,
     pub visibility: String,
     pub linked_at: u64,
+    /// #61 — published to the opt-in find-via-X directory (drives the publish toggle state).
+    pub directory_published: bool,
 }
 
 impl From<&StoredLink> for LinkedIdentity {
@@ -99,6 +106,7 @@ impl From<&StoredLink> for LinkedIdentity {
             verified: s.binding.is_some(),
             visibility: s.visibility.clone(),
             linked_at: s.linked_at,
+            directory_published: s.directory_published,
         }
     }
 }
@@ -322,6 +330,7 @@ fn do_link(
         visibility: "private".to_string(),
         linked_at,
         binding: None,
+        directory_published: false,
     };
     let li = LinkedIdentity::from(&stored);
     links.push(stored);
@@ -361,6 +370,69 @@ pub struct SocialBindManaged(pub SocialBindState);
 
 pub fn build_social_bind_state() -> SocialBindManaged {
     SocialBindManaged(SocialBindState::new())
+}
+
+// ---------------------------------------------------------------------------
+// #61 — self-published bindings directory (find-via-X). A deliberate, opt-in D-7 exception: only a
+// VERIFIED link (which required the OAuth ownership proof) can be published, and publishing is a
+// signed, human-approved action. The two proofs the authority checks are (1) the app's existing
+// verified IdentityBinding (`ownership_proof`) and (2) a fresh, directory-scoped `sig` produced HERE
+// via the SignatureCeremony (Rule 3). Squatting caveat (server can't verify handle OWNERSHIP, which is
+// device-local by design) is accepted for v1 per owner 2026-09-12 — the app OAuth-gate + human-approved
+// invites bound the blast radius to discovery/impersonation, not silent access.
+// ---------------------------------------------------------------------------
+
+/// One in-flight directory ceremony (publish or revoke), held against its ceremony id.
+#[derive(Clone)]
+struct PendingDirectory {
+    network: String,
+    handle: String,
+    address: String,
+    /// Present for a PUBLISH (the ownership proof + timestamp to POST on approve); None for a REVOKE.
+    publish: Option<PendingPublish>,
+}
+
+#[derive(Clone)]
+struct PendingPublish {
+    bound_at: u64,
+    ownership_nonce: String,
+    ownership_sig: String,
+}
+
+#[derive(Default)]
+pub struct DirectoryPendingState {
+    pending: Mutex<HashMap<String, PendingDirectory>>,
+}
+impl DirectoryPendingState {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, PendingDirectory>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Managed Tauri state wrapper for in-flight directory ceremonies.
+pub struct DirectoryPendingManaged(pub DirectoryPendingState);
+
+pub fn build_directory_pending_state() -> DirectoryPendingManaged {
+    DirectoryPendingManaged(DirectoryPendingState::default())
+}
+
+/// The lower-cased, `@`-stripped handle key — the directory's uniqueness/lookup key. MUST match the
+/// authority's `handleKeyOf` (citrate-identity directory.ts) byte-for-byte or a signature never matches.
+fn handle_key(handle: &str) -> String {
+    handle.trim_start_matches('@').to_lowercase()
+}
+
+/// The EXACT directory-scoped statement the wallet signs to PUBLISH. Ported byte-for-byte from the
+/// authority's `buildDirectoryPublishStatement` — deterministic + case-folded so both sides derive the
+/// identical string (lower-cased address, normalized handle key, integer bound_at).
+fn directory_publish_statement(platform: &str, handle_key: &str, address: &str, bound_at: u64) -> String {
+    format!("citrate-directory-binding:v1:{platform}:{handle_key}:{}:{bound_at}", address.to_lowercase())
+}
+
+/// The EXACT statement the wallet signs to REVOKE (no timestamp — re-revoking is idempotent). Ported
+/// from the authority's `buildDirectoryRevokeStatement`.
+fn directory_revoke_statement(platform: &str, handle_key: &str, address: &str) -> String {
+    format!("citrate-directory-revoke:v1:{platform}:{handle_key}:{}", address.to_lowercase())
 }
 
 /// The EIP-191 message the human sees + signs — plain, verbatim at the ceremony.
@@ -622,6 +694,216 @@ pub fn social_ingest_binding(
     Ok(true)
 }
 
+// ---------------------------------------------------------------------------
+// #61 — directory commands (opt-in find-via-X publish + lookup/search).
+// ---------------------------------------------------------------------------
+
+/// Load the verified binding for `network`, erroring if the link is missing or unverified. Only a
+/// verified link can be published (this IS the app-side OAuth gate the directory relies on).
+fn verified_binding(app: &tauri::AppHandle, network: &str) -> Result<(String, Binding), String> {
+    let links = load_links(app);
+    let link = links
+        .iter()
+        .find(|l| l.network == network)
+        .ok_or_else(|| format!("{network} is not linked"))?;
+    let binding = link
+        .binding
+        .clone()
+        .ok_or_else(|| format!("{network} must be verified before you can publish it"))?;
+    Ok((link.handle.clone(), binding))
+}
+
+/// `directory_publish_request` — open a ceremony over the directory-scoped PUBLISH statement the
+/// wallet will sign (opt-in find-via-X). Returns the [`CeremonyView`]; signs nothing (I-2). Requires a
+/// verified link (the OAuth ownership proof already happened); the ownership proof is reused as-is.
+#[tauri::command]
+pub fn directory_publish_request(
+    app: tauri::AppHandle,
+    dir: tauri::State<'_, DirectoryPendingManaged>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    network: String,
+) -> Result<CeremonyView, String> {
+    let (handle, binding) = verified_binding(&app, &network)?;
+    let hk = handle_key(&handle);
+    let bound_at = now_unix();
+    let statement = directory_publish_statement(&network, &hk, &binding.address, bound_at);
+    let view = ceremony.0.request(SignatureIntent {
+        origin: format!("directory:publish:{network}"),
+        kind: IntentKind::PersonalSign,
+        chain_id: CHAIN_ID,
+        raw: hex::encode(statement.as_bytes()),
+    });
+    dir.0.lock().insert(
+        view.id.clone(),
+        PendingDirectory {
+            network,
+            handle,
+            address: binding.address,
+            publish: Some(PendingPublish {
+                bound_at,
+                ownership_nonce: binding.nonce,
+                ownership_sig: binding.signature,
+            }),
+        },
+    );
+    Ok(view)
+}
+
+/// `directory_publish_approve` — the human approved: sign the directory statement at the ceremony,
+/// then POST the binding (ownership proof + fresh sig) to the authority with the member's Bearer.
+/// Marks the link published on success. Honest error on a rejected proof / stale write (Rule 1).
+#[tauri::command]
+pub fn directory_publish_approve(
+    app: tauri::AppHandle,
+    dir: tauri::State<'_, DirectoryPendingManaged>,
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    auth: tauri::State<'_, crate::oidc::AuthState>,
+    id: String,
+    raw_ack: bool,
+) -> Result<LinkedIdentity, String> {
+    let pending = dir
+        .0
+        .lock()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| "no pending directory publish for that request".to_string())?;
+    let publish = pending
+        .publish
+        .clone()
+        .ok_or_else(|| "that request is a revoke, not a publish".to_string())?;
+    let sig = ceremony
+        .0
+        .approve(&custody.0, &id, raw_ack)
+        .map_err(|e| e.to_string())?;
+    // Only drop the pending record once the sign succeeded (a raw-ack refusal can be retried).
+    dir.0.lock().remove(&id);
+    let sig_hex = format!("0x{}", sig.sig_hex);
+    auth.0
+        .directory_publish(
+            &pending.network,
+            &pending.handle,
+            &pending.address,
+            None,
+            publish.bound_at,
+            &publish.ownership_nonce,
+            &publish.ownership_sig,
+            &sig_hex,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut links = load_links(&app);
+    let out = {
+        let link = links
+            .iter_mut()
+            .find(|l| l.network == pending.network)
+            .ok_or_else(|| "the link was removed before publishing completed".to_string())?;
+        link.directory_published = true;
+        LinkedIdentity::from(&*link)
+    };
+    save_links(&app, &links)?;
+    Ok(out)
+}
+
+/// `directory_unpublish_request` — open a ceremony over the directory REVOKE statement (remove a
+/// published binding). Returns the [`CeremonyView`]; signs nothing.
+#[tauri::command]
+pub fn directory_unpublish_request(
+    app: tauri::AppHandle,
+    dir: tauri::State<'_, DirectoryPendingManaged>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    network: String,
+) -> Result<CeremonyView, String> {
+    let (handle, binding) = verified_binding(&app, &network)?;
+    let hk = handle_key(&handle);
+    let statement = directory_revoke_statement(&network, &hk, &binding.address);
+    let view = ceremony.0.request(SignatureIntent {
+        origin: format!("directory:revoke:{network}"),
+        kind: IntentKind::PersonalSign,
+        chain_id: CHAIN_ID,
+        raw: hex::encode(statement.as_bytes()),
+    });
+    dir.0.lock().insert(
+        view.id.clone(),
+        PendingDirectory { network, handle, address: binding.address, publish: None },
+    );
+    Ok(view)
+}
+
+/// `directory_unpublish_approve` — sign the revoke statement at the ceremony, tombstone the binding at
+/// the authority, and mark the link unpublished. Honest error on a failed revoke.
+#[tauri::command]
+pub fn directory_unpublish_approve(
+    app: tauri::AppHandle,
+    dir: tauri::State<'_, DirectoryPendingManaged>,
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
+    auth: tauri::State<'_, crate::oidc::AuthState>,
+    id: String,
+    raw_ack: bool,
+) -> Result<LinkedIdentity, String> {
+    let pending = dir
+        .0
+        .lock()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| "no pending directory revoke for that request".to_string())?;
+    if pending.publish.is_some() {
+        return Err("that request is a publish, not a revoke".to_string());
+    }
+    let sig = ceremony
+        .0
+        .approve(&custody.0, &id, raw_ack)
+        .map_err(|e| e.to_string())?;
+    dir.0.lock().remove(&id);
+    let sig_hex = format!("0x{}", sig.sig_hex);
+    auth.0
+        .directory_revoke(&pending.network, &pending.handle, &pending.address, &sig_hex)
+        .map_err(|e| e.to_string())?;
+    let mut links = load_links(&app);
+    let out = {
+        let link = links
+            .iter_mut()
+            .find(|l| l.network == pending.network)
+            .ok_or_else(|| "the link was removed before revoking completed".to_string())?;
+        link.directory_published = false;
+        LinkedIdentity::from(&*link)
+    };
+    save_links(&app, &links)?;
+    Ok(out)
+}
+
+/// `directory_forget` — drop a pending directory ceremony the human rejected.
+#[tauri::command]
+pub fn directory_forget(dir: tauri::State<'_, DirectoryPendingManaged>, id: String) -> Result<(), String> {
+    dir.0.lock().remove(&id);
+    Ok(())
+}
+
+/// `directory_lookup` — resolve an EXACT social handle to a published address (find-via-X). `None`
+/// when nobody opted in for that handle — never a guess (D-7). Bearer-gated in the authority.
+#[tauri::command]
+pub fn directory_lookup(
+    auth: tauri::State<'_, crate::oidc::AuthState>,
+    platform: String,
+    handle: String,
+) -> Result<Option<crate::oidc::DirectoryHit>, String> {
+    auth.0
+        .directory_lookup(&platform, handle.trim_start_matches('@'))
+        .map_err(|e| e.to_string())
+}
+
+/// `directory_search` — typeahead over published handles (find-via-X). Honest-empty on no match.
+#[tauri::command]
+pub fn directory_search(
+    auth: tauri::State<'_, crate::oidc::AuthState>,
+    platform: String,
+    query: String,
+) -> Result<Vec<crate::oidc::DirectorySearchHit>, String> {
+    auth.0
+        .directory_search(&platform, query.trim_start_matches('@'))
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,8 +959,10 @@ mod tests {
             visibility: "private".into(),
             linked_at: 1,
             binding: None,
+            directory_published: false,
         };
         assert!(!LinkedIdentity::from(&s).verified);
+        assert!(!LinkedIdentity::from(&s).directory_published);
         s.binding = Some(Binding {
             address: "0xabc".into(),
             nonce: "n".into(),
@@ -686,5 +970,29 @@ mod tests {
             bound_at: 2,
         });
         assert!(LinkedIdentity::from(&s).verified);
+    }
+
+    /// #61 — the handle key is lower-cased + `@`-stripped, matching the authority's `handleKeyOf`.
+    #[test]
+    fn handle_key_matches_authority() {
+        assert_eq!(handle_key("@Dana"), "dana");
+        assert_eq!(handle_key("dana"), "dana");
+        assert_eq!(handle_key("Dana_X.1"), "dana_x.1");
+    }
+
+    /// #61 — the directory-scoped statements MUST be byte-for-byte what citrate-identity's
+    /// `buildDirectoryPublishStatement` / `buildDirectoryRevokeStatement` derive, or the signature the
+    /// wallet produces never verifies server-side. Address is case-folded; publish carries `bound_at`.
+    #[test]
+    fn directory_statements_match_authority_format() {
+        let addr = "0xABCdef0000000000000000000000000000000001";
+        assert_eq!(
+            directory_publish_statement("x", "dana", addr, 1_699_999_999),
+            "citrate-directory-binding:v1:x:dana:0xabcdef0000000000000000000000000000000001:1699999999"
+        );
+        assert_eq!(
+            directory_revoke_statement("discord", "dana", addr),
+            "citrate-directory-revoke:v1:discord:dana:0xabcdef0000000000000000000000000000000001"
+        );
     }
 }

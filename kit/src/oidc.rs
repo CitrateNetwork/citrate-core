@@ -785,6 +785,12 @@ pub trait HttpClient: Send + Sync {
     fn post_json(&self, _url: &str, _bearer: Option<&str>, _body: &str) -> Result<String> {
         Err(AuthError::Network)
     }
+    /// `DELETE url` with a JSON body and an optional bearer → body string. Used by the #61 directory
+    /// revoke (a signed tombstone). Default-implemented as unsupported so existing fakes keep
+    /// compiling and fail LOUDLY rather than silently succeeding if driven down this path.
+    fn delete_json(&self, _url: &str, _bearer: Option<&str>, _body: &str) -> Result<String> {
+        Err(AuthError::Network)
+    }
 }
 
 /// Classify a `ureq` failure, PRESERVING what the authority actually said.
@@ -859,6 +865,27 @@ impl HttpClient for UreqClient {
         // opposite remedies, and both used to read as "could not reach".
         let mut resp = req.send(body).map_err(|e| classify_ureq(&e))?;
         // A body-read failure IS a transport fault — Network is correct here.
+        resp.body_mut()
+            .read_to_string()
+            .map_err(|_| AuthError::Network)
+    }
+
+    fn delete_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String> {
+        // ureq's `delete()` builder is body-less (`WithoutBody`); the directory revoke needs a JSON
+        // body, so build an `http::Request` and run it through a timeout-configured agent.
+        let mut builder = ureq::http::Request::builder()
+            .method("DELETE")
+            .uri(url)
+            .header("Content-Type", "application/json");
+        if let Some(tok) = bearer {
+            builder = builder.header("Authorization", format!("Bearer {tok}"));
+        }
+        let req = builder.body(body.to_string()).map_err(|_| AuthError::Network)?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(OIDC_HTTP_TIMEOUT))
+            .build()
+            .into();
+        let mut resp = agent.run(req).map_err(|e| classify_ureq(&e))?;
         resp.body_mut()
             .read_to_string()
             .map_err(|_| AuthError::Network)
@@ -961,6 +988,25 @@ impl AuthStatus {
             email: c.email.clone(),
         }
     }
+}
+
+/// #61 — a live directory binding for an exact handle (find-via-X lookup result). `boundAt` is the
+/// unix-seconds timestamp the binding was last published at. camelCase for the invoke boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryHit {
+    pub address: String,
+    pub bound_at: u64,
+}
+
+/// #61 — one directory search (typeahead) row. `handle` is the discovery key; the app decides display.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySearchHit {
+    pub handle: String,
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// The process-wide auth manager. Owns the authority config, the HTTP seam, a
@@ -1526,6 +1572,116 @@ impl AuthManager {
         );
         self.http.post_json(&url, Some(&access), "{}")?;
         Ok(())
+    }
+
+    // --- #61: self-published bindings directory (find-via-X) --------------
+    // The directory is mounted on the authority (`{issuer}/directory/*`) and Bearer-gated, so these
+    // reuse the in-memory access token exactly like `wallet_set_canonical` — the token is NEVER
+    // returned to a caller, only the parsed result. The two publish PROOFS (the app's verified social
+    // IdentityBinding = ownership_proof, and a fresh directory-scoped `sig` from the SignatureCeremony)
+    // are assembled in citrate-core and passed IN; this layer only makes the authenticated call.
+
+    /// Publish (opt-in) a self-published `(platform, handle) ↔ address` binding. Returns the outcome
+    /// the authority reports (`"stored"` | `"unchanged"`). A 409 (a newer binding won) or 422 (a proof
+    /// failed) surfaces as an error (never a false "published", ADV-9 / Rule 1).
+    #[allow(clippy::too_many_arguments)]
+    pub fn directory_publish(
+        &self,
+        platform: &str,
+        handle: &str,
+        address: &str,
+        display_name: Option<&str>,
+        bound_at: u64,
+        ownership_nonce: &str,
+        ownership_sig: &str,
+        sig: &str,
+    ) -> Result<String> {
+        let (_sub, access) = self.session_sub_and_token()?;
+        let url = format!("{}/directory/bindings", self.cfg.issuer.trim_end_matches('/'));
+        let mut body = serde_json::json!({
+            "platform": platform,
+            "handle": handle,
+            "address": address,
+            "bound_at": bound_at,
+            "ownership_proof": { "nonce": ownership_nonce, "signature": ownership_sig },
+            "sig": sig,
+        });
+        if let Some(dn) = display_name.filter(|d| !d.is_empty()) {
+            body["display_name"] = serde_json::Value::String(dn.to_string());
+        }
+        let resp = self.http.post_json(&url, Some(&access), &body.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| AuthError::Network)?;
+        Ok(v.get("status").and_then(|s| s.as_str()).unwrap_or("stored").to_string())
+    }
+
+    /// Revoke (tombstone) this member's directory binding for `(platform, handle)`. `sig` is a fresh
+    /// signature over the directory revoke statement by the SAME address (assembled in citrate-core).
+    pub fn directory_revoke(&self, platform: &str, handle: &str, address: &str, sig: &str) -> Result<()> {
+        let (_sub, access) = self.session_sub_and_token()?;
+        let url = format!("{}/directory/bindings", self.cfg.issuer.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "platform": platform,
+            "handle": handle,
+            "address": address,
+            "sig": sig,
+        })
+        .to_string();
+        self.http.delete_json(&url, Some(&access), &body)?;
+        Ok(())
+    }
+
+    /// Look up the live binding for an EXACT handle. `None` when nobody published it (never a guess).
+    pub fn directory_lookup(&self, platform: &str, handle: &str) -> Result<Option<DirectoryHit>> {
+        let (_sub, access) = self.session_sub_and_token()?;
+        let url = format!(
+            "{}/directory/lookup?platform={}&handle={}",
+            self.cfg.issuer.trim_end_matches('/'),
+            urlencoding_sub(platform),
+            urlencoding_sub(handle),
+        );
+        let resp = self.http.get(&url, Some(&access))?;
+        let trimmed = resp.trim();
+        if trimmed.is_empty() || trimmed == "null" {
+            return Ok(None);
+        }
+        let v: serde_json::Value = serde_json::from_str(trimmed).map_err(|_| AuthError::Network)?;
+        // A miss also arrives as JSON `null`.
+        if v.is_null() {
+            return Ok(None);
+        }
+        let address = v.get("address").and_then(|a| a.as_str());
+        let bound_at = v.get("bound_at").and_then(|b| b.as_u64());
+        match (address, bound_at) {
+            (Some(a), Some(t)) => Ok(Some(DirectoryHit { address: a.to_string(), bound_at: t })),
+            _ => Ok(None),
+        }
+    }
+
+    /// Typeahead search — up to the authority's cap of live bindings whose handle starts with `query`.
+    /// Honest-empty on a blank/too-short prefix or no matches (never a fabricated row).
+    pub fn directory_search(&self, platform: &str, query: &str) -> Result<Vec<DirectorySearchHit>> {
+        let (_sub, access) = self.session_sub_and_token()?;
+        let url = format!(
+            "{}/directory/search?platform={}&q={}",
+            self.cfg.issuer.trim_end_matches('/'),
+            urlencoding_sub(platform),
+            urlencoding_sub(query),
+        );
+        let resp = self.http.get(&url, Some(&access))?;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(resp.trim()).unwrap_or_default();
+        Ok(arr
+            .into_iter()
+            .filter_map(|v| {
+                let handle = v.get("handle").and_then(|h| h.as_str())?.to_string();
+                let address = v.get("address").and_then(|a| a.as_str())?.to_string();
+                let display_name = v
+                    .get("display_name")
+                    .and_then(|d| d.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                Some(DirectorySearchHit { handle, address, display_name })
+            })
+            .collect())
     }
 
     /// The signed-in sub plus its access token. Both come from the live session;
