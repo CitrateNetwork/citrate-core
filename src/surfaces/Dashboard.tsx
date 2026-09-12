@@ -1,10 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import { useBlockNumber } from "wagmi";
-import { LoaderMark } from "../components/LoaderMark";
-import { ModelPicker } from "../components/ModelPicker";
-import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
-import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
-import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
+import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
 import { AppState, nodeLabel } from "../shell/state";
 import { citrate } from "../chain";
@@ -107,11 +102,6 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     },
   ];
 
-  // Chat runs on the built-in local demo agent today — neither the gateway nor a
-  // real local model is wired for inference yet (Settings → AI providers says so).
-  const chatBackendLabel = "local demo agent · preview";
-  const chatDotColor = "#ffbd10";
-
   const actRows = s.activity.map((a, i) => ({
     kind: a.kind,
     hashShort: short(a.hash),
@@ -139,77 +129,8 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     // Sort: unlocked first, then shortest first (audit: tutorials need ordering).
   }).sort((a, b) => (a.locked === b.locked ? a.minutes - b.minutes : a.locked ? 1 : -1));
 
-  const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
-  const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
-  const chatBusy = s.chatStatus !== "ready";
-  const showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === "ready";
-  // #30 — the Gemma model downloads in the background after onboarding; surface its
-  // progress here so a member who moved straight to the dashboard can see the pull.
-  const modelDownloading = s.modelState === "downloading" || s.modelState === "verifying";
-  const modelPct = s.modelTotalBytes > 0 ? Math.min(100, Math.round((s.modelDownloadedBytes / s.modelTotalBytes) * 100)) : 0;
-  // WP0.4 — the ModelRouter picker over the LIVE sources (local models from the shared
-  // modelsSlice + the always-ready gateway terminal). The chat + the Models section read one
-  // source of truth (modelsSlice.local). The resolved active is what the send path serves.
-  const models = modelsSlice.use();
-  const routerChoices = choicesFromSources(models.local, registryModelsToChoiceInput(models.registry));
-  const activeModel = store.routerActive(routerChoices);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const onPickModel = (id: string) => {
-    store.selectModel(id, routerChoices); // persist the router selection (phantom-safe)
-    const chosen = routerChoices.find((c) => c.id === id);
-    if (chosen?.source === "local") void sliceSelectModel(id); // switch the SERVED local model (restarts llama-server)
-    setPickerOpen(false);
-  };
-  // Fetch the router's live sources once on mount: local verified models + the on-chain
-  // ModelRegistry (WP0.2b). Honest-empty on a sim/failed read; the gateway is always present.
-  useEffect(() => {
-    void refreshLocalModels();
-    void refreshRegistryModels();
-  }, []);
-  const suggestions = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
-
-  const onSend = () => store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");
-
-  // WP4.1 — voice-to-text. On-device browser dictation (Chrome/Edge); honest fallback
-  // elsewhere. Finalized fragments append to the chat input; interim shows as a hint.
-  const dictation = useRef<Dictation | null>(null);
-  const [micOn, setMicOn] = useState(false);
-  const [micInterim, setMicInterim] = useState("");
-  useEffect(() => () => dictation.current?.stop(), []); // stop on unmount
-  const toggleMic = () => {
-    if (!dictation.current) {
-      dictation.current = createDictation({
-        onFinal: (frag) => {
-          const el = store.chatInputEl;
-          if (el) el.value = appendFinal(el.value, frag);
-          setMicInterim("");
-        },
-        onInterim: (t) => setMicInterim(t),
-        onError: (m) => { setMicOn(false); setMicInterim(""); store.toast(m); },
-        onEnd: () => setMicInterim(""),
-      });
-    }
-    const d = dictation.current;
-    if (!d.supported) {
-      store.toast("Dictation needs Chrome or Edge here — typing works everywhere");
-      return;
-    }
-    if (micOn) { d.stop(); setMicOn(false); setMicInterim(""); }
-    else { d.start(); setMicOn(true); }
-  };
-
-  // Auto-scroll the agent chat as responses stream (Luke 2026-09-11). The store's
-  // imperative scrollChat() runs in an rAF that fires BEFORE React commits the new
-  // token, so it perpetually lagged one token behind and never reached the true
-  // bottom. This effect runs POST-COMMIT (keyed on chatMsgs, a fresh array each
-  // token), so scrollHeight is current — the reliable follow. Gated on near-bottom
-  // so a user who scrolled up to read history is never yanked back down.
-  useEffect(() => {
-    const el = store.chatScrollEl;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 160) el.scrollTop = el.scrollHeight;
-  }, [s.chatMsgs, store]);
+  // The agent chat (transcript + model picker + voice + auto-scroll) now lives in the shared
+  // <AgentChat> component, mounted here and on the Agent surface (#62).
 
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: "100%", boxSizing: "border-box" }}>
@@ -231,118 +152,8 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 316px", gap: 16, flex: 1, minHeight: 420 }}>
-        {/* chat pane */}
-        <div className="surface" style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-            <span style={{ fontSize: 14, fontWeight: 500 }}>Agent</span>
-            <span style={{ flex: 1 }}></span>
-            <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 6, height: 6, borderRadius: 999, background: chatDotColor }}></span>
-              {chatBackendLabel}
-            </span>
-            {modelDownloading && (
-              <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--accent-text)", display: "inline-flex", alignItems: "center", gap: 5 }} data-testid="dash-model-dl">
-                <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }}></span>
-                {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
-              </span>
-            )}
-            {/* WP0.4 — the model chip: shows the RESOLVED backend (never a not-ready one) and
-                toggles the router picker. One click to change which model the agent runs on. */}
-            <button
-              className="mono"
-              data-testid="model-chip"
-              aria-expanded={pickerOpen}
-              onClick={() => setPickerOpen((v) => !v)}
-              style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "var(--srf-2)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
-            >
-              <span style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent)" }} aria-hidden></span>
-              {activeModel.label}
-              <span aria-hidden style={{ color: "var(--tx-3)" }}>{pickerOpen ? "▴" : "▾"}</span>
-            </button>
-          </div>
-          {pickerOpen && (
-            <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
-              <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />
-            </div>
-          )}
-          <div ref={(el) => { store.chatScrollEl = el; }} style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
-            {s.chatMsgs.map((m) => (
-              <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: m.who === "You" ? "var(--tx-3)" : "var(--accent-text)" }}>
-                  {m.who}
-                </span>
-                <span style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-1)", whiteSpace: "pre-wrap" }}>
-                  {m.text}
-                  {m.streaming && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
-                </span>
-                {m.chips && m.chips.length > 0 && (
-                  <span style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
-                    {m.chips.map((c, i) => {
-                      const bd = c.status === "declined" ? "var(--danger)" : c.status === "approved" ? "var(--ok)" : "var(--line-2)";
-                      const fg = c.status === "declined" ? "var(--danger)" : c.status === "approved" ? "var(--ok)" : "var(--tx-2)";
-                      return (
-                        <span key={i} className="mono" style={{ fontSize: 10, letterSpacing: ".05em", padding: "2px 8px", borderRadius: 999, border: "1px solid " + bd, color: fg, background: "transparent" }}>
-                          {c.label}
-                        </span>
-                      );
-                    })}
-                  </span>
-                )}
-              </div>
-            ))}
-            {chatThinking && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ width: 34, height: 34, display: "inline-block", flexShrink: 0 }}>
-                  <LoaderMark size={34} />
-                </span>
-                <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-                  {chatThinkingLabel}
-                </span>
-              </div>
-            )}
-          </div>
-          {showSuggestions && (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 16px 10px" }}>
-              {suggestions.map((label) => (
-                <button
-                  key={label}
-                  onClick={() => store.sendChat(label)}
-                  style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--tx-2)", background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: 999, padding: "5px 12px", cursor: "pointer" }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--line-1)", alignItems: "center" }}>
-            <span style={{ flex: 1, position: "relative", display: "flex" }}>
-              <input
-                ref={(el) => { store.chatInputEl = el; }}
-                className="input"
-                placeholder={micOn ? (micInterim || "Listening…") : "Ask about your node, wallet, or memory…"}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    store.sendChat((e.target as HTMLInputElement).value);
-                  }
-                }}
-                style={{ flex: 1 }}
-              />
-            </span>
-            <button
-              className={"btn " + (micOn ? "btn-secondary" : "btn-ghost")}
-              onClick={toggleMic}
-              title={micOn ? "Stop dictation" : "Dictate (on-device)"}
-              aria-pressed={micOn}
-              style={micOn ? { color: "var(--ok)", borderColor: "var(--ok)" } : undefined}
-            >
-              {micOn ? "● Mic" : "Mic"}
-            </button>
-            <button className="btn btn-primary" onClick={onSend} disabled={chatBusy}>
-              Send
-            </button>
-          </div>
-        </div>
+        {/* chat pane — shared component, also mounted on the Agent surface (#62) */}
+        <AgentChat store={store} s={s} />
 
         {/* right rail */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0, overflow: "auto" }}>

@@ -12,6 +12,7 @@
 // =====================================================================
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
+import { AgentChat } from "../components/AgentChat";
 import {
   agentSlice,
   refreshAgent,
@@ -219,6 +220,11 @@ export function Agent({ store, s }: SurfaceProps) {
 
           {tab === "overview" && (
             <>
+              {/* #62 — the chat, front and center on the Agent surface (same shared pane as the
+                  Dashboard). Talk to the agent here; skills/approvals/registry sit below. */}
+              <div style={{ display: "flex", height: 460, minHeight: 0 }}>
+                <AgentChat store={store} s={s} />
+              </div>
               {/* status */}
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
