@@ -198,3 +198,37 @@ fn resolve_by_id_reresolves_a_fresh_descriptor() {
     assert!(resolve_by_id(&http, "hf:acme/cool-gguf/missing.gguf", None).is_err());
     assert!(resolve_by_id(&http, "bundled:x", None).is_err()); // bundled has no catalog source
 }
+
+// --- #63: read_local_models — scan the models dir for verified on-disk GGUFs ---
+#[test]
+fn read_local_models_lists_only_verified_gguf_files() {
+    let dir = std::env::temp_dir().join(format!("cc-local-models-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // a.gguf — verified (has a status.json recording the earned verify) → listed
+    std::fs::write(dir.join("a.gguf"), vec![0u8; 10]).unwrap();
+    std::fs::write(dir.join("a.gguf.status.json"), r#"{"verified":true}"#).unwrap();
+    // b.gguf — present but NOT verified (no status.json) → skipped (router treats local as ready)
+    std::fs::write(dir.join("b.gguf"), vec![0u8; 20]).unwrap();
+    // c.gguf — status.json says NOT verified (interrupted verify) → skipped
+    std::fs::write(dir.join("c.gguf"), vec![0u8; 30]).unwrap();
+    std::fs::write(dir.join("c.gguf.status.json"), r#"{"verified":false}"#).unwrap();
+    // noise: a partial download + a non-model file → ignored
+    std::fs::write(dir.join("d.gguf.part"), vec![0u8; 5]).unwrap();
+    std::fs::write(dir.join("notes.txt"), b"nope").unwrap();
+
+    let models = read_local_models(&dir).expect("scan ok");
+    assert_eq!(models.len(), 1, "only the verified a.gguf is listed");
+    let m = &models[0];
+    assert_eq!(m.file, "a.gguf");
+    assert_eq!(m.id, "local:a.gguf");
+    assert_eq!(m.size_bytes, 10);
+    assert!(matches!(m.kind, crate::model::ModelKind::Gguf));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn read_local_models_missing_dir_is_honest_empty_not_error() {
+    let missing = std::path::Path::new("/no/such/models/dir/xyz");
+    assert_eq!(read_local_models(missing).unwrap().len(), 0);
+}
