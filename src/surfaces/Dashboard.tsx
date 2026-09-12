@@ -1,4 +1,4 @@
-import { useBlockNumber } from "wagmi";
+import { useBlockNumber, useReadContract } from "wagmi";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
 import { AppState, nodeLabel } from "../shell/state";
@@ -18,6 +18,15 @@ const rel = (ts: number) => {
   if (h < 24) return (h | 0) + "h";
   return ((h / 24) | 0) + "d";
 };
+
+// #66 — whole-network "Network validators" count. There's no all-p2p-node census on 40204
+// (per DGX), but the active consensus validator set IS on-chain and reads identically from
+// every node: ValidatorRegistry.activeCount() over the RPC already in the CSP. Honest source,
+// no new infra/CSP. (0x2655d9fb… on 40204; activeCount() selector 0x4331ed1f.)
+const VALIDATOR_REGISTRY = "0x2655d9fbbe599e75ff6e53790f99ebc9a20c93bf" as const;
+const ACTIVE_COUNT_ABI = [
+  { type: "function", name: "activeCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+] as const;
 
 const nodeColors: Record<string, string> = {
   off: "var(--tx-3)",
@@ -39,6 +48,14 @@ const nodeColors: Record<string, string> = {
  */
 export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   const { data: liveHeight, isPending: heightPending, error: heightError } = useBlockNumber({ watch: true, chainId: citrate.id });
+  // #66 — the active validator set (whole-network, on-chain). Honest "—" until it reads.
+  const { data: validatorCount } = useReadContract({
+    address: VALIDATOR_REGISTRY,
+    abi: ACTIVE_COUNT_ABI,
+    functionName: "activeCount",
+    chainId: citrate.id,
+    query: { refetchInterval: 60_000 },
+  });
 
   const effTier = s.entitlement === "lapsed" ? "free" : s.tier;
   // HONEST staked = REAL attributed stake (MembershipStakeVault.attributedStake →
@@ -85,6 +102,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
     { label: "Height", value: heightValue, sub: heightSub, color: "var(--tx-1)", tip: "eth_blockNumber", vsize: "21px" },
     { label: "Peers", value: s.node === "off" ? "—" : String(s.peers), sub: s.node === "off" ? "node off" : "direct P2P", color: "var(--tx-1)", tip: s.node === "off" ? "Unknown — your node is off" : "Direct P2P peers your node is dialed into (bootnodes + sequencer + discovered members) — not the whole network's node count (net_peerCount)", vsize: "21px" },
     { label: "Finality", value: s.finAge < 0 ? "—" : Math.round(s.finAge) + "s", sub: s.finAge < 0 ? "no source yet" : "checkpoint age", color: "var(--tx-1)", tip: "BFT checkpoint every ~50 blocks", vsize: "21px" },
+    { label: "Validators", value: validatorCount != null ? String(validatorCount) : "—", sub: validatorCount != null ? "network · active set" : "reading…", color: "var(--tx-1)", tip: "ValidatorRegistry.activeCount() — the active consensus validator set securing the whole network (on-chain, reads the same from every node), not this node's local peer count", vsize: "21px" },
     { label: "Node", value: nodeLabel(s.node), sub: "supervisor", color: nodeColors[s.node], tip: "node-agent /status", vsize: "16px" },
     { label: "Staked", value: staked > 0 ? fmtI(staked) : "—", sub: staked > 0 ? "SALT" : "no stake", color: "var(--tx-1)", tip: "LiquidStakingPool shares", vsize: "21px" },
     // The SUBTITLE used to read "not validating" whenever earnToday === 0 — i.e. it
@@ -135,7 +153,7 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   return (
     <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: "100%", boxSizing: "border-box" }}>
       {/* vitals strip */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 1, background: "var(--line-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-2)", overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, background: "var(--line-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-2)", overflow: "hidden" }}>
         {vitals.map((v) => (
           <div key={v.label} style={{ background: "var(--srf-1)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }} title={v.tip}>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)", whiteSpace: "nowrap" }}>
