@@ -39,6 +39,21 @@ describe("buildRoleNavigator — CONNECT-S4", () => {
     expect(rows[0].iManage).toBe(false);
   });
 
+  it("issue #55: a comms-keyed owner keeps manage rights on reload — no wallet, no session names", () => {
+    // The reload bug: the roster seat is keyed on the COMMS address, the wallet differs, and the
+    // session-only `createdIds`/names are empty after a refresh. Manage rights must come from the
+    // comms-self ↔ roster match ALONE, not from having created the group this session.
+    const rows = buildRoleNavigator(
+      groups.slice(0, 1),
+      { g1: roster([[SELF, "owner"], ["0xwalletnotroster", "member"]]) },
+      SELF,
+      {}, // no session names
+      [], // no created-this-session ids (the state after a reload)
+    );
+    expect(rows[0].myRole).toBe("owner");
+    expect(rows[0].iManage).toBe(true);
+  });
+
   it("iManage is true for owner/admin, false for member", () => {
     const rows = buildRoleNavigator(
       groups,

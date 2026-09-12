@@ -1577,7 +1577,13 @@ export class Store {
         names,
         Object.keys(names),
       );
-      this.setState({ people, myGroups, peopleState: "ready" });
+      // Persist the comms self-address (roster key) so the Groups surface can resolve "me" +
+      // "can I manage this group" durably across a reload — issue #55. Only store a real read
+      // (the seam fallback sets `self` to the wallet, which must NOT masquerade as commsAddr).
+      const commsPatch = self && self !== (this.identity().wallet || this.state.walletAddr || "").toLowerCase()
+        ? { commsAddr: self }
+        : {};
+      this.setState({ people, myGroups, peopleState: "ready", ...commsPatch });
     } catch {
       this.setState({ people: [], myGroups: [], peopleState: "unavailable" });
     } finally {

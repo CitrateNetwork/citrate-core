@@ -95,13 +95,22 @@ export function Groups({ store, s }: SurfaceProps) {
 
   const selected = st.groups.find((g) => g.id === st.selectedId) ?? null;
   const myWallet = typeof store.identity === "function" ? store.identity().wallet : "";
-  const myAddr = (myWallet || s.walletAddr || "").toLowerCase();
-  const myRole = st.roster.find((r) => r.address.toLowerCase() === myAddr)?.role ?? (selected && selected.owner.toLowerCase() === myAddr ? "owner" : "member");
-  // A group you created THIS session is yours to manage, even if the daemon keys your roster seat
-  // by a different address than your wallet (a known addressing seam). RBAC is still enforced at the
-  // relay — this only decides which controls the UI offers, never whether an action is authorized.
+  // "Me" is the COMMS address (the roster key), NOT the wallet. Using the wallet here demoted owners
+  // on every reload, because the roster never has a wallet-keyed seat (issue #55). Fall back to the
+  // wallet only until the comms address is known (a brief window before refreshPeople lands).
+  const myAddr = (s.commsAddr || myWallet || s.walletAddr || "").toLowerCase();
+  // The DURABLE role comes from the comms-keyed navigator (s.myGroups, built in refreshPeople by
+  // matching the comms self-address against every group's roster). It survives a reload with no
+  // dependence on session-only names. Fall back to the roster/owner match only while the navigator
+  // is still loading — never to the old wallet+iCreated heuristic, which was the bug.
+  const myGroupRow = selected ? s.myGroups.find((g) => g.id === selected.id) : undefined;
   const iCreated = !!(selected && st.names[selected.id]);
-  const canManage = myRole === "owner" || myRole === "admin" || iCreated;
+  const myRole =
+    myGroupRow?.myRole ??
+    st.roster.find((r) => r.address.toLowerCase() === myAddr)?.role ??
+    (selected && selected.owner.toLowerCase() === myAddr ? "owner" : "member");
+  // RBAC is still enforced at the relay — this only decides which controls the UI offers.
+  const canManage = myGroupRow ? myGroupRow.iManage : myRole === "owner" || myRole === "admin" || iCreated;
 
   // Verified, group-visible faces for the addresses on screen (ADR resolver). Self today;
   // cross-member when bindings are shared server-blind to groups. Fallback is the address avatar.
@@ -110,6 +119,9 @@ export function Groups({ store, s }: SurfaceProps) {
 
   useEffect(() => {
     void refreshGroups();
+    // Populate s.myGroups + s.commsAddr (the durable, comms-keyed role source) on mount so
+    // canManage is correct immediately on load/reload — not just after visiting People (#55).
+    void store.refreshPeople();
   }, []);
 
   useEffect(() => {

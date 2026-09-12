@@ -428,6 +428,14 @@ export interface AppState {
   coreMembershipUrl: string;
   walletAddr: string;
   /**
+   * This device's COMMS address (from `bridge.groups.selfAddress()`) — the device-sealed
+   * comms key that group rosters are keyed on, which is NOT the wallet. Set during
+   * `refreshPeople`; the durable identity for "is this me in the roster" + "can I manage
+   * this group" (issue #55 — using the wallet here demoted owners on reload). Empty until
+   * a real selfAddress() read lands (never fabricated).
+   */
+  commsAddr: string;
+  /**
    * This device's CUSTODY EOA (from `wallet.balances().address`) — the address
    * that actually signs, as opposed to `walletAddr`, which is the authority's
    * `wallet_address` CLAIM. They differ until the member links this wallet, and
@@ -692,6 +700,7 @@ export function freshState(pid: string): AppState {
     dataDir: "~/.citrate/core",
     coreMembershipUrl: "https://core-membership.vercel.app",
     walletAddr: makeAddr(P.name),
+    commsAddr: "",
     custodyAddr: "",
     socketPath: "~/.citrate/core/memory/" + first + ".sock",
     deviceId: "dev_" + makeAddr(P.name + "::device").slice(2, 12),
@@ -848,7 +857,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   // PII is written to localStorage.
   "liquid", "selfStake", "bondedStake", "earnVal", "earnPin", "earnComp", "earnToday", "claimable", "activity",
   "node", "nodeIntent", "syncPct", "peers", "gwKey", "rpc", "net", "cpuCap", "autolock", "sigPolicy", "channel",
-  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "socketPath", "activeModelId",
+  "telemetry", "storageMode", "coachDone", "dataDir", "coreMembershipUrl", "s5StakeWei", "s5BondStatus", "walletAddr", "commsAddr", "socketPath", "activeModelId",
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
