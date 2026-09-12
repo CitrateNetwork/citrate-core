@@ -283,15 +283,56 @@ fn normalize_sha256(raw: &str) -> Option<String> {
 // Tauri command surface. Frozen NAMES (lib.rs); bodies here.
 // ---------------------------------------------------------------------------
 
-fn not_wired(cmd: &str) -> Result<(), String> {
-    Err(format!("model_catalog::{cmd} is not wired yet (CX-S1 scaffold)"))
+/// Scan the models dir and return every VERIFIED, on-disk GGUF as a `ModelDescriptor`, so the
+/// router + Models list represent the models actually on this machine (#63). Pure over a dir so
+/// it is unit-tested without an app handle.
+///
+/// Only VERIFIED files are listed (`is_file_ready`: present + `<file>.status.json` records the
+/// earned verify) — the router treats `local` as ready-to-serve, so offering an unverified /
+/// half-downloaded / hand-placed file would be a choice `model_catalog_select` then refuses. A
+/// missing dir is an honest empty list (no models yet), never an error. Importing + verifying a
+/// hand-placed GGUF is a separate follow-on.
+pub fn read_local_models(dir: &std::path::Path) -> Result<Vec<ModelDescriptor>, String> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("read models dir: {e}"))?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
+            continue; // skip .part / .status.json / non-model files
+        }
+        let Some(file) = path.file_name().and_then(|f| f.to_str()).map(String::from) else {
+            continue;
+        };
+        if !crate::model::is_file_ready(dir, &file) {
+            continue; // present but not verified-Ready → not a selectable choice
+        }
+        let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        out.push(ModelDescriptor {
+            id: format!("local:{file}"),
+            source: ModelSource::Bundled,
+            repo: String::new(),
+            file,
+            revision: None,
+            size_bytes,
+            // The pinned sha isn't retained on disk (status.json records only the earned verify);
+            // the router doesn't need it for a local, already-verified file.
+            sha256: String::new(),
+            kind: ModelKind::Gguf,
+        });
+    }
+    out.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok(out)
 }
 
-/// Locally-present, verified models. S1.6 (local registry) fills this in; until then it is an
-/// honest `not wired` stub rather than a half-true guess at what's on disk.
+/// **Command — model_catalog_local.** The verified models on this machine (the models dir under
+/// the app data dir). `AppHandle` is injected by Tauri (the JS call passes no args).
 #[tauri::command]
-pub fn model_catalog_local() -> Result<Vec<ModelDescriptor>, String> {
-    not_wired("local").map(|()| Vec::new())
+pub fn model_catalog_local(app: tauri::AppHandle) -> Result<Vec<ModelDescriptor>, String> {
+    use tauri::Manager;
+    let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    read_local_models(&models_dir)
 }
 
 /// Search a connected source (`"hf"` | `"github"`) for downloadable GGUF models. Public repos
