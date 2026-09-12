@@ -474,7 +474,7 @@ export function Groups({ store, s }: SurfaceProps) {
   const clErr = cl.error;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "248px minmax(0,1fr)", minHeight: "100%", boxSizing: "border-box" }}>
+    <div style={{ display: "flex", flexDirection: "column", minHeight: "100%", boxSizing: "border-box" }}>
       {/* GROW-S1 — the deep-link invite banner: a `citrate://join/...` link opened the app and handed
           us this invite (from the web join page). Show who invited you + to what; a full invite-token
           link gets a one-click "Request to join" (server-blind claim → owner approves). A token-less
@@ -535,100 +535,95 @@ export function Groups({ store, s }: SurfaceProps) {
           </div>
         );
       })()}
-      {/* ---------- left rail ---------- */}
-      <div style={{ borderRight: "1px solid var(--line-1)", background: "var(--srf-1)", padding: "18px 14px", display: "flex", flexDirection: "column", gap: 12, minHeight: 0, overflow: "auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 19 }}>Groups</span>
+      {/* ---------- top bar: group switcher (#59 — replaces the old 248px left rail so the
+           surface is one pane, not a sidebar next to a sidebar) ---------- */}
+      <div style={{ borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)", padding: "12px 20px", display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 19, flexShrink: 0 }}>Groups</span>
           <RelayStatusChip />
-          <button className="btn btn-ghost btn-sm" onClick={() => setCreateOpen((v) => !v)} style={{ marginLeft: "auto" }}>
-            {createOpen ? "Close" : "New"}
-          </button>
+          {/* horizontal group switcher — scrolls when there are many */}
+          {st.groups.length > 0 && (
+            <div style={{ display: "flex", gap: 6, overflowX: "auto", flex: 1, minWidth: 0, padding: "2px 0" }}>
+              {st.groups.map((g) => {
+                const on = g.id === st.selectedId;
+                return (
+                  <button
+                    key={g.id}
+                    onClick={() => { setTab("chat"); void selectGroup(g.id); }}
+                    title={groupLabel(st, g)}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "6px 12px", borderRadius: 999, border: "1px solid " + (on ? "var(--accent)" : "var(--line-1)"), background: on ? "var(--srf-2)" : "transparent", color: "var(--tx-1)", cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, fontSize: 12.5, fontWeight: on ? 500 : 400 }}
+                  >
+                    <span className="mono" style={{ width: 20, height: 20, borderRadius: 6, border: "1px solid var(--line-2)", background: "#fff", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 600 }}>{initialsOf(groupLabel(st, g))}</span>
+                    <span style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>{groupLabel(st, g)}</span>
+                    {g.members.length ? <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)" }}>{g.members.length}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexShrink: 0 }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setRedeemOpen((v) => !v)}>{redeemOpen ? "Close" : "Have an invite?"}</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setCreateOpen((v) => !v)}>{createOpen ? "Close" : "New group"}</button>
+          </span>
         </div>
 
+        {st.groups.length === 0 && (
+          <p style={{ fontSize: 12, lineHeight: 1.6, color: "var(--tx-3)", margin: 0 }}>
+            No groups yet. Create one to bring people together, or join one you've been pointed to.
+          </p>
+        )}
+
         {createOpen && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 12, background: "#fff" }}>
-            <span className="lbl">New group</span>
-            <input ref={nameRef} className="input" placeholder="Name" onKeyDown={(e) => e.key === "Enter" && doCreate()} />
-            <div style={{ display: "flex", gap: 6 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10, border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 12, background: "#fff" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: "1 1 200px", minWidth: 160 }}>
+              <span className="lbl">New group</span>
+              <input ref={nameRef} className="input" placeholder="Name" onKeyDown={(e) => e.key === "Enter" && doCreate()} />
+            </label>
+            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
               {KINDS.map((k) => (
-                <button key={k.id} className={"btn btn-sm " + (kind === k.id ? "btn-secondary" : "btn-ghost")} onClick={() => setKind(k.id)}>
+                <button key={k.id} className={"btn btn-sm " + (kind === k.id ? "btn-secondary" : "btn-ghost")} onClick={() => setKind(k.id)} title={k.note}>
                   {k.label}
                 </button>
               ))}
             </div>
-            <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{KINDS.find((k) => k.id === kind)!.note}</span>
-            <button className="btn btn-primary btn-sm" onClick={doCreate} disabled={st.creating}>{st.creating ? "Creating…" : "Create group"}</button>
-            <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-              <span className="lbl">Or join by id</span>
-              <div style={{ display: "flex", gap: 6 }}>
-                <input ref={joinRef} className="input" placeholder="grp_…" style={{ flex: 1, minWidth: 0 }} onKeyDown={(e) => e.key === "Enter" && doJoin()} />
-                <button className="btn btn-secondary btn-sm" onClick={doJoin}>Join</button>
-              </div>
+            <button className="btn btn-primary btn-sm" onClick={doCreate} disabled={st.creating} style={{ flexShrink: 0 }}>{st.creating ? "Creating…" : "Create"}</button>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 6, flex: "1 1 200px", minWidth: 180, borderLeft: "1px solid var(--line-1)", paddingLeft: 10 }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
+                <span className="lbl">Or join by id</span>
+                <input ref={joinRef} className="input" placeholder="grp_…" onKeyDown={(e) => e.key === "Enter" && doJoin()} />
+              </label>
+              <button className="btn btn-secondary btn-sm" onClick={doJoin} style={{ flexShrink: 0 }}>Join</button>
             </div>
           </div>
         )}
 
-        {st.error && (
-          <div role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.5, padding: "2px 2px" }}>{st.error}</div>
-        )}
-
-        {st.groups.length === 0 ? (
-          <p style={{ fontSize: 12, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "4px 2px" }}>
-            No groups yet. Create one to bring people together, or join one you've been pointed to.
-          </p>
-        ) : (
-          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-            {st.groups.map((g) => {
-              const on = g.id === st.selectedId;
-              return (
-                <li key={g.id}>
-                  <a
-                    href="#/groups"
-                    onClick={(e) => { e.preventDefault(); setTab("chat"); void selectGroup(g.id); }}
-                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: "var(--r-1)", textDecoration: "none", background: on ? "var(--srf-2)" : "transparent" }}
-                  >
-                    <span className="mono" style={{ width: 26, height: 26, borderRadius: "var(--r-1)", border: "1px solid var(--line-2)", background: "#fff", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>
-                      {initialsOf(groupLabel(st, g))}
-                    </span>
-                    <span style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ display: "block", fontSize: 12.5, fontWeight: on ? 500 : 400, color: "var(--tx-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{groupLabel(st, g)}</span>
-                      <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)" }}>
-                        {KINDS.find((k) => k.id === g.kind)?.label ?? g.kind}{g.members.length ? ` · ${g.members.length}` : ""}
-                      </span>
-                    </span>
-                  </a>
-                </li>
-              );
-            })}
-          </ul>
-        )}
         {/* D4 (invitee) — turn an invite link you were DM'd into a claim to send back. */}
-        <div style={{ marginTop: "auto", borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
-          {!redeemOpen ? (
-            <button onClick={() => setRedeemOpen(true)} style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--tx-3)", background: "none", border: "none", cursor: "pointer", padding: "2px", textDecoration: "underline" }}>
-              Have an invite link?
-            </button>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {redeemOpen && (
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 8, border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 12, background: "#fff" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: "1 1 260px", minWidth: 200 }}>
               <span className="lbl">Redeem an invite</span>
               <input ref={redeemRef} className="input mono" placeholder="citrate://invite?…" onKeyDown={(e) => e.key === "Enter" && doRedeemLink()} />
-              <button className="btn btn-secondary btn-sm" onClick={doRedeemLink}>Accept &amp; copy my claim</button>
-              <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)", lineHeight: 1.5 }}>copies a claim with your address to DM back — nobody looks up your address</span>
-            </div>
-          )}
-        </div>
+            </label>
+            <button className="btn btn-secondary btn-sm" onClick={doRedeemLink} style={{ flexShrink: 0 }}>Accept &amp; copy my claim</button>
+            <span className="mono" style={{ fontSize: 9, color: "var(--tx-3)", lineHeight: 1.5, flexBasis: "100%" }}>copies a claim with your address to DM back — nobody looks up your address</span>
+          </div>
+        )}
+
+        {st.error && (
+          <div role="alert" style={{ fontSize: 11.5, color: "var(--danger)", lineHeight: 1.5 }}>{st.error}</div>
+        )}
       </div>
 
-      {/* ---------- main ---------- */}
+      {/* ---------- main (full width now the rail is gone) ---------- */}
       {!selected ? (
-        <div className="lattice-dots" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 48, textAlign: "center" }}>
+        <div className="lattice-dots" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 48, textAlign: "center" }}>
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 400, fontSize: 26 }}>Your groups live here.</div>
           <p style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0, maxWidth: 460 }}>
             A group is a space with real roles — enforced at the relay, which only ever sees ciphertext. Reach stays in your groups. Talk, hold files together as a cluster, and grow it toward the network's milestones.
           </p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 24px 0", flexWrap: "wrap" }}>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 22, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{groupLabel(st, selected)}</span>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid var(--line-2)", color: "var(--tx-2)", flexShrink: 0 }}>
@@ -636,7 +631,7 @@ export function Groups({ store, s }: SurfaceProps) {
             </span>
             <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", flexShrink: 0 }}>{selected.id.slice(0, 12)}…</span>
             <span style={{ display: "flex", gap: 2, background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 2, marginLeft: "auto", flexShrink: 0 }}>
-              {([["chat", "Conversation"], ["roster", "Roster"], ["cluster", "Cluster"]] as const).map(([id, label]) => {
+              {([["chat", "Conversation"], ["roster", "People"], ["cluster", "Cluster"]] as const).map(([id, label]) => {
                 const on = tab === id;
                 return (
                   <button key={id} onClick={() => setTab(id)} style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: on ? 500 : 400, padding: "5px 12px", border: "none", borderRadius: 5, cursor: "pointer", background: on ? "var(--srf-2)" : "transparent", color: on ? "var(--tx-1)" : "var(--tx-2)" }}>
@@ -734,7 +729,7 @@ export function Groups({ store, s }: SurfaceProps) {
               })()}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Roster</span>
+                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Who's here</span>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>{st.roster.length} member{st.roster.length === 1 ? "" : "s"}</span>
                 </div>
                 {st.roster.length === 0 ? (
