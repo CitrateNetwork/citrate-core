@@ -327,7 +327,15 @@ impl ModelTransport for UreqModelTransport {
         // A ranged GET of the first byte returns Content-Range with the total; a
         // plain HEAD can be blocked by some CDNs, so we ask for bytes=0-0 and read
         // the total from Content-Range, falling back to Content-Length.
+        // Bounded timeouts (CX-S1): a HF resolve now 302-redirects to a signed Xet CDN URL
+        // (us.aws.cdn.hf.co). Without a connect/response timeout, a CDN that accepts the socket
+        // but never answers hangs the whole download FOREVER — the reported "downloads time out /
+        // never finish, logged as unfinished". This is a header-only probe, so a short global cap
+        // is safe and turns a hang into an honest, retryable error (Rule 1).
         let resp = ureq::get(&self.url)
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(45)))
+            .build()
             .header("Range", "bytes=0-0")
             .call()
             .map_err(|e| ModelError::Transport(e.to_string()))?;
@@ -350,7 +358,15 @@ impl ModelTransport for UreqModelTransport {
 
     fn get_from(&self, offset: u64) -> Result<Box<dyn Read + Send>> {
         let range = format!("bytes={offset}-");
+        // Bound the CONNECT + response-header phase only — NOT the body. A multi-GB stream over a
+        // slow link can legitimately take many minutes, so a global/body cap would kill a healthy
+        // download; but a Xet CDN that stalls before sending headers (the observed hang) must fail
+        // fast into a retryable error instead of blocking the download thread forever.
         let resp = ureq::get(&self.url)
+            .config()
+            .timeout_connect(Some(std::time::Duration::from_secs(30)))
+            .timeout_recv_response(Some(std::time::Duration::from_secs(90)))
+            .build()
             .header("Range", &range)
             .call()
             .map_err(|e| ModelError::Transport(e.to_string()))?;
