@@ -1,6 +1,6 @@
 [package]
 name = "citrate-core"
-version = "0.2.8"
+version = "0.2.9"
 description = "citrate-core — the federation desktop house (Tauri full-node app). T1."
 authors = ["Citrate Network"]
 edition = "2021"

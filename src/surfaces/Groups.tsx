@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SurfaceProps } from "./shared";
 import { bridge } from "../bridge";
+import { Markdown } from "../components/Markdown";
 import type { DirectorySearchHit, Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
 import { addablePeople, filterPeople } from "./peopleDirectory";
@@ -22,6 +23,7 @@ import {
   createGroup,
   selectGroup,
   sendMessage,
+  reloadMessages,
   assignRole,
   offboardMember,
   addMemberToGroup,
@@ -185,6 +187,16 @@ export function Groups({ store, s }: SurfaceProps) {
 
   // Control messages never render in the conversation.
   const visibleMessages = st.messages.filter((m) => !m.body.startsWith(SOCIAL_BINDING_MSG_PREFIX));
+
+  // While the chat is open on a group, drain the mailbox on an interval so messages from other members
+  // arrive live. `reloadMessages` folds drained messages into retained history (dedup + persist); an
+  // unreachable relay/daemon is an honest no-op, never a fabricated message.
+  useEffect(() => {
+    if (tab !== "chat" || !selected) return;
+    const id = selected.id;
+    const timer = setInterval(() => void reloadMessages(id), 4000);
+    return () => clearInterval(timer);
+  }, [tab, selected?.id]);
 
   // When the Cluster tab opens for a group, drive the cluster slice to that group + load files.
   useEffect(() => {
@@ -704,7 +716,7 @@ export function Groups({ store, s }: SurfaceProps) {
                             {isAgent && <span className="mono" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "1px 6px", borderRadius: 999, border: "1px dashed var(--info)", color: "var(--info)" }}>agent</span>}
                             <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)" }}>{m.ts ? new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
                           </span>
-                          <span style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-1)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.body}</span>
+                          <span style={{ fontSize: 13, lineHeight: 1.55, color: "var(--tx-1)", wordBreak: "break-word" }}><Markdown text={m.body} /></span>
                         </span>
                       </div>
                     );

@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, RegistrySkill } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill } from "../domains";
 import type { CeremonyView } from "../types";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
@@ -54,5 +54,20 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   async resolve(approve: boolean) {
     await invoke("hermes_resolve", { approve });
+  },
+};
+
+export const tauriAgentSkills: AgentSkillsDomain = {
+  list(): Promise<LocalSkill[]> {
+    return invoke<LocalSkill[]>("skills_local_list");
+  },
+  write(name, description, instructions): Promise<LocalSkill> {
+    return invoke<LocalSkill>("skills_local_write", { name, description, instructions });
+  },
+  read(name): Promise<string> {
+    return invoke<string>("skills_local_read", { name });
+  },
+  async remove(name) {
+    await invoke("skills_local_delete", { name });
   },
 };

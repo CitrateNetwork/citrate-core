@@ -28,7 +28,7 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createLocalProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
+import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
@@ -384,6 +384,7 @@ export class Store {
   /** True while an outage has already been reported, so we warn once, not every 30s. */
   private nodeOutageNotified = false;
   private modelTimer: ReturnType<typeof setInterval> | null = null;
+  private serveRouteTimer: ReturnType<typeof setInterval> | null = null;
   private nodeStarting = false;
   // In-flight guards — a slow daemon/RPC call must not let the 2s pollers or a re-mounted surface
   // stack concurrent calls that queue behind a blocked one (a pinwheel amplifier). Each async loop
@@ -714,10 +715,13 @@ export class Store {
       }
       const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
       if (kind === "local") {
-        // REAL local inference against the healthy llama-server (Rust-owned URL).
-        this.provider = createLocalProvider(() => this.snapshot(), (msgs, ctx) =>
-          bridge.chat.inferLocal(msgs, ctx),
+        // REAL local inference against the healthy llama-server (Rust-owned URL). The local model
+        // runs the FULL Hermes tool loop (groups/deploy/skills/memory) out of the box — same loop as
+        // the gateway, via ai_chat_local_tools. Tool calls execute through handleTool (writes gated).
+        this.provider = createLocalAgentProvider(() => this.snapshot(), (msgs, tools, ctx) =>
+          bridge.chat.inferLocalTools(msgs, tools, ctx),
         );
+        this.reflectProvider();
         return;
       }
       if (kind === "real") {
@@ -726,15 +730,29 @@ export class Store {
         this.provider = createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) =>
           bridge.chat.inferTools(pid, msgs, tools, ctx),
         );
+        this.reflectProvider();
         return;
       }
       // No local server + no configured default (or web-dev): the honest demo agent.
       this.provider = createDemoProvider(() => this.snapshot());
+      this.reflectProvider();
     } catch {
       // Honest no-op: providerStatus unavailable (web shim / failed read) — keep
       // the built-in demo agent rather than a fabricated provider.
       this.provider = createDemoProvider(() => this.snapshot());
+      this.reflectProvider();
     }
+  }
+
+  /** Surface the current provider's honest label + kind into state so the chat header reflects what
+   *  actually answers (local llama-server / gateway / built-in demo) instead of a hardcoded string. */
+  private reflectProvider(): void {
+    const p = this.provider;
+    if (!p) return;
+    // local → local; gateway (real/agentic) → real; anything else → the honest demo.
+    const kind: "local" | "real" | "demo" =
+      p.kind === "local" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
+    this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
   }
 
   /**
@@ -1387,6 +1405,10 @@ export class Store {
     this.nodeTimer = null;
     if (this.nodeWatchdog) clearInterval(this.nodeWatchdog);
     this.nodeWatchdog = null;
+    if (this.modelTimer) clearInterval(this.modelTimer);
+    this.modelTimer = null;
+    if (this.serveRouteTimer) clearInterval(this.serveRouteTimer);
+    this.serveRouteTimer = null;
   }
 
   // ---------- helpers ----------
@@ -1990,6 +2012,102 @@ export class Store {
       result = formatJournalForAgent(this.state.jPages || [], args.page, today);
     } else if (call.name === "docs_link") {
       result = "ok";
+    } else if (call.name === "node_status") {
+      try {
+        result = JSON.stringify(await bridge.node.status());
+      } catch (e) {
+        result = "node status unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "staking_status") {
+      try {
+        result = JSON.stringify(await bridge.wallet.balances());
+      } catch (e) {
+        result = "wallet read unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "groups_list") {
+      try {
+        result = JSON.stringify(await bridge.groups.list());
+      } catch (e) {
+        result = "groups unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "group_roster") {
+      try {
+        result = JSON.stringify(await bridge.groups.roster(args.group || ""));
+      } catch (e) {
+        result = "roster unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "group_create") {
+      try {
+        const kind = ["channel", "dm", "forum"].indexOf(args.kind) >= 0 ? (args.kind as "channel" | "dm" | "forum") : "channel";
+        const g = await bridge.groups.create(kind, args.name || "New group");
+        result = "created group “" + g.name + "” (id " + g.id + "). It's end-to-end encrypted; invite people next.";
+      } catch (e) {
+        result = "couldn't create the group: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "group_invite") {
+      try {
+        const { link } = await bridge.invites.create(args.group || "", args.forHandle || "shared link");
+        result = "one-click self-admit invite link (share it; whoever opens it joins in a click, no approval): " + link;
+      } catch (e) {
+        result = "couldn't mint an invite: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "directory_find") {
+      try {
+        const platform = args.platform === "discord" ? "discord" : "x";
+        const hits = await bridge.social.directorySearch(platform, (args.query || "").replace(/^@/, ""));
+        result = hits.length ? JSON.stringify(hits) : "nobody with that handle has opted into the directory (Citrate never resolves a handle without consent).";
+      } catch (e) {
+        result = "directory unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "skills_list") {
+      // Both catalogs: the on-chain SkillRegistry AND the local instruction-skills the agent authored.
+      const [onChain, local] = await Promise.all([
+        bridge.agentHarness.registrySkills().catch(() => []),
+        bridge.agentSkills.list().catch(() => []),
+      ]);
+      result = JSON.stringify({ onChain, local });
+    } else if (call.name === "skill_write") {
+      // WRITE (local file only — no chain/keys). Author a reusable instruction-skill on this device.
+      try {
+        const skill = await bridge.agentSkills.write(
+          String(args.name || ""),
+          String(args.description || ""),
+          String(args.instructions || ""),
+        );
+        result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
+      } catch (e) {
+        result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "skill_run") {
+      // Load the authored playbook back into the loop; the model then executes it with its tools.
+      try {
+        const body = await bridge.agentSkills.read(String(args.name || ""));
+        result = `Running skill "${args.name}". Follow these steps now, using your tools; any chain/write step still needs the member's approval:\n\n${body}`;
+      } catch (e) {
+        result = "couldn't load that skill: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "models_list") {
+      try {
+        const [reg, local] = await Promise.all([
+          bridge.modelsCatalog.registry().catch(() => []),
+          bridge.modelsCatalog.local().catch(() => []),
+        ]);
+        result = JSON.stringify({ onChain: reg, local });
+      } catch (e) {
+        result = "model list unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "contract_deploy") {
+      // WRITE: assemble the creation tx as a PENDING ceremony the member approves (Rule 3).
+      try {
+        const view = await bridge.contracts.deploy({
+          bytecodeHex: args.bytecodeHex || "",
+          ...(args.constructorArgsHex ? { constructorArgsHex: args.constructorArgsHex } : {}),
+        });
+        this.openWalletReview("deploy", "Deploy contract", view);
+        result = "Proposed the contract deploy — it's waiting in the Signature Ceremony. Approve it to broadcast the creation tx to 40204; I never deploy on your behalf.";
+      } catch (e) {
+        result = "couldn't prepare the deploy: " + (e instanceof Error ? e.message : String(e));
+      }
     }
     const label =
       call.name.replace("_", ".") +
@@ -2314,13 +2432,9 @@ export class Store {
       // best-effort (a missing/failed llama-server binary is caught, chat stays on
       // its honest fallback). Re-select the provider once the server is healthy.
       if (BRIDGE_MODE === "tauri" && st.state === "ready") {
-        try {
-          await bridge.model.serveStart();
-          await this.rebuildProvider();
-        } catch {
-          /* honest no-op: no local server (binary missing / spawn failed) → chat
-             stays on the gateway/demo fallback rather than a fabricated answer */
-        }
+        // Spawn + route once healthy (idempotent; polls readiness so it doesn't pick demo while the
+        // server is still cold-loading, and doesn't require an app restart to switch to local).
+        void this.serveLocalAndRoute();
       }
     } catch {
       /* honest no-op: a failed poll keeps the last real status, never a sim number */
@@ -2364,8 +2478,9 @@ export class Store {
       await this.refreshModel(); // reads the EARNED `ready` from the bridge
       if (this.state.modelState === "ready") {
         this.toast("Local model verified — SHA-256 matched. Chat can run on-device.");
-        // Best-effort: spin up the llama-server sidecar so chat routes locally.
-        void bridge.model.serveStart().catch(() => {/* honest: gateway fallback until bundled */});
+        // Spawn llama-server AND route chat to it once it's healthy (the cold-load takes tens of
+        // seconds; serveLocalAndRoute polls readiness before switching the provider off demo).
+        void this.serveLocalAndRoute();
       }
       this.stopModelPoll();
     } catch (e) {
@@ -2414,6 +2529,48 @@ export class Store {
       clearInterval(this.modelTimer);
       this.modelTimer = null;
     }
+  }
+
+  /**
+   * Spawn the local llama-server for a verified model, then route chat to it ONCE IT IS HEALTHY.
+   *
+   * WHY THIS EXISTS: `serveStart` only *spawns* llama-server; a cold start mmaps a multi-GB GGUF and
+   * builds the compute graph, which takes tens of seconds. The old code called `serveStart` then
+   * `rebuildProvider` immediately (server still loading → inferenceState not "ready" → the honest DEMO
+   * provider) and then STOPPED polling — so chat stayed on the canned demo agent for the whole session
+   * even though the model was serving. Here we spawn, then poll `inferenceState` until it reports
+   * "ready" and only THEN rebuild the provider (→ local). Idempotent (a running server → AlreadyRunning;
+   * the poll guard prevents overlaps); bounded (~80s cap) so a genuinely dead server falls back honestly.
+   */
+  async serveLocalAndRoute(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") return;
+    try {
+      await bridge.model.serveStart();
+    } catch {
+      // No local server (binary missing / spawn failed) — leave chat on its honest fallback.
+      await this.rebuildProvider();
+      return;
+    }
+    if (this.serveRouteTimer) return; // a poll is already waiting for the server to warm up
+    let tries = 0;
+    const check = async () => {
+      tries++;
+      let state = "demo";
+      try {
+        state = await bridge.chat.inferenceState(false);
+      } catch {
+        /* transient read failure — keep waiting */
+      }
+      if (state === "ready" || tries >= 40) {
+        if (this.serveRouteTimer) {
+          clearInterval(this.serveRouteTimer);
+          this.serveRouteTimer = null;
+        }
+        await this.rebuildProvider(); // now routes to local (or stays on fallback at the cap)
+      }
+    };
+    this.serveRouteTimer = setInterval(() => void check(), 2000);
+    void check();
   }
 
   /**

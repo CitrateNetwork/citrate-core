@@ -21,8 +21,13 @@ export interface GroupsState {
   selectedId: string | null;
   /** The selected group's roster. */
   roster: GroupMember[];
-  /** The selected group's messages, oldest first. */
+  /** The selected group's messages, oldest first (the retained history for that group). */
   messages: GroupMessage[];
+  /** Per-group retained history. `bridge.groups.messages` DRAINS the daemon mailbox, so each poll
+   *  returns only NEW messages and the daemon does not keep them — the app is the source of truth for
+   *  history. We accumulate here (deduped, capped) + echo the member's own sends, and persist locally
+   *  so a re-select or restart shows the conversation instead of an empty room. */
+  history: Record<string, GroupMessage[]>;
   /** Session id->name (from create) — the DTO carries no name; see the module note. */
   names: Record<string, string>;
   /** A group create is in flight. */
@@ -35,11 +40,74 @@ export interface GroupsState {
   error: string | null;
 }
 
+// Retained chat history lives on the member's own device (server-blind): the daemon DRAINS its mailbox
+// on Poll, so if we do not keep what we drain, a re-select or restart shows an empty room. We cap per
+// group to bound growth and persist across restarts.
+const HISTORY_KEY = "citrate.groups.history.v1";
+const HISTORY_CAP = 500;
+
+function loadHistory(): Record<string, GroupMessage[]> {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(HISTORY_KEY) : null;
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, GroupMessage[]>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveHistory(history: Record<string, GroupMessage[]>): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch {
+    /* quota / unavailable — retention degrades to in-session only, never throws at the caller */
+  }
+}
+
+/** Stable identity for dedup: prefer the daemon-assigned id, else sender+ts+body. */
+const msgKey = (m: GroupMessage): string => m.id || `${m.sender}|${m.ts}|${m.body}`;
+
+/**
+ * Merge freshly-drained (or optimistic self) messages into a group's retained history, dedup by key,
+ * keep oldest-first order, cap length, persist, and reflect into `messages` if that group is selected.
+ */
+function mergeIntoHistory(groupId: string, incoming: GroupMessage[]): void {
+  if (!incoming.length) return;
+  const s = groupsSlice.get();
+  const prior = s.history[groupId] ?? [];
+  const seen = new Set(prior.map(msgKey));
+  const fresh = incoming.filter((m) => !seen.has(msgKey(m)));
+  if (!fresh.length) return;
+  const merged = prior
+    .concat(fresh)
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    .slice(-HISTORY_CAP);
+  const history = { ...s.history, [groupId]: merged };
+  saveHistory(history);
+  const patch: Partial<GroupsState> = { history };
+  if (s.selectedId === groupId) patch.messages = merged;
+  groupsSlice.set(patch);
+}
+
+// The member's own comms address, cached — used to attribute an optimistic echo of a sent message so
+// the sender sees it immediately (the relay delivers only to OTHER members, never back to the sender).
+let selfAddrCache: string | null = null;
+async function selfAddress(): Promise<string> {
+  if (selfAddrCache) return selfAddrCache;
+  try {
+    selfAddrCache = await bridge.groups.selfAddress();
+  } catch {
+    selfAddrCache = "you";
+  }
+  return selfAddrCache;
+}
+
 const initial: GroupsState = {
   groups: [],
   selectedId: null,
   roster: [],
   messages: [],
+  history: loadHistory(),
   names: {},
   creating: false,
   sending: false,
@@ -75,30 +143,47 @@ export async function createGroup(kind: Group["kind"], name: string): Promise<vo
   }
 }
 
-/** Select a group and load its roster + messages. */
+/** Select a group and load its roster + messages. Shows retained history immediately, then drains. */
 export async function selectGroup(groupId: string): Promise<void> {
-  groupsSlice.set({ selectedId: groupId, roster: [], messages: [], error: null });
+  // Show any retained history for this group at once — never flash an empty room while the drain runs.
+  const retained = groupsSlice.get().history[groupId] ?? [];
+  groupsSlice.set({ selectedId: groupId, roster: [], messages: retained, error: null });
   try {
-    const [roster, messages] = await Promise.all([
+    const [roster, drained] = await Promise.all([
       bridge.groups.roster(groupId),
       bridge.groups.messages(groupId),
     ]);
     // Ignore a stale load if the user moved on before it resolved.
     if (groupsSlice.get().selectedId === groupId) {
-      groupsSlice.set({ roster, messages });
+      groupsSlice.set({ roster });
+      mergeIntoHistory(groupId, drained);
     }
   } catch (e) {
     if (groupsSlice.get().selectedId === groupId) groupsSlice.set({ error: message(e) });
   }
 }
 
-/** Send a message to the selected group, then reload its messages. */
+/** Send a message to the selected group. Echoes it locally at once, then relays + drains. */
 export async function sendMessage(body: string): Promise<void> {
   const groupId = groupsSlice.get().selectedId;
-  if (!groupId || !body.trim()) return;
+  const text = body.trim();
+  if (!groupId || !text) return;
   groupsSlice.set({ sending: true, error: null });
+  // Optimistic echo: the relay delivers a message only to OTHER members, never back to the sender,
+  // so the sender's own message must be shown locally or it appears to vanish.
+  const me = await selfAddress();
+  const ts = Date.now();
+  const optimistic: GroupMessage = {
+    // ts in the id keeps two identical messages distinct (otherwise dedup would collapse them to one).
+    id: `local-${me}-${ts}`,
+    groupId,
+    sender: me,
+    body: text,
+    ts,
+  };
+  mergeIntoHistory(groupId, [optimistic]);
   try {
-    await bridge.groups.send(groupId, body);
+    await bridge.groups.send(groupId, text);
     groupsSlice.set({ sending: false });
     await reloadMessages(groupId);
   } catch (e) {
@@ -106,11 +191,11 @@ export async function sendMessage(body: string): Promise<void> {
   }
 }
 
-/** Reload messages for a group (send follow-up / poll). No-op if the selection moved on. */
+/** Drain new messages for a group and fold them into retained history. No-op if selection moved on. */
 export async function reloadMessages(groupId: string): Promise<void> {
   try {
-    const messages = await bridge.groups.messages(groupId);
-    if (groupsSlice.get().selectedId === groupId) groupsSlice.set({ messages });
+    const drained = await bridge.groups.messages(groupId);
+    mergeIntoHistory(groupId, drained);
   } catch (e) {
     if (groupsSlice.get().selectedId === groupId) groupsSlice.set({ error: message(e) });
   }

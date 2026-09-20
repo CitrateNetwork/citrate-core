@@ -379,6 +379,11 @@ export interface AppState {
   chatMsgs: ChatMsg[];
   chatStatus: "ready" | "thinking" | "streaming" | "tool";
   chatBackend: "gateway" | "local";
+  /** Honest live label for the CURRENT chat provider (set by rebuildProvider from provider.label).
+   *  Reflects what actually answers — local llama-server, the gateway, or the built-in demo. */
+  chatProviderLabel: string;
+  /** The current provider's kind — drives the status-dot colour (green local/gateway, amber demo). */
+  chatProviderKind: "local" | "real" | "demo";
   storageMode: "lexical" | "dl" | "semantic";
   modelPct: number;
   /**
@@ -670,6 +675,8 @@ export function freshState(pid: string): AppState {
     chatMsgs: [],
     chatStatus: "ready",
     chatBackend: "gateway",
+    chatProviderLabel: "starting…",
+    chatProviderKind: "demo",
     storageMode: "lexical",
     modelPct: 0,
     modelState: "notPresent",

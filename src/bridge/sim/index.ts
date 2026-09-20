@@ -655,6 +655,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // through to the built-in demo agent, never a fabricated local reply).
         throw new Unavailable("chat", "inferLocal");
       },
+      async inferLocalTools() {
+        assertSimAllowed("chat.inferLocalTools");
+        throw new Unavailable("chat", "inferLocalTools");
+      },
       async inferenceState(): Promise<string> {
         assertSimAllowed("chat.inferenceState");
         // The web preview has no local model + no keyring → the honest demo route.

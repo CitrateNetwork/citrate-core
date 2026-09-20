@@ -1,6 +1,9 @@
 // CX bridge impl — agentHarness (C-22), SIM. Owned by lane s6 after S0. Honest-empty (Rule 1).
-import type { AgentHarnessDomain, AgentHarnessStatus } from "../domains";
+import type { AgentHarnessDomain, AgentHarnessStatus, AgentSkillsDomain, LocalSkill } from "../domains";
 import type { SimHost } from "./index";
+
+const slugify = (name: string): string =>
+  name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "skill";
 
 export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
   return {
@@ -31,6 +34,31 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     },
     async resolve() {
       /* sim: no sidecar effect to release */
+    },
+  };
+}
+
+// Local instruction-skills in web/dev: an in-memory store (no filesystem). Real, not fabricated —
+// it holds exactly what the agent authored this session.
+export function simAgentSkills(_host: SimHost): AgentSkillsDomain {
+  const store = new Map<string, { skill: LocalSkill; body: string }>();
+  return {
+    async list() {
+      return [...store.values()].map((v) => v.skill).sort((a, b) => a.name.localeCompare(b.name));
+    },
+    async write(name, description, instructions) {
+      const slug = slugify(name);
+      const skill: LocalSkill = { name: name.trim(), description: description.trim(), slug };
+      store.set(slug, { skill, body: instructions.trim() });
+      return skill;
+    },
+    async read(name) {
+      const hit = store.get(slugify(name));
+      if (!hit) throw new Error(`no local skill named "${name}"`);
+      return hit.body;
+    },
+    async remove(name) {
+      store.delete(slugify(name));
     },
   };
 }

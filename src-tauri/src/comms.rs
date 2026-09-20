@@ -669,6 +669,12 @@ fn ipc_round_trip(
 // ---------------------------------------------------------------------------
 
 static MANAGER: OnceLock<CommsMemberManager> = OnceLock::new();
+/// Serializes first-time manager init so `mgr.start()` (mint bearer → write the 0600 file → spawn the
+/// daemon) happens for EXACTLY ONE manager. Without it, two concurrent first calls (e.g. the relay-status
+/// chip + the groups list firing on Groups-open) each build + start their own manager, spawning two
+/// daemons and overwriting `member.bearer`; `get_or_init` then commits one manager whose in-memory
+/// bearer no longer matches the surviving daemon's file → the IPC handshake is rejected "unauthorized".
+static MANAGER_INIT: Mutex<()> = Mutex::new(());
 
 /// Stop the comms member-daemon if this session started it (called on graceful app teardown). Releases
 /// the MLS store LOCK so the next launch reopens cleanly instead of racing an orphan. Idempotent and a
@@ -844,6 +850,16 @@ fn ensure_started<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<&'static CommsMemberManager, String> {
     use tauri::Manager;
+    if let Some(m) = MANAGER.get() {
+        if !m.is_running() {
+            m.start().map_err(|e| e.to_string())?;
+        }
+        return Ok(m);
+    }
+    // Serialize first-time init (double-checked): only ONE thread builds + starts + commits the
+    // manager, so the committed manager's in-memory bearer is the one the spawned daemon read from the
+    // file. Concurrent callers block here, then take the fast path below (MANAGER now set).
+    let _init = MANAGER_INIT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(m) = MANAGER.get() {
         if !m.is_running() {
             m.start().map_err(|e| e.to_string())?;

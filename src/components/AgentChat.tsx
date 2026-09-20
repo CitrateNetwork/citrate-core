@@ -9,6 +9,7 @@
 // =====================================================================
 import { useEffect, useRef, useState } from "react";
 import { LoaderMark } from "./LoaderMark";
+import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
@@ -18,10 +19,10 @@ import type { AppState } from "../shell/state";
 
 const SUGGESTIONS = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
 
-// Chat runs on the built-in local demo agent today — neither the gateway nor a real local
-// model is wired for inference yet (Settings → AI providers says so). Honest label (Rule 1).
-const CHAT_BACKEND_LABEL = "local demo agent · preview";
-const CHAT_DOT_COLOR = "#ffbd10";
+// The header dot colour reflects the LIVE provider kind (store.reflectProvider): green when a real
+// backend answers (local llama-server or the gateway), amber for the built-in demo. The label text
+// comes straight from the active provider — honest about what actually replies (Rule 1).
+const DOT_FOR_KIND: Record<string, string> = { local: "#37d67a", real: "#37d67a", demo: "#ffbd10" };
 
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const models = modelsSlice.use();
@@ -91,8 +92,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         <span style={{ fontSize: 14, fontWeight: 500 }}>Agent</span>
         <span style={{ flex: 1 }}></span>
         <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--tx-3)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 6, height: 6, borderRadius: 999, background: CHAT_DOT_COLOR }}></span>
-          {CHAT_BACKEND_LABEL}
+          <span style={{ width: 6, height: 6, borderRadius: 999, background: DOT_FOR_KIND[s.chatProviderKind] ?? "#ffbd10" }}></span>
+          {s.chatProviderLabel}
         </span>
         {modelDownloading && (
           <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", color: "var(--accent-text)", display: "inline-flex", alignItems: "center", gap: 5 }} data-testid="dash-model-dl">
@@ -124,7 +125,9 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
               {m.who}
             </span>
             <span style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-1)", whiteSpace: "pre-wrap" }}>
-              {m.text}
+              {/* Render finished agent replies as markdown; keep the user's own text and in-flight
+                  streaming text plain (no re-parse per token, and never restyle what the user typed). */}
+              {m.who !== "You" && !m.streaming ? <Markdown text={m.text} /> : m.text}
               {m.streaming && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
             </span>
             {m.chips && m.chips.length > 0 && (

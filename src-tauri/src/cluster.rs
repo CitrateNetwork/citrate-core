@@ -444,6 +444,13 @@ pub struct ClusterPeerDto {
 // ---------------------------------------------------------------------------
 
 static MANAGER: OnceLock<ClusterDaemonManager> = OnceLock::new();
+/// Serializes first-time manager init so `mgr.start()` (mint bearer → write the bearer file → spawn the
+/// daemon) happens for EXACTLY ONE manager. Without it, two concurrent first calls (e.g. the cluster
+/// tab opening + a roster/file load) each build + start their own manager, spawning two daemons and
+/// overwriting `cluster.bearer`; `get_or_init` then commits one manager whose in-memory bearer no
+/// longer matches the surviving daemon's file → the IPC handshake is rejected "unauthorized". Mirrors
+/// the comms.rs fix (device identity + bearer scheme is the same).
+static MANAGER_INIT: Mutex<()> = Mutex::new(());
 
 /// Stop the cluster-daemon if this session started it (called on graceful app teardown). Removes the
 /// seed file and drops the mesh cleanly. Idempotent and a no-op if the daemon was never started.
@@ -466,6 +473,16 @@ fn libp2p_opts_from_env(seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton.
 fn ensure_started(app: &tauri::AppHandle) -> std::result::Result<&'static ClusterDaemonManager, String> {
     use tauri::Manager;
+    if let Some(m) = MANAGER.get() {
+        if !m.is_running() {
+            m.start().map_err(|e| e.to_string())?;
+        }
+        return Ok(m);
+    }
+    // Serialize first-time init (double-checked): only ONE thread builds + starts + commits the
+    // manager, so the surviving daemon's bearer always matches the committed manager's (no
+    // "unauthorized"). A concurrent caller that lost the race re-reads the committed manager here.
+    let _init = MANAGER_INIT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(m) = MANAGER.get() {
         if !m.is_running() {
             m.start().map_err(|e| e.to_string())?;

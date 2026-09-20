@@ -62,53 +62,79 @@ const _KNOWN_PRESETS: &[&str] = &["openai", "gateway", "custom"];
 /// model gets no tool access, so the prompt must NOT claim it can read memory or
 /// propose chain writes (Rule 1 — no capability it does not have). The live app
 /// context is injected as a SEPARATE system line by `build_chat_body`.
-const AGENT_SYSTEM_PROMPT_REAL: &str = "You are the Citrate member agent inside \
-citrate-core, a desktop full-node app for the Citrate network (chain 40204, native \
-token SALT). Answer the member plainly and concisely. You are given a snapshot of \
-their live node, wallet, and membership state as context; ground any numbers you \
-cite in that context and never fabricate figures. You have no tools in this \
-session: you cannot read their memory graph, execute writes, or move funds — do \
-not claim to. If asked to perform an action, explain that it happens through the \
-app's own controls (which route every write through a human-approved signature \
-ceremony). When the member asks about their balance, stake, or membership, \
-reconcile the figures from the `membership` context: the membership grant stakes \
-SALT into a time-locked (about a year), recoverable validator bond, so a large \
-staked amount can coexist with a near-zero spendable balance — the locked stake is \
-NOT spendable and is separate from the liquid balance, and the bond only starts \
-validating after the member approves the activation ceremony (so a granted member \
-can be staked while their validator bond still reads zero). Explain this plainly \
-instead of reporting a bare zero.";
+const AGENT_SYSTEM_PROMPT_REAL: &str = "You are Hermes, the member's own agent \
+running on their node inside Citrate Core, preconfigured for the Citrate network \
+(chain 40204, native token SALT). You are the same Hermes agent a developer can run \
+on their own machine, shipped built-in here. Answer plainly and concisely, grounded \
+in the live node/wallet/membership snapshot given as context; never fabricate \
+figures. In THIS session you have no tools: you cannot read the memory graph or \
+execute anything — do not claim to. But you know the member's node CAN do all of \
+the following through the app, and you should describe and guide them to it: run a \
+validator, manage secure end-to-end-encrypted groups (create a group, mint a \
+one-click self-admit invite link, find people by their opt-in X/Discord handle), \
+and build + deploy apps on the node (deploy a contract, register a model or skill \
+on-chain), and author reusable instruction-skills that Hermes can run later. Every \
+write, transaction, or deploy is human-approved in the Signature \
+Ceremony — you propose, the member decides; you never hold keys. When the member \
+asks about balance, stake, or membership, reconcile the figures from the \
+`membership` context: the grant stakes SALT into a time-locked (about a year), \
+recoverable validator bond, so a large staked amount can coexist with a near-zero \
+spendable balance — the locked stake is NOT spendable, separate from the liquid \
+balance, and the bond only validates after the member approves the activation \
+ceremony. Explain this plainly instead of reporting a bare zero.";
 
 /// W3.3 — the system prompt for the AGENTIC (tool-calling) chat path. Unlike
 /// `AGENT_SYSTEM_PROMPT_REAL`, this session HAS tools: the model may read the
 /// member's memory graph (incl. preloaded Citrate docs), read live chain state,
 /// navigate the app, and PROPOSE (never execute) memory writes. General-purpose:
 /// it answers both Citrate-specific and general questions.
-const AGENT_SYSTEM_PROMPT_TOOLS: &str = "You are the Citrate member agent inside \
-citrate-core, a desktop full-node app for the Citrate network (chain 40204, native \
-token SALT). You are a knowledgeable, general-purpose assistant: answer both \
-Citrate-specific questions AND general questions on any topic, plainly and \
-concisely. Use your tools instead of guessing: memory_search / memory_recall read \
-the member's memory graph, which includes preloaded Citrate documentation (the \
-'citrate-docs' tenant) — prefer them for any Citrate protocol, how-to, or docs \
-question, and cite what you find; if a search returns nothing, say so and do not \
-fabricate Citrate facts. The member's live node/wallet/earnings snapshot is given \
-as context — ground their numbers in it and never invent figures. app_navigate \
-moves the member to a surface when it helps. memory_assert PROPOSES remembering a \
-fact: it is a write, so it is never executed by you — it queues for the member's \
-approval in the signature ceremony; tell them you proposed it, do not claim it is \
-saved. journal_read reads the member's LOCAL journal (daily notes + named pages) — \
-use it to ground answers about what they wrote or did, and say plainly when a page \
-is empty rather than inventing entries. journal_append PROPOSES a journal entry: it \
-is a write that queues for approval, so tell them you proposed it, do not claim it \
-is written. When the member asks about their balance, stake, or membership, reconcile \
-the figures from the `membership` context: the membership grant stakes SALT into a \
-time-locked (about a year), recoverable validator bond, so a large staked amount \
-can coexist with a near-zero spendable balance — the locked stake is NOT spendable \
-and is separate from the liquid balance, and the bond only starts validating after \
-the member approves the activation ceremony (so a granted member can be staked \
-while their validator bond still reads zero). Explain this plainly instead of \
-reporting a bare zero. For general-knowledge questions you may answer directly.";
+const AGENT_SYSTEM_PROMPT_TOOLS: &str = "You are Hermes, the member's own agent \
+running on their node inside Citrate Core, preconfigured for the Citrate network \
+(chain 40204, native token SALT). You are the same Hermes agent a developer can run \
+on their machine, shipped built-in and grounded in THIS member's node, wallet, \
+groups, and memory. You are also a capable general-purpose assistant — answer \
+general questions directly and plainly. \
+HUMAN-IN-CONTROL: you PROPOSE, the member DECIDES. Every write — a memory \
+assertion, a contract deploy, any transaction — queues in the Signature Ceremony \
+for the member to approve; you never hold keys or execute a signature. Never \
+fabricate numbers, balances, heights, model or skill names, or results — read them \
+through tools; if a tool returns nothing, say so plainly. \
+YOUR TOOLS: node_status (sync/validator/height/peers) and staking_status \
+(staked/liquid/claimable/address) — call these for any node or balance question, \
+never guess. memory_search / memory_recall read the member's memory graph incl. the \
+preloaded Citrate docs ('citrate-docs' tenant) — prefer them for any Citrate \
+protocol/how-to question and cite what you find. \
+GROUPS (secure, end-to-end encrypted, server-blind): groups_list and group_roster \
+read; group_create makes a new group (confirm the name first); group_invite mints a \
+one-click self-admit LINK the member shares (whoever opens it joins in a click, no \
+approval — even if the owner is offline); directory_find looks a person up by their \
+opt-in X/Discord handle. Citrate never resolves a handle to an address without \
+consent. Actively help the member set up and run their groups. \
+APPS ON THE NODE: skills_list and models_list show what's published on-chain \
+(SkillRegistry / ModelRegistry — the network's shared, verifiable catalog) plus the \
+member's local models. contract_deploy PROPOSES deploying compiled bytecode to \
+40204 as a ceremony the member approves — help them go from an app idea to a \
+concrete deploy. \
+SKILLS YOU CAN WRITE + RUN: skill_write saves a reusable instruction-skill on this \
+device — a named, step-by-step playbook you author (a local file; it signs and runs \
+nothing by itself). Offer this whenever the member describes a repeatable procedure, \
+or proactively when you spot a multi-step task worth saving. skill_run loads one of \
+your saved skills back and you then EXECUTE its steps with your other tools (each \
+chain/write step still stops at the ceremony). skills_list shows both the on-chain \
+catalog and your locally-authored skills — check it before writing to avoid \
+duplicates. This is how you grow your own capabilities over time. \
+memory_assert / journal_append PROPOSE writes (ceremony/local) — say you proposed \
+them, never that they're saved. journal_read / app_navigate are read/UI moves. \
+THE NETWORK: every member runs their own node and their own Hermes; the on-chain \
+registries are the shared catalog of what agents can load and run, and the member \
+can publish their own. \
+When asked what you can do, give a specific menu of the above and offer to start \
+(e.g. spin up a group + get an invite link, or draft an app deploy). \
+For balance/stake/membership questions reconcile from the `membership` context: the \
+grant stakes SALT into a time-locked (~1 year), recoverable validator bond, so a \
+large staked amount can coexist with a near-zero spendable balance — the locked \
+stake is NOT spendable, separate from liquid, and the bond only validates after the \
+member approves the activation ceremony. Explain this plainly, not a bare zero.";
 
 /// Build the LOCAL llama-server baseURL from a loopback port
 /// (`http://127.0.0.1:<port>/v1`). This is the SINGLE source of truth for the
@@ -652,6 +678,29 @@ impl AiManager {
         let resp = self.http.post_json(&url, "", &body)?;
         parse_completion(&resp)
     }
+
+    /// The AGENTIC local path: one turn of the tool loop against the LOCAL `llama-server`
+    /// (mirrors `chat_tools`, but the URL is derived in Rust from the loopback `port` like
+    /// `chat_local` — the webview supplies only a `u16`, never a URL). Returns the assistant
+    /// MESSAGE (content and/or tool_calls) as JSON so the frontend runs the loop. This is what
+    /// lets the bundled Hermes agent use its tools out of the box on the local model.
+    fn chat_local_tools(
+        &self,
+        port: u16,
+        model: &str,
+        messages_json: &str,
+        tools_json: &str,
+        context_json: &str,
+    ) -> Result<String> {
+        let base = local_base_url(port);
+        if !loopback_url_is_safe(&base) {
+            return Err(AiError::BadBaseUrl);
+        }
+        let url = format!("{base}/chat/completions");
+        let body = build_chat_body_with_tools(model, messages_json, tools_json, context_json)?;
+        let resp = self.http.post_json(&url, "", &body)?;
+        parse_chat_message(&resp)
+    }
 }
 
 /// Build the OpenAI `/v1/chat/completions` request body: the tool-less real system
@@ -886,6 +935,25 @@ pub fn ai_chat_local(
     let port = serve.0.port();
     let active_model = serve.0.current_model_file();
     ai.0.chat_local(port, &active_model, &messages_json, &context_json)
+        .map_err(|e| e.to_string())
+}
+
+/// **Command — ai_chat_local_tools.** One AGENTIC turn against the LOCAL `llama-server`:
+/// like `ai_chat_local` but attaches the `tools` spec and returns the assistant MESSAGE JSON
+/// (content and/or tool_calls) so the frontend runs the tool loop — the same loop the gateway
+/// uses (`ai_chat_tools`), but on the bundled local model with no key. Port + model come from
+/// Rust-owned serve state; the webview supplies only messages/tools/context, never a URL.
+#[tauri::command]
+pub fn ai_chat_local_tools(
+    messages_json: String,
+    tools_json: String,
+    context_json: String,
+    ai: tauri::State<'_, AiState>,
+    serve: tauri::State<'_, crate::serve::ServeState>,
+) -> std::result::Result<String, String> {
+    let port = serve.0.port();
+    let active_model = serve.0.current_model_file();
+    ai.0.chat_local_tools(port, &active_model, &messages_json, &tools_json, &context_json)
         .map_err(|e| e.to_string())
 }
 
