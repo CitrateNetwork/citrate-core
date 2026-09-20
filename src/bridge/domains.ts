@@ -452,6 +452,12 @@ export interface ChatDomain {
    */
   inferLocal(messagesJson: string, contextJson: string): Promise<string>;
   /**
+   * The AGENTIC local path: like `inferLocal` but attaches the `tools` spec and returns the
+   * assistant MESSAGE JSON (content and/or tool_calls) so the Hermes tool loop runs on the bundled
+   * local model, not just the gateway. Tauri invokes `ai_chat_local_tools`; sim is Unavailable.
+   */
+  inferLocalTools(messagesJson: string, toolsJson: string, contextJson: string): Promise<string>;
+  /**
    * BC-3.2 — the HONEST inference-routing state (kebab): `ready` (local model +
    * healthy server → chat runs LOCALLY), `local-fallback`/`gateway-only` (route
    * to the gateway), `downloading`, `no-model`, or `demo`. Computed IN RUST from
@@ -857,6 +863,28 @@ export interface AgentHarnessDomain {
   resolve(approve: boolean): Promise<void>;
 }
 
+// ── Local instruction-skills (Hermes "write & run skills"). A skill is a markdown playbook the agent
+// authors and stores on THIS device; running it loads the instructions back into the agent's loop so it
+// carries the task out with its existing (ceremony-gated) tools. Local files only; signs nothing. ──
+export interface LocalSkill {
+  /** The human name as authored. */
+  name: string;
+  /** One-line description of what the skill does. */
+  description: string;
+  /** Stable filename slug (the id skill_run uses). */
+  slug: string;
+}
+export interface AgentSkillsDomain {
+  /** The skills the agent has authored on this device (honest-empty, never fabricated). */
+  list(): Promise<LocalSkill[]>;
+  /** Author (or overwrite) a local instruction-skill. Local file only; signs/runs nothing. */
+  write(name: string, description: string, instructions: string): Promise<LocalSkill>;
+  /** The instruction body of an authored skill, by slug or name. */
+  read(name: string): Promise<string>;
+  /** Remove an authored skill (idempotent). */
+  remove(name: string): Promise<void>;
+}
+
 // ── Social identity (Connections · social discovery). Privacy model: ADR-2026-08-30. ──
 // The address↔identity binding is device-local + shared server-blind; NEVER on-chain by default;
 // private by default; "verified" requires OAuth ownership + a wallet-signed IdentityBinding through
@@ -1074,6 +1102,7 @@ export interface CxBridge {
   cluster: ClusterDomain;
   training: TrainingDomain;
   agentHarness: AgentHarnessDomain;
+  agentSkills: AgentSkillsDomain;
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;

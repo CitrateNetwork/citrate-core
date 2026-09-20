@@ -130,7 +130,12 @@ export async function refreshRegistrySkills(): Promise<void> {
   }
 }
 
-/** Start the Hermes harness. Adapters that aren't wired report an honest error instead. */
+/** Start the Hermes harness. Adapters that aren't wired report an honest error instead.
+ *
+ *  Idempotent + boot-aware: a second tap while it is coming up is a no-op (not an error), the Rust
+ *  `AlreadyRunning` guard is treated as success (the sidecar is up), and we POLL status until it
+ *  reports running rather than reading once — the sidecar needs a beat to boot, so a single immediate
+ *  read used to show "off" until the user left and came back. */
 export async function startRuntime(id: RuntimeId): Promise<void> {
   const rt = agentSlice.get().attached.find((r) => r.id === id);
   if (!rt) return;
@@ -142,16 +147,37 @@ export async function startRuntime(id: RuntimeId): Promise<void> {
     }));
     return;
   }
+  // Idempotent: ignore a tap while a spawn is in flight or it is already up.
+  if (agentSlice.get().busy || rt.state === "starting" || rt.state === "running") return;
   agentSlice.set({ busy: true });
   setHermes({ state: "starting", error: null });
   try {
     await bridge.agentHarness.start();
-    agentSlice.set({ busy: false });
-    await refreshAgent();
   } catch (e) {
-    agentSlice.set({ busy: false, error: message(e) });
-    setHermes({ state: "error", error: message(e) });
+    // "already running" is success, not an error — the sidecar is up (double-start guard).
+    if (!/already running/i.test(message(e))) {
+      agentSlice.set({ busy: false, error: message(e) });
+      setHermes({ state: "error", error: message(e) });
+      return;
+    }
   }
+  // Poll until the sidecar actually reports running (boot takes a beat), then load skills/approvals.
+  for (let i = 0; i < 15; i++) {
+    try {
+      const status = await bridge.agentHarness.status();
+      if (status.running) {
+        agentSlice.set({ busy: false });
+        await refreshAgent();
+        return;
+      }
+    } catch {
+      /* transient during boot — keep polling */
+    }
+    await new Promise((r) => setTimeout(r, 800));
+  }
+  // Never came up within the window — honest soft state, leave it retryable.
+  agentSlice.set({ busy: false });
+  setHermes({ state: "off", error: "Hermes did not report running — tap Start to retry." });
 }
 
 /** Stop the Hermes harness. Pending approvals stay unexecuted (surfaced by the UI). */

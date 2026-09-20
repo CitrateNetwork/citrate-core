@@ -53,12 +53,27 @@ export interface ChatProvider {
 }
 
 export const AGENT_SYSTEM_PROMPT = [
-  "You are the Citrate member agent inside citrate-core.",
-  "You may read the member’s memory graph and local chain state.",
-  "Every write (memory_assert, any chain transaction) is proposed, never executed:",
-  "writes queue for human approval in the Signature Ceremony.",
-  "Speak plainly. Never fabricate numbers; read them through tools.",
-].join(" ");
+  "You are Hermes, the member's own agent running on their node inside Citrate Core, preconfigured for the Citrate network (chain 40204).",
+  "You are the same Hermes agent a developer can run on their own machine, but it ships built-in here and grounded in THIS member's node, wallet, groups, and memory.",
+  "",
+  "# How you operate (human-in-control, non-negotiable)",
+  "You PROPOSE; the member DECIDES. You never hold keys and never execute a signature yourself.",
+  "Every write — a memory assertion, a group role change, a chain transaction, a contract deploy, an on-chain registration — is queued as a PENDING action the member approves in the Signature Ceremony. Say clearly when you've proposed something and that it awaits their approval.",
+  "Never fabricate numbers, balances, heights, model names, or results — read them through tools. If a tool returns nothing or errors, say so plainly; never invent a value or claim a write landed before it was approved.",
+  "",
+  "# What you can help with (your capabilities on this node)",
+  "- Node & staking: read the node's sync/validator status, height, peers; the staking position and earnings/claimable; the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
+  "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-click self-admit link (the invitee joins in a click, no approval needed, even if the owner is offline), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
+  "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
+  "- Memory: semantically search and recall the member's memory graph and the bundled Citrate documentation (the 'citrate-docs' tenant); propose remembering a fact (a ceremony-gated write).",
+  "- Navigation: move the member to the right surface of the app (wallet, node, groups, storage, commissary, settings) when it helps.",
+  "",
+  "# The network & other agents",
+  "Citrate is a member-owned network: every member runs their own node and their own Hermes agent. The on-chain SkillRegistry and ModelRegistry are the shared, verifiable catalog of what agents can load and run — you can read them to see what capabilities and models exist network-wide, and the member can publish their own. Shared inference runs through the Citrate gateway; local inference runs on this node.",
+  "",
+  "# Style",
+  "Speak plainly and concretely. When the member asks what you can do, give them a clear, specific menu of the above — and offer to start (e.g. 'want me to spin up a group and get you an invite link?' or 'tell me the app idea and I'll draft the deploy'). Confirm capabilities honestly: name what's ready now vs what needs a step (a downloaded model, a configured provider, a synced node).",
+].join("\n");
 
 // ---------------------------------------------------------------------
 // Demo provider — same contract, scripted reasoning over live sim state.
@@ -285,6 +300,147 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── node & staking (reads) ──
+  {
+    type: "function",
+    function: {
+      name: "node_status",
+      description: "Read the member's node: sync state, block height, peer count, and whether it is validating. Read-only, live from the local node.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "staking_status",
+      description: "Read the member's real position: staked SALT, liquid balance, claimable rewards, and wallet address. Read-only, from the local node + chain. Never fabricate — call this for any balance/earnings question.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  // ── groups (secure comms) ──
+  {
+    type: "function",
+    function: {
+      name: "groups_list",
+      description: "List the groups the member belongs to (id + name). Read-only. Use before acting on a specific group.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_roster",
+      description: "Read a group's roster (member addresses + roles). Read-only. Pass the group id from groups_list.",
+      parameters: { type: "object", properties: { group: { type: "string", description: "group id" } }, required: ["group"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_create",
+      description: "Create a new end-to-end-encrypted group for the member. `kind` is 'channel' | 'dm' | 'forum'. Returns the new group id. Confirm the name with the member first; this creates real group state on their node.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "human name for the group" },
+          kind: { type: "string", enum: ["channel", "dm", "forum"], description: "defaults to channel" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "group_invite",
+      description: "Mint a one-click self-admit invite LINK for a group (the invitee joins in a click, no approval needed). `forHandle` is a label only (e.g. '@dana' or 'shared link') — Citrate never resolves a handle to an address. Returns the link for the member to share. Safe to call once they've picked a group.",
+      parameters: {
+        type: "object",
+        properties: {
+          group: { type: "string", description: "group id" },
+          forHandle: { type: "string", description: "a label for who it's for; defaults to 'shared link'" },
+        },
+        required: ["group"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "directory_find",
+      description: "Find a person by their opt-in social handle via the find-via-X directory (returns published handle↔address bindings). Only returns people who opted in — never a guess (D-7). `platform` is 'x' or 'discord'.",
+      parameters: {
+        type: "object",
+        properties: {
+          platform: { type: "string", enum: ["x", "discord"] },
+          query: { type: "string", description: "handle or prefix (no @)" },
+        },
+        required: ["platform", "query"],
+      },
+    },
+  },
+  // ── apps on the node (network capabilities + deploy) ──
+  {
+    type: "function",
+    function: {
+      name: "skills_list",
+      description: "List available skills: the skills published on-chain in the SkillRegistry (the network's shared catalog) AND the local instruction-skills you have authored on this device. Read-only. Use before writing a new skill (avoid duplicates) or before running one.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "skill_write",
+      description: "Author (or update) a reusable local instruction-skill on this device — a named markdown playbook of steps you can run later. Use this when the member asks you to remember a repeatable procedure, or when you notice a multi-step task worth saving (e.g. 'weekly staking report', 'onboard a new group member'). Writing a skill is a LOCAL file only; it signs nothing and runs nothing. Instructions should be concrete, ordered steps that reference your other tools by name.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "short human name for the skill" },
+          description: { type: "string", description: "one line: what the skill does" },
+          instructions: { type: "string", description: "the step-by-step playbook (markdown), referencing your tools" },
+        },
+        required: ["name", "instructions"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "skill_run",
+      description: "Load and run one of your authored local instruction-skills by name. This returns the skill's playbook into your context — you then EXECUTE the steps using your normal tools, and every chain/write step still stops at the member's Signature Ceremony. Use skills_list first if unsure of the exact name.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "the skill's name or slug" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "models_list",
+      description: "List the models available: those registered on-chain (ModelRegistry) and the member's local models. Read-only.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "contract_deploy",
+      description: "PROPOSE deploying a compiled contract to chain 40204. This is a WRITE: it opens a ceremony with the creation transaction for the member to approve — it does NOT deploy on its own. `bytecodeHex` must be real compiled bytecode (the app never fabricates code). Use to help the member ship an app/contract idea once they have bytecode.",
+      parameters: {
+        type: "object",
+        properties: {
+          bytecodeHex: { type: "string", description: "compiled deploy bytecode (0x-hex)" },
+          constructorArgsHex: { type: "string", description: "ABI-encoded constructor args (0x-hex), or omit" },
+        },
+        required: ["bytecodeHex"],
+      },
+    },
+  },
 ] as const;
 
 /// Max model↔tool round-trips before we stop (a misbehaving model can't loop
@@ -379,6 +535,19 @@ export function createAgentProvider(
       throw new Error("agent: reached the tool-turn limit without a final answer");
     },
   };
+}
+
+/// The AGENTIC LOCAL provider: the full Hermes tool loop (same as the gateway agent), but run
+/// against the bundled local `llama-server` via `inferLocalTools` — so the built-in agent uses its
+/// tools out of the box on the local model, with no configured provider. Reuses `createAgentProvider`
+/// by adapting the local infer fn (which has no providerId) to the loop's signature.
+export type InferLocalToolsFn = (messagesJson: string, toolsJson: string, contextJson: string) => Promise<string>;
+export function createLocalAgentProvider(
+  getContext: () => AgentContext,
+  inferLocalTools: InferLocalToolsFn,
+): ChatProvider {
+  const inner = createAgentProvider("local", getContext, (_pid, m, t, c) => inferLocalTools(m, t, c));
+  return { ...inner, kind: "local", label: "local model · llama-server · agentic" };
 }
 
 interface Plan {

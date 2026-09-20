@@ -44,6 +44,7 @@ mod model;
 mod model_register;
 mod model_registry;
 mod skill_registry;
+mod skills_local;
 mod node;
 mod provisioning;
 mod sbt_art;
@@ -576,6 +577,11 @@ pub fn run() {
             // BC-3.2 — LOCAL inference against the bundled llama-server on the
             // loopback endpoint (NO key). Fails closed on any non-loopback URL.
             ai::ai_chat_local,
+            ai::ai_chat_local_tools,
+            skills_local::skills_local_list,
+            skills_local::skills_local_write,
+            skills_local::skills_local_read,
+            skills_local::skills_local_delete,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable

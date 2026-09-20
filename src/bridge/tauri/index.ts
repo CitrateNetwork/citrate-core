@@ -395,6 +395,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async inferLocal(messagesJson: string, contextJson: string): Promise<string> {
         return invoke<string>("ai_chat_local", { messagesJson, contextJson });
       },
+      async inferLocalTools(messagesJson: string, toolsJson: string, contextJson: string): Promise<string> {
+        return invoke<string>("ai_chat_local_tools", { messagesJson, toolsJson, contextJson });
+      },
       // BC-3.2 — the honest inference-routing state, computed in Rust from the
       // real model status + serve health + the gateway-key presence.
       async inferenceState(gatewayConfigured: boolean): Promise<string> {
