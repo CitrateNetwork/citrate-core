@@ -51,7 +51,14 @@ jobs:
       - name: audit
         run: |
           cargo install cargo-audit --locked
-          cargo audit
+          # RUSTSEC-2025-0055 (tracing-subscriber 0.2 ANSI-escape log poisoning):
+          # not fixable from this lockfile — pulled transitively via the private
+          # citrate-commd -> ark-relations 0.4 dep, which pins tracing 0.2; the fix
+          # is a breaking 0.3.x that ark-relations must adopt upstream. Low-severity
+          # (log-injection, reachable only through that ZK dep's logging). Revisit
+          # when ark-relations bumps tracing. All other advisories are cleared
+          # (rustls bumped to 0.23.45) or non-failing unmaintained warnings.
+          cargo audit --ignore RUSTSEC-2025-0055
 
   node:
     name: node (typecheck, build)
