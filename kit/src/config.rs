@@ -333,11 +333,11 @@ mod tests {
         let base = AppConfig::default();
         let prev = base.core_membership_url.clone();
         for hostile in [
-            "http://core-membership.vercel.app",             // cleartext
-            "https://core-membershlp.example",               // look-alike host
-            "https://evil.example/checkout",                 // arbitrary host
-            "file:///etc/passwd",                            // file scheme
-            "javascript:alert(1)",                           // js scheme
+            "http://core-membership.vercel.app", // cleartext
+            "https://core-membershlp.example",   // look-alike host
+            "https://evil.example/checkout",     // arbitrary host
+            "file:///etc/passwd",                // file scheme
+            "javascript:alert(1)",               // js scheme
             "https://attacker.core-membership.vercel.app.evil.com", // suffix trick
             "not a url",
         ] {
@@ -365,7 +365,10 @@ mod tests {
                 core_membership_url: Some(ok.to_string()),
                 ..Default::default()
             });
-            assert_eq!(merged.core_membership_url, ok, "allowlisted url {ok:?} accepted");
+            assert_eq!(
+                merged.core_membership_url, ok,
+                "allowlisted url {ok:?} accepted"
+            );
             assert!(
                 merged.checkout_url().starts_with("https://"),
                 "checkout url must always be https"

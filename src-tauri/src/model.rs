@@ -218,7 +218,10 @@ impl std::fmt::Display for ModelError {
                 write!(f, "model download ended short: {got} of {want} bytes")
             }
             ModelError::Overshoot { got, want } => {
-                write!(f, "model download overshot: {got} exceeds expected {want} bytes")
+                write!(
+                    f,
+                    "model download overshot: {got} exceeds expected {want} bytes"
+                )
             }
             ModelError::SizeMismatch { got, want } => {
                 write!(f, "model file size mismatch: {got} != expected {want}")
@@ -339,9 +342,17 @@ impl ModelTransport for UreqModelTransport {
             .header("Range", "bytes=0-0")
             .call()
             .map_err(|e| ModelError::Transport(e.to_string()))?;
-        if let Some(cr) = resp.headers().get("content-range").and_then(|v| v.to_str().ok()) {
+        if let Some(cr) = resp
+            .headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+        {
             // Content-Range: bytes 0-0/<total>
-            if let Some(total) = cr.rsplit('/').next().and_then(|s| s.trim().parse::<u64>().ok()) {
+            if let Some(total) = cr
+                .rsplit('/')
+                .next()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+            {
                 return Ok(total);
             }
         }
@@ -770,7 +781,11 @@ pub fn model_status(state: State<'_, ModelState>) -> std::result::Result<ModelSt
 /// not repeat here. The pins are the same process-wide Gemma constants.
 fn gemma_dir_and_url(app: &tauri::AppHandle) -> std::result::Result<(PathBuf, String), String> {
     use tauri::Manager;
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("models");
     let url = resolve_model_url(std::env::var(MODEL_URL_ENV).ok());
     Ok((dir, url))
 }
@@ -788,7 +803,12 @@ fn gemma_dir_and_url(app: &tauri::AppHandle) -> std::result::Result<(PathBuf, St
 pub async fn model_download(app: tauri::AppHandle) -> std::result::Result<(), String> {
     let (dir, url) = gemma_dir_and_url(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let mgr = ModelManager::new(dir, Box::new(UreqModelTransport::new(url)), MODEL_SHA256.to_string(), MODEL_SIZE_BYTES);
+        let mgr = ModelManager::new(
+            dir,
+            Box::new(UreqModelTransport::new(url)),
+            MODEL_SHA256.to_string(),
+            MODEL_SIZE_BYTES,
+        );
         mgr.download().map(|_| ()).map_err(|e| e.to_string())
     })
     .await
@@ -805,7 +825,12 @@ pub async fn model_download(app: tauri::AppHandle) -> std::result::Result<(), St
 pub async fn model_verify(app: tauri::AppHandle) -> std::result::Result<(), String> {
     let (dir, url) = gemma_dir_and_url(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let mgr = ModelManager::new(dir, Box::new(UreqModelTransport::new(url)), MODEL_SHA256.to_string(), MODEL_SIZE_BYTES);
+        let mgr = ModelManager::new(
+            dir,
+            Box::new(UreqModelTransport::new(url)),
+            MODEL_SHA256.to_string(),
+            MODEL_SIZE_BYTES,
+        );
         mgr.verify().map_err(|e| e.to_string())
     })
     .await

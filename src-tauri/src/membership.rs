@@ -68,11 +68,13 @@ pub async fn membership_checkout<R: tauri::Runtime>(
     // checkout SSO/pre-fills THE SAME account and the resulting order keys to that sub
     // (i.e. the membership applies to this app's account). Validated to an email shape;
     // properly query-encoded. Advisory — the authority still authenticates.
-    if let Some(hint) = login_hint
-        .as_deref()
-        .map(str::trim)
-        .filter(|h| !h.is_empty() && h.len() <= 254 && h.contains('@') && h.contains('.') && !h.contains(char::is_whitespace))
-    {
+    if let Some(hint) = login_hint.as_deref().map(str::trim).filter(|h| {
+        !h.is_empty()
+            && h.len() <= 254
+            && h.contains('@')
+            && h.contains('.')
+            && !h.contains(char::is_whitespace)
+    }) {
         if let Ok(mut parsed) = url::Url::parse(&url) {
             parsed.query_pairs_mut().append_pair("login_hint", hint);
             url = parsed.to_string();
@@ -127,13 +129,16 @@ fn post_enterprise_lead(url: &str, lead: &EnterpriseLead) -> std::result::Result
         .send_json(lead)
     {
         Ok(_) => Ok(()),
-        Err(ureq::Error::StatusCode(400)) => {
-            Err("Please check the form — an organization and a valid work email are required.".to_string())
-        }
+        Err(ureq::Error::StatusCode(400)) => Err(
+            "Please check the form — an organization and a valid work email are required."
+                .to_string(),
+        ),
         Err(ureq::Error::StatusCode(503)) => {
             Err("The contact service isn't available yet — please try again shortly.".to_string())
         }
-        Err(ureq::Error::StatusCode(code)) => Err(format!("membership: contact request failed ({code})")),
+        Err(ureq::Error::StatusCode(code)) => {
+            Err(format!("membership: contact request failed ({code})"))
+        }
         Err(_) => Err("membership: could not reach the contact service.".to_string()),
     }
 }

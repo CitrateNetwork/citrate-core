@@ -77,7 +77,9 @@ impl IpfsManager {
             .output()
             .map_err(|e| IpfsError::Init(format!("run ipfs init: {e}")))?;
         if !out.status.success() {
-            return Err(IpfsError::Init(String::from_utf8_lossy(&out.stderr).to_string()));
+            return Err(IpfsError::Init(
+                String::from_utf8_lossy(&out.stderr).to_string(),
+            ));
         }
         // Best-effort: move the gateway off the common :8080 (the node only needs
         // the API on :5001). A failure here is non-fatal — the daemon still serves
@@ -97,7 +99,10 @@ impl IpfsManager {
             self.bin.clone(),
             vec!["daemon".to_string(), "--migrate=true".to_string()],
         );
-        spec.env = vec![(IPFS_PATH_ENV.to_string(), self.repo_dir.to_string_lossy().to_string())];
+        spec.env = vec![(
+            IPFS_PATH_ENV.to_string(),
+            self.repo_dir.to_string_lossy().to_string(),
+        )];
         spec
     }
 
@@ -134,7 +139,10 @@ impl IpfsManager {
     /// Supervisor-reported running state (for a status surface).
     pub fn running(&self) -> bool {
         let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
-        matches!(guard.as_ref().map(|s| s.status().state), Some(SupervisorState::Running))
+        matches!(
+            guard.as_ref().map(|s| s.status().state),
+            Some(SupervisorState::Running)
+        )
     }
 }
 
@@ -151,7 +159,10 @@ fn resolve_ipfs_bin<R: tauri::Runtime>(
         if path.exists() {
             return Ok(path);
         }
-        return Err(format!("CITRATE_IPFS_BIN set but not found: {}", path.display()));
+        return Err(format!(
+            "CITRATE_IPFS_BIN set but not found: {}",
+            path.display()
+        ));
     }
     crate::supervisor::resolve_external_bin(app, "ipfs")
 }
@@ -166,7 +177,11 @@ pub fn build_ipfs_state<R: tauri::Runtime>(
     let repo_dir = data_root.join("ipfs");
     let crash_record_path = repo_dir.join("crash-records.jsonl");
     let bin = resolve_ipfs_bin(app)?;
-    Ok(IpfsState(IpfsManager::new(bin, repo_dir, crash_record_path)))
+    Ok(IpfsState(IpfsManager::new(
+        bin,
+        repo_dir,
+        crash_record_path,
+    )))
 }
 
 /// Start the bundled IPFS daemon (idempotent). The node reaches it on 127.0.0.1:5001.

@@ -582,8 +582,7 @@ fn address_auto_unlocked_is_idempotent_on_an_already_open_vault() {
 // foreign identity binding: recover the signer and confirm it equals the claimed address.
 #[test]
 fn recover_personal_round_trips_and_resists_spoofing() {
-    let phrase = std::iter::repeat("abandon")
-        .take(11)
+    let phrase = std::iter::repeat_n("abandon", 11)
         .chain(std::iter::once("about"))
         .collect::<Vec<_>>()
         .join(" ");

@@ -103,7 +103,9 @@ mod tests {
 /// (keychain reads + Argon2), the first main-thread touch of existing keychain items on the launch
 /// burst — a blocking keychain prompt here beachballed the webview.
 #[tauri::command]
-pub async fn device_id(custody: tauri::State<'_, crate::custody::CustodyState>) -> Result<String, String> {
+pub async fn device_id(
+    custody: tauri::State<'_, crate::custody::CustodyState>,
+) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let info = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
     let mut h = Sha256::new();

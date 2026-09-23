@@ -200,11 +200,9 @@ fn parse_add_response(text: &str) -> Result<AddOutcome> {
     // kubo may stream multiple JSON objects (one per file); the LAST is the root add.
     let last = text
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .next_back()
+        .rfind(|l| !l.trim().is_empty())
         .ok_or_else(|| StorageError::Parse("empty add response".into()))?;
-    let j: AddJson =
-        serde_json::from_str(last).map_err(|e| StorageError::Parse(e.to_string()))?;
+    let j: AddJson = serde_json::from_str(last).map_err(|e| StorageError::Parse(e.to_string()))?;
     let size = j.size.parse::<u64>().unwrap_or(0);
     Ok(AddOutcome {
         cid: j.hash,
@@ -250,7 +248,8 @@ impl PinIndex {
             .unwrap_or_default()
     }
     fn save(&self, path: &Path) -> Result<()> {
-        let s = serde_json::to_string_pretty(self).map_err(|e| StorageError::Parse(e.to_string()))?;
+        let s =
+            serde_json::to_string_pretty(self).map_err(|e| StorageError::Parse(e.to_string()))?;
         std::fs::write(path, s).map_err(|e| StorageError::Io(e.to_string()))
     }
 }
@@ -366,7 +365,9 @@ impl StorageManager {
     /// reaches the filesystem, closing the path-traversal write sink.
     pub fn retrieve(&self, cid: &str) -> Result<PathBuf> {
         if !is_safe_cid_component(cid) {
-            return Err(StorageError::Io(format!("unsafe cid path component: {cid:?}")));
+            return Err(StorageError::Io(format!(
+                "unsafe cid path component: {cid:?}"
+            )));
         }
         let bytes = self.transport.cat(cid)?;
         let out_dir = self.dir.join("retrieved");
@@ -418,14 +419,19 @@ impl StorageManager {
 // Tauri commands — stateless: each builds a manager from the app data dir.
 // ---------------------------------------------------------------------------
 
-fn build_manager<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::result::Result<StorageManager, String> {
+fn build_manager<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<StorageManager, String> {
     use tauri::Manager;
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("ipfs");
-    Ok(StorageManager::new(Box::new(UreqKuboTransport::from_env()), dir))
+    Ok(StorageManager::new(
+        Box::new(UreqKuboTransport::from_env()),
+        dir,
+    ))
 }
 
 /// **Command — storage_add.** Add a local file to IPFS; returns its CID + size.
@@ -498,7 +504,7 @@ pub fn register_model_calldata(cid: [u8; 32], c: &BondCommitments, data_uri: &st
     out.extend_from_slice(&len);
     out.extend_from_slice(uri);
     let pad = (32 - uri.len() % 32) % 32;
-    out.extend(std::iter::repeat(0u8).take(pad));
+    out.extend(std::iter::repeat_n(0u8, pad));
     out
 }
 

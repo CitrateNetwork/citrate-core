@@ -565,7 +565,10 @@ pub fn recover_personal(message: &[u8], sig: &[u8; 65]) -> Result<String> {
 pub fn recover_personal_hex(message: &[u8], sig_hex: &str) -> Result<String> {
     let clean = sig_hex.strip_prefix("0x").unwrap_or(sig_hex);
     let bytes = hex::decode(clean).map_err(|_| WalletError::Derivation)?;
-    let sig: [u8; 65] = bytes.as_slice().try_into().map_err(|_| WalletError::Derivation)?;
+    let sig: [u8; 65] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| WalletError::Derivation)?;
     recover_personal(message, &sig)
 }
 

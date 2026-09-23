@@ -205,18 +205,30 @@ impl ClusterDaemonManager {
     /// Build the [`SidecarSpec`]: ENV carries the socket + bearer-file PATH + this node's address
     /// (never a token in argv). Liveness = the UDS socket accepts a connection (no HTTP).
     fn build_spec(&self) -> SidecarSpec {
-        let mut spec =
-            SidecarSpec::new("cluster-daemon", self.bin.clone(), self.effective_spawn_args());
+        let mut spec = SidecarSpec::new(
+            "cluster-daemon",
+            self.bin.clone(),
+            self.effective_spawn_args(),
+        );
         spec.env = vec![
-            (ENV_SOCKET.to_string(), self.socket_path.to_string_lossy().to_string()),
-            (ENV_BEARER_FILE.to_string(), self.bearer_path.to_string_lossy().to_string()),
+            (
+                ENV_SOCKET.to_string(),
+                self.socket_path.to_string_lossy().to_string(),
+            ),
+            (
+                ENV_BEARER_FILE.to_string(),
+                self.bearer_path.to_string_lossy().to_string(),
+            ),
             (ENV_SELF_ADDR.to_string(), self.self_addr.clone()),
         ];
         // libp2p (opt-in): the LISTEN addr selects the real transport; the seed crosses as a 0600 file
         // PATH (written in `start`), never inline; bootstrap is optional. Absent → in-process default.
         if let Some(opts) = &self.libp2p {
             spec.env.push((ENV_LISTEN.to_string(), opts.listen.clone()));
-            spec.env.push((ENV_SEED_FILE.to_string(), self.seed_path().to_string_lossy().to_string()));
+            spec.env.push((
+                ENV_SEED_FILE.to_string(),
+                self.seed_path().to_string_lossy().to_string(),
+            ));
             if let Some(b) = &opts.bootstrap {
                 spec.env.push((ENV_BOOTSTRAP.to_string(), b.clone()));
             }
@@ -328,7 +340,10 @@ pub fn resolve_cluster_daemon_bin(app: &tauri::AppHandle) -> std::result::Result
         if path.exists() {
             return Ok(path);
         }
-        return Err(format!("{CLUSTER_DAEMON_BIN_ENV} set but not found: {}", path.display()));
+        return Err(format!(
+            "{CLUSTER_DAEMON_BIN_ENV} set but not found: {}",
+            path.display()
+        ));
     }
     // externalBin lives next to the main executable (Contents/MacOS/<name>), not the resource dir.
     crate::supervisor::resolve_external_bin(app, "cluster-daemon")
@@ -342,12 +357,26 @@ pub fn resolve_cluster_daemon_bin(app: &tauri::AppHandle) -> std::result::Result
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 enum Request {
-    SetRoster { group: String, roster: Vec<(String, String)> },
-    Join { group: String },
-    Leave { group: String },
-    Status { group: String },
-    Peers { group: String },
-    ShareFile { group: String, cid: String },
+    SetRoster {
+        group: String,
+        roster: Vec<(String, String)>,
+    },
+    Join {
+        group: String,
+    },
+    Leave {
+        group: String,
+    },
+    Status {
+        group: String,
+    },
+    Peers {
+        group: String,
+    },
+    ShareFile {
+        group: String,
+        cid: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -398,7 +427,9 @@ fn cluster_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Respon
     stream
         .set_send_timeout(Some(CLUSTER_IPC_TIMEOUT))
         .map_err(|e| ClusterError::Ipc(e.to_string()))?;
-    let mut w = stream.try_clone().map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    let mut w = stream
+        .try_clone()
+        .map_err(|e| ClusterError::Ipc(e.to_string()))?;
     let _ = w.set_send_timeout(Some(CLUSTER_IPC_TIMEOUT));
     let _ = w.set_recv_timeout(Some(CLUSTER_IPC_TIMEOUT));
     let mut r = BufReader::new(stream);
@@ -406,7 +437,8 @@ fn cluster_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Respon
     // Auth handshake: {"token":"..."} → {"type":"ready"}.
     writeln!(w, "{{\"token\":\"{bearer}\"}}").map_err(|e| ClusterError::Ipc(e.to_string()))?;
     let mut line = String::new();
-    r.read_line(&mut line).map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    r.read_line(&mut line)
+        .map_err(|e| ClusterError::Ipc(e.to_string()))?;
     if !line.contains("ready") {
         return Err(ClusterError::Ipc(format!("auth rejected: {}", line.trim())));
     }
@@ -415,7 +447,8 @@ fn cluster_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Respon
     let body = serde_json::to_string(req).map_err(|e| ClusterError::Ipc(e.to_string()))?;
     writeln!(w, "{body}").map_err(|e| ClusterError::Ipc(e.to_string()))?;
     line.clear();
-    r.read_line(&mut line).map_err(|e| ClusterError::Ipc(e.to_string()))?;
+    r.read_line(&mut line)
+        .map_err(|e| ClusterError::Ipc(e.to_string()))?;
     serde_json::from_str::<Response>(line.trim())
         .map_err(|e| ClusterError::Ipc(format!("decode: {e}: {}", line.trim())))
 }
@@ -465,13 +498,23 @@ pub fn shutdown() {
 /// in-process. Kept env-driven (not a UI toggle) so it cannot be flipped on for partner traffic before
 /// the two-machine soak + the Rule-8 transport sign-off.
 fn libp2p_opts_from_env(seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
-    let listen = std::env::var(ENV_LISTEN).ok().filter(|s| !s.trim().is_empty())?;
-    let bootstrap = std::env::var(ENV_BOOTSTRAP).ok().filter(|s| !s.trim().is_empty());
-    Some(Libp2pOpts { listen, bootstrap, seed_hex })
+    let listen = std::env::var(ENV_LISTEN)
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    let bootstrap = std::env::var(ENV_BOOTSTRAP)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    Some(Libp2pOpts {
+        listen,
+        bootstrap,
+        seed_hex,
+    })
 }
 
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton.
-fn ensure_started(app: &tauri::AppHandle) -> std::result::Result<&'static ClusterDaemonManager, String> {
+fn ensure_started(
+    app: &tauri::AppHandle,
+) -> std::result::Result<&'static ClusterDaemonManager, String> {
     use tauri::Manager;
     if let Some(m) = MANAGER.get() {
         if !m.is_running() {
@@ -489,7 +532,11 @@ fn ensure_started(app: &tauri::AppHandle) -> std::result::Result<&'static Cluste
         }
         return Ok(m);
     }
-    let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("cluster");
+    let data_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("cluster");
     // Identity = the device-sealed COMMS key (comms.rs), NOT the wallet — the roster keys on the comms
     // address, so self_addr and (for libp2p) the Noise seed must be the comms identity to match it.
     let identity = crate::comms::device_identity(app)?;
@@ -519,7 +566,13 @@ fn route(app: &tauri::AppHandle, req: Request) -> std::result::Result<Response, 
 /// reconciles the mesh. The cluster is a Group's cluster — no group/roster means no cluster.
 async fn feed_roster(app: &tauri::AppHandle, group: &str) -> std::result::Result<(), String> {
     let roster = crate::comms::groups_roster(app.clone(), group.to_string()).await?;
-    match route(app, Request::SetRoster { group: group.to_string(), roster })? {
+    match route(
+        app,
+        Request::SetRoster {
+            group: group.to_string(),
+            roster,
+        },
+    )? {
         Response::Reconciled { .. } | Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
@@ -540,12 +593,27 @@ fn parse_ok(r: Response) -> std::result::Result<(), String> {
 
 /// **cluster_status** — the group's cluster status (connected / authorized + shared files).
 #[tauri::command]
-pub async fn cluster_status(app: tauri::AppHandle, group: String) -> std::result::Result<ClusterStatusDto, String> {
+pub async fn cluster_status(
+    app: tauri::AppHandle,
+    group: String,
+) -> std::result::Result<ClusterStatusDto, String> {
     feed_roster(&app, &group).await?;
-    match route(&app, Request::Status { group: group.clone() })? {
-        Response::Status { online, total, shared_files } => {
-            Ok(ClusterStatusDto { group_id: group, online, total, shared_files })
-        }
+    match route(
+        &app,
+        Request::Status {
+            group: group.clone(),
+        },
+    )? {
+        Response::Status {
+            online,
+            total,
+            shared_files,
+        } => Ok(ClusterStatusDto {
+            group_id: group,
+            online,
+            total,
+            shared_files,
+        }),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -553,12 +621,19 @@ pub async fn cluster_status(app: tauri::AppHandle, group: String) -> std::result
 
 /// **cluster_peers** — the group's authorized peers with live connection state.
 #[tauri::command]
-pub async fn cluster_peers(app: tauri::AppHandle, group: String) -> std::result::Result<Vec<ClusterPeerDto>, String> {
+pub async fn cluster_peers(
+    app: tauri::AppHandle,
+    group: String,
+) -> std::result::Result<Vec<ClusterPeerDto>, String> {
     feed_roster(&app, &group).await?;
     match route(&app, Request::Peers { group })? {
-        Response::Peers { peers } => {
-            Ok(peers.into_iter().map(|p| ClusterPeerDto { address: p.address, online: p.online }).collect())
-        }
+        Response::Peers { peers } => Ok(peers
+            .into_iter()
+            .map(|p| ClusterPeerDto {
+                address: p.address,
+                online: p.online,
+            })
+            .collect()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -573,13 +648,20 @@ pub async fn cluster_join(app: tauri::AppHandle, group: String) -> std::result::
 
 /// **cluster_share_file** — announce a co-pinned CID to the group over the mesh.
 #[tauri::command]
-pub async fn cluster_share_file(app: tauri::AppHandle, group: String, cid: String) -> std::result::Result<(), String> {
+pub async fn cluster_share_file(
+    app: tauri::AppHandle,
+    group: String,
+    cid: String,
+) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::ShareFile { group, cid })?)
 }
 
 /// **cluster_leave** — this node leaves the group's mesh.
 #[tauri::command]
-pub async fn cluster_leave(app: tauri::AppHandle, group: String) -> std::result::Result<(), String> {
+pub async fn cluster_leave(
+    app: tauri::AppHandle,
+    group: String,
+) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::Leave { group })?)
 }
 

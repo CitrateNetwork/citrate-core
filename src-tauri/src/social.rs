@@ -249,7 +249,12 @@ struct XUserData {
     username: String,
 }
 
-fn fetch_handle(http: &impl HttpClient, network: &str, cfg: &NetCfg, token: &str) -> Result<String, String> {
+fn fetch_handle(
+    http: &impl HttpClient,
+    network: &str,
+    cfg: &NetCfg,
+    token: &str,
+) -> Result<String, String> {
     let body = http
         .get(cfg.userinfo, Some(token))
         .map_err(|_| "could not read your profile from the provider".to_string())?;
@@ -263,7 +268,9 @@ fn fetch_handle(http: &impl HttpClient, network: &str, cfg: &NetCfg, token: &str
         _ => {
             let u: DiscordUser = serde_json::from_str(&body)
                 .map_err(|_| "profile response was unparsable".to_string())?;
-            u.global_name.filter(|s| !s.is_empty()).unwrap_or(u.username)
+            u.global_name
+                .filter(|s| !s.is_empty())
+                .unwrap_or(u.username)
         }
     };
     if handle.is_empty() {
@@ -277,7 +284,8 @@ fn do_link(
     custody: &crate::custody::CustodyVault,
     network: &str,
 ) -> Result<LinkedIdentity, String> {
-    let cfg = net_cfg(network).ok_or_else(|| format!("{network} isn't configured for linking yet"))?;
+    let cfg =
+        net_cfg(network).ok_or_else(|| format!("{network} isn't configured for linking yet"))?;
     let http = crate::oidc::UreqClient;
 
     let app_open = app.clone();
@@ -289,9 +297,11 @@ fn do_link(
             .map_err(|_| ConnError::Network)
     };
 
-    let (code, verifier) =
-        capture_public_pkce(|state, challenge| authorize_url(&cfg, state, challenge), open)
-            .map_err(|e| e.to_string())?;
+    let (code, verifier) = capture_public_pkce(
+        |state, challenge| authorize_url(&cfg, state, challenge),
+        open,
+    )
+    .map_err(|e| e.to_string())?;
 
     // Public client: send the verifier, NO client_secret.
     let form: Vec<(&str, &str)> = vec![
@@ -425,14 +435,25 @@ fn handle_key(handle: &str) -> String {
 /// The EXACT directory-scoped statement the wallet signs to PUBLISH. Ported byte-for-byte from the
 /// authority's `buildDirectoryPublishStatement` — deterministic + case-folded so both sides derive the
 /// identical string (lower-cased address, normalized handle key, integer bound_at).
-fn directory_publish_statement(platform: &str, handle_key: &str, address: &str, bound_at: u64) -> String {
-    format!("citrate-directory-binding:v1:{platform}:{handle_key}:{}:{bound_at}", address.to_lowercase())
+fn directory_publish_statement(
+    platform: &str,
+    handle_key: &str,
+    address: &str,
+    bound_at: u64,
+) -> String {
+    format!(
+        "citrate-directory-binding:v1:{platform}:{handle_key}:{}:{bound_at}",
+        address.to_lowercase()
+    )
 }
 
 /// The EXACT statement the wallet signs to REVOKE (no timestamp — re-revoking is idempotent). Ported
 /// from the authority's `buildDirectoryRevokeStatement`.
 fn directory_revoke_statement(platform: &str, handle_key: &str, address: &str) -> String {
-    format!("citrate-directory-revoke:v1:{platform}:{handle_key}:{}", address.to_lowercase())
+    format!(
+        "citrate-directory-revoke:v1:{platform}:{handle_key}:{}",
+        address.to_lowercase()
+    )
 }
 
 /// The EIP-191 message the human sees + signs — plain, verbatim at the ceremony.
@@ -586,7 +607,10 @@ pub fn social_verify_approve(
 
 /// `social_verify_forget` — drop a pending verification whose ceremony the human rejected.
 #[tauri::command]
-pub fn social_verify_forget(bind: tauri::State<'_, SocialBindManaged>, id: String) -> Result<(), String> {
+pub fn social_verify_forget(
+    bind: tauri::State<'_, SocialBindManaged>,
+    id: String,
+) -> Result<(), String> {
     bind.0.lock().remove(&id);
     Ok(())
 }
@@ -605,7 +629,10 @@ pub struct ResolvedIdentity {
 /// bindings are shared server-blind to groups (ADR D1 — the follow-up). PRIVATE links never resolve
 /// to anyone (D2), and only a verified binding (a wallet signature) ever produces a face (D3).
 #[tauri::command]
-pub fn social_resolve(app: tauri::AppHandle, addresses: Vec<String>) -> Result<Vec<ResolvedIdentity>, String> {
+pub fn social_resolve(
+    app: tauri::AppHandle,
+    addresses: Vec<String>,
+) -> Result<Vec<ResolvedIdentity>, String> {
     let want: std::collections::HashSet<String> =
         addresses.iter().map(|a| a.to_lowercase()).collect();
     // Own verified + group-visible bindings (self-resolution).
@@ -642,7 +669,10 @@ pub fn social_resolve(app: tauri::AppHandle, addresses: Vec<String>) -> Result<V
 /// `social_export_binding` — the shareable payload for a verified, group-visible link (or null). The
 /// caller rides it over the ciphertext-only group relay (server-blind); it carries no token.
 #[tauri::command]
-pub fn social_export_binding(app: tauri::AppHandle, network: String) -> Result<Option<ExportedBinding>, String> {
+pub fn social_export_binding(
+    app: tauri::AppHandle,
+    network: String,
+) -> Result<Option<ExportedBinding>, String> {
     let links = load_links(&app);
     Ok(links.iter().find_map(|l| {
         if l.network != network || l.visibility != "groups" {
@@ -675,7 +705,12 @@ pub fn social_ingest_binding(
         return Ok(false);
     }
     // 2. the signature must recover to that address over the EXACT binding message (D3).
-    let message = binding_message(&binding.network, &binding.handle, &binding.address, &binding.nonce);
+    let message = binding_message(
+        &binding.network,
+        &binding.handle,
+        &binding.address,
+        &binding.nonce,
+    );
     let recovered = crate::wallet::recover_personal_hex(message.as_bytes(), &binding.signature)
         .map_err(|e| e.to_string())?;
     if recovered.to_lowercase() != binding.address.to_lowercase() {
@@ -683,7 +718,9 @@ pub fn social_ingest_binding(
     }
     // 3. accepted — upsert the foreign face (keyed by address+network).
     let mut foreign = load_foreign(&app);
-    foreign.retain(|f| !(f.address.eq_ignore_ascii_case(&binding.address) && f.network == binding.network));
+    foreign.retain(|f| {
+        !(f.address.eq_ignore_ascii_case(&binding.address) && f.network == binding.network)
+    });
     foreign.push(ForeignBinding {
         network: binding.network,
         handle: binding.handle,
@@ -824,7 +861,12 @@ pub fn directory_unpublish_request(
     });
     dir.0.lock().insert(
         view.id.clone(),
-        PendingDirectory { network, handle, address: binding.address, publish: None },
+        PendingDirectory {
+            network,
+            handle,
+            address: binding.address,
+            publish: None,
+        },
     );
     Ok(view)
 }
@@ -857,7 +899,12 @@ pub fn directory_unpublish_approve(
     dir.0.lock().remove(&id);
     let sig_hex = format!("0x{}", sig.sig_hex);
     auth.0
-        .directory_revoke(&pending.network, &pending.handle, &pending.address, &sig_hex)
+        .directory_revoke(
+            &pending.network,
+            &pending.handle,
+            &pending.address,
+            &sig_hex,
+        )
         .map_err(|e| e.to_string())?;
     let mut links = load_links(&app);
     let out = {
@@ -874,7 +921,10 @@ pub fn directory_unpublish_approve(
 
 /// `directory_forget` — drop a pending directory ceremony the human rejected.
 #[tauri::command]
-pub fn directory_forget(dir: tauri::State<'_, DirectoryPendingManaged>, id: String) -> Result<(), String> {
+pub fn directory_forget(
+    dir: tauri::State<'_, DirectoryPendingManaged>,
+    id: String,
+) -> Result<(), String> {
     dir.0.lock().remove(&id);
     Ok(())
 }

@@ -31,17 +31,16 @@ pub fn proposer_pubkey_from_seed(seed: &[u8; 32]) -> [u8; 32] {
 /// zeroized before returning — only the public value leaves.
 pub fn read_proposer_pubkey(data_dir: &std::path::Path) -> Result<String, String> {
     let path = data_dir.join(PROPOSER_KEY_FILE);
-    let mut bytes = std::fs::read(&path)
-        .map_err(|_| {
-            // The file is ABSENT until the node arms mining, and mining arms only
-            // once the local head reaches the network tip. Reporting the path and
-            // "os error 2" told the member their install was broken when the node
-            // was simply still syncing. Name the real gate instead (Rule 1).
-            "proposer key not minted yet — your node mints it once it finishes syncing \
+    let mut bytes = std::fs::read(&path).map_err(|_| {
+        // The file is ABSENT until the node arms mining, and mining arms only
+        // once the local head reaches the network tip. Reporting the path and
+        // "os error 2" told the member their install was broken when the node
+        // was simply still syncing. Name the real gate instead (Rule 1).
+        "proposer key not minted yet — your node mints it once it finishes syncing \
              to the network tip and arms block production. Leave the node running; \
              activation unlocks automatically."
-                .to_string()
-        })?;
+            .to_string()
+    })?;
     if bytes.len() != 32 {
         bytes.zeroize();
         return Err(format!(
@@ -176,7 +175,10 @@ pub const MEMBER_BOND_ACTIVATE_SELECTOR: [u8; 4] = [0x4b, 0xac, 0x89, 0xff];
 /// ABI-encode `MemberBond.activate(bytes32 proposerPubkey, bytes ed25519Sig)` calldata.
 /// Same head/tail layout as [`register_validator_calldata`] (bytes32 + dynamic bytes,
 /// 64-byte sig already 32-aligned); only the selector differs.
-pub fn member_bond_activate_calldata(proposer_pubkey: &[u8; 32], ed25519_sig: &[u8; 64]) -> Vec<u8> {
+pub fn member_bond_activate_calldata(
+    proposer_pubkey: &[u8; 32],
+    ed25519_sig: &[u8; 64],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + 32 * 3 + 64);
     out.extend_from_slice(&MEMBER_BOND_ACTIVATE_SELECTOR);
     out.extend_from_slice(proposer_pubkey); // head word 1: bytes32
@@ -220,7 +222,10 @@ pub fn read_registration_nonce<T: crate::rpc::RpcTransport>(
     });
     let ret = rpc.eth_call(call).map_err(|e| e.to_string())?;
     if ret.len() < 32 {
-        return Err(format!("registrationNonce returned {} bytes, expected 32", ret.len()));
+        return Err(format!(
+            "registrationNonce returned {} bytes, expected 32",
+            ret.len()
+        ));
     }
     let mut b = [0u8; 8];
     b.copy_from_slice(&ret[24..32]);
@@ -257,7 +262,10 @@ pub fn read_validator_rewards<T: crate::rpc::RpcTransport>(
     });
     let ret = rpc.eth_call(call).map_err(|e| e.to_string())?;
     if ret.len() < 64 {
-        return Err(format!("rewardsOf returned {} bytes, expected 64", ret.len()));
+        return Err(format!(
+            "rewardsOf returned {} bytes, expected 64",
+            ret.len()
+        ));
     }
     Ok((u128_from_word(&ret[0..32]), u128_from_word(&ret[32..64])))
 }
@@ -273,20 +281,22 @@ pub fn sign_registration_from_data_dir(
     nonce: u64,
 ) -> Result<([u8; 32], [u8; 64]), String> {
     let path = data_dir.join(PROPOSER_KEY_FILE);
-    let mut bytes = std::fs::read(&path)
-        .map_err(|_| {
-            // The file is ABSENT until the node arms mining, and mining arms only
-            // once the local head reaches the network tip. Reporting the path and
-            // "os error 2" told the member their install was broken when the node
-            // was simply still syncing. Name the real gate instead (Rule 1).
-            "proposer key not minted yet — your node mints it once it finishes syncing \
+    let mut bytes = std::fs::read(&path).map_err(|_| {
+        // The file is ABSENT until the node arms mining, and mining arms only
+        // once the local head reaches the network tip. Reporting the path and
+        // "os error 2" told the member their install was broken when the node
+        // was simply still syncing. Name the real gate instead (Rule 1).
+        "proposer key not minted yet — your node mints it once it finishes syncing \
              to the network tip and arms block production. Leave the node running; \
              activation unlocks automatically."
-                .to_string()
-        })?;
+            .to_string()
+    })?;
     if bytes.len() != 32 {
         bytes.zeroize();
-        return Err(format!("proposer.key is {} bytes, expected 32", bytes.len()));
+        return Err(format!(
+            "proposer.key is {} bytes, expected 32",
+            bytes.len()
+        ));
     }
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&bytes);
@@ -307,8 +317,14 @@ mod tests {
     #[test]
     fn proposer_pubkey_from_seed_matches_ed25519_vectors() {
         let cases = [
-            ([0x01u8; 32], "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"),
-            ([0x2au8; 32], "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61"),
+            (
+                [0x01u8; 32],
+                "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+            ),
+            (
+                [0x2au8; 32],
+                "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+            ),
         ];
         for (seed, want) in cases {
             assert_eq!(hex::encode(proposer_pubkey_from_seed(&seed)), want);
@@ -378,10 +394,19 @@ mod tests {
 
     #[test]
     fn selectors_match_the_contract_signatures() {
-        assert_eq!(REGISTER_VALIDATOR_SELECTOR, keccak256(b"registerValidator(bytes32,bytes)")[..4]);
-        assert_eq!(REGISTRATION_NONCE_SELECTOR, keccak256(b"registrationNonce(address)")[..4]);
+        assert_eq!(
+            REGISTER_VALIDATOR_SELECTOR,
+            keccak256(b"registerValidator(bytes32,bytes)")[..4]
+        );
+        assert_eq!(
+            REGISTRATION_NONCE_SELECTOR,
+            keccak256(b"registrationNonce(address)")[..4]
+        );
         // Bond-clone activation: the member calls MemberBond.activate, not the registry.
-        assert_eq!(MEMBER_BOND_ACTIVATE_SELECTOR, keccak256(b"activate(bytes32,bytes)")[..4]);
+        assert_eq!(
+            MEMBER_BOND_ACTIVATE_SELECTOR,
+            keccak256(b"activate(bytes32,bytes)")[..4]
+        );
     }
 
     #[test]
@@ -392,9 +417,21 @@ mod tests {
         let sig = sign_registration(&[0x01; 32], 40204, &addr20(REGISTRY), &addr20(STAKER), 0);
         let activate = member_bond_activate_calldata(&pubkey, &sig);
         let register = register_validator_calldata(&pubkey, &sig);
-        assert_eq!(&activate[..4], &MEMBER_BOND_ACTIVATE_SELECTOR, "activate selector");
-        assert_ne!(&activate[..4], &register[..4], "distinct selector from registerValidator");
-        assert_eq!(&activate[4..], &register[4..], "identical bytes32+bytes body");
+        assert_eq!(
+            &activate[..4],
+            &MEMBER_BOND_ACTIVATE_SELECTOR,
+            "activate selector"
+        );
+        assert_ne!(
+            &activate[..4],
+            &register[..4],
+            "distinct selector from registerValidator"
+        );
+        assert_eq!(
+            &activate[4..],
+            &register[4..],
+            "identical bytes32+bytes body"
+        );
     }
 
     #[test]
@@ -438,7 +475,11 @@ mod tests {
         let cd = registration_nonce_calldata(&addr20(STAKER));
         assert_eq!(&cd[..4], &REGISTRATION_NONCE_SELECTOR);
         assert_eq!(cd.len(), 36);
-        assert_eq!(&cd[16..36], &addr20(STAKER), "address right-aligned in the word");
+        assert_eq!(
+            &cd[16..36],
+            &addr20(STAKER),
+            "address right-aligned in the word"
+        );
         assert_eq!(&cd[4..16], &[0u8; 12], "left-padded with zeros");
     }
 
@@ -455,7 +496,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(PROPOSER_KEY_FILE), [0x01u8; 32]).unwrap();
         let (pubkey, sig) =
-            sign_registration_from_data_dir(&dir, 40204, &addr20(REGISTRY), &addr20(STAKER), 0).unwrap();
+            sign_registration_from_data_dir(&dir, 40204, &addr20(REGISTRY), &addr20(STAKER), 0)
+                .unwrap();
         assert_eq!(
             hex::encode(pubkey),
             "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
@@ -472,14 +514,22 @@ mod tests {
         use crate::rpc::{RpcClient, RpcError, RpcTransport};
         struct M(u64);
         impl RpcTransport for M {
-            fn call(&self, _body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+            fn call(
+                &self,
+                _body: serde_json::Value,
+            ) -> std::result::Result<serde_json::Value, RpcError> {
                 let mut word = [0u8; 32];
                 word[24..].copy_from_slice(&self.0.to_be_bytes());
-                Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(word))}))
+                Ok(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(word))}),
+                )
             }
         }
         let rpc = RpcClient::with_transport(M(7));
-        assert_eq!(read_registration_nonce(&rpc, REGISTRY, &addr20(STAKER)).unwrap(), 7);
+        assert_eq!(
+            read_registration_nonce(&rpc, REGISTRY, &addr20(STAKER)).unwrap(),
+            7
+        );
     }
 
     #[test]
@@ -488,14 +538,22 @@ mod tests {
         // rewardsOf returns two uint256 words: (total, claimableNow).
         struct M(u128, u128);
         impl RpcTransport for M {
-            fn call(&self, _body: serde_json::Value) -> std::result::Result<serde_json::Value, RpcError> {
+            fn call(
+                &self,
+                _body: serde_json::Value,
+            ) -> std::result::Result<serde_json::Value, RpcError> {
                 let mut buf = [0u8; 64];
                 buf[16..32].copy_from_slice(&self.0.to_be_bytes());
                 buf[48..64].copy_from_slice(&self.1.to_be_bytes());
-                Ok(serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(buf))}))
+                Ok(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"result": format!("0x{}", hex::encode(buf))}),
+                )
             }
         }
-        let rpc = RpcClient::with_transport(M(9_410_000_000_000_000_000u128, 4_000_000_000_000_000_000u128));
+        let rpc = RpcClient::with_transport(M(
+            9_410_000_000_000_000_000u128,
+            4_000_000_000_000_000_000u128,
+        ));
         let pubkey = [0x11u8; 32];
         let (total, claimable) = read_validator_rewards(&rpc, REGISTRY, &pubkey).unwrap();
         assert_eq!(total, 9_410_000_000_000_000_000u128);

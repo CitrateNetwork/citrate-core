@@ -237,9 +237,10 @@ impl UnixSocketTransport {
 
 impl MemoryTransport for UnixSocketTransport {
     fn call_tool(&self, tool: &str, args: Value) -> Result<String> {
-        let stream = crate::ipc_name::connect(&self.socket_path.to_string_lossy()).map_err(|e| {
-            MemoryError::Transport(format!("connect {}: {e}", self.socket_path.display()))
-        })?;
+        let stream =
+            crate::ipc_name::connect(&self.socket_path.to_string_lossy()).map_err(|e| {
+                MemoryError::Transport(format!("connect {}: {e}", self.socket_path.display()))
+            })?;
         stream
             .set_recv_timeout(Some(SOCKET_IO_TIMEOUT))
             .map_err(|e| MemoryError::Transport(e.to_string()))?;
@@ -591,7 +592,8 @@ impl MemoryManager {
                 "CITRATE_BGE_MODEL_DIR".to_string(),
                 dir.to_string_lossy().to_string(),
             ));
-            spec.env.push(("CITRATE_MEM_EMBED".to_string(), "bge".to_string()));
+            spec.env
+                .push(("CITRATE_MEM_EMBED".to_string(), "bge".to_string()));
         }
         spec
     }
@@ -697,12 +699,15 @@ impl MemoryManager {
     ///  - skips if the daemon is not running;
     ///  - skips if the tenant is already seeded (idempotent — first run only);
     ///  - skips if the corpus is empty (ships empty until curated, Rule 7).
+    ///
     /// Otherwise chunks each doc and authors it. The report says what happened.
     pub fn ingest_docs_corpus(
         &self,
         docs: &[(String, String)],
     ) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
-        use crate::docs_ingest::{ingest_docs_incremental, IngestReport, DOCS_TENANT, MAX_CHUNK_CHARS};
+        use crate::docs_ingest::{
+            ingest_docs_incremental, IngestReport, DOCS_TENANT, MAX_CHUNK_CHARS,
+        };
         if self.model_dir.is_none() {
             return Ok(IngestReport::skipped("not-semantic"));
         }
@@ -768,13 +773,22 @@ impl MemoryManager {
     /// missing/unreadable file is an empty set (honest: nothing seeded yet).
     fn load_seeded_chunks(&self) -> std::collections::BTreeSet<String> {
         std::fs::read_to_string(self.seeded_chunks_path())
-            .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
+            .map(|s| {
+                s.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     /// Persist the seen-set atomically (write to a temp file then rename), sorted for
     /// a stable on-disk form. Returns an error string on I/O failure (caller ignores).
-    fn save_seeded_chunks(&self, seen: &std::collections::BTreeSet<String>) -> std::result::Result<(), String> {
+    fn save_seeded_chunks(
+        &self,
+        seen: &std::collections::BTreeSet<String>,
+    ) -> std::result::Result<(), String> {
         let path = self.seeded_chunks_path();
         let tmp = path.with_extension("seeded.tmp");
         let body = seen.iter().cloned().collect::<Vec<_>>().join("\n");
@@ -791,10 +805,16 @@ impl MemoryManager {
     /// once the grant is real (`has_grant`), so a not-yet-granted member is never told a false figure.
     pub fn seed_context(&self, f: &SeedFacts) -> std::result::Result<SeedReport, String> {
         if self.model_dir.is_none() {
-            return Ok(SeedReport { authored: 0, skipped: Some("not-semantic".into()) });
+            return Ok(SeedReport {
+                authored: 0,
+                skipped: Some("not-semantic".into()),
+            });
         }
         if !self.is_running() {
-            return Ok(SeedReport { authored: 0, skipped: Some("not-running".into()) });
+            return Ok(SeedReport {
+                authored: 0,
+                skipped: Some("not-running".into()),
+            });
         }
         let mut authored = 0usize;
 
@@ -818,7 +838,8 @@ impl MemoryManager {
                 ),
             ];
             for fact in facts {
-                self.assert(CHAIN_STATE_TENANT, &fact, "reference").map_err(|e| e.to_string())?;
+                self.assert(CHAIN_STATE_TENANT, &fact, "reference")
+                    .map_err(|e| e.to_string())?;
                 authored += 1;
             }
         }
@@ -849,7 +870,8 @@ impl MemoryManager {
                     ));
                 }
                 for fact in facts {
-                    self.assert(PERSONAL_TENANT, &fact, "reference").map_err(|e| e.to_string())?;
+                    self.assert(PERSONAL_TENANT, &fact, "reference")
+                        .map_err(|e| e.to_string())?;
                     authored += 1;
                 }
             }
@@ -857,7 +879,11 @@ impl MemoryManager {
 
         Ok(SeedReport {
             authored,
-            skipped: if authored == 0 { Some("already-seeded".into()) } else { None },
+            skipped: if authored == 0 {
+                Some("already-seeded".into())
+            } else {
+                None
+            },
         })
     }
 
@@ -931,8 +957,8 @@ fn resolve_mem_mcp_bin<R: tauri::Runtime>(
     crate::supervisor::resolve_external_bin(app, "mem-mcp")
 }
 
-/// Resolve the bundled BGE model dir (`models/bge-base-en-v1.5` with `config.json`
-/// + `tokenizer.json` + `model.safetensors`). `CITRATE_BGE_MODEL_DIR` override
+/// Resolve the bundled BGE model dir (`models/bge-base-en-v1.5` with `config.json` +
+/// `tokenizer.json` + `model.safetensors`). `CITRATE_BGE_MODEL_DIR` override
 /// first (dev/tests), else the Tauri resource dir. Returns `None` (not an error)
 /// when the model is not present — the daemon then stays lexical, and the status
 /// honestly reports `semantic: false` rather than pretending semantic recall works.
@@ -949,7 +975,11 @@ fn resolve_bge_model_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option
             return Some(d);
         }
     }
-    let d = app.path().resource_dir().ok()?.join("models/bge-base-en-v1.5");
+    let d = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("models/bge-base-en-v1.5");
     has_all(&d).then_some(d)
 }
 

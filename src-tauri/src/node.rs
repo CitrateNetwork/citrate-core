@@ -109,9 +109,9 @@ const NODE_BLOCK_V2_VALUE: &str = "1";
 /// bites and SILENTLY FORKS. On THIS chain:
 ///   - app node at `2000`     → settles §R' from block 2000, matches the fleet → syncs clean.
 ///   - app node at `1000000`  → does NOT settle the reward the fleet settles from 2000
-///                              → forks at block 2000. This is exactly why **v0.2.6
-///                              (which shipped `1000000`) is SUPERSEDED and cannot sync
-///                              this chain.**
+///     → forks at block 2000. This is exactly why **v0.2.6
+///     (which shipped `1000000`) is SUPERSEDED and cannot sync
+///     this chain.**
 ///
 /// History: was `1000000` for the 2026-09-07 chain (where the fleet ran `1000000`, so a
 /// bundled `2000` forked); the sign flipped with the 2026-09-12 reroll. This value is
@@ -496,7 +496,10 @@ impl NodeManager {
         }
         let mut spec = SidecarSpec::new("citrate-node", self.bin.clone(), args);
         spec.env = vec![
-            (NODE_STORAGE_KEY_ENV.to_string(), storage_key_hex.to_string()),
+            (
+                NODE_STORAGE_KEY_ENV.to_string(),
+                storage_key_hex.to_string(),
+            ),
             // The node's `tracing` output is piped (not a TTY) into the log tail the
             // UI renders; emit PLAIN text so ANSI colour escapes don't surface as
             // unrenderable boxes. `NO_COLOR` (https://no-color.org) is honoured by
@@ -508,7 +511,10 @@ impl NodeManager {
             // CONSENSUS-CRITICAL: reproduce the fleet producer's validator/§R' state
             // path or the node forks the state root and wedges (see the const docs +
             // DGX_NODE_SYNC_WEDGE_RESPONSE_2026-07-22).
-            (NODE_BLOCK_V2_ENV.to_string(), NODE_BLOCK_V2_VALUE.to_string()),
+            (
+                NODE_BLOCK_V2_ENV.to_string(),
+                NODE_BLOCK_V2_VALUE.to_string(),
+            ),
             (
                 NODE_VALIDATOR_ACTIVATION_HEIGHT_ENV.to_string(),
                 NODE_VALIDATOR_ACTIVATION_HEIGHT_VALUE.to_string(),
@@ -845,7 +851,10 @@ pub async fn node_validator_earnings(
     let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
     let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
     if bytes.len() != 32 {
-        return Err(format!("proposer pubkey is {} bytes, expected 32", bytes.len()));
+        return Err(format!(
+            "proposer pubkey is {} bytes, expected 32",
+            bytes.len()
+        ));
     }
     let mut pubkey = [0u8; 32];
     pubkey.copy_from_slice(&bytes);
@@ -912,8 +921,8 @@ pub async fn node_register_validator(
     // member whose grant has not landed has no deployed bond; one who already activated
     // would revert `AlreadyActivated`. Fail here with a clear reason rather than mint a
     // doomed ceremony that looks like activation succeeded.
-    let grant = crate::grant_status::read_grant_status(&rpc, &wallet.address)
-        .map_err(|e| e.to_string())?;
+    let grant =
+        crate::grant_status::read_grant_status(&rpc, &wallet.address).map_err(|e| e.to_string())?;
     if !grant.bond_deployed {
         return Err(format!(
             "validator bond not ready: no MemberBond escrow is deployed for your wallet ({}). \
@@ -937,7 +946,9 @@ pub async fn node_register_validator(
             "validator bond underfunded: your MemberBond ({}) holds {} SALT of attributed \
              principal but activation needs {} (the 32k bond). The treasury grant funds this \
              automatically; if it hasn't fully landed, activation can't proceed yet.",
-            grant.bond_address, salt(principal), salt(VALIDATOR_STAKE_WEI)
+            grant.bond_address,
+            salt(principal),
+            salt(VALIDATOR_STAKE_WEI)
         ));
     }
 
@@ -948,7 +959,9 @@ pub async fn node_register_validator(
     let nonce =
         crate::validator::read_registration_nonce(&rpc, node_validator_registry_value(), &staker)?;
     // Sign the registration with the node's proposer key (seed stays in validator.rs).
-    let (pubkey, sig) = state.0.sign_registration(40204, &registry, &staker, nonce)?;
+    let (pubkey, sig) = state
+        .0
+        .sign_registration(40204, &registry, &staker, nonce)?;
     let calldata = crate::validator::member_bond_activate_calldata(&pubkey, &sig);
     // Sent FROM the member EOA (the clone's `onlyMember`) TO the clone, value 0.
     let raw = encode_activate_json(&wallet.address, &grant.bond_address, &calldata);
@@ -1019,19 +1032,38 @@ pub struct LastCrash {
 /// error that would itself need explaining.
 #[tauri::command]
 pub fn node_last_crash<R: Runtime>(app: AppHandle<R>) -> Option<LastCrash> {
-    let path = app.path().app_data_dir().ok()?.join("node").join("crash-records.jsonl");
+    let path = app
+        .path()
+        .app_data_dir()
+        .ok()?
+        .join("node")
+        .join("crash-records.jsonl");
     let contents = std::fs::read_to_string(path).ok()?;
     let last = contents.lines().rev().find(|l| !l.trim().is_empty())?;
     let v: serde_json::Value = serde_json::from_str(last).ok()?;
-    let stderr_tail = v.get("stderr_tail").and_then(|x| x.as_str()).unwrap_or("").trim();
+    let stderr_tail = v
+        .get("stderr_tail")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim();
     let exit = v.get("exit").and_then(|x| x.as_str()).unwrap_or("").trim();
     // Prefer the node's own words; fall back to the exit status.
-    let reason = if stderr_tail.is_empty() { exit } else { stderr_tail };
+    let reason = if stderr_tail.is_empty() {
+        exit
+    } else {
+        stderr_tail
+    };
     if reason.is_empty() {
         return None;
     }
     // Keep it to one readable line for a toast.
-    let reason: String = reason.lines().next().unwrap_or(reason).chars().take(180).collect();
+    let reason: String = reason
+        .lines()
+        .next()
+        .unwrap_or(reason)
+        .chars()
+        .take(180)
+        .collect();
     Some(LastCrash {
         reason,
         at_unix_ms: v.get("at_unix_ms").and_then(|x| x.as_u64()).unwrap_or(0),

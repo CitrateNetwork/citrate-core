@@ -10,20 +10,23 @@ fn main() {
         "custody-auto-passphrase",
     ];
     let home = std::env::var("HOME").unwrap_or_default();
-    let env_path = std::path::PathBuf::from(home)
-        .join(".local/share/ai.citrate.core/custody.enc");
-    println!("envelope: {} exists={}", env_path.display(), env_path.exists());
-    for SERVICE in services {
-    println!("keyring service: {SERVICE}");
-    for a in accounts {
-        match keyring::Entry::new(SERVICE, a) {
-            Ok(e) => match e.get_secret() {
-                Ok(b) => println!("  {a:32} PRESENT ({} bytes)", b.len()),
-                Err(keyring::Error::NoEntry) => println!("  {a:32} absent"),
-                Err(err) => println!("  {a:32} ERROR: {err}"),
-            },
-            Err(err) => println!("  {a:32} entry-open ERROR: {err}"),
+    let env_path = std::path::PathBuf::from(home).join(".local/share/ai.citrate.core/custody.enc");
+    println!(
+        "envelope: {} exists={}",
+        env_path.display(),
+        env_path.exists()
+    );
+    for service in services {
+        println!("keyring service: {service}");
+        for a in accounts {
+            match keyring::Entry::new(service, a) {
+                Ok(e) => match e.get_secret() {
+                    Ok(b) => println!("  {a:32} PRESENT ({} bytes)", b.len()),
+                    Err(keyring::Error::NoEntry) => println!("  {a:32} absent"),
+                    Err(err) => println!("  {a:32} ERROR: {err}"),
+                },
+                Err(err) => println!("  {a:32} entry-open ERROR: {err}"),
+            }
         }
-    }
     }
 }

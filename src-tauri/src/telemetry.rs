@@ -59,7 +59,10 @@ fn redact_tokens(s: &str) -> String {
             let trimmed = chunk.trim_end();
             let ws = &chunk[trimmed.len()..];
             let core = trimmed.trim_matches(|c: char| "\"'(),;:<>[]{}".contains(c));
-            let lead = &trimmed[..trimmed.len() - trimmed.trim_start_matches(|c: char| "\"'(),;:<>[]{}".contains(c)).len()];
+            let lead = &trimmed[..trimmed.len()
+                - trimmed
+                    .trim_start_matches(|c: char| "\"'(),;:<>[]{}".contains(c))
+                    .len()];
             let tail = &trimmed[lead.len() + core.len()..];
             let redacted = looks_email(core) || looks_secret(core);
             if redacted {
@@ -169,11 +172,23 @@ pub fn install_panic_hook<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let loc = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
-        let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_default();
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_default();
         // Append (best-effort) so the next diagnostics_bundle can read it.
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let _ = writeln!(f, "panic at {loc}: {msg}");
         }
         prev(info);

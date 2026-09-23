@@ -972,7 +972,10 @@ pub async fn user_claim(
         let raw = pubkey_hex.strip_prefix("0x").unwrap_or(&pubkey_hex);
         let bytes = hex::decode(raw).map_err(|e| format!("bad proposer pubkey hex: {e}"))?;
         if bytes.len() != 32 {
-            return Err(format!("proposer pubkey is {} bytes, expected 32", bytes.len()));
+            return Err(format!(
+                "proposer pubkey is {} bytes, expected 32",
+                bytes.len()
+            ));
         }
         let mut pubkey = [0u8; 32];
         pubkey.copy_from_slice(&bytes);
@@ -981,10 +984,14 @@ pub async fn user_claim(
             crate::addresses::validator_registry(),
             &pubkey,
         )?;
-        let bond = grant.as_ref().map(|g| g.bond_address.clone()).unwrap_or_default();
+        let bond = grant
+            .as_ref()
+            .map(|g| g.bond_address.clone())
+            .unwrap_or_default();
         (bond, claimable)
     } else {
-        let snap = crate::earnings::read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
+        let snap =
+            crate::earnings::read_claimable(&rpc, &wallet.address).map_err(|e| e.to_string())?;
         let wei: u128 = snap
             .claimable_wei
             .parse()

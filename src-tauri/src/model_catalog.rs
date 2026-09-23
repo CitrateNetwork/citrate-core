@@ -297,7 +297,10 @@ pub fn read_local_models(dir: &std::path::Path) -> Result<Vec<ModelDescriptor>, 
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("read models dir: {e}"))?.flatten() {
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| format!("read models dir: {e}"))?
+        .flatten()
+    {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
             continue; // skip .part / .status.json / non-model files
@@ -331,7 +334,11 @@ pub fn read_local_models(dir: &std::path::Path) -> Result<Vec<ModelDescriptor>, 
 #[tauri::command]
 pub fn model_catalog_local(app: tauri::AppHandle) -> Result<Vec<ModelDescriptor>, String> {
     use tauri::Manager;
-    let models_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    let models_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("models");
     read_local_models(&models_dir)
 }
 
@@ -339,14 +346,15 @@ pub fn model_catalog_local(app: tauri::AppHandle) -> Result<Vec<ModelDescriptor>
 /// resolve without a token; gated-repo token threading rides with the S1.5 download path (which
 /// already opens the connection vault). Blocking `ureq` — Tauri runs commands off the UI thread.
 #[tauri::command]
-pub fn model_catalog_search(
-    source: String,
-    query: String,
-) -> Result<Vec<ModelDescriptor>, String> {
+pub fn model_catalog_search(source: String, query: String) -> Result<Vec<ModelDescriptor>, String> {
     let src = match source.as_str() {
         "hf" => ModelSource::Hf,
         "github" => ModelSource::Github,
-        other => return Err(format!("unknown model source '{other}' (expected hf|github)")),
+        other => {
+            return Err(format!(
+                "unknown model source '{other}' (expected hf|github)"
+            ))
+        }
     };
     search(&crate::oidc::UreqClient, src, &query, None)
 }

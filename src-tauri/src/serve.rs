@@ -166,12 +166,7 @@ impl LlamaServerManager {
     /// Build a manager over an explicit binary, model path, crash path, and port.
     /// Production uses [`build_serve_state`]; tests inject a stub binary + a temp
     /// model + a temp crash path.
-    pub fn new(
-        bin: PathBuf,
-        model_path: PathBuf,
-        crash_record_path: PathBuf,
-        port: u16,
-    ) -> Self {
+    pub fn new(bin: PathBuf, model_path: PathBuf, crash_record_path: PathBuf, port: u16) -> Self {
         LlamaServerManager {
             bin,
             model_path: Mutex::new(model_path),
@@ -252,8 +247,11 @@ impl LlamaServerManager {
     /// so a wedged server recovers. No env / no secret (the local model needs no
     /// key).
     fn build_spec(&self) -> SidecarSpec {
-        let mut spec =
-            SidecarSpec::new("llama-server", self.bin.clone(), self.effective_spawn_args());
+        let mut spec = SidecarSpec::new(
+            "llama-server",
+            self.bin.clone(),
+            self.effective_spawn_args(),
+        );
         let health_url = format!("http://127.0.0.1:{}/health", self.port);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -490,7 +488,9 @@ pub fn model_inference_state(
         downloading,
         gateway_key_configured: gateway_configured,
     };
-    Ok(crate::ai::select_inference_state(inputs).as_str().to_string())
+    Ok(crate::ai::select_inference_state(inputs)
+        .as_str()
+        .to_string())
 }
 
 #[cfg(test)]

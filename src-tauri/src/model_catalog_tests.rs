@@ -46,7 +46,7 @@ impl crate::oidc::HttpClient for FixtureHttp {
 
 /// 64 hex chars (upper) → normalized to lowercase; a stand-in real sha256.
 fn hex64(c: char) -> String {
-    std::iter::repeat(c).take(64).collect()
+    std::iter::repeat_n(c, 64).collect()
 }
 
 #[test]

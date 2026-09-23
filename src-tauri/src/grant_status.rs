@@ -428,8 +428,8 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
     let bond_deployed = unlock_ret.len() >= 32;
 
     let (unlock_block, is_unlocked, is_kyc_verified) = if bond_deployed {
-        let unlock =
-            decode_uint256_word(&unlock_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?;
+        let unlock = decode_uint256_word(&unlock_ret)
+            .map_err(|e| GrantStatusError::Decode(e.to_string()))?;
         let unlocked_ret = rpc
             .eth_call(bond_nullary_call(&bond_address, is_unlocked_selector()))
             .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
@@ -438,8 +438,12 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
             .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
         (
             Some(unlock as u64),
-            decode_uint256_word(&unlocked_ret).map(|v| v == 1).unwrap_or(false),
-            decode_uint256_word(&kyc_ret).map(|v| v == 1).unwrap_or(false),
+            decode_uint256_word(&unlocked_ret)
+                .map(|v| v == 1)
+                .unwrap_or(false),
+            decode_uint256_word(&kyc_ret)
+                .map(|v| v == 1)
+                .unwrap_or(false),
         )
     } else {
         (None, false, false)
@@ -467,8 +471,7 @@ pub fn read_grant_status<T: crate::rpc::RpcTransport>(
             let bonded_ret = rpc
                 .eth_call(stake_of_call(&pubkey_word))
                 .map_err(|e| GrantStatusError::Rpc(e.to_string()))?;
-            decode_uint256_word(&bonded_ret)
-                .map_err(|e| GrantStatusError::Decode(e.to_string()))?
+            decode_uint256_word(&bonded_ret).map_err(|e| GrantStatusError::Decode(e.to_string()))?
         } else {
             0
         };

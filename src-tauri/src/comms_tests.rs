@@ -150,7 +150,7 @@ fn empty_relay_url_stays_in_process() {
 // ---- resolve_relay_transport (pure) — GROW-S2 DEFAULT-ON transport + SIWE-domain rule ----
 
 #[test]
-fn resolve_transport_defaults_ON_to_the_shared_relay() {
+fn resolve_transport_defaults_on_to_the_shared_relay() {
     // DEFAULT-ON (alpha): unset OR whitespace-only ⇒ the shared rendezvous relay under its domain, so a
     // partner opening the DMG connects out of the box (no env/config).
     assert_eq!(

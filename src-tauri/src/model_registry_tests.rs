@@ -27,7 +27,7 @@ fn enc_string_tail(s: &str) -> Vec<u8> {
     let mut out = word(b.len()).to_vec();
     out.extend_from_slice(b);
     let pad = (32 - b.len() % 32) % 32;
-    out.extend(std::iter::repeat(0u8).take(pad));
+    out.extend(std::iter::repeat_n(0u8, pad));
     out
 }
 

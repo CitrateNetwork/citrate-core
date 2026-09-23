@@ -67,7 +67,11 @@ fn left_pad_address(addr: &str) -> [u8; 32] {
 }
 
 /// One `eth_call` returning a 32-byte word, or None on a short/empty return (no code / not set).
-fn call_word<T: crate::rpc::RpcTransport>(rpc: &RpcClient<T>, to: &str, calldata: &[u8]) -> Option<[u8; 32]> {
+fn call_word<T: crate::rpc::RpcTransport>(
+    rpc: &RpcClient<T>,
+    to: &str,
+    calldata: &[u8],
+) -> Option<[u8; 32]> {
     let call = serde_json::json!({ "to": to, "data": format!("0x{}", hex::encode(calldata)) });
     let ret = rpc.eth_call(call).ok()?;
     if ret.len() < 32 {
@@ -152,7 +156,9 @@ pub fn training_reward(
 ) -> Result<RewardInfo, String> {
     let ledger = patronage_ledger()?;
     let rpc = RpcClient::citrate();
-    let member = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?.address;
+    let member = crate::wallet::address(&custody.0)
+        .map_err(|e| e.to_string())?
+        .address;
     let word = left_pad_address(&member);
 
     let mut units_call = SEL_UNITS.to_vec();
@@ -180,7 +186,10 @@ pub fn training_reward(
 /// Opening a round is SETTLER-only (the coordinator commits it). Honest, not a sim.
 #[tauri::command]
 pub fn training_start(_group: String) -> Result<(), String> {
-    Err("opening a training round is done by the settlement coordinator, not the member".to_string())
+    Err(
+        "opening a training round is done by the settlement coordinator, not the member"
+            .to_string(),
+    )
 }
 
 /// Contributions meter through the coordinator; recordContribution is SETTLER-only, and real SALT
@@ -200,7 +209,9 @@ pub fn training_claim(
 ) -> Result<(), String> {
     let ledger = patronage_ledger()?;
     let rpc = RpcClient::citrate();
-    let member = crate::wallet::address(&custody.0).map_err(|e| e.to_string())?.address;
+    let member = crate::wallet::address(&custody.0)
+        .map_err(|e| e.to_string())?
+        .address;
     let mut pending_call = SEL_PENDING_DIVIDEND_OF.to_vec();
     pending_call.extend_from_slice(&left_pad_address(&member));
     let pending = call_word(&rpc, ledger, &pending_call)

@@ -321,12 +321,6 @@ pub async fn wallet_balances(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    include!("earnings_tests.rs");
-}
-
-
 /// The CONTRIBUTION claim — `ContributionAccounting.claimRewards()`.
 ///
 /// Kept as the default for a member who is NOT an activated validator. A
@@ -335,4 +329,9 @@ mod tests {
 /// and its caller in `agent::user_claim`).
 pub fn user_claim_request(claimable_wei: u128) -> crate::agent::AgentSignatureRequest {
     user_claim_request_to(claimable_wei, CONTRIBUTION_ACCOUNTING)
+}
+
+#[cfg(test)]
+mod tests {
+    include!("earnings_tests.rs");
 }

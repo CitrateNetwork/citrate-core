@@ -44,7 +44,11 @@ pub struct IngestReport {
 
 impl IngestReport {
     pub fn skipped(reason: &str) -> Self {
-        IngestReport { docs: 0, chunks: 0, skipped: Some(reason.to_string()) }
+        IngestReport {
+            docs: 0,
+            chunks: 0,
+            skipped: Some(reason.to_string()),
+        }
     }
 }
 
@@ -69,7 +73,10 @@ pub fn read_corpus_dir(dir: &std::path::Path) -> Result<Vec<(String, String)>, S
                 let md = std::fs::read_to_string(&path)
                     .map_err(|e| format!("read {}: {e}", path.display()))?;
                 let title = first_h1(&md).unwrap_or_else(|| {
-                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc").to_string()
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("doc")
+                        .to_string()
                 });
                 out.push((title, md));
             }
@@ -82,7 +89,8 @@ pub fn read_corpus_dir(dir: &std::path::Path) -> Result<Vec<(String, String)>, S
 fn first_h1(md: &str) -> Option<String> {
     md.lines().find_map(|l| {
         let t = l.trim_start();
-        (t.starts_with("# ") && !t.starts_with("##")).then(|| t.trim_start_matches('#').trim().to_string())
+        (t.starts_with("# ") && !t.starts_with("##"))
+            .then(|| t.trim_start_matches('#').trim().to_string())
     })
 }
 
@@ -122,6 +130,7 @@ pub fn chunk_markdown(doc_title: &str, md: &str, max_chars: usize) -> Vec<DocChu
 /// which returns `Ok(())` per chunk or an error that aborts the run. Decoupled from
 /// the mem transport so it is trivially testable; production passes a closure that
 /// calls `MemoryManager::assert(DOCS_TENANT, &chunk.content, "reference")`.
+#[allow(dead_code)] // base variant; production authors via ingest_docs_incremental
 pub fn ingest_docs<F>(
     docs: &[(String, String)],
     max_chars: usize,
@@ -198,7 +207,13 @@ fn heading_text(trimmed: &str) -> String {
     trimmed.trim_start_matches('#').trim().to_string()
 }
 
-fn flush_section(doc_title: &str, heading: &str, body: &str, max_chars: usize, out: &mut Vec<DocChunk>) {
+fn flush_section(
+    doc_title: &str,
+    heading: &str,
+    body: &str,
+    max_chars: usize,
+    out: &mut Vec<DocChunk>,
+) {
     let body = body.trim();
     if body.is_empty() {
         return;
@@ -291,7 +306,9 @@ mod tests {
         assert_eq!(chunks[1].breadcrumb, "Validator Guide › Staking");
         assert_eq!(chunks[2].breadcrumb, "Validator Guide › Rewards");
         // The breadcrumb is prepended to the body so a recall hit cites its source.
-        assert!(chunks[1].content.starts_with("Validator Guide › Staking\n\n"));
+        assert!(chunks[1]
+            .content
+            .starts_with("Validator Guide › Staking\n\n"));
         assert!(chunks[1].content.contains("Stake 32k SALT."));
     }
 
@@ -315,7 +332,7 @@ mod tests {
         assert!(chunks.len() >= 2, "oversized section splits");
         for c in &chunks {
             // Body piece (content minus the breadcrumb line) stays within budget.
-            let body = c.content.splitn(2, "\n\n").nth(1).unwrap_or("");
+            let body = c.content.split_once("\n\n").map(|x| x.1).unwrap_or("");
             assert!(body.chars().count() <= 60, "piece within max: {body:?}");
         }
     }
@@ -326,7 +343,9 @@ mod tests {
         let chunks = chunk_markdown("D", md, 5);
         // The long word is emitted whole (never split mid-UTF-8-char).
         assert_eq!(chunks.len(), 1);
-        assert!(chunks[0].content.contains("supercalifragilisticexpialidocious"));
+        assert!(chunks[0]
+            .content
+            .contains("supercalifragilisticexpialidocious"));
     }
 
     #[test]
@@ -339,7 +358,10 @@ mod tests {
     #[test]
     fn ingest_docs_authors_every_chunk_and_reports_counts() {
         let docs = vec![
-            ("A".to_string(), "## S1\nbody one\n\n## S2\nbody two".to_string()),
+            (
+                "A".to_string(),
+                "## S1\nbody one\n\n## S2\nbody two".to_string(),
+            ),
             ("B".to_string(), "just a title body".to_string()),
         ];
         let mut authored: Vec<String> = Vec::new();
@@ -377,8 +399,14 @@ mod tests {
         let titles: Vec<&str> = docs.iter().map(|(t, _)| t.as_str()).collect();
         assert!(titles.contains(&"Staking Guide"), "H1 becomes the title");
         assert!(titles.contains(&"no-heading"), "file stem when no H1");
-        assert!(titles.contains(&"Nested"), "recurses one level into subdirs");
-        assert!(!titles.iter().any(|t| t.contains("notes")), "non-.md ignored");
+        assert!(
+            titles.contains(&"Nested"),
+            "recurses one level into subdirs"
+        );
+        assert!(
+            !titles.iter().any(|t| t.contains("notes")),
+            "non-.md ignored"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -428,9 +456,16 @@ mod tests {
         // The reference docs alone chunk to real content (not empty stubs).
         let ref_dir = dir.join("reference");
         let ref_docs = read_corpus_dir(&ref_dir).expect("read reference packs");
-        assert!(ref_docs.len() >= 6, "six reference packs ship; got {}", ref_docs.len());
+        assert!(
+            ref_docs.len() >= 6,
+            "six reference packs ship; got {}",
+            ref_docs.len()
+        );
         for (title, md) in &ref_docs {
-            assert!(!chunk_markdown(title, md, MAX_CHUNK_CHARS).is_empty(), "{title:?} chunks");
+            assert!(
+                !chunk_markdown(title, md, MAX_CHUNK_CHARS).is_empty(),
+                "{title:?} chunks"
+            );
         }
     }
 
@@ -453,7 +488,10 @@ mod tests {
 
     #[test]
     fn incremental_skips_already_seen_chunks_on_a_second_run() {
-        let docs = vec![("A".to_string(), "## S1\nbody one\n\n## S2\nbody two".to_string())];
+        let docs = vec![(
+            "A".to_string(),
+            "## S1\nbody one\n\n## S2\nbody two".to_string(),
+        )];
         let mut seen = std::collections::BTreeSet::new();
         let mut authored: Vec<String> = Vec::new();
         // First run: both chunks authored, both hashes recorded.
@@ -472,7 +510,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(r2.chunks, 0);
-        assert_eq!(authored.len(), before, "no chunk re-authored on the second run");
+        assert_eq!(
+            authored.len(),
+            before,
+            "no chunk re-authored on the second run"
+        );
     }
 
     #[test]
@@ -508,11 +550,19 @@ mod tests {
         let mut n = 0;
         let err = ingest_docs_incremental(&docs, MAX_CHUNK_CHARS, &mut seen, |_c| {
             n += 1;
-            if n == 2 { Err("daemon write failed".to_string()) } else { Ok(()) }
+            if n == 2 {
+                Err("daemon write failed".to_string())
+            } else {
+                Ok(())
+            }
         })
         .unwrap_err();
         assert_eq!(err, "daemon write failed");
-        assert_eq!(seen.len(), 1, "only the successfully-authored chunk is marked seen");
+        assert_eq!(
+            seen.len(),
+            1,
+            "only the successfully-authored chunk is marked seen"
+        );
     }
 
     #[test]

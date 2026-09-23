@@ -26,11 +26,12 @@ pub use citrate_core_kit::{
     ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
 };
 
-mod addresses;
 mod activity;
+mod addresses;
 mod agent;
 mod ai;
 mod connections;
+mod contract_deploy;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
@@ -38,20 +39,19 @@ mod ipc_name;
 mod ipfs;
 mod membership;
 mod memory;
-mod contract_deploy;
-mod telemetry;
 mod model;
 mod model_register;
 mod model_registry;
-mod skill_registry;
-mod skills_local;
 mod node;
 mod provisioning;
 mod sbt_art;
 mod seam;
 mod serve;
 mod shell;
+mod skill_registry;
+mod skills_local;
 mod staking;
+mod telemetry;
 mod transfer;
 mod validator;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
@@ -60,8 +60,8 @@ mod validator;
 mod cluster;
 mod comms;
 mod hermes;
-mod invites;
 mod invite_seal;
+mod invites;
 mod model_catalog;
 mod social;
 mod storage;
@@ -77,8 +77,14 @@ use tauri::Manager;
 /// The sidecar binaries we own. An orphan of ANY of these holds a data-dir LOCK (RocksDB node store,
 /// ipfs datastore, mem-mcp store) or a UDS socket, so a fresh launch can't open its own → the pinwheel
 /// / "Resource temporarily unavailable" seen when a previous copy crashed or was run from a mounted DMG.
-const OWNED_SIDECARS: &[&str] =
-    &["citrate", "ipfs", "mem-mcp", "comms-member-daemon", "cluster-daemon", "hermes"];
+const OWNED_SIDECARS: &[&str] = &[
+    "citrate",
+    "ipfs",
+    "mem-mcp",
+    "comms-member-daemon",
+    "cluster-daemon",
+    "hermes",
+];
 
 /// Reap orphaned sidecars from a PREVIOUS/other instance before we spawn our own. The supervisor kills
 /// its children on graceful teardown, but a crash (SIGKILL) can't run Drop — leaving an orphan that
@@ -98,8 +104,15 @@ fn sweep_orphan_sidecars() {
     let mut victims: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
     // Pass 1 — processes under our own binary dir.
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
-        if let Ok(out) = std::process::Command::new("pgrep").arg("-f").arg(dir.to_string_lossy().as_ref()).output() {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        if let Ok(out) = std::process::Command::new("pgrep")
+            .arg("-f")
+            .arg(dir.to_string_lossy().as_ref())
+            .output()
+        {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Ok(pid) = line.trim().parse::<u32>() {
                     victims.insert(pid);
@@ -142,7 +155,10 @@ fn sweep_orphan_sidecars() {
 
     for pid in victims {
         if pid != self_pid {
-            let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .status();
         }
     }
 }
@@ -224,9 +240,12 @@ pub fn run() {
             // storage key and mem-store key deliberately STAY on the legacy
             // service (see node.rs / memory.rs) because their data already
             // exists under it.
-            let state =
-                custody::build_custody_state_with_service(handle, autolock, CUSTODY_KEYRING_SERVICE)
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let state = custody::build_custody_state_with_service(
+                handle,
+                autolock,
+                CUSTODY_KEYRING_SERVICE,
+            )
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             app.manage(state);
             // CORE-A3 — the auth manager (real loopback-PKCE OIDC against
             // auth.citrate.ai; refresh token → the A2 vault; access token in

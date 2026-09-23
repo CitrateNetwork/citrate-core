@@ -260,12 +260,12 @@ pub fn token_exchange_params(
 use crate::custody::CustodyVault;
 use crate::oidc::HttpClient;
 use serde::{Deserialize, Serialize};
-use tauri::State;
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::State;
 use zeroize::Zeroize as _;
 
 /// How long the loopback listener waits for the provider callback before failing
@@ -276,8 +276,12 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 /// The three MCP services, for status enumeration.
-const ALL_SERVICES: [Service; 4] =
-    [Service::GitHub, Service::GoogleDrive, Service::Notion, Service::HuggingFace];
+const ALL_SERVICES: [Service; 4] = [
+    Service::GitHub,
+    Service::GoogleDrive,
+    Service::Notion,
+    Service::HuggingFace,
+];
 
 /// Errors surfaced by the connection flow. Mapped to a `String` at the command
 /// boundary; never carries a token, code, or secret.
@@ -405,7 +409,6 @@ fn parse_dev_credentials(contents: &str) -> HashMap<String, String> {
 /// (never a wildcard). One accepted connection, then consumed.
 struct ConnectionListener {
     listener: TcpListener,
-    port: u16,
 }
 
 impl ConnectionListener {
@@ -420,18 +423,23 @@ impl ConnectionListener {
     fn bind_on(port: u16) -> std::result::Result<Self, ConnError> {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let listener = TcpListener::bind(addr).map_err(|_| ConnError::PortInUse)?;
-        let port = listener.local_addr().map_err(|_| ConnError::Network)?.port();
-        Ok(ConnectionListener { listener, port })
+        // Fail closed if the OS-assigned port can't be read back (tests bind on 0).
+        listener.local_addr().map_err(|_| ConnError::Network)?;
+        Ok(ConnectionListener { listener })
     }
 
+    #[cfg(test)]
     fn port(&self) -> u16 {
-        self.port
+        self.listener.local_addr().map(|a| a.port()).unwrap_or(0)
     }
 
     /// Accept exactly one callback and return the parsed `(code, state)`, or fail
     /// closed on timeout. Non-blocking poll against a wall-clock deadline so a
     /// timeout drops `self` (and the socket) deterministically. Single-use.
-    fn wait_for_callback(self, timeout: Duration) -> std::result::Result<CallbackParams, ConnError> {
+    fn wait_for_callback(
+        self,
+        timeout: Duration,
+    ) -> std::result::Result<CallbackParams, ConnError> {
         self.listener
             .set_nonblocking(true)
             .map_err(|_| ConnError::Network)?;
@@ -482,7 +490,9 @@ impl ConnectionListener {
         let mut reader = BufReader::new(stream.try_clone().map_err(|_| ConnError::Network)?)
             .take(MAX_CALLBACK_BYTES as u64);
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|_| ConnError::Network)?;
+        reader
+            .read_line(&mut line)
+            .map_err(|_| ConnError::Network)?;
         let target = line
             .split_whitespace()
             .nth(1)
@@ -883,7 +893,9 @@ mod tests {
         let expect = b64url(&Sha256::digest(p.verifier.as_bytes()));
         assert_eq!(p.challenge, expect);
         // base64url no-pad → no '=', '+', '/'
-        assert!(!p.challenge.contains('=') && !p.challenge.contains('+') && !p.challenge.contains('/'));
+        assert!(
+            !p.challenge.contains('=') && !p.challenge.contains('+') && !p.challenge.contains('/')
+        );
     }
 
     #[test]
@@ -923,7 +935,10 @@ mod tests {
         let url = authorize_url(Service::Notion, "n_id", "s", "c");
         assert!(url.starts_with("https://api.notion.com/v1/oauth/authorize?"));
         assert!(url.contains("owner=user"));
-        assert!(!url.contains("scope="), "Notion sets capabilities on the integration, not a scope param");
+        assert!(
+            !url.contains("scope="),
+            "Notion sets capabilities on the integration, not a scope param"
+        );
     }
 
     #[test]
@@ -931,10 +946,16 @@ mod tests {
         // GitHub + Google accept the plaintext-http loopback redirect directly.
         assert_eq!(Service::GitHub.redirect_uri(), OAUTH_REDIRECT_URI);
         assert_eq!(Service::GoogleDrive.redirect_uri(), OAUTH_REDIRECT_URI);
-        assert_eq!(Service::GitHub.redirect_uri(), "http://127.0.0.1:8975/oauth/callback");
+        assert_eq!(
+            Service::GitHub.redirect_uri(),
+            "http://127.0.0.1:8975/oauth/callback"
+        );
         // Notion rejects the http loopback → the hosted https bounce is registered.
         assert_eq!(Service::Notion.redirect_uri(), HOSTED_REDIRECT_URI);
-        assert_eq!(Service::Notion.redirect_uri(), "https://auth.citrate.ai/oauth/callback");
+        assert_eq!(
+            Service::Notion.redirect_uri(),
+            "https://auth.citrate.ai/oauth/callback"
+        );
     }
 
     #[test]
@@ -960,9 +981,15 @@ mod tests {
         let get = |p: &[(&'static str, String)], k: &str| {
             p.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone())
         };
-        assert_eq!(get(&notion, "redirect_uri").as_deref(), Some(HOSTED_REDIRECT_URI));
+        assert_eq!(
+            get(&notion, "redirect_uri").as_deref(),
+            Some(HOSTED_REDIRECT_URI)
+        );
         let gh = token_exchange_params(Service::GitHub, "id", "sec", "c", "v");
-        assert_eq!(get(&gh, "redirect_uri").as_deref(), Some(OAUTH_REDIRECT_URI));
+        assert_eq!(
+            get(&gh, "redirect_uri").as_deref(),
+            Some(OAUTH_REDIRECT_URI)
+        );
     }
 
     #[test]
@@ -1053,8 +1080,10 @@ mod tests {
             form: &[(&str, &str)],
         ) -> std::result::Result<String, crate::oidc::AuthError> {
             *self.0.last_url.lock().unwrap() = Some(url.to_string());
-            *self.0.last_form.lock().unwrap() =
-                form.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            *self.0.last_form.lock().unwrap() = form
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
             Ok(self.0.response.clone())
         }
     }
@@ -1064,7 +1093,10 @@ mod tests {
         let raw = "# a comment\n\nGITHUB_CLIENT_ID = abc \n  \nNOTION_CLIENT_SECRET=sek\n";
         let m = parse_dev_credentials(raw);
         assert_eq!(m.get("GITHUB_CLIENT_ID").map(String::as_str), Some("abc"));
-        assert_eq!(m.get("NOTION_CLIENT_SECRET").map(String::as_str), Some("sek"));
+        assert_eq!(
+            m.get("NOTION_CLIENT_SECRET").map(String::as_str),
+            Some("sek")
+        );
         assert!(!m.contains_key("# a comment"));
     }
 
@@ -1080,11 +1112,14 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("citrate-conn-creds-{}.json", std::process::id()));
         std::fs::write(&p, "NOTION_CLIENT_ID=nid\nNOTION_CLIENT_SECRET=nsec\n").unwrap();
-        let mgr = ConnectionManager::new(Box::new(SharedHttp(Arc::new(FakeHttp {
-            last_url: StdMutex::new(None),
-            last_form: StdMutex::new(Vec::new()),
-            response: String::new(),
-        }))), p.clone());
+        let mgr = ConnectionManager::new(
+            Box::new(SharedHttp(Arc::new(FakeHttp {
+                last_url: StdMutex::new(None),
+                last_form: StdMutex::new(Vec::new()),
+                response: String::new(),
+            }))),
+            p.clone(),
+        );
         let c = mgr.creds(Service::Notion).unwrap();
         assert_eq!(c.client_id, "nid");
         assert_eq!(c.client_secret.as_str(), "nsec");
@@ -1107,7 +1142,9 @@ mod tests {
     #[test]
     fn slot_is_namespaced_and_not_backend_reserved() {
         assert_eq!(slot(Service::Notion), "connection-notion");
-        assert!(!crate::custody::is_backend_reserved_slot(&slot(Service::Notion)));
+        assert!(!crate::custody::is_backend_reserved_slot(&slot(
+            Service::Notion
+        )));
         assert!(!slot(Service::GitHub).starts_with('\0'));
     }
 
@@ -1152,7 +1189,9 @@ mod tests {
     fn listener_times_out_when_no_callback_arrives() {
         let listener = ConnectionListener::bind_on(0).unwrap();
         assert_eq!(
-            listener.wait_for_callback(Duration::from_millis(80)).unwrap_err(),
+            listener
+                .wait_for_callback(Duration::from_millis(80))
+                .unwrap_err(),
             ConnError::Timeout
         );
     }
@@ -1165,7 +1204,8 @@ mod tests {
             // A Notion-shaped response: access_token + workspace fields we ignore.
             response: r#"{"access_token":"ntn_tok_secret","token_type":"bearer","bot_id":"b","workspace_id":"w"}"#.to_string(),
         });
-        let mgr = ConnectionManager::new(Box::new(SharedHttp(fake.clone())), PathBuf::from("unused"));
+        let mgr =
+            ConnectionManager::new(Box::new(SharedHttp(fake.clone())), PathBuf::from("unused"));
         let vault = fresh_vault();
         let creds = ClientCreds {
             client_id: "n_id".to_string(),
@@ -1216,17 +1256,27 @@ mod tests {
         let before = mgr.status(&vault);
         assert!(before.iter().all(|s| !s.connected));
 
-        mgr.exchange_and_store(Service::GitHub, &creds, &vault, "c", "v").unwrap();
+        mgr.exchange_and_store(Service::GitHub, &creds, &vault, "c", "v")
+            .unwrap();
         let after = mgr.status(&vault);
         let gh = after.iter().find(|s| s.service == "github").unwrap();
         assert!(gh.connected);
         assert_eq!(gh.scope.as_deref(), Some("repo"));
         // The other two remain disconnected.
-        assert!(after.iter().filter(|s| s.service != "github").all(|s| !s.connected));
+        assert!(after
+            .iter()
+            .filter(|s| s.service != "github")
+            .all(|s| !s.connected));
 
         // Disconnect forgets it.
         mgr.disconnect(Service::GitHub, &vault).unwrap();
         let gone = mgr.status(&vault);
-        assert!(gone.iter().find(|s| s.service == "github").unwrap().connected == false);
+        assert!(
+            !gone
+                .iter()
+                .find(|s| s.service == "github")
+                .unwrap()
+                .connected
+        );
     }
 }

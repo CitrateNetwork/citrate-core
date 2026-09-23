@@ -59,7 +59,9 @@ pub fn decode_get_skill(ret: &[u8]) -> Result<(String, String, String, String, S
 }
 
 /// Read every registered skill from the on-chain registry (generic over transport for tests).
-pub fn read_registry_skills<T: RpcTransport>(rpc: &RpcClient<T>) -> Result<Vec<RegistrySkill>, String> {
+pub fn read_registry_skills<T: RpcTransport>(
+    rpc: &RpcClient<T>,
+) -> Result<Vec<RegistrySkill>, String> {
     let hashes_ret = rpc
         .eth_call(call_obj(selector("getAllSkillHashes()"), &[]))
         .map_err(|e| e.to_string())?;
@@ -67,7 +69,9 @@ pub fn read_registry_skills<T: RpcTransport>(rpc: &RpcClient<T>) -> Result<Vec<R
     let get_skill = selector("getSkill(bytes32)");
     let mut out = Vec::with_capacity(hashes.len());
     for h in hashes {
-        let ret = rpc.eth_call(call_obj(get_skill, &h)).map_err(|e| e.to_string())?;
+        let ret = rpc
+            .eth_call(call_obj(get_skill, &h))
+            .map_err(|e| e.to_string())?;
         let (owner, name, version, manifest_cid, description) = decode_get_skill(&ret)?;
         out.push(RegistrySkill {
             id: format!("0x{}", hex::encode(h)),

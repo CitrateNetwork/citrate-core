@@ -770,11 +770,7 @@ fn render_exit(status: &std::process::ExitStatus) -> String {
 fn drain_grace(shared: &Arc<Shared>) {
     let deadline = std::time::Instant::now() + Duration::from_millis(20);
     loop {
-        if shared
-            .logs
-            .snapshot()
-            .iter()
-            .any(|l| l.stream == "err")
+        if shared.logs.snapshot().iter().any(|l| l.stream == "err")
             || std::time::Instant::now() >= deadline
         {
             return;

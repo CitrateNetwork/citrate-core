@@ -123,7 +123,7 @@ fn address_of_verifying_key(vk: &k256::ecdsa::VerifyingKey) -> String {
 
 #[test]
 fn integration_request_decode_approve_ecrecovers_and_is_single_use() {
-    use k256::ecdsa::{RecoveryId, Signature as K256Sig, SigningKey};
+    use k256::ecdsa::{RecoveryId, Signature as K256Sig};
 
     let (v, _p) = vault_with_wallet();
     let c = SignatureCeremony::new();

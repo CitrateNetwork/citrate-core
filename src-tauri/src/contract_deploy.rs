@@ -83,7 +83,12 @@ pub fn contract_deploy(
     };
     let initcode = deploy_initcode(&bytecode, &args);
     let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
-    let raw = encode_deploy_tx_json(&wallet.address, &initcode, value, gas.unwrap_or(DEFAULT_DEPLOY_GAS));
+    let raw = encode_deploy_tx_json(
+        &wallet.address,
+        &initcode,
+        value,
+        gas.unwrap_or(DEFAULT_DEPLOY_GAS),
+    );
     let intent = crate::ceremony::SignatureIntent {
         origin: "local-user".to_string(),
         kind: crate::ceremony::IntentKind::Transaction,

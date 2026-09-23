@@ -52,7 +52,7 @@ fn enc_bytes(b: &[u8]) -> Vec<u8> {
     let mut out = word_u128(b.len() as u128).to_vec();
     out.extend_from_slice(b);
     let pad = (32 - b.len() % 32) % 32;
-    out.extend(std::iter::repeat(0u8).take(pad));
+    out.extend(std::iter::repeat_n(0u8, pad));
     out
 }
 
@@ -167,6 +167,7 @@ fn encode_register_tx_json(from: &str, calldata: &[u8]) -> String {
 /// the verified GGUF first) — an empty CID is rejected up-front, mirroring the contract's
 /// own `require`, so the ceremony never carries a tx that would revert.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // IPC arg list fixed by the tested invoke contract
 pub fn models_registry_register(
     custody: tauri::State<'_, crate::custody::CustodyState>,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
@@ -187,7 +188,11 @@ pub fn models_registry_register(
         // The contract requires a non-empty CID; the model must be pinned first.
         return Err("model must be pinned to IPFS first — CID is required to register".into());
     }
-    let meta = ModelMetadata { description, license, tags };
+    let meta = ModelMetadata {
+        description,
+        license,
+        tags,
+    };
     let calldata = register_model_calldata(
         &name,
         &framework,

@@ -79,7 +79,10 @@ fn blake3_token_hash(token: &str) -> String {
 /// (the daemon IPC is async) — a hiccup here is non-fatal, the invitee just gets a generic label.
 async fn group_name_of(app: &tauri::AppHandle, group: &str) -> Option<String> {
     let names = crate::comms::groups_list(app.clone()).await.ok()?;
-    names.into_iter().find(|(id, _)| id == group).map(|(_, name)| name)
+    names
+        .into_iter()
+        .find(|(id, _)| id == group)
+        .map(|(_, name)| name)
 }
 
 fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -159,15 +162,18 @@ pub async fn group_invite_create(
     });
     save(&app, &invites)?;
     // #73 — the inviter's audit copy (provable intent; the relay tally is authoritative for scoring).
-    append_referral(&app, ReferralEvent {
-        role: "inviter".into(),
-        event: "invited".into(),
-        group,
-        group_name: group_name_hex_decode(&name_hex),
-        token_hash,
-        for_handle,
-        ts: now_unix(),
-    });
+    append_referral(
+        &app,
+        ReferralEvent {
+            role: "inviter".into(),
+            event: "invited".into(),
+            group,
+            group_name: group_name_hex_decode(&name_hex),
+            token_hash,
+            for_handle,
+            ts: now_unix(),
+        },
+    );
     Ok(InviteMinted { token, link })
 }
 
@@ -185,15 +191,18 @@ pub async fn group_invite_redeem(app: tauri::AppHandle, link: String) -> Result<
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Invited group".to_string());
     crate::comms::redeem_invite(&app, group.clone(), token.clone(), name.clone())?;
-    append_referral(&app, ReferralEvent {
-        role: "joiner".into(),
-        event: "joined".into(),
-        group,
-        group_name: name,
-        token_hash: blake3_token_hash(&token),
-        for_handle: String::new(),
-        ts: now_unix(),
-    });
+    append_referral(
+        &app,
+        ReferralEvent {
+            role: "joiner".into(),
+            event: "joined".into(),
+            group,
+            group_name: name,
+            token_hash: blake3_token_hash(&token),
+            for_handle: String::new(),
+            ts: now_unix(),
+        },
+    );
     Ok(())
 }
 
@@ -250,7 +259,10 @@ fn referral_log_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
 }
 
 fn load_referrals(app: &tauri::AppHandle) -> Vec<ReferralEvent> {
-    match referral_log_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
+    match referral_log_path(app)
+        .ok()
+        .and_then(|p| std::fs::read(p).ok())
+    {
         Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         None => Vec::new(),
     }
@@ -303,7 +315,8 @@ pub async fn group_invite_submit_claim(app: tauri::AppHandle, link: String) -> R
     let key = link_param(&link, "k")
         .ok_or("this invite link predates one-click connect — ask for a fresh invite, or use the manual claim")?;
     let address = crate::comms::device_identity(&app)?.address;
-    let claim = serde_json::json!({ "group": group, "token": token, "address": address }).to_string();
+    let claim =
+        serde_json::json!({ "group": group, "token": token, "address": address }).to_string();
     let sealed = crate::invite_seal::seal_to(&key, claim.as_bytes())?;
     let th = hex::encode(crate::invite_seal::token_hash(&token));
     crate::comms::submit_claim(&app, th, hex::encode(sealed))
@@ -314,8 +327,14 @@ pub async fn group_invite_submit_claim(app: tauri::AppHandle, link: String) -> R
 /// Returns the volunteered claims (deduped by address) for the Requests inbox. Sealed blobs that don't
 /// open (wrong invite / tampered) are skipped silently — never surfaced as a claim (Rule 1).
 #[tauri::command]
-pub async fn group_invite_poll_claims(app: tauri::AppHandle, group: String) -> Result<Vec<ClaimView>, String> {
-    let invites: Vec<PendingInvite> = load(&app).into_iter().filter(|i| i.group == group).collect();
+pub async fn group_invite_poll_claims(
+    app: tauri::AppHandle,
+    group: String,
+) -> Result<Vec<ClaimView>, String> {
+    let invites: Vec<PendingInvite> = load(&app)
+        .into_iter()
+        .filter(|i| i.group == group)
+        .collect();
     let mut out: Vec<ClaimView> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for inv in invites {
@@ -328,15 +347,29 @@ pub async fn group_invite_poll_claims(app: tauri::AppHandle, group: String) -> R
             Err(_) => continue, // relay/daemon unavailable for this token — honest skip, never fabricate
         };
         for ct_hex in ciphertexts {
-            let Ok(sealed) = hex::decode(&ct_hex) else { continue };
-            let Ok(plain) = crate::invite_seal::open_with(&inv.priv_key, &sealed) else { continue };
-            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&plain) else { continue };
+            let Ok(sealed) = hex::decode(&ct_hex) else {
+                continue;
+            };
+            let Ok(plain) = crate::invite_seal::open_with(&inv.priv_key, &sealed) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&plain) else {
+                continue;
+            };
             // Only accept a claim that matches THIS invite (group + token), carrying an address.
             let g = v.get("group").and_then(|x| x.as_str()).unwrap_or("");
             let t = v.get("token").and_then(|x| x.as_str()).unwrap_or("");
             let addr = v.get("address").and_then(|x| x.as_str()).unwrap_or("");
-            if g == inv.group && t == inv.token && !addr.is_empty() && seen.insert(addr.to_lowercase()) {
-                out.push(ClaimView { group: g.to_string(), token: t.to_string(), address: addr.to_string() });
+            if g == inv.group
+                && t == inv.token
+                && !addr.is_empty()
+                && seen.insert(addr.to_lowercase())
+            {
+                out.push(ClaimView {
+                    group: g.to_string(),
+                    token: t.to_string(),
+                    address: addr.to_string(),
+                });
             }
         }
     }
@@ -357,8 +390,14 @@ fn link_param(link: &str, key: &str) -> Option<String> {
 
 /// `group_invites` — the owner's outstanding claimable invites for a group.
 #[tauri::command]
-pub async fn group_invites(app: tauri::AppHandle, group: String) -> Result<Vec<PendingInvite>, String> {
-    Ok(load(&app).into_iter().filter(|i| i.group == group).collect())
+pub async fn group_invites(
+    app: tauri::AppHandle,
+    group: String,
+) -> Result<Vec<PendingInvite>, String> {
+    Ok(load(&app)
+        .into_iter()
+        .filter(|i| i.group == group)
+        .collect())
 }
 
 /// `group_invite_verify_consume` — check a claim's one-time token against an outstanding invite for
@@ -385,7 +424,11 @@ pub async fn group_invite_verify_consume(
 /// drops the local record. If the relay revoke fails (daemon down), the call errors honestly and the
 /// local record is KEPT (Rule 1 — we don't report "revoked" while the link still redeems).
 #[tauri::command]
-pub async fn group_invite_revoke(app: tauri::AppHandle, group: String, token: String) -> Result<(), String> {
+pub async fn group_invite_revoke(
+    app: tauri::AppHandle,
+    group: String,
+    token: String,
+) -> Result<(), String> {
     crate::comms::revoke_invite(&app, blake3_token_hash(&token))?;
     let mut invites = load(&app);
     invites.retain(|i| !(i.group == group && i.token == token));
@@ -412,8 +455,14 @@ mod tests {
         assert_eq!(h.len(), 64, "32 bytes as hex");
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(h, hex::encode(blake3::hash(b"tok-abc").as_bytes()));
-        assert_eq!(super::blake3_token_hash("tok-abc"), super::blake3_token_hash("tok-abc"));
-        assert_ne!(super::blake3_token_hash("tok-abc"), super::blake3_token_hash("tok-abd"));
+        assert_eq!(
+            super::blake3_token_hash("tok-abc"),
+            super::blake3_token_hash("tok-abc")
+        );
+        assert_ne!(
+            super::blake3_token_hash("tok-abc"),
+            super::blake3_token_hash("tok-abd")
+        );
     }
 
     /// The publish token hash (BLAKE3) is deliberately DISTINCT from the CONNECT-S1 claims-inbox key

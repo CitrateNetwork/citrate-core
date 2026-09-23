@@ -224,7 +224,10 @@ impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Rejected carries a code, so it cannot share the &'static str table.
         if let AuthError::Rejected(status) = self {
-            return write!(f, "auth: the authority rejected the request (HTTP {status})");
+            return write!(
+                f,
+                "auth: the authority rejected the request (HTTP {status})"
+            );
         }
         let s = match self {
             AuthError::StateMismatch => "auth: callback state mismatch (rejected)",
@@ -880,7 +883,9 @@ impl HttpClient for UreqClient {
         if let Some(tok) = bearer {
             builder = builder.header("Authorization", format!("Bearer {tok}"));
         }
-        let req = builder.body(body.to_string()).map_err(|_| AuthError::Network)?;
+        let req = builder
+            .body(body.to_string())
+            .map_err(|_| AuthError::Network)?;
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(OIDC_HTTP_TIMEOUT))
             .build()
@@ -1521,12 +1526,7 @@ impl AuthManager {
     /// signature that does not recover) surfaces as an error — never a silent
     /// success, because the caller's next step is to trust that the authority now
     /// serves this address as `wallet_address`.
-    pub fn wallet_link_submit(
-        &self,
-        address: &str,
-        signature: &str,
-        nonce: &str,
-    ) -> Result<()> {
+    pub fn wallet_link_submit(&self, address: &str, signature: &str, nonce: &str) -> Result<()> {
         let (sub, access) = self.session_sub_and_token()?;
         let url = format!(
             "{}/identity/{}/wallets",
@@ -1597,7 +1597,10 @@ impl AuthManager {
         sig: &str,
     ) -> Result<String> {
         let (_sub, access) = self.session_sub_and_token()?;
-        let url = format!("{}/directory/bindings", self.cfg.issuer.trim_end_matches('/'));
+        let url = format!(
+            "{}/directory/bindings",
+            self.cfg.issuer.trim_end_matches('/')
+        );
         let mut body = serde_json::json!({
             "platform": platform,
             "handle": handle,
@@ -1609,16 +1612,30 @@ impl AuthManager {
         if let Some(dn) = display_name.filter(|d| !d.is_empty()) {
             body["display_name"] = serde_json::Value::String(dn.to_string());
         }
-        let resp = self.http.post_json(&url, Some(&access), &body.to_string())?;
+        let resp = self
+            .http
+            .post_json(&url, Some(&access), &body.to_string())?;
         let v: serde_json::Value = serde_json::from_str(&resp).map_err(|_| AuthError::Network)?;
-        Ok(v.get("status").and_then(|s| s.as_str()).unwrap_or("stored").to_string())
+        Ok(v.get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("stored")
+            .to_string())
     }
 
     /// Revoke (tombstone) this member's directory binding for `(platform, handle)`. `sig` is a fresh
     /// signature over the directory revoke statement by the SAME address (assembled in citrate-core).
-    pub fn directory_revoke(&self, platform: &str, handle: &str, address: &str, sig: &str) -> Result<()> {
+    pub fn directory_revoke(
+        &self,
+        platform: &str,
+        handle: &str,
+        address: &str,
+        sig: &str,
+    ) -> Result<()> {
         let (_sub, access) = self.session_sub_and_token()?;
-        let url = format!("{}/directory/bindings", self.cfg.issuer.trim_end_matches('/'));
+        let url = format!(
+            "{}/directory/bindings",
+            self.cfg.issuer.trim_end_matches('/')
+        );
         let body = serde_json::json!({
             "platform": platform,
             "handle": handle,
@@ -1652,7 +1669,10 @@ impl AuthManager {
         let address = v.get("address").and_then(|a| a.as_str());
         let bound_at = v.get("bound_at").and_then(|b| b.as_u64());
         match (address, bound_at) {
-            (Some(a), Some(t)) => Ok(Some(DirectoryHit { address: a.to_string(), bound_at: t })),
+            (Some(a), Some(t)) => Ok(Some(DirectoryHit {
+                address: a.to_string(),
+                bound_at: t,
+            })),
             _ => Ok(None),
         }
     }
@@ -1679,7 +1699,11 @@ impl AuthManager {
                     .and_then(|d| d.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
-                Some(DirectorySearchHit { handle, address, display_name })
+                Some(DirectorySearchHit {
+                    handle,
+                    address,
+                    display_name,
+                })
             })
             .collect())
     }
@@ -1719,7 +1743,9 @@ impl AuthManager {
     pub fn handoff_url(&self, target: &str) -> Result<String> {
         let (_sub, access) = self.session_sub_and_token()?;
         let body = serde_json::json!({ "target": target }).to_string();
-        let raw = self.http.post_json(&self.cfg.kyc_handoff, Some(&access), &body)?;
+        let raw = self
+            .http
+            .post_json(&self.cfg.kyc_handoff, Some(&access), &body)?;
         let v: serde_json::Value =
             serde_json::from_str(&raw).map_err(|_| AuthError::Rejected(200))?;
         v.get("url")

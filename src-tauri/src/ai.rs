@@ -953,8 +953,14 @@ pub fn ai_chat_local_tools(
 ) -> std::result::Result<String, String> {
     let port = serve.0.port();
     let active_model = serve.0.current_model_file();
-    ai.0.chat_local_tools(port, &active_model, &messages_json, &tools_json, &context_json)
-        .map_err(|e| e.to_string())
+    ai.0.chat_local_tools(
+        port,
+        &active_model,
+        &messages_json,
+        &tools_json,
+        &context_json,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Build the managed AI state with the real OS keyring + ureq client (production).

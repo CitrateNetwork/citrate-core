@@ -45,7 +45,8 @@ pub fn new_invite_keypair() -> (String, String) {
 /// Seal `plaintext` to the invite's public key (hex, compressed SEC1). Invitee side.
 pub fn seal_to(recipient_pub_hex: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let pub_bytes = hex::decode(recipient_pub_hex.trim()).map_err(|_| "invite key is not hex")?;
-    let recipient = PublicKey::from_sec1_bytes(&pub_bytes).map_err(|_| "invite key is not a valid point")?;
+    let recipient =
+        PublicKey::from_sec1_bytes(&pub_bytes).map_err(|_| "invite key is not a valid point")?;
     let eph = SecretKey::random(&mut OsRng);
     let shared = diffie_hellman(eph.to_nonzero_scalar(), recipient.as_affine());
     let key = derive_key(shared.raw_secret_bytes());
@@ -68,7 +69,8 @@ pub fn open_with(recipient_priv_hex: &str, sealed: &[u8]) -> Result<Vec<u8>, Str
     if sealed.len() < EPH_LEN + NONCE_LEN {
         return Err("sealed claim is too short".into());
     }
-    let priv_bytes = hex::decode(recipient_priv_hex.trim()).map_err(|_| "invite priv is not hex")?;
+    let priv_bytes =
+        hex::decode(recipient_priv_hex.trim()).map_err(|_| "invite priv is not hex")?;
     let sk = SecretKey::from_slice(&priv_bytes).map_err(|_| "invite priv is not a valid scalar")?;
     let eph = PublicKey::from_sec1_bytes(&sealed[..EPH_LEN]).map_err(|_| "bad ephemeral key")?;
     let nonce = &sealed[EPH_LEN..EPH_LEN + NONCE_LEN];

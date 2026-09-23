@@ -41,7 +41,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent, SignatureCeremony};
+use crate::ceremony::{CeremonyView, IntentKind, SignatureCeremony, SignatureIntent};
 use crate::custody::CustodyVault;
 use crate::oidc::wallet_link_message;
 
@@ -341,7 +341,11 @@ where
             false
         }
     };
-    Ok(WalletLinkResult { address, linked: true, canonical })
+    Ok(WalletLinkResult {
+        address,
+        linked: true,
+        canonical,
+    })
 }
 
 /// **Command — wallet_link_reject.** Drop a pending link the human declined.

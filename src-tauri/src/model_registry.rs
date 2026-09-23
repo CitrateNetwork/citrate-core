@@ -133,7 +133,9 @@ pub fn decode_get_model(ret: &[u8]) -> Result<(String, String, String), String> 
 /// Read every registered model from the on-chain registry. Generic over the transport so it is
 /// testable with a mock; production wires `RpcClient::citrate()`. One `getAllModelHashes` call +
 /// one `getModel` per hash.
-pub fn read_registry_models<T: RpcTransport>(rpc: &RpcClient<T>) -> Result<Vec<RegistryModel>, String> {
+pub fn read_registry_models<T: RpcTransport>(
+    rpc: &RpcClient<T>,
+) -> Result<Vec<RegistryModel>, String> {
     let hashes_ret = rpc
         .eth_call(call_obj(selector("getAllModelHashes()"), &[]))
         .map_err(|e| e.to_string())?;
@@ -141,7 +143,9 @@ pub fn read_registry_models<T: RpcTransport>(rpc: &RpcClient<T>) -> Result<Vec<R
     let get_model = selector("getModel(bytes32)");
     let mut out = Vec::with_capacity(hashes.len());
     for h in hashes {
-        let ret = rpc.eth_call(call_obj(get_model, &h)).map_err(|e| e.to_string())?;
+        let ret = rpc
+            .eth_call(call_obj(get_model, &h))
+            .map_err(|e| e.to_string())?;
         let (owner, name, ipfs_cid) = decode_get_model(&ret)?;
         out.push(RegistryModel {
             id: format!("0x{}", hex::encode(h)),

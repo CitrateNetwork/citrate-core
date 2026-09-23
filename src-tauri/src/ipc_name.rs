@@ -29,11 +29,11 @@
 
 use std::io;
 
-use interprocess::local_socket::{prelude::*, Name};
 #[cfg(unix)]
 use interprocess::local_socket::GenericFilePath;
 #[cfg(windows)]
 use interprocess::local_socket::GenericNamespaced;
+use interprocess::local_socket::{prelude::*, Name};
 
 /// The cross-platform local-socket stream type used by every sidecar client. On
 /// Unix it wraps a `UnixStream`; on Windows a named pipe. Re-exported so the
@@ -88,8 +88,7 @@ mod tests {
     fn unix_name_is_the_path_verbatim() {
         // On unix the endpoint name is the filesystem path unchanged, so it stays
         // on-wire identical to `UnixStream::connect(path)`.
-        let n = endpoint_name("/tmp/citrate/memory/memdag.sock")
-            .expect("fs name builds on unix");
+        let n = endpoint_name("/tmp/citrate/memory/memdag.sock").expect("fs name builds on unix");
         // A Name has no public getter for its bytes, but building it must succeed
         // and Debug must reflect the path we handed in (round-trip smoke).
         let dbg = format!("{n:?}");

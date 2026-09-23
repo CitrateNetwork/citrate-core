@@ -130,8 +130,12 @@ pub enum CommsError {
 impl std::fmt::Display for CommsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CommsError::NotConfigured => write!(f, "comms identity not available (daemon not started)"),
-            CommsError::BinaryNotFound(m) => write!(f, "comms-member-daemon binary not bundled: {m}"),
+            CommsError::NotConfigured => {
+                write!(f, "comms identity not available (daemon not started)")
+            }
+            CommsError::BinaryNotFound(m) => {
+                write!(f, "comms-member-daemon binary not bundled: {m}")
+            }
             CommsError::Spawn(m) => write!(f, "comms-member-daemon spawn error: {m}"),
             CommsError::AlreadyRunning => write!(f, "comms-member-daemon already running"),
             CommsError::Ipc(m) => write!(f, "comms ipc error: {m}"),
@@ -270,7 +274,11 @@ impl CommsMemberManager {
     /// rejected (`DomainMismatch`).
     pub fn with_relay_url(mut self, url: impl Into<String>) -> Self {
         let url = url.into();
-        self.relay_url = if url.trim().is_empty() { None } else { Some(url) };
+        self.relay_url = if url.trim().is_empty() {
+            None
+        } else {
+            Some(url)
+        };
         self
     }
 
@@ -308,13 +316,25 @@ impl CommsMemberManager {
     /// Build the [`SidecarSpec`]: ENV carries the socket + bearer-file PATH + seed + domain (never a
     /// token/seed in argv). Liveness = the UDS socket accepts a connection (the daemon has no HTTP).
     fn build_spec(&self) -> SidecarSpec {
-        let mut spec =
-            SidecarSpec::new("comms-member-daemon", self.bin.clone(), self.effective_spawn_args());
+        let mut spec = SidecarSpec::new(
+            "comms-member-daemon",
+            self.bin.clone(),
+            self.effective_spawn_args(),
+        );
         spec.env = vec![
-            (ENV_SOCKET.to_string(), self.socket_path.to_string_lossy().to_string()),
-            (ENV_BEARER_FILE.to_string(), self.bearer_path.to_string_lossy().to_string()),
+            (
+                ENV_SOCKET.to_string(),
+                self.socket_path.to_string_lossy().to_string(),
+            ),
+            (
+                ENV_BEARER_FILE.to_string(),
+                self.bearer_path.to_string_lossy().to_string(),
+            ),
             // The seed crosses as a 0600 FILE PATH (written in `start`), never inline.
-            (ENV_SEED_FILE.to_string(), self.seed_path().to_string_lossy().to_string()),
+            (
+                ENV_SEED_FILE.to_string(),
+                self.seed_path().to_string_lossy().to_string(),
+            ),
             (ENV_DOMAIN.to_string(), self.domain.clone()),
         ];
         // GROW-S2: when a networked relay is configured, the daemon selects the WsRelay transport.
@@ -441,7 +461,11 @@ impl CommsMemberManager {
         let Some(bearer) = self.bearer() else {
             return RelayHealth::Unknown;
         };
-        classify_relay(member_ipc_quick(&self.socket_path, &bearer, &Request::RelayStatus))
+        classify_relay(member_ipc_quick(
+            &self.socket_path,
+            &bearer,
+            &Request::RelayStatus,
+        ))
     }
 
     /// Send one request to the daemon over its UDS socket and return the response.
@@ -480,7 +504,10 @@ pub fn resolve_comms_member_bin<R: tauri::Runtime>(
         if path.exists() {
             return Ok(path);
         }
-        return Err(format!("{COMMS_MEMBER_BIN_ENV} set but not found: {}", path.display()));
+        return Err(format!(
+            "{COMMS_MEMBER_BIN_ENV} set but not found: {}",
+            path.display()
+        ));
     }
     // Bundled externalBin: installed NEXT TO THE MAIN EXECUTABLE (Contents/MacOS/<name>), NOT the
     // resource dir. Using resource_dir() here made a packaged app report "binary not bundled" even
@@ -496,32 +523,68 @@ pub fn resolve_comms_member_bin<R: tauri::Runtime>(
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 enum Request {
-    CreateGroup { name: String },
+    CreateGroup {
+        name: String,
+    },
     ListGroups,
-    JoinGroup { group: String },
+    JoinGroup {
+        group: String,
+    },
     /// Owner-invite: add a member who has published a key package to the shared relay. The daemon
     /// produces + publishes the MLS welcome; the invitee then joins. (Post-S0 amendment, CX-S3.5.)
-    AddMember { group: String, member: String },
-    Roster { group: String },
-    AssignRole { group: String, member: String, role: String },
-    Offboard { group: String, member: String },
-    Send { group: String, text: String },
-    Poll { group: String },
+    AddMember {
+        group: String,
+        member: String,
+    },
+    Roster {
+        group: String,
+    },
+    AssignRole {
+        group: String,
+        member: String,
+        role: String,
+    },
+    Offboard {
+        group: String,
+        member: String,
+    },
+    Send {
+        group: String,
+        text: String,
+    },
+    Poll {
+        group: String,
+    },
     /// CONNECT-S1 — submit a sealed claim to the relay's server-blind claims-inbox (invitee side).
-    SubmitClaim { token_hash: String, ciphertext: String },
+    SubmitClaim {
+        token_hash: String,
+        ciphertext: String,
+    },
     /// CONNECT-S1 — poll the claims-inbox by invite token hash (owner side).
-    PollClaims { token_hash: String },
+    PollClaims {
+        token_hash: String,
+    },
     /// INVITE-S2 — owner publishes a single-use, group-bound invite. `token_hash` is
     /// `BLAKE3(token)` hex (32 bytes); the RAW token stays in the share link and never reaches
     /// the relay. `expires_at` is Unix **ms**. After this the owner may go offline — a
     /// token-holder self-admits with no further owner action.
-    PublishInvite { group: String, token_hash: String, expires_at: u64 },
+    PublishInvite {
+        group: String,
+        token_hash: String,
+        expires_at: u64,
+    },
     /// INVITE-S2 — owner revokes a published invite by its token hash (`BLAKE3(token)` hex).
-    RevokeInvite { token_hash: String },
+    RevokeInvite {
+        token_hash: String,
+    },
     /// INVITE-S2 — invitee SELF-ADMITS by external commit using the RAW invite `token` (hex).
     /// `name` is the local display name to record the joined group under. No owner action needed;
     /// the relay records the referral attribution (inviter→joiner) automatically on success.
-    RedeemInvite { group: String, token: String, name: String },
+    RedeemInvite {
+        group: String,
+        token: String,
+        name: String,
+    },
     /// Flag-A — ask the daemon whether its networked relay link is currently up. Cheap in-memory
     /// read on the daemon side; used by [`CommsMemberManager::relay_status`] so the app can report a
     /// relay DROP instead of showing "healthy" (the UDS socket stays up while every relayed op fails).
@@ -552,22 +615,36 @@ struct RosterEntry {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Response {
     Ok,
-    GroupCreated { id: String },
-    Groups { groups: Vec<GroupView> },
+    GroupCreated {
+        id: String,
+    },
+    Groups {
+        groups: Vec<GroupView>,
+    },
     /// The welcome material the daemon produced for the invitee (published to the relay too); the
     /// owner-client only needs to know the add succeeded, so the fields are informational.
     Added {
         #[allow(dead_code)]
         member: String,
     },
-    Messages { messages: Vec<MsgView> },
-    Roster { members: Vec<RosterEntry> },
+    Messages {
+        messages: Vec<MsgView>,
+    },
+    Roster {
+        members: Vec<RosterEntry>,
+    },
     /// CONNECT-S1 — polled claim ciphertexts (hex; opaque). The owner opens them with the invite key.
-    Claims { ciphertexts: Vec<String> },
+    Claims {
+        ciphertexts: Vec<String>,
+    },
     /// Flag-A — the daemon's networked relay-link state (answer to [`Request::RelayStatus`]).
     /// `connected: false` = configured but the link is down (ops will fail until it reconnects).
-    RelayStatus { connected: bool },
-    Error { message: String },
+    RelayStatus {
+        connected: bool,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Connect to the member daemon's UDS, retrying briefly. The daemon spawns and binds `member.sock`
@@ -582,7 +659,10 @@ fn connect_with_retry(socket_path: &Path) -> Result<IpcStream> {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 if Instant::now() >= deadline {
-                    return Err(CommsError::Ipc(format!("connect {}: {e}", socket_path.display())));
+                    return Err(CommsError::Ipc(format!(
+                        "connect {}: {e}",
+                        socket_path.display()
+                    )));
                 }
                 std::thread::sleep(delay);
                 delay = (delay * 2).min(Duration::from_millis(400));
@@ -650,7 +730,10 @@ fn ipc_round_trip(
         .read_line(&mut line)
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
     if !line.contains("ready") {
-        return Err(CommsError::Ipc(format!("handshake rejected: {}", line.trim())));
+        return Err(CommsError::Ipc(format!(
+            "handshake rejected: {}",
+            line.trim()
+        )));
     }
 
     // request → response
@@ -825,7 +908,11 @@ fn resolve_relay_transport(
     if off {
         return (None, COMMS_DOMAIN.to_string()); // escape hatch → in-process, no remote box
     }
-    let url = if raw.is_empty() { CLUSTER_RELAY_URL.to_string() } else { raw };
+    let url = if raw.is_empty() {
+        CLUSTER_RELAY_URL.to_string()
+    } else {
+        raw
+    };
     let domain = domain_env
         .map(|d| d.trim().to_string())
         .filter(|d| !d.is_empty())
@@ -866,15 +953,21 @@ fn ensure_started<R: tauri::Runtime>(
         }
         return Ok(m);
     }
-    let data_root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("comms");
+    let data_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("comms");
     let seed = provision_comms_seed(app).map_err(|e| e.to_string())?; // GATED — errors until the decision
     let bin = resolve_comms_member_bin(app)?;
     // GROW-S2 transport (DEFAULT-ON for the alpha): use the shared rendezvous relay (CLUSTER_RELAY_URL)
     // so a partner who just opens the DMG connects out of the box. CITRATE_MEMBER_RELAY_URL overrides
     // (another URL, or an off-switch → in-process). The default + domain rule live in
     // `resolve_relay_transport` (unit-tested).
-    let (relay_url, domain) =
-        resolve_relay_transport(std::env::var(ENV_RELAY_URL).ok(), std::env::var(ENV_DOMAIN).ok());
+    let (relay_url, domain) = resolve_relay_transport(
+        std::env::var(ENV_RELAY_URL).ok(),
+        std::env::var(ENV_DOMAIN).ok(),
+    );
     let mut mgr = CommsMemberManager::new(
         bin,
         data_root.join("member.sock"),
@@ -892,7 +985,10 @@ fn ensure_started<R: tauri::Runtime>(
 }
 
 /// Route one request to the running daemon.
-fn route<R: tauri::Runtime>(app: &tauri::AppHandle<R>, req: Request) -> std::result::Result<Response, String> {
+fn route<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    req: Request,
+) -> std::result::Result<Response, String> {
     ensure_started(app)?.ipc(&req).map_err(|e| e.to_string())
 }
 
@@ -910,7 +1006,10 @@ fn parse_ok(r: Response) -> std::result::Result<(), String> {
 
 /// **groups_create** — create a Group; returns its id.
 #[tauri::command]
-pub async fn groups_create(app: tauri::AppHandle, name: String) -> std::result::Result<String, String> {
+pub async fn groups_create(
+    app: tauri::AppHandle,
+    name: String,
+) -> std::result::Result<String, String> {
     match route(&app, Request::CreateGroup { name })? {
         Response::GroupCreated { id } => Ok(id),
         Response::Error { message } => Err(message),
@@ -920,7 +1019,9 @@ pub async fn groups_create(app: tauri::AppHandle, name: String) -> std::result::
 
 /// **groups_list** — the member's groups.
 #[tauri::command]
-pub async fn groups_list(app: tauri::AppHandle) -> std::result::Result<Vec<(String, String)>, String> {
+pub async fn groups_list(
+    app: tauri::AppHandle,
+) -> std::result::Result<Vec<(String, String)>, String> {
     match route(&app, Request::ListGroups)? {
         Response::Groups { groups } => Ok(groups.into_iter().map(|g| (g.id, g.name)).collect()),
         Response::Error { message } => Err(message),
@@ -989,7 +1090,13 @@ pub(crate) fn submit_claim<R: tauri::Runtime>(
     token_hash: String,
     ciphertext: String,
 ) -> std::result::Result<(), String> {
-    match route(app, Request::SubmitClaim { token_hash, ciphertext })? {
+    match route(
+        app,
+        Request::SubmitClaim {
+            token_hash,
+            ciphertext,
+        },
+    )? {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
@@ -1018,7 +1125,14 @@ pub(crate) fn publish_invite<R: tauri::Runtime>(
     token_hash: String,
     expires_at: u64,
 ) -> std::result::Result<(), String> {
-    parse_ok(route(app, Request::PublishInvite { group, token_hash, expires_at })?)
+    parse_ok(route(
+        app,
+        Request::PublishInvite {
+            group,
+            token_hash,
+            expires_at,
+        },
+    )?)
 }
 
 /// INVITE-S2 — OWNER: revoke a published invite by its token hash (`BLAKE3(token)` hex). `pub(crate)`.
@@ -1046,7 +1160,9 @@ pub async fn groups_roster(
     group: String,
 ) -> std::result::Result<Vec<(String, String)>, String> {
     match route(&app, Request::Roster { group })? {
-        Response::Roster { members } => Ok(members.into_iter().map(|m| (m.address, m.role)).collect()),
+        Response::Roster { members } => {
+            Ok(members.into_iter().map(|m| (m.address, m.role)).collect())
+        }
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -1060,7 +1176,14 @@ pub async fn groups_assign_role(
     member: String,
     role: String,
 ) -> std::result::Result<(), String> {
-    parse_ok(route(&app, Request::AssignRole { group, member, role })?)
+    parse_ok(route(
+        &app,
+        Request::AssignRole {
+            group,
+            member,
+            role,
+        },
+    )?)
 }
 
 /// **groups_offboard** — atomic offboard (MLS remove + relay roster/tree drop).

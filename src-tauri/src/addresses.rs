@@ -25,6 +25,7 @@ const BOOK_JSON: &str = include_str!("../addresses/40204.json");
 #[derive(serde::Deserialize)]
 struct Book {
     #[serde(rename = "chainId")]
+    #[allow(dead_code)] // read by chain_id() (a verify-addrs accessor + test tripwire)
     chain_id: u64,
     addresses: Addresses,
 }
@@ -46,6 +47,7 @@ struct Addresses {
     #[serde(rename = "PatronageLedger", default)]
     patronage_ledger: String,
     #[serde(rename = "ModelCooperative", default)]
+    #[allow(dead_code)] // read by model_cooperative() (canonical SETL-S3 accessor)
     model_cooperative: String,
     #[serde(rename = "ModelRegistry", default)]
     model_registry: String,
@@ -68,9 +70,11 @@ fn book() -> &'static Book {
         let mut b: Book =
             serde_json::from_str(BOOK_JSON).expect("embedded 40204 address book is malformed");
         b.addresses.citrate_member_sbt = b.addresses.citrate_member_sbt.to_ascii_lowercase();
-        b.addresses.membership_stake_vault = b.addresses.membership_stake_vault.to_ascii_lowercase();
+        b.addresses.membership_stake_vault =
+            b.addresses.membership_stake_vault.to_ascii_lowercase();
         b.addresses.validator_registry = b.addresses.validator_registry.to_ascii_lowercase();
-        b.addresses.citrate_wallet_factory = b.addresses.citrate_wallet_factory.to_ascii_lowercase();
+        b.addresses.citrate_wallet_factory =
+            b.addresses.citrate_wallet_factory.to_ascii_lowercase();
         b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
         b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
         b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
@@ -80,6 +84,7 @@ fn book() -> &'static Book {
 }
 
 /// The chain id the book was generated for.
+#[allow(dead_code)]
 pub fn chain_id() -> u64 {
     book().chain_id
 }
@@ -141,6 +146,7 @@ pub fn patronage_ledger() -> &'static str {
 }
 
 /// `ModelCooperative` — the member-callable, ceremony-gated `claimDividend()` target (SETL-S3).
+#[allow(dead_code)]
 pub fn model_cooperative() -> &'static str {
     &book().addresses.model_cooperative
 }
@@ -150,9 +156,7 @@ mod tests {
     use super::*;
 
     fn is_address(s: &str) -> bool {
-        s.len() == 42
-            && s.starts_with("0x")
-            && s[2..].chars().all(|c| c.is_ascii_hexdigit())
+        s.len() == 42 && s.starts_with("0x") && s[2..].chars().all(|c| c.is_ascii_hexdigit())
     }
 
     #[test]
@@ -164,7 +168,10 @@ mod tests {
             ("CitrateWalletFactory", citrate_wallet_factory()),
             ("LiquidStakingPool", liquid_staking_pool()),
         ] {
-            assert!(is_address(addr), "{name} is not a 20-byte 0x address: {addr}");
+            assert!(
+                is_address(addr),
+                "{name} is not a 20-byte 0x address: {addr}"
+            );
             assert_ne!(
                 addr.to_ascii_lowercase(),
                 format!("0x{}", "0".repeat(40)),
@@ -185,7 +192,11 @@ mod tests {
             citrate_wallet_factory(),
             liquid_staking_pool(),
         ] {
-            assert_eq!(addr, &addr.to_ascii_lowercase(), "accessors must return lowercase");
+            assert_eq!(
+                addr,
+                &addr.to_ascii_lowercase(),
+                "accessors must return lowercase"
+            );
         }
     }
 
