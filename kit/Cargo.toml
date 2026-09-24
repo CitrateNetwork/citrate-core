@@ -40,7 +40,7 @@ sha3 = "0.10"
 bip39 = { version = "1.2", features = ["std", "zeroize"] }
 # Same pinned rev + lean crypto-only feature set as citrate-core used; cargo
 # dedupes the git dep across the two workspace members.
-citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "2d1ca33a9796a615da7eb236ab95c7afb59a41f7", default-features = false, features = ["crypto"] }
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "f4a07811940a0962325d18e8ba44fea0ff50a3b4", default-features = false, features = ["crypto"] }
 hex = "0.4"
 k256 = { version = "0.13", features = ["ecdsa"] }
 # supervisor.rs: POSIX process signals (SIGTERM→grace→SIGKILL, no orphan).

@@ -93,14 +93,14 @@ bip39 = { version = "1.2", features = ["std", "zeroize"] }
 # commit + its canonical-RLP r/s trim fix, #69 follow-ups) so the ceremony can sign a real
 # 40204 legacy tx via `sign_eip155_legacy_tx`. Still lean: features= ["crypto"], no
 # reqwest/tokio/citrate-consensus. Rule 12 [[drift]] landed first in citrate-federation.
-citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "2d1ca33a9796a615da7eb236ab95c7afb59a41f7", default-features = false, features = ["crypto"] }
+citrate-wallet-core = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "f4a07811940a0962325d18e8ba44fea0ff50a3b4", default-features = false, features = ["crypto"] }
 # CX-S2.2 — the canonical CommD/dataCommit the IPFSIncentivesV3 model bond registers. Pinned at
 # citrate-chain 763d764 (the #170 sound-CommD fix + the 40204 redeploy, PR #179). Lean by design:
 # ark-bn254 + Poseidon only (NO groth16/nova/tracing-subscriber — verified via `cargo tree`), and
 # it is NOT on the key path (it hashes; it never signs), so wallet-core stays at its reviewed
 # 47a6f92 (Cargo carries both revs as separate git sources). Byte-exactness is pinned by a
 # storage_tests vector check against citrate-commd's frozen `commd_frozen_v1.rs`. Rule 12 [[drift]].
-citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "2d1ca33a9796a615da7eb236ab95c7afb59a41f7" }
+citrate-commd = { git = "https://github.com/CitrateNetwork/citrate-chain.git", rev = "f4a07811940a0962325d18e8ba44fea0ff50a3b4" }
 # W1.1 — proposer identity. The node's block-signing (proposer) key is a deterministic
 # ed25519 key seeded from Sha3_256(domain ‖ coinbase32); the app must derive the SAME
 # public value to read validatorInfo(pubkey) and drive registration. We reimplement the
