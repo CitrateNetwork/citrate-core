@@ -2,7 +2,7 @@
 
 > **The Blockchain That Learns.** An AI-native Layer 1 where reaching consensus and training a decentralized AI are the same process. Every block makes the network smarter. Citrate sells **privacy with auditability across an entire organization, bottom-up and at scale** — custom-fit onto each customer's on-premise infrastructure, with optional posting to the public substrate for transparency under their own compliance constraints.
 
-This design system equips designers and engineers to produce work that feels native to Citrate: deliberate, sturdy, expensive, and government-document precise on the surface, with a quiet biological-cryptographic undercurrent. The audience is procurement and operations leaders at Boeing, DuPont, Toyota, Aramco, state and federal governments — buyers who must feel the work would survive scrutiny in a contractor's vault, a minister's briefing book, and a SOC.
+This design system equips designers and engineers to produce work that feels native to Citrate: deliberate, sturdy, expensive, and government-document precise on the surface, with a quiet biological-cryptographic undercurrent. The audience is procurement and operations leaders at defense_prime, DuPont, Toyota, Aramco, state and federal governments — buyers who must feel the work would survive scrutiny in a contractor's vault, a minister's briefing book, and a SOC.
 
 ---
 

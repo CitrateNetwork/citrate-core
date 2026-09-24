@@ -70,7 +70,7 @@ Refresh this release whenever a sidecar or the model changes (e.g. a DGX node re
    check interval (or on next launch), downloads with real byte progress, and
    restarts into the new version.
 
-### Distribution — the DO Space is the public origin (this repo is PRIVATE)
+### Distribution — the DO Space is the public origin
 
 The updater endpoint is a **DigitalOcean Space**, not a GitHub URL, because
 citrate-core is private and `releases/…/download/…` 404s for end users

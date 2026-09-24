@@ -14,12 +14,12 @@
 # Usage (from repo root or anywhere):
 #   src-tauri/scripts/b1_4_live_proof.sh
 #
-# It sources DEPLOY_KEY from citrate-boeing-shell/.env.demo.local (gitignored),
+# It sources DEPLOY_KEY from citrate-defense_prime-shell/.env.demo.local (gitignored),
 # funds a fresh app test wallet from 0x98a3…, and runs the ignored live test.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENV_FILE="${REPO_ROOT}/../citrate-boeing-shell/.env.demo.local"
+ENV_FILE="${REPO_ROOT}/../citrate-defense_prime-shell/.env.demo.local"
 RPC_URL="https://rpc.citrate.ai"
 FUNDER="0x98a32D944e9138B14A35b5D4dcE53339570F371A"
 

@@ -26,7 +26,7 @@ export const PERSONAS = {
   p3: { id: 'p3', name: 'Priya Anand', initials: 'PA', label: 'P3 · The Builder', tier: 'pilot', tierLabel: 'Pilot member', role: 'builder', org: null, fresh: false,
         blurb: 'SDKs, gateway key, agents on the MCP socket.' },
   p4: { id: 'p4', name: 'R. Calloway', initials: 'RC', label: 'P4 · The Org Seat', tier: 'enterprise', tierLabel: 'Enterprise · BA-7', role: 'org-seat', org: 'BA-7', fresh: false,
-        blurb: 'Boeing-class seat — org-scoped doors render.' },
+        blurb: 'defense_prime-class seat — org-scoped doors render.' },
 };
 
 // tier order for gating math

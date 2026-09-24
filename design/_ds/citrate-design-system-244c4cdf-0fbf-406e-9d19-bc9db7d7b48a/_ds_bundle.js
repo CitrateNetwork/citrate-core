@@ -1952,7 +1952,7 @@ function App() {
       overflow: "auto"
     }
   }, route === "dashboard" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TopBar, {
-    breadcrumbs: ["Boeing · Procurement #14", "Dashboard"],
+    breadcrumbs: ["defense_prime · Procurement #14", "Dashboard"],
     eyebrow: "17 May 2026 \xB7 14:02 UTC",
     title: "Good afternoon, Aleia.",
     actions: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
@@ -1966,7 +1966,7 @@ function App() {
   }), /*#__PURE__*/React.createElement(Dashboard, {
     onOpen: id => id === "__list__" ? go("#ledger") : go("#filing/" + id)
   })), route === "ledger" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TopBar, {
-    breadcrumbs: ["Boeing · Procurement #14", "Ledger"],
+    breadcrumbs: ["defense_prime · Procurement #14", "Ledger"],
     eyebrow: "312 filings on record \xB7 live",
     title: "Ledger",
     actions: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
@@ -1988,7 +1988,7 @@ function App() {
     onOpen: id => go("#filing/" + id),
     justSignedId: justSignedId
   }))), route === "filing" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TopBar, {
-    breadcrumbs: ["Boeing · Procurement #14", "Ledger", filingId],
+    breadcrumbs: ["defense_prime · Procurement #14", "Ledger", filingId],
     eyebrow: "Filing detail",
     title: filingId,
     actions: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
@@ -2004,7 +2004,7 @@ function App() {
       setTimeout(() => setJustSignedId(null), 1800);
     }
   })), (route === "witnesses" || route === "custodians" || route === "audit" || route === "settings") && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TopBar, {
-    breadcrumbs: ["Boeing · Procurement #14", route[0].toUpperCase() + route.slice(1)],
+    breadcrumbs: ["defense_prime · Procurement #14", route[0].toUpperCase() + route.slice(1)],
     eyebrow: "Section",
     title: route[0].toUpperCase() + route.slice(1)
   }), /*#__PURE__*/React.createElement("div", {
@@ -2045,7 +2045,7 @@ try { (() => {
 function AuthScreen({
   onSignIn
 }) {
-  const [email, setEmail] = React.useState("aleia.rouhani@boeing.com");
+  const [email, setEmail] = React.useState("aleia.rouhani@defense_prime.com");
   return /*#__PURE__*/React.createElement("div", {
     "data-screen-label": "Auth",
     style: {
@@ -2880,7 +2880,7 @@ const FILINGS = [{
   id: "CTR-9F4A",
   type: "Supply contract",
   reg: "FAR 52.246",
-  cp: "Boeing Procurement #14",
+  cp: "defense_prime Procurement #14",
   j: "US-FED",
   amt: 2418000,
   w: "3 of 3",
@@ -3488,7 +3488,7 @@ function ProjectSwitcher() {
       fontWeight: 500,
       color: "var(--paper)"
     }
-  }, "Boeing \xB7 Procurement #14"), /*#__PURE__*/React.createElement("div", {
+  }, "defense_prime \xB7 Procurement #14"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "var(--font-mono)",
       fontSize: 10,
@@ -4152,7 +4152,7 @@ try { (() => {
 function LogoCloud() {
   // ⚠ Placeholder typographic logos — replace with permissioned customer marks.
   const logos = [{
-    name: "Boeing",
+    name: "defense_prime",
     style: "italic",
     weight: 700,
     font: "var(--font-display)"
@@ -4284,7 +4284,7 @@ function MarketingApp() {
     jurisdiction: "US\u2011FED",
     status: "settled",
     title: "Supply contract \u2014 FAR 52.246",
-    counterparty: "Boeing Procurement #14",
+    counterparty: "defense_prime Procurement #14",
     amount: "$ 2,418,000.00",
     witnesses: "3 of 3 \xB7 Deloitte",
     effective: "2026\u201105\u201117"
@@ -5033,7 +5033,7 @@ function AuthScreen() {
       marginBottom: 24
     }
   }, [{
-    name: "Face ID · Boeing",
+    name: "Face ID · defense_prime",
     j: "US‑FED"
   }, {
     name: "Deloitte SSO",
