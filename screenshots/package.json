@@ -2,6 +2,7 @@
   "name": "citrate-core-screenshots",
   "private": true,
   "version": "0.1.0",
+  "license": "BUSL-1.1",
   "description": "Reproducible docs screenshot harness for Citrate Core (runs the app in sim mode via Playwright).",
   "type": "module",
   "scripts": {

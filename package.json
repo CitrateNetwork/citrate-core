@@ -2,6 +2,7 @@
   "name": "citrate-core",
   "private": true,
   "version": "0.2.9",
+  "license": "BUSL-1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",

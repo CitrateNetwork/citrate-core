@@ -9,6 +9,7 @@
 # now crate-private to THIS crate, reachable only from `ceremony::approve` — the
 # extraction strengthens the property it must preserve.
 [package]
+license = "BUSL-1.1"
 name = "citrate-core-kit"
 version = "0.1.0"
 description = "citrate-core-kit — shared ceremony / custody / oidc / supervisor / wallet / rpc spine. T1."

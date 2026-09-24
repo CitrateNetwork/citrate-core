@@ -1,4 +1,5 @@
 [package]
+license = "BUSL-1.1"
 name = "citrate-core"
 version = "0.2.9"
 description = "citrate-core — the federation desktop house (Tauri full-node app). T1."
