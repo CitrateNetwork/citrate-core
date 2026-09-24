@@ -2150,13 +2150,13 @@ function AuthScreen({
       gap: 8
     }
   }, [{
-    name: "Deloitte SSO",
+    name: "Kestrel SSO",
     j: "Federal · State"
   }, {
-    name: "EY Custodian",
+    name: "Aria Custodian",
     j: "EU · UK"
   }, {
-    name: "KPMG Substrate",
+    name: "Beacon Substrate",
     j: "APAC · JP-GOV"
   }, {
     name: "Government PIV",
@@ -2192,7 +2192,7 @@ function AuthScreen({
       color: "var(--fg-3)",
       letterSpacing: ".06em"
     }
-  }, "Continuously attested by Deloitte \xB7 EY \xB7 KPMG \xB7 99.997 % uptime \xB7 30 days")), /*#__PURE__*/React.createElement("div", {
+  }, "Continuously attested by Kestrel Advisory \xB7 EY \xB7 Beacon \xB7 99.997 % uptime \xB7 30 days")), /*#__PURE__*/React.createElement("div", {
     style: {
       background: "var(--deep-evergreen)",
       color: "#cde7d6",
@@ -2487,15 +2487,15 @@ function AttestationPanel() {
       gap: 10
     }
   }, [{
-    name: "Deloitte LLP",
+    name: "Kestrel Advisory LLP",
     ago: "12 s",
     ok: true
   }, {
-    name: "EY Compliance",
+    name: "Aria Compliance",
     ago: "44 s",
     ok: true
   }, {
-    name: "KPMG Substrate",
+    name: "Beacon Substrate",
     ago: "3 min",
     ok: true
   }].map(a => /*#__PURE__*/React.createElement("div", {
@@ -2596,19 +2596,19 @@ function FilingDetail({
     custodian: false
   }, {
     ts: "2026-05-15 09:14 UTC",
-    who: "Deloitte LLP",
+    who: "Kestrel Advisory LLP",
     what: "Witness 1 of 3",
     hash: "0xcc…7b21",
     custodian: true
   }, {
     ts: "2026-05-16 11:02 UTC",
-    who: "EY Compliance",
+    who: "Aria Compliance",
     what: "Witness 2 of 3",
     hash: "0x09…4f02",
     custodian: true
   }, {
     ts: f.status === "pending" ? null : "2026-05-17 14:02 UTC",
-    who: "KPMG Substrate",
+    who: "Beacon Substrate",
     what: f.status === "pending" ? "Awaiting witness 3 of 3" : "Witness 3 of 3",
     hash: f.status === "pending" ? null : "0x4f…12cc",
     custodian: true,
@@ -2884,14 +2884,14 @@ const FILINGS = [{
   j: "US-FED",
   amt: 2418000,
   w: "3 of 3",
-  custodian: "Deloitte",
+  custodian: "Kestrel Advisory",
   status: "settled",
   effective: "2026-05-17"
 }, {
   id: "CTR-8B12",
   type: "Hazmat manifest",
   reg: "DOT 173",
-  cp: "DuPont de Nemours, Inc.",
+  cp: "Meridian Chemical, Inc.",
   j: "US-DE",
   amt: 1084200,
   w: "2 of 3",
@@ -2902,11 +2902,11 @@ const FILINGS = [{
   id: "CTR-7AE0",
   type: "Routing instrument",
   reg: "WTO TBT",
-  cp: "Toyota Tsusho America",
+  cp: "Continental Trading America",
   j: "JP/US",
   amt: 94500,
   w: "4 of 4",
-  custodian: "KPMG",
+  custodian: "Beacon",
   status: "settled",
   effective: "2026-05-14"
 }, {
@@ -2924,18 +2924,18 @@ const FILINGS = [{
   id: "CTR-5C71",
   type: "Defense supply",
   reg: "DFARS 252",
-  cp: "Lockheed Martin LM-12",
+  cp: "Vanguard Systems VS-12",
   j: "US-FED",
   amt: 8920000,
   w: "3 of 3",
-  custodian: "Deloitte",
+  custodian: "Kestrel Advisory",
   status: "settled",
   effective: "2026-05-11"
 }, {
   id: "CTR-4B02",
   type: "Energy contract",
   reg: "FERC 35.13",
-  cp: "Aramco Services Co.",
+  cp: "Gulf Energy Services Co.",
   j: "SA/US",
   amt: 415000,
   w: "1 of 3",
@@ -2946,18 +2946,18 @@ const FILINGS = [{
   id: "CTR-3A99",
   type: "Aerospace MRO",
   reg: "FAA 145",
-  cp: "Raytheon Technologies",
+  cp: "Sentinel Technologies",
   j: "US-FED",
   amt: 1750000,
   w: "3 of 3",
-  custodian: "Deloitte",
+  custodian: "Kestrel Advisory",
   status: "settled",
   effective: "2026-05-09"
 }, {
   id: "CTR-2F44",
   type: "EU procurement",
   reg: "EU 2014/24",
-  cp: "Airbus Defence & Space",
+  cp: "Aerostar Defence & Space",
   j: "EU",
   amt: 6300000,
   w: "2 of 4",
@@ -4157,12 +4157,12 @@ function LogoCloud() {
     weight: 700,
     font: "var(--font-display)"
   }, {
-    name: "DuPont",
+    name: "Meridian Chemical",
     style: "normal",
     weight: 600,
     font: "var(--font-sans)"
   }, {
-    name: "TOYOTA",
+    name: "CONTINENTAL",
     style: "normal",
     weight: 500,
     font: "var(--font-sans)",
@@ -4180,20 +4180,20 @@ function LogoCloud() {
     font: "var(--font-sans)",
     tracking: "0.18em"
   }, {
-    name: "RAYTHEON",
+    name: "SENTINEL",
     style: "normal",
     weight: 500,
     font: "var(--font-sans)",
     tracking: "0.12em",
     size: 16
   }, {
-    name: "Lockheed Martin",
+    name: "Vanguard Systems",
     style: "normal",
     weight: 420,
     font: "var(--font-display)",
     size: 18
   }, {
-    name: "ARAMCO",
+    name: "GULF ENERGY",
     style: "normal",
     weight: 600,
     font: "var(--font-sans)",
@@ -4286,14 +4286,14 @@ function MarketingApp() {
     title: "Supply contract \u2014 FAR 52.246",
     counterparty: "defense_prime Procurement #14",
     amount: "$ 2,418,000.00",
-    witnesses: "3 of 3 \xB7 Deloitte",
+    witnesses: "3 of 3 \xB7 Kestrel Advisory",
     effective: "2026\u201105\u201117"
   }), /*#__PURE__*/React.createElement(ContractCard, {
     id: "CTR\u20118B12",
     jurisdiction: "US\u2011DE",
     status: "pending",
     title: "Hazardous materials manifest \u2014 DOT 173",
-    counterparty: "DuPont de Nemours, Inc.",
+    counterparty: "Meridian Chemical, Inc.",
     amount: "$ 1,084,200.00",
     witnesses: "2 of 3 \xB7 EY pending",
     effective: "2026\u201105\u201115"
@@ -4328,7 +4328,7 @@ function MarketingApp() {
     body: "Trust services criteria attested by three independent firms on a rolling basis."
   }, {
     tag: "Public auditors",
-    body: "Deloitte, EY, and KPMG operate witness custodians on the substrate. Their attestations are queryable by any participant."
+    body: "Kestrel Advisory, EY, and Beacon operate witness custodians on the substrate. Their attestations are queryable by any participant."
   }].map(c => /*#__PURE__*/React.createElement("div", {
     key: c.tag,
     style: {
@@ -5036,7 +5036,7 @@ function AuthScreen() {
     name: "Face ID · defense_prime",
     j: "US‑FED"
   }, {
-    name: "Deloitte SSO",
+    name: "Kestrel SSO",
     j: "Federal"
   }, {
     name: "Government PIV",
@@ -5157,7 +5157,7 @@ function TodayScreen() {
       color: "var(--fg-2)",
       marginTop: 4
     }
-  }, "DuPont de Nemours \xB7 $ 1.08 M \xB7 DOT 173"), /*#__PURE__*/React.createElement("button", {
+  }, "Meridian Chemical \xB7 $ 1.08 M \xB7 DOT 173"), /*#__PURE__*/React.createElement("button", {
     className: "m-btn m-btn-primary",
     style: {
       marginTop: 14,
@@ -5207,7 +5207,7 @@ function TodayScreen() {
       color: "var(--fg-2)",
       marginTop: 4
     }
-  }, "Airbus Defence \xB7 $ 6.30 M \xB7 EU 2014/24"), /*#__PURE__*/React.createElement("button", {
+  }, "Aerostar Defence \xB7 $ 6.30 M \xB7 EU 2014/24"), /*#__PURE__*/React.createElement("button", {
     className: "m-btn m-btn-primary",
     style: {
       marginTop: 14,
@@ -5379,7 +5379,7 @@ function FilingScreen() {
     }
   }, /*#__PURE__*/React.createElement(KV, {
     k: "Counterparty",
-    v: "DuPont de Nemours"
+    v: "Meridian Chemical"
   }), /*#__PURE__*/React.createElement(KV, {
     k: "Notional",
     v: "$ 1,084,200",
@@ -5435,13 +5435,13 @@ function FilingScreen() {
     done: true,
     hash: "0x8e…a019"
   }, {
-    who: "Deloitte LLP",
+    who: "Kestrel Advisory LLP",
     w: "Witness 1",
     t: "2026‑05‑15 09:14",
     done: true,
     hash: "0xcc…7b21"
   }, {
-    who: "EY Compliance",
+    who: "Aria Compliance",
     w: "Witness 2",
     t: "2026‑05‑16 11:02",
     done: true,
@@ -5614,7 +5614,7 @@ function BiometricScreen() {
       textAlign: "center",
       marginBottom: 22
     }
-  }, "Hazardous materials manifest \xB7 $ 1.08 M \xB7 DuPont"), /*#__PURE__*/React.createElement("div", {
+  }, "Hazardous materials manifest \xB7 $ 1.08 M \xB7 Meridian Chemical"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "center",
