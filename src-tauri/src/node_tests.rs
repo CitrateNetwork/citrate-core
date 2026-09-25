@@ -688,6 +688,39 @@ fn member_config_never_enables_mining() {
     );
 }
 
+/// PBA-L7b-007: the member RPC must not reflect arbitrary web Origins. citrate-chain's
+/// jsonrpc-http-server reflects ANY Origin when `cors_origins` is empty/unset, so the member
+/// config must carry a non-empty allowlist with no wildcard and no web (http/https) origin.
+#[test]
+fn pba_l7b_007_member_rpc_has_a_non_web_cors_allowlist() {
+    let cfg = include_str!("../config/member-node.toml");
+    let rpc = cfg
+        .split("\n[rpc]")
+        .nth(1)
+        .expect("member config must have an [rpc] section");
+    let section = rpc.split("\n[").next().unwrap_or(rpc);
+    let line = section
+        .lines()
+        .find(|l| l.trim_start().starts_with("cors_origins"))
+        .expect("[rpc] must set cors_origins (empty = reflect any Origin)");
+    let list = line.split_once('=').map(|(_, v)| v.trim()).unwrap_or("");
+    assert!(list.starts_with('[') && list.ends_with(']'), "{line}");
+    let entries: Vec<&str> = list
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .map(|e| e.trim().trim_matches('"'))
+        .filter(|e| !e.is_empty())
+        .collect();
+    assert!(!entries.is_empty(), "cors_origins must not be empty: {line}");
+    for e in &entries {
+        assert!(*e != "*", "no wildcard origin");
+        assert!(
+            !e.starts_with("http://") && !e.starts_with("https://") && *e != "null",
+            "no web origin may be allowed: {e}"
+        );
+    }
+}
+
 /// A member's RPC must not be reachable from the network.
 #[test]
 fn member_config_binds_rpc_to_loopback() {
