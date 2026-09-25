@@ -64,9 +64,11 @@
 //! **Both deferrals are now closed.** B1.4 added `wallet::sign_transaction` (real
 //! EIP-155, recoverable) behind `approve_and_broadcast`, and `personal_sign` now
 //! goes through `wallet::sign_personal` — EIP-191 prefix, keccak256, recoverable,
-//! `v` in {27,28} — which is what the name always claimed. `typed_data` still takes
-//! the message path: EIP-712 needs its own domain-separated hashing, and
-//! approximating it silently would be the same defect this change is fixing.
+//! `v` in {27,28} — which is what the name always claimed. PBA-L4-007: `typed_data`
+//! (and a `transaction` on the plain `approve` path) is now REFUSED with
+//! `UnsupportedSigningKind` instead of signing SHA-256 of the raw bytes: EIP-712
+//! needs its own domain-separated hashing, and approximating it silently was a
+//! signing oracle under a misleading label.
 
 // This module is consumed by the B1.2 command surface in `lib.rs` (wired) and by
 // the B1.3 wagmi connector later. Some constructors/fields are part of the stable
@@ -308,6 +310,10 @@ pub enum CeremonyError {
     /// as a downstream nonce/sender rejection. Carries NO key material — only the
     /// (public) claimed-vs-actual addresses, so the human sees why it was refused.
     FromMismatch { claimed: String, wallet: String },
+    /// PBA-L4-007: this intent kind has no honest signer on the `approve` path
+    /// (`typed_data` needs EIP-712 hashing; a `transaction` is signed only by
+    /// `approve_and_broadcast` as a real EIP-155 tx). Nothing was signed.
+    UnsupportedSigningKind,
     /// The signed tx could not be broadcast / confirmed on 40204 (B1.4). Carries
     /// the RPC error's PUBLIC message (node reason / transport / timeout) — never
     /// key material (the broadcast client never sees a key).
@@ -333,6 +339,10 @@ impl std::fmt::Display for CeremonyError {
             CeremonyError::FromMismatch { claimed, wallet } => write!(
                 f,
                 "ceremony: tx `from` ({claimed}) does not match this wallet ({wallet})"
+            ),
+            CeremonyError::UnsupportedSigningKind => write!(
+                f,
+                "ceremony: this request type cannot be signed here (typed data needs EIP-712 hashing, which Citrate Core does not implement yet; transactions are signed only when broadcast)"
             ),
             CeremonyError::Broadcast(m) => write!(f, "ceremony: broadcast failed: {m}"),
         }
@@ -455,8 +465,10 @@ impl SignatureCeremony {
         })
     }
 
-    /// **Step 2 — approve.** The ONLY signing path in the crate. Consumes the
-    /// ceremony (single-use), then signs via the gated `wallet::sign_message`.
+    /// **Step 2 — approve.** The message-signing path. Consumes the ceremony
+    /// (single-use), then signs `personal_sign` via the gated EIP-191
+    /// `wallet::sign_personal`; `typed_data` / `transaction` are refused
+    /// (PBA-L4-007, see `UnsupportedSigningKind`).
     ///
     /// Guards, in order:
     /// 1. The id must map to a PENDING ceremony (`UnknownCeremony` otherwise —
@@ -506,11 +518,17 @@ impl SignatureCeremony {
             // nothing can recover the signer from it, so this was not a signature
             // anyone outside this process could use.
             IntentKind::PersonalSign => wallet::sign_personal(vault, &bytes)?.to_vec(),
-            // TypedData and Transaction keep the message path. EIP-712 needs its own
-            // domain-separated hashing, which is a separate piece of work and is NOT
-            // silently approximated here; `sign_and_broadcast` is what produces a
-            // real, recoverable transaction signature.
-            IntentKind::TypedData | IntentKind::Transaction => wallet::sign_message(vault, &bytes)?,
+            // PBA-L4-007: TypedData and Transaction are REFUSED here. They used to be
+            // signed as SHA-256(raw dApp bytes) with the wallet key — no EIP-712 domain
+            // separation, no chain id — under a UI label that said "Sign typed data":
+            // a signing oracle with a misleading label, producing a signature no
+            // EIP-712 verifier accepts. EIP-712 needs its own domain-separated hashing
+            // (not implemented under the lean `crypto` build), and a transaction is
+            // signed as a real EIP-155 tx only by `approve_and_broadcast`. The ceremony
+            // is already consumed, so the refused request cannot be retried blind.
+            IntentKind::TypedData | IntentKind::Transaction => {
+                return Err(CeremonyError::UnsupportedSigningKind);
+            }
         };
         Ok(Signature {
             sig_hex: hex::encode(sig),

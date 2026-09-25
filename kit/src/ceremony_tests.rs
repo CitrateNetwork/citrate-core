@@ -294,11 +294,26 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
             }
         }
     }
-    // BOTH signers ARE invoked from ceremony.rs (positive control — the one path
-    // each: approve → sign_message, approve_and_broadcast → sign_transaction).
+    // The live signers ARE invoked from ceremony.rs (positive control — the one
+    // path each: approve → sign_personal, approve_and_broadcast → sign_transaction).
+    // PBA-L4-007: the raw-bytes `sign_message` is no longer invoked from ANY
+    // production path (typed_data / transaction on `approve` are refused), which
+    // is strictly narrower than before; assert it stays that way.
     let ceremony_src = include_str!("ceremony.rs");
     let ceremony_non_test = strip_test_module(ceremony_src);
+    let raw_message_call = "sign_".to_string() + "message(";
     for call in &calls {
+        if *call == raw_message_call {
+            let invoked = ceremony_non_test
+                .lines()
+                .map(str::trim_start)
+                .any(|t| t.contains(call.as_str()) && !t.starts_with("//") && !t.starts_with("///") && !t.starts_with("//!"));
+            assert!(
+                !invoked,
+                "PBA-L4-007: the raw SHA-256 message signer must not be reachable from ceremony approval"
+            );
+            continue;
+        }
         assert!(
             ceremony_non_test.contains(call),
             "the sanctioned path (ceremony approval) must invoke the gated signer `{call}`"
@@ -544,16 +559,55 @@ fn adv5_true_origin_surfaced_and_undecodable_is_raw_gated() {
         "a missing-ack approve does not consume the ceremony"
     );
 
-    // approve WITH the explicit raw ack → signs (the human took responsibility).
-    let sig = c
-        .approve(&v, &txview.id, true)
-        .expect("raw-ack approve signs");
+    // approve WITH the explicit raw ack → passes the raw-ack gate, but a
+    // `transaction` is never signed on the plain `approve` path (PBA-L4-007: it
+    // used to be SHA-256(raw bytes) under the wallet key — not a transaction
+    // signature at all). Only `approve_and_broadcast` signs a real EIP-155 tx.
     assert_eq!(
-        sig.sig_hex.len(),
-        128,
-        "raw-mode still produces a valid r||s signature"
+        c.approve(&v, &txview.id, true).err(),
+        Some(CeremonyError::UnsupportedSigningKind),
+        "raw-ack approve of a transaction on the message path is refused"
     );
-    assert_eq!(sig.kind, IntentKind::Transaction);
+    // Consumed: the refused request cannot be retried blind.
+    assert_eq!(
+        c.approve(&v, &txview.id, true).err(),
+        Some(CeremonyError::UnknownCeremony)
+    );
+}
+
+/// PBA-L4-007: a `typed_data` approval must NOT produce a wallet signature over
+/// SHA-256(raw dApp bytes) labelled as EIP-712 (no domain separation, no chain id
+/// — a signing oracle under a misleading label). It is refused until real
+/// EIP-712 hashing exists; nothing is signed and the ceremony is consumed.
+#[test]
+fn pba_l4_007_typed_data_is_refused_not_signed_as_raw_sha256() {
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let td = serde_json::json!({
+        "primaryType": "Permit",
+        "domain": { "name": "Citrate", "verifyingContract": "0x1234000000000000000000000000000000005678" }
+    });
+    let view = c.request(SignatureIntent {
+        origin: "https://app.citrate.ai".into(),
+        kind: IntentKind::TypedData,
+        chain_id: 40204,
+        raw: hex::encode(serde_json::to_vec(&td).unwrap()),
+    });
+    assert!(!view.requires_raw_ack, "well-formed typed data decodes");
+    assert_eq!(
+        c.approve(&v, &view.id, false).err(),
+        Some(CeremonyError::UnsupportedSigningKind),
+        "typed data must not be signed as raw SHA-256 bytes"
+    );
+    assert_eq!(c.pending_count(), 0, "the refused ceremony is consumed");
+    // personal_sign is unaffected (EIP-191, recoverable).
+    let ps = c.request(SignatureIntent {
+        origin: "https://app.citrate.ai".into(),
+        kind: IntentKind::PersonalSign,
+        chain_id: 40204,
+        raw: hex::encode(b"hello"),
+    });
+    assert_eq!(c.approve(&v, &ps.id, false).expect("personal_sign signs").sig_hex.len(), 130);
 }
 
 #[test]
