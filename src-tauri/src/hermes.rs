@@ -88,6 +88,11 @@ pub enum HermesError {
     /// The ceremony bridge failed (e.g. the vault is locked/absent so `from` can't be read). Fail
     /// closed — never bridge without the real signer's address.
     Ceremony(String),
+    /// PBA-L7b-009: another process already holds the control port; refusing to start.
+    PortInUse(u16),
+    /// PBA-L7b-003: the sidecar's head is no longer the action the member reviewed (a timeout
+    /// eviction or a newer effect changed it). Nothing was resolved; the member must re-review.
+    Stale,
 }
 
 impl std::fmt::Display for HermesError {
@@ -104,6 +109,14 @@ impl std::fmt::Display for HermesError {
             }
             HermesError::Decode(m) => write!(f, "hermes control decode error: {m}"),
             HermesError::Ceremony(m) => write!(f, "hermes ceremony bridge error: {m}"),
+            HermesError::PortInUse(p) => write!(
+                f,
+                "hermes control port {p} is already held by another process; refusing to start"
+            ),
+            HermesError::Stale => write!(
+                f,
+                "STALE_APPROVAL: the agent's pending action changed since you reviewed it; nothing was resolved, re-review it"
+            ),
         }
     }
 }
@@ -309,6 +322,13 @@ impl HermesManager {
             Some(Zeroizing::new(token.to_string()));
     }
 
+    /// Test hook: bind the control surface on another loopback address.
+    #[cfg(test)]
+    pub fn with_control_addr(mut self, addr: &str) -> Self {
+        self.control_addr = addr.to_string();
+        self
+    }
+
     /// Test hook: override the `/health` probe cadence (avoids the startup-race flake).
     #[cfg(test)]
     pub fn with_health_interval(mut self, interval: Duration) -> Self {
@@ -380,6 +400,17 @@ impl HermesManager {
         }
         if !self.bin.exists() {
             return Err(HermesError::BinaryNotFound(self.bin.display().to_string()));
+        }
+        // PBA-L7b-009: every control call carries the session bearer to the fixed loopback port. If
+        // another process already holds it, refuse to start instead of handing it the bearer.
+        if let Some(port) = self
+            .control_addr
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse::<u16>().ok())
+        {
+            if !crate::serve::loopback_port_is_free(port) {
+                return Err(HermesError::PortInUse(port));
+            }
         }
         let token = mint_bearer();
         persist_bearer(&self.token_path, &token)?;
@@ -527,10 +558,16 @@ impl HermesManager {
         ceremony: &SignatureCeremony,
         vault: &CustodyVault,
         rpc: &crate::rpc::RpcClient<T>,
+        expected_id: &str,
     ) -> Result<Option<CeremonyView>> {
         let Some(head) = self.pending_approvals()?.into_iter().next() else {
             return Ok(None);
         };
+        // PBA-L7b-003: only bridge the item the member is reviewing. If the head changed (timeout
+        // eviction / a newer effect), refuse — never mint a signing ceremony for an unseen effect.
+        if expected_id.is_empty() || head.id != expected_id {
+            return Err(HermesError::Stale);
+        }
         // Only chain effects (carrying to+data) bridge to a signing ceremony; code/shell effects have
         // their own HIC-1 control decision (S6.4), not a chain signature.
         let (Some(to), Some(data)) = (head.to.clone(), head.data.clone()) else {
@@ -576,6 +613,8 @@ impl HermesManager {
 
     /// Resolve the sidecar's HEAD approval after the human decided its ceremony: `approve` → the
     /// capsule proceeds (the ceremony already signed + broadcast); otherwise → the capsule aborts.
+    /// PBA-L7b-003: the POST body is `{"id": <reviewed call id>}` so the sidecar (AR-B-023) resolves
+    /// ONLY that call and answers 409 if its head is a different one → [`HermesError::Stale`].
     /// The sidecar's queue is head-resolved and the head is BLOCKED until this call, so it targets the
     /// same effect that was bridged.
     ///
@@ -584,16 +623,26 @@ impl HermesManager {
     /// fresh. Because the head is blocked until here, at most one effect is ever bridged at a time, so
     /// clearing the whole map is exactly "forget the resolved effect" (H-1: an approved effect is NOT
     /// re-bridgeable until its head is resolved here).
-    pub fn resolve_head(&self, approve: bool) -> Result<()> {
+    pub fn resolve_head(&self, approve: bool, id: &str) -> Result<()> {
+        // PBA-L7b-003: an empty id would select the sidecar's legacy "resolve whatever is at the
+        // head" path (AR-B-023) — refuse it; every resolve is bound to the reviewed call id.
+        if id.is_empty() {
+            return Err(HermesError::Stale);
+        }
         let bearer = self.bearer()?;
         let path = if approve {
             "/approvals/approve"
         } else {
             "/approvals/reject"
         };
+        let body = serde_json::json!({ "id": id }).to_string();
         let resp = self
             .control
-            .post(&format!("{}{}", self.control_url(), path), &bearer, "")?;
+            .post(&format!("{}{}", self.control_url(), path), &bearer, &body)?;
+        // 409 = the head is not the call the member reviewed; nothing was resolved (re-review).
+        if resp.status == 409 {
+            return Err(HermesError::Stale);
+        }
         if !(200..300).contains(&resp.status) {
             return Err(HermesError::Control {
                 status: resp.status,
@@ -860,10 +909,11 @@ pub fn hermes_bridge_pending(
     app: tauri::AppHandle,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
+    id: String,
 ) -> std::result::Result<Option<CeremonyView>, String> {
     let rpc = crate::rpc::RpcClient::citrate();
     manager(&app)?
-        .bridge_pending(&ceremony.0, &custody.0, &rpc)
+        .bridge_pending(&ceremony.0, &custody.0, &rpc, &id)
         .map_err(|e| e.to_string())
 }
 
@@ -871,9 +921,13 @@ pub fn hermes_bridge_pending(
 /// lets the (already-signed-and-broadcast) effect proceed; `false` aborts it. The head is blocked
 /// until this call, so it targets the effect that was bridged.
 #[tauri::command]
-pub fn hermes_resolve(app: tauri::AppHandle, approve: bool) -> std::result::Result<(), String> {
+pub fn hermes_resolve(
+    app: tauri::AppHandle,
+    approve: bool,
+    id: String,
+) -> std::result::Result<(), String> {
     manager(&app)?
-        .resolve_head(approve)
+        .resolve_head(approve, &id)
         .map_err(|e| e.to_string())
 }
 

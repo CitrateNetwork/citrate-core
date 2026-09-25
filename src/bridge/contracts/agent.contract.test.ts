@@ -27,8 +27,8 @@ describe("CX bridge contract — agentHarness (frozen CX-S0.2)", () => {
     expect(typeof bridge.agentHarness.resolve).toBe("function");
     if (bridge.mode === "sim") {
       // No sidecar in sim → nothing to bridge (Rule 1) and resolve is a safe no-op.
-      expect(await bridge.agentHarness.bridgePending()).toBeNull();
-      await expect(bridge.agentHarness.resolve(false)).resolves.toBeUndefined();
+      expect(await bridge.agentHarness.bridgePending("call-1")).toBeNull();
+      await expect(bridge.agentHarness.resolve(false, "call-1")).resolves.toBeUndefined();
     }
   });
 });

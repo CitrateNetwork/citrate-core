@@ -31,6 +31,7 @@ import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { fenceUntrusted } from "../agent/untrusted";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import type { GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
@@ -2037,19 +2038,66 @@ export class Store {
         result = "roster unavailable: " + (e instanceof Error ? e.message : String(e));
       }
     } else if (call.name === "group_create") {
-      try {
-        const kind = ["channel", "dm", "forum"].indexOf(args.kind) >= 0 ? (args.kind as "channel" | "dm" | "forum") : "channel";
-        const g = await bridge.groups.create(kind, args.name || "New group");
-        result = "created group “" + g.name + "” (id " + g.id + "). It's end-to-end encrypted; invite people next.";
-      } catch (e) {
-        result = "couldn't create the group: " + (e instanceof Error ? e.message : String(e));
+      // PBA-L7b-002: creating a group is a state change the member approves; the agent proposes.
+      const kind = ["channel", "dm", "forum"].indexOf(args.kind) >= 0 ? (args.kind as "channel" | "dm" | "forum") : "channel";
+      const name = args.name || "New group";
+      const r = await this.requestSig({
+        origin: "chat agent",
+        requester: "dashboard agent · tool group_create",
+        title: "Create an encrypted group",
+        chainless: true,
+        rows: [
+          { k: "Name", v: "“" + name + "”" },
+          { k: "Kind", v: kind },
+          { k: "Store", v: "your comms daemon — end-to-end encrypted, no chain transaction" },
+        ],
+        cost: "none — local group creation",
+        sponsor: "no chain transaction",
+        sponsorColor: "var(--tx-3)",
+      });
+      status = r;
+      if (r !== "approved") {
+        result = "the member declined creating the group; nothing was created.";
+      } else {
+        try {
+          const g = await bridge.groups.create(kind, name);
+          result = "created group “" + g.name + "” (id " + g.id + "). It's end-to-end encrypted; invite people next.";
+        } catch (e) {
+          result = "couldn't create the group: " + (e instanceof Error ? e.message : String(e));
+        }
       }
     } else if (call.name === "group_invite") {
-      try {
-        const { link } = await bridge.invites.create(args.group || "", args.forHandle || "shared link");
-        result = "one-click self-admit invite link (share it; whoever opens it joins in a click, no approval): " + link;
-      } catch (e) {
-        result = "couldn't mint an invite: " + (e instanceof Error ? e.message : String(e));
+      // PBA-L7b-002: an invite link is a one-click, no-approval ADMISSION bearer. The member
+      // approves minting it, and the link goes to the member (clipboard) — never back into the
+      // model context, where an injected instruction could exfiltrate it.
+      const group = args.group || "";
+      const forHandle = args.forHandle || "shared link";
+      const r = await this.requestSig({
+        origin: "chat agent",
+        requester: "dashboard agent · tool group_invite",
+        title: "Mint a one-click invite link",
+        chainless: true,
+        rows: [
+          { k: "Group", v: group || "(none given)" },
+          { k: "For", v: forHandle },
+          { k: "Effect", v: "whoever opens the link joins the group in one click, with no further approval (14 days)" },
+        ],
+        cost: "none — no chain transaction",
+        sponsor: "no chain transaction",
+        sponsorColor: "var(--tx-3)",
+      });
+      status = r;
+      if (r !== "approved") {
+        result = "the member declined minting an invite link; no link exists.";
+      } else {
+        try {
+          const { link } = await bridge.invites.create(group, forHandle);
+          this.copy(link, "Invite link copied — share it with " + forHandle);
+          result =
+            "Minted a one-click invite link for the group and copied it to the member's clipboard. The link is deliberately NOT shown to you; tell the member it is on their clipboard.";
+        } catch (e) {
+          result = "couldn't mint an invite: " + (e instanceof Error ? e.message : String(e));
+        }
       }
     } else if (call.name === "directory_find") {
       try {
@@ -2061,22 +2109,53 @@ export class Store {
       }
     } else if (call.name === "skills_list") {
       // Both catalogs: the on-chain SkillRegistry AND the local instruction-skills the agent authored.
+      // PBA-L7b-002: the on-chain registry is permissionless — its strings are fenced as UNTRUSTED data.
       const [onChain, local] = await Promise.all([
         bridge.agentHarness.registrySkills().catch(() => []),
         bridge.agentSkills.list().catch(() => []),
       ]);
-      result = JSON.stringify({ onChain, local });
+      result = JSON.stringify({ local }) + "\n" + fenceUntrusted("on-chain SkillRegistry entries", onChain);
     } else if (call.name === "skill_write") {
       // WRITE (local file only — no chain/keys). Author a reusable instruction-skill on this device.
+      // PBA-L7b-002: a saved skill is a persistent instruction the agent later runs, so it is never
+      // silently overwritten — replacing an existing one needs the member's approval.
+      const name = String(args.name || "");
+      const description = String(args.description || "");
+      const instructions = String(args.instructions || "");
       try {
-        const skill = await bridge.agentSkills.write(
-          String(args.name || ""),
-          String(args.description || ""),
-          String(args.instructions || ""),
-        );
+        const skill = await bridge.agentSkills.write(name, description, instructions, false);
         result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
       } catch (e) {
-        result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!msg.startsWith("SKILL_EXISTS")) {
+          result = "couldn't save the skill: " + msg;
+        } else {
+          const r = await this.requestSig({
+            origin: "chat agent",
+            requester: "dashboard agent · tool skill_write",
+            title: "Overwrite a saved skill",
+            chainless: true,
+            rows: [
+              { k: "Skill", v: "“" + name + "” (already exists — this REPLACES it)" },
+              { k: "New instructions", v: instructions.slice(0, 600) + (instructions.length > 600 ? " …" : "") },
+              { k: "Store", v: "local file on this device" },
+            ],
+            cost: "none — local file",
+            sponsor: "no chain transaction",
+            sponsorColor: "var(--tx-3)",
+          });
+          status = r;
+          if (r !== "approved") {
+            result = `The member declined; the existing skill "${name}" was not overwritten.`;
+          } else {
+            try {
+              const skill = await bridge.agentSkills.write(name, description, instructions, true);
+              result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+            } catch (e2) {
+              result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
+            }
+          }
+        }
       }
     } else if (call.name === "skill_run") {
       // Load the authored playbook back into the loop; the model then executes it with its tools.
@@ -2092,7 +2171,7 @@ export class Store {
           bridge.modelsCatalog.registry().catch(() => []),
           bridge.modelsCatalog.local().catch(() => []),
         ]);
-        result = JSON.stringify({ onChain: reg, local });
+        result = JSON.stringify({ local }) + "\n" + fenceUntrusted("on-chain ModelRegistry entries", reg);
       } catch (e) {
         result = "model list unavailable: " + (e instanceof Error ? e.message : String(e));
       }
@@ -3018,48 +3097,67 @@ export class Store {
    * effect (or a chain head that didn't bridge) is gated by the review ceremony and released the same
    * way. Nothing signs here (Rule 3); the sidecar holds no key.
    */
-  async reviewAgentApproval(ap: { id: string; kind: "code" | "chain" | "shell"; summary: string }, onDone?: () => void): Promise<void> {
+  async reviewAgentApproval(
+    ap: { id: string; kind: "code" | "chain" | "shell"; summary: string; to?: string; data?: string },
+    onDone?: () => void,
+  ): Promise<void> {
+    // PBA-L7b-003: every resolve is BOUND to ap.id (the item the member is looking at). If the
+    // sidecar's head moved (timeout eviction / a newer effect) it answers 409 → STALE_APPROVAL and
+    // nothing is resolved; the member is told to re-review instead of approving something unseen.
+    const settle = async (approved: boolean) => {
+      try {
+        await bridge.agentHarness.resolve(approved, ap.id);
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err);
+        if (msg.startsWith("STALE_APPROVAL")) {
+          this.toast("The agent's pending action changed since you opened it — nothing was " + (approved ? "approved" : "rejected") + ". Please re-review.");
+        }
+        /* otherwise best-effort: the sidecar head unblocks on its own timeout if this fails */
+      }
+      onDone?.();
+    };
     if (ap.kind === "chain") {
       let view: CeremonyView | null = null;
       try {
-        view = await bridge.agentHarness.bridgePending();
+        view = await bridge.agentHarness.bridgePending(ap.id);
       } catch (err) {
-        this.toast("Couldn't prepare the agent's action for review — " + String((err as Error).message ?? err));
+        const msg = String((err as Error).message ?? err);
+        this.toast(
+          msg.startsWith("STALE_APPROVAL")
+            ? "The agent's pending action changed since you opened it — please re-review."
+            : "Couldn't prepare the agent's action for review — " + msg,
+        );
+        onDone?.();
         return;
       }
       if (view) {
-        this.openWalletReview("agent", ap.summary, view, undefined, async (approved) => {
-          try {
-            await bridge.agentHarness.resolve(approved);
-          } catch {
-            /* best-effort: the sidecar head unblocks on its own timeout if this fails */
-          }
-          onDone?.();
-        });
+        this.openWalletReview("agent", ap.summary, view, undefined, (approved) => settle(approved));
         return;
       }
       // No bridged view (head wasn't a chain effect) — fall through to the confirm gate.
     }
     // code / shell (or an unbridged chain head): confirm at the ceremony, then release the sidecar.
+    // The rows show the REAL effect facts the runtime exposes (call id, target, calldata) — not only
+    // the agent-authored summary.
+    const rows = [
+      { k: "Kind", v: ap.kind },
+      { k: "Effect", v: ap.kind === "code" ? "a code change on your machine" : ap.kind === "shell" ? "a shell command on your machine" : "an on-chain action" },
+      { k: "Call id", v: ap.id },
+    ];
+    if (ap.to) rows.push({ k: "Target", v: ap.to });
+    if (ap.data) rows.push({ k: "Calldata", v: ap.data.length > 202 ? ap.data.slice(0, 202) + " … (" + (ap.data.length - 2) / 2 + " bytes)" : ap.data });
+    if (!ap.to && !ap.data) rows.push({ k: "Arguments", v: "not exposed by the agent runtime — approving releases exactly call " + ap.id + ", nothing else" });
     const outcome = await this.requestSig({
       origin: "agent:hermes",
       requester: "agent runtime",
       title: ap.summary,
-      rows: [
-        { k: "Kind", v: ap.kind },
-        { k: "Effect", v: ap.kind === "code" ? "a code change on your machine" : ap.kind === "shell" ? "a shell command on your machine" : "an on-chain action" },
-      ],
+      rows,
       cost: "—",
       sponsor: "you approve · one action",
       sponsorColor: "var(--ok)",
       chainless: true,
     });
-    try {
-      await bridge.agentHarness.resolve(outcome === "approved");
-    } catch {
-      /* best-effort */
-    }
-    onDone?.();
+    await settle(outcome === "approved");
   }
 
   /** Toggle the raw-mode ack for an undecodable-calldata review (gates Approve). */
