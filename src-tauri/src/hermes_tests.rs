@@ -740,3 +740,43 @@ fn pba_l7b_009_start_refuses_when_the_control_port_is_held() {
     );
     drop(squat);
 }
+
+/// AGENT-RUNTIME verifier follow-up on PBA-L7b-003: a 409 (the submitter timed out, so the call is
+/// no longer the sidecar head) must forget that call's dedup entry. Otherwise a later identical
+/// effect finds the stale decided entry and never bridges again (the agent stalls).
+#[test]
+fn pba_l7b_003_a_409_forgets_the_call_so_an_identical_later_effect_bridges() {
+    let mut mock = chain_effect_mock();
+    mock.resolve_resp = (409, String::new());
+    let mgr = control_manager(mock);
+    let ceremony = SignatureCeremony::new();
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        rpc_ok(serde_json::json!("0x8000")),
+        rpc_ok(serde_json::json!("0x8000")),
+    ]));
+    let c1 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .unwrap();
+    ceremony.reject(&c1.id).expect("the member decided");
+    assert!(matches!(
+        mgr.resolve_head(false, "cap::eth-send"),
+        Err(HermesError::Stale)
+    ));
+    // The same (to, data) arriving again as a NEW sidecar call bridges a fresh ceremony.
+    let c2 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .expect("a later identical effect is not stalled by the stale entry");
+    assert_ne!(c2.id, c1.id);
+}
+
+/// The stale error must not claim that nothing happened: a chain effect may already be broadcast.
+#[test]
+fn pba_l7b_003_stale_message_does_not_claim_nothing_happened() {
+    let m = HermesError::Stale.to_string();
+    assert!(m.starts_with("STALE_APPROVAL"));
+    assert!(!m.contains("nothing was resolved"), "{m}");
+    assert!(m.contains("did not receive this decision"), "{m}");
+}

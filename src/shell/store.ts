@@ -3102,15 +3102,22 @@ export class Store {
     onDone?: () => void,
   ): Promise<void> {
     // PBA-L7b-003: every resolve is BOUND to ap.id (the item the member is looking at). If the
-    // sidecar's head moved (timeout eviction / a newer effect) it answers 409 → STALE_APPROVAL and
-    // nothing is resolved; the member is told to re-review instead of approving something unseen.
-    const settle = async (approved: boolean) => {
+    // sidecar no longer holds that call (it expired or was replaced) it answers 409 → STALE_APPROVAL
+    // and the agent never receives the decision. `signedAndSent` = a chain ceremony already signed
+    // and broadcast before the resolve, so the member must NOT be told that nothing happened.
+    const settle = async (approved: boolean, signedAndSent = false) => {
       try {
         await bridge.agentHarness.resolve(approved, ap.id);
       } catch (err) {
         const msg = String((err as Error)?.message ?? err);
         if (msg.startsWith("STALE_APPROVAL")) {
-          this.toast("The agent's pending action changed since you opened it — nothing was " + (approved ? "approved" : "rejected") + ". Please re-review.");
+          this.toast(
+            signedAndSent
+              ? "Your transaction was signed and sent, but the agent had already stopped waiting for it and was not told. Check Activity before approving a retry."
+              : approved
+                ? "The agent's pending action expired or changed before your approval arrived — nothing ran. Please re-review."
+                : "The agent's pending action had already expired or changed; your rejection was not needed.",
+          );
         }
         /* otherwise best-effort: the sidecar head unblocks on its own timeout if this fails */
       }
@@ -3131,7 +3138,8 @@ export class Store {
         return;
       }
       if (view) {
-        this.openWalletReview("agent", ap.summary, view, undefined, (approved) => settle(approved));
+        // approved === true here means the ceremony signed AND broadcast the transaction.
+        this.openWalletReview("agent", ap.summary, view, undefined, (approved) => settle(approved, approved));
         return;
       }
       // No bridged view (head wasn't a chain effect) — fall through to the confirm gate.

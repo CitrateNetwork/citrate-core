@@ -115,7 +115,7 @@ impl std::fmt::Display for HermesError {
             ),
             HermesError::Stale => write!(
                 f,
-                "STALE_APPROVAL: the agent's pending action changed since you reviewed it; nothing was resolved, re-review it"
+                "STALE_APPROVAL: the agent's pending action is no longer the one you reviewed (it expired or was replaced), so the agent did not receive this decision"
             ),
         }
     }
@@ -277,6 +277,11 @@ pub struct HermesManager {
     /// second broadcast (H-1). The entry is cleared only by `resolve_head` (the head has moved) or on
     /// stop, at which point a genuinely new effect may bridge fresh.
     bridged: Mutex<HashMap<String, String>>,
+    /// Sidecar call id → the content key it was bridged under, so a resolve that the sidecar
+    /// answers 409 (the call is no longer its head, e.g. the submitter timed out) forgets exactly
+    /// that effect; otherwise a later identical effect would find the stale decided entry and never
+    /// bridge again.
+    bridged_by_call: Mutex<HashMap<String, String>>,
 }
 
 impl HermesManager {
@@ -295,6 +300,7 @@ impl HermesManager {
             sup: Mutex::new(None),
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
+            bridged_by_call: Mutex::new(HashMap::new()),
         }
     }
 
@@ -437,6 +443,10 @@ impl HermesManager {
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // A new session starts with a clean dedup map.
         self.bridged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.bridged_by_call
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
@@ -607,7 +617,11 @@ impl HermesManager {
             return Ok(ceremony.status(existing)); // reuse pending, or None if decided (never re-mint)
         }
         let view = ceremony.request(hermes_intent(&to, &data, &from, gas));
-        map.insert(key, view.id.clone());
+        map.insert(key.clone(), view.id.clone());
+        self.bridged_by_call
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(head.id.clone(), key);
         Ok(Some(view))
     }
 
@@ -639,8 +653,12 @@ impl HermesManager {
         let resp = self
             .control
             .post(&format!("{}{}", self.control_url(), path), &bearer, &body)?;
-        // 409 = the head is not the call the member reviewed; nothing was resolved (re-review).
+        // 409 = the sidecar no longer has this call at its head (it expired or was replaced), so the
+        // decision was not delivered. A chain effect's ceremony may ALREADY have signed and
+        // broadcast; the UI says so. Forget this call's dedup entry either way: the sidecar has moved
+        // off it, and a stale entry would stop a later identical effect from ever bridging.
         if resp.status == 409 {
+            self.forget_call(id);
             return Err(HermesError::Stale);
         }
         if !(200..300).contains(&resp.status) {
@@ -654,7 +672,26 @@ impl HermesManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+        self.bridged_by_call
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         Ok(())
+    }
+
+    /// Drop the dedup entry recorded for sidecar call `id` (if it was bridged).
+    fn forget_call(&self, id: &str) {
+        let key = self
+            .bridged_by_call
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        if let Some(key) = key {
+            self.bridged
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&key);
+        }
     }
 }
 

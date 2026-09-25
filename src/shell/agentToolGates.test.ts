@@ -260,3 +260,30 @@ describe("fenceUntrusted", () => {
     expect(fenceUntrusted("l", "plain")).toContain("\nplain\n");
   });
 });
+
+describe("PBA-L7b-003 — a 409 after a chain broadcast is reported honestly", () => {
+  it("chain approved + STALE: tells the member the tx WAS sent (not 'nothing happened')", async () => {
+    vi.spyOn(bridge.agentHarness, "bridgePending").mockResolvedValue({ id: "cer-1" } as never);
+    vi.spyOn(bridge.agentHarness, "resolve").mockRejectedValue(new Error("STALE_APPROVAL: gone"));
+    const toast = vi.spyOn(store, "toast").mockImplementation(() => {});
+    let onResolved: ((approved: boolean) => Promise<void>) | undefined;
+    vi.spyOn(store, "openWalletReview").mockImplementation((_k, _l, _v, _s, cb) => {
+      onResolved = cb as never;
+    });
+    await store.reviewAgentApproval({ id: "call-3", kind: "chain", summary: "send" });
+    await onResolved?.(true);
+    expect(toast).toHaveBeenCalledWith(expect.stringMatching(/signed and sent/));
+    expect(toast).not.toHaveBeenCalledWith(expect.stringMatching(/nothing ran/));
+  });
+
+  it("code approved + STALE: says nothing ran; reject + STALE: says the rejection was not needed", async () => {
+    vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+    vi.spyOn(bridge.agentHarness, "resolve").mockRejectedValue(new Error("STALE_APPROVAL: gone"));
+    const toast = vi.spyOn(store, "toast").mockImplementation(() => {});
+    await store.reviewAgentApproval({ id: "c", kind: "code", summary: "x" });
+    expect(toast).toHaveBeenLastCalledWith(expect.stringMatching(/nothing ran/));
+    vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+    await store.reviewAgentApproval({ id: "c", kind: "code", summary: "x" });
+    expect(toast).toHaveBeenLastCalledWith(expect.stringMatching(/rejection was not needed/));
+  });
+});
