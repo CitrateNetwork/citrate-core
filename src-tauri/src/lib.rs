@@ -67,6 +67,10 @@ mod social;
 mod storage;
 mod training;
 
+// PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
+#[cfg(test)]
+mod invoke_secret_scan_tests;
+
 use tauri::Manager;
 
 /// Kill orphaned sidecars left by a crashed previous instance (they'd hold the node LOCK / bound
