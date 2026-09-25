@@ -207,11 +207,10 @@ pub fn resolve_by_id(
     token: Option<&str>,
 ) -> Result<ModelDescriptor, String> {
     if let Some(rest) = id.strip_prefix("hf:") {
-        // "<owner>/<name>/<file>"
-        let (repo, file) = rest
-            .rsplit_once('/')
-            .ok_or_else(|| format!("malformed hf id: {id}"))?;
-        hf_files(http, repo, "main", token)?
+        // "<owner>/<name>/<path/in/repo.gguf>" — the repo is ALWAYS the first two segments; the
+        // file path may itself contain '/' (GGUFs in HF sub-directories, PBA-L7b-013).
+        let (repo, file) = split_hf_id(rest).ok_or_else(|| format!("malformed hf id: {id}"))?;
+        hf_files(http, &repo, "main", token)?
             .into_iter()
             .find(|d| d.file == file)
             .ok_or_else(|| format!("model '{file}' not found in {repo}"))
@@ -239,9 +238,8 @@ pub fn model_file_from_id(id: &str) -> Result<String, String> {
         return Ok(crate::model::MODEL_FILE.to_string());
     }
     if let Some(rest) = id.strip_prefix("hf:") {
-        return rest
-            .rsplit_once('/')
-            .map(|(_repo, file)| file.to_string())
+        return split_hf_id(rest)
+            .map(|(_repo, file)| local_file_name(&file))
             .ok_or_else(|| format!("malformed hf id: {id}"));
     }
     if let Some(rest) = id.strip_prefix("github:") {
@@ -255,6 +253,25 @@ pub fn model_file_from_id(id: &str) -> Result<String, String> {
 }
 
 // ---- helpers ----
+
+/// PBA-L7b-013: split `"<owner>/<name>/<path>"` into (`owner/name`, `path`). The repo is the
+/// first two segments; `path` is the rest and may contain '/'. Every segment must be non-empty
+/// and none may be `.`/`..`.
+fn split_hf_id(rest: &str) -> Option<(String, String)> {
+    let mut it = rest.splitn(3, '/');
+    let (owner, name, path) = (it.next()?, it.next()?, it.next()?);
+    let bad = |seg: &str| seg.is_empty() || seg == "." || seg == "..";
+    if bad(owner) || bad(name) || path.split('/').any(bad) {
+        return None;
+    }
+    Some((format!("{owner}/{name}"), path.to_string()))
+}
+
+/// PBA-L7b-013: the on-disk filename for a catalog file path — its final segment, so a GGUF from
+/// an HF sub-directory lands as a single file in the models dir (never a nested/traversing path).
+pub fn local_file_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
 
 /// Percent-encode a query for a URL query value (RFC 3986 unreserved set stays literal).
 fn pct(s: &str) -> String {
