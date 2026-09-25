@@ -12,7 +12,8 @@
 # ── Owner prerequisites (one-time) ────────────────────────────────────────────
 # Repo secrets required (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.citrate-updater/citrate-core.key
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  "" (the key was generated password-less)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  the updater key's passphrase (PBA-L7b-006: the key
+#                                       must be re-generated WITH a passphrase — see RELEASE.md)
 #   APPLE_CERTIFICATE                   base64 of the Developer ID Application .p12
 #   APPLE_CERTIFICATE_PASSWORD          the .p12 export password
 #   APPLE_SIGNING_IDENTITY              Developer ID Application: Larry Klosowski (DDHUG44QC7)
@@ -20,7 +21,8 @@
 #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarization creds (app-specific pwd)
 #   CITRATE_CHAIN_READ_TOKEN            fine-grained PAT, Contents:read on citrate-chain
 # Runtime deps (the ~4.3 GB model + sidecars are NOT in git): upload them once to a
-# GitHub prerelease tagged `runtime-deps` (see RELEASE.md); this workflow pulls them.
+# GitHub prerelease tagged `runtime-deps` (see RELEASE.md); this workflow pulls them and
+# verifies each against src-tauri/runtime-deps.sha256 before staging (PBA-L7b-005).
 # The pinned updater PUBLIC key lives in tauri.conf.json; only the PRIVATE key is a secret.
 
 name: release
@@ -79,28 +81,42 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # PBA-L7b-005: download EVERYTHING into a scratch dir first and verify it against the
+          # committed sha256 manifest BEFORE any asset is chmod'ed, extracted, staged, signed or
+          # notarized. The `runtime-deps` prerelease is mutable; the pins are code-reviewed.
+          DL="$RUNNER_TEMP/runtime-deps"
+          rm -rf "$DL" && mkdir -p "$DL"
+          ASSETS=(
+            citrate-aarch64-apple-darwin
+            mem-mcp-aarch64-apple-darwin
+            node-agent-aarch64-apple-darwin
+            llama-server-aarch64-apple-darwin
+            llama-runtime-arm64.tar.gz
+            gemma-4-E4B-it-Q4_0.gguf
+            bge-base-en-v1.5.tar.gz
+          )
+          for a in "${ASSETS[@]}"; do
+            gh release download runtime-deps -p "$a" -D "$DL" --clobber
+          done
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
+
           mkdir -p src-tauri/binaries src-tauri/llama src-tauri/models
           # Sidecars (Apple Silicon target triple).
-          gh release download runtime-deps \
-            -p 'citrate-aarch64-apple-darwin' \
-            -p 'mem-mcp-aarch64-apple-darwin' \
-            -p 'node-agent-aarch64-apple-darwin' \
-            -p 'llama-server-aarch64-apple-darwin' \
-            -D src-tauri/binaries --clobber
+          for b in citrate mem-mcp node-agent llama-server; do
+            cp "$DL/$b-aarch64-apple-darwin" src-tauri/binaries/
+          done
           chmod +x src-tauri/binaries/*
           # llama runtime dylibs (packed as a tarball asset) + the model.
-          gh release download runtime-deps -p 'llama-runtime-arm64.tar.gz' -D /tmp --clobber
-          tar -xzf /tmp/llama-runtime-arm64.tar.gz -C src-tauri/llama
-          gh release download runtime-deps -p 'gemma-4-E4B-it-Q4_0.gguf' -D src-tauri/models --clobber
+          tar -xzf "$DL/llama-runtime-arm64.tar.gz" -C src-tauri/llama
+          cp "$DL/gemma-4-E4B-it-Q4_0.gguf" src-tauri/models/
           # BGE embedder (Hermes P1): the mem-mcp semantic ingest is GATED on this model
           # being bundled at models/bge-base-en-v1.5/ — without it first-run ingest skips
-          # ("not-semantic") and the memory graph never fills. Pull + extract it here.
+          # ("not-semantic") and the memory graph never fills. Extract it here.
           # Layout-agnostic: locate the dir that actually holds config.json and place its
           # contents at the expected path, so a tarball with or without a top-level dir works.
-          gh release download runtime-deps -p 'bge-base-en-v1.5.tar.gz' -D /tmp --clobber
-          rm -rf /tmp/bge-extract && mkdir -p /tmp/bge-extract src-tauri/models/bge-base-en-v1.5
-          tar -xzf /tmp/bge-base-en-v1.5.tar.gz -C /tmp/bge-extract
-          BGE_CFG="$(find /tmp/bge-extract -name config.json | head -1)"
+          rm -rf "$RUNNER_TEMP/bge-extract" && mkdir -p "$RUNNER_TEMP/bge-extract" src-tauri/models/bge-base-en-v1.5
+          tar -xzf "$DL/bge-base-en-v1.5.tar.gz" -C "$RUNNER_TEMP/bge-extract"
+          BGE_CFG="$(find "$RUNNER_TEMP/bge-extract" -name config.json | head -1)"
           if [ -z "$BGE_CFG" ]; then
             echo "::error::BGE bundle has no config.json — cannot stage the embedder" && exit 1
           fi

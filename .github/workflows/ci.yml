@@ -71,6 +71,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # PBA-L7b-005 tripwire: release.yml may only stage runtime-deps assets that pass the
+      # committed sha256 manifest, verified before anything is staged or signed.
+      - name: release pin tripwire
+        run: scripts/ci/check-release-pins.sh
       - name: typecheck
         run: npm run typecheck
       - name: test
