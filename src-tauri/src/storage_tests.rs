@@ -307,3 +307,73 @@ fn bond_target_address_is_book_sourced_and_wellformed() {
     assert!(addr[2..].bytes().all(|b| b.is_ascii_hexdigit()));
     assert_eq!(addr, addr.to_ascii_lowercase(), "book addresses are normalized lowercase");
 }
+
+// ---------------------------------------------------------------------------
+// PBA-L7b-010 — the webview-supplied CID is validated before it reaches a kubo
+// query string, and `/cat` is read with a hard size cap.
+// ---------------------------------------------------------------------------
+
+/// A transport that records every CID it is asked about (so a test can prove an
+/// invalid CID never reaches kubo).
+struct RecordingKubo(Arc<Mutex<Vec<String>>>);
+impl KuboTransport for RecordingKubo {
+    fn add(&self, _f: &str, _b: &[u8]) -> Result<AddOutcome> {
+        Err(StorageError::Transport("unused".into()))
+    }
+    fn pin_add(&self, cid: &str) -> Result<()> {
+        self.0.lock().unwrap().push(cid.to_string());
+        Ok(())
+    }
+    fn pin_rm(&self, cid: &str) -> Result<()> {
+        self.0.lock().unwrap().push(cid.to_string());
+        Ok(())
+    }
+    fn pin_ls(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    fn cat(&self, cid: &str) -> Result<Vec<u8>> {
+        self.0.lock().unwrap().push(cid.to_string());
+        Ok(b"x".to_vec())
+    }
+}
+
+#[test]
+fn pba_l7b_010_hostile_cids_never_reach_the_kubo_query_string() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let dir = tmp_dir("cid-validate");
+    let mgr = StorageManager::new(Box::new(RecordingKubo(Arc::clone(&seen))), dir);
+    let long = "b".repeat(10_000);
+    for evil in [
+        "bafyok&recursive=false",
+        "bafyok#frag",
+        "bafy ok",
+        "bafy%26x",
+        "",
+        long.as_str(),
+    ] {
+        assert!(mgr.pin(evil, "1").is_err(), "pin must reject {evil:?}");
+        assert!(mgr.unpin(evil).is_err(), "unpin must reject {evil:?}");
+        assert!(mgr.cat(evil).is_err(), "cat must reject {evil:?}");
+        assert!(mgr.retrieve(evil).is_err(), "retrieve must reject {evil:?}");
+    }
+    assert!(seen.lock().unwrap().is_empty(), "no hostile cid reached kubo: {:?}", seen.lock().unwrap());
+    // Real CIDv0 / CIDv1 still pass.
+    for ok in [
+        "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    ] {
+        assert!(mgr.cat(ok).is_ok(), "{ok} must be accepted");
+    }
+}
+
+#[test]
+fn pba_l7b_010_cat_is_read_with_a_hard_cap() {
+    // Under the cap: returned whole.
+    let small = read_capped(std::io::Cursor::new(vec![1u8; 100]), 100).expect("at cap is ok");
+    assert_eq!(small.len(), 100);
+    // One byte over the cap: refused, and never buffers more than cap+1.
+    assert!(read_capped(std::io::Cursor::new(vec![1u8; 101]), 100).is_err());
+    // An endless stream terminates at the cap instead of exhausting memory.
+    assert!(read_capped(std::io::repeat(0u8), 4096).is_err());
+    assert_eq!(MAX_CAT_BYTES, 1 << 30);
+}
