@@ -241,12 +241,14 @@ export function clearApproval(approvalId: string): void {
   agentSlice.set((s) => ({ approvals: s.approvals.filter((a) => a.id !== approvalId) }));
 }
 
-/** Reject the head effect (hermes_resolve(false)), drop it locally, and re-read the real state. */
+/** Reject THIS effect (hermes_resolve(false, id)), drop it locally, and re-read the real state.
+ *  PBA-L7b-003: bound to `approvalId` — a stale item (the head moved) is refused by the sidecar
+ *  rather than rejecting whatever is now at the head; the refresh below shows the real queue. */
 export async function rejectApproval(approvalId: string): Promise<void> {
   try {
-    await bridge.agentHarness.resolve(false);
+    await bridge.agentHarness.resolve(false, approvalId);
   } catch {
-    /* best-effort — the sidecar head unblocks on its own timeout if this fails */
+    /* best-effort — a stale id resolves nothing; the sidecar head unblocks on its own timeout */
   }
   clearApproval(approvalId);
   await refreshAgent();

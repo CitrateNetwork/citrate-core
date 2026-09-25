@@ -1,0 +1,14 @@
+# PBA-L7b-005 — sha256 pins for EVERY asset .github/workflows/release.yml stages from the mutable
+# `runtime-deps` GitHub prerelease. release.yml runs scripts/ci/verify-runtime-deps.sh against
+# this file BEFORE anything is chmod'ed, extracted, bundled or signed; an asset with no pin (or a
+# changed digest) fails the release. Changing a pin is a reviewed PR — that is the point.
+#
+# Format: `shasum -a 256` output — "<64 lowercase hex>  <asset name>" (two spaces).
+#
+# OWNER: no asset is pinned yet (the prerelease does not currently hold the Apple sidecars, the
+# llama runtime tarball or the Gemma GGUF), so the release workflow fails closed until the exact
+# files that will be uploaded are pinned here. Procedure (docs/RELEASE.md §3):
+#   shasum -a 256 citrate-aarch64-apple-darwin mem-mcp-aarch64-apple-darwin \
+#     node-agent-aarch64-apple-darwin llama-server-aarch64-apple-darwin \
+#     llama-runtime-arm64.tar.gz gemma-4-E4B-it-Q4_0.gguf bge-base-en-v1.5.tar.gz >> src-tauri/runtime-deps.sha256
+# then upload exactly those files to `runtime-deps` and open a PR with the pins.

@@ -232,3 +232,27 @@ fn read_local_models_missing_dir_is_honest_empty_not_error() {
     let missing = std::path::Path::new("/no/such/models/dir/xyz");
     assert_eq!(read_local_models(missing).unwrap().len(), 0);
 }
+
+/// PBA-L7b-013: a GGUF in an HF sub-directory resolves against the RIGHT repo (the first two
+/// segments) instead of `owner/name/subdir`, and lands locally as a single flat file.
+#[test]
+fn pba_l7b_013_hf_subdirectory_ggufs_resolve_and_select() {
+    let sha = hex64('D');
+    let tree = format!(
+        r#"[{{"path":"Q4/model-q4.gguf","size":1,"lfs":{{"oid":"{sha}","size":99}}}}]"#
+    );
+    // Only answers the CORRECT repo tree URL.
+    let http = FixtureHttp::new(&[("/models/acme/cool-gguf/tree/", tree.as_str())]);
+    let d = resolve_by_id(&http, "hf:acme/cool-gguf/Q4/model-q4.gguf", None)
+        .expect("a sub-directory GGUF resolves against owner/name");
+    assert_eq!(d.repo, "acme/cool-gguf");
+    assert_eq!(d.file, "Q4/model-q4.gguf");
+    assert_eq!(
+        model_file_from_id("hf:acme/cool-gguf/Q4/model-q4.gguf").unwrap(),
+        "model-q4.gguf"
+    );
+    // Traversal / empty segments are malformed, never a path.
+    for bad in ["hf:acme/cool-gguf/../x.gguf", "hf:acme//x.gguf", "hf:acme/x", "hf:../x/y.gguf"] {
+        assert!(model_file_from_id(bad).is_err(), "{bad}");
+    }
+}

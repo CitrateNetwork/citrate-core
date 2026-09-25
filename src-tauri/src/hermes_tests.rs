@@ -67,6 +67,17 @@ fn stub_manager(tag: &str) -> (HermesManager, PathBuf) {
     (mgr, dir)
 }
 
+/// PBA-L7b-009: `start` refuses when the control port is already held, so lifecycle tests bind a
+/// FREE ephemeral loopback port instead of the production 19700 (a running Citrate Core on the dev
+/// machine legitimately holds it).
+fn free_control_addr() -> String {
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("a free loopback port");
+    format!("127.0.0.1:{port}")
+}
+
 #[test]
 fn start_refuses_when_binary_missing() {
     let dir = tmp_dir("nobin");
@@ -117,6 +128,7 @@ fn control_url_is_loopback_http() {
 fn start_mints_a_0600_bearer_file_then_reaches_running_and_stops() {
     let (mgr, dir) = stub_manager("wiring");
     let mgr = mgr
+        .with_control_addr(&free_control_addr())
         .with_spawn_args(long_lived_args())
         .with_health_interval(std::time::Duration::from_secs(3600));
     mgr.start().expect("stub hermes starts");
@@ -154,7 +166,9 @@ fn start_mints_a_0600_bearer_file_then_reaches_running_and_stops() {
 #[test]
 fn double_start_is_rejected() {
     let (mgr, _dir) = stub_manager("double");
-    let mgr = mgr.with_spawn_args(long_lived_args());
+    let mgr = mgr
+        .with_control_addr(&free_control_addr())
+        .with_spawn_args(long_lived_args());
     mgr.start().expect("first start");
     std::thread::sleep(std::time::Duration::from_millis(150));
     let r = mgr.start();
@@ -172,6 +186,7 @@ struct MockControl {
     skills_resp: (u16, String),
     approvals_resp: (u16, String),
     run_resp: (u16, String),
+    resolve_resp: (u16, String),
     seen_bearer: Mutex<Option<String>>,
     last_post_body: Mutex<Option<String>>,
     last_post_url: Mutex<Option<String>>,
@@ -184,6 +199,7 @@ impl MockControl {
             skills_resp: (404, String::new()),
             approvals_resp: (404, String::new()),
             run_resp: (404, String::new()),
+            resolve_resp: (200, "{}".to_string()),
             seen_bearer: Mutex::new(None),
             last_post_body: Mutex::new(None),
             last_post_url: Mutex::new(None),
@@ -195,7 +211,7 @@ impl MockControl {
         } else if url.ends_with("/skills") {
             self.skills_resp.clone()
         } else if url.ends_with("/approvals/approve") || url.ends_with("/approvals/reject") {
-            (200, "{}".to_string()) // resolve endpoints: 200 OK
+            self.resolve_resp.clone() // resolve endpoints: 200 OK unless a test scripts 409
         } else if url.ends_with("/approvals") {
             self.approvals_resp.clone()
         } else if url.ends_with("/run_skill") {
@@ -456,7 +472,7 @@ fn bridge_pending_mints_a_ceremony_for_a_chain_effect() {
     let rpc = RpcClient::with_transport(MockRpc::new(vec![rpc_ok(serde_json::json!("0x8000"))]));
 
     let view = mgr
-        .bridge_pending(&ceremony, &vault, &rpc)
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
         .expect("bridge ok")
         .expect("a chain effect was pending");
     assert_eq!(view.origin, "agent:hermes");
@@ -475,12 +491,12 @@ fn bridge_pending_dedups_the_same_effect_to_one_ceremony() {
     ]));
 
     let id1 = mgr
-        .bridge_pending(&ceremony, &vault, &rpc)
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
         .unwrap()
         .unwrap()
         .id;
     let id2 = mgr
-        .bridge_pending(&ceremony, &vault, &rpc)
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
         .unwrap()
         .unwrap()
         .id;
@@ -505,7 +521,7 @@ fn a_decided_effect_is_not_re_bridged_into_a_second_broadcast() {
     ]));
 
     let c1 = mgr
-        .bridge_pending(&ceremony, &vault, &rpc)
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
         .unwrap()
         .unwrap();
     ceremony
@@ -514,17 +530,17 @@ fn a_decided_effect_is_not_re_bridged_into_a_second_broadcast() {
     assert!(ceremony.status(&c1.id).is_none(), "consumed");
 
     // Re-poll while the SAME effect is still the head → must NOT mint a second ceremony.
-    let repoll = mgr.bridge_pending(&ceremony, &vault, &rpc).unwrap();
+    let repoll = mgr.bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send").unwrap();
     assert!(
         repoll.is_none(),
         "an already-decided head effect is NOT re-bridged (H-1: no second broadcast)"
     );
 
     // Only after resolve_head (the sidecar head advances) may a fresh effect bridge again.
-    mgr.resolve_head(false)
+    mgr.resolve_head(false, "cap::eth-send")
         .expect("resolve advances the head + clears the dedup");
     let c2 = mgr
-        .bridge_pending(&ceremony, &vault, &rpc)
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
         .unwrap()
         .unwrap();
     assert_ne!(
@@ -546,7 +562,7 @@ fn bridge_pending_skips_a_non_chain_effect() {
     let vault = vault_with_wallet();
     let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
     assert!(mgr
-        .bridge_pending(&ceremony, &vault, &rpc)
+        .bridge_pending(&ceremony, &vault, &rpc, "run-code")
         .unwrap()
         .is_none());
 }
@@ -559,7 +575,7 @@ fn resolve_head_posts_to_the_right_endpoint() {
         .with_control(Box::new(ArcControl(shared.clone())));
     mgr.set_token_for_test("deadbeef");
 
-    mgr.resolve_head(true).expect("approve resolves");
+    mgr.resolve_head(true, "cap::eth-send").expect("approve resolves");
     assert!(shared
         .last_post_url
         .lock()
@@ -568,7 +584,7 @@ fn resolve_head_posts_to_the_right_endpoint() {
         .unwrap()
         .ends_with("/approvals/approve"));
 
-    mgr.resolve_head(false).expect("reject resolves");
+    mgr.resolve_head(false, "cap::eth-send").expect("reject resolves");
     assert!(shared
         .last_post_url
         .lock()
@@ -637,4 +653,130 @@ fn seed_starter_capsules_missing_bundled_dir_is_honest_zero() {
     // No bundled dir at all → best-effort, zero skills, never a panic.
     let n = seed_starter_capsules(&root.join("nope"), &root.join("dest"));
     assert_eq!(n, 0);
+}
+
+// ---------------------------------------------------------------------------
+// PBA-L7b-003 — the HIC-1 approval is BOUND to the item the member reviewed.
+// Pre-fix `resolve_head` posted an EMPTY body, which the sidecar treats as the
+// legacy "resolve whatever is at the head" (AR-B-023): a head that changed under
+// the member (timeout eviction, a newer effect) was approved/rejected blind.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pba_l7b_003_resolve_head_sends_the_reviewed_call_id() {
+    let shared = std::sync::Arc::new(chain_effect_mock());
+    let dir = tmp_dir("resolve-id");
+    let mgr = HermesManager::new(sleep_bin(), dir.join("t"), dir.join("c"))
+        .with_control(Box::new(ArcControl(shared.clone())));
+    mgr.set_token_for_test("deadbeef");
+    mgr.resolve_head(true, "cap::eth-send").expect("approve resolves");
+    let body = shared.last_post_body.lock().unwrap().clone().unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|_| panic!("resolve body must be JSON carrying the id, got {body:?}"));
+    assert_eq!(v["id"], "cap::eth-send", "the approval is bound to the reviewed call id");
+    mgr.resolve_head(false, "cap::eth-send").expect("reject resolves");
+    let body = shared.last_post_body.lock().unwrap().clone().unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    assert_eq!(v["id"], "cap::eth-send", "reject is bound to the reviewed call id too");
+}
+
+#[test]
+fn pba_l7b_003_resolve_head_refuses_an_empty_id() {
+    let shared = std::sync::Arc::new(chain_effect_mock());
+    let dir = tmp_dir("resolve-empty");
+    let mgr = HermesManager::new(sleep_bin(), dir.join("t"), dir.join("c"))
+        .with_control(Box::new(ArcControl(shared.clone())));
+    mgr.set_token_for_test("deadbeef");
+    assert!(
+        mgr.resolve_head(true, "").is_err(),
+        "an empty id would fall back to the legacy head-approve; refuse it"
+    );
+    assert!(
+        shared.last_post_url.lock().unwrap().is_none(),
+        "nothing is posted to the sidecar"
+    );
+}
+
+#[test]
+fn pba_l7b_003_a_409_from_the_sidecar_is_a_stale_re_review() {
+    let mut mock = chain_effect_mock();
+    mock.resolve_resp = (409, String::new());
+    let mgr = control_manager(mock);
+    let r = mgr.resolve_head(true, "cap::eth-send");
+    assert!(matches!(r, Err(HermesError::Stale)), "409 means re-review, got {r:?}");
+    assert!(r.unwrap_err().to_string().starts_with("STALE_APPROVAL"));
+}
+
+#[test]
+fn pba_l7b_003_bridge_pending_refuses_when_the_head_is_not_the_reviewed_item() {
+    let mgr = control_manager(chain_effect_mock());
+    let ceremony = SignatureCeremony::new();
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![rpc_ok(serde_json::json!("0x8000"))]));
+    let r = mgr.bridge_pending(&ceremony, &vault, &rpc, "the-item-the-member-saw");
+    assert!(matches!(r, Err(HermesError::Stale)), "got {r:?}");
+    // Nothing was minted or recorded for the unreviewed head: bridging the item the member
+    // DID review still mints its first (and only) ceremony.
+    let v = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .expect("bridge ok")
+        .expect("the reviewed head bridges");
+    assert!(ceremony.status(&v.id).is_some());
+}
+
+/// PBA-L7b-009: a squatter already holding the control port would receive the session bearer on
+/// the first control call. `start` refuses (and mints no bearer) instead.
+#[test]
+fn pba_l7b_009_start_refuses_when_the_control_port_is_held() {
+    let squat = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a squatter");
+    let port = squat.local_addr().unwrap().port();
+    let (mgr, dir) = stub_manager("hermes-squat");
+    let mgr = mgr.with_control_addr(&format!("127.0.0.1:{port}"));
+    let r = mgr.start();
+    assert!(matches!(r, Err(HermesError::PortInUse(p)) if p == port), "got {r:?}");
+    assert!(
+        !dir.join("hermes").join("token").exists(),
+        "no bearer is minted for a squatted port"
+    );
+    drop(squat);
+}
+
+/// AGENT-RUNTIME verifier follow-up on PBA-L7b-003: a 409 (the submitter timed out, so the call is
+/// no longer the sidecar head) must forget that call's dedup entry. Otherwise a later identical
+/// effect finds the stale decided entry and never bridges again (the agent stalls).
+#[test]
+fn pba_l7b_003_a_409_forgets_the_call_so_an_identical_later_effect_bridges() {
+    let mut mock = chain_effect_mock();
+    mock.resolve_resp = (409, String::new());
+    let mgr = control_manager(mock);
+    let ceremony = SignatureCeremony::new();
+    let vault = vault_with_wallet();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        rpc_ok(serde_json::json!("0x8000")),
+        rpc_ok(serde_json::json!("0x8000")),
+    ]));
+    let c1 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .unwrap();
+    ceremony.reject(&c1.id).expect("the member decided");
+    assert!(matches!(
+        mgr.resolve_head(false, "cap::eth-send"),
+        Err(HermesError::Stale)
+    ));
+    // The same (to, data) arriving again as a NEW sidecar call bridges a fresh ceremony.
+    let c2 = mgr
+        .bridge_pending(&ceremony, &vault, &rpc, "cap::eth-send")
+        .unwrap()
+        .expect("a later identical effect is not stalled by the stale entry");
+    assert_ne!(c2.id, c1.id);
+}
+
+/// The stale error must not claim that nothing happened: a chain effect may already be broadcast.
+#[test]
+fn pba_l7b_003_stale_message_does_not_claim_nothing_happened() {
+    let m = HermesError::Stale.to_string();
+    assert!(m.starts_with("STALE_APPROVAL"));
+    assert!(!m.contains("nothing was resolved"), "{m}");
+    assert!(m.contains("did not receive this decision"), "{m}");
 }

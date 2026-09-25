@@ -4,8 +4,11 @@
 //! BC-3.2 runs the locally-downloaded + verified Gemma GGUF (BC-3.1) via a
 //! bundled `llama-server` (llama.cpp) under the [`crate::supervisor::Supervisor`].
 //! `llama-server` serves an OpenAI-compatible `/v1/chat/completions`, so the local
-//! model is simply an ai.rs provider whose `baseURL = http://127.0.0.1:<port>/v1`
-//! with NO api key — the existing `ai.rs` inference path calls it unchanged.
+//! model is simply an ai.rs provider whose `baseURL = http://127.0.0.1:<port>/v1`.
+//! PBA-L7b-001: the server is AUTHENTICATED with a per-session random API key
+//! (passed via the `LLAMA_API_KEY` env, never argv) that `ai_chat_local*` present as
+//! their bearer; llama.cpp reflects any `Origin`, so a keyless server was drivable
+//! by any web page the member visited.
 //!
 //! ## Grounded runtime facts
 //! - CLI: `llama-server -m <gguf> --host 127.0.0.1 --port <p> --ctx-size <n>`
@@ -36,6 +39,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::supervisor::{
     BackoffPolicy, HealthCheck, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
@@ -68,6 +72,10 @@ const LLAMA_HEALTHY_AFTER: Duration = Duration::from_secs(60);
 /// genuinely dead server is still caught the moment the grace expires.
 const LLAMA_START_GRACE: Duration = Duration::from_secs(180);
 
+/// PBA-L7b-001: the env var llama.cpp reads its API key from (`--api-key` equivalent).
+/// Passed through the child's environment, never argv (argv is world-readable via `ps`).
+pub const LLAMA_API_KEY_ENV: &str = "LLAMA_API_KEY";
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -83,6 +91,9 @@ pub enum ServeError {
     Spawn(String),
     /// The sidecar is already running (idempotent-start guard).
     AlreadyRunning,
+    /// PBA-L7b-009: something else already holds the loopback port. Refuse to start rather
+    /// than send the member's chat context (and the session API key) to whoever holds it.
+    PortInUse(u16),
 }
 
 impl std::fmt::Display for ServeError {
@@ -94,6 +105,10 @@ impl std::fmt::Display for ServeError {
             ServeError::BinaryNotFound(m) => write!(f, "llama-server binary not bundled: {m}"),
             ServeError::Spawn(m) => write!(f, "llama-server spawn error: {m}"),
             ServeError::AlreadyRunning => write!(f, "llama-server already running"),
+            ServeError::PortInUse(p) => write!(
+                f,
+                "loopback port {p} is already held by another process; refusing to start the local model server"
+            ),
         }
     }
 }
@@ -160,6 +175,8 @@ pub struct LlamaServerManager {
     spawn_args_override: Option<Vec<String>>,
     /// The live supervisor, present only while the sidecar is running.
     sup: Mutex<Option<Supervisor>>,
+    /// PBA-L7b-001: the per-session API key (256-bit, hex).
+    api_key: Zeroizing<String>,
 }
 
 impl LlamaServerManager {
@@ -176,7 +193,13 @@ impl LlamaServerManager {
             #[cfg(test)]
             spawn_args_override: None,
             sup: Mutex::new(None),
+            api_key: mint_api_key(),
         }
+    }
+
+    /// PBA-L7b-001: the per-session API key `ai_chat_local*` presents as its bearer.
+    pub fn api_key(&self) -> Zeroizing<String> {
+        self.api_key.clone()
     }
 
     /// Test hook: override the `/health` probe cadence. Used by the spawn-wiring
@@ -197,7 +220,8 @@ impl LlamaServerManager {
         self
     }
 
-    /// The local OpenAI-compatible baseURL (`http://127.0.0.1:<port>/v1`, no key).
+    /// The local OpenAI-compatible baseURL (`http://127.0.0.1:<port>/v1`). The key is separate
+    /// ([`Self::api_key`]); it is never embedded in the URL.
     /// This is the ai.rs LOCAL provider endpoint.
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}/v1", self.port)
@@ -223,6 +247,10 @@ impl LlamaServerManager {
             self.port.to_string(),
             "--ctx-size".to_string(),
             DEFAULT_CTX_SIZE.to_string(),
+            // PBA-L7b-001: the app never uses the bundled web UI or the /slots monitor; turn
+            // them off so a drive-by page has less surface even before the key check.
+            "--no-webui".to_string(),
+            "--no-slots".to_string(),
         ]
     }
 
@@ -252,6 +280,11 @@ impl LlamaServerManager {
             self.bin.clone(),
             self.effective_spawn_args(),
         );
+        // PBA-L7b-001: the per-session API key goes to the child through its ENV (llama.cpp's
+        // `LLAMA_API_KEY` == `--api-key`), never argv. `/health` stays public in llama.cpp, so
+        // the liveness probe needs no key.
+        spec.env
+            .push((LLAMA_API_KEY_ENV.to_string(), self.api_key.to_string()));
         let health_url = format!("http://127.0.0.1:{}/health", self.port);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -275,6 +308,11 @@ impl LlamaServerManager {
         }
         if !self.bin.exists() {
             return Err(ServeError::BinaryNotFound(self.bin.display().to_string()));
+        }
+        // PBA-L7b-009: fail closed if another process already holds the port — the app would
+        // otherwise send the member's chat context (and the session key) to it.
+        if !loopback_port_is_free(self.port) {
+            return Err(ServeError::PortInUse(self.port));
         }
         let spec = self.build_spec();
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
@@ -363,6 +401,22 @@ impl LlamaServerManager {
             Some(SupervisorState::Running)
         )
     }
+}
+
+/// PBA-L7b-001: mint a fresh 256-bit API key (hex) for one llama-server session.
+fn mint_api_key() -> Zeroizing<String> {
+    use rand::RngCore;
+    let mut b = Zeroizing::new([0u8; 32]);
+    rand::rngs::OsRng.fill_bytes(&mut b[..]);
+    Zeroizing::new(hex::encode(&b[..]))
+}
+
+/// PBA-L7b-009: whether `127.0.0.1:<port>` is currently free (nobody is listening). Used as a
+/// pre-spawn guard for the fixed-port loopback sidecars: if something else already holds the
+/// port, the app refuses to start rather than talk to (and send secrets to) that process. The
+/// probe listener is dropped immediately, releasing the port for the real child.
+pub(crate) fn loopback_port_is_free(port: u16) -> bool {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
 }
 
 /// A best-effort HTTP GET liveness probe: `true` iff the URL answers 2xx quickly.

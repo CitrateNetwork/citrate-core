@@ -348,3 +348,61 @@ fn select_model_repoints_the_m_flag_and_respawns() {
     mgr.stop();
     assert_eq!(mgr.status().state, "stopped");
 }
+
+// ---------------------------------------------------------------------------
+// PBA-L7b-001 — the local llama-server is AUTHENTICATED. llama.cpp reflects any
+// `Origin` with credentials, so an unauthenticated server on a fixed loopback port
+// is drivable by any web page the member visits (free GPU, slot exhaustion, and
+// `/props` leaking the model path / OS username). Every session mints a fresh
+// random API key, hands it to the child via the `LLAMA_API_KEY` env var (NOT argv:
+// argv is world-readable through `ps`), and disables the endpoints the app never
+// uses (web UI, `/slots`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pba_l7b_001_spawn_spec_carries_a_per_session_api_key_in_env_not_argv() {
+    let (mgr, _dir) = stub_manager("apikey");
+    let spec = mgr.build_spec();
+    let key = spec
+        .env
+        .iter()
+        .find(|(k, _)| k == LLAMA_API_KEY_ENV)
+        .map(|(_, v)| v.clone())
+        .expect("llama-server must be spawned with LLAMA_API_KEY (PBA-L7b-001)");
+    assert_eq!(key.len(), 64, "a 256-bit hex key");
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(key, mgr.api_key().as_str(), "the client sends exactly the key the server got");
+    // Never on argv (world-readable via `ps`).
+    assert!(
+        !spec.args.iter().any(|a| a.contains(key.as_str())),
+        "the API key must not appear on the argv"
+    );
+    // Per-session: two managers never share a key.
+    let (other, _d2) = stub_manager("apikey2");
+    assert_ne!(other.api_key().as_str(), key.as_str());
+}
+
+#[test]
+fn pba_l7b_001_spawn_args_disable_the_web_ui_and_slots_endpoint() {
+    let (mgr, _dir) = stub_manager("nowebui");
+    let args = mgr.spawn_args_for_test();
+    assert!(args.iter().any(|a| a == "--no-webui"), "web UI must be off: {args:?}");
+    assert!(args.iter().any(|a| a == "--no-slots"), "/slots must be off: {args:?}");
+}
+
+// PBA-L7b-009 — a squatter already holding the fixed loopback port would receive
+// the member's full chat context (and now the session API key). Refuse to start
+// rather than hand traffic to whoever holds the port.
+#[test]
+fn pba_l7b_009_start_refuses_when_the_port_is_already_held() {
+    let squat = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a squatter");
+    let port = squat.local_addr().unwrap().port();
+    let dir = tmp_dir("squat");
+    let model_path = dir.join("model.gguf");
+    std::fs::write(&model_path, b"GGUF").unwrap();
+    let mgr = LlamaServerManager::new(sleep_bin(), model_path, dir.join("crash.jsonl"), port);
+    let r = mgr.start_if_ready(true);
+    assert!(matches!(r, Err(ServeError::PortInUse(p)) if p == port), "got {r:?}");
+    assert_eq!(mgr.status().state, "stopped");
+    drop(squat);
+}

@@ -433,12 +433,21 @@ impl ConnectionListener {
         self.listener.local_addr().map(|a| a.port()).unwrap_or(0)
     }
 
-    /// Accept exactly one callback and return the parsed `(code, state)`, or fail
-    /// closed on timeout. Non-blocking poll against a wall-clock deadline so a
-    /// timeout drops `self` (and the socket) deterministically. Single-use.
+    /// Wait for THE sign-in callback: the first request whose `state` matches
+    /// `expected_state` (constant-time), or fail closed on timeout. Non-blocking poll
+    /// against a wall-clock deadline so a timeout drops `self` (and the socket)
+    /// deterministically.
+    ///
+    /// PBA-L7b-009: the port is fixed and any web page can make the browser hit
+    /// `127.0.0.1:8975` (`<img src=…>`). The old listener consumed the FIRST
+    /// connection, so such a drive-by request burned the member's sign-in with a
+    /// `StateMismatch`. Now a foreign / malformed / wrong-state request gets a 400 and
+    /// the listener keeps waiting for the real callback; only a request carrying the
+    /// flow's own `state` completes it (still exactly one code is accepted).
     fn wait_for_callback(
         self,
         timeout: Duration,
+        expected_state: &str,
     ) -> std::result::Result<CallbackParams, ConnError> {
         self.listener
             .set_nonblocking(true)
@@ -450,7 +459,13 @@ impl ConnectionListener {
                     stream
                         .set_nonblocking(false)
                         .map_err(|_| ConnError::Network)?;
-                    return Self::serve_callback(stream);
+                    if let Some(cb) = Self::serve_callback(stream, expected_state) {
+                        return Ok(cb);
+                    }
+                    // Not our callback — keep listening until the deadline.
+                    if Instant::now() >= deadline {
+                        return Err(ConnError::Timeout);
+                    }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
@@ -463,16 +478,25 @@ impl ConnectionListener {
         }
     }
 
-    /// Parse the request, then write a minimal close-the-tab page. A foreign or
-    /// malformed request (no `code`/`state`) fails closed.
-    fn serve_callback(mut stream: TcpStream) -> std::result::Result<CallbackParams, ConnError> {
-        let params = Self::read_request(&mut stream);
-        let body = "<!doctype html><meta charset=utf-8><title>Citrate Core</title>\
-                    <body style=\"font-family:system-ui;padding:3rem;text-align:center\">\
-                    <p>Connection authorized. You can close this tab and return to \
-                    Citrate Core.</p>";
+    /// Parse the request; if it is THE callback (`code` + the expected `state`) write a
+    /// minimal close-the-tab page and return it, otherwise answer 400 and return `None`.
+    fn serve_callback(mut stream: TcpStream, expected_state: &str) -> Option<CallbackParams> {
+        let params = Self::read_request(&mut stream)
+            .ok()
+            .filter(|cb| ct_eq(cb.state.as_bytes(), expected_state.as_bytes()));
+        let (status, body) = if params.is_some() {
+            (
+                "200 OK",
+                "<!doctype html><meta charset=utf-8><title>Citrate Core</title>\
+                 <body style=\"font-family:system-ui;padding:3rem;text-align:center\">\
+                 <p>Connection authorized. You can close this tab and return to \
+                 Citrate Core.</p>",
+            )
+        } else {
+            ("400 Bad Request", "not the sign-in callback")
+        };
         let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
              Content-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
@@ -561,7 +585,8 @@ pub(crate) fn capture_public_pkce(
     let pkce = Pkce::new();
     let auth_url = build_authorize_url(&state, &pkce.challenge);
     open(&auth_url)?;
-    let cb = listener.wait_for_callback(CALLBACK_TIMEOUT)?;
+    let cb = listener.wait_for_callback(CALLBACK_TIMEOUT, &state)?;
+    // Defence in depth: the listener only returns a state-matching callback.
     if !ct_eq(cb.state.as_bytes(), state.as_bytes()) {
         return Err(ConnError::StateMismatch);
     }
@@ -678,7 +703,8 @@ impl ConnectionManager {
         let pkce = Pkce::new();
         let auth_url = authorize_url(service, &creds.client_id, &state, &pkce.challenge);
         open(&auth_url)?;
-        let cb = listener.wait_for_callback(CALLBACK_TIMEOUT)?;
+        let cb = listener.wait_for_callback(CALLBACK_TIMEOUT, &state)?;
+        // Defence in depth: the listener only returns a state-matching callback.
         if !ct_eq(cb.state.as_bytes(), state.as_bytes()) {
             return Err(ConnError::StateMismatch);
         }
@@ -1179,10 +1205,48 @@ mod tests {
             )
             .unwrap();
         });
-        let cb = listener.wait_for_callback(Duration::from_secs(5)).unwrap();
+        let cb = listener
+            .wait_for_callback(Duration::from_secs(5), "xyz789")
+            .unwrap();
         h.join().unwrap();
         assert_eq!(cb.code, "abc123");
         assert_eq!(cb.state, "xyz789");
+    }
+
+    /// PBA-L7b-009: a drive-by request from any web page (`<img src=http://127.0.0.1:8975/x>`)
+    /// or a forged callback with the wrong `state` must NOT burn the sign-in; the listener
+    /// answers 400 and keeps waiting for the real, state-matching callback.
+    #[test]
+    fn pba_l7b_009_drive_by_hits_do_not_burn_the_sign_in() {
+        let listener = ConnectionListener::bind_on(0).unwrap();
+        let port = listener.port();
+        let h = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut statuses = Vec::new();
+            for req in [
+                &b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n"[..],
+                &b"GET /oauth/callback?code=attacker&state=guess HTTP/1.1\r\nHost: x\r\n\r\n"[..],
+                &b"GET /oauth/callback?code=real-code&state=the-flow-state HTTP/1.1\r\nHost: x\r\n\r\n"[..],
+            ] {
+                let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+                s.write_all(req).unwrap();
+                let mut resp = String::new();
+                let _ = s.read_to_string(&mut resp);
+                statuses.push(resp.lines().next().unwrap_or("").to_string());
+            }
+            statuses
+        });
+        let cb = listener
+            .wait_for_callback(Duration::from_secs(10), "the-flow-state")
+            .expect("the real callback still completes the sign-in");
+        let statuses = h.join().unwrap();
+        assert_eq!(
+            cb.code, "real-code",
+            "the attacker's code is never accepted"
+        );
+        assert!(statuses[0].contains("400"), "{statuses:?}");
+        assert!(statuses[1].contains("400"), "{statuses:?}");
+        assert!(statuses[2].contains("200"), "{statuses:?}");
     }
 
     #[test]
@@ -1190,7 +1254,7 @@ mod tests {
         let listener = ConnectionListener::bind_on(0).unwrap();
         assert_eq!(
             listener
-                .wait_for_callback(Duration::from_millis(80))
+                .wait_for_callback(Duration::from_millis(80), "st")
                 .unwrap_err(),
             ConnError::Timeout
         );

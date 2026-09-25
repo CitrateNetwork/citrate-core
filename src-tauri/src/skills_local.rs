@@ -122,14 +122,20 @@ pub fn skills_local_list(app: tauri::AppHandle) -> Result<Vec<LocalSkill>, Strin
     Ok(out)
 }
 
-/// **skills_local_write** — author (or overwrite) a local instruction-skill. Local file only; signs
-/// nothing and runs nothing. Returns the stored metadata.
-#[tauri::command]
-pub fn skills_local_write(
-    app: tauri::AppHandle,
-    name: String,
-    description: String,
-    instructions: String,
+/// PBA-L7b-002: the error prefix a create-only write returns when the skill already exists. The
+/// webview keys the member-approval prompt off this prefix.
+pub const SKILL_EXISTS_PREFIX: &str = "SKILL_EXISTS";
+
+/// Write a skill file into `dir`. With `overwrite == false` an existing skill is NEVER replaced
+/// (atomic `create_new`): a saved skill is a persistent instruction the agent later runs, so a
+/// silent overwrite is a persistence vector for an injected instruction (PBA-L7b-002). Replacing
+/// one is an explicit, member-approved `overwrite == true` call.
+fn write_skill_file(
+    dir: &Path,
+    name: &str,
+    description: &str,
+    instructions: &str,
+    overwrite: bool,
 ) -> Result<LocalSkill, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -139,7 +145,6 @@ pub fn skills_local_write(
         return Err("skill name/description/instructions exceed the allowed size".into());
     }
     let slug = slugify(name);
-    let dir = skills_dir(&app)?;
     let path = dir.join(format!("{slug}.md"));
     // Escape any frontmatter-breaking newlines out of the single-line meta fields.
     let safe_name = name.replace('\n', " ");
@@ -148,12 +153,51 @@ pub fn skills_local_write(
         "---\nname: {safe_name}\ndescription: {safe_desc}\n---\n\n{}\n",
         instructions.trim()
     );
-    fs::write(&path, content).map_err(|e| e.to_string())?;
+    if overwrite {
+        fs::write(&path, content).map_err(|e| e.to_string())?;
+    } else {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!(
+                        "{SKILL_EXISTS_PREFIX}: a skill named \"{safe_name}\" already exists; replacing it needs the member's approval"
+                    )
+                } else {
+                    e.to_string()
+                }
+            })?;
+        f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    }
     Ok(LocalSkill {
         name: safe_name,
         description: safe_desc,
         slug,
     })
+}
+
+/// **skills_local_write** — author a local instruction-skill. Local file only; signs nothing and
+/// runs nothing. Returns the stored metadata. `overwrite` defaults to `false`: an existing skill is
+/// refused with a `SKILL_EXISTS` error unless the caller (after the member approved) passes `true`.
+#[tauri::command]
+pub fn skills_local_write(
+    app: tauri::AppHandle,
+    name: String,
+    description: String,
+    instructions: String,
+    overwrite: Option<bool>,
+) -> Result<LocalSkill, String> {
+    let dir = skills_dir(&app)?;
+    write_skill_file(
+        &dir,
+        &name,
+        &description,
+        &instructions,
+        overwrite.unwrap_or(false),
+    )
 }
 
 /// **skills_local_read** — the instruction body of an authored skill, by slug or name. Used by
@@ -199,6 +243,50 @@ mod tests {
         assert_eq!(meta.description, "does a thing");
         assert_eq!(meta.slug, "my-skill");
         assert_eq!(strip_frontmatter(body), "Step 1. do it\n");
+    }
+
+    /// PBA-L7b-002: a create-only write never replaces an existing skill (the persistence vector
+    /// for an injected instruction); an explicit, member-approved overwrite does.
+    #[test]
+    fn pba_l7b_002_existing_skill_is_not_silently_overwritten() {
+        let dir = std::env::temp_dir().join(format!(
+            "citrate-skills-l7b002-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write_skill_file(&dir, "Daily", "d", "original steps", false).expect("first write");
+        let err = write_skill_file(&dir, "Daily", "d", "INJECTED steps", false)
+            .expect_err("a second create-only write must be refused");
+        assert!(err.starts_with(SKILL_EXISTS_PREFIX), "got {err}");
+        let body = fs::read_to_string(dir.join("daily.md")).unwrap();
+        assert!(body.contains("original steps") && !body.contains("INJECTED"));
+        write_skill_file(&dir, "Daily", "d", "approved replacement", true)
+            .expect("approved overwrite");
+        let body = fs::read_to_string(dir.join("daily.md")).unwrap();
+        assert!(body.contains("approved replacement"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Mutation hardening (cargo-mutants on write_skill_file): each size bound is exact.
+    #[test]
+    fn pba_l7b_002_write_skill_file_size_bounds_are_exact() {
+        let dir = std::env::temp_dir().join(format!(
+            "citrate-skills-bounds-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let n = |len: usize, c: char| std::iter::repeat_n(c, len).collect::<String>();
+        assert!(write_skill_file(&dir, &n(MAX_NAME, 'a'), "d", "i", false).is_ok());
+        assert!(write_skill_file(&dir, &n(MAX_NAME + 1, 'b'), "d", "i", false).is_err());
+        assert!(write_skill_file(&dir, "c", &n(MAX_DESC, 'd'), "i", false).is_ok());
+        assert!(write_skill_file(&dir, "e", &n(MAX_DESC + 1, 'd'), "i", false).is_err());
+        assert!(write_skill_file(&dir, "f", "d", &n(MAX_BODY, 'x'), false).is_ok());
+        assert!(write_skill_file(&dir, "g", "d", &n(MAX_BODY + 1, 'x'), false).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

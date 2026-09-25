@@ -447,8 +447,9 @@ impl ModelManager {
         transport: Box<dyn ModelTransport>,
         desc: &ModelDescriptor,
     ) -> Self {
+        // PBA-L7b-013: the local name is the file's final segment (HF sub-directory GGUFs).
         ModelManager::new(dir, transport, desc.sha256.clone(), desc.size_bytes)
-            .with_file(desc.file.clone())
+            .with_file(crate::model_catalog::local_file_name(&desc.file))
     }
 
     /// The final model file path (`<dir>/<file>`).

@@ -88,6 +88,11 @@ pub enum HermesError {
     /// The ceremony bridge failed (e.g. the vault is locked/absent so `from` can't be read). Fail
     /// closed — never bridge without the real signer's address.
     Ceremony(String),
+    /// PBA-L7b-009: another process already holds the control port; refusing to start.
+    PortInUse(u16),
+    /// PBA-L7b-003: the sidecar's head is no longer the action the member reviewed (a timeout
+    /// eviction or a newer effect changed it). Nothing was resolved; the member must re-review.
+    Stale,
 }
 
 impl std::fmt::Display for HermesError {
@@ -104,6 +109,14 @@ impl std::fmt::Display for HermesError {
             }
             HermesError::Decode(m) => write!(f, "hermes control decode error: {m}"),
             HermesError::Ceremony(m) => write!(f, "hermes ceremony bridge error: {m}"),
+            HermesError::PortInUse(p) => write!(
+                f,
+                "hermes control port {p} is already held by another process; refusing to start"
+            ),
+            HermesError::Stale => write!(
+                f,
+                "STALE_APPROVAL: the agent's pending action is no longer the one you reviewed (it expired or was replaced), so the agent did not receive this decision"
+            ),
         }
     }
 }
@@ -264,6 +277,11 @@ pub struct HermesManager {
     /// second broadcast (H-1). The entry is cleared only by `resolve_head` (the head has moved) or on
     /// stop, at which point a genuinely new effect may bridge fresh.
     bridged: Mutex<HashMap<String, String>>,
+    /// Sidecar call id → the content key it was bridged under, so a resolve that the sidecar
+    /// answers 409 (the call is no longer its head, e.g. the submitter timed out) forgets exactly
+    /// that effect; otherwise a later identical effect would find the stale decided entry and never
+    /// bridge again.
+    bridged_by_call: Mutex<HashMap<String, String>>,
 }
 
 impl HermesManager {
@@ -282,6 +300,7 @@ impl HermesManager {
             sup: Mutex::new(None),
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
+            bridged_by_call: Mutex::new(HashMap::new()),
         }
     }
 
@@ -307,6 +326,13 @@ impl HermesManager {
     pub fn set_token_for_test(&self, token: &str) {
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(Zeroizing::new(token.to_string()));
+    }
+
+    /// Test hook: bind the control surface on another loopback address.
+    #[cfg(test)]
+    pub fn with_control_addr(mut self, addr: &str) -> Self {
+        self.control_addr = addr.to_string();
+        self
     }
 
     /// Test hook: override the `/health` probe cadence (avoids the startup-race flake).
@@ -381,6 +407,17 @@ impl HermesManager {
         if !self.bin.exists() {
             return Err(HermesError::BinaryNotFound(self.bin.display().to_string()));
         }
+        // PBA-L7b-009: every control call carries the session bearer to the fixed loopback port. If
+        // another process already holds it, refuse to start instead of handing it the bearer.
+        if let Some(port) = self
+            .control_addr
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse::<u16>().ok())
+        {
+            if !crate::serve::loopback_port_is_free(port) {
+                return Err(HermesError::PortInUse(port));
+            }
+        }
         let token = mint_bearer();
         persist_bearer(&self.token_path, &token)?;
         let spec = self.build_spec();
@@ -406,6 +443,10 @@ impl HermesManager {
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // A new session starts with a clean dedup map.
         self.bridged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.bridged_by_call
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
@@ -527,10 +568,16 @@ impl HermesManager {
         ceremony: &SignatureCeremony,
         vault: &CustodyVault,
         rpc: &crate::rpc::RpcClient<T>,
+        expected_id: &str,
     ) -> Result<Option<CeremonyView>> {
         let Some(head) = self.pending_approvals()?.into_iter().next() else {
             return Ok(None);
         };
+        // PBA-L7b-003: only bridge the item the member is reviewing. If the head changed (timeout
+        // eviction / a newer effect), refuse — never mint a signing ceremony for an unseen effect.
+        if expected_id.is_empty() || head.id != expected_id {
+            return Err(HermesError::Stale);
+        }
         // Only chain effects (carrying to+data) bridge to a signing ceremony; code/shell effects have
         // their own HIC-1 control decision (S6.4), not a chain signature.
         let (Some(to), Some(data)) = (head.to.clone(), head.data.clone()) else {
@@ -570,12 +617,18 @@ impl HermesManager {
             return Ok(ceremony.status(existing)); // reuse pending, or None if decided (never re-mint)
         }
         let view = ceremony.request(hermes_intent(&to, &data, &from, gas));
-        map.insert(key, view.id.clone());
+        map.insert(key.clone(), view.id.clone());
+        self.bridged_by_call
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(head.id.clone(), key);
         Ok(Some(view))
     }
 
     /// Resolve the sidecar's HEAD approval after the human decided its ceremony: `approve` → the
     /// capsule proceeds (the ceremony already signed + broadcast); otherwise → the capsule aborts.
+    /// PBA-L7b-003: the POST body is `{"id": <reviewed call id>}` so the sidecar (AR-B-023) resolves
+    /// ONLY that call and answers 409 if its head is a different one → [`HermesError::Stale`].
     /// The sidecar's queue is head-resolved and the head is BLOCKED until this call, so it targets the
     /// same effect that was bridged.
     ///
@@ -584,16 +637,30 @@ impl HermesManager {
     /// fresh. Because the head is blocked until here, at most one effect is ever bridged at a time, so
     /// clearing the whole map is exactly "forget the resolved effect" (H-1: an approved effect is NOT
     /// re-bridgeable until its head is resolved here).
-    pub fn resolve_head(&self, approve: bool) -> Result<()> {
+    pub fn resolve_head(&self, approve: bool, id: &str) -> Result<()> {
+        // PBA-L7b-003: an empty id would select the sidecar's legacy "resolve whatever is at the
+        // head" path (AR-B-023) — refuse it; every resolve is bound to the reviewed call id.
+        if id.is_empty() {
+            return Err(HermesError::Stale);
+        }
         let bearer = self.bearer()?;
         let path = if approve {
             "/approvals/approve"
         } else {
             "/approvals/reject"
         };
+        let body = serde_json::json!({ "id": id }).to_string();
         let resp = self
             .control
-            .post(&format!("{}{}", self.control_url(), path), &bearer, "")?;
+            .post(&format!("{}{}", self.control_url(), path), &bearer, &body)?;
+        // 409 = the sidecar no longer has this call at its head (it expired or was replaced), so the
+        // decision was not delivered. A chain effect's ceremony may ALREADY have signed and
+        // broadcast; the UI says so. Forget this call's dedup entry either way: the sidecar has moved
+        // off it, and a stale entry would stop a later identical effect from ever bridging.
+        if resp.status == 409 {
+            self.forget_call(id);
+            return Err(HermesError::Stale);
+        }
         if !(200..300).contains(&resp.status) {
             return Err(HermesError::Control {
                 status: resp.status,
@@ -605,7 +672,26 @@ impl HermesManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+        self.bridged_by_call
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         Ok(())
+    }
+
+    /// Drop the dedup entry recorded for sidecar call `id` (if it was bridged).
+    fn forget_call(&self, id: &str) {
+        let key = self
+            .bridged_by_call
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        if let Some(key) = key {
+            self.bridged
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&key);
+        }
     }
 }
 
@@ -860,10 +946,11 @@ pub fn hermes_bridge_pending(
     app: tauri::AppHandle,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
+    id: String,
 ) -> std::result::Result<Option<CeremonyView>, String> {
     let rpc = crate::rpc::RpcClient::citrate();
     manager(&app)?
-        .bridge_pending(&ceremony.0, &custody.0, &rpc)
+        .bridge_pending(&ceremony.0, &custody.0, &rpc, &id)
         .map_err(|e| e.to_string())
 }
 
@@ -871,9 +958,13 @@ pub fn hermes_bridge_pending(
 /// lets the (already-signed-and-broadcast) effect proceed; `false` aborts it. The head is blocked
 /// until this call, so it targets the effect that was bridged.
 #[tauri::command]
-pub fn hermes_resolve(app: tauri::AppHandle, approve: bool) -> std::result::Result<(), String> {
+pub fn hermes_resolve(
+    app: tauri::AppHandle,
+    approve: bool,
+    id: String,
+) -> std::result::Result<(), String> {
     manager(&app)?
-        .resolve_head(approve)
+        .resolve_head(approve, &id)
         .map_err(|e| e.to_string())
 }
 

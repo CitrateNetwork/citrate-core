@@ -46,8 +46,10 @@ export function simAgentSkills(_host: SimHost): AgentSkillsDomain {
     async list() {
       return [...store.values()].map((v) => v.skill).sort((a, b) => a.name.localeCompare(b.name));
     },
-    async write(name, description, instructions) {
+    async write(name, description, instructions, overwrite = false) {
       const slug = slugify(name);
+      // PBA-L7b-002: same contract as the Rust command — never silently overwrite.
+      if (!overwrite && store.has(slug)) throw new Error(`SKILL_EXISTS: a skill named "${name}" already exists`);
       const skill: LocalSkill = { name: name.trim(), description: description.trim(), slug };
       store.set(slug, { skill, body: instructions.trim() });
       return skill;

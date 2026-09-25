@@ -47,13 +47,14 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   async stop() {
     await invoke("hermes_stop");
   },
-  bridgePending(): Promise<CeremonyView | null> {
+  bridgePending(id: string): Promise<CeremonyView | null> {
     // Returns the CeremonyView for the head chain effect (also enqueues the pending ceremony that
     // signing.broadcast will consume), or null for a code/shell head / nothing pending.
-    return invoke<CeremonyView | null>("hermes_bridge_pending");
+    return invoke<CeremonyView | null>("hermes_bridge_pending", { id });
   },
-  async resolve(approve: boolean) {
-    await invoke("hermes_resolve", { approve });
+  async resolve(approve: boolean, id: string) {
+    // PBA-L7b-003: the approval is bound to the reviewed call id (never the legacy head-resolve).
+    await invoke("hermes_resolve", { approve, id });
   },
 };
 
@@ -61,8 +62,8 @@ export const tauriAgentSkills: AgentSkillsDomain = {
   list(): Promise<LocalSkill[]> {
     return invoke<LocalSkill[]>("skills_local_list");
   },
-  write(name, description, instructions): Promise<LocalSkill> {
-    return invoke<LocalSkill>("skills_local_write", { name, description, instructions });
+  write(name, description, instructions, overwrite = false): Promise<LocalSkill> {
+    return invoke<LocalSkill>("skills_local_write", { name, description, instructions, overwrite });
   },
   read(name): Promise<string> {
     return invoke<string>("skills_local_read", { name });

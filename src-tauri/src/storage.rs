@@ -166,16 +166,12 @@ impl KuboTransport for UreqKuboTransport {
 
     fn cat(&self, cid: &str) -> Result<Vec<u8>> {
         let url = format!("{}/api/v0/cat?arg={cid}", self.api);
-        let mut buf = Vec::new();
-        use std::io::Read;
-        ureq::post(&url)
+        let body = ureq::post(&url)
             .send_empty()
             .map_err(|e| StorageError::Transport(e.to_string()))?
-            .into_body()
-            .into_reader()
-            .read_to_end(&mut buf)
-            .map_err(|e| StorageError::Transport(e.to_string()))?;
-        Ok(buf)
+            .into_body();
+        // PBA-L7b-010: bounded — a multi-GB (or hostile, never-ending) object cannot OOM the app.
+        read_capped(body.into_reader(), MAX_CAT_BYTES)
     }
 }
 
@@ -274,6 +270,44 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// PBA-L7b-010: the most bytes `cat` will buffer in memory (1 GiB). `/cat` feeds the in-memory
+/// bond commitments and the retrieve write; anything larger is refused rather than read unbounded.
+pub const MAX_CAT_BYTES: u64 = 1 << 30;
+
+/// PBA-L7b-010: the longest CID accepted (real CIDv0 is 46 chars; CIDv1 base32 sha2-256 is 59).
+const MAX_CID_LEN: usize = 128;
+
+/// Read `r` to the end, failing (instead of buffering) once more than `cap` bytes arrive.
+fn read_capped<R: std::io::Read>(r: R, cap: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    r.take(cap.saturating_add(1))
+        .read_to_end(&mut buf)
+        .map_err(|e| StorageError::Transport(e.to_string()))?;
+    if buf.len() as u64 > cap {
+        return Err(StorageError::Transport(format!(
+            "object exceeds the {cap}-byte retrieval limit"
+        )));
+    }
+    Ok(buf)
+}
+
+/// PBA-L7b-010: a renderer-supplied CID is interpolated into kubo query strings
+/// (`?arg=<cid>`), so it must be a bare multibase CID: non-empty, bounded, ASCII alphanumeric
+/// only. That rejects `&`/`=`/`#`/`%`/`/`/whitespace (query-parameter smuggling such as
+/// `x&recursive=false`), path forms, and oversized strings — before any kubo call.
+fn is_valid_cid(cid: &str) -> bool {
+    !cid.is_empty() && cid.len() <= MAX_CID_LEN && cid.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+fn check_cid(cid: &str) -> Result<()> {
+    if is_valid_cid(cid) {
+        Ok(())
+    } else {
+        Err(StorageError::Io(format!("invalid cid: {cid:?}")))
+    }
+}
+
 /// CORE-B-005: a `cid` is safe to use as a path component iff it is exactly one
 /// `Normal` path component — no root/prefix (an absolute string discards the base
 /// dir), no `..`/`.` traversal, and no embedded separator. This gates the
@@ -335,6 +369,7 @@ impl StorageManager {
     /// Pin a CID, recording the SALT bond behind it. S2.1 records the bond as-passed; S2.2 makes
     /// it a real ceremony-gated on-chain bond.
     pub fn pin(&self, cid: &str, bond_salt: &str) -> Result<()> {
+        check_cid(cid)?;
         self.transport.pin_add(cid)?;
         std::fs::create_dir_all(&self.dir).map_err(|e| StorageError::Io(e.to_string()))?;
         let mut idx = PinIndex::load(&self.index_path());
@@ -349,11 +384,13 @@ impl StorageManager {
     /// Unpin a CID (releases the daemon pin; the index record is kept, marked by absence from the
     /// live set on the next `list`).
     pub fn unpin(&self, cid: &str) -> Result<()> {
+        check_cid(cid)?;
         self.transport.pin_rm(cid)
     }
 
     /// Fetch a CID's raw bytes (no disk write) — used to compute the bond commitments (S2.2).
     pub fn cat(&self, cid: &str) -> Result<Vec<u8>> {
+        check_cid(cid)?;
         self.transport.cat(cid)
     }
 
@@ -369,6 +406,7 @@ impl StorageManager {
                 "unsafe cid path component: {cid:?}"
             )));
         }
+        check_cid(cid)?;
         let bytes = self.transport.cat(cid)?;
         let out_dir = self.dir.join("retrieved");
         std::fs::create_dir_all(&out_dir).map_err(|e| StorageError::Io(e.to_string()))?;

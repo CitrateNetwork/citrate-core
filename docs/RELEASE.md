@@ -27,11 +27,16 @@ update the app will trust. Store it in the org secret manager; the CI secret is 
 only copy CI needs. Losing it means shipping a new pinned pubkey (a hard cutover
 for already-installed apps), so back it up.
 
+**Key handling.** The updater private key must be passphrase-protected (set a strong
+passphrase when running `tauri signer generate`) and stored in the org secret manager
+and the repo secrets below, not on developer machines. Key rotation (including the
+pubkey cutover release) follows the private release runbook.
+
 ### 2. GitHub Actions secrets
 | Secret | Value |
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.citrate-updater/citrate-core.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty string (key was generated password-less) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater key passphrase |
 | `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
 | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
 | `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Larry Klosowski (DDHUG44QC7)` |
@@ -39,7 +44,21 @@ for already-installed apps), so back it up.
 | `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | notarization (use an app-specific password) |
 | `CITRATE_CHAIN_READ_TOKEN` | fine-grained PAT, Contents:read on `citrate-chain` |
 
-### 3. Runtime deps prerelease (`runtime-deps`)
+### 3. Runtime deps prerelease (`runtime-deps`) — digest-pinned (PBA-L7b-005)
+
+The prerelease is **mutable**, so the release workflow does not trust it: every asset
+is downloaded to a scratch dir and checked against the committed manifest
+`src-tauri/runtime-deps.sha256` (`scripts/ci/verify-runtime-deps.sh`) **before** it is
+staged, bundled, signed or notarized. An unpinned or changed asset fails the release.
+When you upload a new asset, pin it in the same PR:
+
+```bash
+shasum -a 256 <each asset file> >> src-tauri/runtime-deps.sha256   # "<hex>  <name>"
+```
+
+CI's `release pin tripwire` step (`scripts/ci/check-release-pins.sh`) fails if
+release.yml ever downloads an asset that bypasses this check.
+
 The ~4.3 GB Gemma model, the llama runtime dylibs, and the three sidecars
 (`citrate`, `mem-mcp`, `node-agent`) are **not in git**. Upload them once to a
 GitHub prerelease tagged `runtime-deps`; the release workflow pulls them each build:

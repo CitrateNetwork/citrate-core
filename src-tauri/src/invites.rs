@@ -44,6 +44,39 @@ pub struct PendingInvite {
     pub link: String,
 }
 
+/// PBA-L4-008: the webview view of an outstanding invite. It deliberately has NO private-key
+/// field: the invite's ECIES `priv_key` is owner-only, lives only in the 0600 `pending.json`, and
+/// never crosses `invoke` (I-2). `group_invites` returns this, never [`PendingInvite`].
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingInviteView {
+    pub group: String,
+    pub token: String,
+    pub for_handle: String,
+    pub created_at: u64,
+    pub link: String,
+}
+
+impl From<&PendingInvite> for PendingInviteView {
+    fn from(i: &PendingInvite) -> Self {
+        PendingInviteView {
+            group: i.group.clone(),
+            token: i.token.clone(),
+            for_handle: i.for_handle.clone(),
+            created_at: i.created_at,
+            link: i.link.clone(),
+        }
+    }
+}
+
+/// The owner's outstanding invites for `group`, as key-free views (PBA-L4-008).
+pub fn invite_views_for_group(all: &[PendingInvite], group: &str) -> Vec<PendingInviteView> {
+    all.iter()
+        .filter(|i| i.group == group)
+        .map(PendingInviteView::from)
+        .collect()
+}
+
 /// The link + token returned to the owner to share (DM to the @handle on the platform).
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -388,16 +421,14 @@ fn link_param(link: &str, key: &str) -> Option<String> {
     None
 }
 
-/// `group_invites` — the owner's outstanding claimable invites for a group.
+/// `group_invites` — the owner's outstanding claimable invites for a group. PBA-L4-008: returns
+/// key-free [`PendingInviteView`]s; the invite private key never crosses `invoke`.
 #[tauri::command]
 pub async fn group_invites(
     app: tauri::AppHandle,
     group: String,
-) -> Result<Vec<PendingInvite>, String> {
-    Ok(load(&app)
-        .into_iter()
-        .filter(|i| i.group == group)
-        .collect())
+) -> Result<Vec<PendingInviteView>, String> {
+    Ok(invite_views_for_group(&load(&app), &group))
 }
 
 /// `group_invite_verify_consume` — check a claim's one-time token against an outstanding invite for
@@ -487,6 +518,32 @@ mod tests {
     }
 
     /// CORE-B-006 tripwire: the pending-invite store — which holds the plaintext
+    /// PBA-L4-008: what `group_invites` hands the webview carries no invite private key.
+    #[test]
+    fn pba_l4_008_group_invites_view_never_carries_the_private_key() {
+        let invites = vec![super::PendingInvite {
+            group: "grp_abc".into(),
+            token: "tok123".into(),
+            for_handle: "@alice".into(),
+            created_at: 1000,
+            priv_key: "5ec2e7ba5eba11deadbeefc0ffee0123456789abcdef0123456789abcdef0123".into(),
+            link: "citrate://invite?g=grp_abc&t=tok123&k=pub".into(),
+        }];
+        let views = super::invite_views_for_group(&invites, "grp_abc");
+        assert_eq!(views.len(), 1);
+        let json = serde_json::to_string(&views).unwrap();
+        assert!(
+            !json.contains("5ec2e7ba5eba11"),
+            "private key leaked: {json}"
+        );
+        assert!(
+            !json.to_lowercase().contains("priv"),
+            "no private-key field: {json}"
+        );
+        assert!(json.contains("tok123") && json.contains("@alice"));
+        assert!(super::invite_views_for_group(&invites, "other").is_empty());
+    }
+
     /// ECIES private keys of outstanding invites — must be written owner-only
     /// (no group/other read bits). Fails on the old `fs::write` (umask `0644`).
     #[cfg(unix)]

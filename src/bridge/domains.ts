@@ -817,6 +817,9 @@ export interface AgentApproval {
   id: string;
   kind: "code" | "chain" | "shell";
   summary: string;
+  /** A chain effect's real target + calldata (what would actually be signed). Absent for code/shell. */
+  to?: string;
+  data?: string;
 }
 export interface AgentHarnessStatus {
   running: boolean;
@@ -856,11 +859,14 @@ export interface AgentHarnessDomain {
    * CX-S6.3 — bridge the sidecar's head CHAIN effect into a PENDING ceremony (signs nothing) and
    * return the decoded CeremonyView to show at the Signature Ceremony, or null when the head is a
    * code/shell effect or nothing is pending. The human then approves via signing.broadcast and the
-   * caller must call `resolve(true)` to let the capsule proceed.
+   * caller must call `resolve(true, id)` to let the capsule proceed. PBA-L7b-003: `id` is the call the
+   * member is reviewing; if the head is a different call this rejects with `STALE_APPROVAL`.
    */
-  bridgePending(): Promise<CeremonyView | null>;
-  /** CX-S6.3 — resolve the sidecar's head effect after the human decided: true proceeds, false aborts. */
-  resolve(approve: boolean): Promise<void>;
+  bridgePending(id: string): Promise<CeremonyView | null>;
+  /** CX-S6.3 — resolve the sidecar's head effect after the human decided: true proceeds, false aborts.
+   *  PBA-L7b-003: BOUND to the reviewed call `id` — if the sidecar's head is no longer that call the
+   *  promise rejects with a message starting `STALE_APPROVAL` and NOTHING is resolved (re-review). */
+  resolve(approve: boolean, id: string): Promise<void>;
 }
 
 // ── Local instruction-skills (Hermes "write & run skills"). A skill is a markdown playbook the agent
@@ -877,8 +883,10 @@ export interface LocalSkill {
 export interface AgentSkillsDomain {
   /** The skills the agent has authored on this device (honest-empty, never fabricated). */
   list(): Promise<LocalSkill[]>;
-  /** Author (or overwrite) a local instruction-skill. Local file only; signs/runs nothing. */
-  write(name: string, description: string, instructions: string): Promise<LocalSkill>;
+  /** Author a local instruction-skill. Local file only; signs/runs nothing. PBA-L7b-002: with
+   *  `overwrite` false (the default) an existing skill is NOT replaced — the call rejects with an
+   *  error whose message starts `SKILL_EXISTS`; replacing it needs the member's approval first. */
+  write(name: string, description: string, instructions: string, overwrite?: boolean): Promise<LocalSkill>;
   /** The instruction body of an authored skill, by slug or name. */
   read(name: string): Promise<string>;
   /** Remove an authored skill (idempotent). */

@@ -375,18 +375,19 @@ fn a_provider_id_that_is_not_configured_cannot_borrow_another_providers_key() {
 // BC-3.2 — LOCAL inference routing + the honest provider-selection state.
 // ===========================================================================
 
-/// Inference routes to the LOCAL llama-server baseURL (loopback) with an EMPTY
-/// bearer (no key). This is the "inference routes to the LOCAL baseURL when the
-/// model is Ready" proof. F-1: the endpoint is DERIVED IN RUST from the port
-/// (`http://127.0.0.1:<port>/v1`); the webview supplies NO URL — it cannot pass
-/// one, so there is no attacker-controllable URL on the local path.
+/// Inference routes to the LOCAL llama-server baseURL (loopback). F-1: the endpoint
+/// is DERIVED IN RUST from the port (`http://127.0.0.1:<port>/v1`); the webview
+/// supplies NO URL. PBA-L7b-001: the local server is no longer keyless — the call
+/// presents the serve manager's per-session API key as its bearer (an empty bearer
+/// would be refused by the authenticated llama-server).
 #[test]
-fn local_inference_posts_to_the_loopback_endpoint_with_no_key() {
+fn local_inference_posts_to_the_loopback_endpoint_with_the_session_key() {
     let shared = SharedHttp::new(vec![Ok(completion_response("local model reply"))]);
     let mgr = mgr_with(&shared);
     let out = mgr
         .chat_local(
             18080,
+            "k3y-for-this-session",
             "gemma-4-E4B-it",
             &json!([{ "role": "user", "content": "hi" }]).to_string(),
             &json!({ "height": 1 }).to_string(),
@@ -396,16 +397,36 @@ fn local_inference_posts_to_the_loopback_endpoint_with_no_key() {
     let calls = shared.calls();
     assert_eq!(calls.len(), 1);
     let (url, bearer, body) = &calls[0];
-    // The LOCAL loopback endpoint is built by Rust from the port — parsed host is
-    // exactly 127.0.0.1, scheme http, no userinfo. /chat/completions appended.
     assert_eq!(url, "http://127.0.0.1:18080/v1/chat/completions");
     let parsed = url::Url::parse(url).unwrap();
     assert_eq!(parsed.host_str(), Some("127.0.0.1"));
     assert_eq!(parsed.scheme(), "http");
     assert!(parsed.username().is_empty() && parsed.password().is_none());
-    // NO api key — the local server is keyless (empty bearer).
-    assert_eq!(bearer, "");
+    // PBA-L7b-001: the session key is the bearer.
+    assert_eq!(bearer, "k3y-for-this-session");
     assert_eq!(body["model"], "gemma-4-E4B-it");
+}
+
+/// PBA-L7b-001: the agentic local path presents the same session key.
+#[test]
+fn pba_l7b_001_local_tools_turn_presents_the_session_key() {
+    let shared = SharedHttp::new(vec![Ok(json!({
+        "choices": [{ "message": { "role": "assistant", "content": "ok" } }]
+    })
+    .to_string())]);
+    let mgr = mgr_with(&shared);
+    mgr.chat_local_tools(
+        18080,
+        "tools-session-key",
+        "gemma",
+        &json!([]).to_string(),
+        &json!([]).to_string(),
+        &json!({}).to_string(),
+    )
+    .expect("local tools turn");
+    let calls = shared.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, "tools-session-key");
 }
 
 /// F-1 (BLOCKING) — the LOCAL path takes NO webview-supplied URL. `chat_local`
@@ -470,6 +491,7 @@ fn local_inference_rejects_non_loopback_url_no_egress() {
     let out = mgr
         .chat_local(
             18080,
+            "k",
             "gemma",
             &json!([]).to_string(),
             &json!({}).to_string(),
