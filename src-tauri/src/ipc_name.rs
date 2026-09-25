@@ -212,6 +212,9 @@ mod tests {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'));
         assert!(a.ends_with("-member.sock"));
+        // The basename sanitisation keeps [A-Za-z0-9._-] and maps anything else to '-'.
+        let odd = windows_pipe_name(r"C:\u\a_b.c-d e$f.sock", &n1);
+        assert!(odd.ends_with("-a_b.c-d-e-f.sock"), "{odd}");
     }
 
     /// The nonce is created once (owner-only) and then read back identically by every caller.
@@ -237,6 +240,9 @@ mod tests {
         }
         // A corrupted (wrong-length) nonce fails closed rather than silently regenerating.
         std::fs::write(pipe_nonce_path(&p), b"short").unwrap();
+        assert!(pipe_nonce(&p).is_err());
+        // Too long is also corrupt (never silently truncated to 32 bytes).
+        std::fs::write(pipe_nonce_path(&p), [1u8; PIPE_NONCE_LEN + 1]).unwrap();
         assert!(pipe_nonce(&p).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

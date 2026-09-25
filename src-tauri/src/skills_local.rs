@@ -269,6 +269,26 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Mutation hardening (cargo-mutants on write_skill_file): each size bound is exact.
+    #[test]
+    fn pba_l7b_002_write_skill_file_size_bounds_are_exact() {
+        let dir = std::env::temp_dir().join(format!(
+            "citrate-skills-bounds-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let n = |len: usize, c: char| std::iter::repeat_n(c, len).collect::<String>();
+        assert!(write_skill_file(&dir, &n(MAX_NAME, 'a'), "d", "i", false).is_ok());
+        assert!(write_skill_file(&dir, &n(MAX_NAME + 1, 'b'), "d", "i", false).is_err());
+        assert!(write_skill_file(&dir, "c", &n(MAX_DESC, 'd'), "i", false).is_ok());
+        assert!(write_skill_file(&dir, "e", &n(MAX_DESC + 1, 'd'), "i", false).is_err());
+        assert!(write_skill_file(&dir, "f", "d", &n(MAX_BODY, 'x'), false).is_ok());
+        assert!(write_skill_file(&dir, "g", "d", &n(MAX_BODY + 1, 'x'), false).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn strip_without_frontmatter_is_identity() {
         assert_eq!(strip_frontmatter("just text"), "just text");

@@ -112,3 +112,31 @@ fn pba_l7b_014_telemetry_send_posts_only_the_rescrubbed_bundle() {
     assert!(rescrub < post);
     assert!(!body.contains(".send(&bundle_json)"), "never post the raw webview JSON");
 }
+
+/// Mutation hardening (cargo-mutants on rescrub_bundle_json): exact size bound and a strict
+/// `rpt_<1..=64 hex>` report id.
+#[test]
+fn pba_l7b_014_rescrub_bounds_are_exact() {
+    let make = |id: &str, pad: usize| {
+        serde_json::json!({
+            "reportId": id, "appVersion": "0.2.9", "os": "macos",
+            "crashTail": "x".repeat(pad), "nodeLogTail": "", "uiErrors": []
+        })
+        .to_string()
+    };
+    let base = make("rpt_ab", 0).len();
+    let exact = make("rpt_ab", MAX_BUNDLE_BYTES - base);
+    assert_eq!(exact.len(), MAX_BUNDLE_BYTES);
+    assert!(rescrub_bundle_json(&exact, "/Users/a").is_ok(), "exactly at the cap is accepted");
+    let over = make("rpt_ab", MAX_BUNDLE_BYTES - base + 1);
+    assert!(rescrub_bundle_json(&over, "/Users/a").is_err(), "one byte over is refused");
+    let big = make("rpt_ab", MAX_BUNDLE_BYTES);
+    assert!(rescrub_bundle_json(&big, "/Users/a").is_err());
+    for bad_id in ["rpt_", "rpt_zz", "rpt_0g", "xpt_ab"] {
+        assert!(rescrub_bundle_json(&make(bad_id, 0), "/Users/a").is_err(), "{bad_id}");
+    }
+    let long = format!("rpt_{}", "a".repeat(65));
+    assert!(rescrub_bundle_json(&make(&long, 0), "/Users/a").is_err());
+    let max = format!("rpt_{}", "a".repeat(64));
+    assert!(rescrub_bundle_json(&make(&max, 0), "/Users/a").is_ok());
+}
