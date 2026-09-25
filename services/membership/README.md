@@ -1,10 +1,3 @@
----
-created: 2026-07-11
-branch: feat/core-s0-scaffold
-author: Claude Fable 5 (CORE-S0 scaffold agent), directed by @SaulBuilds
-status: active
----
-
 # services/membership — reserved, not started
 
 This directory is **reserved** for the `core-membership` Next.js app

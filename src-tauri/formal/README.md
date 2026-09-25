@@ -1,10 +1,3 @@
----
-created: 2026-07-13
-branch: feat/core-c1-0b-supervisor-formal
-author: Claude Fable 5
-status: draft
----
-
 # SidecarSupervisor formal model (CORE-C1.0b)
 
 TLA+ model of the `SidecarSupervisor` state machine

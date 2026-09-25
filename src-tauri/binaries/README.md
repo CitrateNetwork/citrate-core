@@ -1,10 +1,3 @@
----
-created: 2026-07-13
-branch: feat/core-c1-1-node
-author: Claude Fable 5, directed by @SaulBuilds
-status: active
----
-
 # src-tauri/binaries — bundled sidecars: citrate-node + node-agent + mem-mcp + llama + ipfs + comms + hermes
 
 Sidecars are bundled as **Tauri `externalBin`s**: the `citrate` node (C1.1), the
