@@ -51,17 +51,10 @@ enabled = true
 listen_addr = "127.0.0.1:8545"
 ws_addr = "127.0.0.1:8546"
 allow_eth_send_transaction = false
-# PBA-L7b-007: an EMPTY cors_origins does NOT mean "no CORS" in citrate-chain's
-# JSON-RPC server — jsonrpc-http-server treats an unset allowlist as "reflect any
-# Origin", so every website the member visits could call eth_coinbase/eth_chainId
-# on 127.0.0.1:8545 and fingerprint them as a Citrate member. A non-empty
-# allowlist switches the server to AllowOnly: a request carrying any other
-# Origin (every web page, and the sandboxed "null" origin) is refused with 403.
-# The app itself talks to the node from Rust (no Origin header → unaffected), and
-# the webview CSP does not allow it to reach 127.0.0.1:8545 at all. The entry is
-# the Tauri app origin, which no web page can present.
-# NOTE: the WS server on 8546 does not read this list yet (citrate-chain wires
-# WsConfig::allowed_origins to its default, allow-all) — chain-side follow-up.
+# Origin allowlist for the local JSON-RPC server. Only the Tauri app origin is
+# listed; requests carrying any other Origin are refused. The app itself talks to
+# the node from Rust (no Origin header), and the webview CSP does not reach
+# 127.0.0.1:8545 directly. Keep this list non-empty and free of web origins.
 cors_origins = ["tauri://localhost"]
 
 [storage]

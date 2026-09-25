@@ -16,26 +16,15 @@
 //!   `UnixStream::connect(P)`, and a `ListenerOptions` over it wraps exactly a
 //!   `UnixListener::bind(P)` — so the on-wire behaviour (same `AF_UNIX` path) is
 //!   identical to the pre-port code.
-//! - **Windows**: a namespaced pipe (`GenericNamespaced`). The named-pipe
-//!   namespace is MACHINE-GLOBAL (`\\.\pipe\<name>` is shared by every account
-//!   and session), so the name MUST carry a per-user, unguessable component or a
-//!   co-resident user can pre-create it and receive this member's comms / memory
-//!   traffic (PBA-L7b-004). The name is
+//! - **Windows**: a namespaced pipe (`GenericNamespaced`) with a per-user,
+//!   per-install pipe name (PBA-L7b-004). The name is
 //!   `citrate-<hex(sha256("citrate/ipc-pipe/v1" || P || NUL || nonce))[..32]>-<slug>`
 //!   where `nonce` is 32 random bytes kept in the owner-only file `P.pipe-nonce`
 //!   (created with `create_new` on first use, inside the member's per-user data
 //!   dir) and `slug` is the sanitised basename of `P` (chars outside
 //!   `[A-Za-z0-9._-]` become `-`). `P` itself is per-user (it lives under the
-//!   member's app-data dir), and the nonce makes the name unguessable to another
-//!   account that cannot read that dir. See [`windows_pipe_name`] (a pure fn,
-//!   unit-tested on every platform).
-//!
-//! **Daemon side (cross-repo follow-up, Windows-release blocker):** the comms,
-//! cluster and mem-mcp daemons must derive the SAME name from `P` (read the same
-//! nonce file), create the pipe with `FILE_FLAG_FIRST_PIPE_INSTANCE`, an
-//! owner-only DACL and `PIPE_REJECT_REMOTE_CLIENTS`, and this client must verify
-//! the server's owner SID (`GetNamedPipeServerProcessId`) before sending. No
-//! Windows build has shipped (release.yml is macOS-only).
+//!   member's app-data dir). See [`windows_pipe_name`] (a pure fn, unit-tested on
+//!   every platform).
 //!
 //! `interprocess`' `local_socket::Stream` implements `Read`/`Write` (by value and
 //! by `&`), `TryClone` (-> `UnixStream::try_clone` on unix), and the `Stream`
@@ -184,9 +173,8 @@ mod tests {
         );
     }
 
-    /// PBA-L7b-004 tripwire: the Windows pipe name carries a per-user, per-install component. The
-    /// named-pipe namespace is machine-global, so a name derived from the basename alone
-    /// (`member.sock`) is the SAME for every account and a co-resident user can squat it.
+    /// PBA-L7b-004 tripwire: the Windows pipe name carries a per-user, per-install component, so
+    /// two accounts (or two installs) never share a pipe name.
     #[test]
     fn pba_l7b_004_windows_pipe_name_is_per_user_and_per_install() {
         let alice = r"C:\Users\alice\AppData\Roaming\ai.citrate.core\comms\member.sock";

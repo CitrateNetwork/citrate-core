@@ -24,9 +24,8 @@ tauri-plugin-store = "2"
 # W2.1 — in-app remote auto-updates. Fetches a signed release feed (GitHub Releases
 # latest.json), verifies the Ed25519 updater signature against the pinned pubkey in
 # tauri.conf.json, downloads + applies on restart. @rule8: the private updater key is
-# never in the repo. PBA-L7b-006: it is NOT "only in CI secrets" today — releases are
-# signed locally from the maintainer's copy (~/.citrate-updater/), which was generated
-# password-less. The owner re-key procedure is in docs/RELEASE.md §1.
+# never in the repo; it is passphrase-protected and held in the org secret manager /
+# CI secrets (see docs/RELEASE.md §1).
 tauri-plugin-updater = "2"
 # W2.4 — relaunch the app after an update is staged (updater installs, process
 # plugin restarts into the new version).

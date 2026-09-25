@@ -27,27 +27,16 @@ update the app will trust. Store it in the org secret manager; the CI secret is 
 only copy CI needs. Losing it means shipping a new pinned pubkey (a hard cutover
 for already-installed apps), so back it up.
 
-**PBA-L7b-006 (2026-09-24 pre-bounty audit) — current state and the OWNER re-key.**
-The live key at `~/.citrate-updater/citrate-core.key` was generated **without a
-passphrase** and sits on the maintainer laptop with mode `0644`; releases are signed
-locally (the CI release job has never run). Any same-user process or unencrypted
-backup can mint an update signature. Re-key (owner only; an agent cannot do this):
-
-1. `tauri signer generate -w ~/.citrate-updater/citrate-core-v2.key` and set a strong
-   passphrase when prompted. `chmod 600` the new key.
-2. Put the new private key + passphrase in the org secret manager and in the repo
-   secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
-3. Ship ONE release, signed with the **old** key, whose `tauri.conf.json`
-   `plugins.updater.pubkey` is the **new** public key (installed apps verify that
-   release with the old key, then trust only the new one).
-4. After that release is out, securely delete the old key and every laptop copy
-   (`rm -P` / secure-erase; check backups), and keep only the secret-manager copy.
+**Key handling.** The updater private key must be passphrase-protected (set a strong
+passphrase when running `tauri signer generate`) and stored in the org secret manager
+and the repo secrets below, not on developer machines. Key rotation (including the
+pubkey cutover release) follows the private release runbook.
 
 ### 2. GitHub Actions secrets
 | Secret | Value |
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.citrate-updater/citrate-core.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater key passphrase (the current key is password-less — re-key per PBA-L7b-006 above) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater key passphrase |
 | `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
 | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
 | `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Larry Klosowski (DDHUG44QC7)` |
