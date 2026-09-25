@@ -191,8 +191,12 @@ mod tests {
     fn pba_l7b_004_windows_pipe_name_is_per_user_and_per_install() {
         let alice = r"C:\Users\alice\AppData\Roaming\ai.citrate.core\comms\member.sock";
         let bob = r"C:\Users\bob\AppData\Roaming\ai.citrate.core\comms\member.sock";
-        let n1 = [7u8; PIPE_NONCE_LEN];
-        let n2 = [9u8; PIPE_NONCE_LEN];
+        // Fresh random nonces (as production mints them), not hard-coded values.
+        let n1: [u8; PIPE_NONCE_LEN] = rand::random();
+        let mut n2: [u8; PIPE_NONCE_LEN] = rand::random();
+        while n2 == n1 {
+            n2 = rand::random();
+        }
         let a = windows_pipe_name(alice, &n1);
         // Not the old machine-global basename.
         assert_ne!(a, "member.sock");

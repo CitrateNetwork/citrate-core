@@ -7,7 +7,7 @@
 //! the bundle later reads. Scrubbing is a pure, unit-tested function (WP-T.3): HOME→~ and
 //! address/email/token redaction — defence-in-depth on top of a bundle that by construction
 //! carries no wallet, key, seed, or OIDC sub.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The one pinned ingest endpoint (WP-T.5 — a standalone service, isolated from the money
@@ -109,7 +109,10 @@ pub fn scrub(text: &str, home: &str) -> String {
 // --------------------------------------------------------------------------
 
 /// A scrubbed diagnostic bundle for the member to review before (optionally) sending.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// `Deserialize` + `deny_unknown_fields` so `telemetry_send` can re-validate exactly this shape
+/// (PBA-L7b-014) — an extra field smuggled in by the webview is refused, not forwarded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct DiagnosticBundle {
     /// Ephemeral, per-report id — random, never stored or linked to identity.
     #[serde(rename = "reportId")]
@@ -146,6 +149,38 @@ pub fn build_bundle(
         node_log_tail: scrub(node_log_tail, home),
         ui_errors: ui_errors.iter().map(|e| scrub(e, home)).collect(),
     }
+}
+
+/// PBA-L7b-014: the most bytes `telemetry_send` will forward (the reviewed bundle is a few KB).
+const MAX_BUNDLE_BYTES: usize = 256 * 1024;
+
+/// PBA-L7b-014: re-validate and RE-SCRUB the webview-supplied bundle in Rust before egress.
+/// ConsentGate (INV-Consent-3) lives in the webview; this is the Rust backstop so a compromised
+/// or buggy renderer cannot post arbitrary JSON (or unscrubbed PII) through the one pinned POST.
+/// Only the exact [`DiagnosticBundle`] shape is accepted; every text field is scrubbed again
+/// (scrub is idempotent, so an honest bundle is unchanged) and the report id must be the
+/// ephemeral `rpt_<hex>` form.
+pub fn rescrub_bundle_json(bundle_json: &str, home: &str) -> Result<String, String> {
+    if bundle_json.len() > MAX_BUNDLE_BYTES {
+        return Err("diagnostic report is too large to send".into());
+    }
+    let b: DiagnosticBundle = serde_json::from_str(bundle_json)
+        .map_err(|_| "diagnostic report is not a reviewed bundle".to_string())?;
+    let id_ok = b.report_id.strip_prefix("rpt_").is_some_and(|h| {
+        !h.is_empty() && h.len() <= 64 && h.bytes().all(|c| c.is_ascii_hexdigit())
+    });
+    if !id_ok {
+        return Err("diagnostic report id is malformed".into());
+    }
+    let clean = DiagnosticBundle {
+        report_id: b.report_id,
+        app_version: scrub(&b.app_version, home),
+        os: scrub(&b.os, home),
+        crash_tail: scrub(&b.crash_tail, home),
+        node_log_tail: scrub(&b.node_log_tail, home),
+        ui_errors: b.ui_errors.iter().map(|e| scrub(e, home)).collect(),
+    };
+    serde_json::to_string(&clean).map_err(|e| e.to_string())
 }
 
 /// Read the last `n` lines of a file (for the crash/log tails), or "" if absent.
@@ -229,10 +264,13 @@ pub fn diagnostics_bundle<R: tauri::Runtime>(
 /// ingest service (WP-T.5) is live.
 #[tauri::command]
 pub async fn telemetry_send(bundle_json: String) -> std::result::Result<(), String> {
+    // PBA-L7b-014: never forward webview JSON verbatim — re-validate + re-scrub in Rust first.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let clean = rescrub_bundle_json(&bundle_json, &home)?;
     tauri::async_runtime::spawn_blocking(move || {
         ureq::post(TELEMETRY_INGEST_URL)
             .header("content-type", "application/json")
-            .send(&bundle_json)
+            .send(&clean)
             .map(|_| ())
             .map_err(|e| format!("couldn't send the report: {e}"))
     })
