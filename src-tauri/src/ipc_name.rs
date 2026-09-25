@@ -16,10 +16,26 @@
 //!   `UnixStream::connect(P)`, and a `ListenerOptions` over it wraps exactly a
 //!   `UnixListener::bind(P)` — so the on-wire behaviour (same `AF_UNIX` path) is
 //!   identical to the pre-port code.
-//! - **Windows**: a namespaced pipe (`GenericNamespaced`) whose name is the
-//!   basename of `P` with every char outside `[A-Za-z0-9._-]` replaced by `-`
-//!   (e.g. `".../memory/memdag.sock"` -> `"memdag.sock"`). A namespaced name maps
-//!   to `\\.\pipe\<name>`; the sanitisation keeps it a legal single pipe segment.
+//! - **Windows**: a namespaced pipe (`GenericNamespaced`). The named-pipe
+//!   namespace is MACHINE-GLOBAL (`\\.\pipe\<name>` is shared by every account
+//!   and session), so the name MUST carry a per-user, unguessable component or a
+//!   co-resident user can pre-create it and receive this member's comms / memory
+//!   traffic (PBA-L7b-004). The name is
+//!   `citrate-<hex(sha256("citrate/ipc-pipe/v1" || P || NUL || nonce))[..32]>-<slug>`
+//!   where `nonce` is 32 random bytes kept in the owner-only file `P.pipe-nonce`
+//!   (created with `create_new` on first use, inside the member's per-user data
+//!   dir) and `slug` is the sanitised basename of `P` (chars outside
+//!   `[A-Za-z0-9._-]` become `-`). `P` itself is per-user (it lives under the
+//!   member's app-data dir), and the nonce makes the name unguessable to another
+//!   account that cannot read that dir. See [`windows_pipe_name`] (a pure fn,
+//!   unit-tested on every platform).
+//!
+//! **Daemon side (cross-repo follow-up, Windows-release blocker):** the comms,
+//! cluster and mem-mcp daemons must derive the SAME name from `P` (read the same
+//! nonce file), create the pipe with `FILE_FLAG_FIRST_PIPE_INSTANCE`, an
+//! owner-only DACL and `PIPE_REJECT_REMOTE_CLIENTS`, and this client must verify
+//! the server's owner SID (`GetNamedPipeServerProcessId`) before sending. No
+//! Windows build has shipped (release.yml is macOS-only).
 //!
 //! `interprocess`' `local_socket::Stream` implements `Read`/`Write` (by value and
 //! by `&`), `TryClone` (-> `UnixStream::try_clone` on unix), and the `Stream`
@@ -52,22 +68,91 @@ pub fn endpoint_name(p: &str) -> io::Result<Name<'static>> {
     }
     #[cfg(windows)]
     {
-        let base = std::path::Path::new(p)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("citrate.sock");
-        let slug: String = base
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        slug.to_ns_name::<GenericNamespaced>()
+        let nonce = pipe_nonce(p)?;
+        windows_pipe_name(p, &nonce).to_ns_name::<GenericNamespaced>()
     }
+}
+
+/// PBA-L7b-004: the length of the per-install pipe nonce.
+pub const PIPE_NONCE_LEN: usize = 32;
+
+/// The owner-only nonce file for the endpoint `p` (`<p>.pipe-nonce`).
+#[cfg_attr(unix, allow(dead_code))]
+pub fn pipe_nonce_path(p: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{p}.pipe-nonce"))
+}
+
+/// Read the per-install pipe nonce for `p`, creating it (32 random bytes, `create_new`, 0600 on
+/// unix; inherits the per-user profile ACL on Windows) on first use. A concurrent creator wins
+/// the `create_new` race and the loser reads the winner's nonce, so both ends always agree.
+#[cfg_attr(unix, allow(dead_code))]
+pub fn pipe_nonce(p: &str) -> io::Result<[u8; PIPE_NONCE_LEN]> {
+    use std::io::{Read, Write};
+    let path = pipe_nonce_path(p);
+    let read = |path: &std::path::Path| -> io::Result<[u8; PIPE_NONCE_LEN]> {
+        let mut buf = Vec::with_capacity(PIPE_NONCE_LEN);
+        std::fs::File::open(path)?
+            .take(PIPE_NONCE_LEN as u64 + 1)
+            .read_to_end(&mut buf)?;
+        buf.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pipe nonce file has the wrong length",
+            )
+        })
+    };
+    match read(&path) {
+        Ok(n) => return Ok(n),
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        Err(_) => {}
+    }
+    let mut nonce = [0u8; PIPE_NONCE_LEN];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    match opts.open(&path) {
+        Ok(mut f) => {
+            f.write_all(&nonce)?;
+            Ok(nonce)
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => read(&path),
+        Err(e) => Err(e),
+    }
+}
+
+/// PBA-L7b-004: the Windows pipe name for endpoint path `p` and per-install `nonce` (pure; see
+/// the module docs). The per-user component is a domain-separated SHA-256 over the per-user path
+/// and the secret nonce, so two accounts (or two installs) never share a name and another account
+/// cannot predict it.
+#[cfg_attr(unix, allow(dead_code))]
+pub fn windows_pipe_name(p: &str, nonce: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let base = std::path::Path::new(p)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("citrate.sock");
+    let slug: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut h = Sha256::new();
+    h.update(b"citrate/ipc-pipe/v1");
+    h.update(p.as_bytes());
+    h.update([0u8]);
+    h.update(nonce);
+    let tag = hex::encode(&h.finalize()[..16]);
+    format!("citrate-{tag}-{slug}")
 }
 
 /// Connect to the local sidecar endpoint identified by the unix-socket path `p`.
@@ -97,6 +182,59 @@ mod tests {
             dbg.contains("memdag.sock"),
             "unix name must carry the path: {dbg}"
         );
+    }
+
+    /// PBA-L7b-004 tripwire: the Windows pipe name carries a per-user, per-install component. The
+    /// named-pipe namespace is machine-global, so a name derived from the basename alone
+    /// (`member.sock`) is the SAME for every account and a co-resident user can squat it.
+    #[test]
+    fn pba_l7b_004_windows_pipe_name_is_per_user_and_per_install() {
+        let alice = r"C:\Users\alice\AppData\Roaming\ai.citrate.core\comms\member.sock";
+        let bob = r"C:\Users\bob\AppData\Roaming\ai.citrate.core\comms\member.sock";
+        let n1 = [7u8; PIPE_NONCE_LEN];
+        let n2 = [9u8; PIPE_NONCE_LEN];
+        let a = windows_pipe_name(alice, &n1);
+        // Not the old machine-global basename.
+        assert_ne!(a, "member.sock");
+        assert!(a.len() > "member.sock".len() + 16, "{a}");
+        // Two users → two names, even with the same nonce.
+        assert_ne!(a, windows_pipe_name(bob, &n1));
+        // Same path, different install nonce → different name (unguessable without the nonce).
+        assert_ne!(a, windows_pipe_name(alice, &n2));
+        // Deterministic for both ends (client + daemon derive the same name).
+        assert_eq!(a, windows_pipe_name(alice, &n1));
+        // Still a single legal pipe segment.
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'));
+        assert!(a.ends_with("-member.sock"));
+    }
+
+    /// The nonce is created once (owner-only) and then read back identically by every caller.
+    #[test]
+    fn pba_l7b_004_pipe_nonce_is_stable_and_owner_only() {
+        let dir = std::env::temp_dir().join(format!("citrate-ipc-nonce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("member.sock");
+        let p = p.to_string_lossy().to_string();
+        let a = pipe_nonce(&p).expect("create");
+        let b = pipe_nonce(&p).expect("read back");
+        assert_eq!(a, b);
+        assert_ne!(a, [0u8; PIPE_NONCE_LEN]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(pipe_nonce_path(&p))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "nonce file must be owner-only ({mode:o})");
+        }
+        // A corrupted (wrong-length) nonce fails closed rather than silently regenerating.
+        std::fs::write(pipe_nonce_path(&p), b"short").unwrap();
+        assert!(pipe_nonce(&p).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
