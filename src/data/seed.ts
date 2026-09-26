@@ -75,7 +75,7 @@ export const CATALOG = {
   // decision is to name the canonical three exactly and take NO registry action.
   sdks: [
     { id: 'citrate-sdk-ts', name: 'Citrate SDK (TypeScript)', registry: 'npm', install: 'npm i @citratelabs/sdk@0.2.0', desc: 'TypeScript SDK — chain reads, UserOps, memory client.', minTier: 'free', docs: 'atlas/sdk/js' },
-    { id: 'citrate-sdk-py', name: 'Citrate SDK (Python)', registry: 'PyPI', install: 'pip install citrate-labs-sdk==0.6.0', desc: 'Python SDK — gateway inference, MCP tools, agent harness.', minTier: 'free', docs: 'atlas/sdk/python' },
+    { id: 'citrate-sdk-py', name: 'Citrate SDK (Python)', registry: 'PyPI', install: 'pip install citrate-labs-sdk==0.6.2', desc: 'Python SDK — gateway inference, MCP tools, agent harness.', minTier: 'free', docs: 'atlas/sdk/python' },
     { id: 'citrate-sdk-marketplace', name: 'Marketplace SDK', registry: 'npm', install: 'npm i @citratelabs/marketplace-sdk@0.1.0', desc: 'x402 marketplace bidding and settlement.', minTier: 'free', docs: 'atlas/sdk/marketplace' },
   ],
   docs: [

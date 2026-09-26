@@ -22,7 +22,7 @@ import { CATALOG } from "./seed";
 
 const CANONICAL: Record<string, string> = {
   "citrate-sdk-ts": "npm i @citratelabs/sdk@0.2.0",
-  "citrate-sdk-py": "pip install citrate-labs-sdk==0.6.0",
+  "citrate-sdk-py": "pip install citrate-labs-sdk==0.6.2",
   "citrate-sdk-marketplace": "npm i @citratelabs/marketplace-sdk@0.1.0",
 };
 
