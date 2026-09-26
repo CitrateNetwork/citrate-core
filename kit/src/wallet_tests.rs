@@ -303,7 +303,7 @@ fn adv4_no_secret_plaintext_at_rest_and_no_keys_json() {
     let unified = citrate_wallet_core::secp256k1_from_mnemonic(CANONICAL_MNEMONIC, 0)
         .expect("derive");
     let secret = unified.secret_bytes();
-    assert!(!leaked(&raw, &secret), "private key must not be at rest");
+    assert!(!leaked(&raw, secret.as_slice()), "private key must not be at rest");
 
     // NO keys.json anywhere near the envelope dir (Option A: no second store).
     let dir = p.parent().expect("parent dir");
