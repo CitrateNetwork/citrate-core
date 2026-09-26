@@ -11,7 +11,7 @@
 #
 # ── Owner prerequisites (one-time) ────────────────────────────────────────────
 # Repo secrets required (Settings → Secrets and variables → Actions):
-#   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.citrate-updater/citrate-core.key
+#   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.citrate-updater/citrate-core-v2.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  the updater key's passphrase (see RELEASE.md)
 #   APPLE_CERTIFICATE                   base64 of the Developer ID Application .p12
 #   APPLE_CERTIFICATE_PASSWORD          the .p12 export password

@@ -28,7 +28,7 @@
         "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/updater/latest.json",
         "https://github.com/CitrateNetwork/citrate-core/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2RTc0QjgyMUVBQUVCMzIKUldReTY2b2Vna3ZuOXN2OG9kNG5NTHdsUHJaOEYyUkhKN0QrVDR3clJSaXNaY1ppMW9Xa3dSK3UK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFQzM4MkREMTA3RjA4QzUKUldURkNIOFEzWUxEanZsN096Vk1WWm9WMllUUE5GNXVUYVFYeGRQNFluRnVlVG5vWVZnV0F6eXAK"
     }
   },
   "bundle": {
