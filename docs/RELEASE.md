@@ -18,7 +18,8 @@ never reinstall a DMG for a patch.
 
 ### 1. Updater signing key
 Generated with `tauri signer generate` (Ed25519). The keypair lives **outside the
-repo** at `~/.citrate-updater/citrate-core.key{,.pub}`. The **public** key is
+repo** at `~/.citrate-updater/citrate-core-v2.key{,.pub}` (passphrase-protected;
+the passphrase is in the release maintainer's macOS Keychain as `citrate-core-updater-v2`). The **public** key is
 already pinned in `tauri.conf.json` (`plugins.updater.pubkey`). Add the **private**
 key to repo secrets — never commit it.
 
@@ -32,10 +33,19 @@ passphrase when running `tauri signer generate`) and stored in the org secret ma
 and the repo secrets below, not on developer machines. Key rotation (including the
 pubkey cutover release) follows the private release runbook.
 
+**Signing a local release.** Export the key and passphrase for the build only:
+```sh
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.citrate-updater/citrate-core-v2.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -s citrate-core-updater-v2 -a citrate-updater -w)"
+```
+Update artifacts for every platform (macOS, Linux, Windows) are signed with this one
+key. Artifacts built on other hosts are signed here with `tauri signer sign`, so the
+private key never leaves the signing machine.
+
 ### 2. GitHub Actions secrets
 | Secret | Value |
 | --- | --- |
-| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.citrate-updater/citrate-core.key` |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.citrate-updater/citrate-core-v2.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the updater key passphrase |
 | `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
 | `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
