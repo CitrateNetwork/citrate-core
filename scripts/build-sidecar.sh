@@ -92,6 +92,31 @@ fi
 echo "    OK — post-re-roll source"
 echo
 
+# ── activation-hardening gate ───────────────────────────────────────────────
+# The node must carry the activation hardening (citrate-chain f9f6257b, #240):
+# chain-bound V2 native signatures and the block body commitment at the
+# activation height, protocol 1.1 relay gating, and the release-pinned
+# activation table. A node without it rejects nothing at the activation height
+# and forks from the fleet there. Same rev the workspace Cargo.toml pins.
+MIN_CHAIN_REV="f9f6257b2dcde21149fe9c09236231ccfc32da68"
+echo "▶ verifying citrate-chain source carries the activation hardening"
+if git -C "$CHAIN_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  head_rev="$(git -C "$CHAIN_DIR" rev-parse HEAD)"
+  echo "    HEAD = $head_rev"
+  if ! git -C "$CHAIN_DIR" cat-file -e "${MIN_CHAIN_REV}^{commit}" 2>/dev/null; then
+    die "citrate-chain checkout does not have $MIN_CHAIN_REV (git -C \"$CHAIN_DIR\" fetch origin)"
+  fi
+  git -C "$CHAIN_DIR" merge-base --is-ancestor "$MIN_CHAIN_REV" HEAD \
+    || die "citrate-chain HEAD $head_rev does not contain $MIN_CHAIN_REV (activation hardening). Check out citrate-chain main at or after it."
+  if [ -n "$(git -C "$CHAIN_DIR" status --porcelain --untracked-files=no)" ]; then
+    die "citrate-chain checkout has uncommitted changes; build the sidecar from a clean commit"
+  fi
+fi
+grep -q 'pub fn sign_transaction_v2' "$CHAIN_DIR/core/consensus/src/crypto.rs" 2>/dev/null \
+  || die "citrate-chain source has no V2 native signing (core/consensus/src/crypto.rs); it predates $MIN_CHAIN_REV"
+echo "    OK — contains $MIN_CHAIN_REV"
+echo
+
 # ── build ───────────────────────────────────────────────────────────────────
 BUILT="$CHAIN_DIR/target/release/citrate"
 if [ "$SKIP_BUILD" -eq 0 ]; then
