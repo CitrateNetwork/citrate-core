@@ -48,6 +48,8 @@ fn the_session_body_takes_the_endpoint_from_rust_and_stamps_every_tool_core() {
     assert_eq!(tools.len(), 2);
     assert_eq!(tools[0]["name"], "node_status", "OpenAI function wrappers are unwrapped");
     assert!(tools.iter().all(|t| t["host"] == "core"), "the webview cannot route a tool to the sidecar");
+    assert_eq!(v["contextTokens"], crate::serve::DEFAULT_CTX_SIZE, "the real llama-server context window");
+    assert_eq!(v["maxToolsPerRequest"], 8);
 }
 
 #[test]

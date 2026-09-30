@@ -1227,6 +1227,10 @@ pub fn build_session_body(
         "systemPrompt": system_prompt,
         "llm": { "baseUrl": base_url, "bearer": bearer },
         "tools": tools,
+        // HUP-S1.2: the sidecar offers only the relevant tools per request and keeps every prompt
+        // inside the local model's real context window (llama-server --ctx-size).
+        "maxToolsPerRequest": 8,
+        "contextTokens": crate::serve::DEFAULT_CTX_SIZE,
     })
     .to_string())
 }
