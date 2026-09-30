@@ -161,9 +161,17 @@ impl UreqControl {
     }
 }
 
+/// HUP-S0.1 — deadline for one loopback control call to the Hermes sidecar. The sidecar answers
+/// control requests immediately (skills run in the background), so a call that exceeds this is a
+/// wedged sidecar: fail the call instead of hanging the command.
+pub(crate) const HERMES_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl HermesControl for UreqControl {
     fn get(&self, url: &str, bearer: &str) -> Result<ControlResp> {
         match ureq::get(url)
+            .config()
+            .timeout_global(Some(HERMES_CONTROL_TIMEOUT))
+            .build()
             .header("Authorization", &format!("Bearer {bearer}"))
             .call()
         {
@@ -179,6 +187,9 @@ impl HermesControl for UreqControl {
 
     fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp> {
         match ureq::post(url)
+            .config()
+            .timeout_global(Some(HERMES_CONTROL_TIMEOUT))
+            .build()
             .header("Authorization", &format!("Bearer {bearer}"))
             .header("Content-Type", "application/json")
             .send(body)
@@ -875,7 +886,13 @@ fn manager<R: tauri::Runtime>(
 
 /// Start the sidecar (idempotent). Returns the local lifecycle status.
 #[tauri::command]
-pub fn hermes_start(app: tauri::AppHandle) -> std::result::Result<HermesStatus, String> {
+pub async fn hermes_start(app_h: tauri::AppHandle) -> std::result::Result<HermesStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || hermes_start_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`hermes_start`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_start_sync(app: tauri::AppHandle) -> std::result::Result<HermesStatus, String> {
     let m = manager(&app)?;
     m.start().map_err(|e| e.to_string())?;
     Ok(m.status())
@@ -884,7 +901,13 @@ pub fn hermes_start(app: tauri::AppHandle) -> std::result::Result<HermesStatus, 
 /// The AgentHarnessDomain status snapshot: running + skill/pending counts. A not-started sidecar is a
 /// clean stopped snapshot, not an error.
 #[tauri::command]
-pub fn hermes_status(app: tauri::AppHandle) -> std::result::Result<RemoteStatus, String> {
+pub async fn hermes_status(app_h: tauri::AppHandle) -> std::result::Result<RemoteStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || hermes_status_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`hermes_status`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_status_sync(app: tauri::AppHandle) -> std::result::Result<RemoteStatus, String> {
     let m = manager(&app)?;
     if !m.is_running() {
         return Ok(RemoteStatus {
@@ -898,14 +921,30 @@ pub fn hermes_status(app: tauri::AppHandle) -> std::result::Result<RemoteStatus,
 
 /// The installed skill catalog.
 #[tauri::command]
-pub fn hermes_skills(app: tauri::AppHandle) -> std::result::Result<Vec<SkillMeta>, String> {
+pub async fn hermes_skills(app_h: tauri::AppHandle) -> std::result::Result<Vec<SkillMeta>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || hermes_skills_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`hermes_skills`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_skills_sync(app: tauri::AppHandle) -> std::result::Result<Vec<SkillMeta>, String> {
     manager(&app)?.list_skills().map_err(|e| e.to_string())
 }
 
 /// Accept a skill for execution; its chain effects surface as pending approvals (the ceremony bridge,
 /// S6.3). Returns `{ ok: true }` = accepted.
 #[tauri::command]
-pub fn hermes_run_skill(
+pub async fn hermes_run_skill(
+    app_h: tauri::AppHandle,
+    name: String,
+    args: serde_json::Value,
+) -> std::result::Result<serde_json::Value, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || hermes_run_skill_sync(app_h.clone(), name, args)).await
+}
+
+/// Blocking body of [`hermes_run_skill`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_run_skill_sync(
     app: tauri::AppHandle,
     name: String,
     args: serde_json::Value,
@@ -918,7 +957,15 @@ pub fn hermes_run_skill(
 
 /// The pending chain/skill effects awaiting human approval.
 #[tauri::command]
-pub fn hermes_pending_approvals(
+pub async fn hermes_pending_approvals(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<Vec<PendingApproval>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || hermes_pending_approvals_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`hermes_pending_approvals`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_pending_approvals_sync(
     app: tauri::AppHandle,
 ) -> std::result::Result<Vec<PendingApproval>, String> {
     let mut approvals = manager(&app)?
@@ -932,7 +979,13 @@ pub fn hermes_pending_approvals(
 
 /// Stop the sidecar (SIGTERM → grace → SIGKILL; the session bearer is wiped). Idempotent.
 #[tauri::command]
-pub fn hermes_stop(app: tauri::AppHandle) -> std::result::Result<(), String> {
+pub async fn hermes_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || hermes_stop_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`hermes_stop`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_stop_sync(app: tauri::AppHandle) -> std::result::Result<(), String> {
     manager(&app)?.stop();
     Ok(())
 }
@@ -942,7 +995,23 @@ pub fn hermes_stop(app: tauri::AppHandle) -> std::result::Result<(), String> {
 /// nothing pending / the head is a non-chain effect. The user then approves it via the normal
 /// ceremony path (`sign_and_broadcast`) and calls `hermes_resolve(true)` to let the capsule proceed.
 #[tauri::command]
-pub fn hermes_bridge_pending(
+pub async fn hermes_bridge_pending(
+    app_h: tauri::AppHandle,
+    id: String,
+) -> std::result::Result<Option<CeremonyView>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        hermes_bridge_pending_sync(app_h.clone(), st1, st2, id)
+    })
+    .await
+}
+
+/// Blocking body of [`hermes_bridge_pending`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_bridge_pending_sync(
     app: tauri::AppHandle,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
@@ -958,7 +1027,17 @@ pub fn hermes_bridge_pending(
 /// lets the (already-signed-and-broadcast) effect proceed; `false` aborts it. The head is blocked
 /// until this call, so it targets the effect that was bridged.
 #[tauri::command]
-pub fn hermes_resolve(
+pub async fn hermes_resolve(
+    app_h: tauri::AppHandle,
+    approve: bool,
+    id: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || hermes_resolve_sync(app_h.clone(), approve, id)).await
+}
+
+/// Blocking body of [`hermes_resolve`]; reached only through [`crate::blocking::off_main`].
+pub fn hermes_resolve_sync(
     app: tauri::AppHandle,
     approve: bool,
     id: String,

@@ -673,3 +673,26 @@ fn build_chat_body_with_tools_rejects_a_non_array_tools_spec() {
     ));
 }
 
+
+// ===========================================================================
+// HUP-S0.1 — every chat request is BOUNDED (the pinwheel / runaway-generation fix)
+// ===========================================================================
+
+#[test]
+fn every_chat_body_caps_generation_with_max_tokens() {
+    // Without max_tokens a local model can generate until the context window fills, holding
+    // the request (and, before S0.1, the main thread) for minutes.
+    let plain = build_chat_body("m", "[]", "{}").unwrap();
+    assert_eq!(plain["max_tokens"], AI_MAX_TOKENS);
+    let tools = build_chat_body_with_tools("m", "[]", TOOLS_SPEC, "{}").unwrap();
+    assert_eq!(tools["max_tokens"], AI_MAX_TOKENS);
+    assert!(AI_MAX_TOKENS >= 512 && AI_MAX_TOKENS <= 4096, "a sane per-turn cap");
+}
+
+#[test]
+fn the_production_ai_http_client_has_connect_and_overall_deadlines() {
+    // A dead endpoint or a hung generation must fail the turn, never hang it forever.
+    assert!(AI_CONNECT_TIMEOUT <= std::time::Duration::from_secs(15));
+    assert!(AI_REQUEST_TIMEOUT >= std::time::Duration::from_secs(60), "room for a slow local turn");
+    assert!(AI_REQUEST_TIMEOUT <= std::time::Duration::from_secs(600), "but bounded");
+}

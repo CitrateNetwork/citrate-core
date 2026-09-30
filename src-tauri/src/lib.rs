@@ -30,6 +30,7 @@ mod activity;
 mod addresses;
 mod agent;
 mod ai;
+mod blocking;
 mod connections;
 mod contract_deploy;
 mod docs_ingest;
@@ -70,6 +71,8 @@ mod training;
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
 #[cfg(test)]
 mod invoke_secret_scan_tests;
+#[cfg(test)]
+mod main_thread_tripwire;
 
 use tauri::Manager;
 

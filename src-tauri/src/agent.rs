@@ -899,12 +899,34 @@ pub fn build_agent_state<R: tauri::Runtime>(
 use tauri::State;
 
 #[tauri::command]
-pub fn agent_status(state: State<'_, AgentState>) -> std::result::Result<AgentStatus, String> {
+pub async fn agent_status(app_h: tauri::AppHandle) -> std::result::Result<AgentStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<AgentState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        agent_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`agent_status`]; reached only through [`crate::blocking::off_main`].
+pub fn agent_status_sync(state: State<'_, AgentState>) -> std::result::Result<AgentStatus, String> {
     Ok(state.0.status())
 }
 
 #[tauri::command]
-pub fn agent_start(state: State<'_, AgentState>) -> std::result::Result<(), String> {
+pub async fn agent_start(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<AgentState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        agent_start_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`agent_start`]; reached only through [`crate::blocking::off_main`].
+pub fn agent_start_sync(state: State<'_, AgentState>) -> std::result::Result<(), String> {
     state.0.start().map_err(|e| e.to_string())
 }
 

@@ -848,7 +848,22 @@ pub async fn connection_start(
 /// `connection_status` — the connect/disconnect state of all three services. No
 /// token crosses the boundary.
 #[tauri::command]
-pub fn connection_status(
+pub async fn connection_status(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<Vec<ConnectionStatus>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<ConnectionState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        connection_status_sync(st0, st1)
+    })
+    .await
+}
+
+/// Blocking body of [`connection_status`]; reached only through [`crate::blocking::off_main`].
+pub fn connection_status_sync(
     state: State<'_, ConnectionState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<Vec<ConnectionStatus>, String> {

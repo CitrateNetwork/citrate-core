@@ -469,7 +469,13 @@ fn binding_message(network: &str, handle: &str, address: &str, nonce: &str) -> S
 
 /// `social_status` — the device-local linked identities (no token/signature; verified derived).
 #[tauri::command]
-pub fn social_status(app: tauri::AppHandle) -> Result<Vec<LinkedIdentity>, String> {
+pub async fn social_status(app_h: tauri::AppHandle) -> Result<Vec<LinkedIdentity>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || social_status_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`social_status`]; reached only through [`crate::blocking::off_main`].
+pub fn social_status_sync(app: tauri::AppHandle) -> Result<Vec<LinkedIdentity>, String> {
     Ok(load_links(&app).iter().map(LinkedIdentity::from).collect())
 }
 
@@ -486,7 +492,20 @@ pub async fn social_start(
 
 /// `social_set_visibility` — set a link's visibility (private | groups). Narrowing takes effect now.
 #[tauri::command]
-pub fn social_set_visibility(
+pub async fn social_set_visibility(
+    app_h: tauri::AppHandle,
+    network: String,
+    visibility: String,
+) -> Result<LinkedIdentity, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        social_set_visibility_sync(app_h.clone(), network, visibility)
+    })
+    .await
+}
+
+/// Blocking body of [`social_set_visibility`]; reached only through [`crate::blocking::off_main`].
+pub fn social_set_visibility_sync(
     app: tauri::AppHandle,
     network: String,
     visibility: String,
@@ -509,7 +528,18 @@ pub fn social_set_visibility(
 
 /// `social_disconnect` — forget a link: wipe the keyring token (best-effort) + drop the local record.
 #[tauri::command]
-pub fn social_disconnect(
+pub async fn social_disconnect(app_h: tauri::AppHandle, network: String) -> Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        social_disconnect_sync(app_h.clone(), st1, network)
+    })
+    .await
+}
+
+/// Blocking body of [`social_disconnect`]; reached only through [`crate::blocking::off_main`].
+pub fn social_disconnect_sync(
     app: tauri::AppHandle,
     custody: tauri::State<'_, crate::custody::CustodyState>,
     network: String,
@@ -524,7 +554,25 @@ pub fn social_disconnect(
 /// Returns the [`CeremonyView`] the approval UI renders — NEVER a signature (I-2). The address is
 /// read first so a locked vault fails before a one-time nonce is minted.
 #[tauri::command]
-pub fn social_verify_request(
+pub async fn social_verify_request(
+    app_h: tauri::AppHandle,
+    network: String,
+) -> Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<SocialBindManaged>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        social_verify_request_sync(app_h.clone(), st1, st2, st3, network)
+    })
+    .await
+}
+
+/// Blocking body of [`social_verify_request`]; reached only through [`crate::blocking::off_main`].
+pub fn social_verify_request_sync(
     app: tauri::AppHandle,
     bind: tauri::State<'_, SocialBindManaged>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
@@ -566,7 +614,26 @@ pub fn social_verify_request(
 /// signs; Rule 3), record the `IdentityBinding`, and flip `verified`. Returns the updated link. The
 /// signature is stored device-local, never returned as a raw buffer.
 #[tauri::command]
-pub fn social_verify_approve(
+pub async fn social_verify_approve(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> Result<LinkedIdentity, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<SocialBindManaged>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        social_verify_approve_sync(app_h.clone(), st1, st2, st3, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`social_verify_approve`]; reached only through [`crate::blocking::off_main`].
+pub fn social_verify_approve_sync(
     app: tauri::AppHandle,
     bind: tauri::State<'_, SocialBindManaged>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
@@ -629,7 +696,16 @@ pub struct ResolvedIdentity {
 /// bindings are shared server-blind to groups (ADR D1 — the follow-up). PRIVATE links never resolve
 /// to anyone (D2), and only a verified binding (a wallet signature) ever produces a face (D3).
 #[tauri::command]
-pub fn social_resolve(
+pub async fn social_resolve(
+    app_h: tauri::AppHandle,
+    addresses: Vec<String>,
+) -> Result<Vec<ResolvedIdentity>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || social_resolve_sync(app_h.clone(), addresses)).await
+}
+
+/// Blocking body of [`social_resolve`]; reached only through [`crate::blocking::off_main`].
+pub fn social_resolve_sync(
     app: tauri::AppHandle,
     addresses: Vec<String>,
 ) -> Result<Vec<ResolvedIdentity>, String> {
@@ -669,7 +745,16 @@ pub fn social_resolve(
 /// `social_export_binding` — the shareable payload for a verified, group-visible link (or null). The
 /// caller rides it over the ciphertext-only group relay (server-blind); it carries no token.
 #[tauri::command]
-pub fn social_export_binding(
+pub async fn social_export_binding(
+    app_h: tauri::AppHandle,
+    network: String,
+) -> Result<Option<ExportedBinding>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || social_export_binding_sync(app_h.clone(), network)).await
+}
+
+/// Blocking body of [`social_export_binding`]; reached only through [`crate::blocking::off_main`].
+pub fn social_export_binding_sync(
     app: tauri::AppHandle,
     network: String,
 ) -> Result<Option<ExportedBinding>, String> {
@@ -695,7 +780,18 @@ pub fn social_export_binding(
 /// whether it was accepted. This is the gate that stops anyone asserting a handle for an address
 /// they don't control.
 #[tauri::command]
-pub fn social_ingest_binding(
+pub async fn social_ingest_binding(
+    app_h: tauri::AppHandle,
+    sender: String,
+    binding: ExportedBinding,
+) -> Result<bool, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || social_ingest_binding_sync(app_h.clone(), sender, binding))
+        .await
+}
+
+/// Blocking body of [`social_ingest_binding`]; reached only through [`crate::blocking::off_main`].
+pub fn social_ingest_binding_sync(
     app: tauri::AppHandle,
     sender: String,
     binding: ExportedBinding,
@@ -754,7 +850,23 @@ fn verified_binding(app: &tauri::AppHandle, network: &str) -> Result<(String, Bi
 /// wallet will sign (opt-in find-via-X). Returns the [`CeremonyView`]; signs nothing (I-2). Requires a
 /// verified link (the OAuth ownership proof already happened); the ownership proof is reused as-is.
 #[tauri::command]
-pub fn directory_publish_request(
+pub async fn directory_publish_request(
+    app_h: tauri::AppHandle,
+    network: String,
+) -> Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<DirectoryPendingManaged>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        directory_publish_request_sync(app_h.clone(), st1, st2, network)
+    })
+    .await
+}
+
+/// Blocking body of [`directory_publish_request`]; reached only through [`crate::blocking::off_main`].
+pub fn directory_publish_request_sync(
     app: tauri::AppHandle,
     dir: tauri::State<'_, DirectoryPendingManaged>,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
@@ -790,7 +902,28 @@ pub fn directory_publish_request(
 /// then POST the binding (ownership proof + fresh sig) to the authority with the member's Bearer.
 /// Marks the link published on success. Honest error on a rejected proof / stale write (Rule 1).
 #[tauri::command]
-pub fn directory_publish_approve(
+pub async fn directory_publish_approve(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> Result<LinkedIdentity, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<DirectoryPendingManaged>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st4 = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        directory_publish_approve_sync(app_h.clone(), st1, st2, st3, st4, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`directory_publish_approve`]; reached only through [`crate::blocking::off_main`].
+pub fn directory_publish_approve_sync(
     app: tauri::AppHandle,
     dir: tauri::State<'_, DirectoryPendingManaged>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
@@ -844,7 +977,23 @@ pub fn directory_publish_approve(
 /// `directory_unpublish_request` — open a ceremony over the directory REVOKE statement (remove a
 /// published binding). Returns the [`CeremonyView`]; signs nothing.
 #[tauri::command]
-pub fn directory_unpublish_request(
+pub async fn directory_unpublish_request(
+    app_h: tauri::AppHandle,
+    network: String,
+) -> Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<DirectoryPendingManaged>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        directory_unpublish_request_sync(app_h.clone(), st1, st2, network)
+    })
+    .await
+}
+
+/// Blocking body of [`directory_unpublish_request`]; reached only through [`crate::blocking::off_main`].
+pub fn directory_unpublish_request_sync(
     app: tauri::AppHandle,
     dir: tauri::State<'_, DirectoryPendingManaged>,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
@@ -874,7 +1023,28 @@ pub fn directory_unpublish_request(
 /// `directory_unpublish_approve` — sign the revoke statement at the ceremony, tombstone the binding at
 /// the authority, and mark the link unpublished. Honest error on a failed revoke.
 #[tauri::command]
-pub fn directory_unpublish_approve(
+pub async fn directory_unpublish_approve(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> Result<LinkedIdentity, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<DirectoryPendingManaged>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st4 = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        directory_unpublish_approve_sync(app_h.clone(), st1, st2, st3, st4, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`directory_unpublish_approve`]; reached only through [`crate::blocking::off_main`].
+pub fn directory_unpublish_approve_sync(
     app: tauri::AppHandle,
     dir: tauri::State<'_, DirectoryPendingManaged>,
     custody: tauri::State<'_, crate::custody::CustodyState>,

@@ -763,7 +763,18 @@ pub fn build_node_state<R: Runtime>(app: &AppHandle<R>) -> std::result::Result<N
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn node_status(state: State<'_, NodeState>) -> std::result::Result<NodeStatus, String> {
+pub async fn node_status(app_h: tauri::AppHandle) -> std::result::Result<NodeStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        node_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`node_status`]; reached only through [`crate::blocking::off_main`].
+pub fn node_status_sync(state: State<'_, NodeState>) -> std::result::Result<NodeStatus, String> {
     Ok(state.0.status())
 }
 
@@ -817,7 +828,22 @@ pub struct ProposerIdentity {
 }
 
 #[tauri::command]
-pub fn node_proposer_identity(
+pub async fn node_proposer_identity(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<ProposerIdentity, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        node_proposer_identity_sync(st0, st1)
+    })
+    .await
+}
+
+/// Blocking body of [`node_proposer_identity`]; reached only through [`crate::blocking::off_main`].
+pub fn node_proposer_identity_sync(
     state: State<'_, NodeState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<ProposerIdentity, String> {
@@ -1031,7 +1057,15 @@ pub struct LastCrash {
 /// Read-only and best-effort: a missing/short/corrupt file is `None`, never an
 /// error that would itself need explaining.
 #[tauri::command]
-pub fn node_last_crash<R: Runtime>(app: AppHandle<R>) -> Option<LastCrash> {
+pub async fn node_last_crash<R: Runtime>(
+    app_h: tauri::AppHandle<R>,
+) -> std::result::Result<Option<LastCrash>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || Ok(node_last_crash_sync(app_h.clone()))).await
+}
+
+/// Blocking body of [`node_last_crash`]; reached only through [`crate::blocking::off_main`].
+pub fn node_last_crash_sync<R: Runtime>(app: AppHandle<R>) -> Option<LastCrash> {
     let path = app
         .path()
         .app_data_dir()

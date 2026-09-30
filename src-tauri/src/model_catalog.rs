@@ -363,7 +363,19 @@ pub fn model_catalog_local(app: tauri::AppHandle) -> Result<Vec<ModelDescriptor>
 /// resolve without a token; gated-repo token threading rides with the S1.5 download path (which
 /// already opens the connection vault). Blocking `ureq` — Tauri runs commands off the UI thread.
 #[tauri::command]
-pub fn model_catalog_search(source: String, query: String) -> Result<Vec<ModelDescriptor>, String> {
+pub async fn model_catalog_search(
+    source: String,
+    query: String,
+) -> Result<Vec<ModelDescriptor>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || model_catalog_search_sync(source, query)).await
+}
+
+/// Blocking body of [`model_catalog_search`]; reached only through [`crate::blocking::off_main`].
+pub fn model_catalog_search_sync(
+    source: String,
+    query: String,
+) -> Result<Vec<ModelDescriptor>, String> {
     let src = match source.as_str() {
         "hf" => ModelSource::Hf,
         "github" => ModelSource::Github,
@@ -432,7 +444,18 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
 /// downloaded+verified ([`crate::model::is_file_ready`]) — fails closed with an honest error if
 /// not, leaving the current model serving — then hands the path to `serve::select_model`.
 #[tauri::command]
-pub fn model_catalog_select(
+pub async fn model_catalog_select(app_h: tauri::AppHandle, id: String) -> Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        model_catalog_select_sync(app_h.clone(), st1, id)
+    })
+    .await
+}
+
+/// Blocking body of [`model_catalog_select`]; reached only through [`crate::blocking::off_main`].
+pub fn model_catalog_select_sync(
     app: tauri::AppHandle,
     serve: tauri::State<'_, crate::serve::ServeState>,
     id: String,
