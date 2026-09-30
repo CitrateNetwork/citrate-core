@@ -1969,7 +1969,18 @@ fn open_auth_popup(
 
 /// `auth_status` — claim-derived flags ONLY (ADV-8). No token ever crosses here.
 #[tauri::command]
-pub fn auth_status(state: State<'_, AuthState>) -> std::result::Result<AuthStatus, String> {
+pub async fn auth_status(app_h: tauri::AppHandle) -> std::result::Result<AuthStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        auth_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`auth_status`]; reached only through [`crate::blocking::off_main`].
+pub fn auth_status_sync(state: State<'_, AuthState>) -> std::result::Result<AuthStatus, String> {
     Ok(state.0.status())
 }
 
@@ -2052,7 +2063,20 @@ pub async fn auth_refresh(
 
 /// `auth_logout` — revoke + clear the vault slot + wipe memory. Returns `()`.
 #[tauri::command]
-pub fn auth_logout(
+pub async fn auth_logout(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        auth_logout_sync(st0, st1)
+    })
+    .await
+}
+
+/// Blocking body of [`auth_logout`]; reached only through [`crate::blocking::off_main`].
+pub fn auth_logout_sync(
     auth: State<'_, AuthState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<(), String> {
@@ -2062,7 +2086,18 @@ pub fn auth_logout(
 /// `kyc_start` — open the authority `/kyc/start` in the system browser (S2).
 /// Returns `()`. Status is then read via `auth_userinfo` (the `kycStatus` flag).
 #[tauri::command]
-pub fn kyc_start(
+pub async fn kyc_start(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        kyc_start_sync(app_h.clone(), st1)
+    })
+    .await
+}
+
+/// Blocking body of [`kyc_start`]; reached only through [`crate::blocking::off_main`].
+pub fn kyc_start_sync(
     app: tauri::AppHandle,
     auth: State<'_, AuthState>,
 ) -> std::result::Result<(), String> {

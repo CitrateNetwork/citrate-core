@@ -120,7 +120,16 @@ fn patronage_ledger() -> Result<&'static str, String> {
 /// The group's current round + phase, read from PatronageLedger. Scans roundMergedHash for the
 /// highest committed round; honest "idle / round 0" when none.
 #[tauri::command]
-pub fn training_status(app: tauri::AppHandle, group: String) -> Result<RoundStatus, String> {
+pub async fn training_status(
+    app_h: tauri::AppHandle,
+    group: String,
+) -> Result<RoundStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || training_status_sync(app_h.clone(), group)).await
+}
+
+/// Blocking body of [`training_status`]; reached only through [`crate::blocking::off_main`].
+pub fn training_status_sync(app: tauri::AppHandle, group: String) -> Result<RoundStatus, String> {
     let _ = &app;
     let ledger = patronage_ledger()?;
     let rpc = RpcClient::citrate();
@@ -149,7 +158,18 @@ pub fn training_status(app: tauri::AppHandle, group: String) -> Result<RoundStat
 /// The member's reward for a group's current round: cumulative weight + claimable SALT, read from
 /// PatronageLedger by the wallet address. Reads only; signs nothing.
 #[tauri::command]
-pub fn training_reward(
+pub async fn training_reward(app_h: tauri::AppHandle, group: String) -> Result<RewardInfo, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        training_reward_sync(app_h.clone(), st1, group)
+    })
+    .await
+}
+
+/// Blocking body of [`training_reward`]; reached only through [`crate::blocking::off_main`].
+pub fn training_reward_sync(
     app: tauri::AppHandle,
     custody: tauri::State<'_, crate::custody::CustodyState>,
     group: String,
@@ -175,7 +195,9 @@ pub fn training_reward(
     let salt_whole = pending_wei / 1_000_000_000_000_000_000u128; // wei → whole SALT
 
     // Round is informational here; the surface pairs this with training_status.
-    let round = training_status(app, group).map(|s| s.round).unwrap_or(0);
+    let round = training_status_sync(app, group)
+        .map(|s| s.round)
+        .unwrap_or(0);
     Ok(RewardInfo {
         round,
         weight: weight.to_string(),
@@ -203,7 +225,18 @@ pub fn training_contribute(_group: String) -> Result<(), String> {
 /// credited (gateSec), pendingDividend is 0 and there is nothing to claim — reported honestly. When
 /// dividends flow, this builds a claimDividend intent that stops at the SignatureCeremony (Rule 3).
 #[tauri::command]
-pub fn training_claim(
+pub async fn training_claim(app_h: tauri::AppHandle, group: String) -> Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        training_claim_sync(st0, group)
+    })
+    .await
+}
+
+/// Blocking body of [`training_claim`]; reached only through [`crate::blocking::off_main`].
+pub fn training_claim_sync(
     custody: tauri::State<'_, crate::custody::CustodyState>,
     group: String,
 ) -> Result<(), String> {

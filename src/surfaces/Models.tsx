@@ -134,6 +134,36 @@ export function Models({ store }: SurfaceProps) {
         </div>
       </section>
 
+      {/* ---- interrupted downloads (HUP-S0.3: survive an app restart) ---- */}
+      {st.partials.length > 0 && (
+        <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 520 }}>Interrupted downloads</span>
+          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+            {st.partials.map((p) => {
+              const running = st.downloadingId === p.id;
+              const pct = running && st.downloadPct != null ? st.downloadPct : p.pct;
+              return (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span className="mono" style={{ display: "block", fontSize: 12.5 }}>{p.file}</span>
+                    <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
+                      {humanBytes(p.downloadedBytes)} of {humanBytes(p.totalBytes)} · {pct}%
+                    </span>
+                  </span>
+                  <button
+                    className="btn btn-sm"
+                    disabled={st.downloadingId != null}
+                    onClick={() => void downloadModel(p.id)}
+                  >
+                    {running ? `Resuming… ${pct}%` : "Resume"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* ---- add a model ---- */}
       <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 520 }}>Add a model</div>

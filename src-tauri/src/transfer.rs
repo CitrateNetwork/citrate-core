@@ -62,7 +62,24 @@ fn encode_transfer_json(from: &str, to: &str, value_wei: u128) -> String {
 /// decimal wei string; a zero/garbage amount or malformed recipient is rejected
 /// before any ceremony state is created.
 #[tauri::command]
-pub fn wallet_send(
+pub async fn wallet_send(
+    app_h: tauri::AppHandle,
+    to: String,
+    amount_wei: String,
+) -> std::result::Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st2 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_send_sync(to, amount_wei, st2, st3)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_send`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_send_sync(
     to: String,
     amount_wei: String,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,

@@ -207,12 +207,31 @@ pub enum ModelError {
     NotPresent,
     /// A filesystem error (create dir, write, rename, read).
     Io(String),
+    /// HUP-S0.3: another download of the SAME file is already running in this process. A second
+    /// writer appending to the same `.part` corrupts it, so it is refused (the UI attaches to the
+    /// running download's progress events instead).
+    AlreadyDownloading,
+    /// HUP-S0.3: a resume (`Range` from a non-zero offset) got a full `200` body instead of
+    /// `206 Partial Content`. Refused up front, before any byte is appended to the `.part`.
+    RangeIgnored,
 }
 
 impl std::fmt::Display for ModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ModelError::Transport(m) => write!(f, "model transport error: {m}"),
+            ModelError::AlreadyDownloading => {
+                write!(
+                    f,
+                    "this model is already downloading; progress continues in the background"
+                )
+            }
+            ModelError::RangeIgnored => {
+                write!(
+                    f,
+                    "the model server ignored the resume range (expected 206 Partial Content)"
+                )
+            }
             ModelError::BadMagic => write!(f, "model download is not a GGUF file (bad magic)"),
             ModelError::ShortStream { got, want } => {
                 write!(f, "model download ended short: {got} of {want} bytes")
@@ -311,6 +330,74 @@ pub trait ModelTransport: Send + Sync {
     /// `Range: bytes=offset-`). `offset == 0` is a full GET; `offset > 0` is a
     /// RESUME. The returned reader yields the remaining bytes.
     fn get_from(&self, offset: u64) -> Result<Box<dyn Read + Send>>;
+    /// HUP-S0.3: a reader for the byte range `[start, end)` — one download SEGMENT. Production
+    /// sends `Range: bytes=start-(end-1)` under a per-segment deadline, so a stalled body fails the
+    /// segment (and is retried from the exact byte) instead of hanging forever. The default serves
+    /// the remainder from `start` (fixtures); the download loop tolerates either shape.
+    fn get_range(&self, start: u64, _end: u64) -> Result<Box<dyn Read + Send>> {
+        self.get_from(start)
+    }
+}
+
+/// HUP-S0.3 — bytes requested per ranged segment. Each segment is bounded by
+/// [`SEGMENT_TIMEOUT`], so a stall costs at most one segment's deadline before a resume.
+pub const SEGMENT_BYTES: u64 = 64 << 20; // 64 MiB
+/// HUP-S0.3 — per-segment deadline (≈ 0.36 MiB/s floor for a full segment before a retry).
+pub const SEGMENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+/// HUP-S0.3 — consecutive transport failures tolerated (with backoff) before giving up. Any
+/// segment that makes progress resets the count, so a slow-but-alive link always finishes.
+pub const MAX_SEGMENT_RETRIES: u32 = 8;
+
+/// Default retry backoff: 1, 2, 4, 8, 16, 30, 30… seconds.
+fn default_retry_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((1u64 << attempt.min(5).saturating_sub(1)).min(30))
+}
+
+/// HUP-S0.3 — a resume must be answered with `206 Partial Content`. A `200` on a non-zero start
+/// means the server ignored `Range` and would re-send the whole file onto the `.part`.
+pub fn check_range_status(start: u64, status: u16) -> Result<()> {
+    match (start, status) {
+        (_, 206) => Ok(()),
+        (0, 200) => Ok(()),
+        (s, 200) if s > 0 => Err(ModelError::RangeIgnored),
+        (_, other) => Err(ModelError::Transport(format!(
+            "unexpected HTTP status {other}"
+        ))),
+    }
+}
+
+/// HUP-S0.3 — single-flight guard: at most one download per `.part` path in this process.
+pub struct DownloadGuard {
+    path: PathBuf,
+}
+
+fn in_flight() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+impl DownloadGuard {
+    /// Claim `part`; `Err(AlreadyDownloading)` if another download holds it.
+    pub fn acquire(part: &std::path::Path) -> Result<Self> {
+        let mut set = in_flight()
+            .lock()
+            .map_err(|_| ModelError::Io("download registry poisoned".into()))?;
+        if !set.insert(part.to_path_buf()) {
+            return Err(ModelError::AlreadyDownloading);
+        }
+        Ok(DownloadGuard {
+            path: part.to_path_buf(),
+        })
+    }
+}
+
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = in_flight().lock() {
+            set.remove(&self.path);
+        }
+    }
 }
 
 /// Production transport: blocking `ureq` (rustls TLS), the same client ai.rs and
@@ -383,6 +470,22 @@ impl ModelTransport for UreqModelTransport {
             .map_err(|e| ModelError::Transport(e.to_string()))?;
         Ok(Box::new(resp.into_body().into_reader()))
     }
+
+    fn get_range(&self, start: u64, end: u64) -> Result<Box<dyn Read + Send>> {
+        let range = format!("bytes={start}-{}", end.saturating_sub(1));
+        // HUP-S0.3: the whole segment (connect + headers + body) is bounded, so a dead connection
+        // mid-body fails this segment and the loop resumes from the exact byte written.
+        let resp = ureq::get(&self.url)
+            .config()
+            .timeout_connect(Some(std::time::Duration::from_secs(30)))
+            .timeout_global(Some(SEGMENT_TIMEOUT))
+            .build()
+            .header("Range", &range)
+            .call()
+            .map_err(|e| ModelError::Transport(e.to_string()))?;
+        check_range_status(start, resp.status().as_u16())?;
+        Ok(Box::new(resp.into_body().into_reader()))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +515,10 @@ pub struct ModelManager {
     /// / [`from_descriptor`], so multiple models coexist in `models/` by filename. The
     /// `.part` and `.status.json` side-files are DERIVED from it.
     file: String,
+    /// HUP-S0.3: bytes per ranged segment ([`SEGMENT_BYTES`]; tests shrink it).
+    segment_bytes: u64,
+    /// HUP-S0.3: backoff before retry `n` ([`default_retry_backoff`]; tests use zero).
+    retry_backoff: fn(u32) -> std::time::Duration,
 }
 
 impl ModelManager {
@@ -430,7 +537,21 @@ impl ModelManager {
             expected_hash,
             expected_size,
             file: MODEL_FILE.to_string(),
+            segment_bytes: SEGMENT_BYTES,
+            retry_backoff: default_retry_backoff,
         }
+    }
+
+    /// Override the ranged-segment size (builder; tests use tiny segments).
+    pub fn with_segment_bytes(mut self, n: u64) -> Self {
+        self.segment_bytes = n.max(1);
+        self
+    }
+
+    /// Override the retry backoff (builder; tests use zero).
+    pub fn with_retry_backoff(mut self, f: fn(u32) -> std::time::Duration) -> Self {
+        self.retry_backoff = f;
+        self
     }
 
     /// Override the model filename (builder) — the catalog sets this per model so several
@@ -538,6 +659,16 @@ impl ModelManager {
         std::fs::create_dir_all(&self.dir).map_err(|e| ModelError::Io(e.to_string()))?;
         let part = self.part_path();
 
+        // HUP-S0.3: a complete file already on disk is never downloaded again (an app quit between
+        // the rename and the verify used to restart a multi-GB pull from byte 0). The caller runs
+        // `verify`, which quarantines it if it is wrong.
+        if self.final_path().exists() {
+            on_progress(self.expected_size, self.expected_size);
+            return Ok(Vec::new());
+        }
+        // HUP-S0.3: exactly one writer per `.part` (a second appender corrupts it).
+        let _guard = DownloadGuard::acquire(&part)?;
+
         // Resume from the current partial size, if any.
         let mut have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
         // Never resume past what we expect (a corrupt oversized part → restart).
@@ -547,8 +678,7 @@ impl ModelManager {
         }
 
         on_progress(have, self.expected_size); // initial (resume offset, or 0)
-        let offsets = vec![have];
-        let mut reader = self.transport.get_from(have)?;
+        let mut offsets = Vec::new();
 
         // Open the part file for append (resume) or create (fresh).
         use std::io::Write;
@@ -563,56 +693,95 @@ impl ModelManager {
         let mut written = have;
         let mut magic_checked = have >= GGUF_MAGIC.len() as u64;
         let mut magic_buf: Vec<u8> = Vec::with_capacity(GGUF_MAGIC.len());
-
         let mut buf = vec![0u8; DOWNLOAD_CHUNK];
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| ModelError::Transport(e.to_string()))?;
-            if n == 0 {
-                break;
-            }
-            let mut chunk = &buf[..n];
+        // HUP-S0.3: consecutive transport failures; any segment that makes progress resets it.
+        let mut failures: u32 = 0;
 
-            // Magic gate on a fresh download: accumulate the first 4 bytes and
-            // check them BEFORE any are persisted, so a wrong body never lands.
-            if !magic_checked {
-                let need = GGUF_MAGIC.len() - magic_buf.len();
-                let take = need.min(chunk.len());
-                magic_buf.extend_from_slice(&chunk[..take]);
-                chunk = &chunk[take..];
-                if magic_buf.len() == GGUF_MAGIC.len() {
-                    if magic_buf.as_slice() != GGUF_MAGIC {
-                        // Abort: remove the (empty) part file; never finalize.
-                        drop(file);
-                        let _ = std::fs::remove_file(&part);
-                        return Err(ModelError::BadMagic);
+        'segments: while written < self.expected_size {
+            let seg_end = written
+                .saturating_add(self.segment_bytes)
+                .min(self.expected_size);
+            offsets.push(written);
+            let before = written;
+            let mut transient: Option<ModelError> = None;
+            match self.transport.get_range(written, seg_end) {
+                // A network failure is retryable; a policy failure (range ignored, …) is not.
+                Err(ModelError::Transport(m)) => transient = Some(ModelError::Transport(m)),
+                Err(e) => return Err(e),
+                Ok(mut reader) => loop {
+                    let n = match reader.read(&mut buf) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            transient = Some(ModelError::Transport(e.to_string()));
+                            break;
+                        }
+                    };
+                    if n == 0 {
+                        break;
                     }
-                    // Magic OK — persist it, then continue with the rest.
-                    file.write_all(&magic_buf)
-                        .map_err(|e| ModelError::Io(e.to_string()))?;
-                    written += magic_buf.len() as u64;
-                    magic_checked = true;
-                }
+                    let mut chunk = &buf[..n];
+
+                    // Magic gate on a fresh download: accumulate the first 4 bytes and
+                    // check them BEFORE any are persisted, so a wrong body never lands.
+                    if !magic_checked {
+                        let need = GGUF_MAGIC.len() - magic_buf.len();
+                        let take = need.min(chunk.len());
+                        magic_buf.extend_from_slice(&chunk[..take]);
+                        chunk = &chunk[take..];
+                        if magic_buf.len() == GGUF_MAGIC.len() {
+                            if magic_buf.as_slice() != GGUF_MAGIC {
+                                // Abort: remove the (empty) part file; never finalize.
+                                drop(file);
+                                let _ = std::fs::remove_file(&part);
+                                return Err(ModelError::BadMagic);
+                            }
+                            // Magic OK — persist it, then continue with the rest.
+                            file.write_all(&magic_buf)
+                                .map_err(|e| ModelError::Io(e.to_string()))?;
+                            written += magic_buf.len() as u64;
+                            magic_checked = true;
+                        }
+                    }
+                    if magic_checked && !chunk.is_empty() {
+                        file.write_all(chunk)
+                            .map_err(|e| ModelError::Io(e.to_string()))?;
+                        written += chunk.len() as u64;
+                        // Overshoot guard: a server that IGNORES `Range` re-sends the full
+                        // body onto a resume, driving `written` past the pinned length.
+                        // Reset the corrupt oversized `.part` and fail closed — never carry
+                        // an over-length partial forward, never finalize it.
+                        if written > self.expected_size {
+                            drop(file);
+                            let _ = std::fs::remove_file(&part);
+                            return Err(ModelError::Overshoot {
+                                got: written,
+                                want: self.expected_size,
+                            });
+                        }
+                    }
+                    on_progress(written, self.expected_size);
+                },
             }
-            if magic_checked && !chunk.is_empty() {
-                file.write_all(chunk)
-                    .map_err(|e| ModelError::Io(e.to_string()))?;
-                written += chunk.len() as u64;
-                // Overshoot guard: a server that IGNORES `Range` re-sends the full
-                // body onto a resume, driving `written` past the pinned length.
-                // Reset the corrupt oversized `.part` and fail closed — never carry
-                // an over-length partial forward, never finalize it.
-                if written > self.expected_size {
-                    drop(file);
-                    let _ = std::fs::remove_file(&part);
-                    return Err(ModelError::Overshoot {
-                        got: written,
-                        want: self.expected_size,
-                    });
+            if let Some(err) = transient {
+                // HUP-S0.3: resume from the exact byte written, with bounded, backed-off retries.
+                if written > before {
+                    failures = 0;
                 }
+                failures += 1;
+                if failures > MAX_SEGMENT_RETRIES {
+                    file.flush().map_err(|e| ModelError::Io(e.to_string()))?;
+                    return Err(err);
+                }
+                std::thread::sleep((self.retry_backoff)(failures));
+                continue 'segments;
             }
-            on_progress(written, self.expected_size);
+            if written >= seg_end {
+                failures = 0;
+                continue 'segments;
+            }
+            // A clean end-of-stream short of the segment: stop and report it below (the
+            // `.part` stays resumable).
+            break 'segments;
         }
         file.flush().map_err(|e| ModelError::Io(e.to_string()))?;
         drop(file);
@@ -771,7 +940,18 @@ use tauri::State;
 /// **Command — model_status.** The honest, file-derived model state. `Ready`
 /// only when a real verify matched the pinned hash (never mere presence).
 #[tauri::command]
-pub fn model_status(state: State<'_, ModelState>) -> std::result::Result<ModelStatus, String> {
+pub async fn model_status(app_h: tauri::AppHandle) -> std::result::Result<ModelStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<ModelState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        model_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`model_status`]; reached only through [`crate::blocking::off_main`].
+pub fn model_status_sync(state: State<'_, ModelState>) -> std::result::Result<ModelStatus, String> {
     Ok(state.0.status())
 }
 

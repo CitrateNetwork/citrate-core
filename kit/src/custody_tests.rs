@@ -330,9 +330,18 @@ fn f3_custody_put_command_is_wired_to_the_reservation_guard() {
     // only the predicate — makes the reserved slot writable from the invoke path
     // (the exact A3-01/B1.1-ADV-R plant/overwrite), and this test fails.
     let src = include_str!("custody.rs");
-    let cmd_start = src
-        .find("pub fn custody_put(")
+    // HUP-S0.1b: the command is an async wrapper that runs its guarded body (`custody_put_sync`)
+    // off the main thread — prove the wrapper routes through that body, then scan the body.
+    let wrapper = src
+        .find("pub async fn custody_put(")
         .expect("custody_put command must exist");
+    assert!(
+        src[wrapper..].find("custody_put_sync(").is_some_and(|i| i < 600),
+        "the custody_put command must delegate to custody_put_sync"
+    );
+    let cmd_start = src
+        .find("pub fn custody_put_sync(")
+        .expect("custody_put_sync (the guarded body) must exist");
     let cmd_body = &src[cmd_start..];
     let put_call = cmd_body.find("state.0.put(").expect("custody_put must seal via state.0.put");
     let guard = cmd_body

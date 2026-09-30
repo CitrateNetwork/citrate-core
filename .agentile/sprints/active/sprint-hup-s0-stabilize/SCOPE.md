@@ -25,15 +25,16 @@ Each WP is red → green → close-with-proof. WP definitions are in
 
 | WP | Summary | Stories | Status |
 |---|---|---|---|
-| S0.1 | Async commands + timeouts + `max_tokens`; widen the tripwire | US-0.1 | todo |
-| S0.2 | Long commands exempt from the 12 s invoke deadline | US-0.1, US-0.2 | todo |
-| S0.3 | Download robustness (lock, idle-resume, 206, restart-resume, verify-not-redownload, HF token) | US-0.2 | todo |
-| S0.4 | GFM markdown renderer + golden tests; stop stripping `**` | US-0.3 | todo |
-| S0.5 | llama-server `--jinja` / reasoning format / tier ctx; template-token guard | US-0.3 | todo |
-| S0.6 | Selector subscriptions; drop the global tick; render isolation | US-0.1 | todo |
-| S0.7 | Failed turns inline with Retry | US-0.3 | todo |
-| S0.8 | Sidebar consolidation + routing/theme fixes | US-0.4 | todo |
-| S0.9 | Write-tool approval audit (enumeration test) | gate1 g1-approval-audit | todo |
+| S0.1 | Async commands + timeouts + `max_tokens`; widen the tripwire | US-0.1 | done (hardware QA pending) |
+| S0.2 | Long commands exempt from the 12 s invoke deadline | US-0.1, US-0.2 | done |
+| S0.3 | Download robustness (lock, idle-resume, 206, restart-resume, verify-not-redownload) | US-0.2 | done |
+| S0.3b | HF token for gated repos (custody token reader; auth header only to huggingface.co, never forwarded to the CDN redirect) | US-0.2 AC5 | todo (T1 review) |
+| S0.4 | GFM markdown renderer + golden tests; stop stripping `**` | US-0.3 | done |
+| S0.5 | llama-server `--jinja` / reasoning format / tier ctx; template-token guard | US-0.3 | done |
+| S0.6 | Selector subscriptions; drop the global tick; render isolation | US-0.1 | done (selector subscriptions → S1.1) |
+| S0.7 | Failed turns inline with Retry | US-0.3 | done |
+| S0.8 | Sidebar consolidation + routing/theme fixes | US-0.4 | done (one chat + one model picker → S1.1) |
+| S0.9 | Write-tool approval audit (enumeration test) | gate1 g1-approval-audit | done (already on main) |
 
 ## Suggested order
 
@@ -54,5 +55,10 @@ counts are recorded in EVIDENCE.md on the first S0 run. Counts only go up.
 
 ## Daily log
 
+- 2026-09-30: S0.8 done — 18 → 10 top-level nav items; sub-surfaces became hub tabs (deep links intact); `#/people` deep link fixed. vitest 563→566.
+- 2026-09-30: S0.6 done — idle desktop tick now changes nothing (cosmetic countdowns were re-rendering the whole app ~1.7×/s), empty setState elided, tokens coalesced. vitest 559→563.
+- 2026-09-30: S0.4/S0.5/S0.7 done. Found the Markdown renderer looped forever (webview OOM) on any fence whose language tag had a non-word char (```c++) — a second pinwheel cause. Rewritten with a progress guarantee + fuzz test. cargo 684→687, vitest 543→559.
+- 2026-09-30: S0.3 done — segmented, self-resuming downloads + single-flight + restart Resume rows. HF gated-repo token split to S0.3b (custody read is a T1 change). cargo 676→684, vitest 540→543.
+- 2026-09-30: S0.9 found already implemented (PBA-L7b-002). S0.1: 58 sync commands reached blocking I/O (not just the 4 chat commands) — all moved off the main thread; also fixed a stray `#[tauri::command]` on `comms::submit_claim`. S0.2 deadlines per command class. cargo 669→676, vitest 536→540.
 - 2026-09-30: Sprint opened on `release/0.5.0-hermes-upskill`. Planset Stage-2
   (red-teamed) committed as the kickoff.

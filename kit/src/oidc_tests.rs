@@ -1368,7 +1368,10 @@ fn adv8_no_auth_invoke_command_returns_a_token() {
     // auth_userinfo/auth_refresh are `async fn` (run off the main thread — the login-pinwheel fix);
     // async changes the threading, NOT the return type, so the token-boundary proof is intact.
     for sig in [
-        "pub fn auth_status(state: State<'_, AuthState>) -> std::result::Result<AuthStatus, String>",
+        // HUP-S0.1b: auth_status is an async wrapper (off the main thread) over auth_status_sync;
+        // both return AuthStatus, never a token.
+        "pub async fn auth_status(app_h: tauri::AppHandle) -> std::result::Result<AuthStatus, String>",
+        "pub fn auth_status_sync(state: State<'_, AuthState>) -> std::result::Result<AuthStatus, String>",
         "pub async fn auth_userinfo(auth: State<'_, AuthState>) -> std::result::Result<AuthStatus, String>",
         "pub async fn auth_refresh(",
     ] {

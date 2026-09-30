@@ -1035,7 +1035,20 @@ pub fn build_memory_state<R: tauri::Runtime>(
 use tauri::State;
 
 #[tauri::command]
-pub fn memory_status(state: State<'_, MemoryState>) -> std::result::Result<MemoryStatus, String> {
+pub async fn memory_status(app_h: tauri::AppHandle) -> std::result::Result<MemoryStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_status`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_status_sync(
+    state: State<'_, MemoryState>,
+) -> std::result::Result<MemoryStatus, String> {
     Ok(state.0.status())
 }
 
@@ -1044,7 +1057,20 @@ pub fn memory_status(state: State<'_, MemoryState>) -> std::result::Result<Memor
 /// safe to call on every launch — it skips once seeded, when lexical-only, or when
 /// the corpus is empty. The report says what happened (never fabricates a count).
 #[tauri::command]
-pub fn memory_ingest_docs<R: tauri::Runtime>(
+pub async fn memory_ingest_docs<R: tauri::Runtime>(
+    app_h: tauri::AppHandle<R>,
+) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_ingest_docs_sync(app_h.clone(), st1)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_ingest_docs`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_ingest_docs_sync<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, MemoryState>,
 ) -> std::result::Result<crate::docs_ingest::IngestReport, String> {
@@ -1083,7 +1109,21 @@ pub struct SeedReport {
 /// Seed the constellation tenants with real network/node/stake facts when the daemon connects. Same
 /// author identity + gates as the docs preload (a local mem-dag write, NOT a Rule-3 signature).
 #[tauri::command]
-pub fn memory_seed_context(
+pub async fn memory_seed_context(
+    app_h: tauri::AppHandle,
+    facts: SeedFacts,
+) -> std::result::Result<SeedReport, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_seed_context_sync(st0, facts)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_seed_context`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_seed_context_sync(
     state: State<'_, MemoryState>,
     facts: SeedFacts,
 ) -> std::result::Result<SeedReport, String> {
@@ -1091,19 +1131,56 @@ pub fn memory_seed_context(
 }
 
 #[tauri::command]
-pub fn memory_start(state: State<'_, MemoryState>) -> std::result::Result<(), String> {
+pub async fn memory_start(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_start_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_start`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_start_sync(state: State<'_, MemoryState>) -> std::result::Result<(), String> {
     state.0.start().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn memory_stop(state: State<'_, MemoryState>) -> std::result::Result<(), String> {
+pub async fn memory_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_stop_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_stop`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_stop_sync(state: State<'_, MemoryState>) -> std::result::Result<(), String> {
     state.0.stop();
     Ok(())
 }
 
 /// `MemoryDomain.recall` — a real recall over a tenant, returned as parsed rows.
 #[tauri::command]
-pub fn memory_recall(
+pub async fn memory_recall(
+    app_h: tauri::AppHandle,
+    tenant: String,
+    budget: Option<usize>,
+) -> std::result::Result<MemoryResult, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_recall_sync(st0, tenant, budget)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_recall`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_recall_sync(
     state: State<'_, MemoryState>,
     tenant: String,
     budget: Option<usize>,
@@ -1116,7 +1193,23 @@ pub fn memory_recall(
 
 /// `MemoryDomain.search` — a real semantic/lexical search over a tenant.
 #[tauri::command]
-pub fn memory_search(
+pub async fn memory_search(
+    app_h: tauri::AppHandle,
+    tenant: String,
+    query: String,
+    budget: Option<usize>,
+) -> std::result::Result<MemoryResult, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_search_sync(st0, tenant, query, budget)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_search`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_search_sync(
     state: State<'_, MemoryState>,
     tenant: String,
     query: String,
@@ -1130,7 +1223,23 @@ pub fn memory_search(
 
 /// `MemoryDomain.neighbors` — blast-radius edges of a node prefix in a tenant.
 #[tauri::command]
-pub fn memory_neighbors(
+pub async fn memory_neighbors(
+    app_h: tauri::AppHandle,
+    tenant: String,
+    id_prefix: String,
+    budget: Option<usize>,
+) -> std::result::Result<Vec<MemoryNeighbor>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_neighbors_sync(st0, tenant, id_prefix, budget)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_neighbors`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_neighbors_sync(
     state: State<'_, MemoryState>,
     tenant: String,
     id_prefix: String,
@@ -1145,7 +1254,21 @@ pub fn memory_neighbors(
 /// `MemoryDomain.constellation` — recall the personal + chain-state tenants for
 /// the Storage graph. A real graph or an honest error (never a sim graph).
 #[tauri::command]
-pub fn memory_constellation(
+pub async fn memory_constellation(
+    app_h: tauri::AppHandle,
+    budget: Option<usize>,
+) -> std::result::Result<Vec<MemoryResult>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        memory_constellation_sync(st0, budget)
+    })
+    .await
+}
+
+/// Blocking body of [`memory_constellation`]; reached only through [`crate::blocking::off_main`].
+pub fn memory_constellation_sync(
     state: State<'_, MemoryState>,
     budget: Option<usize>,
 ) -> std::result::Result<Vec<MemoryResult>, String> {

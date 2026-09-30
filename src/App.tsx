@@ -9,7 +9,7 @@ import { bridge } from "./bridge";
 import { Onboarding } from "./onboarding/Onboarding";
 import { LoaderMark } from "./components/LoaderMark";
 import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
-import { Sidebar } from "./shell/Sidebar";
+import { Sidebar, HUBS, NESTED, ROUTES } from "./shell/Sidebar";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { NetworkCompatGate } from "./shell/NetworkCompatGate";
@@ -39,7 +39,45 @@ export const REGISTER: Record<string, "instrument" | "charter"> = {
   agent: "charter",
   connections: "charter",
   community: "charter",
+  // HUP-S0.8: these routed but had no register (fell back silently).
+  people: "charter",
+  alf: "charter",
 };
+
+/** HUP-S0.8 — the tab strip on a hub parent and its nested surfaces (e.g. Groups: Chat · Members ·
+ *  Cluster · Training · Alerts). Each tab is a real route, so deep links keep working. */
+function HubTabs({ route }: { route: string }) {
+  const tabs = HUBS[NESTED[route] ?? route];
+  if (!tabs) return null;
+  return (
+    <div role="tablist" style={{ display: "flex", gap: 4, padding: "10px 26px 0", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
+      {tabs.map((t) => {
+        const on = t.id === route;
+        return (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={on}
+            onClick={() => store.go(t.id)}
+            className="mono"
+            style={{
+              fontSize: 11,
+              letterSpacing: ".06em",
+              padding: "7px 12px",
+              border: "none",
+              borderBottom: on ? "2px solid var(--accent)" : "2px solid transparent",
+              background: "transparent",
+              color: on ? "var(--tx-1)" : "var(--tx-3)",
+              cursor: "pointer",
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function Shell({ s }: { s: AppState }) {
   const reg = REGISTER[s.route] || "charter";
@@ -127,6 +165,7 @@ function Shell({ s }: { s: AppState }) {
             )}
           </div>
         )}
+        <HubTabs route={s.route} />
         <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{surface}</div>
       </main>
     </div>
@@ -219,7 +258,8 @@ function Root() {
     }
     const onHash = () => {
       const r = (location.hash || "").replace(/^#\//, "");
-      if (r && r !== store.state.route && ["dashboard", "wallet", "node", "storage", "journal", "comms", "commissary", "settings", "alf", "models", "files", "groups", "cluster", "train", "agent", "connections", "community"].indexOf(r) >= 0) {
+      // HUP-S0.8: the allowlist is derived from the nav registry (it used to omit `people`).
+      if (r && r !== store.state.route && ROUTES.indexOf(r) >= 0) {
         store.setState({ route: r });
       }
     };

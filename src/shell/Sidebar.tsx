@@ -9,7 +9,7 @@ const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
 // [id, label, iconA, iconB] — verbatim from the design's NAVI list. Ordering/grouping is finalized
 // in CX-S7 via SECTIONS below (this stays the flat item registry the sections index into).
 export const NAVI: [string, string, string, string][] = [
-  ["dashboard", "Dashboard", "M3 11 L12 3 L21 11 V20 H14 V14 H10 V20 H3 Z", "M0 0"],
+  ["dashboard", "Hermes", "M3 11 L12 3 L21 11 V20 H14 V14 H10 V20 H3 Z", "M0 0"],
   ["wallet", "Wallet", "M3 7 V17 A2 2 0 0 0 5 19 H19 A2 2 0 0 0 21 17 V9 A2 2 0 0 0 19 7 Z M3 7 A2 2 0 0 1 5 5 H16", "M15.5 13 H17.5"],
   ["node", "Node", "M4 5 H20 V11 H4 Z M4 13 H20 V19 H4 Z", "M7 8 H7.01 M7 16 H7.01"],
   ["storage", "Storage", "M12 3 C7 3 4 4.5 4 6.5 C4 8.5 7 10 12 10 C17 10 20 8.5 20 6.5 C20 4.5 17 3 12 3 Z", "M4 6.5 V17.5 C4 19.5 7 21 12 21 C17 21 20 19.5 20 17.5 V6.5 M4 12 C4 14 7 15.5 12 15.5 C17 15.5 20 14 20 12"],
@@ -28,16 +28,56 @@ export const NAVI: [string, string, string, string][] = [
   ["community", "Community", "M12 3 L14.5 8.5 L20.5 9.2 L16 13.3 L17.3 19.2 L12 16.1 L6.7 19.2 L8 13.3 L3.5 9.2 L9.5 8.5 Z", "M0 0"],
 ];
 
-// CX-S7.1 — the grandma-proof IA (gS-ia): the app is organized around YOU + YOUR GROUPS, not a flat
-// list of technical primitives. Each section lists the nav ids (from NAVI) in its group; "alf" is
-// appended to "You" only for ALF members. Section titles are the mental model a non-technical user
-// navigates by.
+// HUP-S0.8 (D-34, owner-approved 2026-09-30) — the consolidated IA. Supersedes CX-S7.1's
+// "You / Your Groups" layout (18 items, six overlapping social entries). Hermes is home; the rest is
+// grouped by intent. Sub-surfaces are NOT removed: they stay routable (deep links work) and appear as
+// TABS under their parent (see NESTED / HUBS). "alf" is appended to People for ALF members.
 export const SECTIONS: { title: string; ids: string[] }[] = [
-  { title: "You", ids: ["dashboard", "wallet", "storage", "files", "models", "agent", "connections", "journal"] },
-  { title: "Your Groups", ids: ["people", "groups", "comms", "cluster", "train", "community"] },
-  { title: "Your Node", ids: ["node"] },
-  { title: "More", ids: ["commissary", "settings"] },
+  { title: "", ids: ["dashboard"] },
+  { title: "Build", ids: ["agent", "files", "models"] },
+  { title: "Money", ids: ["wallet"] },
+  { title: "Network", ids: ["node"] },
+  { title: "People", ids: ["groups"] },
+  { title: "More", ids: ["journal", "commissary", "settings"] },
 ];
+
+/** HUP-S0.8 — surfaces that live as a tab under a top-level parent (child → parent). */
+export const NESTED: Record<string, string> = {
+  storage: "files",
+  people: "groups",
+  cluster: "groups",
+  train: "groups",
+  comms: "groups",
+  connections: "settings",
+};
+
+/** HUP-S0.8 — the tab strip shown on a parent and each of its nested surfaces. */
+export const HUBS: Record<string, { id: string; label: string }[]> = {
+  files: [
+    { id: "files", label: "Files" },
+    { id: "storage", label: "Memory" },
+  ],
+  groups: [
+    { id: "groups", label: "Chat" },
+    { id: "people", label: "Members" },
+    { id: "cluster", label: "Cluster" },
+    { id: "train", label: "Training" },
+    { id: "comms", label: "Alerts" },
+  ],
+  settings: [
+    { id: "settings", label: "Settings" },
+    { id: "connections", label: "Connections" },
+  ],
+};
+
+/** HUP-S0.8 — routable but not in the nav until wired (Rule 1: no placeholder in the main nav). */
+export const HIDDEN: string[] = ["community"];
+
+/** Every deep-linkable route (the hash router's allowlist). */
+export const ROUTES: string[] = [...NAVI.map(([id]) => id), "alf"];
+
+/** The top-level nav item a route highlights (a nested surface lights up its parent). */
+export const navParent = (route: string): string => NESTED[route] ?? route;
 
 // ALF cooperative workbench — appended to the nav ONLY for ALF members (gated on
 // s.alfMember, a claim). Graduation-cap glyph. See src/surfaces/ALF.tsx (ALF-ND-A).
@@ -82,23 +122,26 @@ export function Sidebar({ store, s }: { store: Store; s: AppState }) {
           const byId: Record<string, [string, string, string, string]> = {};
           for (const item of s.alfMember ? [...NAVI, ALF_NAV] : NAVI) byId[item[0]] = item;
           const sections = s.alfMember
-            ? SECTIONS.map((sec) => (sec.title === "You" ? { ...sec, ids: [...sec.ids, "alf"] } : sec))
+            ? SECTIONS.map((sec) => (sec.title === "People" ? { ...sec, ids: [...sec.ids, "alf"] } : sec))
             : SECTIONS;
-          return sections.map((sec) => (
-            <div key={sec.title}>
-              <div
-                className="mono"
-                style={{ padding: "0 12px 6px", fontSize: 9, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(205,231,214,.4)" }}
-              >
-                {sec.title}
-              </div>
+          return sections.map((sec, si) => (
+            <div key={si}>
+              {sec.title && (
+                <div
+                  className="mono"
+                  style={{ padding: "0 12px 6px", fontSize: 9, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(205,231,214,.4)" }}
+                >
+                  {sec.title}
+                </div>
+              )}
               <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 2 }}>
                 {sec.ids.map((id) => {
                   const item = byId[id];
                   if (!item) return null;
                   const [, label, iconA, iconB] = item;
-                  const active = s.route === id;
-                  const dot = id === "comms" && s.stage === "done";
+                  const active = navParent(s.route) === id;
+                  // Group alerts (the former Comms item) now surface as a dot on Groups.
+                  const dot = id === "groups" && s.stage === "done";
                   const badge = id === "agent" && agentPending > 0 ? agentPending : 0;
                   return (
                     <li key={id}>

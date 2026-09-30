@@ -234,7 +234,16 @@ pub fn install_panic_hook<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// network. `ui_errors` is the frontend ErrorBoundary ring. The ephemeral id is fresh each
 /// call and never persisted.
 #[tauri::command]
-pub fn diagnostics_bundle<R: tauri::Runtime>(
+pub async fn diagnostics_bundle<R: tauri::Runtime>(
+    app_h: tauri::AppHandle<R>,
+    ui_errors: Vec<String>,
+) -> std::result::Result<DiagnosticBundle, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || diagnostics_bundle_sync(app_h.clone(), ui_errors)).await
+}
+
+/// Blocking body of [`diagnostics_bundle`]; reached only through [`crate::blocking::off_main`].
+pub fn diagnostics_bundle_sync<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     ui_errors: Vec<String>,
 ) -> std::result::Result<DiagnosticBundle, String> {
