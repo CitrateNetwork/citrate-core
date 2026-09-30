@@ -168,7 +168,44 @@ fn encode_register_tx_json(from: &str, calldata: &[u8]) -> String {
 /// own `require`, so the ceremony never carries a tx that would revert.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // IPC arg list fixed by the tested invoke contract
-pub fn models_registry_register(
+pub async fn models_registry_register(
+    app_h: tauri::AppHandle,
+    name: String,
+    framework: String,
+    version: String,
+    ipfs_cid: String,
+    size_bytes: u64,
+    inference_price: u64,
+    description: String,
+    license: String,
+    tags: Vec<String>,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        models_registry_register_sync(
+            st0,
+            st1,
+            name,
+            framework,
+            version,
+            ipfs_cid,
+            size_bytes,
+            inference_price,
+            description,
+            license,
+            tags,
+        )
+    })
+    .await
+}
+
+/// Blocking body of [`models_registry_register`]; reached only through [`crate::blocking::off_main`].
+#[allow(clippy::too_many_arguments)] // IPC arg list fixed by the tested invoke contract
+pub fn models_registry_register_sync(
     custody: tauri::State<'_, crate::custody::CustodyState>,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     name: String,

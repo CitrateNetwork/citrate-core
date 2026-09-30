@@ -5,17 +5,7 @@
 //! an `async` wrapper that hands its unchanged `*_sync` body to Tauri's blocking pool through
 //! [`off_main`]. The tripwire in `main_thread_tripwire.rs` keeps it that way.
 
-/// Run `f` on the async runtime's blocking pool and await its result. A panic or cancellation in
-/// the background task surfaces as a coarse `Err` (never a crash, never an `unwrap`).
-pub(crate) async fn off_main<T, F>(f: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|e| format!("background task failed: {e}"))?
-}
+pub(crate) use citrate_core_kit::blocking::off_main;
 
 #[cfg(test)]
 mod tests {

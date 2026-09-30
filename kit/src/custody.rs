@@ -1670,7 +1670,18 @@ fn err_str(e: CustodyError) -> String {
 }
 
 #[tauri::command]
-pub fn custody_status(
+pub async fn custody_status(app_h: tauri::AppHandle) -> std::result::Result<CustodyStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        custody_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`custody_status`]; reached only through [`crate::blocking::off_main`].
+pub fn custody_status_sync(
     state: State<'_, CustodyState>,
 ) -> std::result::Result<CustodyStatus, String> {
     let v = &state.0;
@@ -1683,7 +1694,21 @@ pub fn custody_status(
 }
 
 #[tauri::command]
-pub fn custody_init(
+pub async fn custody_init(
+    app_h: tauri::AppHandle,
+    passphrase: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        custody_init_sync(st0, passphrase)
+    })
+    .await
+}
+
+/// Blocking body of [`custody_init`]; reached only through [`crate::blocking::off_main`].
+pub fn custody_init_sync(
     state: State<'_, CustodyState>,
     mut passphrase: String,
 ) -> std::result::Result<(), String> {
@@ -1695,7 +1720,21 @@ pub fn custody_init(
 }
 
 #[tauri::command]
-pub fn custody_unlock(
+pub async fn custody_unlock(
+    app_h: tauri::AppHandle,
+    passphrase: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        custody_unlock_sync(st0, passphrase)
+    })
+    .await
+}
+
+/// Blocking body of [`custody_unlock`]; reached only through [`crate::blocking::off_main`].
+pub fn custody_unlock_sync(
     state: State<'_, CustodyState>,
     mut passphrase: String,
 ) -> std::result::Result<(), String> {
@@ -1740,7 +1779,22 @@ pub fn custody_lock(state: State<'_, CustodyState>) -> std::result::Result<(), S
 }
 
 #[tauri::command]
-pub fn custody_put(
+pub async fn custody_put(
+    app_h: tauri::AppHandle,
+    slot: String,
+    bytes: Vec<u8>,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        custody_put_sync(st0, slot, bytes)
+    })
+    .await
+}
+
+/// Blocking body of [`custody_put`]; reached only through [`crate::blocking::off_main`].
+pub fn custody_put_sync(
     state: State<'_, CustodyState>,
     slot: String,
     mut bytes: Vec<u8>,
@@ -1761,12 +1815,31 @@ pub fn custody_put(
 }
 
 #[tauri::command]
-pub fn custody_list(state: State<'_, CustodyState>) -> std::result::Result<Vec<SlotInfo>, String> {
+pub async fn custody_list(app_h: tauri::AppHandle) -> std::result::Result<Vec<SlotInfo>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        custody_list_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`custody_list`]; reached only through [`crate::blocking::off_main`].
+pub fn custody_list_sync(
+    state: State<'_, CustodyState>,
+) -> std::result::Result<Vec<SlotInfo>, String> {
     state.0.list().map_err(err_str)
 }
 
 #[tauri::command]
-pub fn custody_keyring_status() -> String {
+pub async fn custody_keyring_status() -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || Ok(custody_keyring_status_sync())).await
+}
+
+/// Blocking body of [`custody_keyring_status`]; reached only through [`crate::blocking::off_main`].
+pub fn custody_keyring_status_sync() -> String {
     keyring_probe()
 }
 

@@ -56,6 +56,14 @@ const LONG: Record<string, number> = {
   hermes_bridge_pending: 45_000,
   hermes_resolve: 45_000,
   hermes_stop: 45_000,
+  // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
+  sign_and_broadcast: 75_000,
+  // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.
+  node_stop: 20_000,
+  memory_stop: 20_000,
+  ipfs_stop: 20_000,
+  model_serve_stop: 20_000,
+  agent_stop: 20_000,
 };
 
 /** The deadline (ms) applied to `command`; `Infinity` means never pre-empted. */

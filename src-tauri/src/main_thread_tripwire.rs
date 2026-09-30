@@ -29,7 +29,28 @@ const BLOCKING_MARKERS: &[&str] = &[
     "thread::sleep",
     ".wait()",
     "wait_timeout",
+    // HUP-S0.1b (DGX review of #114): the OS keychain can block (and prompt), Argon2 is
+    // deliberately slow, and file I/O on a busy/cloud-synced disk can stall.
+    "keyring::",
+    "Entry::new",
+    "get_password(",
+    "set_password(",
+    "delete_credential(",
+    "Argon2",
+    "argon2::",
+    "hash_password(",
+    "hash_password_into(",
+    "std::fs::",
+    "fs::read",
+    "fs::write",
+    "File::open",
+    "File::create",
 ];
+
+/// HUP-S0.1b — every crate whose `#[tauri::command]`s run in this app. The first tripwire only
+/// scanned `src-tauri/src`, so `kit/` (ceremony, custody, config, oidc, wallet_link) — including
+/// `sign_and_broadcast`'s ~60 s receipt poll — was invisible to it.
+const SCANNED_DIRS: &[&str] = &["src", "../kit/src"];
 
 struct FnDef {
     file: String,
@@ -65,9 +86,10 @@ fn parse_fn_sig(line: &str) -> Option<(bool, String)> {
 }
 
 fn collect_defs() -> Vec<FnDef> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("read src/")
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<_> = SCANNED_DIRS
+        .iter()
+        .flat_map(|d| std::fs::read_dir(root.join(d)).expect("read a scanned src dir"))
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
         .collect();
@@ -179,7 +201,7 @@ fn blocking_sync_commands() -> Vec<String> {
     }
     let mut out: Vec<String> = defs
         .iter()
-        .filter(|d| d.is_command && !d.is_async)
+        .filter(|d| d.is_command && !d.is_async && !d.file.ends_with("_tests.rs"))
         .filter(|d| {
             BLOCKING_MARKERS.iter().any(|m| d.body.contains(m))
                 || blocking.iter().any(|b| calls(&d.body, b))
@@ -200,6 +222,17 @@ fn no_synchronous_tauri_command_blocks_the_main_thread() {
          (macOS pinwheel). Make them `pub async fn` and move the blocking work into \
          `tauri::async_runtime::spawn_blocking`: {offenders:#?}",
         offenders.len()
+    );
+}
+
+#[test]
+fn tripwire_scans_the_kit_crate_too() {
+    // Guard the guard: the signing path lives in kit/ and must be visible to the scan.
+    let defs = collect_defs();
+    assert!(
+        defs.iter()
+            .any(|d| d.file == "ceremony.rs" && d.name.starts_with("sign_and_broadcast")),
+        "kit/src/ceremony.rs must be scanned"
     );
 }
 

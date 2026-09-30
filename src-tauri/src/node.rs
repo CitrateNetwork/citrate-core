@@ -1017,7 +1017,18 @@ pub async fn node_arm_mining(state: State<'_, NodeState>) -> std::result::Result
 }
 
 #[tauri::command]
-pub fn node_stop(state: State<'_, NodeState>) -> std::result::Result<(), String> {
+pub async fn node_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        node_stop_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`node_stop`]; reached only through [`crate::blocking::off_main`].
+pub fn node_stop_sync(state: State<'_, NodeState>) -> std::result::Result<(), String> {
     state.0.stop();
     Ok(())
 }
@@ -1027,7 +1038,18 @@ pub fn node_stop(state: State<'_, NodeState>) -> std::result::Result<(), String>
 /// running. The webview folds these into the Node LOG panel so a packaged build
 /// shows live node output, never a fabricated template (Rule 1).
 #[tauri::command]
-pub fn node_logs(state: State<'_, NodeState>) -> std::result::Result<Vec<LogLine>, String> {
+pub async fn node_logs(app_h: tauri::AppHandle) -> std::result::Result<Vec<LogLine>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<NodeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        node_logs_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`node_logs`]; reached only through [`crate::blocking::off_main`].
+pub fn node_logs_sync(state: State<'_, NodeState>) -> std::result::Result<Vec<LogLine>, String> {
     Ok(state.0.logs())
 }
 

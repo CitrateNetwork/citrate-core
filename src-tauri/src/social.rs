@@ -1102,7 +1102,22 @@ pub fn directory_forget(
 /// `directory_lookup` — resolve an EXACT social handle to a published address (find-via-X). `None`
 /// when nobody opted in for that handle — never a guess (D-7). Bearer-gated in the authority.
 #[tauri::command]
-pub fn directory_lookup(
+pub async fn directory_lookup(
+    app_h: tauri::AppHandle,
+    platform: String,
+    handle: String,
+) -> Result<Option<crate::oidc::DirectoryHit>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        directory_lookup_sync(st0, platform, handle)
+    })
+    .await
+}
+
+/// Blocking body of [`directory_lookup`]; reached only through [`crate::blocking::off_main`].
+pub fn directory_lookup_sync(
     auth: tauri::State<'_, crate::oidc::AuthState>,
     platform: String,
     handle: String,
@@ -1114,7 +1129,22 @@ pub fn directory_lookup(
 
 /// `directory_search` — typeahead over published handles (find-via-X). Honest-empty on no match.
 #[tauri::command]
-pub fn directory_search(
+pub async fn directory_search(
+    app_h: tauri::AppHandle,
+    platform: String,
+    query: String,
+) -> Result<Vec<crate::oidc::DirectorySearchHit>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        directory_search_sync(st0, platform, query)
+    })
+    .await
+}
+
+/// Blocking body of [`directory_search`]; reached only through [`crate::blocking::off_main`].
+pub fn directory_search_sync(
     auth: tauri::State<'_, crate::oidc::AuthState>,
     platform: String,
     query: String,

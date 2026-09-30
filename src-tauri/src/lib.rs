@@ -228,7 +228,7 @@ pub fn run() {
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
             let handle = app.handle();
-            let autolock = config::config_read(handle.clone())
+            let autolock = config::config_read_sync(handle.clone())
                 .map(|c| c.autolock)
                 .unwrap_or_else(|_| config::AppConfig::default().autolock);
             // Custody gets its OWN keyring namespace. The kit is shared with

@@ -452,7 +452,13 @@ pub fn read_local_models(dir: &std::path::Path) -> Result<Vec<ModelDescriptor>, 
 /// **Command — model_catalog_local.** The verified models on this machine (the models dir under
 /// the app data dir). `AppHandle` is injected by Tauri (the JS call passes no args).
 #[tauri::command]
-pub fn model_catalog_local(app: tauri::AppHandle) -> Result<Vec<ModelDescriptor>, String> {
+pub async fn model_catalog_local(app_h: tauri::AppHandle) -> Result<Vec<ModelDescriptor>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || model_catalog_local_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`model_catalog_local`]; reached only through [`crate::blocking::off_main`].
+pub fn model_catalog_local_sync(app: tauri::AppHandle) -> Result<Vec<ModelDescriptor>, String> {
     use tauri::Manager;
     let models_dir = app
         .path()

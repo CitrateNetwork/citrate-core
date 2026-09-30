@@ -30,3 +30,14 @@ describe("HUP-S0.2 invoke deadlines", () => {
     expect(deadlineFor("groups_list")).toBe(INVOKE_TIMEOUT_MS);
   });
 });
+
+describe("HUP-S0.1b deadlines for the newly-async signing and stop commands", () => {
+  it("broadcast outlives its 60 s receipt poll (a timeout mid-broadcast would misreport a sent tx)", () => {
+    expect(deadlineFor("sign_and_broadcast")).toBeGreaterThan(60_000);
+  });
+  it("stop commands outlive their 10 s graceful-shutdown wait", () => {
+    for (const c of ["node_stop", "memory_stop", "ipfs_stop", "model_serve_stop", "agent_stop"]) {
+      expect(deadlineFor(c)).toBeGreaterThan(10_000);
+    }
+  });
+});

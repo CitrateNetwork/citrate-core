@@ -243,7 +243,26 @@ pub fn build_link_state() -> LinkState {
 /// Reads the wallet address first, so a locked vault fails before a one-time
 /// nonce is spent.
 #[tauri::command]
-pub fn wallet_link_request(
+pub async fn wallet_link_request(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<LinkState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_link_request_sync(st0, st1, st2, st3)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_link_request`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_link_request_sync(
     link: State<'_, LinkState>,
     auth: State<'_, crate::oidc::AuthState>,
     custody: State<'_, crate::custody::CustodyState>,
@@ -273,7 +292,28 @@ pub fn wallet_link_request(
 /// After this succeeds the authority serves this address as `wallet_address`, so
 /// the membership money path pays an address this device can actually spend from.
 #[tauri::command]
-pub fn wallet_link_approve(
+pub async fn wallet_link_approve(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<WalletLinkResult, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<LinkState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_link_approve_sync(st0, st1, st2, st3, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_link_approve`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_link_approve_sync(
     link: State<'_, LinkState>,
     auth: State<'_, crate::oidc::AuthState>,
     custody: State<'_, crate::custody::CustodyState>,
@@ -350,7 +390,23 @@ where
 
 /// **Command — wallet_link_reject.** Drop a pending link the human declined.
 #[tauri::command]
-pub fn wallet_link_reject(
+pub async fn wallet_link_reject(
+    app_h: tauri::AppHandle,
+    id: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<LinkState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_link_reject_sync(st0, st1, id)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_link_reject`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_link_reject_sync(
     link: State<'_, LinkState>,
     ceremony: State<'_, crate::ceremony::CeremonyState>,
     id: String,

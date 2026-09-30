@@ -931,7 +931,18 @@ pub fn agent_start_sync(state: State<'_, AgentState>) -> std::result::Result<(),
 }
 
 #[tauri::command]
-pub fn agent_stop(state: State<'_, AgentState>) -> std::result::Result<(), String> {
+pub async fn agent_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<AgentState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        agent_stop_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`agent_stop`]; reached only through [`crate::blocking::off_main`].
+pub fn agent_stop_sync(state: State<'_, AgentState>) -> std::result::Result<(), String> {
     state.0.stop();
     Ok(())
 }

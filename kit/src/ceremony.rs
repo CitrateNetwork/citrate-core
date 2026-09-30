@@ -831,7 +831,21 @@ fn err_str(e: CeremonyError) -> String {
 /// signer ONLY through this door: it produces an intent → a ceremony, never a
 /// signature (B1.2-ADV-1/7).
 #[tauri::command]
-pub fn sign_request(
+pub async fn sign_request(
+    app_h: tauri::AppHandle,
+    intent: SignatureIntent,
+) -> std::result::Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        sign_request_sync(st0, intent)
+    })
+    .await
+}
+
+/// Blocking body of [`sign_request`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_request_sync(
     ceremony: State<'_, CeremonyState>,
     intent: SignatureIntent,
 ) -> std::result::Result<CeremonyView, String> {
@@ -845,7 +859,24 @@ pub fn sign_request(
 /// hex ONLY — never key/seed/entropy (I-2). Fails closed if the vault is locked
 /// (B1.2-ADV-3).
 #[tauri::command]
-pub fn sign_approve(
+pub async fn sign_approve(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<Signature, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        sign_approve_sync(st0, st1, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`sign_approve`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_approve_sync(
     ceremony: State<'_, CeremonyState>,
     custody: State<'_, crate::custody::CustodyState>,
     id: String,
@@ -866,7 +897,24 @@ pub fn sign_approve(
 /// undecodable-calldata ceremony (B1.2-ADV-5); fails closed if the vault is
 /// locked (B1.2-ADV-3). All B1.2 single-use/consume-first invariants hold.
 #[tauri::command]
-pub fn sign_and_broadcast(
+pub async fn sign_and_broadcast(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> std::result::Result<BroadcastResult, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        sign_and_broadcast_sync(st0, st1, id, raw_ack)
+    })
+    .await
+}
+
+/// Blocking body of [`sign_and_broadcast`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_and_broadcast_sync(
     ceremony: State<'_, CeremonyState>,
     custody: State<'_, crate::custody::CustodyState>,
     id: String,
@@ -895,7 +943,18 @@ pub fn sign_and_broadcast(
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.
 /// Unknown/already-consumed id → error.
 #[tauri::command]
-pub fn sign_reject(
+pub async fn sign_reject(app_h: tauri::AppHandle, id: String) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        sign_reject_sync(st0, id)
+    })
+    .await
+}
+
+/// Blocking body of [`sign_reject`]; reached only through [`crate::blocking::off_main`].
+pub fn sign_reject_sync(
     ceremony: State<'_, CeremonyState>,
     id: String,
 ) -> std::result::Result<(), String> {
