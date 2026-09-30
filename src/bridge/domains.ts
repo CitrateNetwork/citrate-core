@@ -183,11 +183,30 @@ export interface WalletDomain {
   linkApprove(id: string, rawAck: boolean): Promise<{ address: string; linked: boolean; canonical: boolean }>;
   /** Decline a pending link: release the ceremony + drop the one-time nonce. */
   linkReject(id: string): Promise<void>;
+  /**
+   * Every wallet linked to the signed-in identity, read from the authority, with
+   * its `canonical` (pay-to) flag. An authority error rejects; it never reads as [].
+   */
+  linkedList(): Promise<LinkedWallet[]>;
+  /**
+   * Remove a wallet link from the signed-in identity (own sub only). Unlinking
+   * the canonical wallet moves the pay-to address to the next-linked wallet, or
+   * back to the predicted address when none remain. No funds move.
+   */
+  unlink(address: string): Promise<void>;
 }
 
 /** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
  * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
  * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
+/** One wallet linked to the member's identity, as the authority serves it. */
+export interface LinkedWallet {
+  address: string;
+  /** True for the wallet the authority serves as `wallet_address` (the pay-to). */
+  canonical: boolean;
+  linked_at: string;
+}
+
 export interface PendingWithdrawal {
   id: string;
   saltWei: string;
