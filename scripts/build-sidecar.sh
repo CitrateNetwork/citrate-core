@@ -98,7 +98,7 @@ echo
 # activation height, protocol 1.1 relay gating, and the release-pinned
 # activation table. A node without it rejects nothing at the activation height
 # and forks from the fleet there. Same rev the workspace Cargo.toml pins.
-MIN_CHAIN_REV="f9f6257b2dcde21149fe9c09236231ccfc32da68"
+MIN_CHAIN_REV="80c1781cc39c4edf2a7253a0adf08616c34d2215"
 echo "▶ verifying citrate-chain source carries the activation hardening"
 if git -C "$CHAIN_DIR" rev-parse --git-dir >/dev/null 2>&1; then
   head_rev="$(git -C "$CHAIN_DIR" rev-parse HEAD)"

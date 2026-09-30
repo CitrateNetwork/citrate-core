@@ -104,11 +104,13 @@ const BOND_WORD: &str = "0x00000000000000000000000000000000000000000000000000000
 /// Re-earned 2026-09-09: taken from the address book synced at `2d88191`, and
 /// confirmed against the live chain — `eth_getCode` on this address is non-empty
 /// (220 bytes) while the previous pin `0x04c32967…` returns `0x`.
+///
+/// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (vault = the ERC1967 PROXY, 109 bytes; its implementation slot reads 0x72035977…).
 #[test]
 fn membership_stake_vault_is_the_canonical_40204_value() {
     assert_eq!(
         membership_stake_vault(),
-        "0x53fb4badffaceedd575d47d0e74bb721504f786e"
+        "0x4c0f8b27c509cba4a32e1cd2bc5709bbd2699024"
     );
 }
 
@@ -120,11 +122,13 @@ fn membership_stake_vault_is_the_canonical_40204_value() {
 ///
 /// Re-earned 2026-09-09: address book at `2d88191`; live `eth_getCode` is 20,440
 /// bytes here, `0x` at the previous pin.
+///
+/// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (10,219 bytes).
 #[test]
 fn citrate_member_sbt_is_the_canonical_40204_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0xf0badd9eed5a81871a2f0d309b1f0a225646448a"
+        "0xa24aa35fba269f8755c2173779cc3dbc9690c4c9"
     );
 }
 

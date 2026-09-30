@@ -86,11 +86,13 @@ const EXPECTED_IMAGE_DATA_URI: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0
 ///
 /// Re-earned 2026-09-09 alongside the grant_status pin — same book value at
 /// `2d88191`, confirmed live on-chain.
+///
+/// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (10,219 bytes).
 #[test]
 fn sbt_address_is_the_canonical_reroll_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0xf0badd9eed5a81871a2f0d309b1f0a225646448a"
+        "0xa24aa35fba269f8755c2173779cc3dbc9690c4c9"
     );
 }
 
