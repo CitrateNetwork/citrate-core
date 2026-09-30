@@ -33,7 +33,7 @@ Each WP is red → green → close-with-proof. WP definitions are in
 | S0.5 | llama-server `--jinja` / reasoning format / tier ctx; template-token guard | US-0.3 | done |
 | S0.6 | Selector subscriptions; drop the global tick; render isolation | US-0.1 | done (selector subscriptions → S1.1) |
 | S0.7 | Failed turns inline with Retry | US-0.3 | done |
-| S0.8 | Sidebar consolidation + routing/theme fixes | US-0.4 | todo |
+| S0.8 | Sidebar consolidation + routing/theme fixes | US-0.4 | done (one chat + one model picker → S1.1) |
 | S0.9 | Write-tool approval audit (enumeration test) | gate1 g1-approval-audit | done (already on main) |
 
 ## Suggested order
@@ -55,6 +55,7 @@ counts are recorded in EVIDENCE.md on the first S0 run. Counts only go up.
 
 ## Daily log
 
+- 2026-09-30: S0.8 done — 18 → 10 top-level nav items; sub-surfaces became hub tabs (deep links intact); `#/people` deep link fixed. vitest 563→566.
 - 2026-09-30: S0.6 done — idle desktop tick now changes nothing (cosmetic countdowns were re-rendering the whole app ~1.7×/s), empty setState elided, tokens coalesced. vitest 559→563.
 - 2026-09-30: S0.4/S0.5/S0.7 done. Found the Markdown renderer looped forever (webview OOM) on any fence whose language tag had a non-word char (```c++) — a second pinwheel cause. Rewritten with a progress guarantee + fuzz test. cargo 684→687, vitest 543→559.
 - 2026-09-30: S0.3 done — segmented, self-resuming downloads + single-flight + restart Resume rows. HF gated-repo token split to S0.3b (custody read is a T1 change). cargo 676→684, vitest 540→543.

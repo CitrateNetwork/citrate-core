@@ -446,7 +446,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           return (
             <button
               key={id}
-              onClick={() => setSec(id)}
+              // HUP-S0.8: Connections has one home — the Connections tab of the Settings hub.
+              onClick={() => (id === "connections" ? store.go("connections") : setSec(id))}
               style={{
                 fontFamily: "var(--font-sans)",
                 textAlign: "left",
