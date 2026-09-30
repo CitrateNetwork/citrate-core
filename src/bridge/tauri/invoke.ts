@@ -34,7 +34,35 @@ const UNBOUNDED = new Set<string>([
   "model_serve_start", // spawns the llama-server sidecar
   "memory_ingest_docs", // first-run bulk docs preload
   "memory_seed_context", // first-run bulk memory writes
+  "model_catalog_download", // HUP-S0.2: catalog GGUF download (drives its own progress events)
+  "storage_add", // HUP-S0.2: adding a large file to IPFS
+  "storage_retrieve", // HUP-S0.2: retrieving a large file from IPFS
 ]);
+
+/** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so
+ *  the Rust error (with its real cause) always arrives first and the UI never abandons a live turn. */
+const LONG: Record<string, number> = {
+  // One non-streaming model turn: Rust bounds it at AI_REQUEST_TIMEOUT (300 s).
+  ai_chat: 330_000,
+  ai_chat_tools: 330_000,
+  ai_chat_local: 330_000,
+  ai_chat_local_tools: 330_000,
+  // Loopback control calls to the Hermes sidecar: Rust bounds them at HERMES_CONTROL_TIMEOUT (30 s).
+  hermes_start: 45_000,
+  hermes_status: 45_000,
+  hermes_skills: 45_000,
+  hermes_run_skill: 45_000,
+  hermes_pending_approvals: 45_000,
+  hermes_bridge_pending: 45_000,
+  hermes_resolve: 45_000,
+  hermes_stop: 45_000,
+};
+
+/** The deadline (ms) applied to `command`; `Infinity` means never pre-empted. */
+export function deadlineFor(command: string, timeoutMs: number = INVOKE_TIMEOUT_MS): number {
+  if (UNBOUNDED.has(command) || !Number.isFinite(timeoutMs)) return Infinity;
+  return LONG[command] ?? timeoutMs;
+}
 
 /** Thrown when a command exceeds its deadline. Distinct type so callers/telemetry can tell a timeout
  *  from a real command error. */
@@ -56,10 +84,11 @@ export function invoke<T>(command: string, args?: InvokeArgs, timeoutMs: number 
   // the underlying call is byte-identical to a direct invoke (and the contract tests still match).
   const call = args === undefined ? rawInvoke<T>(command) : rawInvoke<T>(command, args);
   // Long-running-by-design commands run unbounded (a deadline here would break a real login/download).
-  if (UNBOUNDED.has(command) || !Number.isFinite(timeoutMs)) return call;
+  const ms = deadlineFor(command, timeoutMs);
+  if (!Number.isFinite(ms)) return call;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new InvokeTimeout(command, timeoutMs)), timeoutMs);
+    timer = setTimeout(() => reject(new InvokeTimeout(command, ms)), ms);
   });
   return Promise.race([call, deadline]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
