@@ -27,6 +27,10 @@ struct Book {
     #[serde(rename = "chainId")]
     #[allow(dead_code)] // read by chain_id() (a verify-addrs accessor + test tripwire)
     chain_id: u64,
+    /// Block-0 hash of the chain this book (and so this build) targets. A reroll
+    /// with the same chain id moves it, so it is what tells a stale build apart.
+    #[serde(rename = "genesisHash")]
+    genesis_hash: String,
     addresses: Addresses,
 }
 
@@ -79,6 +83,7 @@ fn book() -> &'static Book {
         b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
         b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
         b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
+        b.genesis_hash = b.genesis_hash.to_ascii_lowercase();
         b
     })
 }
@@ -87,6 +92,12 @@ fn book() -> &'static Book {
 #[allow(dead_code)]
 pub fn chain_id() -> u64 {
     book().chain_id
+}
+
+/// Block-0 hash of the chain this build targets (lowercase `0x` + 64 hex).
+#[allow(dead_code)] // read by the frontend network-compat gate via the same JSON + tests
+pub fn genesis_hash() -> &'static str {
+    &book().genesis_hash
 }
 
 /// `CitrateMemberSBT` — the soulbound membership token.
@@ -203,6 +214,21 @@ mod tests {
     #[test]
     fn the_book_is_for_40204() {
         assert_eq!(chain_id(), 40204);
+    }
+
+    /// The book must name the genesis it was generated against: a same-chain-id
+    /// reroll changes nothing else a build can check, so without it a stale build
+    /// talks to the new chain with dead addresses.
+    #[test]
+    fn the_book_pins_a_genesis_hash() {
+        let g = genesis_hash();
+        assert_eq!(g.len(), 66, "genesisHash must be 0x + 64 hex, got {g}");
+        assert!(g.starts_with("0x"), "genesisHash must be 0x-prefixed, got {g}");
+        assert!(
+            g[2..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "genesisHash must be lowercase hex, got {g}"
+        );
+        assert_ne!(g, &format!("0x{}", "0".repeat(64)), "genesisHash is the zero hash");
     }
 
     /// The book is GENERATED. If someone hand-edits it, the marker goes away and

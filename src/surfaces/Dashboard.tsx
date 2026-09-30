@@ -1,4 +1,5 @@
 import { useBlockNumber, useReadContract } from "wagmi";
+import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
 import { Store } from "../shell/store";
 import { AppState, nodeLabel } from "../shell/state";
@@ -22,8 +23,9 @@ const rel = (ts: number) => {
 // #66 — whole-network "Network validators" count. There's no all-p2p-node census on 40204
 // (per DGX), but the active consensus validator set IS on-chain and reads identically from
 // every node: ValidatorRegistry.activeCount() over the RPC already in the CSP. Honest source,
-// no new infra/CSP. (0x2655d9fb… on 40204; activeCount() selector 0x4331ed1f.)
-const VALIDATOR_REGISTRY = "0x2655d9fbbe599e75ff6e53790f99ebc9a20c93bf" as const;
+// no new infra/CSP. The address comes from the GENERATED book (a reroll moves it; a
+// hard-coded copy here went stale once already). activeCount() selector 0x4331ed1f.
+const VALIDATOR_REGISTRY = book.addresses.ValidatorRegistry as `0x${string}`;
 const ACTIVE_COUNT_ABI = [
   { type: "function", name: "activeCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ] as const;

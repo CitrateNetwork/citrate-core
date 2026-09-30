@@ -12,6 +12,7 @@ import marqueeBlack from "./assets/brand/citrate_marquee_black.svg";
 import { Sidebar } from "./shell/Sidebar";
 import { SignatureCeremony, WalletReviewModal, Coach, Toast, DemoPanel } from "./shell/Chrome";
 import { UpdateBanner } from "./shell/UpdateBanner";
+import { NetworkCompatGate } from "./shell/NetworkCompatGate";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
 // CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
@@ -253,6 +254,8 @@ function Root() {
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />
       <Toast s={s} />
+      {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
+      <NetworkCompatGate />
       {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}
       <UpdateBanner />
     </div>
