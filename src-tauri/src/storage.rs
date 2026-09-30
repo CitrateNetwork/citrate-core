@@ -474,7 +474,19 @@ fn build_manager<R: tauri::Runtime>(
 
 /// **Command — storage_add.** Add a local file to IPFS; returns its CID + size.
 #[tauri::command]
-pub fn storage_add(app: tauri::AppHandle, path: String) -> std::result::Result<AddOutcome, String> {
+pub async fn storage_add(
+    app_h: tauri::AppHandle,
+    path: String,
+) -> std::result::Result<AddOutcome, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || storage_add_sync(app_h.clone(), path)).await
+}
+
+/// Blocking body of [`storage_add`]; reached only through [`crate::blocking::off_main`].
+pub fn storage_add_sync(
+    app: tauri::AppHandle,
+    path: String,
+) -> std::result::Result<AddOutcome, String> {
     build_manager(&app)?
         .add_file(Path::new(&path))
         .map_err(|e| e.to_string())
@@ -568,7 +580,24 @@ fn encode_bond_tx_json(from: &str, calldata: &[u8]) -> String {
 /// bond appears in the ceremony pending list for approval. Returns `()` (the frozen DTO shape); the
 /// ceremony is surfaced by the existing signing surface.
 #[tauri::command]
-pub fn storage_pin(
+pub async fn storage_pin(
+    app_h: tauri::AppHandle,
+    cid: String,
+    bond_salt: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        storage_pin_sync(app_h.clone(), st1, st2, cid, bond_salt)
+    })
+    .await
+}
+
+/// Blocking body of [`storage_pin`]; reached only through [`crate::blocking::off_main`].
+pub fn storage_pin_sync(
     app: tauri::AppHandle,
     custody: tauri::State<'_, crate::custody::CustodyState>,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
@@ -598,13 +627,31 @@ pub fn storage_pin(
 
 /// **Command — storage_list.** The pinning file store (index ∪ live pins).
 #[tauri::command]
-pub fn storage_list(app: tauri::AppHandle) -> std::result::Result<Vec<PinRow>, String> {
+pub async fn storage_list(app_h: tauri::AppHandle) -> std::result::Result<Vec<PinRow>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || storage_list_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`storage_list`]; reached only through [`crate::blocking::off_main`].
+pub fn storage_list_sync(app: tauri::AppHandle) -> std::result::Result<Vec<PinRow>, String> {
     build_manager(&app)?.list().map_err(|e| e.to_string())
 }
 
 /// **Command — storage_retrieve.** Fetch a CID to a local file; returns its path.
 #[tauri::command]
-pub fn storage_retrieve(app: tauri::AppHandle, cid: String) -> std::result::Result<String, String> {
+pub async fn storage_retrieve(
+    app_h: tauri::AppHandle,
+    cid: String,
+) -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || storage_retrieve_sync(app_h.clone(), cid)).await
+}
+
+/// Blocking body of [`storage_retrieve`]; reached only through [`crate::blocking::off_main`].
+pub fn storage_retrieve_sync(
+    app: tauri::AppHandle,
+    cid: String,
+) -> std::result::Result<String, String> {
     build_manager(&app)?
         .retrieve(&cid)
         .map(|p| p.to_string_lossy().to_string())
@@ -613,7 +660,16 @@ pub fn storage_retrieve(app: tauri::AppHandle, cid: String) -> std::result::Resu
 
 /// **Command — storage_unpin.** Release a CID's pin.
 #[tauri::command]
-pub fn storage_unpin(app: tauri::AppHandle, cid: String) -> std::result::Result<(), String> {
+pub async fn storage_unpin(
+    app_h: tauri::AppHandle,
+    cid: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || storage_unpin_sync(app_h.clone(), cid)).await
+}
+
+/// Blocking body of [`storage_unpin`]; reached only through [`crate::blocking::off_main`].
+pub fn storage_unpin_sync(app: tauri::AppHandle, cid: String) -> std::result::Result<(), String> {
     build_manager(&app)?.unpin(&cid).map_err(|e| e.to_string())
 }
 

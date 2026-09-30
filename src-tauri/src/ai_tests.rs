@@ -673,3 +673,49 @@ fn build_chat_body_with_tools_rejects_a_non_array_tools_spec() {
     ));
 }
 
+
+// ===========================================================================
+// HUP-S0.1 — every chat request is BOUNDED (the pinwheel / runaway-generation fix)
+// ===========================================================================
+
+#[test]
+fn every_chat_body_caps_generation_with_max_tokens() {
+    // Without max_tokens a local model can generate until the context window fills, holding
+    // the request (and, before S0.1, the main thread) for minutes.
+    let plain = build_chat_body("m", "[]", "{}").unwrap();
+    assert_eq!(plain["max_tokens"], AI_MAX_TOKENS);
+    let tools = build_chat_body_with_tools("m", "[]", TOOLS_SPEC, "{}").unwrap();
+    assert_eq!(tools["max_tokens"], AI_MAX_TOKENS);
+    const { assert!(AI_MAX_TOKENS >= 512 && AI_MAX_TOKENS <= 4096, "a sane per-turn cap") };
+}
+
+#[test]
+fn the_production_ai_http_client_has_connect_and_overall_deadlines() {
+    // A dead endpoint or a hung generation must fail the turn, never hang it forever.
+    assert!(AI_CONNECT_TIMEOUT <= std::time::Duration::from_secs(15));
+    assert!(AI_REQUEST_TIMEOUT >= std::time::Duration::from_secs(60), "room for a slow local turn");
+    assert!(AI_REQUEST_TIMEOUT <= std::time::Duration::from_secs(600), "but bounded");
+}
+
+// HUP-S0.5 — belt and braces: even if a model/template leaks control tokens or raw thinking into
+// `content`, the chat never shows them.
+#[test]
+fn leaked_template_and_thinking_tokens_are_stripped_from_replies() {
+    let raw = "<think>internal plan</think>Your node is <|im_end|>validating.<end_of_turn>";
+    assert_eq!(strip_template_tokens(raw), "Your node is validating.");
+    let raw2 = "<|im_start|>assistant\nHello<|eot_id|>";
+    assert_eq!(strip_template_tokens(raw2), "Hello");
+    // An unterminated think block (cut by max_tokens) is dropped, not shown.
+    assert_eq!(strip_template_tokens("Answer first.<think>still thinking"), "Answer first.");
+    // Ordinary text, including angle brackets in code, is untouched.
+    let code = "Use `a <b> c` and x < y";
+    assert_eq!(strip_template_tokens(code), code);
+}
+
+#[test]
+fn parsed_replies_are_sanitized() {
+    let resp = json!({"choices":[{"message":{"role":"assistant","content":"<think>x</think>Hi<|im_end|>"}}]}).to_string();
+    let msg: Value = serde_json::from_str(&parse_chat_message(&resp).unwrap()).unwrap();
+    assert_eq!(msg["content"], "Hi");
+    assert_eq!(parse_completion(&resp).unwrap(), "Hi");
+}

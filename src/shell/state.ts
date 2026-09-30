@@ -124,6 +124,11 @@ export interface ChatMsg {
   text: string;
   chips: { label: string; status: string }[];
   streaming: boolean;
+  /** HUP-S0.7 — the turn failed (timeout, provider, transport). Shown inline with Retry; never
+   *  sent back to the model as context. */
+  error?: string;
+  /** HUP-S0.7 — the user text to resend on Retry. */
+  retryText?: string;
 }
 export interface Activity {
   id: string;

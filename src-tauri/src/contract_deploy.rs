@@ -58,7 +58,26 @@ fn encode_deploy_tx_json(from: &str, initcode: &[u8], value_wei: u128, gas: u64)
 /// approves + broadcasts; nothing signs here). The bytecode is caller-supplied + audited
 /// — the app never invents contract code (Rule 1). Empty bytecode is rejected up-front.
 #[tauri::command]
-pub fn contract_deploy(
+pub async fn contract_deploy(
+    app_h: tauri::AppHandle,
+    bytecode_hex: String,
+    constructor_args_hex: Option<String>,
+    value_wei: Option<String>,
+    gas: Option<u64>,
+) -> std::result::Result<crate::ceremony::CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        contract_deploy_sync(st0, st1, bytecode_hex, constructor_args_hex, value_wei, gas)
+    })
+    .await
+}
+
+/// Blocking body of [`contract_deploy`]; reached only through [`crate::blocking::off_main`].
+pub fn contract_deploy_sync(
     custody: tauri::State<'_, crate::custody::CustodyState>,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     bytecode_hex: String,

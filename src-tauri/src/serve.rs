@@ -247,6 +247,11 @@ impl LlamaServerManager {
             self.port.to_string(),
             "--ctx-size".to_string(),
             DEFAULT_CTX_SIZE.to_string(),
+            // HUP-S0.5: use the model's native chat/tool-call template, and extract thinking into
+            // `reasoning_content` so it never lands in the visible reply.
+            "--jinja".to_string(),
+            "--reasoning-format".to_string(),
+            "deepseek".to_string(),
             // PBA-L7b-001: the app never uses the bundled web UI or the /slots monitor; turn
             // them off so a drive-by page has less surface even before the key check.
             "--no-webui".to_string(),
@@ -496,7 +501,20 @@ use tauri::State;
 /// it is verified-`Ready` (BC-3.1) and the binary is bundled. Fails closed +
 /// honest error otherwise (never a silent no-op).
 #[tauri::command]
-pub fn model_serve_start(
+pub async fn model_serve_start(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<ServeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::model::ModelState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        model_serve_start_sync(st0, st1)
+    })
+    .await
+}
+
+/// Blocking body of [`model_serve_start`]; reached only through [`crate::blocking::off_main`].
+pub fn model_serve_start_sync(
     serve: State<'_, ServeState>,
     model: State<'_, crate::model::ModelState>,
 ) -> std::result::Result<(), String> {
@@ -507,7 +525,18 @@ pub fn model_serve_start(
 /// **Command — model_serve_stop.** Release the supervisor (SIGTERM→grace→SIGKILL,
 /// no orphan). Idempotent.
 #[tauri::command]
-pub fn model_serve_stop(serve: State<'_, ServeState>) -> std::result::Result<(), String> {
+pub async fn model_serve_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<ServeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        model_serve_stop_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`model_serve_stop`]; reached only through [`crate::blocking::off_main`].
+pub fn model_serve_stop_sync(serve: State<'_, ServeState>) -> std::result::Result<(), String> {
     serve.0.stop();
     Ok(())
 }
@@ -515,7 +544,20 @@ pub fn model_serve_stop(serve: State<'_, ServeState>) -> std::result::Result<(),
 /// **Command — model_serve_status.** The supervisor state + the local baseURL +
 /// a coarse healthy flag.
 #[tauri::command]
-pub fn model_serve_status(
+pub async fn model_serve_status(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<ServeStatus, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<ServeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        model_serve_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`model_serve_status`]; reached only through [`crate::blocking::off_main`].
+pub fn model_serve_status_sync(
     serve: State<'_, ServeState>,
 ) -> std::result::Result<ServeStatus, String> {
     Ok(serve.0.status())
@@ -528,7 +570,23 @@ pub fn model_serve_status(
 /// providerStatus read (the gateway provider is configured iff a cgk_ key is
 /// sealed); the model + serve facts are read here from the real managers.
 #[tauri::command]
-pub fn model_inference_state(
+pub async fn model_inference_state(
+    app_h: tauri::AppHandle,
+    gateway_configured: bool,
+) -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<ServeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st1 = tauri::Manager::try_state::<crate::model::ModelState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        model_inference_state_sync(st0, st1, gateway_configured)
+    })
+    .await
+}
+
+/// Blocking body of [`model_inference_state`]; reached only through [`crate::blocking::off_main`].
+pub fn model_inference_state_sync(
     serve: State<'_, ServeState>,
     model: State<'_, crate::model::ModelState>,
     gateway_configured: bool,

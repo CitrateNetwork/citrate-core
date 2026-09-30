@@ -186,7 +186,18 @@ pub fn build_ipfs_state<R: tauri::Runtime>(
 
 /// Start the bundled IPFS daemon (idempotent). The node reaches it on 127.0.0.1:5001.
 #[tauri::command]
-pub fn ipfs_start(state: tauri::State<'_, IpfsState>) -> std::result::Result<(), String> {
+pub async fn ipfs_start(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<IpfsState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ipfs_start_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`ipfs_start`]; reached only through [`crate::blocking::off_main`].
+pub fn ipfs_start_sync(state: tauri::State<'_, IpfsState>) -> std::result::Result<(), String> {
     match state.0.start() {
         Ok(()) | Err(IpfsError::AlreadyRunning) => Ok(()),
         Err(e) => Err(e.to_string()),
@@ -195,13 +206,35 @@ pub fn ipfs_start(state: tauri::State<'_, IpfsState>) -> std::result::Result<(),
 
 /// Stop the bundled IPFS daemon.
 #[tauri::command]
-pub fn ipfs_stop(state: tauri::State<'_, IpfsState>) -> std::result::Result<(), String> {
+pub async fn ipfs_stop(app_h: tauri::AppHandle) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<IpfsState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ipfs_stop_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`ipfs_stop`]; reached only through [`crate::blocking::off_main`].
+pub fn ipfs_stop_sync(state: tauri::State<'_, IpfsState>) -> std::result::Result<(), String> {
     state.0.stop();
     Ok(())
 }
 
 /// Whether the IPFS daemon is supervised-running (honest — never fabricated).
 #[tauri::command]
-pub fn ipfs_status(state: tauri::State<'_, IpfsState>) -> std::result::Result<bool, String> {
+pub async fn ipfs_status(app_h: tauri::AppHandle) -> std::result::Result<bool, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<IpfsState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ipfs_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`ipfs_status`]; reached only through [`crate::blocking::off_main`].
+pub fn ipfs_status_sync(state: tauri::State<'_, IpfsState>) -> std::result::Result<bool, String> {
     Ok(state.0.running())
 }

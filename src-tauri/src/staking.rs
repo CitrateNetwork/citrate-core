@@ -630,7 +630,23 @@ fn encode_stake_json(from: &str, value_wei: u128) -> String {
 /// fails closed. A zero/garbage amount is rejected before any ceremony state is
 /// created. The staked SALT is forwarded as `msg.value` (the deposit is payable).
 #[tauri::command]
-pub fn wallet_stake(
+pub async fn wallet_stake(
+    app_h: tauri::AppHandle,
+    amount_wei: String,
+) -> std::result::Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_stake_sync(amount_wei, st1, st2)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_stake`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_stake_sync(
     amount_wei: String,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,
@@ -696,7 +712,23 @@ pub async fn wallet_request_withdrawal(
 /// this command builds the intent only. Signs NOTHING — the human approves via
 /// `sign_and_broadcast`. `request_id` is a decimal id (from the pending list).
 #[tauri::command]
-pub fn wallet_claim_withdrawal(
+pub async fn wallet_claim_withdrawal(
+    app_h: tauri::AppHandle,
+    request_id: String,
+) -> std::result::Result<CeremonyView, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st2 = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_claim_withdrawal_sync(request_id, st1, st2)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_claim_withdrawal`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_claim_withdrawal_sync(
     request_id: String,
     ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
     custody: tauri::State<'_, crate::custody::CustodyState>,

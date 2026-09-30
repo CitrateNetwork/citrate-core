@@ -1081,8 +1081,6 @@ pub async fn groups_add_member(
     }
 }
 
-/// **groups_roster** — the (address, role) roster.
-#[tauri::command]
 /// CONNECT-S1 — submit a sealed claim (hex ciphertext) to the relay's server-blind claims-inbox, keyed
 /// by the invite `token_hash` (hex). Invitee side. `pub(crate)` — driven by the invites module.
 pub(crate) fn submit_claim<R: tauri::Runtime>(
@@ -1154,6 +1152,7 @@ pub(crate) fn redeem_invite<R: tauri::Runtime>(
     parse_ok(route(app, Request::RedeemInvite { group, token, name })?)
 }
 
+/// **groups_roster** — the (address, role) roster.
 #[tauri::command]
 pub async fn groups_roster(
     app: tauri::AppHandle,

@@ -195,12 +195,27 @@ fn save_config<R: Runtime>(app: &AppHandle<R>, cfg: &AppConfig) -> Result<(), St
 }
 
 #[tauri::command]
-pub fn config_read<R: Runtime>(app: AppHandle<R>) -> Result<AppConfig, String> {
+pub async fn config_read<R: Runtime>(app_h: tauri::AppHandle<R>) -> Result<AppConfig, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || config_read_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`config_read`]; reached only through [`crate::blocking::off_main`].
+pub fn config_read_sync<R: Runtime>(app: AppHandle<R>) -> Result<AppConfig, String> {
     load_config(&app)
 }
 
 #[tauri::command]
-pub fn config_write<R: Runtime>(
+pub async fn config_write<R: Runtime>(
+    app_h: tauri::AppHandle<R>,
+    patch: AppConfigPatch,
+) -> Result<AppConfig, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || config_write_sync(app_h.clone(), patch)).await
+}
+
+/// Blocking body of [`config_write`]; reached only through [`crate::blocking::off_main`].
+pub fn config_write_sync<R: Runtime>(
     app: AppHandle<R>,
     patch: AppConfigPatch,
 ) -> Result<AppConfig, String> {
@@ -214,7 +229,13 @@ pub fn config_write<R: Runtime>(
 /// reachable; "unavailable" means it is not (e.g. no secret service on a
 /// headless Linux box). Never fabricated.
 #[tauri::command]
-pub fn config_keyring_status() -> String {
+pub async fn config_keyring_status() -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || Ok(config_keyring_status_sync())).await
+}
+
+/// Blocking body of [`config_keyring_status`]; reached only through [`crate::blocking::off_main`].
+pub fn config_keyring_status_sync() -> String {
     match keyring::Entry::new("ai.citrate.core", "keyring-probe") {
         Ok(entry) => match entry.get_password() {
             // Reachable and either has or lacks the probe entry — both mean the

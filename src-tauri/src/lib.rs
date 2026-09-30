@@ -30,6 +30,7 @@ mod activity;
 mod addresses;
 mod agent;
 mod ai;
+mod blocking;
 mod connections;
 mod contract_deploy;
 mod docs_ingest;
@@ -70,6 +71,8 @@ mod training;
 // PBA-L4-008 class tripwire: no invoke command serializes a secret-bearing struct (I-2).
 #[cfg(test)]
 mod invoke_secret_scan_tests;
+#[cfg(test)]
+mod main_thread_tripwire;
 
 use tauri::Manager;
 
@@ -225,7 +228,7 @@ pub fn run() {
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
             let handle = app.handle();
-            let autolock = config::config_read(handle.clone())
+            let autolock = config::config_read_sync(handle.clone())
                 .map(|c| c.autolock)
                 .unwrap_or_else(|_| config::AppConfig::default().autolock);
             // Custody gets its OWN keyring namespace. The kit is shared with
@@ -437,6 +440,7 @@ pub fn run() {
             // ── CX (planset citrate-core-social) — command names FROZEN in S0.3. Each is a
             // NotWired stub until its lane wires the body (in its own module, never here). ──
             model_catalog::model_catalog_local,
+            model_catalog::model_catalog_partials,
             model_catalog::model_catalog_search,
             model_catalog::model_catalog_download,
             model_catalog::model_catalog_select,

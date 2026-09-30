@@ -124,12 +124,21 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: m.who === "You" ? "var(--tx-3)" : "var(--accent-text)" }}>
               {m.who}
             </span>
-            <span style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-1)", whiteSpace: "pre-wrap" }}>
-              {/* Render finished agent replies as markdown; keep the user's own text and in-flight
-                  streaming text plain (no re-parse per token, and never restyle what the user typed). */}
-              {m.who !== "You" && !m.streaming ? <Markdown text={m.text} /> : m.text}
+            <div style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-1)", overflowWrap: "anywhere" }}>
+              {/* HUP-S0.4: agent replies render as markdown while streaming too (no reflow jump at the
+                  end; finished messages are memoized). Never restyle what the user typed. A div, not a
+                  span: markdown is block content. */}
+              {m.who !== "You" ? <Markdown text={m.text} /> : <span style={{ whiteSpace: "pre-wrap" }}>{m.text}</span>}
               {m.streaming && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
-            </span>
+            </div>
+            {m.error && (
+              <span role="alert" style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--danger)" }}>
+                <span style={{ flex: 1, minWidth: 0 }}>The agent didn't finish this reply: {m.error}</span>
+                <button className="btn btn-sm" onClick={() => void store.retryChat(m.id)}>
+                  Retry
+                </button>
+              </span>
+            )}
             {m.chips && m.chips.length > 0 && (
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
                 {m.chips.map((c, i) => {

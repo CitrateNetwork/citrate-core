@@ -6,11 +6,14 @@
 // (Rust serializes camelCase), so nothing is reshaped here.
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "./invoke";
-import type { ModelDescriptor, ModelsCatalogDomain, RegisterModelInput, RegistryModel } from "../domains";
+import type { ModelDescriptor, ModelsCatalogDomain, PartialDownload, RegisterModelInput, RegistryModel } from "../domains";
 
 export const tauriModelsCatalog: ModelsCatalogDomain = {
   local() {
     return invoke<ModelDescriptor[]>("model_catalog_local");
+  },
+  partials() {
+    return invoke<PartialDownload[]>("model_catalog_partials");
   },
   search(source, query) {
     return invoke<ModelDescriptor[]>("model_catalog_search", { source, query });

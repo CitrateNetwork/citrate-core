@@ -57,6 +57,15 @@ const KEYRING_DEFAULT_ACCOUNT: &str = "ai-default";
 /// id is validated for shape so it cannot escape the keyring account namespace.
 const _KNOWN_PRESETS: &[&str] = &["openai", "gateway", "custom"];
 
+/// HUP-S0.1 — per-turn generation cap sent on EVERY chat request. Without it a local model may
+/// generate until its context window fills, holding the turn for minutes.
+pub(crate) const AI_MAX_TOKENS: u32 = 2048;
+/// HUP-S0.1 — connect deadline for every AI request (a dead endpoint fails fast).
+pub(crate) const AI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// HUP-S0.1 — overall deadline for one non-streaming AI turn. Generous enough for a slow local
+/// model on a small machine, but bounded: a hung generation fails the turn instead of hanging it.
+pub(crate) const AI_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// The real-provider system prompt (a tool-LESS variant of the demo's
 /// `AGENT_SYSTEM_PROMPT`). This WP is plain chat + live-context injection: the
 /// model gets no tool access, so the prompt must NOT claim it can read memory or
@@ -433,6 +442,10 @@ pub struct UreqAiClient;
 impl AiHttpClient for UreqAiClient {
     fn post_json(&self, url: &str, bearer: &str, body: &Value) -> Result<String> {
         let mut resp = ureq::post(url)
+            .config()
+            .timeout_connect(Some(AI_CONNECT_TIMEOUT))
+            .timeout_global(Some(AI_REQUEST_TIMEOUT))
+            .build()
             .header("Authorization", &format!("Bearer {bearer}"))
             .header("Content-Type", "application/json")
             .send_json(body)
@@ -740,6 +753,7 @@ fn build_chat_body(model: &str, messages_json: &str, context_json: &str) -> Resu
         "model": model,
         "messages": messages,
         "stream": false,
+        "max_tokens": AI_MAX_TOKENS,
     }))
 }
 
@@ -800,12 +814,51 @@ fn build_chat_body_with_tools(
         "messages": messages,
         "tools": tools,
         "stream": false,
+        "max_tokens": AI_MAX_TOKENS,
     }))
 }
 
 /// Parse the assistant MESSAGE object (`choices[0].message`) from a chat-completions
 /// response, preserving `tool_calls` so the frontend loop can act on them. Returned
 /// as a JSON string (the message object). Missing message → coarse `BadResponse`.
+/// HUP-S0.5 — chat-template control tokens that must never reach the chat surface.
+const TEMPLATE_TOKENS: &[&str] = &[
+    "<|im_start|>assistant\n",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|eot_id|>",
+    "<|end_of_text|>",
+    "<|endoftext|>",
+    "<start_of_turn>model\n",
+    "<start_of_turn>",
+    "<end_of_turn>",
+    "</s>",
+];
+
+/// HUP-S0.5 — remove leaked template control tokens and raw thinking from a model reply. llama-server
+/// runs with `--jinja --reasoning-format deepseek`, which should already keep these out of
+/// `content`; this is the belt-and-braces guard for templates that leak anyway. An unterminated
+/// `<think>` (cut off by `max_tokens`) drops everything after it.
+pub(crate) fn strip_template_tokens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    for t in TEMPLATE_TOKENS {
+        out = out.replace(t, "");
+    }
+    out.trim().to_string()
+}
+
 fn parse_chat_message(resp: &str) -> Result<String> {
     let v: Value = serde_json::from_str(resp).map_err(|_| AiError::BadResponse)?;
     let msg = v
@@ -821,6 +874,14 @@ fn parse_chat_message(resp: &str) -> Result<String> {
     {
         return Err(AiError::BadResponse);
     }
+    let mut msg = msg.clone();
+    if let Some(c) = msg
+        .get("content")
+        .and_then(Value::as_str)
+        .map(strip_template_tokens)
+    {
+        msg["content"] = Value::String(c);
+    }
     Ok(msg.to_string())
 }
 
@@ -834,7 +895,7 @@ fn parse_completion(resp: &str) -> Result<String> {
         .and_then(|c0| c0.get("message"))
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(strip_template_tokens)
         .ok_or(AiError::BadResponse)
 }
 
@@ -855,7 +916,24 @@ const STATUS_PROVIDER_IDS: &[&str] = &["openai", "gateway", "custom"];
 /// non-https baseURL or an empty key. Returns nothing — NEVER the key (invariant
 /// 1).
 #[tauri::command]
-pub fn ai_set_provider(
+pub async fn ai_set_provider(
+    app_h: tauri::AppHandle,
+    provider_id: String,
+    base_url: String,
+    model: String,
+    api_key: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st4 = tauri::Manager::try_state::<AiState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_set_provider_sync(provider_id, base_url, model, api_key, st4)
+    })
+    .await
+}
+
+/// Blocking body of [`ai_set_provider`]; reached only through [`crate::blocking::off_main`].
+pub fn ai_set_provider_sync(
     provider_id: String,
     base_url: String,
     model: String,
@@ -870,7 +948,20 @@ pub fn ai_set_provider(
 /// provider ids: `{id, baseURL, model, configured, isDefault}` — NEVER the key or
 /// the Authorization header (invariant 1).
 #[tauri::command]
-pub fn ai_provider_status(
+pub async fn ai_provider_status(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<Vec<ProviderStatus>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st0 = tauri::Manager::try_state::<AiState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_provider_status_sync(st0)
+    })
+    .await
+}
+
+/// Blocking body of [`ai_provider_status`]; reached only through [`crate::blocking::off_main`].
+pub fn ai_provider_status_sync(
     ai: tauri::State<'_, AiState>,
 ) -> std::result::Result<Vec<ProviderStatus>, String> {
     ai.0.provider_status(STATUS_PROVIDER_IDS)
@@ -880,7 +971,21 @@ pub fn ai_provider_status(
 /// **Command — ai_clear_provider (@rule8).** Delete a provider's sealed config
 /// (and clear the default if it pointed here).
 #[tauri::command]
-pub fn ai_clear_provider(
+pub async fn ai_clear_provider(
+    app_h: tauri::AppHandle,
+    provider_id: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st1 = tauri::Manager::try_state::<AiState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_clear_provider_sync(provider_id, st1)
+    })
+    .await
+}
+
+/// Blocking body of [`ai_clear_provider`]; reached only through [`crate::blocking::off_main`].
+pub fn ai_clear_provider_sync(
     provider_id: String,
     ai: tauri::State<'_, AiState>,
 ) -> std::result::Result<(), String> {
@@ -892,7 +997,23 @@ pub fn ai_clear_provider(
 /// key, and return the model completion. The webview picks WHICH provider id; it
 /// can NEVER supply the URL (invariant 3). Errors are coarse + secret-free.
 #[tauri::command]
-pub fn ai_chat(
+pub async fn ai_chat(
+    app_h: tauri::AppHandle,
+    provider_id: String,
+    messages_json: String,
+    context_json: String,
+) -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st3 = tauri::Manager::try_state::<AiState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_sync(provider_id, messages_json, context_json, st3)
+    })
+    .await
+}
+
+/// Blocking body of [`ai_chat`]; reached only through [`crate::blocking::off_main`].
+pub fn ai_chat_sync(
     provider_id: String,
     messages_json: String,
     context_json: String,
@@ -909,7 +1030,24 @@ pub fn ai_chat(
 /// through its own gated handlers and appending results — but can NEVER supply the
 /// URL or the key (invariants 1 + 3). Errors are coarse + secret-free.
 #[tauri::command]
-pub fn ai_chat_tools(
+pub async fn ai_chat_tools(
+    app_h: tauri::AppHandle,
+    provider_id: String,
+    messages_json: String,
+    tools_json: String,
+    context_json: String,
+) -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st4 = tauri::Manager::try_state::<AiState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_tools_sync(provider_id, messages_json, tools_json, context_json, st4)
+    })
+    .await
+}
+
+/// Blocking body of [`ai_chat_tools`]; reached only through [`crate::blocking::off_main`].
+pub fn ai_chat_tools_sync(
     provider_id: String,
     messages_json: String,
     tools_json: String,
@@ -929,7 +1067,24 @@ pub fn ai_chat_tools(
 /// the "local" route to a remote host (no attacker-controllable URL exists on this
 /// path). Returns the model completion only.
 #[tauri::command]
-pub fn ai_chat_local(
+pub async fn ai_chat_local(
+    app_h: tauri::AppHandle,
+    messages_json: String,
+    context_json: String,
+) -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st2 = tauri::Manager::try_state::<AiState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st3 = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_local_sync(messages_json, context_json, st2, st3)
+    })
+    .await
+}
+
+/// Blocking body of [`ai_chat_local`]; reached only through [`crate::blocking::off_main`].
+pub fn ai_chat_local_sync(
     messages_json: String,
     context_json: String,
     ai: tauri::State<'_, AiState>,
@@ -951,7 +1106,25 @@ pub fn ai_chat_local(
 /// uses (`ai_chat_tools`), but on the bundled local model with its per-session key. Port + model come from
 /// Rust-owned serve state; the webview supplies only messages/tools/context, never a URL.
 #[tauri::command]
-pub fn ai_chat_local_tools(
+pub async fn ai_chat_local_tools(
+    app_h: tauri::AppHandle,
+    messages_json: String,
+    tools_json: String,
+    context_json: String,
+) -> std::result::Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let st3 = tauri::Manager::try_state::<AiState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let st4 = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        ai_chat_local_tools_sync(messages_json, tools_json, context_json, st3, st4)
+    })
+    .await
+}
+
+/// Blocking body of [`ai_chat_local_tools`]; reached only through [`crate::blocking::off_main`].
+pub fn ai_chat_local_tools_sync(
     messages_json: String,
     tools_json: String,
     context_json: String,

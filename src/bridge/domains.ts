@@ -651,9 +651,22 @@ export interface ModelDescriptor {
 }
 
 /** C-16 — model catalog & switcher (local + HF + GitHub). Wired in CX-S1. */
+/** HUP-S0.3 — an interrupted catalog download (survives an app restart; resumable). */
+export interface PartialDownload {
+  /** The catalog id; `download(id)` resumes its `.part`. */
+  id: string;
+  file: string;
+  downloadedBytes: number;
+  totalBytes: number;
+  /** Whole percent, 0–100. */
+  pct: number;
+}
+
 export interface ModelsCatalogDomain {
   /** Locally-present, verified models. */
   local(): Promise<ModelDescriptor[]>;
+  /** HUP-S0.3 — interrupted catalog downloads that can be resumed. */
+  partials(): Promise<PartialDownload[]>;
   /** Search downloadable models from a connected source (HF Hub / GitHub Releases). */
   search(source: "hf" | "github", query: string): Promise<ModelDescriptor[]>;
   /** Download + verify a descriptor; resolves on Ready. `onProgress` (0–100) fires as the

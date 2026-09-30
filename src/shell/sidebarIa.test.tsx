@@ -1,37 +1,57 @@
-// CX-S7.1 — the grandma-proof IA (gS-ia): assert the sidebar is organized around You + Your Groups,
-// and that every navigable surface lives in exactly one section (no orphaned/duplicated surface).
+// HUP-S0.8 (D-34, owner-approved 2026-09-30) — the consolidated sidebar. Supersedes the CX-S7.1
+// "You / Your Groups" IA test: the owner found the sidebar too long (18 items, 6 overlapping social
+// entries). Sub-surfaces stay routable (deep links keep working) but live as TABS under a parent.
 import { describe, it, expect } from "vitest";
-import { NAVI, SECTIONS } from "./Sidebar";
+import { NAVI, SECTIONS, NESTED, HUBS, HIDDEN, ROUTES } from "./Sidebar";
+import { REGISTER } from "../App";
 
-describe("Sidebar IA — organized around You + Your Groups (gS-ia)", () => {
-  it("leads with You then Your Groups", () => {
-    expect(SECTIONS[0].title).toBe("You");
-    expect(SECTIONS[1].title).toBe("Your Groups");
+const naviIds = NAVI.map(([id]) => id);
+const topLevel = SECTIONS.flatMap((s) => s.ids);
+
+describe("HUP-S0.8 consolidated sidebar (D-34)", () => {
+  it("leads with Hermes (the home: chat + widgets)", () => {
+    expect(SECTIONS[0].ids).toEqual(["dashboard"]);
+    expect(NAVI.find(([id]) => id === "dashboard")?.[1]).toBe("Hermes");
   });
 
-  it("puts the Group front and center in Your Groups", () => {
-    const yourGroups = SECTIONS.find((s) => s.title === "Your Groups");
-    expect(yourGroups?.ids).toContain("groups");
-    expect(yourGroups?.ids).toContain("cluster");
-    expect(yourGroups?.ids).toContain("train");
+  it("has at most 11 top-level items (was 18)", () => {
+    expect(topLevel.length).toBeLessThanOrEqual(11);
   });
 
-  it("covers every NAVI surface exactly once across the sections (no orphan, no dupe)", () => {
-    const naviIds = NAVI.map(([id]) => id).sort();
-    const sectionIds = SECTIONS.flatMap((s) => s.ids).sort();
-    // every section id is a real surface
-    for (const id of sectionIds) expect(naviIds).toContain(id);
-    // every surface is placed exactly once
-    expect(sectionIds).toEqual(naviIds);
-    expect(new Set(sectionIds).size).toBe(sectionIds.length);
+  it("places every surface exactly once: top-level, nested under a top-level parent, or hidden", () => {
+    for (const id of naviIds) {
+      const places = [topLevel.includes(id), id in NESTED, HIDDEN.includes(id)].filter(Boolean).length;
+      expect(places, `surface ${id}`).toBe(1);
+    }
+    for (const [child, parent] of Object.entries(NESTED)) {
+      expect(topLevel, `${child}'s parent ${parent}`).toContain(parent);
+    }
   });
-});
 
-describe("CONNECT-S0 — People directory entry (AC6)", () => {
-  it("adds a People entry to Your Groups, wired into NAVI", () => {
-    const yourGroups = SECTIONS.find((s) => s.title === "Your Groups");
-    expect(yourGroups?.ids).toContain("people");
-    const naviIds = NAVI.map((n) => n[0]);
-    expect(naviIds).toContain("people");
+  it("folds the social section into one Groups item with tabs", () => {
+    for (const id of ["people", "cluster", "train", "comms"]) expect(NESTED[id]).toBe("groups");
+    expect(HUBS.groups.map((t) => t.label)).toEqual(["Chat", "Members", "Cluster", "Training", "Alerts"]);
+    expect(topLevel).not.toContain("people");
+    expect(HIDDEN).toContain("community");
+  });
+
+  it("merges memory into Files and Connections into Settings", () => {
+    expect(NESTED.storage).toBe("files");
+    expect(NESTED.connections).toBe("settings");
+  });
+
+  it("every hub's first tab is the parent itself and it lists all of its nested surfaces", () => {
+    for (const [parent, tabs] of Object.entries(HUBS)) {
+      expect(tabs[0].id).toBe(parent);
+      const nested = Object.entries(NESTED).filter(([, p]) => p === parent).map(([c]) => c);
+      for (const c of nested) expect(tabs.map((t) => t.id)).toContain(c);
+    }
+  });
+
+  it("every surface (and ALF) is a routable deep link with a theme register", () => {
+    for (const id of [...naviIds, "alf"]) {
+      expect(ROUTES, `route ${id}`).toContain(id);
+      expect(REGISTER[id], `register ${id}`).toBeDefined();
+    }
   });
 });

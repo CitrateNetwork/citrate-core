@@ -102,7 +102,13 @@ fn strip_frontmatter(body: &str) -> String {
 /// **skills_local_list** — the skills the agent has authored on THIS device. Honest-empty, never
 /// fabricated (Rule 1); an unreadable entry is skipped rather than failing the whole list.
 #[tauri::command]
-pub fn skills_local_list(app: tauri::AppHandle) -> Result<Vec<LocalSkill>, String> {
+pub async fn skills_local_list(app_h: tauri::AppHandle) -> Result<Vec<LocalSkill>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || skills_local_list_sync(app_h.clone())).await
+}
+
+/// Blocking body of [`skills_local_list`]; reached only through [`crate::blocking::off_main`].
+pub fn skills_local_list_sync(app: tauri::AppHandle) -> Result<Vec<LocalSkill>, String> {
     let dir = skills_dir(&app)?;
     let mut out = Vec::new();
     let entries = match fs::read_dir(&dir) {
@@ -183,7 +189,22 @@ fn write_skill_file(
 /// runs nothing. Returns the stored metadata. `overwrite` defaults to `false`: an existing skill is
 /// refused with a `SKILL_EXISTS` error unless the caller (after the member approved) passes `true`.
 #[tauri::command]
-pub fn skills_local_write(
+pub async fn skills_local_write(
+    app_h: tauri::AppHandle,
+    name: String,
+    description: String,
+    instructions: String,
+    overwrite: Option<bool>,
+) -> Result<LocalSkill, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        skills_local_write_sync(app_h.clone(), name, description, instructions, overwrite)
+    })
+    .await
+}
+
+/// Blocking body of [`skills_local_write`]; reached only through [`crate::blocking::off_main`].
+pub fn skills_local_write_sync(
     app: tauri::AppHandle,
     name: String,
     description: String,
@@ -203,7 +224,13 @@ pub fn skills_local_write(
 /// **skills_local_read** — the instruction body of an authored skill, by slug or name. Used by
 /// skill_run to load the playbook into the agent's loop.
 #[tauri::command]
-pub fn skills_local_read(app: tauri::AppHandle, name: String) -> Result<String, String> {
+pub async fn skills_local_read(app_h: tauri::AppHandle, name: String) -> Result<String, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || skills_local_read_sync(app_h.clone(), name)).await
+}
+
+/// Blocking body of [`skills_local_read`]; reached only through [`crate::blocking::off_main`].
+pub fn skills_local_read_sync(app: tauri::AppHandle, name: String) -> Result<String, String> {
     let slug = slugify(&name);
     let dir = skills_dir(&app)?;
     let path = dir.join(format!("{slug}.md"));

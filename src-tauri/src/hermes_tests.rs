@@ -780,3 +780,10 @@ fn pba_l7b_003_stale_message_does_not_claim_nothing_happened() {
     assert!(!m.contains("nothing was resolved"), "{m}");
     assert!(m.contains("did not receive this decision"), "{m}");
 }
+
+/// HUP-S0.1 — a wedged sidecar fails a control call instead of hanging the command.
+#[test]
+fn hermes_control_calls_are_bounded() {
+    assert!(HERMES_CONTROL_TIMEOUT >= Duration::from_secs(5));
+    assert!(HERMES_CONTROL_TIMEOUT <= Duration::from_secs(60));
+}

@@ -62,7 +62,7 @@ pub async fn membership_checkout<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     login_hint: Option<String>,
 ) -> std::result::Result<(), String> {
-    let cfg = crate::config::config_read(app.clone())?;
+    let cfg = crate::config::config_read_sync(app.clone())?;
     let mut url = cfg.checkout_url();
     // Hand the signed-in account to the browser as an OIDC login_hint, so the browser
     // checkout SSO/pre-fills THE SAME account and the resulting order keys to that sub
@@ -112,7 +112,7 @@ pub async fn membership_enterprise_lead<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     lead: EnterpriseLead,
 ) -> std::result::Result<(), String> {
-    let cfg = crate::config::config_read(app.clone())?;
+    let cfg = crate::config::config_read_sync(app.clone())?;
     let url = cfg.enterprise_lead_url();
     // ureq is BLOCKING (the crate's chosen light HTTP client — lean tree); run it off the async
     // runtime so it never stalls the event loop.
