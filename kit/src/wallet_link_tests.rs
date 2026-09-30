@@ -345,3 +345,20 @@ fn other_submit_error_stays_a_hard_failure() {
     assert!(!canonical_called, "canonical not attempted on a hard submit failure");
     assert!(err.contains("authority"), "surfaces the authority failure, got: {err}");
 }
+
+#[test]
+fn unlink_address_validation_accepts_only_0x_plus_40_hex() {
+    assert!(validate_unlink_address("0x339aB336AC6a6B1b8B7C1c0f76b3a9C1D6f0a771").is_ok());
+    assert!(validate_unlink_address(" 0x339ab336ac6a6b1b8b7c1c0f76b3a9c1d6f0a771 ").is_ok());
+    for bad in [
+        "",
+        "0x",
+        "339ab336ac6a6b1b8b7c1c0f76b3a9c1d6f0a771",
+        "0x339ab336ac6a6b1b8b7c1c0f76b3a9c1d6f0a77",
+        "0x339ab336ac6a6b1b8b7c1c0f76b3a9c1d6f0a7711",
+        "0x339ab336ac6a6b1b8b7c1c0f76b3a9c1d6f0a77g",
+        "0x339ab336ac6a6b1b8b7c1c0f76b3a9c1d6f0/../x",
+    ] {
+        assert!(validate_unlink_address(bad).is_err(), "must reject {bad:?}");
+    }
+}

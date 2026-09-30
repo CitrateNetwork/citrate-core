@@ -434,6 +434,8 @@ pub fn run() {
             wallet_link::wallet_link_request,
             wallet_link::wallet_link_approve,
             wallet_link::wallet_link_reject,
+            wallet_link::wallet_unlink,
+            wallet_link::wallet_linked_list,
             // ── CX (planset citrate-core-social) — command names FROZEN in S0.3. Each is a
             // NotWired stub until its lane wires the body (in its own module, never here). ──
             model_catalog::model_catalog_local,

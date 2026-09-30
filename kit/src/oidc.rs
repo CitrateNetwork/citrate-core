@@ -909,6 +909,22 @@ pub struct WalletLinkChallenge {
     pub message_template: String,
 }
 
+/// One wallet linked to the signed-in identity, from `GET /identity/:sub/wallets`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LinkedWallet {
+    /// EIP-55 address as the authority serves it.
+    pub address: String,
+    /// True for the one wallet the authority serves as `wallet_address` (the pay-to).
+    pub canonical: bool,
+    /// ISO-8601 time the link was proven.
+    pub linked_at: String,
+}
+
+#[derive(Deserialize)]
+struct LinkedWalletList {
+    wallets: Vec<LinkedWallet>,
+}
+
 /// The placeholder the authority puts where the wallet address belongs.
 pub const WALLET_LINK_PLACEHOLDER: &str = "0x<wallet>";
 
@@ -1571,6 +1587,54 @@ impl AuthManager {
             urlencoding_sub(address)
         );
         self.http.post_json(&url, Some(&access), "{}")?;
+        Ok(())
+    }
+
+    /// Every wallet linked to THIS member's identity (`GET
+    /// /identity/:sub/wallets`, Bearer, own sub only), in link order, with the
+    /// authority's own `canonical` flag. The Wallet surface lists these so a
+    /// member can see (and unlink) links made from other vaults or devices,
+    /// which the local custody address alone cannot show.
+    ///
+    /// A non-2xx or an unparseable body is an error, never an empty list: an
+    /// empty list would claim "no other wallets" when the answer is unknown.
+    pub fn wallet_list(&self) -> Result<Vec<LinkedWallet>> {
+        let (sub, access) = self.session_sub_and_token()?;
+        let url = format!(
+            "{}/identity/{}/wallets",
+            self.cfg.issuer.trim_end_matches('/'),
+            urlencoding_sub(&sub)
+        );
+        let body = self.http.get(&url, Some(&access))?;
+        serde_json::from_str::<LinkedWalletList>(&body)
+            .map(|l| l.wallets)
+            .map_err(|_| AuthError::Network)
+    }
+
+    /// Remove a wallet link from THIS member's identity (`DELETE
+    /// /identity/:sub/wallets/:address`, Bearer, own sub only).
+    ///
+    /// Why the desktop needs it: canonical is first-linked by default, so a member
+    /// whose earlier wallet is still linked (a rebuilt vault, a second device, a
+    /// wallet they no longer hold) had no way to drop it from the app. The
+    /// authority scopes the call to the bearer's own sub, so it can never touch
+    /// another identity's links.
+    ///
+    /// Unlinking the CANONICAL wallet moves the pay-to address: the authority
+    /// promotes the next-linked wallet, or, with none left, returns the claim to
+    /// the predicted address. Callers must make that consequence explicit to the
+    /// human before calling (the Wallet surface does).
+    ///
+    /// A non-2xx surfaces as an error, never a silent success.
+    pub fn wallet_unlink(&self, address: &str) -> Result<()> {
+        let (sub, access) = self.session_sub_and_token()?;
+        let url = format!(
+            "{}/identity/{}/wallets/{}",
+            self.cfg.issuer.trim_end_matches('/'),
+            urlencoding_sub(&sub),
+            urlencoding_sub(address)
+        );
+        self.http.delete_json(&url, Some(&access), "{}")?;
         Ok(())
     }
 
