@@ -1871,6 +1871,17 @@ export class Store {
   }
 
   // ---------- chat ----------
+  /** HUP-S0.7 — retry a failed turn: drop the failed reply and its user message, then resend. */
+  async retryChat(failedId: string): Promise<void> {
+    const msgs = this.state.chatMsgs;
+    const idx = msgs.findIndex((m) => m.id === failedId && m.error);
+    if (idx < 0) return;
+    const text = msgs[idx].retryText ?? "";
+    const userIdx = idx - 1 >= 0 && msgs[idx - 1].who === "You" && msgs[idx - 1].text === text ? idx - 1 : -1;
+    this.setState({ chatMsgs: msgs.filter((_, i) => i !== idx && i !== userIdx) });
+    await this.sendChat(text);
+  }
+
   async sendChat(text: string): Promise<void> {
     text = (text || "").trim();
     if (!text || this.state.chatStatus !== "ready" || !this.provider) return;
@@ -1889,7 +1900,7 @@ export class Store {
     try {
       await this.provider.send({
         messages: this.state.chatMsgs
-          .filter((m) => !m.streaming)
+          .filter((m) => !m.streaming && !m.error)
           .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
           .concat([{ role: "user", content: text }]),
         callbacks: {
@@ -1899,14 +1910,19 @@ export class Store {
           },
           onToken: (tk) => {
             ensure();
-            patch((m) => ({ ...m, text: m.text + tk.replace(/\*\*/g, "") }));
+            // HUP-S0.4: keep the model's markdown intact (bold used to be stripped per token).
+            patch((m) => ({ ...m, text: m.text + tk }));
             this.scrollChat();
           },
           onToolCall: (call) => this.handleTool(call, asstId, ensure),
         },
       });
     } catch (e) {
+      // HUP-S0.7: a failed/timed-out turn stays visible with Retry (it used to vanish silently).
       console.error(e);
+      ensure();
+      const reason = e instanceof Error ? e.message : String(e);
+      patch((m) => ({ ...m, error: reason || "the agent did not answer", retryText: text }));
     }
     patch((m) => ({ ...m, streaming: false }));
     this.setState({ chatStatus: "ready" });

@@ -821,6 +821,44 @@ fn build_chat_body_with_tools(
 /// Parse the assistant MESSAGE object (`choices[0].message`) from a chat-completions
 /// response, preserving `tool_calls` so the frontend loop can act on them. Returned
 /// as a JSON string (the message object). Missing message → coarse `BadResponse`.
+/// HUP-S0.5 — chat-template control tokens that must never reach the chat surface.
+const TEMPLATE_TOKENS: &[&str] = &[
+    "<|im_start|>assistant\n",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|eot_id|>",
+    "<|end_of_text|>",
+    "<|endoftext|>",
+    "<start_of_turn>model\n",
+    "<start_of_turn>",
+    "<end_of_turn>",
+    "</s>",
+];
+
+/// HUP-S0.5 — remove leaked template control tokens and raw thinking from a model reply. llama-server
+/// runs with `--jinja --reasoning-format deepseek`, which should already keep these out of
+/// `content`; this is the belt-and-braces guard for templates that leak anyway. An unterminated
+/// `<think>` (cut off by `max_tokens`) drops everything after it.
+pub(crate) fn strip_template_tokens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    for t in TEMPLATE_TOKENS {
+        out = out.replace(t, "");
+    }
+    out.trim().to_string()
+}
+
 fn parse_chat_message(resp: &str) -> Result<String> {
     let v: Value = serde_json::from_str(resp).map_err(|_| AiError::BadResponse)?;
     let msg = v
@@ -836,6 +874,14 @@ fn parse_chat_message(resp: &str) -> Result<String> {
     {
         return Err(AiError::BadResponse);
     }
+    let mut msg = msg.clone();
+    if let Some(c) = msg
+        .get("content")
+        .and_then(Value::as_str)
+        .map(strip_template_tokens)
+    {
+        msg["content"] = Value::String(c);
+    }
     Ok(msg.to_string())
 }
 
@@ -849,7 +895,7 @@ fn parse_completion(resp: &str) -> Result<String> {
         .and_then(|c0| c0.get("message"))
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(strip_template_tokens)
         .ok_or(AiError::BadResponse)
 }
 

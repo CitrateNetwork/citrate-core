@@ -247,6 +247,11 @@ impl LlamaServerManager {
             self.port.to_string(),
             "--ctx-size".to_string(),
             DEFAULT_CTX_SIZE.to_string(),
+            // HUP-S0.5: use the model's native chat/tool-call template, and extract thinking into
+            // `reasoning_content` so it never lands in the visible reply.
+            "--jinja".to_string(),
+            "--reasoning-format".to_string(),
+            "deepseek".to_string(),
             // PBA-L7b-001: the app never uses the bundled web UI or the /slots monitor; turn
             // them off so a drive-by page has less surface even before the key check.
             "--no-webui".to_string(),

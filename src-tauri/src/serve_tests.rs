@@ -406,3 +406,14 @@ fn pba_l7b_009_start_refuses_when_the_port_is_already_held() {
     assert_eq!(mgr.status().state, "stopped");
     drop(squat);
 }
+
+// HUP-S0.5 — the model's own chat/tool template is used (--jinja) and thinking is extracted out of
+// the visible reply (--reasoning-format deepseek), so template/thought tokens never reach chat.
+#[test]
+fn spawn_args_use_the_native_template_and_extract_reasoning() {
+    let (mgr, _dir) = stub_manager("jinja");
+    let args = mgr.spawn_args_for_test();
+    assert!(args.iter().any(|a| a == "--jinja"), "native chat/tool template: {args:?}");
+    let r = args.iter().position(|a| a == "--reasoning-format").expect("--reasoning-format");
+    assert_eq!(args[r + 1], "deepseek");
+}
