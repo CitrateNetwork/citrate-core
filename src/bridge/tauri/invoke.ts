@@ -56,6 +56,12 @@ const LONG: Record<string, number> = {
   hermes_bridge_pending: 45_000,
   hermes_resolve: 45_000,
   hermes_stop: 45_000,
+  // HUP-S1.1c: session calls; events is a long-poll capped at 20 s Rust-side.
+  hermes_session_open: 45_000,
+  hermes_session_send: 45_000,
+  hermes_session_events: 45_000,
+  hermes_session_tool_result: 45_000,
+  hermes_session_stop: 45_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.

@@ -48,6 +48,11 @@ scheduled daemons all drive **one** agent, and the webview becomes a view. Today
    checked between and during steps (TLA+ `AgentLoop`: `Bounded`, `StopIsLive`,
    `OnlyVerifierSucceeds`, `NoEffectWithoutGate`, `TaintDowngrade`).
 
+> **Amendment (2026-09-30, S1.1b):** v1 serves events by **long-poll**
+> (`GET /sessions/:id/events?after=N&wait_ms=M`, sequence-numbered, bounded replay log) rather than
+> SSE: no extra stream dependencies, trivially testable, and core's Rust relay reads it with its
+> existing HTTP client. SSE can sit on the same log later without changing clients' semantics.
+
 ## Consequences
 
 - The webview keeps rendering and approving; it stops deciding. `harness.ts` is retired only after

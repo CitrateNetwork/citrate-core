@@ -482,6 +482,11 @@ pub fn run() {
             hermes::hermes_run_skill,
             hermes::hermes_pending_approvals,
             hermes::hermes_stop,
+            hermes::hermes_session_open,
+            hermes::hermes_session_send,
+            hermes::hermes_session_events,
+            hermes::hermes_session_tool_result,
+            hermes::hermes_session_stop,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).

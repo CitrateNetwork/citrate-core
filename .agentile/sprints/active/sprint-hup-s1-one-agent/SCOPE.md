@@ -19,9 +19,9 @@ carry-in. WP definitions: [05 §HUP-S1](../../planset/2026-09-30-hermes-upskill/
 
 | WP | Summary | Repo | Status |
 |---|---|---|---|
-| S1.1a | `agent-loop` crate: types, `LlmClient`/`ToolHost` traits, bounded loop, stop, event stream — pure + offline-tested | rt | in progress |
-| S1.1b | Sidecar HTTP: sessions, SSE events, tool_results, stop; core-hosted tool suspension | rt | todo |
-| S1.1c | citrate-core: session start (endpoint + bearer from serve/gateway state), SSE relay to webview, core tool host = existing `handleTool` gates | core | todo |
+| S1.1a | `agent-loop` crate: types, `LlmClient`/`ToolHost` traits, bounded loop, stop, event stream — pure + offline-tested | rt | review (runtime#10) |
+| S1.1b | Sidecar HTTP: sessions, long-poll events, tool_results, stop; core-hosted tool suspension | rt | review (runtime#10) |
+| S1.1c | citrate-core: session start (endpoint + bearer from serve state), event long-poll, core tool host = existing `handleTool` gates; opt-in preview flag | core | review |
 | S1.9 | Parity suite vs `harness.ts`; then retire the TS loop; one chat surface + one model picker (deferred from S0.8) | core, rt | todo |
 | S1.2 | Tool retrieval (BGE + keyword top-K) + tokenizer-true budget + compaction-must-shrink | rt | todo |
 | S1.3 | Planner/executor + verifier framework + TLA+ `AgentLoop` | rt | todo |
@@ -42,5 +42,6 @@ citrate-core at `f4daf14` (v0.4.1): cargo 688 passed (6 ignored), vitest 568. Co
 
 ## Daily log
 
+- 2026-09-30: S1.1a+b (runtime#10: agent-loop crate + sidecar sessions, runtime 626→646) and S1.1c (core: 5 session commands + sidecar chat provider behind Settings › App preview toggle; cargo 688→694, vitest 568→573). Live use needs the hermes binary rebuilt from runtime#10.
 - 2026-09-30: Sprint opened after v0.4.1 froze on `main`. ADR "loop in sidecar" accepted. S1.1a
   started in citrate-agent-runtime.

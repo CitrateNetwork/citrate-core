@@ -880,6 +880,23 @@ export interface AgentHarnessDomain {
    *  PBA-L7b-003: BOUND to the reviewed call `id` — if the sidecar's head is no longer that call the
    *  promise rejects with a message starting `STALE_APPROVAL` and NOTHING is resolved (re-review). */
   resolve(approve: boolean, id: string): Promise<void>;
+  /** HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar). Open a session on the LOCAL
+   *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
+   *  tool runs in core through its approval gates). Returns the session id. */
+  sessionOpen(systemPrompt: string, toolsJson: string): Promise<string>;
+  sessionSend(id: string, text: string): Promise<void>;
+  /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
+  sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
+  /** Hand back a core-hosted tool's result after core's own gates ran it. */
+  sessionToolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
+  sessionStop(id: string): Promise<void>;
+}
+
+/** HUP-S1.1c — one page of a sidecar session's event log. */
+export interface SessionEventsPage {
+  events: { seq: number; event: Record<string, unknown> }[];
+  lastSeq: number;
+  busy: boolean;
 }
 
 // ── Local instruction-skills (Hermes "write & run skills"). A skill is a markdown playbook the agent
