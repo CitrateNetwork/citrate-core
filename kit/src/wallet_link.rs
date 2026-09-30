@@ -416,6 +416,53 @@ pub fn wallet_link_reject_sync(
     Ok(())
 }
 
+/// Accept only a `0x` + 40-hex address for an unlink. The authority validates too,
+/// but a malformed value is refused here so it never reaches the network (and a
+/// path segment built from it can never smuggle extra path).
+fn validate_unlink_address(address: &str) -> std::result::Result<&str, String> {
+    let a = address.trim();
+    let ok = a.len() == 42
+        && (a.starts_with("0x") || a.starts_with("0X"))
+        && a[2..].chars().all(|c| c.is_ascii_hexdigit());
+    if ok {
+        Ok(a)
+    } else {
+        Err("that is not a wallet address (expected 0x followed by 40 hex characters)".to_string())
+    }
+}
+
+/// **Command — wallet_unlink.** Remove one wallet link from the signed-in
+/// member's own identity. No signature and no funds move; the authority scopes
+/// it to the bearer's own sub.
+///
+/// If the unlinked wallet was CANONICAL, the authority moves the pay-to address
+/// (next-linked wallet, or the predicted address when none remain). The Wallet
+/// surface states that consequence and asks for an explicit confirmation before
+/// invoking this (HIC: an identity/pay-to change needs a human decision).
+/// Every wallet linked to the signed-in identity, straight from the authority
+/// (`GET /identity/:sub/wallets`). An authority error is an error, never `[]`.
+#[tauri::command]
+pub fn wallet_linked_list(
+    auth: State<'_, crate::oidc::AuthState>,
+) -> std::result::Result<Vec<crate::oidc::LinkedWallet>, String> {
+    auth.0.wallet_list().map_err(|e| match e {
+        crate::oidc::AuthError::NotSignedIn => LinkError::NotSignedIn.to_string(),
+        other => format!("could not read linked wallets from the authority: {other}"),
+    })
+}
+
+#[tauri::command]
+pub fn wallet_unlink(
+    auth: State<'_, crate::oidc::AuthState>,
+    address: String,
+) -> std::result::Result<(), String> {
+    let addr = validate_unlink_address(&address)?;
+    auth.0.wallet_unlink(addr).map_err(|e| match e {
+        crate::oidc::AuthError::NotSignedIn => LinkError::NotSignedIn.to_string(),
+        other => format!("the authority did not unlink the wallet: {other}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     include!("wallet_link_tests.rs");
