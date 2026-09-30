@@ -6,7 +6,7 @@
 //! the `hf-model-pull-register` skill registers it on-chain so it appears in that
 //! registry source for every node.
 //!
-//! Live ABI (contracts/src/ModelRegistry.sol @ 0xba36fa0d, verified against the
+//! Live ABI (contracts/src/ModelRegistry.sol, address from the generated book (0x807cb7ee on the 2026-09-30 reroll), verified against the
 //! foundry `RegisterStarterModels.s.sol` deploy script):
 //!
 //!   registerModel(
