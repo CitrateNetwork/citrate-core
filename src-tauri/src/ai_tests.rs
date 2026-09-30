@@ -686,7 +686,7 @@ fn every_chat_body_caps_generation_with_max_tokens() {
     assert_eq!(plain["max_tokens"], AI_MAX_TOKENS);
     let tools = build_chat_body_with_tools("m", "[]", TOOLS_SPEC, "{}").unwrap();
     assert_eq!(tools["max_tokens"], AI_MAX_TOKENS);
-    assert!(AI_MAX_TOKENS >= 512 && AI_MAX_TOKENS <= 4096, "a sane per-turn cap");
+    const { assert!(AI_MAX_TOKENS >= 512 && AI_MAX_TOKENS <= 4096, "a sane per-turn cap") };
 }
 
 #[test]
