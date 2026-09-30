@@ -223,12 +223,21 @@ mod tests {
     fn the_book_pins_a_genesis_hash() {
         let g = genesis_hash();
         assert_eq!(g.len(), 66, "genesisHash must be 0x + 64 hex, got {g}");
-        assert!(g.starts_with("0x"), "genesisHash must be 0x-prefixed, got {g}");
         assert!(
-            g[2..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            g.starts_with("0x"),
+            "genesisHash must be 0x-prefixed, got {g}"
+        );
+        assert!(
+            g[2..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "genesisHash must be lowercase hex, got {g}"
         );
-        assert_ne!(g, &format!("0x{}", "0".repeat(64)), "genesisHash is the zero hash");
+        assert_ne!(
+            g,
+            &format!("0x{}", "0".repeat(64)),
+            "genesisHash is the zero hash"
+        );
     }
 
     /// The book is GENERATED. If someone hand-edits it, the marker goes away and
