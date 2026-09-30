@@ -431,18 +431,24 @@ fn validate_unlink_address(address: &str) -> std::result::Result<&str, String> {
     }
 }
 
-/// **Command — wallet_unlink.** Remove one wallet link from the signed-in
-/// member's own identity. No signature and no funds move; the authority scopes
-/// it to the bearer's own sub.
-///
-/// If the unlinked wallet was CANONICAL, the authority moves the pay-to address
-/// (next-linked wallet, or the predicted address when none remain). The Wallet
-/// surface states that consequence and asks for an explicit confirmation before
-/// invoking this (HIC: an identity/pay-to change needs a human decision).
-/// Every wallet linked to the signed-in identity, straight from the authority
-/// (`GET /identity/:sub/wallets`). An authority error is an error, never `[]`.
+/// **Command — wallet_linked_list.** Every wallet linked to the signed-in identity,
+/// straight from the authority (`GET /identity/:sub/wallets`). An authority error is
+/// an error, never `[]`.
 #[tauri::command]
-pub fn wallet_linked_list(
+pub async fn wallet_linked_list(
+    app_h: tauri::AppHandle,
+) -> std::result::Result<Vec<crate::oidc::LinkedWallet>, String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let auth = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_linked_list_sync(auth)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_linked_list`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_linked_list_sync(
     auth: State<'_, crate::oidc::AuthState>,
 ) -> std::result::Result<Vec<crate::oidc::LinkedWallet>, String> {
     auth.0.wallet_list().map_err(|e| match e {
@@ -451,8 +457,30 @@ pub fn wallet_linked_list(
     })
 }
 
+/// **Command — wallet_unlink.** Remove one wallet link from the signed-in
+/// member's own identity. No signature and no funds move; the authority scopes
+/// it to the bearer's own sub.
+///
+/// If the unlinked wallet was CANONICAL, the authority moves the pay-to address
+/// (next-linked wallet, or the predicted address when none remain). The Wallet
+/// surface states that consequence and asks for an explicit confirmation before
+/// invoking this (HIC: an identity/pay-to change needs a human decision).
 #[tauri::command]
-pub fn wallet_unlink(
+pub async fn wallet_unlink(
+    app_h: tauri::AppHandle,
+    address: String,
+) -> std::result::Result<(), String> {
+    // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
+    crate::blocking::off_main(move || {
+        let auth = tauri::Manager::try_state::<crate::oidc::AuthState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        wallet_unlink_sync(auth, address)
+    })
+    .await
+}
+
+/// Blocking body of [`wallet_unlink`]; reached only through [`crate::blocking::off_main`].
+pub fn wallet_unlink_sync(
     auth: State<'_, crate::oidc::AuthState>,
     address: String,
 ) -> std::result::Result<(), String> {
