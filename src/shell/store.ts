@@ -369,6 +369,109 @@ export function mergeActivity(real: Activity[], current: Activity[]): Activity[]
   return pendingLocal.concat(real).slice(0, 24);
 }
 
+/** HUP-S0.6 — the pure per-tick state change (exported for tests). Outside the sim it only
+ *  advances real animations (the S5 grant counter); an idle desktop tick is an empty patch, which
+ *  `setState` elides, so nothing re-renders. */
+export function tickPatch(
+  s: AppState,
+  sim: boolean,
+  rand: () => number = Math.random,
+  ctx: { nextId: () => number; makePeers: (n: number) => AppState["peerRows"] } = {
+    nextId: () => Date.now(),
+    makePeers: () => [],
+  },
+): Partial<AppState> {
+  const u: Partial<AppState> = {};
+  const running = s.node !== "off" && s.node !== "prov";
+  // NODE VITALS SIMULATION — web-dev ONLY. In a Tauri build height/peers/
+  // syncPct/node-state come from the REAL node via `refreshNode`
+  // (bridge.node.status → node.rs → local RPC eth_blockNumber/net_peerCount),
+  // and cpu/ram/logs/peer-rows are honestly blank rather than fabricated
+  // (Rule 1). This whole block is the source of the implausible always-
+  // climbing height + steady ~24 peers a packaged build must never show.
+  if (sim) {
+    u.height = s.height + (rand() < 0.85 ? 1 : 2);
+    u.finAge = s.finAge + 0.6;
+    if (u.height - s.lastCp >= 50) {
+      u.lastCp = u.height;
+      u.finAge = 0;
+    }
+    const target = running ? 24 : 0;
+    let peers = s.peers;
+    if (peers < target) peers += Math.ceil(rand() * 3);
+    else if (peers > target) peers -= Math.ceil(rand() * 4);
+    else if (running && rand() < 0.15) peers += rand() < 0.5 ? 1 : -1;
+    u.peers = Math.max(0, Math.min(32, peers));
+    if (s.node === "syncing") {
+      const np = Math.min(100, s.syncPct + 5 + rand() * 9);
+      u.syncPct = np;
+      if (np >= 100) {
+        // SIM-ONLY preview: the sim has no real ValidatorRegistry, so it treats
+        // a granted member's principal as the bond and folds it into
+        // `bondedStake` too, keeping the fabricated node state and the
+        // `snapshot().staked` vitals (= bondedStake + selfStake) coherent. The
+        // REAL tauri path reads the genuine registry bond in refreshNode.
+        const simBond = s.hasGrant ? 32000 : 0;
+        u.bondedStake = simBond;
+        u.node = simBond + s.selfStake >= 32000 ? "validating" : "synced";
+        if (s.stage === "s6") u.s6ready = true;
+      }
+    }
+    if (s.node === "validating" && rand() < 0.018) u.blocksProposed = s.blocksProposed + 1;
+    if (s.node === "validating") {
+      const dv = 0.004 + rand() * 0.005,
+        dp = 0.0009 + rand() * 0.0006,
+        dc = 0.0004 + rand() * 0.0004;
+      u.earnVal = s.earnVal + dv;
+      u.earnPin = s.earnPin + dp;
+      u.earnComp = s.earnComp + dc;
+      u.earnToday = s.earnToday + dv + dp + dc;
+      u.claimable = s.claimable + (dv + dp + dc) * 0.85;
+    }
+    if (running) {
+      u.hb = (s.hb + 0.6) % 30;
+      u.cpu = s.node === "paused" ? 2 + rand() * 2 : (s.node === "validating" ? 18 : 11) + rand() * 12;
+      u.ram = (s.node === "validating" ? 780 : 540) + rand() * 140;
+      if (rand() < 0.55) {
+        const T = NODE_LOG_TEMPLATES;
+        const line = T[(rand() * T.length) | 0]
+          .replace(/\{h\}/g, String(u.height))
+          .replace(/\{peers\}/g, String(u.peers))
+          .replace(/\{r\}/g, String((u.height! / 50) | 0));
+        const d = new Date();
+        const t =
+          String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
+        u.logs = s.logs.concat([{ t, line, id: ctx.nextId() }]).slice(-14);
+      }
+      if (!s.peerRows.length || (u.height! % 60 === 0)) u.peerRows = ctx.makePeers(u.peers!);
+    }
+  }
+  if (s.s5 === "settling") {
+    // BC-1.3: the counter is a PURE animation now — it NEVER settles S5 or sets
+    // hasGrant/hasSbt (Rule 1). Settlement comes ONLY from the real grant read:
+    // the TAURI path settles via pollGrant (the on-chain attributedStake + SBT +
+    // entitlement); the web-dev SIM path settles via pollGrantSim (the honest
+    // sim grantStatus derived from the persona/AppState) — never a blind timer.
+    u.s5n = Math.min(32000, s.s5n + 6800);
+  }
+  // Q-A.4a item 1: the fabricated semantic-search "download" tick is GONE.
+  // The bge embedding model is bundled WITH the mem-mcp daemon (not a UI
+  // download), so semantic availability is a REAL read from memory_status()
+  // (state.memSemantic), never a rand() progress bar claiming a
+  // "sha256 verified" file that was never fetched (Rule 1).
+  // HUP-S0.6: these countdowns are cosmetic (sim preview only). In the desktop build they changed
+  // state every tick and re-rendered the whole app ~1.7x/s forever, including during chat.
+  if (sim) u.pollIn = s.pollIn <= 0.6 ? 20 : s.pollIn - 0.6;
+  if (sim && running && s.pins.length) {
+    u.pins = s.pins.map((p) => {
+      const nx = p.nextIn - 0.6;
+      if (nx <= 0) return { ...p, nextIn: p.cadH * 3600, last: p.last === "pending" ? "pending" : "attested" };
+      return { ...p, nextIn: nx };
+    });
+  }
+  return u;
+}
+
 export class Store {
   state: AppState;
   private subs = new Set<() => void>();
@@ -439,6 +542,8 @@ export class Store {
 
   setState(u: Updater): void {
     const patch = typeof u === "function" ? u(this.state) : u;
+    // HUP-S0.6: an empty patch changes nothing — don't re-render the whole app for it.
+    if (!patch || Object.keys(patch).length === 0) return;
     this.state = { ...this.state, ...patch };
     this.snap = this.state;
     this.subs.forEach((cb) => cb());
@@ -1719,95 +1824,12 @@ export class Store {
 
   // ---------- sim tick (verbatim logic) ----------
   tick(): void {
-    this.setState((s) => {
-      const u: Partial<AppState> = {};
-      const running = s.node !== "off" && s.node !== "prov";
-      // NODE VITALS SIMULATION — web-dev ONLY. In a Tauri build height/peers/
-      // syncPct/node-state come from the REAL node via `refreshNode`
-      // (bridge.node.status → node.rs → local RPC eth_blockNumber/net_peerCount),
-      // and cpu/ram/logs/peer-rows are honestly blank rather than fabricated
-      // (Rule 1). This whole block is the source of the implausible always-
-      // climbing height + steady ~24 peers a packaged build must never show.
-      if (BRIDGE_MODE === "sim") {
-        u.height = s.height + (Math.random() < 0.85 ? 1 : 2);
-        u.finAge = s.finAge + 0.6;
-        if (u.height - s.lastCp >= 50) {
-          u.lastCp = u.height;
-          u.finAge = 0;
-        }
-        const target = running ? 24 : 0;
-        let peers = s.peers;
-        if (peers < target) peers += Math.ceil(Math.random() * 3);
-        else if (peers > target) peers -= Math.ceil(Math.random() * 4);
-        else if (running && Math.random() < 0.15) peers += Math.random() < 0.5 ? 1 : -1;
-        u.peers = Math.max(0, Math.min(32, peers));
-        if (s.node === "syncing") {
-          const np = Math.min(100, s.syncPct + 5 + Math.random() * 9);
-          u.syncPct = np;
-          if (np >= 100) {
-            // SIM-ONLY preview: the sim has no real ValidatorRegistry, so it treats
-            // a granted member's principal as the bond and folds it into
-            // `bondedStake` too, keeping the fabricated node state and the
-            // `snapshot().staked` vitals (= bondedStake + selfStake) coherent. The
-            // REAL tauri path reads the genuine registry bond in refreshNode.
-            const simBond = s.hasGrant ? 32000 : 0;
-            u.bondedStake = simBond;
-            u.node = simBond + s.selfStake >= 32000 ? "validating" : "synced";
-            if (s.stage === "s6") u.s6ready = true;
-          }
-        }
-        if (s.node === "validating" && Math.random() < 0.018) u.blocksProposed = s.blocksProposed + 1;
-        if (s.node === "validating") {
-          const dv = 0.004 + Math.random() * 0.005,
-            dp = 0.0009 + Math.random() * 0.0006,
-            dc = 0.0004 + Math.random() * 0.0004;
-          u.earnVal = s.earnVal + dv;
-          u.earnPin = s.earnPin + dp;
-          u.earnComp = s.earnComp + dc;
-          u.earnToday = s.earnToday + dv + dp + dc;
-          u.claimable = s.claimable + (dv + dp + dc) * 0.85;
-        }
-        if (running) {
-          u.hb = (s.hb + 0.6) % 30;
-          u.cpu = s.node === "paused" ? 2 + Math.random() * 2 : (s.node === "validating" ? 18 : 11) + Math.random() * 12;
-          u.ram = (s.node === "validating" ? 780 : 540) + Math.random() * 140;
-          if (Math.random() < 0.55) {
-            const T = NODE_LOG_TEMPLATES;
-            const line = T[(Math.random() * T.length) | 0]
-              .replace(/\{h\}/g, String(u.height))
-              .replace(/\{peers\}/g, String(u.peers))
-              .replace(/\{r\}/g, String((u.height! / 50) | 0));
-            const d = new Date();
-            const t =
-              String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
-            u.logs = s.logs.concat([{ t, line, id: this.mid++ }]).slice(-14);
-          }
-          if (!s.peerRows.length || (u.height! % 60 === 0)) u.peerRows = this.makePeers(u.peers!);
-        }
-      }
-      if (s.s5 === "settling") {
-        // BC-1.3: the counter is a PURE animation now — it NEVER settles S5 or sets
-        // hasGrant/hasSbt (Rule 1). Settlement comes ONLY from the real grant read:
-        // the TAURI path settles via pollGrant (the on-chain attributedStake + SBT +
-        // entitlement); the web-dev SIM path settles via pollGrantSim (the honest
-        // sim grantStatus derived from the persona/AppState) — never a blind timer.
-        u.s5n = Math.min(32000, s.s5n + 6800);
-      }
-      // Q-A.4a item 1: the fabricated semantic-search "download" tick is GONE.
-      // The bge embedding model is bundled WITH the mem-mcp daemon (not a UI
-      // download), so semantic availability is a REAL read from memory_status()
-      // (state.memSemantic), never a Math.random() progress bar claiming a
-      // "sha256 verified" file that was never fetched (Rule 1).
-      u.pollIn = s.pollIn <= 0.6 ? 20 : s.pollIn - 0.6;
-      if (running && s.pins.length) {
-        u.pins = s.pins.map((p) => {
-          const nx = p.nextIn - 0.6;
-          if (nx <= 0) return { ...p, nextIn: p.cadH * 3600, last: p.last === "pending" ? "pending" : "attested" };
-          return { ...p, nextIn: nx };
-        });
-      }
-      return u;
-    });
+    this.setState((s) =>
+      tickPatch(s, BRIDGE_MODE === "sim", Math.random, {
+        nextId: () => this.mid++,
+        makePeers: (n) => this.makePeers(n),
+      }),
+    );
   }
 
   makePeers(n: number) {
@@ -1897,6 +1919,21 @@ export class Store {
     };
     const patch = (fn: (m: ChatMsg) => ChatMsg) =>
       this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? fn(m) : m)) }));
+    // HUP-S0.6: coalesce streamed tokens — one render per ~frame instead of one full-app render
+    // per token (Root subscribes to the whole state).
+    let pending = "";
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (!pending) return;
+      const add = pending;
+      pending = "";
+      patch((m) => ({ ...m, text: m.text + add }));
+      this.scrollChat();
+    };
     try {
       await this.provider.send({
         messages: this.state.chatMsgs
@@ -1911,13 +1948,18 @@ export class Store {
           onToken: (tk) => {
             ensure();
             // HUP-S0.4: keep the model's markdown intact (bold used to be stripped per token).
-            patch((m) => ({ ...m, text: m.text + tk }));
-            this.scrollChat();
+            pending += tk;
+            if (flushTimer === null) flushTimer = setTimeout(flush, 32);
           },
-          onToolCall: (call) => this.handleTool(call, asstId, ensure),
+          onToolCall: (call) => {
+            flush();
+            return this.handleTool(call, asstId, ensure);
+          },
         },
       });
+      flush();
     } catch (e) {
+      flush();
       // HUP-S0.7: a failed/timed-out turn stays visible with Retry (it used to vanish silently).
       console.error(e);
       ensure();
