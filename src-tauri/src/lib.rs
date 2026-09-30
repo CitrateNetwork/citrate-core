@@ -440,6 +440,7 @@ pub fn run() {
             // ── CX (planset citrate-core-social) — command names FROZEN in S0.3. Each is a
             // NotWired stub until its lane wires the body (in its own module, never here). ──
             model_catalog::model_catalog_local,
+            model_catalog::model_catalog_partials,
             model_catalog::model_catalog_search,
             model_catalog::model_catalog_download,
             model_catalog::model_catalog_select,

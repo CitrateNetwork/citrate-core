@@ -256,3 +256,38 @@ fn pba_l7b_013_hf_subdirectory_ggufs_resolve_and_select() {
         assert!(model_file_from_id(bad).is_err(), "{bad}");
     }
 }
+
+// HUP-S0.3 — a catalog download interrupted by an app restart is listed as resumable (it used to
+// vanish: the in-memory slice was lost and read_local_models skips `.part` files).
+#[test]
+fn interrupted_catalog_downloads_are_listed_as_resumable() {
+    let dir = std::env::temp_dir().join(format!("cc-partials-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A tracked partial: 10 of 40 bytes.
+    write_download_marker(&dir, "qwen.gguf", "hf:org/repo/qwen.gguf", 40).unwrap();
+    std::fs::write(dir.join("qwen.gguf.part"), [0u8; 10]).unwrap();
+    // An untracked stray .part (no marker → unknown origin → not offered).
+    std::fs::write(dir.join("stray.gguf.part"), [0u8; 5]).unwrap();
+    // A marker whose download has not written a byte yet.
+    write_download_marker(&dir, "new.gguf", "hf:org/repo/new.gguf", 100).unwrap();
+
+    let mut got = read_partial_downloads(&dir);
+    got.sort_by(|a, b| a.file.cmp(&b.file));
+    assert_eq!(got.len(), 2, "tracked partials only: {got:?}");
+    assert_eq!(got[1].id, "hf:org/repo/qwen.gguf");
+    assert_eq!(got[1].downloaded_bytes, 10);
+    assert_eq!(got[1].total_bytes, 40);
+    assert_eq!(got[1].pct, 25);
+    assert_eq!(got[0].downloaded_bytes, 0);
+
+    // Finishing clears the marker, so a completed model is never offered as a resume.
+    clear_download_marker(&dir, "qwen.gguf");
+    assert!(read_partial_downloads(&dir).iter().all(|p| p.file != "qwen.gguf"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_missing_models_dir_has_no_partials() {
+    assert!(read_partial_downloads(std::path::Path::new("/nonexistent/citrate/models")).is_empty());
+}

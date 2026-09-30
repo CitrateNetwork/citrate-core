@@ -10,6 +10,9 @@ export function simModelsCatalog(_host: SimHost): ModelsCatalogDomain {
     async local() {
       return [];
     },
+    async partials() {
+      return []; // honest-empty: no downloads in web/dev
+    },
     async search() {
       return [];
     },

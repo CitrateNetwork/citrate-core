@@ -10,13 +10,15 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import type { ModelDescriptor, RegistryModel } from "../../bridge/domains";
+import type { ModelDescriptor, PartialDownload, RegistryModel } from "../../bridge/domains";
 
 export type ModelSourceId = "hf" | "github";
 
 export interface ModelsState {
   /** Locally-present, verified models (bridge.modelsCatalog.local). */
   local: ModelDescriptor[];
+  /** HUP-S0.3 — interrupted catalog downloads that can be resumed after a restart. */
+  partials: PartialDownload[];
   /** Results of the last catalog search. */
   results: ModelDescriptor[];
   /** Models registered on-chain in the ModelRegistry (Hermes WP0.2b). Not-yet-local. */
@@ -39,6 +41,7 @@ export interface ModelsState {
 
 const initial: ModelsState = {
   local: [],
+  partials: [],
   results: [],
   registry: [],
   activeId: null,
@@ -76,6 +79,16 @@ export async function refreshLocalModels(): Promise<void> {
     // user-facing error. Keep the surface calm and honest; search/download/select still work.
     modelsSlice.set({ localPending: true });
   }
+  await refreshPartials();
+}
+
+/** HUP-S0.3 — load interrupted downloads. Honest-empty on failure (never an error banner). */
+export async function refreshPartials(): Promise<void> {
+  try {
+    modelsSlice.set({ partials: await bridge.modelsCatalog.partials() });
+  } catch {
+    modelsSlice.set({ partials: [] });
+  }
 }
 
 /** Search a source for downloadable models. Clears results first so stale hits never linger. */
@@ -107,6 +120,7 @@ export async function downloadModel(id: string): Promise<void> {
     await refreshLocalModels();
   } catch (e) {
     modelsSlice.set({ downloadingId: null, downloadPct: null, error: message(e) });
+    await refreshPartials(); // an interrupted download stays listed for a later resume
   }
 }
 

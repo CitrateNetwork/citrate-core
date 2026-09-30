@@ -563,3 +563,162 @@ fn model_descriptor_default_and_per_file_isolation() {
     assert!(matches!(from_desc.status(), ModelStatus::Ready), "from_descriptor sees the already-verified custom model");
 }
 
+
+// ===========================================================================
+// HUP-S0.3 — download robustness (owner report 2026-09-29: "HF downloads are not finishing
+// and not persistent"). Segmented ranged reads with bounded retries, single-flight per file,
+// verify-not-redownload, and a 206 requirement on resume.
+// ===========================================================================
+
+/// Serves `body` honouring `get_range(start, end)`; fails the call numbers in `fail_calls`
+/// (1-based) with a transport error, and optionally makes the reader of call `err_mid_call`
+/// yield `err_after` bytes then an I/O error (a dropped connection mid-body).
+struct RangeTransport {
+    body: Vec<u8>,
+    fail_calls: Vec<usize>,
+    err_mid_call: Option<(usize, usize)>,
+    always_fail_after: Option<usize>,
+    calls: StdMutex<Vec<(u64, u64)>>,
+}
+
+impl RangeTransport {
+    fn new(body: Vec<u8>) -> Self {
+        RangeTransport { body, fail_calls: vec![], err_mid_call: None, always_fail_after: None, calls: StdMutex::new(vec![]) }
+    }
+    fn starts(&self) -> Vec<u64> {
+        self.calls.lock().unwrap().iter().map(|c| c.0).collect()
+    }
+}
+
+struct ErrAfter {
+    data: std::io::Cursor<Vec<u8>>,
+    remaining: usize,
+}
+impl std::io::Read for ErrAfter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "dropped"));
+        }
+        let n = buf.len().min(self.remaining);
+        let got = self.data.read(&mut buf[..n])?;
+        self.remaining -= got;
+        Ok(got)
+    }
+}
+
+impl ModelTransport for RangeTransport {
+    fn total_size(&self) -> std::result::Result<u64, ModelError> {
+        Ok(self.body.len() as u64)
+    }
+    fn get_from(&self, offset: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, ModelError> {
+        self.get_range(offset, self.body.len() as u64)
+    }
+    fn get_range(&self, start: u64, end: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, ModelError> {
+        let call_no = {
+            let mut c = self.calls.lock().unwrap();
+            c.push((start, end));
+            c.len()
+        };
+        if self.fail_calls.contains(&call_no) || self.always_fail_after.is_some_and(|n| call_no > n) {
+            return Err(ModelError::Transport("connection reset".into()));
+        }
+        let slice = self.body[start as usize..end as usize].to_vec();
+        if let Some((n, after)) = self.err_mid_call {
+            if n == call_no {
+                return Ok(Box::new(ErrAfter { data: std::io::Cursor::new(slice), remaining: after }));
+            }
+        }
+        Ok(Box::new(std::io::Cursor::new(slice)))
+    }
+}
+
+fn range_manager(tag: &str, body: &[u8], t: std::sync::Arc<RangeTransport>) -> (ModelManager, PathBuf) {
+    struct Shared(std::sync::Arc<RangeTransport>);
+    impl ModelTransport for Shared {
+        fn total_size(&self) -> std::result::Result<u64, ModelError> {
+            self.0.total_size()
+        }
+        fn get_from(&self, o: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, ModelError> {
+            self.0.get_from(o)
+        }
+        fn get_range(&self, s: u64, e: u64) -> std::result::Result<Box<dyn std::io::Read + Send>, ModelError> {
+            self.0.get_range(s, e)
+        }
+    }
+    let dir = tmp_model_dir(tag);
+    let mgr = ModelManager::new(dir.clone(), Box::new(Shared(t)), sha256_hex(body), body.len() as u64)
+        .with_segment_bytes(16)
+        .with_retry_backoff(|_| std::time::Duration::ZERO);
+    (mgr, dir)
+}
+
+#[test]
+fn a_transient_segment_failure_auto_resumes_and_finishes() {
+    let body = gguf_fixture(64);
+    let mut t = RangeTransport::new(body.clone());
+    t.fail_calls = vec![2];
+    let t = std::sync::Arc::new(t);
+    let (mgr, dir) = range_manager("seg-retry", &body, t.clone());
+    mgr.download().expect("a single transient failure is retried, not fatal");
+    assert_eq!(t.starts(), vec![0, 16, 16, 32, 48], "the failed segment is re-requested from its start");
+    assert_eq!(std::fs::read(dir.join(MODEL_FILE)).unwrap(), body);
+    mgr.verify().expect("the resumed file is byte-identical");
+}
+
+#[test]
+fn a_dropped_connection_mid_segment_resumes_at_the_exact_byte() {
+    let body = gguf_fixture(64);
+    let mut t = RangeTransport::new(body.clone());
+    t.err_mid_call = Some((2, 8)); // segment [16,32) delivers 8 bytes then resets
+    let t = std::sync::Arc::new(t);
+    let (mgr, _dir) = range_manager("mid-drop", &body, t.clone());
+    mgr.download().expect("resumes after a mid-body drop");
+    assert_eq!(t.starts()[2], 24, "resume starts exactly after the 8 bytes already written");
+    mgr.verify().expect("no bytes lost or duplicated");
+}
+
+#[test]
+fn retries_are_bounded_and_the_partial_is_kept_for_later() {
+    let body = gguf_fixture(64);
+    let mut t = RangeTransport::new(body.clone());
+    t.always_fail_after = Some(1);
+    let t = std::sync::Arc::new(t);
+    let (mgr, dir) = range_manager("bounded", &body, t.clone());
+    let r = mgr.download();
+    assert!(matches!(r, Err(ModelError::Transport(_))), "gives up with a transport error, got {r:?}");
+    assert_eq!(t.starts().len(), 1 + MAX_SEGMENT_RETRIES as usize + 1, "first segment + bounded retries");
+    let part = std::fs::metadata(dir.join(format!("{MODEL_FILE}.part"))).unwrap().len();
+    assert_eq!(part, 16, "the verified-good first segment stays on disk for a later resume");
+}
+
+#[test]
+fn a_second_download_of_the_same_file_is_refused_while_one_runs() {
+    let body = gguf_fixture(64);
+    let dir = tmp_model_dir("single-flight");
+    let hold = DownloadGuard::acquire(&dir.join(format!("{MODEL_FILE}.part"))).expect("first holder");
+    let mgr = ModelManager::new(dir.clone(), Box::new(FixtureTransport::new(body.clone())), sha256_hex(&body), 64);
+    assert!(matches!(mgr.download(), Err(ModelError::AlreadyDownloading)));
+    drop(hold);
+    mgr.download().expect("once the first finishes, a download may start");
+}
+
+#[test]
+fn a_finished_but_unverified_file_is_verified_not_downloaded_again() {
+    let body = gguf_fixture(64);
+    let mut t = RangeTransport::new(body.clone());
+    t.always_fail_after = Some(0); // any network call would fail
+    let t = std::sync::Arc::new(t);
+    let (mgr, dir) = range_manager("no-redownload", &body, t.clone());
+    std::fs::write(dir.join(MODEL_FILE), &body).unwrap();
+    mgr.download().expect("the complete file is kept");
+    assert!(t.starts().is_empty(), "no bytes re-requested for a finished file");
+    mgr.verify().expect("and it verifies");
+}
+
+#[test]
+fn a_resume_must_get_206_partial_content() {
+    assert!(check_range_status(0, 200).is_ok(), "a fresh full GET may be 200");
+    assert!(check_range_status(0, 206).is_ok());
+    assert!(check_range_status(4096, 206).is_ok());
+    assert!(matches!(check_range_status(4096, 200), Err(ModelError::RangeIgnored)));
+}

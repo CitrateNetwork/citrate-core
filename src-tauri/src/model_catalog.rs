@@ -300,6 +300,109 @@ fn normalize_sha256(raw: &str) -> Option<String> {
 // Tauri command surface. Frozen NAMES (lib.rs); bodies here.
 // ---------------------------------------------------------------------------
 
+/// HUP-S0.3 — an interrupted catalog download that can be resumed. Serialized camelCase for the
+/// Models surface's "Resume" rows.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialDownload {
+    /// The catalog id to pass back to `model_catalog_download` (which resumes the `.part`).
+    pub id: String,
+    /// The local model filename (the `.part` is `<file>.part`).
+    pub file: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    /// Whole percent, 0–100.
+    pub pct: u8,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadMarker {
+    id: String,
+    size_bytes: u64,
+}
+
+fn marker_path(dir: &std::path::Path, file: &str) -> std::path::PathBuf {
+    dir.join(format!("{file}.download.json"))
+}
+
+/// HUP-S0.3 — record which catalog id a `<file>.part` belongs to, so the download survives an app
+/// restart (the in-memory UI state does not).
+pub fn write_download_marker(
+    dir: &std::path::Path,
+    file: &str,
+    id: &str,
+    size_bytes: u64,
+) -> Result<(), String> {
+    let blob = serde_json::to_vec(&DownloadMarker {
+        id: id.to_string(),
+        size_bytes,
+    })
+    .map_err(|e| e.to_string())?;
+    std::fs::write(marker_path(dir, file), blob).map_err(|e| format!("write download marker: {e}"))
+}
+
+/// HUP-S0.3 — forget a download marker once its model is downloaded + verified.
+pub fn clear_download_marker(dir: &std::path::Path, file: &str) {
+    let _ = std::fs::remove_file(marker_path(dir, file));
+}
+
+/// HUP-S0.3 — every tracked, unfinished catalog download in `dir`. A `.part` without a marker has
+/// no known origin and is not offered; a missing dir is an honest empty list.
+pub fn read_partial_downloads(dir: &std::path::Path) -> Vec<PartialDownload> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(file) = name.strip_suffix(".download.json") else {
+            continue;
+        };
+        let Some(marker) = std::fs::read(entry.path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<DownloadMarker>(&b).ok())
+        else {
+            continue;
+        };
+        if dir.join(file).exists() {
+            continue; // finished (verify pending/complete) — not a resume
+        }
+        let downloaded = std::fs::metadata(dir.join(format!("{file}.part")))
+            .map(|m| m.len())
+            .unwrap_or(0)
+            .min(marker.size_bytes);
+        let pct = if marker.size_bytes == 0 {
+            0
+        } else {
+            ((downloaded as u128 * 100) / marker.size_bytes as u128) as u8
+        };
+        out.push(PartialDownload {
+            id: marker.id,
+            file: file.to_string(),
+            downloaded_bytes: downloaded,
+            total_bytes: marker.size_bytes,
+            pct,
+        });
+    }
+    out
+}
+
+/// HUP-S0.3 — list interrupted catalog downloads for the Models surface's "Resume" rows.
+#[tauri::command]
+pub async fn model_catalog_partials(app: tauri::AppHandle) -> Result<Vec<PartialDownload>, String> {
+    crate::blocking::off_main(move || {
+        use tauri::Manager;
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("models");
+        Ok(read_partial_downloads(&dir))
+    })
+    .await
+}
+
 /// Scan the models dir and return every VERIFIED, on-disk GGUF as a `ModelDescriptor`, so the
 /// router + Models list represent the models actually on this machine (#63). Pure over a dir so
 /// it is unit-tested without an app handle.
@@ -413,7 +516,10 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
             .join("models");
         std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
         let transport = Box::new(crate::model::UreqModelTransport::new(url));
-        let mgr = crate::model::ModelManager::from_descriptor(models_dir, transport, &desc);
+        // HUP-S0.3: remember which catalog id owns this `.part` so a restart can resume it.
+        let local_file = local_file_name(&desc.file);
+        write_download_marker(&models_dir, &local_file, &id, desc.size_bytes)?;
+        let mgr = crate::model::ModelManager::from_descriptor(models_dir.clone(), transport, &desc);
         // Stream progress to the UI (a multi-GB GGUF is otherwise a silent minutes-long block that
         // reads as a stuck download). Emit only on a whole-percent change to avoid flooding.
         let emit_id = id.clone();
@@ -430,6 +536,7 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
         })
         .map_err(|e| e.to_string())?;
         mgr.verify().map_err(|e| e.to_string())?;
+        clear_download_marker(&models_dir, &local_file);
         let _ = app.emit(
             "model://download-progress",
             serde_json::json!({ "id": id, "pct": 100, "done": true }),
