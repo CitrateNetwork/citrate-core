@@ -178,3 +178,37 @@ fn not_running_is_an_honest_error() {
     let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"));
     assert!(personas(&m).is_err());
 }
+
+#[test]
+fn every_core_bound_refuses_before_the_sidecar_sees_it() {
+    // Reviewer mutation check: each bound in `validate_custom_input` is exercised on its own.
+    type Break = fn(&mut CustomPersonaInput);
+    let cases: [(&str, Break); 8] = [
+        ("summary", |c| c.summary = "s".repeat(201)),
+        ("voice", |c| c.voice = "v".repeat(301)),
+        ("tone", |c| c.tone = "t".repeat(301)),
+        ("blank voice", |c| c.voice = "  ".into()),
+        ("no rules", |c| c.style_rules.clear()),
+        ("too many tools", |c| {
+            c.tool_emphasis = vec!["forge_test".into(); 13]
+        }),
+        ("bad tool name", |c| {
+            c.tool_emphasis = vec!["forge test".into()]
+        }),
+        ("too many skills", |c| {
+            c.skills = vec!["solidity".into(); 25]
+        }),
+    ];
+    for (what, brk) in cases {
+        let mut c = custom();
+        brk(&mut c);
+        assert!(validate_custom_input(&c).is_err(), "{what} must be refused");
+    }
+    let mut c = custom();
+    c.skills = vec!["Not A Slug".into()];
+    assert!(validate_custom_input(&c).is_err(), "skills are slugs");
+    assert!(
+        validate_custom_input(&custom()).is_ok(),
+        "the baseline is valid"
+    );
+}

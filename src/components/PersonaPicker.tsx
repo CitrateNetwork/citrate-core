@@ -65,7 +65,7 @@ function PersonaOption({
               <span style={note}>
                 Voice: {p.voice} Tone: {p.tone}
                 <br />
-                Default track: {p.default_track}, workflow {p.default_workflow}. Speech: {p.tts_voice ? p.tts_voice : "system voice"}.
+                Default track: {p.default_track}, workflow {p.default_workflow}. Speech: {p.tts_voice ? `${p.tts_voice} (stored, not used by speech yet)` : "system voice"}.
                 {p.tool_emphasis.length > 0 && (
                   <>
                     <br />
@@ -256,7 +256,7 @@ export function PersonaPicker({
                   ))}
                 </select>
               </Field>
-              <Field label="Speech voice id (optional; empty uses the system voice)">
+              <Field label="Speech voice id (optional; stored for later, not used by speech yet)">
                 <input className="input" data-testid="persona-custom-tts" value={form.tts_voice ?? ""} onChange={set("tts_voice")} />
               </Field>
               {formError && (

@@ -846,11 +846,7 @@ export class Store {
             stop: (id) => h.sessionStop(id),
           },
           // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
-          () =>
-            composeSystemPrompt(
-              AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
-              this.state.hermesPersona,
-            ),
+          () => this.sidecarSystemPrompt(),
           () => annotatedAgentTools(),
         );
         this.reflectProvider();
@@ -1943,6 +1939,15 @@ export class Store {
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([msg]), hermesBrief: { brief, markdown, acceptedAt: Date.now() } }));
     this.save();
     this.scrollChat();
+  }
+
+  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context, then the
+   *  chosen persona's fragment (none = exactly the base prompt and context). */
+  sidecarSystemPrompt(): string {
+    return composeSystemPrompt(
+      AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
+      this.state.hermesPersona,
+    );
   }
 
   /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for

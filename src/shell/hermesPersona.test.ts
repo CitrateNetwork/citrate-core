@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { store } from "./store";
 import { PERSIST_KEYS, freshState } from "./state";
-import type { ChatProvider } from "../agent/harness";
+import { AGENT_SYSTEM_PROMPT, type ChatProvider } from "../agent/harness";
 import type { HermesPersona } from "../bridge/domains";
 
 const GRAFT: HermesPersona = {
@@ -89,5 +89,15 @@ describe("store persona selection", () => {
   it("a shipped persona can never be stored as a custom one", () => {
     store.addCustomPersona(GRAFT);
     expect(store.state.customPersonas).toHaveLength(0);
+  });
+
+  it("the sidecar session prompt is the base prompt, then the persona fragment (none = unchanged)", () => {
+    const base = store.sidecarSystemPrompt();
+    expect(base.startsWith(AGENT_SYSTEM_PROMPT)).toBe(true);
+    expect(base).not.toContain("## Persona");
+    store.chooseHermesPersona(GRAFT);
+    const withVoice = store.sidecarSystemPrompt();
+    expect(withVoice.startsWith(AGENT_SYSTEM_PROMPT)).toBe(true);
+    expect(withVoice.endsWith(GRAFT.prompt_fragment.trim())).toBe(true);
   });
 });

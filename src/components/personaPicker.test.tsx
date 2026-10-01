@@ -220,4 +220,13 @@ describe("PersonaPicker", () => {
     const { host } = await mount(props({ chosen: GRAFT, custom: [OWL] }));
     expect(host.textContent).not.toContain("—");
   });
+
+  it("says a speech voice id is stored but not used by speech yet (no TTS wiring in this lane)", async () => {
+    const withVoice = { ...GRAFT, tts_voice: "en-calm" };
+    const { host } = await mount(props({ api: api({ personas: vi.fn(async () => [withVoice]) }) }));
+    expect(q(host, "persona-option-builder")?.textContent).toContain("en-calm (stored, not used by speech yet)");
+    await click(q(host, "persona-custom-open"));
+    expect(host.textContent).toContain("Speech voice id (optional; stored for later, not used by speech yet)");
+  });
 });
+
