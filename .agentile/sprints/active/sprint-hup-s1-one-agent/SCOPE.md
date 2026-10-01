@@ -5,11 +5,11 @@ author: Larry Klosowski + Claude Opus 5.5
 status: active
 sprint: HUP-S1
 planset: 2026-09-30-hermes-upskill
-release: 0.4.2
+release: 0.5.0 (milestone M-S1, formerly labelled 0.4.2; no interim release per D-41)
 tier: T1
 ---
 
-# Sprint HUP-S1 — One agent → v0.4.2
+# Sprint HUP-S1 — One agent (milestone toward v0.5.0)
 
 Hermes's loop moves into the sidecar ([ADR](../../../docs/adr/ADR-2026-09-30-hermes-loop-in-sidecar.md)),
 so app, CLI, MCP and daemons drive one agent; plus tiering, escalation, eval, and the wallet-unlink
@@ -52,7 +52,7 @@ standalone crate, module or draft that can be dropped without touching S1 work.
 
 Retros: [RETRO-2026-09-30-fanout.md](RETRO-2026-09-30-fanout.md), [RETRO-2026-09-30-fanout-2.md](RETRO-2026-09-30-fanout-2.md).
 
-## Exit (gate1 remainder for 0.4.2)
+## Exit (gate1 remainder; milestone only, ships in v0.5.0)
 
 `g1-loop`, `g1-eval`, `g1-injection` met with evidence; S1.11 merged; parity suite green.
 
