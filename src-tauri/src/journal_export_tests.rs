@@ -207,3 +207,70 @@ fn error_messages_are_plain_and_name_no_internals() {
         assert!(!m.contains("aes") && !m.contains("argon"), "{m}");
     }
 }
+
+// --- review hardening (HUP-S10.4 adversarial review) ---------------------------
+
+#[cfg(unix)]
+#[test]
+fn export_over_an_existing_loose_file_leaves_it_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmpdir("mode");
+    let path = d.join("old.citrate-journal");
+    std::fs::write(&path, b"older export").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    export_to_path(&path, PASS, BUNDLE).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o077,
+        0,
+        "a replaced export must be owner-only, got {mode:o}"
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn the_export_opener_itself_does_not_follow_a_symlink() {
+    // The pre-check in export_to_path can race with a symlink swap; the open
+    // call must refuse a symlink on its own.
+    let d = tmpdir("nofollow");
+    let target = d.join("target.txt");
+    std::fs::write(&target, b"keep me").unwrap();
+    let link = d.join("swap.citrate-journal");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(open_export_file(&link).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep me");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn import_refuses_a_non_regular_file_without_blocking() {
+    let d = tmpdir("fifo");
+    let path = d.join("pipe.citrate-journal");
+    let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+    // SAFETY: c is a valid NUL-terminated path for the duration of the call.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(import_from_path(&p, PASS));
+    });
+    let r = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("import blocked on a FIFO");
+    assert_eq!(r.unwrap_err(), JournalCryptoError::NotAJournalFile);
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn import_refuses_a_directory_as_not_a_journal_file() {
+    let d = tmpdir("dir");
+    let sub = d.join("folder.citrate-journal");
+    std::fs::create_dir_all(&sub).unwrap();
+    assert_eq!(
+        import_from_path(&sub, PASS).unwrap_err(),
+        JournalCryptoError::NotAJournalFile
+    );
+    std::fs::remove_dir_all(&d).unwrap();
+}

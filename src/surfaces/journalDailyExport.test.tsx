@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Journal } from "./Journal";
 import { freshState, type AppState } from "../shell/state";
 import type { Store } from "../shell/store";
-import { HERMES_SUMMARY_HEADER } from "../journal/dailyEntry";
+import { HERMES_SUMMARY_HEADER, NO_HERMES_ACTIVITY_LINE } from "../journal/dailyEntry";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -85,7 +85,7 @@ describe("Journal surface — HUP-S10.4", () => {
     });
     const entry = s.jPages.find((p) => p.id === "d-" + today());
     expect(entry?.blocks).toContain(HERMES_SUMMARY_HEADER);
-    expect(entry?.blocks.join("\n")).toContain("No Hermes activity is recorded on this device today.");
+    expect(entry?.blocks.join("\n")).toContain(NO_HERMES_ACTIVITY_LINE);
     root.unmount();
   });
 });

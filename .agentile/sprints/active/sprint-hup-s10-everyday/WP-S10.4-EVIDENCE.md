@@ -60,6 +60,26 @@ Mutation checks on the Rust guards (break, see a test fail, restore):
    with that extension that are not symlinks.
 5. The day is the UTC date, as `journal_append` already uses.
 
+## Adversarial review (2026-10-01)
+
+Fixes made in review, each red first:
+- The export open call refuses a symlink by itself (`O_NOFOLLOW`), so a swap after the
+  pre-check cannot redirect the write; it does not block on a FIFO and refuses
+  anything that is not a regular file. Test: `the_export_opener_itself_does_not_follow_a_symlink`.
+- Replacing an older export resets its mode to `0600`. Test:
+  `export_over_an_existing_loose_file_leaves_it_owner_only`.
+- Import reads only regular files and does not block on a FIFO. Tests:
+  `import_refuses_a_non_regular_file_without_blocking`,
+  `import_refuses_a_directory_as_not_a_journal_file`.
+- The webview appended no extension to `x.CITRATE-JOURNAL`, which Rust then refused;
+  the extension check is now exact.
+- Wallet rows are labelled "any, not only Hermes" and the empty line names its limited
+  sources, so the summary does not credit Hermes with the member's own transactions.
+
+Mutation checks rerun by the reviewer: dropping `O_NOFOLLOW`, the KDF-params check, the
+header AAD or the regular-file check each made a test fail. Removing the first size
+check survives because the bounded read still refuses the file (same outcome, more I/O).
+
 ## Not done
 
 - The summary reads the approved `@agent` bullets and today's wallet activity only.

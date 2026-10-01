@@ -43,7 +43,8 @@ export function checkExportPassphrase(passphrase: string, confirm: string): stri
 }
 
 function withExtension(path: string): string {
-  return path.toLowerCase().endsWith("." + JOURNAL_EXT) ? path : path + "." + JOURNAL_EXT;
+  // Exact, case-sensitive match: the Rust command accepts only this spelling.
+  return path.endsWith("." + JOURNAL_EXT) ? path : path + "." + JOURNAL_EXT;
 }
 
 /** Seal the whole journal into a file the member picks. */

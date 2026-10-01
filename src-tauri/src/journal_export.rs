@@ -227,6 +227,52 @@ fn is_symlink(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Open the export target for writing. On unix the open itself refuses a symlink
+/// (`O_NOFOLLOW`, so a swap after the pre-check cannot redirect the write) and
+/// does not block on a FIFO (`O_NONBLOCK`); anything that is not a regular file
+/// is refused, and the mode is set to `0600` on the open handle so a replaced,
+/// loosely-permissioned older export ends up owner-only too.
+#[cfg(unix)]
+pub(crate) fn open_export_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.set_len(0)?;
+    Ok(f)
+}
+
+/// Non-unix fallback: the kit's secret-file opener (no POSIX mode or flags).
+#[cfg(not(unix))]
+pub(crate) fn open_export_file(path: &Path) -> std::io::Result<std::fs::File> {
+    citrate_core_kit::fsutil::create_secret_file(path)
+}
+
+/// Open an import source for reading without blocking on a FIFO or device, and
+/// refuse anything that is not a regular file.
+fn open_import_file(path: &Path) -> Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let f = opts.open(path).map_err(|_| JournalCryptoError::Io)?;
+    let meta = f.metadata().map_err(|_| JournalCryptoError::Io)?;
+    if !meta.is_file() {
+        return Err(JournalCryptoError::NotAJournalFile);
+    }
+    Ok(f)
+}
+
 /// Seal `bundle` and write ONLY the ciphertext to `path` (owner-only mode on
 /// unix). Returns the number of bytes written.
 pub(crate) fn export_to_path(path: &Path, passphrase: &str, bundle: &[u8]) -> Result<u64> {
@@ -236,8 +282,7 @@ pub(crate) fn export_to_path(path: &Path, passphrase: &str, bundle: &[u8]) -> Re
         return Err(JournalCryptoError::UnsafePath);
     }
     let sealed = seal_journal(passphrase.as_bytes(), bundle)?;
-    let mut f =
-        citrate_core_kit::fsutil::create_secret_file(path).map_err(|_| JournalCryptoError::Io)?;
+    let mut f = open_export_file(path).map_err(|_| JournalCryptoError::Io)?;
     f.write_all(&sealed).map_err(|_| JournalCryptoError::Io)?;
     f.sync_all().map_err(|_| JournalCryptoError::Io)?;
     Ok(sealed.len() as u64)
@@ -245,11 +290,11 @@ pub(crate) fn export_to_path(path: &Path, passphrase: &str, bundle: &[u8]) -> Re
 
 /// Read and open the export at `path`, returning the bundle text.
 pub(crate) fn import_from_path(path: &Path, passphrase: &str) -> Result<Zeroizing<String>> {
-    let meta = std::fs::metadata(path).map_err(|_| JournalCryptoError::Io)?;
+    let f = open_import_file(path)?;
+    let meta = f.metadata().map_err(|_| JournalCryptoError::Io)?;
     if meta.len() > MAX_FILE_BYTES {
         return Err(JournalCryptoError::TooLarge);
     }
-    let f = std::fs::File::open(path).map_err(|_| JournalCryptoError::Io)?;
     let mut bytes = Vec::with_capacity(meta.len() as usize);
     f.take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)

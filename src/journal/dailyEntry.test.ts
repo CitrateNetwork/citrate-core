@@ -74,9 +74,9 @@ describe("hermesDayLines — real local records only", () => {
     ];
     const lines = hermesDayLines({ pages: [], activity, today: TODAY });
     expect(lines).toEqual([
-      "Wallet activity: Claim rewards · +1.00 SALT (confirmed)",
-      "Wallet activity: Send · -2.00 SALT (failed)",
-      "Wallet activity: Add stake · -3.00 SALT (pending)",
+      "Wallet activity (any, not only Hermes): Claim rewards · +1.00 SALT (confirmed)",
+      "Wallet activity (any, not only Hermes): Send · -2.00 SALT (failed)",
+      "Wallet activity (any, not only Hermes): Add stake · -3.00 SALT (pending)",
     ]);
   });
 
@@ -84,6 +84,14 @@ describe("hermesDayLines — real local records only", () => {
     const blocks = applyHermesSummary(["@agent real note"], ["Journal note you approved: real note"]);
     const lines = hermesDayLines({ pages: [page("d-" + TODAY, blocks, "daily")], activity: [], today: TODAY });
     expect(lines).toEqual(["Journal note you approved: real note"]);
+  });
+});
+
+describe("summary wording stays honest about its sources", () => {
+  it("does not credit Hermes with every wallet row, and names the limited sources when empty", () => {
+    const lines = hermesDayLines({ pages: [], activity: [{ id: "w1", kind: "Send", amount: "1", hash: "0x", ts: NOON_TODAY, status: 1 }], today: TODAY });
+    expect(lines[0]).toMatch(/not only Hermes/);
+    expect(NO_HERMES_ACTIVITY_LINE).toMatch(/approved Hermes notes or wallet activity/);
   });
 });
 

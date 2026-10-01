@@ -26,13 +26,14 @@ The **Hermes summary** button (shown on today's entry) writes an editable block:
 ```
 What Hermes did today (from local records on this device):
   Journal note you approved: <text of each @agent bullet in today's entry>
-  Wallet activity: <kind> · <amount> (confirmed | failed | pending)
+  Wallet activity (any, not only Hermes): <kind> · <amount> (confirmed | failed | pending)
 ```
 
 Sources, all already on this device: the `@agent` bullets the member approved
 into today's entry, and the wallet activity rows timestamped today. Demo persona
-seed rows (`id` starting `seed`) are skipped. With no records the block says
-"No Hermes activity is recorded on this device today." Re-running replaces the
+seed rows (`id` starting `seed`) are skipped. Wallet rows are not tagged with who started them, so each is labelled
+"any, not only Hermes" rather than credited to Hermes. With no records the block says
+"No approved Hermes notes or wallet activity are recorded on this device today." Re-running replaces the
 block instead of stacking a second one.
 
 Not included yet: the sidecar session event log, metering records and the memory
@@ -77,14 +78,15 @@ file give the same message. A newer format version is named as such.
 
 Write rules: the passphrase must be at least 12 characters (checked in the
 webview and again in Rust). The path must be absolute, end in `.citrate-journal`,
-and not be a symlink. The file is created owner-only (`0600`) on unix. No
-plaintext temp file is ever written.
+and not be a symlink; on unix the open call itself also refuses a symlink and
+anything that is not a regular file. The file is owner-only (`0600`) on unix,
+including when it replaces an older export. No plaintext temp file is ever written.
 
 ## Import
 
 The member picks a `.citrate-journal` file and enters its passphrase;
-`journal_import_encrypted` opens it (files over 32 MiB are refused before
-reading) and returns the bundle text. The webview validates it strictly and
+`journal_import_encrypted` opens it (only regular files are read, and
+files over 32 MiB are refused before reading) and returns the bundle text. The webview validates it strictly and
 merges without overwriting: new pages are added, identical pages are skipped, and a
 page whose id exists with different content is added as a separate page titled
 `<title> (imported)`, so one daily entry per day still holds. Imported pages arrive

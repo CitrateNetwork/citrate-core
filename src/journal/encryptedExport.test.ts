@@ -54,6 +54,13 @@ describe("exportJournalEncrypted", () => {
     expect(r.ok && r.path).toBe("/a/b.citrate-journal");
   });
 
+  it("appends the exact lower-case extension the Rust command requires when the typed one differs in case", async () => {
+    const x = io({ reply: 1, pickSavePath: async () => "/a/B.CITRATE-JOURNAL" });
+    const r = await exportJournalEncrypted(x, pages, PASS, PASS, NOW);
+    expect(r.ok && r.path).toBe("/a/B.CITRATE-JOURNAL." + JOURNAL_EXT);
+    expect(x.calls[0].args.path).toBe("/a/B.CITRATE-JOURNAL." + JOURNAL_EXT);
+  });
+
   it("does nothing when the passphrase is weak (no dialog, no invoke)", async () => {
     let asked = false;
     const x = io({ pickSavePath: async () => ((asked = true), "/a") });

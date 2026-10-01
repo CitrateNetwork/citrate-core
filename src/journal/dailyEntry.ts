@@ -17,7 +17,7 @@ import type { Activity, JournalPage } from "../shell/state";
 /** Header bullet that opens the summary block (the block's lines follow, indented). */
 export const HERMES_SUMMARY_HEADER = "What Hermes did today (from local records on this device):";
 /** The honest line used when no local record mentions Hermes today. */
-export const NO_HERMES_ACTIVITY_LINE = "No Hermes activity is recorded on this device today.";
+export const NO_HERMES_ACTIVITY_LINE = "No approved Hermes notes or wallet activity are recorded on this device today.";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const INDENT = "  ";
@@ -89,7 +89,8 @@ export function hermesDayLines(input: { pages: JournalPage[]; activity: Activity
   for (const a of input.activity || []) {
     if (a.id.startsWith("seed")) continue; // demo persona rows, not a real record
     if (utcDay(a.ts) !== input.today) continue;
-    lines.push(`Wallet activity: ${a.kind} · ${a.amount} (${statusLabel(a)})`);
+    // Wallet rows are not tagged by who started them, so they are not credited to Hermes.
+    lines.push(`Wallet activity (any, not only Hermes): ${a.kind} · ${a.amount} (${statusLabel(a)})`);
   }
   return lines;
 }
