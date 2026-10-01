@@ -1361,5 +1361,9 @@ fn clear_pid(shared: &Arc<Shared>) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     include!("supervisor_tests.rs");
+
+    #[cfg(windows)]
+    include!("supervisor_windows_tests.rs");
 }
