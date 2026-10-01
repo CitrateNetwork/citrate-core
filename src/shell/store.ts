@@ -31,6 +31,8 @@ import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
+import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
+import type { FlRoundPlan } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
@@ -53,7 +55,7 @@ import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, to
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
  * Every other tool is held behind an explicit card before it runs when the call is hic:"required".
  */
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -2407,6 +2409,37 @@ export class Store {
         result = JSON.stringify({ local }) + "\n" + fenceUntrusted("on-chain ModelRegistry entries", reg);
       } catch (e) {
         result = "model list unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_round_plan") {
+      // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
+      try {
+        const plan = await bridge.flRounds.plan(proposalFromToolArgs(args as Record<string, unknown>));
+        result = formatPlanForAgent(plan);
+      } catch (e) {
+        result = "couldn't plan a round: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_round_start") {
+      // HUP-S9.4 (HIC-1): the member decides on a card showing core's plan; only an Approve asks
+      // core to record the start for that exact hash. A hic:"required" reason rides the same card.
+      let plan: FlRoundPlan | null = null;
+      try {
+        plan = await bridge.flRounds.lookupPlan(String(args.planHash || ""));
+      } catch (e) {
+        result = "couldn't find that plan: " + (e instanceof Error ? e.message : String(e));
+      }
+      if (plan) {
+        const p = plan;
+        const out = await approveAndStartRound(
+          { requestSig: (spec) => this.requestSig(spec), start: (h) => bridge.flRounds.start(h) },
+          p,
+          "chat agent",
+          (spec) => {
+            const card = fieldsCard("fl_round_start", ann, { coordinator: spec.rows[0]?.v ?? "", plan: p.planHash }, "join the federated round of plan " + p.planHash.slice(0, 12));
+            return hic ? { ...spec, card, hic } : { ...spec, card };
+          },
+        );
+        status = out.status;
+        result = out.message;
       }
     } else if (call.name === "contract_deploy") {
       // WRITE: assemble the creation tx as a PENDING ceremony the member approves (Rule 3).

@@ -89,3 +89,21 @@ describe("resultFileName", () => {
     expect(resultFileName("2026-09-30T12:00:00.000Z", "../../etc")).toBe("2026-09-30-______etc.json");
   });
 });
+
+describe("HUP-S9.4 --adapter-sha256 (eval a LoRA candidate for the gate)", () => {
+  const base = ["--base-url", "http://127.0.0.1:18080/v1", "--model", "m"];
+  it("accepts a sha256 hex and lowercases it", () => {
+    expect(parseEvalCliArgs([...base, "--adapter-sha256", "AB".repeat(32)]).adapterSha256).toBe("ab".repeat(32));
+  });
+  it("refuses anything that is not a sha256 hex", () => {
+    expect(() => parseEvalCliArgs([...base, "--adapter-sha256", "xyz"])).toThrow(/sha256/);
+    expect(() => parseEvalCliArgs([...base, "--adapter-sha256", "a".repeat(63)])).toThrow(/sha256/);
+  });
+  it("is absent by default (a base run)", () => {
+    expect(parseEvalCliArgs(base).adapterSha256).toBeUndefined();
+  });
+  it("names the candidate's result file so it never overwrites the base run", () => {
+    expect(resultFileName("2026-10-01T00:00:00Z", "m", "ab".repeat(32))).toBe("2026-10-01-m-lora-abababababab.json");
+    expect(resultFileName("2026-10-01T00:00:00Z", "m")).toBe("2026-10-01-m.json");
+  });
+});

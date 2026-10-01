@@ -822,6 +822,118 @@ export interface TrainingDomain {
   claim(groupId: string): Promise<void>;
 }
 
+// ── HUP-S9.4: Hermes plans, explains and starts federated rounds; LoRA eval gate ──
+// Shapes mirror src-tauri/src/fl_rounds.rs (serde camelCase). Data source: the compute-pool
+// training-coordinator `GET /v1/status` at the configured URL; there is no default coordinator.
+export type FlCapability = "probe" | "federated" | "h01";
+export interface FlRoundProposal {
+  requires: FlCapability;
+  loraRank: number;
+  maxTrajectories: number;
+  leaseHours: number;
+}
+export type FlSettlement = "shadow" | "live" | "unknown";
+export type FlPoolPhase = "noWork" | "open" | "running" | "complete";
+export interface FlCoordinatorStatus {
+  pending: number;
+  leased: number;
+  done: number;
+  quarantined: number;
+  workers: number;
+  settlement: FlSettlement;
+  phase: FlPoolPhase;
+}
+export type FlCoordinatorView =
+  | { state: "notConfigured" }
+  | { state: "unreachable"; url: string; reason: string }
+  | { state: "live"; url: string; status: FlCoordinatorStatus };
+export interface FlRoundExplanation {
+  data: string;
+  compute: string;
+  reward: string;
+  privacy: string;
+  status: string;
+}
+export interface FlRoundPlan {
+  planHash: string;
+  createdAtMs: number;
+  coordinator: FlCoordinatorView;
+  proposal: FlRoundProposal;
+  baseModel: string;
+  device: { tier: string | null; accelerator: boolean | null };
+  explain: FlRoundExplanation;
+  canStart: boolean;
+  blockers: string[];
+}
+export interface FlStartReceipt {
+  planHash: string;
+  coordinatorUrl: string;
+  authorizedAtMs: number;
+  /** Always false in this build: the device training worker is not bundled (HUP-S9.1/S9.2). */
+  trainingStarted: boolean;
+  note: string;
+}
+export interface FlStartRecord {
+  planHash: string;
+  coordinatorUrl: string;
+  requires: FlCapability;
+  authorizedAtMs: number;
+}
+export interface FlCoordinatorConfig {
+  url: string | null;
+  source: "env" | "settings" | "invalid" | "none";
+  settingsUrl: string | null;
+  note: string | null;
+}
+export interface FlAdapterGateRequest {
+  adapterPath: string;
+  expectedSha256: string;
+  baseToolsPath: string;
+  candidateToolsPath: string;
+  baseQaPath?: string;
+  candidateQaPath?: string;
+}
+export interface FlMetricDelta {
+  metric: string;
+  base: number | null;
+  candidate: number | null;
+  improvement: number | null;
+}
+export interface FlAdapterGateRecord {
+  adapterSha256: string;
+  adapterPath: string;
+  baseModel: string;
+  decidedAtMs: number;
+  decision: {
+    verdict: "ACCEPT" | "REJECT";
+    reasons: string[];
+    metrics: FlMetricDelta[];
+    compositeBase: number;
+    compositeCandidate: number;
+  };
+}
+export interface FlOverview {
+  config: FlCoordinatorConfig;
+  starts: FlStartRecord[];
+  gates: FlAdapterGateRecord[];
+  activeAdapter: string | null;
+  storeError: string | null;
+}
+export interface FlRoundsDomain {
+  overview(): Promise<FlOverview>;
+  /** Persist (or clear, with null) the coordinator base URL. Core validates it. */
+  setCoordinator(url: string | null): Promise<FlCoordinatorConfig>;
+  /** Read the coordinator and build the plan + plain-words explanation. Read-only. */
+  plan(proposal?: FlRoundProposal): Promise<FlRoundPlan>;
+  lookupPlan(planHash: string): Promise<FlRoundPlan>;
+  /** Record the member's HIC-1 approval of exactly this plan. Call only after the approval card. */
+  start(planHash: string): Promise<FlStartReceipt>;
+  gateAdapter(request: FlAdapterGateRequest): Promise<FlAdapterGateRecord>;
+  /** Load an ACCEPTED adapter into llama-server (`--lora`). Returns the served copy's path. */
+  loadAdapter(sha256: string): Promise<string>;
+  unloadAdapter(): Promise<void>;
+}
+
 // ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──
 export interface AgentSkill {
   name: string;
@@ -1254,6 +1366,7 @@ export interface CxBridge {
   groups: GroupsDomain;
   cluster: ClusterDomain;
   training: TrainingDomain;
+  flRounds: FlRoundsDomain;
   agentHarness: AgentHarnessDomain;
   agentSkills: AgentSkillsDomain;
   contracts: ContractsDomain;

@@ -123,6 +123,7 @@ export const AGENT_SYSTEM_PROMPT = [
   "- Node & staking: read the node's sync/validator status, height, peers; the staking position and earnings/claimable; the wallet address and balances. You can PROPOSE claiming rewards, adding stake, or activating the validator bond (each opens a ceremony).",
   "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-click self-admit link (the invitee joins in a click, no approval needed, even if the owner is offline), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
   "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
+  "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one.",
   "- Memory: semantically search and recall the member's memory graph and the bundled Citrate documentation (the 'citrate-docs' tenant); propose remembering a fact (a ceremony-gated write).",
   "- Navigation: move the member to the right surface of the app (wallet, node, groups, storage, commissary, settings) when it helps.",
   "",
@@ -499,6 +500,37 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── federated rounds (HUP-S9.4) ──
+  {
+    type: "function",
+    function: {
+      name: "fl_round_plan",
+      description:
+        "Plan this device's part in a federated training round: reads the configured training coordinator and this device, and returns core's plain-words explanation (data, compute, reward, privacy), what blocks a start, and a planHash. Read-only. If no coordinator is configured it says so; never invent a round, numbers or rewards.",
+      parameters: {
+        type: "object",
+        properties: {
+          requires: { type: "string", enum: ["probe", "federated", "h01"], description: "the work tier; defaults to federated (LoRA training)" },
+          loraRank: { type: "number", description: "LoRA rank, a power of two from 1 to 64; defaults to 8" },
+          maxTrajectories: { type: "number", description: "most verified conversations this device may train on; defaults to 500" },
+          leaseHours: { type: "number", description: "longest lease per job, 1 to 48 hours; defaults to 6" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fl_round_start",
+      description:
+        "PROPOSE joining the round of one plan from fl_round_plan. The member decides on an approval card (HIC-1); you never start a round yourself. Core re-reads the coordinator and refuses if anything changed. This build has no device training worker, so an approved start records the member's approval and no training runs yet; say so.",
+      parameters: {
+        type: "object",
+        properties: { planHash: { type: "string", description: "the planHash fl_round_plan returned" } },
+        required: ["planHash"],
+      },
+    },
+  },
 ] as const;
 
 /// Max model↔tool round-trips before we stop (a misbehaving model can't loop
@@ -743,4 +775,5 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "skills_list",
   "skill_run",
   "models_list",
+  "fl_round_plan",
 ]);
