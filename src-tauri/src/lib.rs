@@ -33,6 +33,7 @@ mod ai;
 mod blocking;
 mod connections;
 mod contract_deploy;
+mod deploy_gate;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
@@ -269,6 +270,8 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             app.manage(ceremony::build_ceremony_state());
+            // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
+            app.manage(deploy_gate::DeployGateState::default());
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
@@ -454,6 +457,9 @@ pub fn run() {
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
+            // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
+            deploy_gate::deploy_gate_submit,
+            deploy_gate::deploy_gate_lookup,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,

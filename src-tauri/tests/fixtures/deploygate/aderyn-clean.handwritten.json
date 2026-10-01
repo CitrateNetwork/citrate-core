@@ -1,0 +1,17 @@
+{
+  "files_summary": { "total_source_units": 1, "total_sloc": 14 },
+  "files_details": { "files_details": [ { "file_path": "src/HelloMint.sol", "n_sloc": 14 } ] },
+  "issue_count": { "high": 0, "low": 1 },
+  "high_issues": { "issues": [] },
+  "low_issues": {
+    "issues": [
+      {
+        "title": "Solidity pragma should be specific, not wide",
+        "description": "Consider using a specific version of Solidity in your contracts instead of a wide version.",
+        "detector_name": "unspecific-solidity-pragma",
+        "instances": [ { "contract_path": "src/HelloMint.sol", "line_no": 2, "src": "32:23", "src_char": "32:23" } ]
+      }
+    ]
+  },
+  "detectors_used": [ "unprotected-initializer", "arbitrary-transfer-from", "unspecific-solidity-pragma" ]
+}

@@ -10,6 +10,7 @@
 // Store and whose Tauri impl returns `Unavailable` (Rule 1) until a later
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
+import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import type {
   AppConfig,
   KeyringStatus,
@@ -1157,13 +1158,22 @@ export interface ContractDeployInput {
   gas?: number;
 }
 
+/** HUP-S6.4 — what `contract_deploy` returns: the pending ceremony view plus the READY D-4
+ *  gate record core checked for exactly this init code. */
+export type DeployProposalView = CeremonyView & { gate: DeployGateRecord };
+
 export interface ContractsDomain {
   /** Hermes P3 / WP3.2 — propose deploying a compiled contract. Assembles the init code
    *  and submits a PENDING SignatureCeremony carrying the `to`-less creation tx (Rule 3 —
    *  the human approves + broadcasts via signing.broadcast(view.id); nothing signs here).
    *  Returns the decoded CeremonyView (a "contract creation") for the review modal. Empty
-   *  bytecode rejects. */
-  deploy(input: ContractDeployInput): Promise<CeremonyView>;
+   *  bytecode rejects. HUP-S6.4: rejects with the honest refusal (naming the failing gate
+   *  items) unless the D-4 deploy gate is READY for exactly this init code. */
+  deploy(input: ContractDeployInput): Promise<DeployProposalView>;
+  /** HUP-S6.4 — the init-code hash a deploy would carry and its gate record (null if none). */
+  gateLookup(bytecodeHex: string, constructorArgsHex?: string): Promise<DeployGateLookup>;
+  /** HUP-S6.4 — hand verifier outputs to core; core parses them and stores the verdict. */
+  gateSubmit(inputs: DeployGateInputs): Promise<DeployGateRecord>;
 }
 
 /** A scrubbed diagnostic bundle (Telemetry WP-T.2/T.3). Mirrors the Rust DiagnosticBundle. */

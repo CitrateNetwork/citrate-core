@@ -302,3 +302,60 @@ its guard went undetected; the SIWE config now has 3 nonces and M23 covers that 
   a broken connection and must retry; D2's "never silently dropped" should say so.
 - **A-8 lock naming.** D8 says concurrent requests serialize "on the ceremony lock"; D4 says a
   dedicated budget lock, not the pending-map lock. The model uses the dedicated budget lock.
+
+# DeployGate (HUP-S6.4)
+
+Model of the D-4 deploy gate (`src/deploy_gate.rs`, `src/contract_deploy.rs`).
+
+## Files
+
+- `DeployGate.tla`: the model.
+- `DeployGate.cfg`: the safety run (2 init codes, 3 deploy attempts).
+- `DeployGate_Reach.cfg`: non-vacuity. TLC is expected to report `NeverSigns` violated,
+  which shows a deploy can be signed at all.
+- `DeployGate_mutants.py`: the mutation check.
+
+## What maps to what
+
+| Model | Code |
+|---|---|
+| `gate[c]` (latest verdict per code; hashing as identity) | `GateStore.records`, keyed by keccak256(init code) |
+| `Evaluate(c, v)` under the store lock; NOT_READY rejects pending ceremonies for `c` | `deploy_gate_submit` → `GateStore::record_and_revoke` |
+| `Check(i)` (read the bytes once, take the lock, require READY) then `Open(i)` (ceremony from the same bytes, release) | `contract_deploy_sync` → `GateStore::open_ceremony` |
+| `Approve(i)` / `Reject(i)` | the SignatureCeremony approve / reject |
+
+## Invariants
+
+| Invariant | Meaning | Rust tests |
+|---|---|---|
+| `NotReadyNeverSigns` | every signature was made while the latest verdict for exactly the signed bytes was READY | `store_not_ready_refusal_names_every_failing_item`, `a_not_ready_record_rejects_the_open_ceremonies_for_that_hash`, `open_ceremony_refuses_a_not_ready_record_and_never_calls_the_opener` |
+| `OpenOnlyForReadyBytes` | a ceremony that can still be approved carries bytes whose own verdict is READY; a READY for an earlier version of the bytecode never covers a new one | `store_ready_record_allows_exactly_that_initcode`, `a_later_not_ready_record_revokes_an_earlier_ready_for_the_same_hash` |
+| `NoTOCTOU` | the bytes a ceremony carries are the bytes the gate check read | `contract_deploy_requires_a_ready_gate_before_any_ceremony` (source check: one parse, the gated `initcode` is what the tx carries) |
+
+## Run result (2026-10-01)
+
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802), `scripts/run-tlc.sh DeployGate`:
+**No error found**, 17,438 states generated, 3,378 distinct, depth 15.
+
+`scripts/run-tlc.sh DeployGate DeployGate_Reach`: `NeverSigns` violated as expected
+(a signing trace exists).
+
+Mutation check (`python3 src-tauri/formal/DeployGate_mutants.py`), all 7 killed:
+
+| Mutant | Break | Caught by |
+|---|---|---|
+| M01 | `Open` re-reads the source instead of the checked bytes | `NoTOCTOU` |
+| M02 | same, seen per hash | `OpenOnlyForReadyBytes` |
+| M03 | NOT_READY does not reject open ceremonies | `NotReadyNeverSigns` |
+| M04 | `Evaluate` ignores the store lock (lands between check and open) | `OpenOnlyForReadyBytes` |
+| M05 | `Check` accepts any recorded verdict | `NotReadyNeverSigns` |
+| M06 | `Check` accepts a code with no record | `NotReadyNeverSigns` |
+| M07 | `Approve` signs a rejected ceremony | `NotReadyNeverSigns` |
+
+## Abstractions
+
+- keccak256 is assumed collision-free (codes stand for hashes).
+- Compiler settings are folded into the code identity (they are part of `binding_hash`).
+- The evidence parsers are folded into the verdict `Evaluate` writes; the Rust tests cover
+  them (every "not installed" or tool error is a failing item).
+- The store's size bound is not modelled. Eviction revokes open ceremonies like NOT_READY.

@@ -27,6 +27,8 @@ import {
   type RuntimeId,
 } from "../shell/slices/agent";
 import type { AgentApproval } from "../bridge/domains";
+import type { DeployGateLookup } from "../agent/deployGate";
+import { DeployGateCard } from "../shell/DeployGateCard";
 
 type Tab = "overview" | "contracts";
 
@@ -50,6 +52,8 @@ export function Agent({ store, s }: SurfaceProps) {
   const [openSkill, setOpenSkill] = useState<string | null>(null);
   const skillArg = useRef<HTMLInputElement>(null);
   const [ctKind, setCtKind] = useState<string>("treasury");
+  // HUP-S6.4 — the D-4 gate verdict for the last refused deploy (null: nothing to show).
+  const [gateRefusal, setGateRefusal] = useState<DeployGateLookup | null>(null);
   const ctName = useRef<HTMLInputElement>(null);
   const ctBytecode = useRef<HTMLTextAreaElement>(null);
   const ctArgs = useRef<HTMLInputElement>(null);
@@ -120,9 +124,15 @@ export function Agent({ store, s }: SurfaceProps) {
     const argsHex = (ctArgs.current?.value ?? "").trim();
     const kind = CONTRACT_KINDS.find((k) => k.id === ctKind)!;
     noteRun(`deploy ${kind.name}`, name, "awaiting");
+    setGateRefusal(null);
     void store
       .deployContract({ bytecodeHex: bytecode, constructorArgsHex: argsHex || undefined })
-      .then(() => {
+      .then((r) => {
+        if (!r.ok) {
+          // Refused (D-4 gate not READY, or no node): keep the inputs and show the verdict card.
+          if (r.gate) setGateRefusal(r.gate);
+          return;
+        }
         if (ctName.current) ctName.current.value = "";
         if (ctBytecode.current) ctBytecode.current.value = "";
         if (ctArgs.current) ctArgs.current.value = "";
@@ -420,6 +430,10 @@ export function Agent({ store, s }: SurfaceProps) {
                   </span>
                   <button className="btn btn-primary btn-sm" onClick={deploy}>Deploy</button>
                 </div>
+                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                  deploys need a READY deploy gate for this exact bytecode: forge tests pass, Slither and Aderyn report no High findings, a Medusa campaign passes its call budget, and a fork dry run succeeds
+                </span>
+                {gateRefusal && <DeployGateCard record={gateRefusal.record} initcodeHash={gateRefusal.initcodeHash} />}
               </div>
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
