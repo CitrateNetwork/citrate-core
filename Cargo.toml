@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "kit"]
+members = ["src-tauri", "kit", "templates/renderer"]
 
 # Space: full DWARF debug info is the bulk of a debug build's target/ size.
 # "line-tables-only" keeps file:line in panics/backtraces (so debugging still
