@@ -32,6 +32,7 @@ import { createDemoProvider, createLocalAgentProvider, createAgentProvider, Chat
 import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { fenceUntrusted } from "../agent/untrusted";
@@ -2356,10 +2357,16 @@ export class Store {
         this.openWalletReview("deploy", "Deploy contract", view, undefined, undefined, {
           card: chainCard("contract_deploy", ann, view, "network gas"),
           hic,
+          // HUP-S6.4: the READY D-4 gate record core checked for exactly this bytecode.
+          ...(view.gate ? { deployGate: view.gate } : {}),
         });
         result = "Proposed the contract deploy — it's waiting in the Signature Ceremony. Approve it to broadcast the creation tx to 40204; I never deploy on your behalf.";
       } catch (e) {
-        result = "couldn't prepare the deploy: " + (e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        // HUP-S6.4 (D-4): core refused because the deploy gate is not READY for this bytecode.
+        result = /Deploy refused/.test(msg)
+          ? msg + " Explain this to the member in plain words; do not retry the deploy until the deploy gate passes for this exact bytecode."
+          : "couldn't prepare the deploy: " + msg;
       }
     }
     const label =
@@ -3000,16 +3007,26 @@ export class Store {
     constructorArgsHex?: string;
     valueWei?: string;
     gas?: number;
-  }): Promise<void> {
+  }): Promise<{ ok: boolean; error?: string; gate: DeployGateLookup | null }> {
     let view: Awaited<ReturnType<typeof bridge.contracts.deploy>>;
     try {
       view = await bridge.contracts.deploy(input);
     } catch (err) {
-      this.toast("Deploy unavailable — " + String((err as Error).message ?? err));
-      return;
+      const error = String((err as Error).message ?? err);
+      this.toast("Deploy unavailable — " + error);
+      // HUP-S6.4: fetch the gate record (if any) so the verdict card can show why it was refused.
+      let gate: DeployGateLookup | null = null;
+      try {
+        gate = await bridge.contracts.gateLookup(input.bytecodeHex, input.constructorArgsHex);
+      } catch {
+        gate = null;
+      }
+      return { ok: false, error, gate };
     }
-    // STOP: a human sees the decoded creation tx (raw init code) and approves it.
-    this.openWalletReview("deploy", "Deploy contract", view);
+    // STOP: a human sees the decoded creation tx (raw init code) and approves it, with the
+    // D-4 gate verdict and bytecode hash beside it (HUP-S6.4).
+    this.openWalletReview("deploy", "Deploy contract", view, undefined, undefined, view.gate ? { deployGate: view.gate } : undefined);
+    return { ok: true, gate: view.gate ? { initcodeHash: view.gate.initcodeHash, record: view.gate } : null };
   }
 
   /**
@@ -3266,9 +3283,9 @@ export class Store {
     view: CeremonyView,
     spendSummary?: string,
     onResolved?: WalletReview["onResolved"],
-    extra?: { card?: ApprovalCard; hic?: HicRequirement },
+    extra?: { card?: ApprovalCard; hic?: HicRequirement; deployGate?: DeployGateRecord },
   ): void {
-    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}) } });
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}), ...(extra?.deployGate ? { deployGate: extra.deployGate } : {}) } });
   }
 
   /**
