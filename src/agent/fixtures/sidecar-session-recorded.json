@@ -1,0 +1,37 @@
+{
+  "_comment": "Recorded with citrate-agent-runtime agent-loop run_turn at ae29ebc (runtime PR #20): a scripted model, the real loop, serde_json of each Event. seq numbers as the sidecar session assigns them. Turn 1: 6-call reply (cap 4), malformed and non-object arguments, a denied call, an unknown tool, empty arguments, a sidecar-hosted call. Turn 2: model transport error.",
+  "turns": [
+    [
+      {"seq": 1, "event": {"step": 1, "type": "step_start"}},
+      {"seq": 2, "event": {"call": {"arguments": "{}", "id": "c1", "name": "node_status"}, "host": "core", "step": 1, "type": "tool_call"}},
+      {"seq": 3, "event": {"call_id": "c1", "content": "{\"height\":6310}", "status": "ok", "step": 1, "type": "tool_result"}},
+      {"seq": 4, "event": {"call": {"arguments": "{\"entry\":\"node synced", "id": "c2", "name": "journal_append"}, "host": null, "step": 1, "type": "tool_call"}},
+      {"seq": 5, "event": {"call_id": "c2", "content": "tool error: the arguments were not valid JSON; retry with a JSON object", "status": "error", "step": 1, "type": "tool_result"}},
+      {"seq": 6, "event": {"call": {"arguments": "{\"group\":\"g-1\"}", "id": "c3", "name": "group_invite"}, "host": "core", "step": 1, "type": "tool_call"}},
+      {"seq": 7, "event": {"call_id": "c3", "content": "declined: the member declined minting an invite link. Nothing was done.", "status": "denied", "step": 1, "type": "tool_result"}},
+      {"seq": 8, "event": {"call": {"arguments": "[\"height\"]", "id": "c4", "name": "memory_search"}, "host": "core", "step": 1, "type": "tool_call"}},
+      {"seq": 9, "event": {"call_id": "c4", "content": "tool error: the arguments must be a JSON object", "status": "error", "step": 1, "type": "tool_result"}},
+      {"seq": 10, "event": {"call": {"arguments": "{}", "id": "c5", "name": "staking_status"}, "host": null, "step": 1, "type": "tool_call"}},
+      {"seq": 11, "event": {"call_id": "c5", "content": "tool error: skipped: at most 4 tool calls per step — call it again next step if still needed", "status": "error", "step": 1, "type": "tool_result"}},
+      {"seq": 12, "event": {"call": {"arguments": "{}", "id": "c6", "name": "models_list"}, "host": null, "step": 1, "type": "tool_call"}},
+      {"seq": 13, "event": {"call_id": "c6", "content": "tool error: skipped: at most 4 tool calls per step — call it again next step if still needed", "status": "error", "step": 1, "type": "tool_result"}},
+      {"seq": 14, "event": {"step": 1, "type": "step_end"}},
+      {"seq": 15, "event": {"step": 2, "type": "step_start"}},
+      {"seq": 16, "event": {"call": {"arguments": "{}", "id": "c7", "name": "not_a_tool"}, "host": null, "step": 2, "type": "tool_call"}},
+      {"seq": 17, "event": {"call_id": "c7", "content": "tool error: unknown tool 'not_a_tool'", "status": "error", "step": 2, "type": "tool_result"}},
+      {"seq": 18, "event": {"call": {"arguments": "", "id": "c8", "name": "journal_append"}, "host": "core", "step": 2, "type": "tool_call"}},
+      {"seq": 19, "event": {"call_id": "c8", "content": "journal entry saved", "status": "ok", "step": 2, "type": "tool_result"}},
+      {"seq": 20, "event": {"call": {"arguments": "{\"capsule\":\"hello\"}", "id": "c9", "name": "capsule_run"}, "host": "sidecar", "step": 2, "type": "tool_call"}},
+      {"seq": 21, "event": {"call_id": "c9", "content": "hello from the capsule", "status": "ok", "step": 2, "type": "tool_result"}},
+      {"seq": 22, "event": {"step": 2, "type": "step_end"}},
+      {"seq": 23, "event": {"step": 3, "type": "step_start"}},
+      {"seq": 24, "event": {"content": "Height 6,310. The invite was not created.", "type": "final"}},
+      {"seq": 25, "event": {"outcome": "answered", "type": "done"}}
+    ],
+    [
+      {"seq": 26, "event": {"step": 1, "type": "step_start"}},
+      {"seq": 27, "event": {"message": "model transport error: could not connect", "type": "error"}},
+      {"seq": 28, "event": {"outcome": "failed", "type": "done"}}
+    ]
+  ]
+}
