@@ -558,6 +558,117 @@ impl HermesManager {
         Self::decode(resp)
     }
 
+    // --- HUP-S1.1c agent sessions (ADR loop-in-sidecar) -----------------------------------------
+
+    fn check(resp: ControlResp) -> Result<ControlResp> {
+        if !(200..300).contains(&resp.status) {
+            return Err(HermesError::Control {
+                status: resp.status,
+                msg: resp.body.chars().take(200).collect(),
+            });
+        }
+        Ok(resp)
+    }
+
+    /// `POST /sessions` with a body from [`build_session_body`]; returns the session id.
+    pub fn session_open(&self, body: &str) -> Result<String> {
+        let bearer = self.bearer()?;
+        let resp = Self::check(self.control.post(
+            &format!("{}/sessions", self.control_url()),
+            &bearer,
+            body,
+        )?)?;
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))?;
+        let id = v
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        valid_session_id(&id).map_err(HermesError::Decode)?;
+        Ok(id)
+    }
+
+    /// `POST /sessions/:id/messages` — start one turn (the sidecar answers 409 while busy).
+    pub fn session_send(&self, id: &str, text: &str) -> Result<()> {
+        valid_session_id(id).map_err(|m| HermesError::Control {
+            status: 400,
+            msg: m,
+        })?;
+        let bearer = self.bearer()?;
+        let body = serde_json::json!({ "text": text }).to_string();
+        Self::check(self.control.post(
+            &format!("{}/sessions/{id}/messages", self.control_url()),
+            &bearer,
+            &body,
+        )?)?;
+        Ok(())
+    }
+
+    /// `GET /sessions/:id/events?after=N&wait_ms=M` — long-poll; `wait_ms` is capped below the
+    /// control-call deadline so the poll itself can never time out.
+    pub fn session_events(&self, id: &str, after: u64, wait_ms: u64) -> Result<serde_json::Value> {
+        valid_session_id(id).map_err(|m| HermesError::Control {
+            status: 400,
+            msg: m,
+        })?;
+        let bearer = self.bearer()?;
+        let cap = HERMES_CONTROL_TIMEOUT.as_millis() as u64 * 2 / 3;
+        let wait = wait_ms.min(cap);
+        let resp = self.control.get(
+            &format!(
+                "{}/sessions/{id}/events?after={after}&wait_ms={wait}",
+                self.control_url()
+            ),
+            &bearer,
+        )?;
+        Self::decode(resp)
+    }
+
+    /// `POST /sessions/:id/tool_results` — hand back a core-hosted tool's gated result.
+    pub fn session_tool_result(
+        &self,
+        id: &str,
+        call_id: &str,
+        status: &str,
+        content: &str,
+    ) -> Result<()> {
+        valid_session_id(id).map_err(|m| HermesError::Control {
+            status: 400,
+            msg: m,
+        })?;
+        if !matches!(status, "ok" | "denied" | "error") {
+            return Err(HermesError::Control {
+                status: 400,
+                msg: format!("unknown tool status {status:?}"),
+            });
+        }
+        let bearer = self.bearer()?;
+        let body = serde_json::json!({ "callId": call_id, "status": status, "content": content })
+            .to_string();
+        Self::check(self.control.post(
+            &format!("{}/sessions/{id}/tool_results", self.control_url()),
+            &bearer,
+            &body,
+        )?)?;
+        Ok(())
+    }
+
+    /// `POST /sessions/:id/stop`.
+    pub fn session_stop(&self, id: &str) -> Result<()> {
+        valid_session_id(id).map_err(|m| HermesError::Control {
+            status: 400,
+            msg: m,
+        })?;
+        let bearer = self.bearer()?;
+        Self::check(self.control.post(
+            &format!("{}/sessions/{id}/stop", self.control_url()),
+            &bearer,
+            "{}",
+        )?)?;
+        Ok(())
+    }
+
     // --- S6.3 ceremony bridge -------------------------------------------------------------------
 
     /// Bridge the sidecar's HEAD pending chain effect into a PENDING ceremony (Rule 3): build the
@@ -1045,6 +1156,177 @@ pub fn hermes_resolve_sync(
     manager(&app)?
         .resolve_head(approve, &id)
         .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// HUP-S1.1c — session body builder + commands (ADR loop-in-sidecar)
+// ---------------------------------------------------------------------------
+
+/// A sidecar session id: short, `[A-Za-z0-9-]` only (it is placed in a URL path).
+pub fn valid_session_id(id: &str) -> std::result::Result<(), String> {
+    if !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        Ok(())
+    } else {
+        Err("invalid session id".into())
+    }
+}
+
+/// Build the `POST /sessions` body. The webview supplies ONLY the system prompt and tool specs
+/// (OpenAI `{type:"function",function:{…}}` wrappers or bare `{name,description,parameters}`); the
+/// model endpoint, key and model name come from Rust-owned serve state; every tool is stamped
+/// `host: "core"` so it executes through citrate-core's approval gates, never in the sidecar.
+pub fn build_session_body(
+    system_prompt: &str,
+    tools_json: &str,
+    base_url: &str,
+    bearer: &str,
+    model: &str,
+) -> std::result::Result<String, String> {
+    let raw: serde_json::Value =
+        serde_json::from_str(tools_json).map_err(|_| "tools must be a JSON array".to_string())?;
+    let arr = raw.as_array().ok_or("tools must be a JSON array")?;
+    if arr.len() > 64 {
+        return Err("at most 64 tools".into());
+    }
+    let mut tools = Vec::with_capacity(arr.len());
+    for t in arr {
+        let f = t.get("function").unwrap_or(t);
+        let name = f
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or("every tool needs a name")?;
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(format!("invalid tool name {name:?}"));
+        }
+        let description: String = f
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(2000)
+            .collect();
+        let parameters = f
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+        if !parameters.is_object() {
+            return Err(format!("tool {name} parameters must be a JSON object"));
+        }
+        tools.push(serde_json::json!({ "name": name, "description": description, "parameters": parameters, "host": "core" }));
+    }
+    Ok(serde_json::json!({
+        "model": model,
+        "systemPrompt": system_prompt,
+        "llm": { "baseUrl": base_url, "bearer": bearer },
+        "tools": tools,
+        // HUP-S1.2: the sidecar offers only the relevant tools per request and keeps every prompt
+        // inside the local model's real context window (llama-server --ctx-size).
+        "maxToolsPerRequest": 8,
+        "contextTokens": crate::serve::DEFAULT_CTX_SIZE,
+    })
+    .to_string())
+}
+
+/// **hermes_session_open** — open a sidecar agent session on the LOCAL model. The endpoint + key are
+/// the running llama-server's (serve state); nothing about them comes from the webview.
+#[tauri::command]
+pub async fn hermes_session_open(
+    app: tauri::AppHandle,
+    system_prompt: String,
+    tools_json: String,
+) -> std::result::Result<String, String> {
+    crate::blocking::off_main(move || {
+        let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app)
+            .ok_or("internal: serve state unavailable")?;
+        if !serve.0.is_running() {
+            return Err(
+                "the local model isn't running yet — start it from Models, then try again".into(),
+            );
+        }
+        let key = serve.0.api_key();
+        let body = build_session_body(
+            &system_prompt,
+            &tools_json,
+            &serve.0.base_url(),
+            key.as_str(),
+            &serve.0.current_model_file(),
+        )?;
+        manager(&app)?
+            .session_open(&body)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **hermes_session_send** — run one user turn in the session.
+#[tauri::command]
+pub async fn hermes_session_send(
+    app: tauri::AppHandle,
+    id: String,
+    text: String,
+) -> std::result::Result<(), String> {
+    crate::blocking::off_main(move || {
+        manager(&app)?
+            .session_send(&id, &text)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **hermes_session_events** — long-poll the session's event log after `after`.
+#[tauri::command]
+pub async fn hermes_session_events(
+    app: tauri::AppHandle,
+    id: String,
+    after: u64,
+    wait_ms: u64,
+) -> std::result::Result<serde_json::Value, String> {
+    crate::blocking::off_main(move || {
+        manager(&app)?
+            .session_events(&id, after, wait_ms)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **hermes_session_tool_result** — hand back a core-hosted tool's result (already gated by core).
+#[tauri::command]
+pub async fn hermes_session_tool_result(
+    app: tauri::AppHandle,
+    id: String,
+    call_id: String,
+    status: String,
+    content: String,
+) -> std::result::Result<(), String> {
+    crate::blocking::off_main(move || {
+        manager(&app)?
+            .session_tool_result(&id, &call_id, &status, &content)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **hermes_session_stop** — stop the session's current turn.
+#[tauri::command]
+pub async fn hermes_session_stop(
+    app: tauri::AppHandle,
+    id: String,
+) -> std::result::Result<(), String> {
+    crate::blocking::off_main(move || manager(&app)?.session_stop(&id).map_err(|e| e.to_string()))
+        .await
+}
+
+#[cfg(test)]
+mod session_tests {
+    include!("hermes_session_tests.rs");
 }
 
 #[cfg(test)]

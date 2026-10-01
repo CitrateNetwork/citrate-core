@@ -141,3 +141,31 @@ INV_Consent_1 + INV_Consent_3 + the INV_Consent_2 property hold). Negative contr
 has teeth): an earlier draft cleared `consented` on `ToggleOff`, and TLC produced a concrete
 counterexample violating INV-Consent-1 (a legitimately-sent bundle no longer showed as
 consented) — fixed by keeping consent as a historical record.
+
+---
+
+# AgentLoop formal model (HUP-S1.3)
+
+TLA+ model of Hermes's verifier-judged loop (`citrate-agent-loop`: `run_workflow` /
+`run_turn_with`; ADR `docs/adr/ADR-2026-09-30-hermes-loop-in-sidecar.md`). A workflow has
+`NSteps` steps; each step gets `MaxAttempts` attempts of up to `MaxTurns` model calls; a model call
+answers (verifiers judge the attempt) or proposes an effect, which passes a gate (human approve,
+human deny, or HIC-2 auto); reading untrusted content taints the task; Stop can arrive any time.
+
+| Property | Meaning | Rust tests (`agent-loop/tests/`) |
+|---|---|---|
+| `Bounded` | model calls ≤ NSteps × MaxAttempts × MaxTurns | `the_loop_is_bounded_by_max_steps` |
+| `OnlyVerifierSucceeds` | succeeded ⇒ every step verified | `the_models_claim_of_success_is_not_success`, `steps_run_in_order_and_all_must_pass` |
+| `NoEffectWithoutGate` | every executed effect passed a gate; a denied effect never executes | `a_denied_tool_is_reported_to_the_model_as_declined`, `a_declined_tool_does_not_count_as_succeeded` |
+| `TaintDowngrade` | no auto-approved effect after untrusted content entered the task | (enforcement lands with HIC budgets in S2.7) |
+| `StopIsLive`, `Terminates` | a stop request always halts; every run ends | `stop_during_a_tool_halts_before_the_next_model_call`, `stop_during_a_workflow_stops_it` |
+
+**Run:** `scripts/run-tlc.sh AgentLoop` (needs a JDK: `brew install openjdk`, and `~/.tla/tla2tools.jar`).
+**Result (2026-09-30, TLC 2.19, OpenJDK 27):** 2,342 states generated, 1,258 distinct, depth 27,
+no error; both temporal properties hold. **Mutation checks:** removing the taint guard violates
+`TaintDowngrade`; letting a failed judgement mark success violates `OnlyVerifierSucceeds`.
+`NoEffectWithoutGate` holds by construction (the model has no ungated execution path) — it
+documents the design rather than being mutation-tested.
+
+Re-checked on the same date with this script: `ConsentGate`, `MemoryPack`, `ModelRouter`,
+`SidecarSupervisor` and `SidecarSupervisor_ForkBomb` — no error.

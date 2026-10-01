@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage } from "../domains";
 import type { CeremonyView } from "../types";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
@@ -55,6 +55,21 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   async resolve(approve: boolean, id: string) {
     // PBA-L7b-003: the approval is bound to the reviewed call id (never the legacy head-resolve).
     await invoke("hermes_resolve", { approve, id });
+  },
+  sessionOpen(systemPrompt, toolsJson) {
+    return invoke<string>("hermes_session_open", { systemPrompt, toolsJson });
+  },
+  async sessionSend(id, text) {
+    await invoke("hermes_session_send", { id, text });
+  },
+  sessionEvents(id, after, waitMs) {
+    return invoke<SessionEventsPage>("hermes_session_events", { id, after, waitMs });
+  },
+  async sessionToolResult(id, callId, status, content) {
+    await invoke("hermes_session_tool_result", { id, callId, status, content });
+  },
+  async sessionStop(id) {
+    await invoke("hermes_session_stop", { id });
   },
 };
 

@@ -1054,6 +1054,26 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* HUP-S1.1c — opt-in preview of the sidecar-owned agent loop (ADR loop-in-sidecar). */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              <span className="eyebrow">Hermes · agent loop (preview)</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <input
+                  id="hermes-sidecar-loop"
+                  type="checkbox"
+                  checked={!!s.hermesSidecarLoop}
+                  onChange={(e) => {
+                    store.setState({ hermesSidecarLoop: e.target.checked });
+                    store.save();
+                    void store.rebuildProvider();
+                  }}
+                />
+                Run Hermes's loop in the agent sidecar
+              </label>
+              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
+                Uses your local model. Tools still run here, behind the same approvals. Needs the Hermes sidecar running. Off by default until the parity checks pass.
+              </span>
+            </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>
               <span style={{ display: "flex", gap: 8 }}>

@@ -475,6 +475,8 @@ export interface AppState {
    * Whether a route is actually usable is read live via bridge.chat.providerStatus.
    */
   aiDefault: string;
+  /** HUP-S1.1c — run Hermes's loop in the sidecar (preview; off until the S1.9 parity suite passes). */
+  hermesSidecarLoop: boolean;
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -729,6 +731,7 @@ export function freshState(pid: string): AppState {
     // AI provider KEYS live in the OS keyring (Rust), never in AppState. Only the
     // non-secret default route id is kept here (AI1, invariant 2).
     aiDefault: "gateway",
+    hermesSidecarLoop: false,
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -873,7 +876,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {

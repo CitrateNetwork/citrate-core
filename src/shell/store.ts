@@ -28,7 +28,8 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall } from "../agent/harness";
+import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "../agent/harness";
+import { createSidecarProvider } from "../agent/sidecarProvider";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { fenceUntrusted } from "../agent/untrusted";
@@ -820,6 +821,24 @@ export class Store {
         inferenceState = "demo";
       }
       const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
+      // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
+      // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
+      if (kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri") {
+        const h = bridge.agentHarness;
+        this.provider = createSidecarProvider(
+          {
+            open: (p, t) => h.sessionOpen(p, t),
+            send: (id, text) => h.sessionSend(id, text),
+            events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
+            toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
+            stop: (id) => h.sessionStop(id),
+          },
+          () => AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
+          () => AGENT_TOOLS,
+        );
+        this.reflectProvider();
+        return;
+      }
       if (kind === "local") {
         // REAL local inference against the healthy llama-server (Rust-owned URL). The local model
         // runs the FULL Hermes tool loop (groups/deploy/skills/memory) out of the box — same loop as
