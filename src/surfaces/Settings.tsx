@@ -31,6 +31,8 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
+import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -816,6 +818,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 {s.socketPath}
               </span>
             </div>
+            {/* HUP-S4.2 — this node as an MCP server (off by default; loopback; connect token). */}
+            <NodeMcpPanel io={desktopNodeMcpIo} />
           </div>
         )}
 
