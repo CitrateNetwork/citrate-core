@@ -22,6 +22,7 @@ import {
   extractSection,
   findMissingCitations,
   keyPointCoverage,
+  keyPointMatched,
   normalizeText,
   parseQaDataset,
   runQaEval,
@@ -92,6 +93,21 @@ describe("deterministic scorer", () => {
   it("normalizes digit grouping, case, and code marks but keeps identifier underscores", () => {
     expect(normalizeText("**32,000 SALT** and `eth_call`")).toBe("32000 salt and eth_call");
     expect(keyPointCoverage("Stake 32000 salt.", [["32,000 SALT"]])).toBe(1);
+  });
+  it("matches key points on token boundaries, so a short number or word is not found inside a longer one", () => {
+    // "18" must not be credited by "2018" or "180"; "mod" not by "model"; "3" not by "0x0103".
+    expect(keyPointMatched("Shipped in 2018 with 180 peers.", ["18"])).toBe(false);
+    expect(keyPointMatched("k is 18.", ["18"])).toBe(true);
+    expect(keyPointMatched("The model picks one.", ["mod", "modulo"])).toBe(false);
+    expect(keyPointMatched("keccak256(job) mod n", ["mod"])).toBe(true);
+    expect(keyPointMatched("precompile 0x0103", ["3", "three"])).toBe(false);
+    expect(keyPointMatched("Observe, orient, decide, and act.", ["Act"])).toBe(true);
+    expect(keyPointMatched("It acts exactly once.", ["Act"])).toBe(true);
+    expect(keyPointMatched("Exactly once.", ["Act"])).toBe(false);
+    // punctuation-edged phrasings keep working
+    expect(keyPointMatched("a 10% quorum", ["10%"])).toBe(true);
+    expect(keyPointMatched("a 110% quorum", ["10%"])).toBe(false);
+    expect(keyPointMatched("retries (3) times", ["(3)"])).toBe(true);
   });
   it("extracts source:path#anchor citations and de-duplicates them", () => {
     const refs = extractCitations(

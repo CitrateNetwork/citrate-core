@@ -252,9 +252,27 @@ export function normalizeText(s: string): string {
     .trim();
 }
 
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Regex for one normalized phrasing, anchored on token boundaries so a short key point is not
+ * credited from inside a longer token ("18" in "2018", "mod" in "model", "3" in "0x0103"). A
+ * phrasing that starts or ends with a letter or digit must not touch another letter or digit on
+ * that side; a letter-final phrasing may take a plural "s"/"es"; a digit-final one may not run into
+ * a decimal or grouped continuation ("18" vs "18.5").
+ */
+function phrasingRe(alt: string): RegExp {
+  const n = normalizeText(alt);
+  const left = /^[\p{L}\p{N}]/u.test(n) ? "(?<![\\p{L}\\p{N}])" : "";
+  let right = "";
+  if (/\p{L}$/u.test(n)) right = "(?:e?s)?(?![\\p{L}\\p{N}])";
+  else if (/\p{N}$/u.test(n)) right = "(?![\\p{L}\\p{N}]|[.,]\\p{N})";
+  return new RegExp(left + escapeRe(n) + right, "u");
+}
+
 export function keyPointMatched(answer: string, alternatives: string[]): boolean {
   const a = normalizeText(answer);
-  return alternatives.some((alt) => a.includes(normalizeText(alt)));
+  return alternatives.some((alt) => phrasingRe(alt).test(a));
 }
 
 /** Fraction of key points the answer covers. No key points → 1. */
