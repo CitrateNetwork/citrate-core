@@ -66,6 +66,12 @@ const LONG: Record<string, number> = {
   hermes_tracks: 45_000,
   hermes_brief_create: 45_000,
   hermes_brief_check: 45_000,
+  // HUP-S2.1: a grant change is sent to each open Hermes conversation (at most 8, each a 30 s
+  // loopback call Rust-side) before the command returns.
+  agent_grants_add_folder: 270_000,
+  agent_grants_revoke: 270_000,
+  agent_grants_full_access_confirm: 270_000,
+  agent_grants_reset: 270_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.

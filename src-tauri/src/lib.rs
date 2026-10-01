@@ -29,6 +29,7 @@ pub use citrate_core_kit::{
 mod activity;
 mod addresses;
 mod agent;
+mod agent_grants;
 mod ai;
 mod blocking;
 mod connections;
@@ -635,6 +636,13 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S2.1 — Hermes folder grants (store in app data; sent to agent sessions on change).
+            agent_grants::agent_grants_view,
+            agent_grants::agent_grants_add_folder,
+            agent_grants::agent_grants_revoke,
+            agent_grants::agent_grants_full_access_prepare,
+            agent_grants::agent_grants_full_access_confirm,
+            agent_grants::agent_grants_reset,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable

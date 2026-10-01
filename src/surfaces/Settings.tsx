@@ -31,6 +31,8 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { GrantsPanel } from "../agent/grants/GrantsPanel";
+import { desktopGrantsIo } from "../agent/grants/grants";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -1073,6 +1075,11 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
                 Uses your local model. Tools still run here, behind the same approvals. Needs the Hermes sidecar running. Off by default until the parity checks pass.
               </span>
+            </div>
+            {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
+              <span className="eyebrow">Hermes · folder access</span>
+              <GrantsPanel io={desktopGrantsIo} />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>

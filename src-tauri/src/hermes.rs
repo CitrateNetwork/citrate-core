@@ -301,6 +301,19 @@ pub struct HermesManager {
     /// that effect; otherwise a later identical effect would find the stale decided entry and never
     /// bridge again.
     bridged_by_call: Mutex<HashMap<String, String>>,
+    /// HUP-S2.1: agent sessions opened with the member's folder-grant document; each change to the
+    /// document is sent to every one of them (`POST /sessions/:id/grants`).
+    grant_sessions: Mutex<std::collections::BTreeSet<String>>,
+}
+
+/// HUP-S2.1: how sending a changed grant document to the open agent sessions went.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantsPushOutcome {
+    /// Sessions that now use the new document.
+    pub updated: usize,
+    /// One line per session that refused it or could not be reached.
+    pub failed: Vec<String>,
 }
 
 impl HermesManager {
@@ -320,6 +333,7 @@ impl HermesManager {
             control: Box::new(UreqControl),
             bridged: Mutex::new(HashMap::new()),
             bridged_by_call: Mutex::new(HashMap::new()),
+            grant_sessions: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
@@ -469,6 +483,10 @@ impl HermesManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+        self.grant_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// The current status: supervisor state + the control URL + a coarse healthy flag.
@@ -594,7 +612,75 @@ impl HermesManager {
             .unwrap_or_default()
             .to_string();
         valid_session_id(&id).map_err(HermesError::Decode)?;
+        let with_grants = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|b| b.get("grants").is_some());
+        if with_grants {
+            self.grant_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.clone());
+        }
         Ok(id)
+    }
+
+    /// HUP-S2.1: send `doc` (the whole grant document) to every session opened with grants. A
+    /// session the sidecar no longer has (404) is forgotten; any other refusal is reported. With no
+    /// sidecar running there is nothing to send to.
+    pub fn push_grants(&self, doc: &crate::agent_grants::GrantState) -> GrantsPushOutcome {
+        let mut out = GrantsPushOutcome::default();
+        let ids: Vec<String> = self
+            .grant_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        if ids.is_empty() {
+            return out;
+        }
+        let Ok(bearer) = self.bearer() else {
+            self.grant_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            return out;
+        };
+        let body = match serde_json::to_string(doc) {
+            Ok(b) => b,
+            Err(e) => {
+                out.failed.push(format!("could not encode the grants: {e}"));
+                return out;
+            }
+        };
+        for id in ids {
+            let url = format!("{}/sessions/{id}/grants", self.control_url());
+            match self.control.post(&url, &bearer, &body) {
+                Ok(r) if (200..300).contains(&r.status) => out.updated += 1,
+                Ok(r) if r.status == 404 => {
+                    self.grant_sessions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
+                }
+                Ok(r) => {
+                    let msg: String = serde_json::from_str::<serde_json::Value>(&r.body)
+                        .ok()
+                        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+                        .unwrap_or_else(|| format!("status {}", r.status))
+                        .chars()
+                        .take(200)
+                        .collect();
+                    out.failed.push(format!(
+                        "a Hermes conversation refused the new grants ({msg}), so it has no folder access now"
+                    ));
+                }
+                Err(e) => out
+                    .failed
+                    .push(format!("a Hermes conversation could not be reached ({e})")),
+            }
+        }
+        out
     }
 
     /// `POST /sessions/:id/messages` — start one turn (the sidecar answers 409 while busy).
@@ -1043,6 +1129,14 @@ static HERMES: OnceLock<HermesManager> = OnceLock::new();
 pub fn shutdown() {
     if let Some(m) = HERMES.get() {
         m.stop();
+    }
+}
+
+/// HUP-S2.1: send the grant document to every open agent session, if the manager exists.
+pub(crate) fn push_grants_to_sessions(doc: &crate::agent_grants::GrantState) -> GrantsPushOutcome {
+    match HERMES.get() {
+        Some(m) => m.push_grants(doc),
+        None => GrantsPushOutcome::default(),
     }
 }
 
@@ -1564,6 +1658,10 @@ pub async fn hermes_session_open(
             &serve.0.current_model_file(),
             serve.0.ctx_size(),
         )?;
+        // HUP-S2.1: the member's folder grants travel with the session (an unreadable grant file
+        // sends an empty document: no folder access).
+        let grants = crate::agent_grants::GrantStore::for_app(&app)?.document_for_agent();
+        let body = crate::agent_grants::attach_grants(&body, &grants)?;
         manager(&app)?
             .session_open(&body)
             .map_err(|e| e.to_string())
