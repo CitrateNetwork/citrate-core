@@ -359,3 +359,81 @@ Mutation check (`python3 src-tauri/formal/DeployGate_mutants.py`), all 7 killed:
 - The evidence parsers are folded into the verdict `Evaluate` writes; the Rust tests cover
   them (every "not installed" or tool error is a failing item).
 - The store's size bound is not modelled. Eviction revokes open ceremonies like NOT_READY.
+
+# FlRoundGate (HUP-S9.4)
+
+Federated round start (HIC-1) and the LoRA eval gate, mirroring `src-tauri/src/fl_rounds.rs`.
+
+## Files
+
+- `FlRoundGate.tla`: the model.
+- `FlRoundGate.cfg`: safety (one plan, since plans are independent; two source files; two adapter
+  versions; two base models).
+- `FlRoundGate_Reach.cfg`, `FlRoundGate_ReachLoad.cfg`: non-vacuity (a round can start; an
+  adapter can load).
+- `FlRoundGate_mutants.py`: the mutation check.
+
+## What maps to what
+
+| Model | Code |
+|---|---|
+| `Plan(p)` | `fl_round_plan` (`build_plan` over a coordinator read; the plan hash binds what was read) |
+| `Approve(p)` | the member's Approve click on the plan's card (`store.ts`, `fl_round_start` tool and the Train surface) |
+| `Start(p)` | `start_round`: plan known and startable, not already started, coordinator re-read still open, settlement unchanged |
+| `CoordChange` | the coordinator moving at any time |
+| `Gate(f, d, b)` | `fl_adapter_gate` (`evaluate_adapter` + `record_gate`, keyed by sha256) and `must_unload_after_gate` |
+| `Load(v)` | `fl_adapter_load` (`authorize_load`: ACCEPT, same base, content-addressed copy re-hashed) |
+| `Swap(f, v)` | the member's source file changing on disk |
+| `DamageCopy(v, w)` | an app-store copy damaged while not served |
+| `CrashRestart` | the supervisor respawning llama-server with the same `--lora` argv |
+| `SelectBase(b)` | `select_model` dropping the adapter on a base change |
+
+## Invariants
+
+| Invariant | Meaning | Rust tests (`fl_rounds_tests.rs`) |
+|---|---|---|
+| `StartOnlyApproved` | no start without the member's approval of that plan | `start_requires_a_plan_core_built` (the command is reached only from the approval path) |
+| `StartOnlyWhatWasApproved` | a start happens only while work is open, as planned, under the settlement mode the member saw | `start_refuses_when_the_coordinator_changed_since_the_plan`, `start_refuses_a_settlement_mode_change`, `start_refuses_a_blocked_plan` |
+| `AtMostOneStart` | one authorization per plan | `start_refuses_a_stale_plan_and_a_second_start` |
+| `LoadedIsAccepted` | the configured adapter's latest record is ACCEPT for the served base | `load_needs_an_accepted_gate_for_this_exact_file_and_base`, `a_later_reject_revokes_an_earlier_accept`, `a_new_gate_record_unloads_the_served_adapter_unless_it_still_fits`, `serve_argv_carries_the_loaded_adapter_and_a_model_switch_clears_it` |
+| `ServedIsLoaded` | what llama-server actually read is the gated version, across source swaps and crash restarts | `a_source_swapped_after_the_gate_is_refused_and_after_load_is_not_served` |
+
+## Run result (2026-10-01)
+
+TLC2 Version 2.19 (rev 5a47802), `scripts/run-tlc.sh FlRoundGate`: **No error found**,
+24,204,496 states generated, 881,600 distinct, depth 15 (19 s).
+
+`FlRoundGate_Reach`: `NeverStarts` violated as expected. `FlRoundGate_ReachLoad`: `NeverLoads`
+violated as expected.
+
+The first draft of this model found a gap: re-gating a served adapter as ACCEPT with scorecards
+from a different base left it loaded. The fix is `must_unload_after_gate` (mutant M09 below is
+that first draft).
+
+Mutation check (`python3 src-tauri/formal/FlRoundGate_mutants.py`), all 13 killed:
+
+| Mutant | Break | Caught by |
+|---|---|---|
+| M01 | start without approval | `StartOnlyApproved` |
+| M02 | start without re-reading the coordinator | `StartOnlyWhatWasApproved` |
+| M03 | start under a settlement mode the member did not see | `StartOnlyWhatWasApproved` |
+| M04 | a second start for one plan | `AtMostOneStart` |
+| M05 | start a plan that was blocked when made | `StartOnlyWhatWasApproved` |
+| M06 | load accepts any recorded verdict | `LoadedIsAccepted` |
+| M07 | load ignores the measured base | `LoadedIsAccepted` |
+| M08 | a new gate record never unloads | `LoadedIsAccepted` |
+| M09 | only a REJECT unloads (first draft) | `LoadedIsAccepted` |
+| M10 | a base switch keeps the adapter | `LoadedIsAccepted` |
+| M11 | an existing copy is reused without re-hashing | `ServedIsLoaded` |
+| M12 | llama-server points at the member's source file | `ServedIsLoaded` |
+| M13 | the copy is not re-hashed after copying | `ServedIsLoaded` |
+
+## Abstractions
+
+- sha256 is assumed collision-free (versions stand for hashes).
+- Device fit, plan expiry (15 minutes) and the plan memory bound are not modelled; the Rust
+  tests cover them.
+- The app-owned adapter copy is assumed not to change while it is being served (the same trust
+  the model files get). A copy damaged while not served is re-hashed and replaced on load.
+- The eval decision itself is folded into the verdict `Gate` writes; `decide_eval_gate` is
+  covered by the Rust tests.

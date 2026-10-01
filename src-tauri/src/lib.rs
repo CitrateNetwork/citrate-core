@@ -34,6 +34,7 @@ mod blocking;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
+mod fl_rounds;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
@@ -274,6 +275,8 @@ pub fn run() {
             app.manage(ceremony::build_ceremony_state());
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
+            // HUP-S9.4 — federated rounds: coordinator setting, start authorizations, eval-gate records.
+            app.manage(fl_rounds::build_state(app.handle()));
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
@@ -462,6 +465,15 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
+            fl_rounds::fl_overview,
+            fl_rounds::fl_coordinator_set,
+            fl_rounds::fl_round_plan,
+            fl_rounds::fl_round_plan_lookup,
+            fl_rounds::fl_round_start,
+            fl_rounds::fl_adapter_gate,
+            fl_rounds::fl_adapter_load,
+            fl_rounds::fl_adapter_unload,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
