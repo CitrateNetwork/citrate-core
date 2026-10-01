@@ -16,6 +16,7 @@ import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
 import type { UserSkill } from "../agent/userSkills";
 import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
+import type { DeployGateRecord } from "../agent/deployGate";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
@@ -232,6 +233,8 @@ export interface WalletReview {
   /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
   card?: ApprovalCard;
   hic?: HicRequirement;
+  /** HUP-S6.4 — for a contract deploy: the READY D-4 gate record core checked for this bytecode. */
+  deployGate?: DeployGateRecord;
 }
 
 export interface AppState {

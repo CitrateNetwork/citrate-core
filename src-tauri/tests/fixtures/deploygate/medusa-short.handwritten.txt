@@ -1,0 +1,11 @@
+⇾ Reading the configuration file at: /work/hello-mint/medusa.json
+⇾ Compiling targets with crytic-compile
+⇾ Finished compiling targets in 3s
+⇾ Initializing corpus
+⇾ Fuzzing with 4 workers
+⇾ [NOT STARTED] Property Test: HelloMintInvariants.property_supply_never_exceeds_cap()
+⇾ fuzz: elapsed: 0s, calls: 0 (0/sec), seq/s: 0, branches hit: 0, corpus: 0, failures: 0/0, gas/s: 0
+⇾ fuzz: elapsed: 3s, calls: 17114 (5704/sec), seq/s: 171, branches hit: 37, corpus: 9, failures: 0/171, gas/s: 41290510
+⇾ Fuzzer stopped, test results follow below ...
+⇾ [PASSED] Property Test: HelloMintInvariants.property_supply_never_exceeds_cap()
+⇾ Test summary: 1 test(s) passed, 0 test(s) failed

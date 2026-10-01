@@ -33,11 +33,14 @@ mod ai;
 mod blocking;
 mod connections;
 mod contract_deploy;
+mod deploy_gate;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
+mod hf_auth;
 mod ipc_name;
 mod ipfs;
+mod journal_export;
 mod membership;
 mod memory;
 mod model;
@@ -50,6 +53,7 @@ mod provisioning;
 mod sbt_art;
 mod seam;
 mod serve;
+mod serve_plan;
 mod shell;
 mod skill_registry;
 mod skills_local;
@@ -268,6 +272,8 @@ pub fn run() {
             // this LIFTS Rule 3 — all signing goes through this ceremony. No
             // secret bytes cross invoke (sign_* return id / decoded / sig-hex).
             app.manage(ceremony::build_ceremony_state());
+            // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
+            app.manage(deploy_gate::DeployGateState::default());
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
@@ -453,6 +459,9 @@ pub fn run() {
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
+            // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
+            deploy_gate::deploy_gate_submit,
+            deploy_gate::deploy_gate_lookup,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
@@ -623,6 +632,9 @@ pub fn run() {
             skills_local::skills_local_write,
             skills_local::skills_local_read,
             skills_local::skills_local_delete,
+            // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
+            journal_export::journal_export_encrypted,
+            journal_export::journal_import_encrypted,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable

@@ -41,7 +41,7 @@ const TOOLS: &str = r#"[{"type":"function","function":{"name":"node_status","des
 
 #[test]
 fn the_session_body_takes_the_endpoint_from_rust_and_stamps_every_tool_core() {
-    let body = build_session_body("You are Hermes.", TOOLS, "http://127.0.0.1:18080/v1", "sk-local", "gemma.gguf").unwrap();
+    let body = build_session_body("You are Hermes.", TOOLS, "http://127.0.0.1:18080/v1", "sk-local", "gemma.gguf", 16_384).unwrap();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["llm"]["baseUrl"], "http://127.0.0.1:18080/v1");
     assert_eq!(v["llm"]["bearer"], "sk-local");
@@ -50,17 +50,18 @@ fn the_session_body_takes_the_endpoint_from_rust_and_stamps_every_tool_core() {
     assert_eq!(tools.len(), 2);
     assert_eq!(tools[0]["name"], "node_status", "OpenAI function wrappers are unwrapped");
     assert!(tools.iter().all(|t| t["host"] == "core"), "the webview cannot route a tool to the sidecar");
-    assert_eq!(v["contextTokens"], crate::serve::DEFAULT_CTX_SIZE, "the real llama-server context window");
+    assert_eq!(v["contextTokens"], 16_384, "the running llama-server's planned context window");
+    assert_eq!(v["maxTokens"], crate::ai::AI_MAX_TOKENS, "the same per-turn cap as direct chat");
     assert_eq!(v["maxToolsPerRequest"], 8);
 }
 
 #[test]
 fn malformed_tool_specs_are_refused() {
     for bad in ["{}", "not json", r#"[{"description":"no name"}]"#, r#"[{"name":"../x","parameters":{}}]"#, r#"[{"name":"a","parameters":"nope"}]"#] {
-        assert!(build_session_body("p", bad, "http://127.0.0.1:1/v1", "", "m").is_err(), "{bad}");
+        assert!(build_session_body("p", bad, "http://127.0.0.1:1/v1", "", "m", 8192).is_err(), "{bad}");
     }
     let many: Vec<serde_json::Value> = (0..65).map(|i| serde_json::json!({"name": format!("t{i}"), "parameters": {}})).collect();
-    assert!(build_session_body("p", &serde_json::to_string(&many).unwrap(), "http://127.0.0.1:1/v1", "", "m").is_err());
+    assert!(build_session_body("p", &serde_json::to_string(&many).unwrap(), "http://127.0.0.1:1/v1", "", "m", 8192).is_err());
 }
 
 #[test]
@@ -85,7 +86,7 @@ fn open_send_events_result_and_stop_hit_the_session_routes() {
         (201, r#"{"id":"s1-abc"}"#.into()),                                   // open
     ];
     let m = mgr(rec.clone());
-    let body = build_session_body("p", "[]", "http://127.0.0.1:1/v1", "", "m").unwrap();
+    let body = build_session_body("p", "[]", "http://127.0.0.1:1/v1", "", "m", 8192).unwrap();
     let id = m.session_open(&body).unwrap();
     assert_eq!(id, "s1-abc");
     m.session_send(&id, "hello").unwrap();
@@ -132,7 +133,7 @@ fn a_refused_open_surfaces_the_sidecar_status() {
 
 #[test]
 fn annotations_are_carried_through_with_the_host_still_stamped_core() {
-    let body = build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m").unwrap();
+    let body = build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m", 8192).unwrap();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let tools = v["tools"].as_array().unwrap();
     assert_eq!(tools[0]["annotations"]["effect"], "none");
@@ -146,7 +147,7 @@ fn annotations_are_carried_through_with_the_host_still_stamped_core() {
 #[test]
 fn an_annotation_cannot_smuggle_a_host_or_extra_hints() {
     let t = r#"[{"name":"a","parameters":{},"annotations":{"effect":"none","trust":"trusted","host":"sidecar","destructive":false}}]"#;
-    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", t, "http://127.0.0.1:1/v1", "", "m").unwrap()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", t, "http://127.0.0.1:1/v1", "", "m", 8192).unwrap()).unwrap();
     let a = &v["tools"][0]["annotations"];
     assert!(a.get("host").is_none(), "{a}");
     assert!(a.get("destructive").is_none(), "only core-derived hints are sent: {a}");
@@ -164,7 +165,7 @@ fn a_tool_without_complete_annotations_is_refused() {
         r#"[{"name":"a","parameters":{},"annotations":{"effect":"none","trust":"mostly"}}]"#,
         r#"[{"name":"a","parameters":{},"annotations":{"effect":"NONE","trust":"trusted"}}]"#,
     ] {
-        let err = build_session_body("p", bad, "http://127.0.0.1:1/v1", "", "m").unwrap_err();
+        let err = build_session_body("p", bad, "http://127.0.0.1:1/v1", "", "m", 8192).unwrap_err();
         assert!(err.contains("annotation"), "{bad}: {err}");
     }
 }
@@ -174,7 +175,7 @@ fn every_effect_and_trust_value_the_runtime_knows_is_accepted() {
     for effect in ["none", "write", "spend", "sign"] {
         for trust in ["trusted", "untrusted"] {
             let t = format!(r#"[{{"name":"a","parameters":{{}},"annotations":{{"effect":"{effect}","trust":"{trust}"}}}}]"#);
-            let v: serde_json::Value = serde_json::from_str(&build_session_body("p", &t, "http://127.0.0.1:1/v1", "", "m").unwrap()).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&build_session_body("p", &t, "http://127.0.0.1:1/v1", "", "m", 8192).unwrap()).unwrap();
             assert_eq!(v["tools"][0]["annotations"]["effect"], effect);
             assert_eq!(v["tools"][0]["annotations"]["trust"], trust);
         }
@@ -187,6 +188,17 @@ fn the_session_body_claims_hic_awareness() {
     // call resolves only through the member's Approve/Decline click (src/shell/hicApproval.test.ts
     // pins that there is no automatic or budget route); without it the sidecar would silently
     // decline every effectful call after taint.
-    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m").unwrap()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m", 8192).unwrap()).unwrap();
     assert_eq!(v["hicAware"], serde_json::Value::Bool(true), "{v}");
+}
+
+// HUP-S1.6 (rest): the reply budget never eats more than a quarter of a small window.
+#[test]
+fn the_session_reply_budget_stays_inside_the_window() {
+    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", "[]", "http://127.0.0.1:1/v1", "", "m", 4096).unwrap()).unwrap();
+    assert_eq!(v["contextTokens"], 4096);
+    assert_eq!(v["maxTokens"], 1024);
+    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", "[]", "http://127.0.0.1:1/v1", "", "m", 65_536).unwrap()).unwrap();
+    assert_eq!(v["contextTokens"], 65_536);
+    assert_eq!(v["maxTokens"], crate::ai::AI_MAX_TOKENS);
 }

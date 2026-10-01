@@ -34,6 +34,14 @@ describe("HUP-S1.6 TierView", () => {
     expect(html).toContain("16k context");
   });
 
+  it("says the tier context is a target the model start caps, applied at the next start", () => {
+    const html = renderToStaticMarkup(<TierView report={sampleReport()} loaded saving={false} error={null} onOverride={noop} />);
+    expect(html).toContain('data-testid="tier-ctx-note"');
+    expect(html).toContain("the next time the local model starts");
+    expect(html).toContain("what the model file supports");
+    expect(html).toContain("memory free beside the node");
+  });
+
   it("T0 recommends escalation (guided tier)", () => {
     const rep = sampleReport();
     rep.recommendation = { ...rep.profiles[0], rationale: ["Under 12 GB usable → T0"], guided: true, usableBytes: 9 * 2 ** 30 };

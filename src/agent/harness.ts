@@ -488,7 +488,7 @@ export const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "contract_deploy",
-      description: "PROPOSE deploying a compiled contract to chain 40204. This is a WRITE: it opens a ceremony with the creation transaction for the member to approve — it does NOT deploy on its own. `bytecodeHex` must be real compiled bytecode (the app never fabricates code). Use to help the member ship an app/contract idea once they have bytecode.",
+      description: "PROPOSE deploying a compiled contract to chain 40204. This is a WRITE: it opens a ceremony with the creation transaction for the member to approve — it does NOT deploy on its own. `bytecodeHex` must be real compiled bytecode (the app never fabricates code). The node refuses unless the D-4 deploy gate is READY for exactly this bytecode (forge tests, Slither, Aderyn, Medusa, fork dry run); if refused, explain the failing items to the member and do not retry. Use to help the member ship an app/contract idea once they have bytecode.",
       parameters: {
         type: "object",
         properties: {

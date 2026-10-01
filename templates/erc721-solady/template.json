@@ -1,0 +1,15 @@
+{
+  "id": "erc721-solady",
+  "kind": "contract",
+  "title": "ERC-721 paid mint (Solady)",
+  "description": "The hello-mint contract on Solady v0.1.26 instead of OpenZeppelin: the same external interface (mint, totalMinted, MAX_SUPPLY, PRICE, MAX_PER_TX, setBaseURI, withdraw) with lower gas, and the same property harness.",
+  "layers": ["foundry", "erc721-properties"],
+  "params": {
+    "name": {},
+    "symbol": {},
+    "supply": { "default": "500", "min": 1, "max": 1000000 },
+    "price": { "default": "0" },
+    "owner": {}
+  },
+  "medusa": true
+}
