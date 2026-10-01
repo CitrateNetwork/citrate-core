@@ -507,3 +507,60 @@ fn import_stores_canonical_addresses() {
     let got = import_link(&mut st, &addr_of(&member), &code).expect("import");
     assert_eq!(got.device, addr_of(&seed(4)));
 }
+
+#[test]
+fn approve_refuses_before_spending_the_ceremony_if_the_member_key_changed() {
+    // Review (HUP-S8.1): the member (comms) key check must also run BEFORE the ceremony is consumed.
+    let (vault, path) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    let flow = DeviceLinkFlow::default();
+    let (member, device) = (seed(0x61), seed(0x62));
+    let view = flow.open(&ceremony, 40204, body_for(&vault, &member, &device));
+    assert!(flow
+        .approve(&vault, &ceremony, &view.id, false, &seed(0x63), &device)
+        .is_err());
+    // Nothing was consumed: the right keys still complete the link.
+    assert!(flow
+        .approve(&vault, &ceremony, &view.id, false, &member, &device)
+        .is_ok());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn approve_refuses_a_link_naming_a_wallet_the_vault_does_not_hold() {
+    // Review (HUP-S8.1): the final three-signature check is what catches a ceremony signature from a
+    // different wallet than the one the link names; the link must not be returned.
+    let (vault, path) = vault_with_wallet();
+    let ceremony = SignatureCeremony::new();
+    let flow = DeviceLinkFlow::default();
+    let (member, device) = (seed(0x71), seed(0x72));
+    let body = DeviceLinkBody::new(
+        &addr_of(&member),
+        &addr_of(&device),
+        &addr_of(&seed(0x73)),
+        0,
+        "Studio Mac",
+        1_790_000_000,
+    )
+    .expect("valid");
+    let view = flow.open(&ceremony, 40204, body);
+    assert!(flow
+        .approve(&vault, &ceremony, &view.id, false, &member, &device)
+        .is_err());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn import_refuses_an_overlong_code_even_when_it_parses() {
+    // Review (HUP-S8.1): the length cap is enforced on the raw input, before parsing.
+    let member = seed(1);
+    let ok = wire(&member, &seed(4), &seed(3), 1, "Linux box");
+    let code = format!(
+        "{}{}",
+        serde_json::to_string(&ok).expect("json"),
+        " ".repeat(5000)
+    );
+    let mut st = DeviceLinkStore::default();
+    assert!(import_link(&mut st, &addr_of(&member), &code).is_err());
+    assert!(st.links.is_empty());
+}
