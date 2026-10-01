@@ -172,6 +172,8 @@ Re-checked on the same date with this script: `ConsentGate`, `MemoryPack`, `Mode
 
 # WebSigningBudget formal model (HUP-S2.3, formal half)
 
+Implementation (HUP-S2.3) and the test that pins each property: `docs/WEB_SIGNING_BUDGETS.md`.
+
 TLA+ model of the signing side of the **proposed** Rule-3 amendment,
 `docs/adr/ADR-2026-09-30-rule3-budgetable-signatures.md` (section D9). It models a design,
 not code: nothing in the tree calls a budget, the ADR's sign-off block is not complete (the

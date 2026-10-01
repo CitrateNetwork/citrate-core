@@ -69,6 +69,14 @@
 //! `UnsupportedSigningKind` instead of signing SHA-256 of the raw bytes: EIP-712
 //! needs its own domain-separated hashing, and approximating it silently was a
 //! signing oracle under a misleading label.
+//!
+//! ## The one budgeted exception (HUP-S2.3, ADR-2026-09-30-rule3-budgetable-signatures)
+//! [`SignatureCeremony::request_siwe_budgeted`] may sign a hardened Sign-In with Ethereum message
+//! (EIP-4361, `personal_sign`) WITHOUT a per-signature click, but only inside a budget the member
+//! granted in Settings → Budgets, for a core-attested top-frame origin, under the dedicated budget
+//! lock, with the decision record written before the signature. It takes message text only, so no
+//! transaction, permit or other typed data can reach it; everything that fails a check becomes an
+//! ordinary pending ceremony here. The generic `SessionBudget` below stays dormant (CORE-G2).
 
 // This module is consumed by the B1.2 command surface in `lib.rs` (wired) and by
 // the B1.3 wagmi connector later. Some constructors/fields are part of the stable
@@ -808,6 +816,149 @@ fn decode_typed_data(intent: &SignatureIntent) -> DecodedAction {
 }
 
 // ---------------------------------------------------------------------------
+// HUP-S2.3 — budgeted Sign-In with Ethereum (ADR-2026-09-30-rule3-budgetable-signatures).
+// ---------------------------------------------------------------------------
+
+/// A Sign-In with Ethereum request that MAY be auto-approved inside a member-granted
+/// [`crate::web_budget::WebSigningBudget`]. It carries the message text only: there is no kind
+/// field, so a transaction, a permit or other typed data cannot be submitted here (D1 closed list,
+/// `OnlyClosedList`). Anything that is not a budgetable SIWE becomes an ordinary HIC-1 card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiweSignRequest {
+    /// The exact message text to sign with `personal_sign` (EIP-191).
+    pub message: String,
+    /// Core's own attestation of the top-frame origin (D2 #1-3). `None` when core cannot attest
+    /// it, which always means an HIC-1 card. Never taken from the request body.
+    pub attestation: Option<crate::web_budget::OriginAttestation>,
+    /// What the current agent task has read (D2 #19).
+    pub taint: crate::web_budget::TaskTaint,
+    /// The sidecar marked the call `hic: "required"`: never budgeted.
+    pub hic_required: bool,
+    /// Who asked (the in-app Hermes loop, or one external client). Budgets are per principal.
+    pub principal: String,
+    /// The origin the caller says the page has. Display only, and only on a card, where it is
+    /// marked as not verified when core could not attest it.
+    pub claimed_origin: String,
+}
+
+/// The result of [`SignatureCeremony::request_siwe_budgeted`]: either a signature produced under
+/// a budget (with its decision record), or a pending HIC-1 ceremony and the plain-language reason
+/// it was not budgetable. A request is never dropped (`FallThroughLive`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum BudgetedOutcome {
+    AutoSigned {
+        signature: Signature,
+        #[serde(rename = "recordId")]
+        record_id: u64,
+        #[serde(rename = "budgetId")]
+        budget_id: u64,
+        remaining: u32,
+        origin: String,
+    },
+    Pending {
+        ceremony: CeremonyView,
+        reason: String,
+    },
+}
+
+impl SignatureCeremony {
+    /// **The budgeted path (B-1 only).** Under the dedicated budget lock, in one critical section
+    /// (`WebSigningBudget.tla` `Decide` → `Sign` → `Return`):
+    /// 1. evaluate every D2 check and the budget (live, unexpired, count left, same wallet, rate);
+    /// 2. reserve write-ahead: counter, nonce ledger, window slot and the `Reserved` decision
+    ///    record are persisted BEFORE any signature (`RecordBeforeSignature`);
+    /// 3. re-read the clock: if the budget or the message expired meanwhile, sign nothing;
+    /// 4. sign `personal_sign` through the gated EIP-191 signer and close the record.
+    ///
+    /// Any failure returns an ordinary pending ceremony (HIC-1) carrying the same message, so the
+    /// member can still approve it by id. Revocation takes the same lock, so a revoke that commits
+    /// first wins. `clock` returns epoch ms and is read twice (steps 1 and 3).
+    pub fn request_siwe_budgeted(
+        &self,
+        vault: &CustodyVault,
+        gate: &crate::web_budget::BudgetGate,
+        req: SiweSignRequest,
+        clock: &dyn Fn() -> u64,
+    ) -> BudgetedOutcome {
+        use crate::web_budget::{FallThrough, RecordStatus, SiweEvalInput};
+        let mut guard = gate.lock();
+        let now = clock();
+        let wallet_addr = wallet::address(vault).ok().map(|w| w.address);
+        let input = SiweEvalInput {
+            message: &req.message,
+            attestation: req.attestation.as_ref(),
+            taint: &req.taint,
+            hic_required: req.hic_required,
+            principal: &req.principal,
+            wallet_address: wallet_addr.as_deref(),
+        };
+        let plan = match guard.evaluate_siwe(&input, now) {
+            Ok(p) => p,
+            Err(why) => {
+                drop(guard);
+                return self.siwe_fall_through(&req, why);
+            }
+        };
+        let record_id = match guard.reserve(&plan, now) {
+            Ok(r) => r,
+            Err(why) => {
+                drop(guard);
+                return self.siwe_fall_through(&req, why);
+            }
+        };
+        if let Err(why) = guard.still_signable(&plan, clock()) {
+            guard.close(record_id, RecordStatus::NotSigned);
+            drop(guard);
+            return self.siwe_fall_through(&req, why);
+        }
+        match wallet::sign_personal(vault, req.message.as_bytes()) {
+            Ok(sig) => {
+                guard.close(record_id, RecordStatus::Signed);
+                let remaining = guard.remaining_of(plan.budget_id);
+                BudgetedOutcome::AutoSigned {
+                    signature: Signature {
+                        sig_hex: hex::encode(sig),
+                        kind: IntentKind::PersonalSign,
+                    },
+                    record_id,
+                    budget_id: plan.budget_id,
+                    remaining,
+                    origin: plan.origin,
+                }
+            }
+            Err(_) => {
+                guard.close(record_id, RecordStatus::NotSigned);
+                drop(guard);
+                self.siwe_fall_through(&req, FallThrough::SignerUnavailable)
+            }
+        }
+    }
+
+    /// Turn a non-budgetable SIWE into an ordinary pending `personal_sign` ceremony (HIC-1).
+    fn siwe_fall_through(
+        &self,
+        req: &SiweSignRequest,
+        why: crate::web_budget::FallThrough,
+    ) -> BudgetedOutcome {
+        let origin = match &req.attestation {
+            Some(a) => a.origin.clone(),
+            None => format!("{} (site not verified by Citrate Core)", req.claimed_origin),
+        };
+        let view = self.request(SignatureIntent {
+            origin,
+            kind: IntentKind::PersonalSign,
+            chain_id: crate::rpc::CITRATE_CHAIN_ID,
+            raw: hex::encode(req.message.as_bytes()),
+        });
+        BudgetedOutcome::Pending {
+            ceremony: view,
+            reason: why.to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Managed Tauri state + command surface (I-2: no secret crosses invoke).
 // ---------------------------------------------------------------------------
 
@@ -964,4 +1115,5 @@ pub fn sign_reject_sync(
 #[cfg(test)]
 mod tests {
     include!("ceremony_tests.rs");
+    include!("ceremony_budget_tests.rs");
 }

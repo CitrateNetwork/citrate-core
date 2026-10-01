@@ -879,6 +879,7 @@ dependencies = [
  "citrate-wallet-core",
  "hex",
  "hkdf",
+ "hmac",
  "jsonwebtoken",
  "k256",
  "keyring",

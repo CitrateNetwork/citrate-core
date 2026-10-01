@@ -34,6 +34,8 @@ mod blocking;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
+// HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
+mod web_budgets;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
@@ -274,6 +276,8 @@ pub fn run() {
             app.manage(ceremony::build_ceremony_state());
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
+            // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
+            app.manage(web_budgets::build_web_budget_state(app.handle()));
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
@@ -462,6 +466,12 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            web_budgets::web_budget_status,
+            web_budgets::web_budget_grant,
+            web_budgets::web_budget_revoke,
+            web_budgets::web_budget_revoke_all,
+            web_budgets::web_budget_reset,
+            web_budgets::web_signing_request,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
