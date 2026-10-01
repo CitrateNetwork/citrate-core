@@ -91,7 +91,9 @@ never deletes a path the webview sends.
   when the member includes the wallet, the four `ai.citrate.core.custody` vault entries.
   The `custody-*` accounts on the legacy `ai.citrate.core` service belong to another
   Citrate app and are never listed or touched.
-- **Defaults:** the wallet vault (`custody.enc` and its keychain entries) is kept. Ticking
+- **Defaults:** the wallet vault (`custody.enc` and its keychain entries) is kept. The
+  vault also holds the sign-in session and connected-account tokens, so those stay too
+  unless the wallet is deleted; the dry run says so on the vault line. Ticking
   "also delete my wallet" requires a second phrase, `delete my wallet`. "Keep downloaded
   models" keeps the `models` folder.
 - **Order:** the webview clears its own local and session storage; Rust checks the

@@ -308,7 +308,10 @@ pub(crate) fn build_plan(
             {
                 (
                     Action::Keep,
-                    Some("your wallet vault (kept unless you also delete the wallet)".to_string()),
+                    Some(
+                        "your wallet vault, which also holds your sign-in session and connected-account tokens (kept unless you also delete the wallet)"
+                            .to_string(),
+                    ),
                 )
             } else if kind == RootKind::Data && name == MODELS_DIR && opts.keep_models {
                 (

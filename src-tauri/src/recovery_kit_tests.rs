@@ -434,3 +434,41 @@ fn errors_read_as_plain_member_messages() {
         assert!(!m.to_lowercase().contains("aes"), "no algorithm names: {m}");
     }
 }
+
+// ---------- adversarial review (HUP-S10.5) ----------
+
+/// Two valid phrases moved under each other's labels pass the BIP39 checksum, so only the
+/// account-bound printed fingerprint stops the node key landing in the memory slot.
+#[test]
+fn phrases_swapped_between_labels_are_refused_by_the_printed_fingerprint() {
+    let keys = collect_keys(&provisioned()).unwrap();
+    let sheet = render_sheet(&keys, "2026-10-01");
+    let swapped = sheet
+        .replace("[node-storage-key]", "[swap-placeholder]")
+        .replace("[memory-store-key]", "[node-storage-key]")
+        .replace("[swap-placeholder]", "[memory-store-key]");
+    assert_ne!(swapped, *sheet);
+    assert_eq!(
+        parse_sheet(&swapped).unwrap_err(),
+        RecoveryError::PhraseInvalid
+    );
+}
+
+/// A kit path that is a symlink is refused before anything is written through it.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_kit_path_is_refused() {
+    let dir = tmpdir("symlink");
+    let target = dir.join("elsewhere.txt");
+    std::fs::write(&target, b"not a kit").unwrap();
+    let link = dir.join("kit.citrate-recovery.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(
+        check_kit_path(&link, KitForm::Sheet).unwrap_err(),
+        RecoveryError::UnsafePath
+    );
+    let keys = collect_keys(&provisioned()).unwrap();
+    assert!(write_sheet(&link, &keys, "2026-10-01").is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"not a kit");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

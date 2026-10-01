@@ -402,3 +402,51 @@ fn plan_serializes_without_secret_values() {
     assert!(!json.contains("Zq9xK")); // file contents are never read into the plan
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+// ---------- adversarial review (HUP-S10.5) ----------
+
+/// Defence in depth: even a plan entry that is not a direct child of an app-owned folder
+/// is refused at execution time and reported, never deleted.
+#[test]
+fn execute_refuses_an_entry_outside_an_app_folder() {
+    let base = tmp_root("forged");
+    let roots = layout(&base);
+    let outside = base.join("not-the-app");
+    std::fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("keep.txt");
+    std::fs::write(&victim, b"member file").unwrap();
+    let mut plan = build_plan(&roots, &FakeKeychain::default(), DeleteOptions::default());
+    plan.entries.push(PlanEntry {
+        path: victim.display().to_string(),
+        kind: RootKind::Data,
+        bytes: 11,
+        action: Action::Delete,
+        reason: None,
+    });
+    let report = execute_plan(&plan, &FakeKeychain::default());
+    assert!(
+        victim.exists(),
+        "a path outside the app folders was deleted"
+    );
+    assert!(report
+        .failed
+        .iter()
+        .any(|f| f.item == victim.display().to_string()));
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// The kept wallet vault also holds the sign-in session and connected-account tokens; the
+/// dry run must say so, so "keep my wallet" is not mistaken for "every token is gone".
+#[test]
+fn the_kept_wallet_vault_says_it_also_holds_sign_in_and_connection_tokens() {
+    let base = tmp_root("vaultnote");
+    let roots = layout(&base);
+    let plan = build_plan(&roots, &FakeKeychain::default(), DeleteOptions::default());
+    let reason = entry(&plan, "custody.enc")
+        .reason
+        .clone()
+        .unwrap_or_default();
+    assert!(reason.contains("sign-in"), "{reason}");
+    assert!(reason.contains("connected"), "{reason}");
+    std::fs::remove_dir_all(&base).unwrap();
+}
