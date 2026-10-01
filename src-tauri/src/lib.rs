@@ -29,8 +29,10 @@ pub use citrate_core_kit::{
 mod activity;
 mod addresses;
 mod agent;
+mod agent_sbt;
 mod ai;
 mod blocking;
+mod capsule_pins;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
@@ -41,6 +43,7 @@ mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
+mod local_data;
 mod membership;
 mod memory;
 mod model;
@@ -50,6 +53,7 @@ mod node;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
 mod popout;
 mod provisioning;
+mod recovery_kit;
 mod sbt_art;
 mod seam;
 mod serve;
@@ -81,6 +85,9 @@ mod training;
 mod invoke_secret_scan_tests;
 #[cfg(test)]
 mod main_thread_tripwire;
+// HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
+#[cfg(test)]
+mod privacy_contract_tests;
 
 use tauri::Manager;
 
@@ -638,6 +645,18 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S10.5 — device-key recovery kit + "delete my local data".
+            recovery_kit::recovery_kit_status,
+            recovery_kit::recovery_kit_save_phrase,
+            recovery_kit::recovery_kit_save_file,
+            recovery_kit::recovery_kit_restore_phrase,
+            recovery_kit::recovery_kit_restore_file,
+            local_data::local_data_plan,
+            local_data::local_data_delete,
+            // HUP-S7.4 — Hermes identity: AgentSBT status read + the onboarding mint (a pending
+            // SignatureCeremony; signs nothing here).
+            agent_sbt::agent_sbt_status,
+            agent_sbt::agent_sbt_mint,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable
@@ -698,7 +717,7 @@ pub fn run() {
 /// SidecarSupervisor via `.0.stop()`; the lazily-started daemons expose a module `shutdown()`. Every
 /// stop is idempotent and a no-op when that sidecar was never started, so this is safe to call once
 /// on exit regardless of what the session actually launched.
-fn shutdown_all_sidecars(app: &tauri::AppHandle) {
+pub(crate) fn shutdown_all_sidecars(app: &tauri::AppHandle) {
     use tauri::Manager;
     if let Some(s) = app.try_state::<node::NodeState>() {
         s.0.stop();

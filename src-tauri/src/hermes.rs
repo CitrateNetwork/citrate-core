@@ -971,36 +971,22 @@ fn http_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Seed the per-session capsule dir from the bundled starter capsules (first run only). Each bundled
-/// skill dir is copied into `dest` ONLY if a skill of that name is absent — a user's own capsules are
-/// never clobbered. Best-effort: a missing bundled dir or a copy error is skipped, never fatal — the
-/// agent still starts, honestly reporting however many skills it actually has (Rule 1). Returns the
-/// number of skill dirs present in `dest` afterwards (0 is a legitimate, honest outcome).
+/// Seed the per-session capsule dir from the bundled starter capsules. HUP-S2.5: only a capsule whose
+/// `.cps` matches the digest pinned in this build is installed (`capsule_pins`), a seeded copy that no
+/// longer matches is replaced by the verified one, and the member's own capsules are never touched. The
+/// sidecar then verifies each `.cps` signature and content hash again at load. Best-effort: a refused
+/// or failed copy is logged with the reason, never fatal; the agent still starts, honestly reporting
+/// however many skills it actually has (Rule 1). Returns the number of skill dirs present in `dest`
+/// afterwards (0 is a legitimate, honest outcome).
 fn seed_starter_capsules(bundled: &Path, dest: &Path) -> usize {
-    let _ = std::fs::create_dir_all(dest);
-    if let Ok(entries) = std::fs::read_dir(bundled) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let target = dest.join(entry.file_name());
-            if target.exists() {
-                continue; // never overwrite an existing (possibly user-added) skill
-            }
-            if std::fs::create_dir_all(&target).is_ok() {
-                if let Ok(files) = std::fs::read_dir(entry.path()) {
-                    for f in files.flatten() {
-                        if f.path().is_file() {
-                            let _ = std::fs::copy(f.path(), target.join(f.file_name()));
-                        }
-                    }
-                }
-            }
-        }
+    let report = crate::capsule_pins::seed_verified(bundled, dest);
+    for (name, why) in &report.refused {
+        eprintln!("[hermes] starter capsule {name} not installed: {why}");
     }
-    std::fs::read_dir(dest)
-        .map(|e| e.flatten().filter(|x| x.path().is_dir()).count())
-        .unwrap_or(0)
+    for name in &report.repaired {
+        eprintln!("[hermes] starter capsule {name} did not match its pin; replaced with the verified copy");
+    }
+    report.present
 }
 
 /// Resolve the bundled `hermes` binary (env override → resource dir), honest error if absent.
