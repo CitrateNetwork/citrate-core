@@ -29,8 +29,11 @@ pub use citrate_core_kit::{
 mod activity;
 mod addresses;
 mod agent;
+mod agent_sbt;
 mod ai;
 mod blocking;
+mod chain_agent;
+mod capsule_pins;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
@@ -43,15 +46,25 @@ mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
+mod local_data;
 mod membership;
 mod memory;
 mod model;
 mod model_register;
 mod model_registry;
 mod node;
+// HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
+mod node_mcp;
+mod node_mcp_approvals;
+mod node_mcp_http;
+mod node_mcp_live;
+mod node_mcp_protocol;
+mod node_mcp_token;
+mod node_mcp_tools;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
 mod popout;
 mod provisioning;
+mod recovery_kit;
 mod sbt_art;
 mod seam;
 mod serve;
@@ -70,6 +83,7 @@ mod validator;
 mod cluster;
 mod comms;
 mod hermes;
+mod hermes_web;
 mod invite_seal;
 mod invites;
 mod model_catalog;
@@ -82,6 +96,9 @@ mod training;
 mod invoke_secret_scan_tests;
 #[cfg(test)]
 mod main_thread_tripwire;
+// HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
+#[cfg(test)]
+mod privacy_contract_tests;
 
 use tauri::Manager;
 
@@ -179,6 +196,12 @@ fn sweep_orphan_sidecars() {
     }
 }
 
+/// HUP-S4.2 — `citrate-core --mcp-stdio`: the stdio shim for the citrate-node MCP server. Runs
+/// without starting the app; forwards stdin JSON-RPC to the running app's loopback endpoint.
+pub fn node_mcp_stdio_main() -> i32 {
+    node_mcp_http::stdio_main()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Linux + NVIDIA black-screen fix. WebKitGTK's GPU-accelerated compositing / DMABUF renderer
@@ -233,6 +256,9 @@ pub fn run() {
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());
+            // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
+            // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
+            chain_agent::start_nightly_if_ready(app.handle().clone());
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
@@ -342,6 +368,9 @@ pub fn run() {
             // pin/add/ls (block production does NOT need it). Repo lives in the app
             // data dir; started on demand via ipfs_start (alongside the node).
             app.manage(ipfs::build_ipfs_state(&app.handle().clone())?);
+            // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
+            // Settings; loopback only; every request needs a connect token; writes need approval.
+            app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -519,6 +548,8 @@ pub fn run() {
             hermes::hermes_brief_check,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes_web::hermes_web_settings_get,
+            hermes_web::hermes_web_settings_set,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an
@@ -647,6 +678,18 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S10.5 — device-key recovery kit + "delete my local data".
+            recovery_kit::recovery_kit_status,
+            recovery_kit::recovery_kit_save_phrase,
+            recovery_kit::recovery_kit_save_file,
+            recovery_kit::recovery_kit_restore_phrase,
+            recovery_kit::recovery_kit_restore_file,
+            local_data::local_data_plan,
+            local_data::local_data_delete,
+            // HUP-S7.4 — Hermes identity: AgentSBT status read + the onboarding mint (a pending
+            // SignatureCeremony; signs nothing here).
+            agent_sbt::agent_sbt_status,
+            agent_sbt::agent_sbt_mint,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable
@@ -685,6 +728,20 @@ pub fn run() {
             seam::comms_connections,
             popout::popout_open,
             popout::popout_monitor_facts,
+            // HUP-S7.3 + S7.5 — nightly anchor (off until AnchorRegistry is deployed; the anchor
+            // key signs only inside the anchor ceremony) + the daily metering report.
+            chain_agent::hermes_chain_status,
+            chain_agent::hermes_chain_settings_set,
+            chain_agent::hermes_metering_daily,
+            chain_agent::hermes_anchor_approve,
+            chain_agent::hermes_anchor_reject,
+            // HUP-S4.2 — citrate-node MCP server (Settings, API endpoints & keys).
+            node_mcp::node_mcp_status,
+            node_mcp::node_mcp_set_enabled,
+            node_mcp::node_mcp_token_create,
+            node_mcp::node_mcp_token_revoke,
+            node_mcp::node_mcp_requests,
+            node_mcp::node_mcp_decide,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -707,7 +764,7 @@ pub fn run() {
 /// SidecarSupervisor via `.0.stop()`; the lazily-started daemons expose a module `shutdown()`. Every
 /// stop is idempotent and a no-op when that sidecar was never started, so this is safe to call once
 /// on exit regardless of what the session actually launched.
-fn shutdown_all_sidecars(app: &tauri::AppHandle) {
+pub(crate) fn shutdown_all_sidecars(app: &tauri::AppHandle) {
     use tauri::Manager;
     if let Some(s) = app.try_state::<node::NodeState>() {
         s.0.stop();
