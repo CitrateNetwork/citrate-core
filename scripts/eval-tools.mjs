@@ -4,6 +4,8 @@
 //
 //   node scripts/eval-tools.mjs --base-url http://127.0.0.1:18080/v1 --model <name> \
 //        [--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--allow-remote]
+//        [--adapter-sha256 <hex>]   (HUP-S9.4: the endpoint serves this LoRA; stamped into the
+//                                    scorecard so the app's eval gate can bind it to the file)
 //
 // Runs src/agent/eval/{toolcall-v1,injection-v1}.json against a LIVE OpenAI-compatible
 // /chat/completions endpoint (llama-server --jinja, or a user endpoint) and writes the
@@ -93,9 +95,10 @@ async function main() {
     process.exit(1);
   }
 
+  if (args.adapterSha256) scorecard.adapterSha256 = args.adapterSha256;
   const outDir = resolve(ROOT, args.outDir);
   await mkdir(outDir, { recursive: true });
-  const out = join(outDir, resultFileName(scorecard.startedAt, args.model));
+  const out = join(outDir, resultFileName(scorecard.startedAt, args.model, args.adapterSha256));
   await writeFile(out, JSON.stringify(scorecard, null, 2) + "\n");
   const pct = (r) => (r === null ? "n/a" : (r * 100).toFixed(1) + "%");
   console.log(

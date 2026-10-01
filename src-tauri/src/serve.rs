@@ -194,6 +194,9 @@ pub struct LlamaServerManager {
     api_key: Zeroizing<String>,
     /// HUP-S1.6: the serve plan (`--ctx-size`, `-ngl`) the server is (or will be) started with.
     plan: Mutex<crate::serve_plan::ServePlan>,
+    /// HUP-S9.4: a LoRA adapter passed as `--lora`. Set only through `fl_rounds` after the eval
+    /// gate accepted that exact file; cleared whenever the base model changes.
+    lora: Mutex<Option<PathBuf>>,
 }
 
 impl LlamaServerManager {
@@ -212,6 +215,7 @@ impl LlamaServerManager {
             sup: Mutex::new(None),
             api_key: mint_api_key(),
             plan: Mutex::new(crate::serve_plan::ServePlan::not_sized()),
+            lora: Mutex::new(None),
         }
     }
 
@@ -262,6 +266,16 @@ impl LlamaServerManager {
         self.plan.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// HUP-S9.4: set (or clear) the LoRA adapter. Takes effect at the next (re)spawn.
+    pub fn set_lora(&self, path: Option<PathBuf>) {
+        *self.lora.lock().unwrap_or_else(|e| e.into_inner()) = path;
+    }
+
+    /// HUP-S9.4: the LoRA adapter the server is (or will be) started with.
+    pub fn lora(&self) -> Option<PathBuf> {
+        self.lora.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// HUP-S1.6: the `--ctx-size` of the current plan: the real context window of the server.
     pub fn ctx_size(&self) -> u32 {
         self.plan.lock().unwrap_or_else(|e| e.into_inner()).ctx_size
@@ -296,6 +310,11 @@ impl LlamaServerManager {
         if let Some(n) = plan.gpu_layers {
             args.push("-ngl".to_string());
             args.push(n.to_string());
+        }
+        // HUP-S9.4: an eval-gated LoRA adapter, when one is loaded.
+        if let Some(lora) = self.lora() {
+            args.push("--lora".to_string());
+            args.push(lora.to_string_lossy().to_string());
         }
         args
     }
@@ -439,6 +458,10 @@ impl LlamaServerManager {
         self.stop();
         {
             let mut guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+            // HUP-S9.4: an adapter belongs to the base model it was trained on.
+            if *guard != new_path {
+                self.set_lora(None);
+            }
             *guard = new_path;
         }
         // Already gated on readiness above; start re-checks the binary + idempotency.

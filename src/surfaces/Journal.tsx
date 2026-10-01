@@ -26,6 +26,15 @@ import { JournalPage } from "../shell/state";
 import { applyHermesSummary, ensureDailyEntry, hermesDayLines } from "../journal/dailyEntry";
 import { JournalVaultPanel } from "../journal/JournalVaultPanel";
 import { desktopJournalIo } from "../journal/encryptedExport";
+import { SchedulePanel } from "../agent/schedule/SchedulePanel";
+import { desktopScheduleIo } from "../agent/schedule/schedule";
+import { HermesDailyReport } from "../journal/HermesDailyReport";
+import { BRIDGE_MODE } from "../bridge/mode";
+import { invoke as bridgeInvoke } from "../bridge/tauri/invoke";
+
+// HUP-S7.3: approving an anchor waits for its receipt (up to about a minute), so that one command
+// gets a longer UI deadline than the default.
+const reportInvoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> => bridgeInvoke<T>(cmd, args, cmd === "hermes_anchor_approve" ? 120_000 : undefined);
 
 // ---------- dictation (ported from design initSpeech/toggleMic) ----------
 // The design keeps a single SpeechRecognition instance on the logic
@@ -130,6 +139,9 @@ export function Journal({ store, s }: SurfaceProps) {
   const jTitleRef = useRef<HTMLInputElement | null>(null);
   // HUP-S10.4 — which passphrase panel is open (component-local; never persisted).
   const [vault, setVault] = useState<null | "export" | "import">(null);
+  // HUP-S10.2: Hermes's schedule (and Google Calendar when connected), shown as a week calendar.
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const jPages = s.jPages || [];
   const jSelPage: JournalPage | null = jPages.find((p) => p.id === s.jSel) || jPages[0] || null;
@@ -341,6 +353,9 @@ export function Journal({ store, s }: SurfaceProps) {
           <button className="btn btn-ghost btn-sm" onClick={onJNew}>
             + Page
           </button>
+          <button data-testid="j-schedule" className="btn btn-ghost btn-sm" aria-pressed={showSchedule} onClick={() => setShowSchedule((v) => !v)} title="Hermes's schedule as a calendar">
+            Schedule
+          </button>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <span className="eyebrow" style={{ padding: "0 2px 4px" }}>
@@ -419,6 +434,9 @@ export function Journal({ store, s }: SurfaceProps) {
               Hermes summary
             </button>
           )}
+          <button data-testid="j-hermes-report" className="btn btn-ghost btn-sm" onClick={() => setReportOpen((o) => !o)} title="Hermes's measured day and the on-chain anchor state">
+            Hermes report
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={onJPin} disabled={jPinDisabled}>
             {jPinLabel}
           </button>
@@ -426,6 +444,18 @@ export function Journal({ store, s }: SurfaceProps) {
             {jEditLabel}
           </button>
         </div>
+
+        {showSchedule && (
+          <div style={{ paddingTop: 14 }} id="journal-schedule">
+            <SchedulePanel io={desktopScheduleIo} />
+          </div>
+        )}
+
+        {reportOpen && (
+          <div style={{ padding: "14px 20px 0" }}>
+            <HermesDailyReport mode={BRIDGE_MODE} invoke={reportInvoke} now={() => new Date()} />
+          </div>
+        )}
 
         {vault && (
           <div style={{ paddingTop: 14 }}>

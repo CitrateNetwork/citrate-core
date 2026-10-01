@@ -1,0 +1,457 @@
+{
+  "schema": 1,
+  "wp": "HUP-S6.1",
+  "note": "The dApp-forge toolchain, per OS, as first-run components (planset red-team correction 15, D-21). Upstream URLs and hashes only; no binary is committed. macos-arm64 artifacts were downloaded and hashed on 2026-10-01 and each tool was run once from the unpacked archive. Other platforms record the upstream URL with status to_be_measured. The release step turns the measured entries into a component manifest (citrate-components manifest-from-bundle), which the @rule8 component key signs. Library commits are not copied here: they come from templates/deps.lock.json.",
+  "measured_on": "2026-10-01",
+  "platforms": [
+    "macos-arm64",
+    "macos-x64",
+    "linux-x64",
+    "linux-arm64",
+    "windows-x64"
+  ],
+  "tools": [
+    {
+      "name": "solc",
+      "version": "0.8.36",
+      "kind": "toolchain",
+      "license": "GPL-3.0",
+      "homepage": "https://soliditylang.org",
+      "entrypoints": [
+        "solc"
+      ],
+      "artifacts": {
+        "macos-arm64": {
+          "url": "https://binaries.soliditylang.org/macosx-amd64/solc-macosx-amd64-v0.8.36+commit.8a079791",
+          "format": "raw",
+          "status": "measured",
+          "sha256": "d4abcf0b3e24b7948ddfd64c374d26c3214648717777790ecb936979054a129d",
+          "size": 34001520,
+          "note": "Universal binary (x86_64 + arm64). Matches the sha256 in binaries.soliditylang.org/macosx-amd64/list.json. solc --version printed 0.8.36+commit.8a079791.Darwin.appleclang."
+        },
+        "macos-x64": {
+          "url": "https://binaries.soliditylang.org/macosx-amd64/solc-macosx-amd64-v0.8.36+commit.8a079791",
+          "format": "raw",
+          "status": "measured",
+          "sha256": "d4abcf0b3e24b7948ddfd64c374d26c3214648717777790ecb936979054a129d",
+          "size": 34001520,
+          "note": "The same universal file as macos-arm64; not run on an Intel Mac."
+        },
+        "linux-x64": {
+          "url": "https://binaries.soliditylang.org/linux-amd64/solc-linux-amd64-v0.8.36+commit.8a079791",
+          "format": "raw",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://binaries.soliditylang.org/linux-amd64/list.json"
+        },
+        "linux-arm64": {
+          "url": null,
+          "format": "raw",
+          "status": "upstream_unavailable",
+          "sha256": null,
+          "size": null,
+          "note": "binaries.soliditylang.org publishes no linux-arm64 build; a source build is a release-pipeline decision."
+        },
+        "windows-x64": {
+          "url": "https://binaries.soliditylang.org/windows-amd64/solc-windows-amd64-v0.8.36+commit.8a079791.exe",
+          "format": "raw",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://binaries.soliditylang.org/windows-amd64/list.json"
+        }
+      }
+    },
+    {
+      "name": "foundry",
+      "version": "1.5.1",
+      "kind": "toolchain",
+      "license": "MIT OR Apache-2.0",
+      "homepage": "https://github.com/foundry-rs/foundry",
+      "entrypoints": [
+        "forge",
+        "anvil",
+        "cast",
+        "chisel"
+      ],
+      "artifacts": {
+        "macos-arm64": {
+          "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_darwin_arm64.tar.gz",
+          "format": "tar.gz",
+          "status": "measured",
+          "sha256": "b3bf1752be066e0877911721e0624058171c88fc5616e228937fe4620b41c40d",
+          "size": 71587260,
+          "note": "Matches the release asset digest GitHub reports. forge --version printed 1.5.1-v1.5.1."
+        },
+        "macos-x64": {
+          "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_darwin_amd64.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1"
+        },
+        "linux-x64": {
+          "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_amd64.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_arm64.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1"
+        },
+        "windows-x64": {
+          "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_win32_amd64.zip",
+          "format": "zip",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1",
+          "note": "zip is not unpacked by the updater yet (Windows toolchain spike)."
+        }
+      }
+    },
+    {
+      "name": "python",
+      "version": "3.12.14+20260929",
+      "kind": "toolchain",
+      "license": "PSF-2.0",
+      "homepage": "https://github.com/astral-sh/python-build-standalone",
+      "entrypoints": [
+        "python/bin/python3"
+      ],
+      "note": "Runtime for slither. The distribution also contains third-party libraries under their own licences; the build tooling is MPL-2.0.",
+      "artifacts": {
+        "macos-arm64": {
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-aarch64-apple-darwin-install_only_stripped.tar.gz",
+          "format": "tar.gz",
+          "status": "measured",
+          "sha256": "1bb3e53d231ee2c8881e8daf6426f4dd95bff0dda496af0f3af300357aa998d0",
+          "size": 25017608,
+          "note": "Matches the release asset digest GitHub reports. python3 --version printed 3.12.14."
+        },
+        "macos-x64": {
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-apple-darwin-install_only_stripped.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929"
+        },
+        "linux-x64": {
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929"
+        },
+        "windows-x64": {
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929"
+        }
+      }
+    },
+    {
+      "name": "slither",
+      "version": "0.11.6",
+      "kind": "toolchain",
+      "license": "AGPL-3.0",
+      "homepage": "https://github.com/crytic/slither",
+      "entrypoints": [
+        "bin/slither"
+      ],
+      "note": "Slither ships as Python wheels, not a binary. The release step packs the hash-locked wheelhouse into one archive (status to_be_built). The wheel itself and its 46 dependency wheels were downloaded and hashed for macOS arm64 (components/locks), and slither --version printed 0.11.6 from a venv installed with --no-index --require-hashes.",
+      "upstream": {
+        "url": "https://files.pythonhosted.org/packages/63/d2/967c616a6a9bed1a34c27165278efcfad79ae917e8f483a73c2013ee7bea/slither_analyzer-0.11.6-py3-none-any.whl",
+        "sha256": "01f809198d3f171e2d768569c0054c96af5736614e183c64f42c9b51636c33c1",
+        "size": 765009
+      },
+      "artifacts": {
+        "macos-arm64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "build_from": "components/locks/slither-0.11.6-macos-arm64-cp312.txt",
+          "note": "47 wheels, 12894764 bytes before packing."
+        },
+        "macos-x64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "Lock to be resolved on this platform (native wheels differ)."
+        },
+        "linux-x64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "Lock to be resolved on this platform (native wheels differ)."
+        },
+        "linux-arm64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "Lock to be resolved on this platform (native wheels differ)."
+        },
+        "windows-x64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "Lock to be resolved on this platform; Windows support is part of the toolchain spike."
+        }
+      }
+    },
+    {
+      "name": "aderyn",
+      "version": "0.6.8",
+      "kind": "toolchain",
+      "license": "GPL-3.0",
+      "homepage": "https://github.com/Cyfrin/aderyn",
+      "entrypoints": [],
+      "note": "Each platform archive has its own top-level directory, so the entrypoints are per artifact.",
+      "artifacts": {
+        "macos-arm64": {
+          "url": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-aarch64-apple-darwin.tar.xz",
+          "format": "tar.xz",
+          "status": "measured",
+          "sha256": "624c6652bb9478b38ddc255c27819cd5c6cb0448f5deb72036cc9cf5a27d4aac",
+          "size": 5355884,
+          "note": "Matches the release asset digest GitHub reports. aderyn --version printed aderyn 0.6.8.",
+          "entrypoints": [
+            "aderyn-aarch64-apple-darwin/aderyn"
+          ]
+        },
+        "macos-x64": {
+          "url": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-x86_64-apple-darwin.tar.xz",
+          "format": "tar.xz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/sha256.sum",
+          "entrypoints": [
+            "aderyn-x86_64-apple-darwin/aderyn"
+          ]
+        },
+        "linux-x64": {
+          "url": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-x86_64-unknown-linux-gnu.tar.xz",
+          "format": "tar.xz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/sha256.sum",
+          "entrypoints": [
+            "aderyn-x86_64-unknown-linux-gnu/aderyn"
+          ]
+        },
+        "linux-arm64": {
+          "url": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-aarch64-unknown-linux-gnu.tar.xz",
+          "format": "tar.xz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/sha256.sum",
+          "entrypoints": [
+            "aderyn-aarch64-unknown-linux-gnu/aderyn"
+          ]
+        },
+        "windows-x64": {
+          "url": null,
+          "format": "tar.xz",
+          "status": "upstream_unavailable",
+          "sha256": null,
+          "size": null,
+          "note": "aderyn 0.6.8 publishes no Windows build (Windows toolchain spike)."
+        }
+      }
+    },
+    {
+      "name": "medusa",
+      "version": "1.5.1",
+      "kind": "toolchain",
+      "license": "AGPL-3.0",
+      "homepage": "https://github.com/crytic/medusa",
+      "entrypoints": [
+        "medusa"
+      ],
+      "artifacts": {
+        "macos-arm64": {
+          "url": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-mac-arm64.tar.gz",
+          "format": "tar.gz",
+          "status": "measured",
+          "sha256": "a8b38bbd07a60f51e1b96304db58dba441b5053d7a61d1749458f3f7eaf5d3ce",
+          "size": 12193783,
+          "note": "Matches the release asset digest GitHub reports (a sigstore bundle is also published). medusa --version printed medusa version 1.5.1."
+        },
+        "macos-x64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "upstream_unavailable",
+          "sha256": null,
+          "size": null,
+          "note": "medusa 1.5.1 publishes no Intel macOS build."
+        },
+        "linux-x64": {
+          "url": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-linux-x64.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-linux-x64.tar.gz.sigstore.json"
+        },
+        "linux-arm64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "upstream_unavailable",
+          "sha256": null,
+          "size": null,
+          "note": "medusa 1.5.1 publishes no linux-arm64 build."
+        },
+        "windows-x64": {
+          "url": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-win-x64.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-win-x64.tar.gz.sigstore.json"
+        }
+      }
+    },
+    {
+      "name": "node",
+      "version": "24.21.0",
+      "kind": "toolchain",
+      "license": "MIT",
+      "homepage": "https://nodejs.org",
+      "entrypoints": [],
+      "note": "Node 24 LTS (Krypton). Each platform archive has its own top-level directory, so the entrypoints are per artifact. The archive contains npm and corepack under their own licences.",
+      "artifacts": {
+        "macos-arm64": {
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+          "format": "tar.gz",
+          "status": "measured",
+          "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+          "size": 52909993,
+          "note": "Matches SHASUMS256.txt for v24.21.0.",
+          "entrypoints": [
+            "node-v24.21.0-darwin-arm64/bin/node"
+          ]
+        },
+        "macos-x64": {
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz",
+          "format": "tar.gz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+          "entrypoints": [
+            "node-v24.21.0-darwin-x64/bin/node"
+          ]
+        },
+        "linux-x64": {
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
+          "format": "tar.xz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+          "entrypoints": [
+            "node-v24.21.0-linux-x64/bin/node"
+          ]
+        },
+        "linux-arm64": {
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz",
+          "format": "tar.xz",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+          "entrypoints": [
+            "node-v24.21.0-linux-arm64/bin/node"
+          ]
+        },
+        "windows-x64": {
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+          "format": "zip",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "upstream_checksums": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+          "note": "zip is not unpacked by the updater yet (Windows toolchain spike).",
+          "entrypoints": [
+            "node-v24.21.0-win-x64/node.exe"
+          ]
+        }
+      }
+    }
+  ],
+  "libraries": {
+    "lock": "templates/deps.lock.json",
+    "note": "Vendored Solidity libraries, one platform-independent archive per pinned commit. Commits, tags, URLs and licences come from the lock; this file adds only the measured archive. The archive is GitHub's tarball of that commit (two fetches on 2026-10-01 gave the same bytes); the release step re-measures it and may mirror it.",
+    "archives": {
+      "openzeppelin-contracts": {
+        "url": "https://api.github.com/repos/OpenZeppelin/openzeppelin-contracts/tarball/cab19933c33c2ad1d4c7a84864a3601dddfd16f3",
+        "format": "tar.gz",
+        "status": "measured",
+        "sha256": "8158f1a22b468a0b1afa85269a0b50595ccfb77f5ebc2a954aacedb2911c32b1",
+        "size": 6539944,
+        "top_dir": "OpenZeppelin-openzeppelin-contracts-cab1993",
+        "license_files": [
+          "components/licenses/openzeppelin-contracts-v5.7.0.LICENSE"
+        ]
+      },
+      "solady": {
+        "url": "https://api.github.com/repos/Vectorized/solady/tarball/acd959aa4bd04720d640bf4e6a5c71037510cc4b",
+        "format": "tar.gz",
+        "status": "measured",
+        "sha256": "36991c81bbebc5155f5ab002ff2bed63eb845c1dec3257e3c7be66239f6b59ba",
+        "size": 2642534,
+        "top_dir": "Vectorized-solady-acd959a",
+        "license_files": [
+          "components/licenses/solady-v0.1.26.LICENSE"
+        ]
+      },
+      "forge-std": {
+        "url": "https://api.github.com/repos/foundry-rs/forge-std/tarball/f3dae6e6ee381f25eb6a246f7da9b85c91a68219",
+        "format": "tar.gz",
+        "status": "measured",
+        "sha256": "79b96423c021a859afcc253707732f46dc8ffe32813b10b8b4ee0ce9833d7081",
+        "size": 138335,
+        "top_dir": "foundry-rs-forge-std-f3dae6e",
+        "license_files": [
+          "components/licenses/forge-std-v1.17.0.LICENSE-MIT",
+          "components/licenses/forge-std-v1.17.0.LICENSE-APACHE"
+        ]
+      }
+    }
+  }
+}

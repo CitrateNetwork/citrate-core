@@ -5,7 +5,18 @@
 // SignatureCeremony (Rule 3 — the human approves + broadcasts; nothing signs here). The
 // bytecode is caller-supplied + compiled; the app never fabricates contract code (Rule 1).
 import { invoke } from "./invoke";
-import type { ContractDeployInput, ContractsDomain, DeployProposalView } from "../domains";
+import type { CeremonyView } from "../types";
+import type {
+  ContractDeployInput,
+  ContractSourceView,
+  ContractsDomain,
+  DeployProposalView,
+  DeployReceiptView,
+  PostDeployStatus,
+  SitePinView,
+  VercelExportView,
+  VerifyOutcomeView,
+} from "../domains";
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../../agent/deployGate";
 import type { VerifiedSourceView } from "../../agent/verifiedSource";
 
@@ -29,5 +40,37 @@ export const tauriContracts: ContractsDomain = {
   // HUP-S4.3 — read-only CitrateScan verified-source lookup (core makes the HTTP call).
   verifiedSource(address: string) {
     return invoke<VerifiedSourceView>("contract_verified_source", { address });
+  },
+  // HUP-S6.7 — the Contract reader (reads; a write only opens a ceremony).
+  source(address: string) {
+    return invoke<ContractSourceView>("contract_source", { address });
+  },
+  codeSize(target: string, address: string) {
+    return invoke<number>("contract_code_size", { target, address });
+  },
+  viewCall(target: string, address: string, calldata: string) {
+    return invoke<string>("contract_view_call", { target, address, calldata });
+  },
+  proposeWrite(address: string, calldata: string, valueWei: string) {
+    return invoke<CeremonyView>("contract_write_propose", { address, calldata, valueWei });
+  },
+  // HUP-S6.6 — after the deploy.
+  postdeployStatus(projectDir: string) {
+    return invoke<PostDeployStatus>("postdeploy_status", { projectDir });
+  },
+  postdeployReceipt(txHash: string) {
+    return invoke<DeployReceiptView | null>("postdeploy_receipt", { txHash });
+  },
+  postdeployVerify(projectDir: string, address: string, constructorArgsHex?: string) {
+    return invoke<VerifyOutcomeView>("postdeploy_verify", { projectDir, address, constructorArgsHex: constructorArgsHex ?? null });
+  },
+  postdeploySwitchSite(projectDir: string, address: string) {
+    return invoke<{ envPath: string; address: string }>("postdeploy_switch_site", { projectDir, address });
+  },
+  postdeployPinSite(projectDir: string) {
+    return invoke<SitePinView>("postdeploy_pin_site", { projectDir });
+  },
+  postdeployVercelExport(projectDir: string) {
+    return invoke<VercelExportView>("postdeploy_vercel_export", { projectDir });
   },
 };

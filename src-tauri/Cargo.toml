@@ -17,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 citrate-core-kit = { path = "../kit" }
+# HUP-S5.5 / S6.1 — signed first-run components + toolchain bundle definitions (workspace crate).
+citrate-components = { path = "../components" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -125,6 +127,12 @@ k256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
 # the same AF_UNIX path) and a named pipe on Windows. Sync API only (default features); the naming
 # rule both ends share lives in `src/ipc_name.rs`. RUSTSEC clean at 2.4.x.
 interprocess = "2"
+# HUP-S8.2 — fleet wizard. `qrcode` renders the pairing link as a QR module matrix (no image
+# feature, so no transitive crates; the webview draws the modules). `socket2` sets SO_REUSEADDR /
+# SO_REUSEPORT on the opt-in mDNS socket so it can share UDP 5353 with the OS responder; it is
+# ALREADY in the tree (tokio), naming it adds no new compiled crate.
+qrcode = { version = "0.14", default-features = false }
+socket2 = { version = "0.6", features = ["all"] }
 
 # CORE-C1.0 — SidecarSupervisor process-signalling. `libc` is used ONLY for the
 # Unix `kill(pid, SIGTERM|SIGKILL|0)` on the graceful-stop / liveness path

@@ -50,6 +50,10 @@ pub enum Service {
     /// Hugging Face — model downloads (public need no token; gated/private need `read-repos`).
     /// Added for Commons CX-S1 (model catalog). Standard OAuth2 + PKCE; loopback redirect OK.
     HuggingFace,
+    /// HUP-S10.2: Google Sheets (read ranges, append rows). Same Google OAuth client as Drive.
+    GoogleSheets,
+    /// HUP-S10.2: Google Calendar (list events, create an event). Same Google OAuth client.
+    GoogleCalendar,
 }
 
 impl Service {
@@ -59,6 +63,8 @@ impl Service {
             Service::GoogleDrive => "gdrive",
             Service::Notion => "notion",
             Service::HuggingFace => "hf",
+            Service::GoogleSheets => "gsheets",
+            Service::GoogleCalendar => "gcal",
         }
     }
 
@@ -68,6 +74,8 @@ impl Service {
             "gdrive" => Some(Service::GoogleDrive),
             "notion" => Some(Service::Notion),
             "hf" => Some(Service::HuggingFace),
+            "gsheets" => Some(Service::GoogleSheets),
+            "gcal" => Some(Service::GoogleCalendar),
             _ => None,
         }
     }
@@ -76,7 +84,9 @@ impl Service {
     pub fn authorize_endpoint(self) -> &'static str {
         match self {
             Service::GitHub => "https://github.com/login/oauth/authorize",
-            Service::GoogleDrive => "https://accounts.google.com/o/oauth2/v2/auth",
+            Service::GoogleDrive | Service::GoogleSheets | Service::GoogleCalendar => {
+                "https://accounts.google.com/o/oauth2/v2/auth"
+            }
             Service::Notion => "https://api.notion.com/v1/oauth/authorize",
             Service::HuggingFace => "https://huggingface.co/oauth/authorize",
         }
@@ -86,7 +96,9 @@ impl Service {
     pub fn token_endpoint(self) -> &'static str {
         match self {
             Service::GitHub => "https://github.com/login/oauth/access_token",
-            Service::GoogleDrive => "https://oauth2.googleapis.com/token",
+            Service::GoogleDrive | Service::GoogleSheets | Service::GoogleCalendar => {
+                "https://oauth2.googleapis.com/token"
+            }
             Service::Notion => "https://api.notion.com/v1/oauth/token",
             Service::HuggingFace => "https://huggingface.co/oauth/token",
         }
@@ -99,7 +111,11 @@ impl Service {
     /// hosted https bounce, which returns the browser to the same loopback listener.
     pub fn redirect_uri(self) -> &'static str {
         match self {
-            Service::GitHub | Service::GoogleDrive | Service::HuggingFace => OAUTH_REDIRECT_URI,
+            Service::GitHub
+            | Service::GoogleDrive
+            | Service::GoogleSheets
+            | Service::GoogleCalendar
+            | Service::HuggingFace => OAUTH_REDIRECT_URI,
             Service::Notion => HOSTED_REDIRECT_URI,
         }
     }
@@ -115,6 +131,8 @@ impl Service {
             Service::GoogleDrive => &["https://www.googleapis.com/auth/drive.readonly"],
             Service::Notion => &[],
             Service::HuggingFace => &["read-repos"],
+            Service::GoogleSheets => &["https://www.googleapis.com/auth/spreadsheets"],
+            Service::GoogleCalendar => &["https://www.googleapis.com/auth/calendar.events"],
         }
     }
 }
@@ -201,7 +219,7 @@ pub fn authorize_url(service: Service, client_id: &str, state: &str, challenge: 
         q.push(("scope".into(), scopes.join(" ")));
     }
     match service {
-        Service::GoogleDrive => {
+        Service::GoogleDrive | Service::GoogleSheets | Service::GoogleCalendar => {
             q.push(("access_type".into(), "offline".into()));
             q.push(("prompt".into(), "consent".into()));
         }
@@ -276,11 +294,13 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_CALLBACK_BYTES: usize = 8 * 1024;
 
 /// The three MCP services, for status enumeration.
-const ALL_SERVICES: [Service; 4] = [
+const ALL_SERVICES: [Service; 6] = [
     Service::GitHub,
     Service::GoogleDrive,
     Service::Notion,
     Service::HuggingFace,
+    Service::GoogleSheets,
+    Service::GoogleCalendar,
 ];
 
 /// Errors surfaced by the connection flow. Mapped to a `String` at the command
@@ -357,6 +377,8 @@ fn env_prefix(service: Service) -> &'static str {
         Service::GoogleDrive => "GOOGLE",
         Service::Notion => "NOTION",
         Service::HuggingFace => "HF",
+        // HUP-S10.2: one Google OAuth client (Desktop app type) serves Drive, Sheets and Calendar.
+        Service::GoogleSheets | Service::GoogleCalendar => "GOOGLE",
     }
 }
 
@@ -711,6 +733,12 @@ impl ConnectionManager {
             client_id: id,
             client_secret: Zeroizing::new(secret),
         })
+    }
+
+    /// HUP-S10.2: whether this service's OAuth client id and secret are configured (without them
+    /// the flow cannot start, and the UI keeps Connect disabled with that reason).
+    pub(crate) fn is_configured(&self, service: Service) -> bool {
+        self.creds(service).is_ok()
     }
 
     /// Run the full connect flow: bind the fixed loopback, mint PKCE + state, open

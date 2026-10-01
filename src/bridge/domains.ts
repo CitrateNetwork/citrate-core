@@ -12,6 +12,8 @@
 // =====================================================================
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import type { VerifiedSourceView } from "../agent/verifiedSource";
+import type { CheckpointList, UndoOutcome } from "../agent/fileChanges";
+import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
 import type {
   AppConfig,
   KeyringStatus,
@@ -374,6 +376,40 @@ export interface SeedReport {
   /** "not-semantic" | "not-running" | "already-seeded" when nothing was authored. */
   skipped?: string;
 }
+/** HUP-S3.1 — one progress line from the first-run knowledge-corpus import (mirrors the Rust
+ *  `ImportLine`; the importer's JSON-lines contract lives in citrate-memories `mem_corpus::progress`). */
+export type KnowledgeImportLine =
+  | { event: "verified"; bundle_digest: string; tenants: number; nodes: number; edges: number }
+  | { event: "tenant_start"; tenant: string; nodes: number; edges: number }
+  | { event: "progress"; tenant: string; done: number; total: number }
+  | { event: "tenant_skipped"; tenant: string; reason: string }
+  | { event: "tenant_done"; tenant: string }
+  | {
+      event: "done";
+      bundle_digest: string;
+      embed_model: string;
+      nodes_added: number;
+      nodes_merged: number;
+      edges_added: number;
+      tenants_imported: string[];
+      tenants_skipped: string[];
+    }
+  | { event: "error"; stage: string; message: string };
+
+/** HUP-S3.1 — what the first-run knowledge import did. Counts come only from the importer. */
+export interface KnowledgeImportReport {
+  state: "imported" | "skipped" | "failed";
+  /** "no-bundle" | "not-semantic" | "already-imported" | "in-progress" when nothing ran. */
+  skipped?: string | null;
+  error?: string | null;
+  bundleDigest?: string | null;
+  embedModel?: string | null;
+  nodesAdded: number;
+  edgesAdded: number;
+  tenantsImported: string[];
+  tenantsSkipped: string[];
+}
+
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
@@ -389,6 +425,10 @@ export interface MemoryDomain {
   ingestDocs(): Promise<DocsIngestReport>;
   /** Seed the constellation tenants with real network/node/stake facts on daemon-connect. */
   seedContext(facts: SeedFacts): Promise<SeedReport>;
+  /** HUP-S3.1 — import the bundled knowledge corpus into the local store (first run; idempotent,
+   *  verified against its manifest in Rust). Must run while the daemon is stopped; Rust stops and
+   *  restarts a running daemon itself. `onProgress` receives each importer line. */
+  importKnowledge(onProgress?: (line: KnowledgeImportLine) => void): Promise<KnowledgeImportReport>;
 }
 
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
@@ -784,6 +824,39 @@ export interface GroupsDomain {
 export interface ClusterPeer {
   address: string;
   online: boolean;
+  /** HUP-S8.1: set when this peer is a linked device; the member it acts for. */
+  member?: string;
+}
+/** HUP-S8.1: one linked device under a member, as the cluster daemon admits it. */
+export interface ClusterDevice {
+  device: string;
+  index: number;
+  label: string;
+  issuedAt: number;
+  online: boolean;
+}
+/** HUP-S8.1: a cluster member with its linked devices. */
+export interface ClusterMemberDevices {
+  member: string;
+  role: string;
+  online: boolean;
+  devices: ClusterDevice[];
+}
+/** HUP-S8.1: a DeviceLink this machine knows (no signatures cross the bridge). */
+export interface DeviceLinkView {
+  device: string;
+  member: string;
+  wallet: string;
+  index: number;
+  label: string;
+  issuedAt: number;
+  thisDevice: boolean;
+}
+/** HUP-S8.1: this machine's device address (null before its key exists) + known links. */
+export interface DeviceLinks {
+  thisDevice: string | null;
+  links: DeviceLinkView[];
+  revoked: string[];
 }
 export interface ClusterStatus {
   groupId: string;
@@ -798,6 +871,22 @@ export interface ClusterDomain {
   /** Co-pin a CID across the Group roster. */
   shareFile(groupId: string, cid: string): Promise<void>;
   leave(groupId: string): Promise<void>;
+  /** HUP-S8.1: the group's members with their linked devices (live). */
+  devices(groupId: string): Promise<ClusterMemberDevices[]>;
+  /** HUP-S8.1: this machine's device key address + the links it knows. Never mints a key. */
+  myDevices(): Promise<DeviceLinks>;
+  /** HUP-S8.1: open the wallet ceremony that links THIS machine. Signs nothing. */
+  linkDeviceRequest(label: string): Promise<CeremonyView>;
+  /** HUP-S8.1: the person approved; complete + store the link. */
+  linkDeviceApprove(id: string, rawAck: boolean): Promise<DeviceLinks>;
+  /** HUP-S8.1: the person declined; nothing was signed. */
+  linkDeviceReject(id: string): Promise<void>;
+  /** HUP-S8.1: revoke a device of yours (permanent for that device key). */
+  revokeDevice(device: string): Promise<DeviceLinks>;
+  /** HUP-S8.1: this machine's signed link as a code to paste on another of YOUR devices. */
+  exportDeviceLink(): Promise<string>;
+  /** HUP-S8.1: add another of your own devices from its code (verified before it is stored). */
+  importDeviceLink(code: string): Promise<DeviceLinks>;
 }
 
 // ── C-21 train-together: group federated training (lane s5) ──
@@ -821,6 +910,118 @@ export interface TrainingDomain {
   reward(groupId: string): Promise<RewardInfo>;
   /** Claim the member's SALT reward — ceremony-gated (D-18/D-23). */
   claim(groupId: string): Promise<void>;
+}
+
+// ── HUP-S9.4: Hermes plans, explains and starts federated rounds; LoRA eval gate ──
+// Shapes mirror src-tauri/src/fl_rounds.rs (serde camelCase). Data source: the compute-pool
+// training-coordinator `GET /v1/status` at the configured URL; there is no default coordinator.
+export type FlCapability = "probe" | "federated" | "h01";
+export interface FlRoundProposal {
+  requires: FlCapability;
+  loraRank: number;
+  maxTrajectories: number;
+  leaseHours: number;
+}
+export type FlSettlement = "shadow" | "live" | "unknown";
+export type FlPoolPhase = "noWork" | "open" | "running" | "complete";
+export interface FlCoordinatorStatus {
+  pending: number;
+  leased: number;
+  done: number;
+  quarantined: number;
+  workers: number;
+  settlement: FlSettlement;
+  phase: FlPoolPhase;
+}
+export type FlCoordinatorView =
+  | { state: "notConfigured" }
+  | { state: "unreachable"; url: string; reason: string }
+  | { state: "live"; url: string; status: FlCoordinatorStatus };
+export interface FlRoundExplanation {
+  data: string;
+  compute: string;
+  reward: string;
+  privacy: string;
+  status: string;
+}
+export interface FlRoundPlan {
+  planHash: string;
+  createdAtMs: number;
+  coordinator: FlCoordinatorView;
+  proposal: FlRoundProposal;
+  baseModel: string;
+  device: { tier: string | null; accelerator: boolean | null };
+  explain: FlRoundExplanation;
+  canStart: boolean;
+  blockers: string[];
+}
+export interface FlStartReceipt {
+  planHash: string;
+  coordinatorUrl: string;
+  authorizedAtMs: number;
+  /** Always false in this build: the device training worker is not bundled (HUP-S9.1/S9.2). */
+  trainingStarted: boolean;
+  note: string;
+}
+export interface FlStartRecord {
+  planHash: string;
+  coordinatorUrl: string;
+  requires: FlCapability;
+  authorizedAtMs: number;
+}
+export interface FlCoordinatorConfig {
+  url: string | null;
+  source: "env" | "settings" | "invalid" | "none";
+  settingsUrl: string | null;
+  note: string | null;
+}
+export interface FlAdapterGateRequest {
+  adapterPath: string;
+  expectedSha256: string;
+  baseToolsPath: string;
+  candidateToolsPath: string;
+  baseQaPath?: string;
+  candidateQaPath?: string;
+}
+export interface FlMetricDelta {
+  metric: string;
+  base: number | null;
+  candidate: number | null;
+  improvement: number | null;
+}
+export interface FlAdapterGateRecord {
+  adapterSha256: string;
+  adapterPath: string;
+  baseModel: string;
+  decidedAtMs: number;
+  decision: {
+    verdict: "ACCEPT" | "REJECT";
+    reasons: string[];
+    metrics: FlMetricDelta[];
+    compositeBase: number;
+    compositeCandidate: number;
+  };
+}
+export interface FlOverview {
+  config: FlCoordinatorConfig;
+  starts: FlStartRecord[];
+  gates: FlAdapterGateRecord[];
+  activeAdapter: string | null;
+  storeError: string | null;
+}
+export interface FlRoundsDomain {
+  overview(): Promise<FlOverview>;
+  /** Persist (or clear, with null) the coordinator base URL. Core validates it. */
+  setCoordinator(url: string | null): Promise<FlCoordinatorConfig>;
+  /** Read the coordinator and build the plan + plain-words explanation. Read-only. */
+  plan(proposal?: FlRoundProposal): Promise<FlRoundPlan>;
+  lookupPlan(planHash: string): Promise<FlRoundPlan>;
+  /** Record the member's HIC-1 approval of exactly this plan. Call only after the approval card. */
+  start(planHash: string): Promise<FlStartReceipt>;
+  gateAdapter(request: FlAdapterGateRequest): Promise<FlAdapterGateRecord>;
+  /** Load an ACCEPTED adapter into llama-server (`--lora`). Returns the served copy's path. */
+  loadAdapter(sha256: string): Promise<string>;
+  unloadAdapter(): Promise<void>;
 }
 
 // ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──
@@ -933,6 +1134,98 @@ export interface AgentHarnessDomain {
   mcpSettings(): Promise<HermesMcpView>;
   /** HUP-S4.3 — save the member's choice; takes effect at the next Hermes start. */
   mcpSet(settings: HermesMcpSettings): Promise<HermesMcpView>;
+  /** HUP-S2.9 — the agent session's checkpointed file changes (newest first). `enabled: false`
+   *  with a note when the sidecar cannot undo. Rejects when the sidecar isn't running. */
+  checkpoints(id: string): Promise<CheckpointList>;
+  /** HUP-S2.9 — undo one agent file change. A refusal (a file changed since, a pruned step) resolves
+   *  with `ok: false` and the reason; nothing was restored. */
+  undoStep(id: string, seq: number): Promise<UndoOutcome>;
+  /** HUP-S2.9 — undo every change of the session not undone yet (all or nothing). */
+  undoSession(id: string): Promise<UndoOutcome>;
+  /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
+  workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
+  /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */
+  workflowStatus(sessionId: string, runId: string): Promise<WorkflowRunView>;
+  /** HUP-S3.4 — whether learning is on in the sidecar, and whether publishing is. */
+  learnStatus(): Promise<LearnStatus>;
+  /** HUP-S3.4 — proposals waiting for the member (`all`: every kept one). */
+  learnProposals(all?: boolean): Promise<LearnProposal[]>;
+  /** HUP-S3.4 — propose a skill or memory from a VERIFIED run of that session. */
+  learnPropose(sessionId: string, runId: string, content: LearnContent): Promise<LearnProposal>;
+  /** HUP-S3.4 — accept (HIC-1, recorded first). `acknowledged` names the conflicts accepted anyway.
+   *  A refusal rejects with a message starting `LEARN_REFUSED: `. */
+  learnAccept(id: string, acknowledged: string[]): Promise<LearnAcceptResult>;
+  /** HUP-S3.4 — reject (recorded, final). */
+  learnReject(id: string, reason: string): Promise<void>;
+  /** HUP-S3.4 — the learned-memory ledger, with each memory's place in the memory graph. */
+  learnMemories(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — store learned memories that are still waiting for the memory store. */
+  learnStorePending(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
+   *  `PUBLISH_DISABLED: ` while publishing is off. */
+  learnPublish(id: string, version: string): Promise<void>;
+  /** HUP-S3.3 + S3.7 — the shipped personas with their prompt fragments (names are placeholders
+   *  pending owner sign-off). Rejects when the sidecar isn't running. */
+  personas(): Promise<HermesPersona[]>;
+  /** HUP-S3.3 — the sidecar validates a member-defined persona and renders its fragment. A refusal
+   *  rejects with a message starting `PERSONA_REFUSED: `. */
+  personaCheck(persona: CustomPersonaInput): Promise<HermesPersona>;
+  /** HUP-S3.3 — every track's workflow family (definitions; nothing runs). */
+  workflows(): Promise<TrackWorkflow[]>;
+}
+
+// HUP-S3.3 + S3.7 — persona and track-workflow wire shapes. These mirror the sidecar's
+// `agent-loop::personas` / `agent-loop::workflows` views verbatim (snake_case).
+export interface HermesPersona {
+  id: string;
+  role: string;
+  name: string;
+  name_status: string;
+  summary: string;
+  voice: string;
+  tone: string;
+  style_rules: string[];
+  default_track: string;
+  default_workflow: string;
+  tool_emphasis: string[];
+  skills: string[];
+  /** Optional voice id for the existing speech engine; null = the system voice. */
+  tts_voice?: string | null;
+  /** What the chat appends to its system prompt while this persona is active. */
+  prompt_fragment: string;
+  /** True while the shipped name is a placeholder (the UI says so). */
+  name_pending_sign_off: boolean;
+  custom: boolean;
+}
+export interface CustomPersonaInput {
+  id: string;
+  name: string;
+  summary: string;
+  voice: string;
+  tone: string;
+  style_rules: string[];
+  default_track: string;
+  tool_emphasis: string[];
+  skills: string[];
+  tts_voice: string | null;
+}
+export interface TrackWorkflowStep {
+  id: string;
+  instruction: string;
+  max_attempts: number;
+  verifier_names: string[];
+}
+export interface TrackWorkflow {
+  id: string;
+  track: string;
+  title: string;
+  summary: string;
+  is_default: boolean;
+  /** "tool-report" (a tool's own report decides) or "answer-shape" (the answer's structure). */
+  evidence: "tool-report" | "answer-shape" | string;
+  tools: string[];
+  verifier_names: string[];
+  steps: TrackWorkflowStep[];
 }
 
 // HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types
@@ -1209,6 +1502,80 @@ export interface ContractsDomain {
   /** HUP-S4.3 — a contract's verified source/ABI/compiler from CitrateScan (read-only). Rejects
    *  only when the lookup itself fails; "not verified" is a normal answer. */
   verifiedSource(address: string): Promise<VerifiedSourceView>;
+  /** HUP-S6.7 — CitrateScan's verified source and ABI for an address (`contract_source`). */
+  source(address: string): Promise<ContractSourceView>;
+  /** HUP-S6.7 — deployed code size at `address` on `target` ("citrate" or a loopback fork URL). */
+  codeSize(target: string, address: string): Promise<number>;
+  /** HUP-S6.7 — a read-only eth_call; resolves with the raw `0x` return data. */
+  viewCall(target: string, address: string, calldata: string): Promise<string>;
+  /** HUP-S6.7 — a write call on 40204 as a PENDING SignatureCeremony (nothing signs here). */
+  proposeWrite(address: string, calldata: string, valueWei: string): Promise<CeremonyView>;
+  /** HUP-S6.6 — where a hello-mint project stands after its deploy (local reads). */
+  postdeployStatus(projectDir: string): Promise<PostDeployStatus>;
+  /** HUP-S6.6 — the deploy tx's receipt on 40204; null while pending. */
+  postdeployReceipt(txHash: string): Promise<DeployReceiptView | null>;
+  /** HUP-S6.6 — submit the project contract's source to CitrateScan's verifier. */
+  postdeployVerify(projectDir: string, address: string, constructorArgsHex?: string): Promise<VerifyOutcomeView>;
+  /** HUP-S6.6 — point the page at chain 40204 and the deployed contract. */
+  postdeploySwitchSite(projectDir: string, address: string): Promise<{ envPath: string; address: string }>;
+  /** HUP-S6.6 — pin the built page to the app's IPFS daemon. */
+  postdeployPinSite(projectDir: string): Promise<SitePinView>;
+  /** HUP-S6.6 — write the Vercel-ready export folder (no account actions). */
+  postdeployVercelExport(projectDir: string): Promise<VercelExportView>;
+}
+
+/** HUP-S6.7 — what CitrateScan says about an address. Mirrors Rust `contract_reader::VerifiedSource`. */
+export interface ContractSourceView {
+  status: "verified" | "partial" | "unverified" | "notContract";
+  isContract: boolean;
+  codeSize: number | null;
+  contractName: string | null;
+  compilerVersion: string | null;
+  abi: unknown[] | null;
+  source: string | null;
+  note: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::PostDeployStatus`. */
+export interface PostDeployStatus {
+  contractName: string;
+  siteContract: string | null;
+  built: boolean;
+  exportDir: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::DeployReceipt`. */
+export interface DeployReceiptView {
+  txHash: string;
+  blockNumber: number;
+  status: number | null;
+  contractAddress: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::VerifyOutcome`. */
+export interface VerifyOutcomeView {
+  status: "verified" | "partial" | "failed" | "unavailable";
+  guid: string | null;
+  matchType: string | null;
+  contractName: string | null;
+  message: string;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::SitePin`. */
+export interface SitePinView {
+  cid: string;
+  files: number;
+  bytes: number;
+  localGatewayUrl: string;
+  publicGatewayUrl: string;
+  note: string;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::VercelExport`. */
+export interface VercelExportView {
+  dir: string;
+  files: number;
+  commands: string[];
 }
 
 /** A scrubbed diagnostic bundle (Telemetry WP-T.2/T.3). Mirrors the Rust DiagnosticBundle. */
@@ -1281,17 +1648,164 @@ export interface TierDomain {
   setOverride(tier: TierId | null): Promise<TierId | null>;
 }
 
+// ---- HUP-S1.5 — the escalation router (US-1.5). Mirrors Rust `escalation.rs`. ----
+// Amounts are integer micro-USD. Prices are member-entered (per 1M tokens) and unverified.
+
+export interface EscalationEndpointInput {
+  label: string;
+  baseUrl: string;
+  model: string;
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+}
+
+/** A member endpoint. Never carries the key (it is sealed in the OS keyring by core). */
+export interface EscalationEndpoint extends EscalationEndpointInput {
+  id: string;
+  /** "label · host" — what every price card names. */
+  destination: string;
+}
+
+export type EscalationMode = "budget" | "confirmed";
+
+export interface EscalationSpendRecord {
+  escalationId: string;
+  endpointId: string;
+  destination: string;
+  quotedMicros: number;
+  chargedMicros: number;
+  mode: EscalationMode;
+  outcome: "answered" | "not_sent" | "failed" | "unknown";
+  usageReported: boolean;
+  exceededQuote: boolean;
+  atMs: number;
+}
+
+export interface EscalationBudget {
+  capMicros: number;
+  usedMicros: number;
+  remainingMicros: number;
+  /** Member-confirmed (HIC-1) spend today, outside the cap. */
+  confirmedMicros: number;
+  periodStartMs: number;
+  periodEndMs: number;
+  maxCapMicros: number;
+  /** The ledger file could not be read: every escalation asks until the cap is set again. */
+  unreadable: boolean;
+  history: EscalationSpendRecord[];
+}
+
+/** The price card shown before an escalation runs. */
+export interface EscalationQuote {
+  quoteId: string;
+  endpointId: string;
+  destination: string;
+  model: string;
+  costMicros: number;
+  costLabel: string;
+  withinBudget: boolean;
+  remainingMicros: number;
+  capMicros: number;
+  maxTokens: number;
+  promptBytes: number;
+  expiresMs: number;
+}
+
+export interface EscalationRun {
+  escalationId: string;
+  content: string;
+  destination: string;
+  mode: EscalationMode;
+  chargedMicros: number;
+  chargedLabel: string;
+  usageReported: boolean;
+  exceededQuote: boolean;
+  remainingMicros: number;
+}
+
+export interface EscalationRegistryStatus {
+  enabled: boolean;
+  reason: string;
+  missing: string[];
+}
+
+export interface EscalationDomain {
+  endpoints(): Promise<EscalationEndpoint[]>;
+  /** The key goes to core once and is sealed in the OS keyring; it is never returned. */
+  addEndpoint(input: EscalationEndpointInput, apiKey: string): Promise<EscalationEndpoint>;
+  removeEndpoint(id: string): Promise<void>;
+  budget(): Promise<EscalationBudget>;
+  setBudget(capMicros: number): Promise<EscalationBudget>;
+  quote(endpointId: string, prompt: string, system?: string | null, maxTokens?: number | null): Promise<EscalationQuote>;
+  /** Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. */
+  run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean): Promise<EscalationRun>;
+  registryStatus(): Promise<EscalationRegistryStatus>;
+}
+
+// ---- HUP-S5.5 / S6.1 — signed first-run components. Mirrors Rust `components.rs`. ----
+
+export interface ComponentsInstalled {
+  name: string;
+  version: string;
+  previous: string | null;
+  installedAt: number;
+}
+
+export interface ComponentsBundleTool {
+  name: string;
+  version: string;
+  license: string;
+  /** Platforms with a measured hash. */
+  measuredPlatforms: string[];
+  /** This machine's entry: measured | to_be_measured | to_be_built | upstream_unavailable | none. */
+  thisPlatform: string;
+}
+
+export interface ComponentsStatus {
+  /** false until the component signing key is set at the key ceremony; updates refuse until then. */
+  keyConfigured: boolean;
+  keyFingerprint: string | null;
+  keyNote: string;
+  platform: string | null;
+  freshness: "never_checked" | "fresh" | "stale" | "expired";
+  manifestAgeSecs: number | null;
+  browserMayOpenWeb: boolean;
+  installed: ComponentsInstalled[];
+  bundle: ComponentsBundleTool[];
+  libraries: { name: string; sha256: string }[];
+  sla: {
+    criticalHours: number;
+    highDays: number;
+    mediumDays: number;
+    lowDays: number;
+    staleAfterDays: number;
+    pendingOwnerSignoff: boolean;
+  };
+  manifestUrl: string;
+}
+
+export interface ComponentsDomain {
+  /** Read-only. null = no component store here (web preview), never an invented one. */
+  status(): Promise<ComponentsStatus | null>;
+  /** Verify-then-swap update of one component. Refuses while the key is not configured. */
+  update(name: string): Promise<string>;
+  rollback(name: string): Promise<string>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
+  escalation: EscalationDomain;
   telemetry: TelemetryDomain;
   storage: StorageDomain;
   groups: GroupsDomain;
   cluster: ClusterDomain;
   training: TrainingDomain;
+  flRounds: FlRoundsDomain;
   agentHarness: AgentHarnessDomain;
   agentSkills: AgentSkillsDomain;
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
+  components: ComponentsDomain;
 }
