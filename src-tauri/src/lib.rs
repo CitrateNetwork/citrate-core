@@ -31,6 +31,7 @@ mod addresses;
 mod agent;
 mod ai;
 mod blocking;
+mod components;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
@@ -635,6 +636,10 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S5.5 — signed first-run components. Update refuses until the component key is set.
+            components::components_status,
+            components::components_update,
+            components::components_rollback,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable

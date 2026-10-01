@@ -37,6 +37,7 @@ const UNBOUNDED = new Set<string>([
   "model_catalog_download", // HUP-S0.2: catalog GGUF download (drives its own progress events)
   "storage_add", // HUP-S0.2: adding a large file to IPFS
   "storage_retrieve", // HUP-S0.2: retrieving a large file from IPFS
+  "components_update", // HUP-S5.5: a signed component download (a browser build is hundreds of MB)
 ]);
 
 /** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so

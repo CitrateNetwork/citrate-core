@@ -17,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 citrate-core-kit = { path = "../kit" }
+# HUP-S5.5 / S6.1 — signed first-run components + toolchain bundle definitions (workspace crate).
+citrate-components = { path = "../components" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

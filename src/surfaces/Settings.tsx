@@ -29,6 +29,7 @@ import { AppState, fmtSaltFromWei } from "../shell/state";
 import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
+import { ComponentUpdates } from "../components/ComponentUpdates";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 
@@ -1111,6 +1112,11 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
                 automatic update checks are not available in this build · citrate-core 0.1.0-proto
               </span>
+            </div>
+            {/* HUP-S5.5 / S6.1 — signed first-run components (toolchain today, browser later). */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
+              <span className="eyebrow">Components · signed tools</span>
+              <ComponentUpdates toast={(m) => store.toast(m)} />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Telemetry</span>
