@@ -360,6 +360,18 @@ enum Request {
     SetRoster {
         group: String,
         roster: Vec<(String, String)>,
+        /// HUP-S8.1: the signed DeviceLinks this machine knows (the daemon verifies them and adds
+        /// each allowed member's devices to the mesh). Omitted when empty, so an older daemon sees
+        /// the exact request it always did.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        devices: Vec<crate::device_link::DeviceLinkWire>,
+        /// HUP-S8.1: member-signed device revocations (sticky in the daemon).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        revocations: Vec<crate::device_link::RevocationWire>,
+    },
+    /// HUP-S8.1: members with their linked devices.
+    Devices {
+        group: String,
     },
     Join {
         group: String,
@@ -384,6 +396,30 @@ enum Request {
 struct PeerView {
     address: String,
     online: bool,
+    /// HUP-S8.1: the member a device peer acts for (absent for a member's own identity).
+    #[serde(default)]
+    member: Option<String>,
+}
+
+/// HUP-S8.1: one device under a member (mirrors cluster-daemon `DeviceViewWire`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterDeviceDto {
+    device: String,
+    index: u32,
+    label: String,
+    issued_at: u64,
+    online: bool,
+}
+
+/// HUP-S8.1: a member and its devices (mirrors cluster-daemon `MemberDevicesWire`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterMemberDevicesDto {
+    member: String,
+    role: String,
+    online: bool,
+    devices: Vec<ClusterDeviceDto>,
 }
 
 /// A response from the daemon. `type`-tagged; mirrors cluster-daemon::ipc::Response.
@@ -394,6 +430,13 @@ enum Response {
     Reconciled {
         #[allow(dead_code)]
         evicted: Vec<String>,
+        /// HUP-S8.1: links the daemon refused, one secret-free reason each.
+        #[serde(default)]
+        rejected: Vec<String>,
+    },
+    /// HUP-S8.1: answer to [`Request::Devices`].
+    Devices {
+        members: Vec<ClusterMemberDevicesDto>,
     },
     Status {
         online: usize,
@@ -470,6 +513,9 @@ pub struct ClusterStatusDto {
 pub struct ClusterPeerDto {
     address: String,
     online: bool,
+    /// HUP-S8.1: set when this peer is a linked device; the member it acts for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +543,13 @@ pub fn shutdown() {
 /// `CITRATE_CLUSTER_LISTEN` present → real cross-machine mesh (CL-S3, soak-gated); absent → `None` =
 /// in-process. Kept env-driven (not a UI toggle) so it cannot be flipped on for partner traffic before
 /// the two-machine soak + the Rule-8 transport sign-off.
+/// Whether the operator turned the cross-machine transport on (`CITRATE_CLUSTER_LISTEN` set).
+fn libp2p_requested() -> bool {
+    std::env::var(ENV_LISTEN)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn libp2p_opts_from_env(seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
     let listen = std::env::var(ENV_LISTEN)
         .ok()
@@ -539,7 +592,10 @@ fn ensure_started(
         .join("cluster");
     // Identity = the device-sealed COMMS key (comms.rs), NOT the wallet — the roster keys on the comms
     // address, so self_addr and (for libp2p) the Noise seed must be the comms identity to match it.
-    let identity = crate::comms::device_identity(app)?;
+    // HUP-S8.1: when the cross-machine transport is on AND this machine holds an active DeviceLink,
+    // mesh as this machine's own device key instead (its own PeerId; the daemon admits it through
+    // the link). Otherwise nothing changes.
+    let identity = crate::device_link::mesh_identity(app, libp2p_requested())?;
     let libp2p = libp2p_opts_from_env(identity.seed_hex);
     let bin = resolve_cluster_daemon_bin(app)?;
     let mut mgr = ClusterDaemonManager::new(
@@ -566,14 +622,30 @@ fn route(app: &tauri::AppHandle, req: Request) -> std::result::Result<Response, 
 /// reconciles the mesh. The cluster is a Group's cluster — no group/roster means no cluster.
 async fn feed_roster(app: &tauri::AppHandle, group: &str) -> std::result::Result<(), String> {
     let roster = crate::comms::groups_roster(app.clone(), group.to_string()).await?;
+    // HUP-S8.1: send the device links + revocations this machine knows with the roster, so a link
+    // and its revocation are applied in the same reconcile. A missing store is empty; a corrupt one
+    // is an error (never silently dropped, which would lose revocations).
+    let store = crate::device_link::DeviceLinkStore::load(&crate::device_link::store_path(app)?)?;
     match route(
         app,
         Request::SetRoster {
             group: group.to_string(),
             roster,
+            devices: store.links,
+            revocations: store.revocations,
         },
     )? {
-        Response::Reconciled { .. } | Response::Ok => Ok(()),
+        Response::Reconciled { rejected, .. } => {
+            if !rejected.is_empty() {
+                // Diagnostic only (addresses + reasons, never a signature or key).
+                eprintln!(
+                    "[cluster] daemon refused device links: {}",
+                    rejected.join("; ")
+                );
+            }
+            Ok(())
+        }
+        Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -632,8 +704,23 @@ pub async fn cluster_peers(
             .map(|p| ClusterPeerDto {
                 address: p.address,
                 online: p.online,
+                member: p.member,
             })
             .collect()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// **cluster_devices** (HUP-S8.1): the group's members with their linked devices and live state.
+#[tauri::command]
+pub async fn cluster_devices(
+    app: tauri::AppHandle,
+    group: String,
+) -> std::result::Result<Vec<ClusterMemberDevicesDto>, String> {
+    feed_roster(&app, &group).await?;
+    match route(&app, Request::Devices { group })? {
+        Response::Devices { members } => Ok(members),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }

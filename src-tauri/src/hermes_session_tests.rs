@@ -202,3 +202,28 @@ fn the_session_reply_budget_stays_inside_the_window() {
     assert_eq!(v["contextTokens"], 65_536);
     assert_eq!(v["maxTokens"], crate::ai::AI_MAX_TOKENS);
 }
+
+// HUP-S1.5 — `escalate` posts the core-built body to `/escalations` and hands back the raw status +
+// body (the caller settles from the sidecar's `sent` flag), including a non-2xx answer.
+#[test]
+fn escalate_posts_to_the_escalations_route_and_returns_the_raw_answer() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    rec.reply.lock().unwrap().push((422, r#"{"error":"bad","sent":false}"#.into()));
+    let m = mgr(rec.clone());
+    let r = m.escalate(r#"{"escalationId":"esc-1"}"#).unwrap();
+    assert_eq!(r.status, 422);
+    assert!(r.body.contains("\"sent\":false"));
+    let posts = rec.posts.lock().unwrap();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].0.ends_with("/escalations"), "{}", posts[0].0);
+    assert_eq!(posts[0].1, r#"{"escalationId":"esc-1"}"#);
+}
+
+#[test]
+fn escalate_without_a_running_sidecar_fails_closed_before_any_request() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    let dir = std::env::temp_dir().join(format!("hesc-{}", std::process::id()));
+    let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c")).with_control(Box::new(RecControl(rec.clone())));
+    assert!(matches!(m.escalate("{}"), Err(HermesError::NotRunning)));
+    assert!(rec.posts.lock().unwrap().is_empty());
+}

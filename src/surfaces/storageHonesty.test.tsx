@@ -91,3 +91,57 @@ describe("Storage honesty — MCP endpoint shows the REAL socket, never a client
     expect(html).not.toContain("mcp_connect");
   });
 });
+
+// HUP-S3.1 — the built-in knowledge import line shows only what the importer reported.
+describe("Storage — built-in knowledge import status (HUP-S3.1)", () => {
+  const ki = (patch: Partial<AppState["knowledgeImport"]>): AppState["knowledgeImport"] => ({
+    state: "idle",
+    tenant: null,
+    done: 0,
+    total: 0,
+    nodesAdded: 0,
+    message: null,
+    ...patch,
+  });
+
+  it("renders nothing before an import was attempted", () => {
+    const html = renderToStaticMarkup(<Storage store={stubStore} s={storageState({ knowledgeImport: ki({}) })} />);
+    expect(html).not.toContain("Built-in knowledge");
+  });
+
+  it("shows the importer's own progress counts while running", () => {
+    const html = renderToStaticMarkup(
+      <Storage store={stubStore} s={storageState({ knowledgeImport: ki({ state: "running", tenant: "skills", done: 256, total: 7788 }) })} />,
+    );
+    expect(html).toContain("Importing built-in knowledge");
+    expect(html).toContain("skills");
+    expect(html).toContain("256 / 7788");
+  });
+
+  it("says plainly when this build ships no corpus (no fabricated 'ready')", () => {
+    const html = renderToStaticMarkup(
+      <Storage store={stubStore} s={storageState({ knowledgeImport: ki({ state: "skipped", message: "no-bundle" }) })} />,
+    );
+    expect(html).toContain("not included in this build");
+    expect(html).not.toContain("Built-in knowledge ready");
+  });
+
+  it("shows a failure with its reason and a retry", () => {
+    const html = renderToStaticMarkup(
+      <Storage
+        store={stubStore}
+        s={storageState({ knowledgeImport: ki({ state: "failed", message: "verify: tenants/refs.syncbundle.json does not match its manifest hash" }) })}
+      />,
+    );
+    expect(html).toContain("Built-in knowledge import failed");
+    expect(html).toContain("does not match its manifest hash");
+    expect(html).toContain("Retry");
+  });
+
+  it("reports the imported entry count from the importer", () => {
+    const html = renderToStaticMarkup(
+      <Storage store={stubStore} s={storageState({ knowledgeImport: ki({ state: "imported", nodesAdded: 10630 }) })} />,
+    );
+    expect(html).toContain("10630");
+  });
+});

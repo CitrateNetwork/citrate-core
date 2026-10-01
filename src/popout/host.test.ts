@@ -103,4 +103,35 @@ describe("HUP-S5.4 pop-out host", () => {
     expect(d.openWindow).not.toHaveBeenCalled();
     h.dispose();
   });
+
+  it("HUP-S1.9: polls the worker processes while the monitor is open and republishes on change", async () => {
+    let rows: unknown[] = [{ kind: "toolchain", state: "running", healthy: true, pid: 1, restarts: 0, lastExit: null, lastError: null, runningSinceMs: 1, detail: null }];
+    const workers = vi.fn(async () => rows as never);
+    const { d, ft } = deps({ workers, workersPollMs: 5 });
+    const h = await createPopoutHost(d);
+    expect(workers).not.toHaveBeenCalled();
+    ft.deliver({ v: 1, type: "popout.ready", kind: "monitor" });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ft.sent[0].payload.snapshot.workers.rows[0].restarts).toBe(0);
+    const before = ft.sent.length;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ft.sent.length).toBe(before);
+    rows = [{ ...(rows[0] as object), restarts: 1, pid: 2, lastExit: "killed by signal 9" }];
+    await new Promise((r) => setTimeout(r, 40));
+    const last = ft.sent[ft.sent.length - 1].payload.snapshot;
+    expect(last.workers.rows[0].restarts).toBe(1);
+    h.dispose();
+    const calls = workers.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(workers.mock.calls.length).toBe(calls);
+  });
+
+  it("HUP-S1.9: a failed worker read is shown as unknown, never as no workers", async () => {
+    const { d, ft } = deps({ workers: vi.fn(async () => { throw new Error("sidecar down"); }), workersPollMs: 1000 });
+    const h = await createPopoutHost(d);
+    ft.deliver({ v: 1, type: "popout.ready", kind: "monitor" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ft.sent[0].payload.snapshot.workers.rows).toBeNull();
+    h.dispose();
+  });
 });

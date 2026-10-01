@@ -9,9 +9,10 @@ wp: HUP-S5.4, HUP-S7.6
 # Pop-out windows and the Activity monitor
 
 Pop-outs are separate Tauri windows that show one view of the app (planset D-36). The framework
-landed with HUP-S5.4; the first pop-out is the Activity monitor (HUP-S7.6, US-7.4). The Browser,
-Contract reader, Code and diff, and Media player pop-outs are on the allowlist but have no view
-yet, so the app refuses to open them and says "not built yet".
+landed with HUP-S5.4; the first pop-out is the Activity monitor (HUP-S7.6, US-7.4). The Browser
+pop-out followed with HUP-S5.1 (see [HERMES_BROWSER.md](HERMES_BROWSER.md)). The Contract reader,
+Code and diff, and Media player pop-outs are on the allowlist but have no view yet, so the app
+refuses to open them and says "not built yet".
 
 ## Rules the framework keeps
 
@@ -46,7 +47,9 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 |---|---|---|
 | pop-out to main | `popout.ready {kind}` | send me the current state |
 | pop-out to main | `monitor.stop` | stop the running turn |
+| pop-out to main | `browser.stop` | stop Hermes's browser (HUP-S5.1); the Browser pop-out re-sends `popout.ready` every 3 s as a heartbeat |
 | main to monitor | `monitor.snapshot {snapshot}` | the monitor's whole view, rebuilt on every change (coalesced to one per 150 ms) |
+| main to browser | `browser.view {view}` | the browser status and latest screencast frame, re-checked on receipt (`src/popout/browserView.ts`) |
 
 ## Activity monitor: data sources (Rule 7)
 
@@ -86,3 +89,9 @@ The Stop button sends `monitor.stop`; the main window runs `store.stopAgentTurn(
   stream wired into the monitor (the sidecar emits `verifier` events; the core provider does not
   forward them yet).
 - A Stop button in the main chat itself is not part of this work.
+
+## Accessibility
+
+Checks and results for the pop-out framework and the Activity monitor (landmarks, window title,
+focus order, live regions, contrast, reduced motion) are recorded in
+[A11Y_AUDIT_HUP_S10_6_2026-10-01.md](A11Y_AUDIT_HUP_S10_6_2026-10-01.md).

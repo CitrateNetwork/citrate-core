@@ -6,7 +6,14 @@
 // status/peers return REAL daemon state; `online` reflects live mesh connectivity (0 until peers are
 // actually connected — no fabricated peers, Rule 1). shareFile announces a co-pin over the mesh.
 import { invoke } from "./invoke";
-import type { ClusterDomain, ClusterPeer, ClusterStatus } from "../domains";
+import type {
+  ClusterDomain,
+  ClusterMemberDevices,
+  ClusterPeer,
+  ClusterStatus,
+  DeviceLinks,
+} from "../domains";
+import type { CeremonyView } from "../types";
 
 export const tauriCluster: ClusterDomain = {
   status(groupId): Promise<ClusterStatus> {
@@ -23,5 +30,31 @@ export const tauriCluster: ClusterDomain = {
   },
   async leave(groupId) {
     await invoke("cluster_leave", { group: groupId });
+  },
+  // HUP-S8.1 — per-device keys + DeviceLink. The wallet signature goes through the ceremony
+  // (linkDeviceRequest opens it, linkDeviceApprove completes it after the person approves).
+  devices(groupId): Promise<ClusterMemberDevices[]> {
+    return invoke<ClusterMemberDevices[]>("cluster_devices", { group: groupId });
+  },
+  myDevices(): Promise<DeviceLinks> {
+    return invoke<DeviceLinks>("device_links");
+  },
+  linkDeviceRequest(label): Promise<CeremonyView> {
+    return invoke<CeremonyView>("device_link_request", { label });
+  },
+  linkDeviceApprove(id, rawAck): Promise<DeviceLinks> {
+    return invoke<DeviceLinks>("device_link_approve", { id, rawAck });
+  },
+  async linkDeviceReject(id) {
+    await invoke("device_link_reject", { id });
+  },
+  revokeDevice(device): Promise<DeviceLinks> {
+    return invoke<DeviceLinks>("device_link_revoke", { device });
+  },
+  exportDeviceLink(): Promise<string> {
+    return invoke<string>("device_link_export");
+  },
+  importDeviceLink(code): Promise<DeviceLinks> {
+    return invoke<DeviceLinks>("device_link_import", { code });
   },
 };

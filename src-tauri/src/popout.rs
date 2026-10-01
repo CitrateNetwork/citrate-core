@@ -1,7 +1,8 @@
 //! HUP-S5.4 — the pop-out window framework (D-36).
 //!
 //! A pop-out is a separate Tauri window that renders one view of the app (the Activity monitor
-//! today; Browser, Contract reader, Code and diff, and Media player later). The rules it keeps:
+//! and the Browser today; Contract reader, Code and diff, and Media player later). The rules it
+//! keeps:
 //!
 //! - **Closed allowlist.** Only the five kinds in [`PopoutKind`] exist, each with one fixed label
 //!   (`popout-<kind>`). Only kinds with a view ([`PopoutKind::available`]) can be opened; the
@@ -99,11 +100,14 @@ impl PopoutKind {
         }
     }
 
-    /// Whether this kind has a view yet. The others ship in later work packages (S5.1 browser,
-    /// S6.7 contract reader); until then they are refused, never opened empty. HUP-S10.1 added
-    /// the Media player.
+    /// Whether this kind has a view yet: the Activity monitor (S7.6), the Browser (S5.1) and the
+    /// Media player (S10.1). The others ship in later work packages (S6.7 contract reader, the diff
+    /// view); until then they are refused, never opened empty.
     pub(crate) fn available(self) -> bool {
-        matches!(self, PopoutKind::Monitor | PopoutKind::Media)
+        matches!(
+            self,
+            PopoutKind::Monitor | PopoutKind::Browser | PopoutKind::Media
+        )
     }
 
     /// The first-open size (logical px).
