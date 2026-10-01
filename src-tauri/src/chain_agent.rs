@@ -26,8 +26,8 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use crate::ceremony::anchor::{
-    anchor_address, ensure_anchor_key, receipt_confirms, AnchorCeremony, AnchorCeremonyView,
-    AnchorReceipt, AnchorRequest, AnchorTxConfig,
+    anchor_address, date_of_day, ensure_anchor_key, receipt_confirms, AnchorCeremony,
+    AnchorCeremonyView, AnchorReceipt, AnchorRequest, AnchorTxConfig,
 };
 use crate::hermes::chain::PlannedAnchor;
 
@@ -215,7 +215,8 @@ pub fn request_from_plan(p: &PlannedAnchor) -> Result<Option<AnchorRequest>, Str
         .map_err(|_| "the plan's calldata is not hex".to_string())?;
     Ok(Some(AnchorRequest {
         day: p.day,
-        date: p.date.clone().unwrap_or_default(),
+        // The date shown on the card is computed from the day here, never taken from the plan.
+        date: date_of_day(p.day).ok_or("the plan's day is out of range")?,
         commitment,
         to: call
             .to
@@ -249,8 +250,9 @@ pub struct TickReport {
     pub skipped: Vec<(u64, String)>,
 }
 
-/// One pass of the nightly schedule: only when the gate is `Ready`, plan each day the sidecar
-/// still has to anchor and raise one approval card per ready day. Signs nothing.
+/// [`nightly_tick_with`] with nothing in flight. Test convenience: the production scheduler always
+/// passes its in-flight set.
+#[cfg(test)]
 pub fn nightly_tick(
     port: &dyn AnchorPort,
     ceremony: &AnchorCeremony,
@@ -260,9 +262,10 @@ pub fn nightly_tick(
     nightly_tick_with(port, ceremony, gate, registry, &BTreeSet::new())
 }
 
-/// [`nightly_tick`], skipping days whose previous anchor was sent and is still waiting for its
-/// receipt (`in_flight`): a day never has two anchor transactions on the way (`AnchorSettle.tla`,
-/// `AtMostOneInFlight`).
+/// One pass of the nightly schedule: only when the gate is `Ready`, plan each day the sidecar
+/// still has to anchor and raise one approval card per ready day. Signs nothing. Days whose
+/// previous anchor was sent and is still waiting for its receipt (`in_flight`) are skipped: a day
+/// never has two anchor transactions on the way (`AnchorSettle.tla`, `AtMostOneInFlight`).
 pub fn nightly_tick_with(
     port: &dyn AnchorPort,
     ceremony: &AnchorCeremony,
@@ -328,6 +331,48 @@ pub fn settle(port: &dyn AnchorPort, r: &AnchorReceipt) -> Result<bool, String> 
         block,
     )?;
     Ok(true)
+}
+
+/// After a broadcast: settle when the receipt confirms, and keep every sent anchor that is not
+/// settled yet (receipt unknown, or mined but the sidecar could not record it) in `held`, so the
+/// re-poll finishes it and the scheduler never raises a second anchor for that day
+/// (`AnchorSettle.tla`, `AtMostOneInFlight`). A reverted anchor is not kept: the day may be raised
+/// again. Returns whether the day is now anchored, and the line shown to the member.
+pub fn after_broadcast(
+    port: Result<&dyn AnchorPort, String>,
+    r: &AnchorReceipt,
+    held: &Mutex<BTreeMap<u64, AnchorReceipt>>,
+) -> (bool, String) {
+    let hold = || {
+        if let Ok(mut m) = held.lock() {
+            m.insert(r.day, r.clone());
+        }
+    };
+    match (r.block_number, receipt_confirms(r)) {
+        (Some(block), true) => match port.and_then(|p| settle(p, r)) {
+            Ok(true) => (true, format!("Anchored in block {block}.")),
+            _ => {
+                hold();
+                (
+                    false,
+                    format!(
+                        "Mined in block {block}, but Hermes could not record it yet; it will be retried. The day is not marked anchored yet."
+                    ),
+                )
+            }
+        },
+        (None, _) => {
+            hold();
+            (
+                false,
+                "Sent. Waiting for the block; the day is not marked anchored yet.".to_string(),
+            )
+        }
+        (Some(_), false) => (
+            false,
+            "The transaction did not succeed on chain; the day is not anchored.".to_string(),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -524,18 +569,9 @@ pub async fn hermes_anchor_approve(
                 },
             )
             .map_err(|e| e.to_string())?;
-        let m = crate::hermes::chain::manager_for(&app)?;
-        let anchored = settle(m, &receipt)?;
-        let status_line = if anchored {
-            format!("Anchored in block {}.", receipt.block_number.unwrap_or(0))
-        } else if receipt.block_number.is_none() {
-            if let Ok(mut s) = submitted().lock() {
-                s.insert(receipt.day, receipt.clone());
-            }
-            "Sent. Waiting for the block; the day is not marked anchored yet.".to_string()
-        } else {
-            "The transaction did not succeed on chain; the day is not anchored.".to_string()
-        };
+        // Signed and sent from here on: never return early and lose the transaction.
+        let port = crate::hermes::chain::manager_for(&app).map(|m| m as &dyn AnchorPort);
+        let (anchored, status_line) = after_broadcast(port, &receipt, submitted());
         Ok(AnchorApproveView {
             receipt,
             anchored,

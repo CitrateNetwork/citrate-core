@@ -397,3 +397,78 @@ fn turning_anchoring_off_drops_every_pending_card_unsigned() {
     assert_eq!(drop_pending_when_off(&c, &ChainSettings::default()), 1);
     assert!(c.pending().is_empty());
 }
+
+// ---------------------------------------------------------------------------------------------
+// review fixes (n4 adversarial review)
+
+#[test]
+fn the_card_date_comes_from_the_day_not_from_the_sidecar() {
+    let mut p = ready_plan(20_000, 0xc1, REG);
+    p.date = Some("tomorrow, approve now".into());
+    let req = request_from_plan(&p).unwrap().unwrap();
+    assert_eq!(req.date, "2024-10-04");
+    let c = AnchorCeremony::new();
+    let v = c.request(req, REG).unwrap();
+    assert!(
+        v.decoded.action.contains("2024-10-04"),
+        "{}",
+        v.decoded.action
+    );
+    let mut far = ready_plan(u64::MAX, 0xc1, REG);
+    far.date = None;
+    assert!(request_from_plan(&far).is_err());
+}
+
+struct DownPort;
+impl AnchorPort for DownPort {
+    fn status(&self) -> Result<serde_json::Value, String> {
+        Err("down".into())
+    }
+    fn plan(&self, _d: u64, _r: &str) -> Result<PlannedAnchor, String> {
+        Err("down".into())
+    }
+    fn confirm(&self, _d: u64, _c: &str, _t: &str, _b: u64) -> Result<(), String> {
+        Err("down".into())
+    }
+}
+
+#[test]
+fn a_sent_anchor_is_never_forgotten_after_broadcast() {
+    // Mined and confirmed, but the sidecar could not record it: kept for the re-poll, so the day
+    // is not raised again.
+    let held = Mutex::new(BTreeMap::new());
+    let port: &dyn AnchorPort = &DownPort;
+    let (anchored, line) = after_broadcast(Ok(port), &receipt(Some(9), Some(1)), &held);
+    assert!(!anchored);
+    assert!(line.contains("block 9"), "{line}");
+    assert!(held.lock().unwrap().contains_key(&20000));
+    // Hermes not reachable at all: same.
+    let held = Mutex::new(BTreeMap::new());
+    let (anchored, _) = after_broadcast(
+        Err("Hermes is not running".into()),
+        &receipt(Some(9), Some(1)),
+        &held,
+    );
+    assert!(!anchored);
+    assert!(held.lock().unwrap().contains_key(&20000));
+    // Receipt unknown: kept.
+    let held = Mutex::new(BTreeMap::new());
+    let (anchored, _) = after_broadcast(
+        Err("Hermes is not running".into()),
+        &receipt(None, None),
+        &held,
+    );
+    assert!(!anchored);
+    assert!(held.lock().unwrap().contains_key(&20000));
+    // Reverted: not kept (the day may be raised again), not anchored.
+    let held = Mutex::new(BTreeMap::new());
+    let ok_port = Port::default();
+    let (anchored, _) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(0)), &held);
+    assert!(!anchored);
+    assert!(held.lock().unwrap().is_empty());
+    // Confirmed and recorded: anchored, nothing kept.
+    let (anchored, line) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(1)), &held);
+    assert!(anchored);
+    assert_eq!(line, "Anchored in block 9.");
+    assert!(held.lock().unwrap().is_empty());
+}

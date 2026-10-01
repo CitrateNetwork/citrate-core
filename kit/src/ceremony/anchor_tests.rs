@@ -89,7 +89,7 @@ fn cfg() -> AnchorTxConfig {
 fn good_request(day: u64, r: [u8; 32]) -> AnchorRequest {
     AnchorRequest {
         day,
-        date: "2026-09-30".into(),
+        date: date_of_day(day).unwrap_or_default(),
         commitment: r,
         to: REGISTRY.into(),
         chain_id: 40204,
@@ -220,7 +220,7 @@ fn request_accepts_only_the_pinned_nightly_anchor() {
     assert_eq!(v.day, 20_000);
     assert_eq!(v.registry, REGISTRY);
     assert!(
-        v.decoded.action.contains("2026-09-30"),
+        v.decoded.action.contains("2024-10-04"),
         "{}",
         v.decoded.action
     );
@@ -433,4 +433,49 @@ fn the_anchor_module_never_touches_the_wallet_signers() {
         1,
         "exactly one signing site"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// review fixes (n4 adversarial review)
+
+#[test]
+fn the_card_date_is_derived_from_the_day_never_taken_on_trust() {
+    assert_eq!(date_of_day(0).as_deref(), Some("1970-01-01"));
+    assert_eq!(date_of_day(20_000).as_deref(), Some("2024-10-04"));
+    assert_eq!(date_of_day(20_726).as_deref(), Some("2026-09-30"));
+    assert_eq!(date_of_day(11_016).as_deref(), Some("2000-02-29"));
+    assert_eq!(date_of_day(u64::MAX), None);
+    let c = AnchorCeremony::new();
+    let mut req = good_request(20_000, root(9));
+    req.date = "2026-09-30 (approve to receive a refund)".into();
+    assert!(matches!(
+        c.request(req, REGISTRY),
+        Err(AnchorError::NotAnchorCall(_))
+    ));
+    assert!(c.pending().is_empty());
+    let mut far = good_request(u64::MAX, root(9));
+    far.date = String::new();
+    assert!(c.request(far, REGISTRY).is_err());
+}
+
+#[test]
+fn a_receipt_poll_error_after_broadcast_keeps_the_sent_transaction() {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c.request(good_request(20_000, root(10)), REGISTRY).unwrap();
+    // nonce, gas price, estimate, send succeed; the receipt query then fails.
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+        ok(json!(format!("0x{}", "cd".repeat(32)))),
+        json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": "busy" } }),
+    ]));
+    let r = c
+        .approve_and_broadcast(&kr, &rpc, &v.id, REGISTRY, cfg())
+        .expect("a sent anchor is reported, with its receipt unknown");
+    assert_eq!(r.tx_hash, format!("0x{}", "cd".repeat(32)));
+    assert_eq!((r.block_number, r.status), (None, None));
+    assert!(!receipt_confirms(&r));
 }

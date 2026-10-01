@@ -127,6 +127,28 @@ pub fn decode_anchor_calldata(data: &[u8]) -> Result<[u8; 32]> {
     Ok(root)
 }
 
+/// The last UTC day an anchor card may name (9999-12-31).
+const MAX_ANCHOR_DAY: u64 = 2_932_896;
+
+/// `YYYY-MM-DD` of a UTC day number (days since 1970-01-01), computed here so the date on an
+/// approval card never comes from across the process boundary. `None` past 9999-12-31.
+pub fn date_of_day(day: u64) -> Option<String> {
+    if day > MAX_ANCHOR_DAY {
+        return None;
+    }
+    // Proleptic Gregorian civil date from a day count (H. Hinnant's days_to_civil).
+    let z = day + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + u64::from(m <= 2);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
 fn parse_address(s: &str) -> Option<[u8; 20]> {
     let h = s.strip_prefix("0x")?;
     if h.len() != 40 {
@@ -309,6 +331,12 @@ impl AnchorCeremony {
         if to != pinned {
             return Err(AnchorError::RegistryMismatch);
         }
+        // The card shows a date: it must be the stated day's own date, computed here.
+        if date_of_day(req.day).as_deref() != Some(req.date.as_str()) {
+            return Err(AnchorError::NotAnchorCall(
+                "the date does not match the day".into(),
+            ));
+        }
         if decode_anchor_calldata(&req.data)? != req.commitment {
             return Err(AnchorError::NotAnchorCall(
                 "the calldata does not anchor the stated commitment".into(),
@@ -354,7 +382,8 @@ impl AnchorCeremony {
     /// `pinned_registry` is the address the caller pins now; if it no longer matches the one the
     /// ceremony was raised for, nothing is signed. Nonce, gas price and gas limit come from the
     /// live RPC for the anchor key's own address (nothing is guessed). The returned receipt may
-    /// be unmined or reverted: only [`receipt_confirms`] decides whether the day is anchored.
+    /// be unmined, unknown (the poll failed after the send) or reverted: only [`receipt_confirms`]
+    /// decides whether the day is anchored.
     pub fn approve_and_broadcast<T: RpcTransport>(
         &self,
         keyring: &dyn Keyring,
@@ -407,9 +436,10 @@ impl AnchorCeremony {
         let (block_number, status) =
             match rpc.poll_receipt(&tx_hash, cfg.poll_attempts, cfg.poll_interval) {
                 Ok(r) => (Some(r.block_number), r.status),
-                // Accepted but not mined within the budget: report it honestly as unknown.
-                Err(RpcError::ReceiptTimeout) => (None, None),
-                Err(e) => return Err(AnchorError::Rpc(e.to_string())),
+                // The transaction is already sent: whether the receipt poll timed out or failed,
+                // report the hash with the receipt unknown, so the caller can keep waiting on it
+                // instead of raising a second anchor for the same day.
+                Err(_) => (None, None),
             };
         Ok(AnchorReceipt {
             day: p.req.day,
