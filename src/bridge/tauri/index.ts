@@ -37,6 +37,7 @@ import type {
   ConnectionInfo,
 } from "../domains";
 import { Unavailable } from "../types";
+import { tauriImportKnowledge } from "./knowledge";
 
 function unavailable(domain: string, op: string): never {
   throw new Unavailable(domain, op);
@@ -354,6 +355,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       // Seed the constellation tenants with real network/node/stake facts (gated + idempotent in Rust).
       async seedContext(facts: SeedFacts) {
         return invoke<SeedReport>("memory_seed_context", { facts });
+      },
+      // HUP-S3.1 — first-run knowledge-corpus import (verified + idempotent in Rust).
+      importKnowledge(onProgress) {
+        return tauriImportKnowledge(onProgress);
       },
     },
     // ---- chat: REAL OpenAI-compatible inference, key sealed in Rust (AI1) ----

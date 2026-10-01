@@ -846,12 +846,14 @@ dependencies = [
  "keyring",
  "libc",
  "p256",
+ "qrcode",
  "rand 0.8.7",
  "rlp",
  "serde",
  "serde_json",
  "sha2",
  "sha3",
+ "socket2",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
@@ -3718,6 +3720,12 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-xml"
