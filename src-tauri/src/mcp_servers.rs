@@ -662,8 +662,10 @@ pub fn apply_remove(reg: &mut Registry, name: &str) -> bool {
     reg.servers.len() != before
 }
 
-/// Disable an entry (keeps it; a later enable needs a fresh review).
-pub fn apply_disable(reg: &mut Registry, name: &str) -> bool {
+/// Disable an entry (keeps it; a later enable needs a fresh review, so this session's check of
+/// it is forgotten too).
+pub fn apply_disable(reg: &mut Registry, gate: &mut ReviewGate, name: &str) -> bool {
+    gate.forget(name);
     match reg.servers.iter_mut().find(|s| s.name == name) {
         Some(s) => {
             s.enabled = false;
@@ -983,10 +985,10 @@ pub async fn mcp_server_disable(
     name: String,
 ) -> Result<Vec<ServerView>, String> {
     crate::blocking::off_main(move || {
-        let _g = gate().lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = gate().lock().unwrap_or_else(|e| e.into_inner());
         let st = store(&app)?;
         let mut reg = st.load()?;
-        if apply_disable(&mut reg, &name) {
+        if apply_disable(&mut reg, &mut g, &name) {
             st.save(&reg)?;
         }
         Ok(views(&reg))

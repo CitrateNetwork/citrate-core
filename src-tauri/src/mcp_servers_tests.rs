@@ -332,6 +332,27 @@ fn enable_requires_a_successful_probe_of_the_entry_as_it_stands() {
 }
 
 #[test]
+fn turning_a_server_off_needs_a_fresh_check_to_turn_it_on_again() {
+    let mut reg = Registry::default();
+    let mut gate = ReviewGate::default();
+    apply_save(&mut reg, stdio_input("notes")).expect("save");
+    gate.record(&reg.servers[0], &ok_probe("notes"));
+    let token = review_token(&gate, &reg.servers[0]);
+    apply_enable(&mut reg, &gate, "notes", &token).expect("enable");
+    assert!(apply_disable(&mut reg, &mut gate, "notes"));
+    assert!(!reg.servers[0].enabled);
+    assert!(reg.servers[0].reviewed.is_none());
+    assert!(allowlist_json(&reg).is_none());
+    // The earlier check's token no longer enables it.
+    assert!(apply_enable(&mut reg, &gate, "notes", &token).is_err());
+    assert!(!apply_disable(&mut reg, &mut gate, "missing"));
+    // A new check does.
+    gate.record(&reg.servers[0], &ok_probe("notes"));
+    let token = review_token(&gate, &reg.servers[0]);
+    apply_enable(&mut reg, &gate, "notes", &token).expect("re-enable");
+}
+
+#[test]
 fn a_review_of_an_older_version_cannot_enable_the_edited_entry() {
     let mut reg = Registry::default();
     let mut gate = ReviewGate::default();
