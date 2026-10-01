@@ -179,6 +179,8 @@ describe("deterministic scorer", () => {
       "The docs cover this: SALT has 18 decimals.",
       "The documentation does contain the genesis parameters.",
       "Validators do not need documentation to stake.",
+      // The match stays inside one sentence: a docs noun in one sentence and a negated verb in the next is not an abstention.
+      "The documentation lists two RPC ports. Clients do not specify a port when they use the default.",
     ]) {
       expect(scoreQaItem(unanswerable, a, fixtureIndex).abstained, a).toBe(false);
     }
