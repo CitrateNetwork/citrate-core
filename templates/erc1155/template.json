@@ -1,0 +1,15 @@
+{
+  "id": "erc1155",
+  "kind": "contract",
+  "title": "ERC-1155 paid mint (OpenZeppelin)",
+  "description": "An OpenZeppelin v5.7.0 ERC-1155 with supply tracking: anyone mints any token id at a fixed price per unit in wei, each id capped at the same supply, with an owner-set URI and an owner-only withdraw.",
+  "layers": ["foundry"],
+  "params": {
+    "name": {},
+    "symbol": {},
+    "supply": { "default": "1000", "min": 1, "max": 1000000000 },
+    "price": { "default": "0" },
+    "owner": {}
+  },
+  "medusa": true
+}

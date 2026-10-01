@@ -98,6 +98,10 @@ Refresh this release whenever a sidecar or the model changes (e.g. a DGX node re
 4. Verify: an older installed build shows the **Update available** card within its
    check interval (or on next launch), downloads with real byte progress, and
    restarts into the new version.
+5. Size gate (HUP-S11.0): on the machine that built the bundle, run
+   `node scripts/size-budget.mjs` (reads `target/release/bundle`, compares with
+   `release/budgets.json`, exits 1 when anything is over budget). Not wired into
+   `release.yml`; see [`release/README.md`](../release/README.md).
 
 ### Distribution — the DO Space is the public origin
 

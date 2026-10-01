@@ -482,9 +482,9 @@ pub fn model_catalog_local_sync(app: tauri::AppHandle) -> Result<Vec<ModelDescri
     read_local_models(&models_dir)
 }
 
-/// Search a connected source (`"hf"` | `"github"`) for downloadable GGUF models. Public repos
-/// resolve without a token; gated-repo token threading rides with the S1.5 download path (which
-/// already opens the connection vault). Blocking `ureq` — Tauri runs commands off the UI thread.
+/// Search a connected source (`"hf"` | `"github"`) for downloadable GGUF models. Search runs
+/// without a token (public listings); the HUP-S0.3b download path attaches the member's
+/// connected Hugging Face token to Hugging Face origins only (see `hf_auth.rs`). Blocking `ureq` — Tauri runs commands off the UI thread.
 #[tauri::command]
 pub async fn model_catalog_search(
     source: String,
@@ -535,7 +535,15 @@ pub async fn model_catalog_download(app: tauri::AppHandle, id: String) -> Result
             .map_err(|e| e.to_string())?
             .join("models");
         std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
-        let transport = Box::new(crate::model::UreqModelTransport::new(url));
+        // HUP-S0.3b: a Hugging Face model downloads with the member's connected HF token (gated
+        // and private repos). `hf_auth` attaches it to huggingface.co / hf.co hops ONLY, never to
+        // the CDN a resolve redirects to. Other sources never get it.
+        let hf_token = match desc.source {
+            ModelSource::Hf => crate::hf_auth::connected_token(&app),
+            _ => None,
+        };
+        let transport =
+            Box::new(crate::model::UreqModelTransport::new(url).with_hf_token(hf_token));
         // HUP-S0.3: remember which catalog id owns this `.part` so a restart can resume it.
         let local_file = local_file_name(&desc.file);
         write_download_marker(&models_dir, &local_file, &id, desc.size_bytes)?;
