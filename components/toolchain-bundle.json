@@ -40,10 +40,11 @@
         "linux-x64": {
           "url": "https://binaries.soliditylang.org/linux-amd64/solc-linux-amd64-v0.8.36+commit.8a079791",
           "format": "raw",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
-          "upstream_checksums": "https://binaries.soliditylang.org/linux-amd64/list.json"
+          "status": "measured",
+          "sha256": "c8d35afdddc3cd2743ee88b8f25e0fecd16e2bdd5f2120f37e52cd9cc45ae0e6",
+          "size": 16279888,
+          "upstream_checksums": "https://binaries.soliditylang.org/linux-amd64/list.json",
+          "note": "Measured 2026-10-01 on DO droplet (x86_64, Ubuntu 22.04): unpacked with `citrate-components unpack` (rc 0); solc --version printed 0.8.36+commit.8a079791.Linux.g++; sha256 matches binaries.soliditylang.org/linux-amd64/list.json."
         },
         "linux-arm64": {
           "url": null,
@@ -95,18 +96,20 @@
         "linux-x64": {
           "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_amd64.tar.gz",
           "format": "tar.gz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
-          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1"
+          "status": "measured",
+          "sha256": "73640b01bd9ed29fdb4965085099371f8cf0dbbec3e2086cf54564efc4dcfe88",
+          "size": 79867532,
+          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1",
+          "note": "Measured 2026-10-01 on DO droplet (x86_64, Ubuntu 22.04): unpacked with `citrate-components unpack` (rc 0); forge --version printed 1.5.1-v1.5.1."
         },
         "linux-arm64": {
           "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_arm64.tar.gz",
           "format": "tar.gz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
-          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1"
+          "status": "measured",
+          "sha256": "cccf28bdf202289e837a9e21ed213b2b80dc1e806e12f1717bc98a44315c331e",
+          "size": 77256067,
+          "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1",
+          "note": "Measured 2026-10-01 on DGX Spark (aarch64, Ubuntu): unpacked with `citrate-components unpack` (rc 0); forge --version printed 1.5.1-v1.5.1."
         },
         "windows-x64": {
           "url": "https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_win32_amd64.zip",
@@ -149,18 +152,20 @@
         "linux-x64": {
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
           "format": "tar.gz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
-          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929"
+          "status": "measured",
+          "sha256": "ef605200f8174e87ecfc308e52a88127543f85dd5c940dc5e92cab244b98a003",
+          "size": 34277962,
+          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929",
+          "note": "Measured 2026-10-01 on DO droplet (x86_64, Ubuntu 22.04): unpacked with `citrate-components unpack` (rc 0); python3 --version printed Python 3.12.14."
         },
         "linux-arm64": {
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
           "format": "tar.gz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
-          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929"
+          "status": "measured",
+          "sha256": "706111f834ae1557314f48b7293ddc72cc96e952aa75c5d31f56c2b7ddeac3d3",
+          "size": 29203166,
+          "upstream_checksums": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260929",
+          "note": "Measured 2026-10-01 on DGX Spark (aarch64, Ubuntu): unpacked with `citrate-components unpack` (rc 0); python3 --version printed Python 3.12.14."
         },
         "windows-x64": {
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
@@ -265,24 +270,26 @@
         "linux-x64": {
           "url": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-x86_64-unknown-linux-gnu.tar.xz",
           "format": "tar.xz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
+          "status": "measured",
+          "sha256": "ffd6ca658962e211a3ac821c646f69c8e14bf1b1001cbfe091bcd4535a691e46",
+          "size": 6269536,
           "upstream_checksums": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/sha256.sum",
           "entrypoints": [
             "aderyn-x86_64-unknown-linux-gnu/aderyn"
-          ]
+          ],
+          "note": "Measured 2026-10-01 on DO droplet (x86_64, Ubuntu 22.04): unpacked with `citrate-components unpack` (rc 0); aderyn --version printed aderyn 0.6.8."
         },
         "linux-arm64": {
           "url": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-aarch64-unknown-linux-gnu.tar.xz",
           "format": "tar.xz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
+          "status": "measured",
+          "sha256": "961070bf5ee4ed0f82f67a261c616e1525ec1b036bae60cdaec94d087eb5e405",
+          "size": 4955576,
           "upstream_checksums": "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/sha256.sum",
           "entrypoints": [
             "aderyn-aarch64-unknown-linux-gnu/aderyn"
-          ]
+          ],
+          "note": "Measured 2026-10-01 on DGX Spark (aarch64, Ubuntu): unpacked with `citrate-components unpack` (rc 0); aderyn --version printed aderyn 0.6.8."
         },
         "windows-x64": {
           "url": null,
@@ -323,10 +330,11 @@
         "linux-x64": {
           "url": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-linux-x64.tar.gz",
           "format": "tar.gz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
-          "upstream_checksums": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-linux-x64.tar.gz.sigstore.json"
+          "status": "measured",
+          "sha256": "ddfe1517ae9028ef9fc331b00f5a6a9d5406f3fcd11a715d60c6b6fb3e4546d3",
+          "size": 11948454,
+          "upstream_checksums": "https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-linux-x64.tar.gz.sigstore.json",
+          "note": "Measured 2026-10-01 on DO droplet (x86_64, Ubuntu 22.04): unpacked with `citrate-components unpack` (rc 0); medusa --version printed medusa version 1.5.1."
         },
         "linux-arm64": {
           "url": null,
@@ -380,24 +388,26 @@
         "linux-x64": {
           "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
           "format": "tar.xz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
+          "status": "measured",
+          "sha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+          "size": 31890184,
           "upstream_checksums": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
           "entrypoints": [
             "node-v24.21.0-linux-x64/bin/node"
-          ]
+          ],
+          "note": "Measured 2026-10-01 on DO droplet (x86_64, Ubuntu 22.04): unpacked with `citrate-components unpack` (rc 0); node --version printed v24.21.0."
         },
         "linux-arm64": {
           "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz",
           "format": "tar.xz",
-          "status": "to_be_measured",
-          "sha256": null,
-          "size": null,
+          "status": "measured",
+          "sha256": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2",
+          "size": 30843004,
           "upstream_checksums": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
           "entrypoints": [
             "node-v24.21.0-linux-arm64/bin/node"
-          ]
+          ],
+          "note": "Measured 2026-10-01 on DGX Spark (aarch64, Ubuntu): unpacked with `citrate-components unpack` (rc 0); node --version printed v24.21.0."
         },
         "windows-x64": {
           "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
