@@ -49,3 +49,35 @@ describe("CX bridge — tauri contracts invokes contract_deploy (P3/WP3.2)", () 
     });
   });
 });
+
+describe("HUP-S6.4 — the D-4 deploy gate seam", () => {
+  beforeEach(() => invokeMock.mockReset());
+
+  it("gateLookup → deploy_gate_lookup with camelCase keys", async () => {
+    invokeMock.mockResolvedValueOnce({ initcodeHash: "0xaa", record: null });
+    const r = await tauriContracts.gateLookup("0x6080", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("deploy_gate_lookup", { bytecodeHex: "0x6080", constructorArgsHex: null });
+    expect(r.record).toBeNull();
+  });
+
+  it("gateSubmit → deploy_gate_submit with the typed verifier inputs", async () => {
+    invokeMock.mockResolvedValueOnce({ verdict: "NOT_READY" });
+    const inputs = {
+      bytecodeHex: "0x6000",
+      compiler: { solcVersion: "0.8.28", optimizer: true, optimizerRuns: 200, evmVersion: "cancun", viaIr: false },
+      forgeTests: { state: "notInstalled" as const },
+      slither: { state: "notInstalled" as const },
+      aderyn: { state: "notInstalled" as const },
+      medusa: { run: { state: "notInstalled" as const }, callBudget: 50_000 },
+      forkDryRun: { run: { state: "notInstalled" as const }, txInputHex: "0x6000", citratePrecompiles: "unknown" as const },
+    };
+    await tauriContracts.gateSubmit(inputs);
+    expect(invokeMock).toHaveBeenCalledWith("deploy_gate_submit", { inputs });
+  });
+
+  it("sim is honest — no gate runs without the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.gateLookup("0x6080")).rejects.toThrow(/desktop node/i);
+    }
+  });
+});

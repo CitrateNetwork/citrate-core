@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "note": "HUP-S6.9 per-tier Medusa budgets, counted in fuzzer calls (00_OVERVIEW red-team correction #10). test_limit, workers, call_sequence_length and timeout_secs go into each rendered medusa.json and are enforced by Medusa. coverage_plateau_calls and min_coverage_pct are enforced by the toolchain runner (HUP-S6.3) and the deploy gate (HUP-S6.4), not by Medusa. timeout_secs is a wall-clock safety ceiling only. Starting values, to be re-measured on real T0/T1/T2 hardware.",
+  "tiers": {
+    "T0": {
+      "test_limit": 10000,
+      "workers": 2,
+      "call_sequence_length": 50,
+      "timeout_secs": 1200,
+      "coverage_plateau_calls": 2500,
+      "min_coverage_pct": 60
+    },
+    "T1": {
+      "test_limit": 50000,
+      "workers": 4,
+      "call_sequence_length": 50,
+      "timeout_secs": 900,
+      "coverage_plateau_calls": 10000,
+      "min_coverage_pct": 75
+    },
+    "T2": {
+      "test_limit": 200000,
+      "workers": 8,
+      "call_sequence_length": 100,
+      "timeout_secs": 900,
+      "coverage_plateau_calls": 40000,
+      "min_coverage_pct": 80
+    }
+  }
+}

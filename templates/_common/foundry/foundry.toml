@@ -1,0 +1,26 @@
+# Generated from a Citrate template. Compiler settings match citrate-chain
+# (solc 0.8.36, evm cancun). Dependencies are pinned in citrate-template.lock.json.
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+solc = "0.8.36"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+ffi = false
+fs_permissions = []
+
+[fuzz]
+runs = 256
+
+[invariant]
+runs = 64
+depth = 32
+fail_on_revert = false
+
+[lint]
+# Medusa only runs functions named property_*, and EIP-6372 fixes the name
+# CLOCK_MODE, so the mixed-case function rule does not fit these templates.
+exclude_lints = ["mixed-case-function"]

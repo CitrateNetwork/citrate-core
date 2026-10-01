@@ -417,3 +417,78 @@ fn spawn_args_use_the_native_template_and_extract_reasoning() {
     let r = args.iter().position(|a| a == "--reasoning-format").expect("--reasoning-format");
     assert_eq!(args[r + 1], "deepseek");
 }
+
+// ---------------------------------------------------------------------------
+// HUP-S1.6 (rest) — the effective tier's serve plan drives `--ctx-size` and `-ngl`.
+// ---------------------------------------------------------------------------
+
+fn sized(ctx: u32, ngl: Option<u32>) -> crate::serve_plan::ServePlan {
+    crate::serve_plan::ServePlan {
+        ctx_size: ctx,
+        gpu_layers: ngl,
+        tier: Some(crate::tier::Tier::T1),
+        fits: true,
+        budget_bytes: Some(1),
+        notes: vec!["test plan".into()],
+    }
+}
+
+fn arg_after(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).map(|i| args[i + 1].clone())
+}
+
+#[test]
+fn before_any_plan_the_server_keeps_the_8192_context_and_no_offload_flag() {
+    let (mgr, _dir) = stub_manager("plan-default");
+    let args = mgr.spawn_args_for_test();
+    assert_eq!(arg_after(&args, "--ctx-size").as_deref(), Some("8192"));
+    assert!(!args.iter().any(|a| a == "-ngl"), "{args:?}");
+    assert_eq!(mgr.ctx_size(), DEFAULT_CTX_SIZE);
+}
+
+#[test]
+fn the_plan_sets_ctx_size_and_gpu_layers_on_the_argv_and_status() {
+    let (mgr, _dir) = stub_manager("plan-args");
+    mgr.set_plan(sized(32_768, Some(99)));
+    let args = mgr.spawn_args_for_test();
+    assert_eq!(arg_after(&args, "--ctx-size").as_deref(), Some("32768"));
+    assert_eq!(arg_after(&args, "-ngl").as_deref(), Some("99"));
+    assert_eq!(mgr.ctx_size(), 32_768);
+    let st = mgr.status();
+    assert_eq!(st.ctx_tokens, 32_768);
+    assert_eq!(st.gpu_layers, Some(99));
+    assert_eq!(st.plan_notes, vec!["test plan".to_string()]);
+    let json = serde_json::to_value(&st).unwrap();
+    assert_eq!(json["ctxTokens"], 32_768);
+    assert_eq!(json["gpuLayers"], 99);
+    // A CPU plan carries no -ngl flag at all.
+    mgr.set_plan(sized(16_384, None));
+    assert!(!mgr.spawn_args_for_test().iter().any(|a| a == "-ngl"));
+}
+
+#[test]
+fn a_refused_start_leaves_the_previous_plan_in_place() {
+    let (mgr, dir) = stub_manager("plan-refused");
+    mgr.set_plan(sized(16_384, Some(99)));
+    let r = mgr.start_with_plan(false, sized(65_536, Some(99)));
+    assert!(matches!(r, Err(ServeError::ModelNotReady)), "got {r:?}");
+    assert_eq!(mgr.ctx_size(), 16_384, "a refused start must not change the plan");
+    let r = mgr.select_model_planned(dir.join("other.gguf"), false, sized(65_536, None));
+    assert!(matches!(r, Err(ServeError::ModelNotReady)), "got {r:?}");
+    assert_eq!(mgr.ctx_size(), 16_384);
+}
+
+#[test]
+fn select_model_planned_applies_the_new_models_plan() {
+    let (mgr, dir) = stub_manager("plan-select");
+    let mgr = mgr
+        .with_spawn_args(long_lived_args())
+        .with_health_interval(std::time::Duration::from_secs(3600));
+    let new_model = dir.join("model3.gguf");
+    std::fs::write(&new_model, b"GGUF-3").unwrap();
+    mgr.select_model_planned(new_model, true, sized(32_768, Some(99)))
+        .expect("select starts on the new model");
+    assert_eq!(mgr.ctx_size(), 32_768);
+    assert_eq!(arg_after(&mgr.spawn_args_for_test(), "--ctx-size").as_deref(), Some("32768"));
+    mgr.stop();
+}

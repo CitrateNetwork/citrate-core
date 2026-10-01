@@ -1,0 +1,115 @@
+{
+  "$comment": [
+    "HUP-S11.0 installer size budgets (gate g5-size). Checked by scripts/size-budget.mjs; see release/README.md.",
+    "maxBytes: integer = gated (over budget exits 1); null = measured and reported, not gated (no baseline yet).",
+    "Artifact baselines are the shipped v0.4.2 GitHub release assets; maxBytes = baseline + about 5%, rounded.",
+    "Component baselines are a local v0.4.2 macOS aarch64 build (target/release/bundle, 2026-09-30); maxBytes = baseline + 10%, rounded up to the next MB.",
+    "Raising a budget is a reviewed change: say why in the PR and update baselineBytes when a new release ships."
+  ],
+  "version": 1,
+  "artifacts": {
+    "macos-aarch64/dmg": {
+      "maxBytes": 415000000,
+      "baselineBytes": 394782331,
+      "source": "v0.4.2 release asset Citrate-Core_0.4.2_aarch64.dmg"
+    },
+    "macos-aarch64/app.tar.gz": {
+      "maxBytes": 385000000,
+      "baselineBytes": 366205330,
+      "source": "v0.4.2 release asset Citrate-Core.app.tar.gz (updater)"
+    },
+    "linux-x86_64/appimage": {
+      "maxBytes": null,
+      "source": "no Linux release yet; set from the first measured build"
+    },
+    "linux-x86_64/deb": {
+      "maxBytes": null,
+      "source": "no Linux release yet; set from the first measured build"
+    },
+    "windows-x86_64/msi": {
+      "maxBytes": null,
+      "source": "no Windows release yet; set from the first measured build"
+    },
+    "windows-x86_64/nsis": {
+      "maxBytes": null,
+      "source": "no Windows release yet; set from the first measured build"
+    }
+  },
+  "components": {
+    "macos-aarch64/bin/citrate": {
+      "maxBytes": 59000000,
+      "baselineBytes": 53174368,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/citrate-core": {
+      "maxBytes": 29000000,
+      "baselineBytes": 26028640,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/cluster-daemon": {
+      "maxBytes": 6000000,
+      "baselineBytes": 4658544,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/comms-member-daemon": {
+      "maxBytes": 13000000,
+      "baselineBytes": 11503088,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/hermes": {
+      "maxBytes": 24000000,
+      "baselineBytes": 20988736,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/ipfs": {
+      "maxBytes": 96000000,
+      "baselineBytes": 86487504,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/llama-server": {
+      "maxBytes": 1000000,
+      "baselineBytes": 51744,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/mem-mcp": {
+      "maxBytes": 20000000,
+      "baselineBytes": 17488288,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/bin/node-agent": {
+      "maxBytes": 7000000,
+      "baselineBytes": 5560176,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/resources/capsules": {
+      "maxBytes": 1000000,
+      "baselineBytes": 41700,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/resources/docs-corpus": {
+      "maxBytes": 1000000,
+      "baselineBytes": 29370,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/resources/icon.icns": {
+      "maxBytes": 1000000,
+      "baselineBytes": 178076,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/resources/llama": {
+      "maxBytes": 66000000,
+      "baselineBytes": 59637533,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/resources/models": {
+      "maxBytes": 483000000,
+      "baselineBytes": 438667685,
+      "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/app": {
+      "maxBytes": 797000000,
+      "baselineBytes": 724520985,
+      "source": "local v0.4.2 build 2026-09-30"
+    }
+  }
+}

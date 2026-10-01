@@ -10,5 +10,11 @@ export function simContracts(_host: SimHost): ContractsDomain {
     async deploy() {
       throw new Error("deploying a contract needs the desktop node (no chain in web/dev)");
     },
+    async gateLookup() {
+      throw new Error("the deploy gate runs in the desktop node (no gate records in web/dev)");
+    },
+    async gateSubmit() {
+      throw new Error("the deploy gate runs in the desktop node (no gate records in web/dev)");
+    },
   };
 }

@@ -5,6 +5,7 @@ import { AppState, ORIGIN_COLORS, PERSONAS, short } from "./state";
 import { COACH_STEPS } from "../data/seed";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ApprovalCardView, HicBanner } from "./ApprovalCardView";
+import { DeployGateCard } from "./DeployGateCard";
 
 // ============================ SIGNATURE CEREMONY ============================
 export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
@@ -205,6 +206,8 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
           {r.hic && <HicBanner hic={r.hic} />}
           {/* HUP-S2.4: the chain card's rows ARE the decoded view shown below; only its summary line is added here. */}
           {r.card && <ApprovalCardView card={r.card} showRows={false} />}
+          {/* HUP-S6.4: a contract deploy shows the D-4 gate verdict and the exact bytecode hash. */}
+          {r.deployGate && <DeployGateCard record={r.deployGate} initcodeHash={r.deployGate.initcodeHash} />}
 
           {raw ? (
             // Undecodable calldata — Rule 1: DO NOT dress it as legible. Show the raw

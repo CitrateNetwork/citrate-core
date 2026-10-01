@@ -214,6 +214,9 @@ pub enum ModelError {
     /// HUP-S0.3: a resume (`Range` from a non-zero offset) got a full `200` body instead of
     /// `206 Partial Content`. Refused up front, before any byte is appended to the `.part`.
     RangeIgnored,
+    /// HUP-S0.3b: a Hugging Face origin answered `401`/`403`: the repo is gated or private and
+    /// needs a token with access. Final (not retried); the message says where to add the token.
+    Gated { token_sent: bool },
 }
 
 impl std::fmt::Display for ModelError {
@@ -232,6 +235,13 @@ impl std::fmt::Display for ModelError {
                     "the model server ignored the resume range (expected 206 Partial Content)"
                 )
             }
+            ModelError::Gated { token_sent } => write!(
+                f,
+                "{}",
+                crate::hf_auth::FetchError::Gated {
+                    token_sent: *token_sent
+                }
+            ),
             ModelError::BadMagic => write!(f, "model download is not a GGUF file (bad magic)"),
             ModelError::ShortStream { got, want } => {
                 write!(f, "model download ended short: {got} of {want} bytes")
@@ -402,13 +412,56 @@ impl Drop for DownloadGuard {
 
 /// Production transport: blocking `ureq` (rustls TLS), the same client ai.rs and
 /// rpc.rs use — no new heavy dep. Range requests power the resume.
+///
+/// HUP-S0.3b: redirects are followed hop by hop by [`crate::hf_auth::fetch`], which attaches the
+/// member's Hugging Face token (when one is set via [`Self::with_hf_token`]) ONLY to hops whose
+/// origin is exactly `https://huggingface.co` / `https://hf.co`; the CDN hop a resolve redirects
+/// to never carries it. Without a token no `Authorization` header is ever sent.
 pub struct UreqModelTransport {
     url: String,
+    token: Option<crate::hf_auth::HfToken>,
+    scope: crate::hf_auth::AuthScope,
 }
 
 impl UreqModelTransport {
     pub fn new(url: impl Into<String>) -> Self {
-        UreqModelTransport { url: url.into() }
+        UreqModelTransport {
+            url: url.into(),
+            token: None,
+            scope: crate::hf_auth::AuthScope::huggingface(),
+        }
+    }
+
+    /// HUP-S0.3b: the member's Hugging Face token for gated/private repos (builder).
+    pub fn with_hf_token(mut self, token: Option<crate::hf_auth::HfToken>) -> Self {
+        self.token = token;
+        self
+    }
+
+    /// Point the token scope at loopback test servers (tests only; production is always
+    /// [`crate::hf_auth::AuthScope::huggingface`]).
+    #[cfg(test)]
+    pub fn with_auth_scope(mut self, scope: crate::hf_auth::AuthScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    fn fetch(
+        &self,
+        range: &str,
+        timeouts: crate::hf_auth::Timeouts,
+    ) -> Result<ureq::http::Response<ureq::Body>> {
+        crate::hf_auth::fetch(
+            &self.url,
+            Some(range),
+            &self.scope,
+            self.token.as_ref(),
+            &timeouts,
+        )
+        .map_err(|e| match e {
+            crate::hf_auth::FetchError::Gated { token_sent } => ModelError::Gated { token_sent },
+            other => ModelError::Transport(other.to_string()),
+        })
     }
 }
 
@@ -422,13 +475,13 @@ impl ModelTransport for UreqModelTransport {
         // but never answers hangs the whole download FOREVER — the reported "downloads time out /
         // never finish, logged as unfinished". This is a header-only probe, so a short global cap
         // is safe and turns a hang into an honest, retryable error (Rule 1).
-        let resp = ureq::get(&self.url)
-            .config()
-            .timeout_global(Some(std::time::Duration::from_secs(45)))
-            .build()
-            .header("Range", "bytes=0-0")
-            .call()
-            .map_err(|e| ModelError::Transport(e.to_string()))?;
+        let resp = self.fetch(
+            "bytes=0-0",
+            crate::hf_auth::Timeouts {
+                global: Some(std::time::Duration::from_secs(45)),
+                ..Default::default()
+            },
+        )?;
         if let Some(cr) = resp
             .headers()
             .get("content-range")
@@ -460,14 +513,14 @@ impl ModelTransport for UreqModelTransport {
         // slow link can legitimately take many minutes, so a global/body cap would kill a healthy
         // download; but a Xet CDN that stalls before sending headers (the observed hang) must fail
         // fast into a retryable error instead of blocking the download thread forever.
-        let resp = ureq::get(&self.url)
-            .config()
-            .timeout_connect(Some(std::time::Duration::from_secs(30)))
-            .timeout_recv_response(Some(std::time::Duration::from_secs(90)))
-            .build()
-            .header("Range", &range)
-            .call()
-            .map_err(|e| ModelError::Transport(e.to_string()))?;
+        let resp = self.fetch(
+            &range,
+            crate::hf_auth::Timeouts {
+                connect: Some(std::time::Duration::from_secs(30)),
+                recv_response: Some(std::time::Duration::from_secs(90)),
+                global: None,
+            },
+        )?;
         Ok(Box::new(resp.into_body().into_reader()))
     }
 
@@ -475,14 +528,14 @@ impl ModelTransport for UreqModelTransport {
         let range = format!("bytes={start}-{}", end.saturating_sub(1));
         // HUP-S0.3: the whole segment (connect + headers + body) is bounded, so a dead connection
         // mid-body fails this segment and the loop resumes from the exact byte written.
-        let resp = ureq::get(&self.url)
-            .config()
-            .timeout_connect(Some(std::time::Duration::from_secs(30)))
-            .timeout_global(Some(SEGMENT_TIMEOUT))
-            .build()
-            .header("Range", &range)
-            .call()
-            .map_err(|e| ModelError::Transport(e.to_string()))?;
+        let resp = self.fetch(
+            &range,
+            crate::hf_auth::Timeouts {
+                connect: Some(std::time::Duration::from_secs(30)),
+                recv_response: None,
+                global: Some(SEGMENT_TIMEOUT),
+            },
+        )?;
         check_range_status(start, resp.status().as_u16())?;
         Ok(Box::new(resp.into_body().into_reader()))
     }

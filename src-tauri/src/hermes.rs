@@ -1475,12 +1475,14 @@ fn session_tool_annotations(
 /// untrusted content) resolves only through the member's explicit Approve/Decline click, with no
 /// automatic or budget route (pinned by `src/shell/hicApproval.test.ts`). Any future budget path
 /// (HUP-S2.3) must keep refusing hic-required calls, or this flag must come off.
+/// `context_tokens` is the running llama-server's planned `--ctx-size` (HUP-S1.6).
 pub fn build_session_body(
     system_prompt: &str,
     tools_json: &str,
     base_url: &str,
     bearer: &str,
     model: &str,
+    context_tokens: u32,
 ) -> std::result::Result<String, String> {
     let raw: serde_json::Value =
         serde_json::from_str(tools_json).map_err(|_| "tools must be a JSON array".to_string())?;
@@ -1528,7 +1530,10 @@ pub fn build_session_body(
         // HUP-S1.2: the sidecar offers only the relevant tools per request and keeps every prompt
         // inside the local model's real context window (llama-server --ctx-size).
         "maxToolsPerRequest": 8,
-        "contextTokens": crate::serve::DEFAULT_CTX_SIZE,
+        "contextTokens": context_tokens,
+        // HUP-S1.6: the same per-turn reply cap as direct chat, never more than a quarter of the
+        // window so a small window still leaves room for the prompt.
+        "maxTokens": crate::ai::AI_MAX_TOKENS.min(context_tokens / 4),
         "hicAware": true,
     })
     .to_string())
@@ -1557,6 +1562,7 @@ pub async fn hermes_session_open(
             &serve.0.base_url(),
             key.as_str(),
             &serve.0.current_model_file(),
+            serve.0.ctx_size(),
         )?;
         manager(&app)?
             .session_open(&body)

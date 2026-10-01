@@ -137,6 +137,11 @@ interprocess = "2"
 libc = "0.2"
 
 [dev-dependencies]
+# HUP-S5.4 test-only: resolve the app's ACL (permissions/main-window.toml + capabilities/*.json)
+# with Tauri's own resolver, to prove pop-out windows get no app command. Same versions tauri
+# already pulls in (no new crates).
+tauri-utils = "2"
+toml = "0.9"
 # Test-only mock OIDC authority: p256 signs the id_token with a TEST key and
 #   serves its public coords as JWKS, so the full flow is exercised headlessly.
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
