@@ -31,6 +31,7 @@ mod addresses;
 mod agent;
 mod ai;
 mod blocking;
+mod capsule_pins;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
