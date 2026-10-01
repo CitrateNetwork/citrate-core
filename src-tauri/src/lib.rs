@@ -29,6 +29,7 @@ pub use citrate_core_kit::{
 mod activity;
 mod addresses;
 mod agent;
+mod agent_sbt;
 mod ai;
 mod blocking;
 mod connections;
@@ -635,6 +636,10 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S7.4 — Hermes identity: AgentSBT status read + the onboarding mint (a pending
+            // SignatureCeremony; signs nothing here).
+            agent_sbt::agent_sbt_status,
+            agent_sbt::agent_sbt_mint,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable
