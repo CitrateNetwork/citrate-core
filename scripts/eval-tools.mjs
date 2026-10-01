@@ -66,7 +66,7 @@ async function main() {
   if (args.apiKeyEnv) {
     apiKey = process.env[args.apiKeyEnv];
     if (!apiKey) {
-      console.error(`--api-key-env ${args.apiKeyEnv} is set but that env var is empty`);
+      console.error("--api-key-env names an environment variable that is empty or unset");
       process.exit(2);
     }
   }
