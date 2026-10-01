@@ -75,7 +75,8 @@ This ADR does not move that boundary.
 ### D1. The closed list
 
 Exactly **two** signature kinds may be **budgetable**, meaning auto-approved inside a budget
-the member granted through an HIC-1 ceremony:
+the member granted through an HIC-1 ceremony. In the planset's tier vocabulary, a
+signature auto-approved inside such a budget is HIC-2; granting the budget is HIC-1:
 
 | # | Kind | Wire form | Signed by | Budget object |
 |---|---|---|---|---|
@@ -168,7 +169,9 @@ unusual sign-in still works with a click.
     same allowlisted origin does **not** taint a sign-in to that origin, because the
     checks above are deterministic and do not depend on what the model concluded. The
     reviewer may reject that exemption, in which case SIWE budgets only apply to
-    member-initiated navigation.
+    member-initiated navigation. **Until O-3 is answered in the sign-off block, the strict
+    rule of red-team correction 3 applies with no exemption**, because that correction
+    supersedes the planset text and this ADR may not relax it on its own.
 20. **Budget live.** The `WebSigningBudget` for this origin exists, is not revoked, is not
     expired, and has count remaining (D4).
 21. **Rate.** At most one auto-approved SIWE per origin per 30 s and 20 per origin per
@@ -269,7 +272,9 @@ has no read or write access to this file.
 
 **Revocation.** Revocation is **immediate**. `budget_revoke(id)` and `budget_revoke_all()`
 are async Tauri commands (via `crate::blocking::off_main`). They set `revoked_at` under the
-**same lock** that every auto-approval takes, and they persist a tombstone before
+**same budget lock** that every auto-approval takes (a dedicated lock held across the whole
+check, reserve, record and sign sequence; not the pending-map lock, which `approve`
+releases before signing), and they persist a tombstone before
 returning. The point at which a revocation takes effect is acquisition of that lock. An
 auto-approval that has not acquired the lock when the revoke commits cannot sign. All
 budgets are also voided when:
@@ -310,11 +315,18 @@ prove which signatures were auto-approved and under which budget.
   forwarder request), or a small gas float that the member tops up only through an HIC-1
   transfer, with a balance ceiling that core refuses to exceed.
 - **Single-purpose signer.** The anchor signer encodes exactly one call:
-  `AnchorRegistry.anchor(root, …)` on the pinned registry address and chain 40204. It
+  `AnchorRegistry.anchor(AnchorKind.NightlyMerkle, root)` on the pinned registry address
+  and chain 40204. It
   refuses any other destination, selector, value above zero, SIWE, x402 or typed data.
   The restriction is in the signer's code, not in configuration.
 - **Binding to the member.** One HIC-1 ceremony, signed by the wallet key, registers the
-  anchor key as the member's anchor delegate. Rotating or revoking that delegate is also
+  anchor key as the member's anchor delegate. *Contract dependency:* the deployed
+  `AnchorRegistry` (citrate-chain `contracts/src/cit_agent/AnchorRegistry.sol`) records
+  `committer = msg.sender` and has no delegate registry and no EIP-2771 trusted-forwarder
+  support. The delegate binding therefore needs new on-chain work (a delegate registry or
+  an off-chain signed binding that verifiers check), and the relayer route proposed in O-5
+  would record the forwarder, not the anchor key, as committer unless the contract is
+  extended. S7.3 cannot start until this is decided. Rotating or revoking that delegate is also
   HIC-1. A compromised anchor key can at worst post wrong roots under the member's
   delegate, and those roots are detectable against the local hash chain. It cannot move
   funds or sign in anywhere.
@@ -371,7 +383,7 @@ All budget logic lives in `kit/src/ceremony.rs` next to the gated signers, so th
 | Cap, count or rate exhausted | HIC-1, with "budget exhausted" shown on the card |
 | Wall clock jumps backwards by more than 5 min, or disagrees with the monotonic clock | Budgets suspended (HIC-1) until the clock is consistent |
 | Decision-record write fails | No signature (write-ahead) |
-| Crash after reservation, before signing | The reservation stays counted (over-count is safe), and the record is marked `not_signed` on recovery |
+| Crash after reservation, before signing | The reservation stays counted (over-count is safe). On recovery the record is marked `outcome_unknown`, not `not_signed`: a write-ahead record alone cannot tell this case from a crash just after signing, so the audit trail must not assert that no signature exists |
 | Crash after signing, before returning | The record exists. The signature may be lost to the caller, which is acceptable. The cap stays charged. |
 | Two concurrent requests against one budget | Serialized on the ceremony lock. Neither can exceed caps. |
 | Revoke races an auto-sign | Linearized on the lock. After the revoke commits, no auto-sign for that budget. |
@@ -467,7 +479,7 @@ Small-bound config: 2 origins, 2 recipients, 1 asset, `max_count = 2`, window = 
 | O-2 | Default cap values | The table in D3, plus a SIWE default of `max_count = 50` and `expires_at ≤ 30 days`. Final values come from the "default budget values" WP. |
 | O-3 | Does content from the same allowlisted origin taint a SIWE sign-in to it? | No (exemption). The reviewer may strike it. |
 | O-4 | Is the budget grant an approval-card decision (no signature) or a wallet signature over the terms? | Approval-card decision plus a decision record |
-| O-5 | How is anchor gas paid? | The EIP-2771 relayer. Fallback: a capped gas float topped up via HIC-1. |
+| O-5 | How is anchor gas paid? | The EIP-2771 relayer, which requires an `AnchorRegistry` change (see D5). Fallback, which works with the contract as deployed: a capped gas float topped up via HIC-1. |
 
 ## Sign-off
 
