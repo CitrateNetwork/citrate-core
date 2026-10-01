@@ -281,6 +281,9 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S5.2/S5.3: extra child environment from the member's web opt-ins, computed at each
+    /// start. Only keys on `hermes_web::SIDECAR_ENV_KEYS` pass. `None` = nothing extra.
+    env_source: Option<crate::hermes_web::EnvSource>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -312,6 +315,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            env_source: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -328,6 +332,12 @@ impl HermesManager {
     /// catalog. Absent → the env is not set (unchanged default behavior).
     pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
         self.capsules_dir = Some(dir);
+        self
+    }
+
+    /// HUP-S5.2/S5.3: add the member's web opt-ins to the child environment at each start.
+    pub fn with_env_source(mut self, src: crate::hermes_web::EnvSource) -> Self {
+        self.env_source = Some(src);
         self
     }
 
@@ -399,6 +409,13 @@ impl HermesManager {
                 HERMES_CAPSULES_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
             ));
+        }
+        if let Some(src) = &self.env_source {
+            spec.env.extend(
+                src()
+                    .into_iter()
+                    .filter(|(k, _)| crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())),
+            );
         }
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
@@ -954,36 +971,22 @@ fn http_health_ok(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Seed the per-session capsule dir from the bundled starter capsules (first run only). Each bundled
-/// skill dir is copied into `dest` ONLY if a skill of that name is absent — a user's own capsules are
-/// never clobbered. Best-effort: a missing bundled dir or a copy error is skipped, never fatal — the
-/// agent still starts, honestly reporting however many skills it actually has (Rule 1). Returns the
-/// number of skill dirs present in `dest` afterwards (0 is a legitimate, honest outcome).
+/// Seed the per-session capsule dir from the bundled starter capsules. HUP-S2.5: only a capsule whose
+/// `.cps` matches the digest pinned in this build is installed (`capsule_pins`), a seeded copy that no
+/// longer matches is replaced by the verified one, and the member's own capsules are never touched. The
+/// sidecar then verifies each `.cps` signature and content hash again at load. Best-effort: a refused
+/// or failed copy is logged with the reason, never fatal; the agent still starts, honestly reporting
+/// however many skills it actually has (Rule 1). Returns the number of skill dirs present in `dest`
+/// afterwards (0 is a legitimate, honest outcome).
 fn seed_starter_capsules(bundled: &Path, dest: &Path) -> usize {
-    let _ = std::fs::create_dir_all(dest);
-    if let Ok(entries) = std::fs::read_dir(bundled) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let target = dest.join(entry.file_name());
-            if target.exists() {
-                continue; // never overwrite an existing (possibly user-added) skill
-            }
-            if std::fs::create_dir_all(&target).is_ok() {
-                if let Ok(files) = std::fs::read_dir(entry.path()) {
-                    for f in files.flatten() {
-                        if f.path().is_file() {
-                            let _ = std::fs::copy(f.path(), target.join(f.file_name()));
-                        }
-                    }
-                }
-            }
-        }
+    let report = crate::capsule_pins::seed_verified(bundled, dest);
+    for (name, why) in &report.refused {
+        eprintln!("[hermes] starter capsule {name} not installed: {why}");
     }
-    std::fs::read_dir(dest)
-        .map(|e| e.flatten().filter(|x| x.path().is_dir()).count())
-        .unwrap_or(0)
+    for name in &report.repaired {
+        eprintln!("[hermes] starter capsule {name} did not match its pin; replaced with the verified copy");
+    }
+    report.present
 }
 
 /// Resolve the bundled `hermes` binary (env override → resource dir), honest error if absent.
@@ -1071,7 +1074,9 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_capsules_dir(capsules_dir)
+        .with_env_source(crate::hermes_web::file_env_source(base.clone()));
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
