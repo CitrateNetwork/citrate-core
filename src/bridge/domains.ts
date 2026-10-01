@@ -890,6 +890,60 @@ export interface AgentHarnessDomain {
   /** Hand back a core-hosted tool's result after core's own gates ran it. */
   sessionToolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   sessionStop(id: string): Promise<void>;
+  /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
+   *  gates). Rejects when the sidecar isn't running. */
+  tracks(): Promise<InterviewTrack[]>;
+  /** HUP-S1.4 — answers → brief. Unanswered questions take their defaults (empty answers = "just use
+   *  defaults"); no `track` lets the sidecar suggest one from the goal. A refusal (no track fits, an
+   *  answer outside its choices) rejects with a message starting `BRIEF_REFUSED: `. Builds nothing. */
+  briefCreate(track: string | null, goal: string, answers: Record<string, string>): Promise<BriefDraft>;
+  /** HUP-S1.4 — validate a member-edited brief against its track (required gates and the workflow
+   *  can't be edited away). A refusal rejects with `BRIEF_REFUSED: <reason>`. */
+  briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
+}
+
+// HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types
+// verbatim (snake_case), so a brief round-trips webview → core → sidecar unchanged.
+export interface InterviewQuestion {
+  id: string;
+  ask: string;
+  /** Empty = free text; otherwise the answer must be one of these. */
+  choices: string[];
+  default: string;
+}
+export interface InterviewTrack {
+  id: string;
+  title: string;
+  summary: string;
+  persona: string;
+  skills: string[];
+  workflow: string;
+  /** False until the workflow ships; the UI says so (Rule 1). */
+  workflow_available: boolean;
+  ships_in?: string | null;
+  gates: string[];
+  questions: InterviewQuestion[];
+}
+export interface BriefConstraint {
+  id: string;
+  ask: string;
+  answer: string;
+  from_default: boolean;
+}
+export interface Brief {
+  track: string;
+  goal: string;
+  constraints: BriefConstraint[];
+  persona: string;
+  skills: string[];
+  workflow: string;
+  workflow_available: boolean;
+  ships_in?: string | null;
+  gates: string[];
+}
+export interface BriefDraft {
+  brief: Brief;
+  markdown: string;
 }
 
 /** HUP-S1.1c — one page of a sidecar session's event log. */

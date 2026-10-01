@@ -36,7 +36,7 @@ import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter
 import { formatJournalForAgent } from "../agent/journalRead";
 import { fenceUntrusted } from "../agent/untrusted";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
-import type { GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -1921,6 +1921,22 @@ export class Store {
   }
 
   // ---------- chat ----------
+  /** HUP-S1.4 — keep a brief the sidecar accepted: a card in the thread + persisted state. This
+   *  starts nothing (no turn, no workflow); building from a brief arrives with the workflows. */
+  acceptBrief(brief: Brief, markdown: string): void {
+    const msg: ChatMsg = {
+      id: "m" + ++this.mid,
+      who: "Brief",
+      text: markdown,
+      chips: [{ label: brief.workflow_available ? "brief saved · nothing built yet" : "brief saved · nothing is built until the workflow ships", status: "approved" }],
+      streaming: false,
+      brief,
+    };
+    this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([msg]), hermesBrief: { brief, markdown, acceptedAt: Date.now() } }));
+    this.save();
+    this.scrollChat();
+  }
+
   /** HUP-S0.7 — retry a failed turn: drop the failed reply and its user message, then resend. */
   async retryChat(failedId: string): Promise<void> {
     const msgs = this.state.chatMsgs;
