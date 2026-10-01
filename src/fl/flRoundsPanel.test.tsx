@@ -198,4 +198,10 @@ describe("FlRoundsPanel — web preview", () => {
     const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
     expect(q(host, "fl-error")!.textContent).toContain("need the desktop app");
   });
+  it("says the eval --model must be the served base model's file name (load compares it)", async () => {
+    // Review fix: the gate records the scorecards' model as the adapter's base and load refuses unless
+    // it matches the served GGUF file name, so a short alias passed as --model would make every load fail.
+    const { host } = await mount(<FlRoundsPanel fl={domain()} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(host.textContent).toContain("--model set to the base model's file name");
+  });
 });

@@ -229,7 +229,7 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
           <span className="mono" style={label}>Round adapter and the eval gate</span>
           <p style={para}>
             Downloading a round's adapter from LoRAFactory is not deployed yet. Give the adapter file and its published sha256, plus the eval scorecards for the base model and for the
-            base model with this adapter (scripts/eval-tools.mjs, optionally scripts/eval-qa.mjs, with --adapter-sha256). The adapter loads only if nothing got worse and the score improved.
+            base model with this adapter (scripts/eval-tools.mjs, optionally scripts/eval-qa.mjs, with --model set to the base model's file name and --adapter-sha256). The adapter loads only if nothing got worse and the score improved.
           </p>
           {field("adapter", "fl-gate-adapter", "adapter .gguf path")}
           {field("sha", "fl-gate-sha", "expected sha256")}
