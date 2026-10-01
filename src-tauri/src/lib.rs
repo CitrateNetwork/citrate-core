@@ -49,6 +49,7 @@ mod provisioning;
 mod sbt_art;
 mod seam;
 mod serve;
+mod serve_plan;
 mod shell;
 mod skill_registry;
 mod skills_local;

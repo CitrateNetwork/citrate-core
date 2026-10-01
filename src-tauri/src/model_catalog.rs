@@ -607,9 +607,12 @@ pub fn model_catalog_select_sync(
             "model '{file}' is not downloaded and verified yet — download it first"
         ));
     }
+    // HUP-S1.6: size the context + GPU offload for the effective tier and the TARGET model.
+    let path = models_dir.join(&file);
+    let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(&app, &path));
     serve
         .0
-        .select_model(models_dir.join(&file), true)
+        .select_model_planned(path, true, plan)
         .map_err(|e| e.to_string())
 }
 
