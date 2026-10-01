@@ -167,7 +167,10 @@ function isObj(x: unknown): x is Record<string, unknown> {
 /** Validate the dataset shape. Throws with a readable reason on the first defect. */
 export function parseQaDataset(raw: unknown): QaDataset {
   if (!isObj(raw)) fail("not an object");
-  if (typeof raw.version !== "string" || !/^qa-v\d+$/.test(raw.version)) fail("version must look like qa-vN");
+  // HUP-S7.7: a named pack (`qa-<pack>-vN`, e.g. qa-literacy-v1) is a separate set, not a revision of qa-v1.
+  if (typeof raw.version !== "string" || !/^qa(-[a-z0-9]+)*-v\d+$/.test(raw.version)) {
+    fail("version must look like qa-vN or qa-<pack>-vN");
+  }
   const p = raw.provenance;
   if (!isObj(p)) fail("missing provenance");
   for (const k of ["author", "created", "purpose"]) {

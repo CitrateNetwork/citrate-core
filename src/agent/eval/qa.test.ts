@@ -324,7 +324,8 @@ describe.skipIf(!live)("qa-v1 live provenance against the pinned source commits"
         expect(extractAnchors(show(source, path))).toEqual(f.anchors);
       }
     }
-  });
+    // 44 `git show` + `git rev-parse` pairs: past the 5 s default under a full parallel run.
+  }, 60_000);
   it("every key point of every answerable item appears in the text of the section(s) it cites", () => {
     const problems: string[] = [];
     for (const it of ds.items.filter((i) => i.answerable)) {
@@ -333,5 +334,5 @@ describe.skipIf(!live)("qa-v1 live provenance against the pinned source commits"
       if (missing.length) problems.push(`${it.id}: ${missing.map((k) => k.join("|")).join("; ")}`);
     }
     expect(problems).toEqual([]);
-  });
+  }, 60_000);
 });
