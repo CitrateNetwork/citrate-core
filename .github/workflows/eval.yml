@@ -1,0 +1,133 @@
+# created: 2026-10-01 | branch: hup/n3-release-gates
+# author: Larry Klosowski + Claude Opus 5.5
+# status: active
+#
+# HUP-S11.2: the deterministic agent eval suites, run on demand against a model endpoint.
+#
+# MANUAL ONLY. There is no push, pull_request or schedule trigger: this workflow costs
+# nothing unless someone presses "Run workflow" (Actions tab, or
+# `gh workflow run eval.yml -f model=<name> [-f base_url=<url>] [-f tier=T1] [-f suites=all]`).
+# A run can take a long time (up to 180 s per request, ~80 tool-call items plus the QA set).
+#
+# What it does: runs scripts/eval-tools.mjs (tool-call + injection, HUP-S1.7/S1.10) and
+# scripts/eval-qa.mjs (Citrate QA, HUP-S3.5) against an OpenAI-compatible /chat/completions
+# endpoint, renders SCORECARD.md with scripts/eval-scorecard.mjs, writes it to the job summary
+# and uploads the JSON scorecards + SCORECARD.md as the `eval-scorecard-<run id>` artifact.
+# Scoring is deterministic (no model-as-judge). A transport error aborts that suite and writes
+# no scorecard for it (Rule 1).
+#
+# Endpoint: the `base_url` input, or the repo secret EVAL_BASE_URL when the input is blank.
+# Optional repo secret EVAL_API_KEY is passed to the CLIs by env var NAME, never on argv.
+# The endpoint must be reachable from a GitHub-hosted runner. A run sends the Hermes system
+# prompt, every tool schema and per-case canary strings to that endpoint (--allow-remote).
+
+name: eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model name sent in the request (as the endpoint knows it)"
+        required: true
+        type: string
+      base_url:
+        description: "OpenAI-compatible base URL ending in /v1. Blank = repo secret EVAL_BASE_URL"
+        required: false
+        type: string
+        default: ""
+      tier:
+        description: "Sizeup tier label for the scorecard"
+        required: false
+        type: choice
+        options: [none, T0, T1, T2]
+        default: none
+      suites:
+        description: "Which suites to run"
+        required: false
+        type: choice
+        options: [all, tools, qa]
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    name: eval (${{ inputs.model }}, ${{ inputs.suites }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      EVAL_MODEL: ${{ inputs.model }}
+      EVAL_TIER: ${{ inputs.tier }}
+      EVAL_OUT: eval-ci-out
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Node >= 22.18 strips TypeScript types natively; the eval CLIs import the .ts runners
+      # directly and need no npm install.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Resolve endpoint
+        env:
+          INPUT_BASE_URL: ${{ inputs.base_url }}
+          SECRET_BASE_URL: ${{ secrets.EVAL_BASE_URL }}
+        run: |
+          url="${INPUT_BASE_URL:-$SECRET_BASE_URL}"
+          if [ -z "$url" ]; then
+            echo "::error::no endpoint: set the base_url input or the EVAL_BASE_URL repo secret"
+            exit 2
+          fi
+          if ! printf '%s' "$url" | grep -Eq '^https?://[^[:space:]]+$'; then
+            echo "::error::base URL must be a single http(s) URL"
+            exit 2
+          fi
+          echo "EVAL_BASE_URL=$url" >> "$GITHUB_ENV"
+          mkdir -p "$EVAL_OUT"
+
+      - name: Tool-call + injection eval
+        if: ${{ inputs.suites == 'all' || inputs.suites == 'tools' }}
+        env:
+          EVAL_API_KEY: ${{ secrets.EVAL_API_KEY }}
+        run: |
+          args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --allow-remote)
+          if [ "$EVAL_TIER" != "none" ]; then args+=(--tier "$EVAL_TIER"); fi
+          if [ -n "$EVAL_API_KEY" ]; then args+=(--api-key-env EVAL_API_KEY); fi
+          node scripts/eval-tools.mjs "${args[@]}"
+
+      - name: Citrate QA eval
+        if: ${{ !cancelled() && (inputs.suites == 'all' || inputs.suites == 'qa') }}
+        env:
+          EVAL_API_KEY: ${{ secrets.EVAL_API_KEY }}
+        run: |
+          [ -n "${EVAL_BASE_URL:-}" ] || { echo "::error::endpoint not resolved"; exit 2; }
+          args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --allow-remote)
+          if [ "$EVAL_TIER" != "none" ]; then args+=(--tier "$EVAL_TIER"); fi
+          if [ -n "$EVAL_API_KEY" ]; then args+=(--api-key-env EVAL_API_KEY); fi
+          node scripts/eval-qa.mjs "${args[@]}"
+
+      - name: Render SCORECARD.md
+        if: ${{ !cancelled() }}
+        run: |
+          if ls "$EVAL_OUT"/*.json >/dev/null 2>&1; then
+            node scripts/eval-scorecard.mjs --in "$EVAL_OUT" --out "$EVAL_OUT/SCORECARD.md" --branch "$GITHUB_REF_NAME"
+            cat "$EVAL_OUT/SCORECARD.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No scorecard was written (every suite that ran aborted). See the step logs." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload scorecard
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: eval-scorecard-${{ github.run_id }}
+          path: eval-ci-out/
+          if-no-files-found: warn
+          retention-days: 30
