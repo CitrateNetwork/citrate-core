@@ -12,7 +12,11 @@ import { createRoot } from "react-dom/client";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const enterpriseLeadMock = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+// vi.hoisted: the mock factory can run while Onboarding's imports load (it now imports the tier
+// slice, which imports the bridge), so the mock fn must exist before any module code runs.
+const { enterpriseLeadMock } = vi.hoisted(() => ({
+  enterpriseLeadMock: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+}));
 vi.mock("../bridge", () => ({
   bridge: { membership: { enterpriseLead: enterpriseLeadMock } },
   BRIDGE_MODE: "sim",

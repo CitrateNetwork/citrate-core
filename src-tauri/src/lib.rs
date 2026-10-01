@@ -53,6 +53,7 @@ mod skill_registry;
 mod skills_local;
 mod staking;
 mod telemetry;
+mod tier;
 mod transfer;
 mod validator;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
@@ -444,6 +445,9 @@ pub fn run() {
             model_catalog::model_catalog_search,
             model_catalog::model_catalog_download,
             model_catalog::model_catalog_select,
+            // HUP-S1.6 — hardware tier recommendation + persisted override (local only).
+            tier::tier_recommend,
+            tier::tier_set_override,
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
