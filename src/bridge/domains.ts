@@ -11,6 +11,7 @@
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
+import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
 import type {
   AppConfig,
   KeyringStatus,
@@ -373,6 +374,40 @@ export interface SeedReport {
   /** "not-semantic" | "not-running" | "already-seeded" when nothing was authored. */
   skipped?: string;
 }
+/** HUP-S3.1 — one progress line from the first-run knowledge-corpus import (mirrors the Rust
+ *  `ImportLine`; the importer's JSON-lines contract lives in citrate-memories `mem_corpus::progress`). */
+export type KnowledgeImportLine =
+  | { event: "verified"; bundle_digest: string; tenants: number; nodes: number; edges: number }
+  | { event: "tenant_start"; tenant: string; nodes: number; edges: number }
+  | { event: "progress"; tenant: string; done: number; total: number }
+  | { event: "tenant_skipped"; tenant: string; reason: string }
+  | { event: "tenant_done"; tenant: string }
+  | {
+      event: "done";
+      bundle_digest: string;
+      embed_model: string;
+      nodes_added: number;
+      nodes_merged: number;
+      edges_added: number;
+      tenants_imported: string[];
+      tenants_skipped: string[];
+    }
+  | { event: "error"; stage: string; message: string };
+
+/** HUP-S3.1 — what the first-run knowledge import did. Counts come only from the importer. */
+export interface KnowledgeImportReport {
+  state: "imported" | "skipped" | "failed";
+  /** "no-bundle" | "not-semantic" | "already-imported" | "in-progress" when nothing ran. */
+  skipped?: string | null;
+  error?: string | null;
+  bundleDigest?: string | null;
+  embedModel?: string | null;
+  nodesAdded: number;
+  edgesAdded: number;
+  tenantsImported: string[];
+  tenantsSkipped: string[];
+}
+
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
@@ -388,6 +423,10 @@ export interface MemoryDomain {
   ingestDocs(): Promise<DocsIngestReport>;
   /** Seed the constellation tenants with real network/node/stake facts on daemon-connect. */
   seedContext(facts: SeedFacts): Promise<SeedReport>;
+  /** HUP-S3.1 — import the bundled knowledge corpus into the local store (first run; idempotent,
+   *  verified against its manifest in Rust). Must run while the daemon is stopped; Rust stops and
+   *  restarts a running daemon itself. `onProgress` receives each importer line. */
+  importKnowledge(onProgress?: (line: KnowledgeImportLine) => void): Promise<KnowledgeImportReport>;
 }
 
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
@@ -783,6 +822,39 @@ export interface GroupsDomain {
 export interface ClusterPeer {
   address: string;
   online: boolean;
+  /** HUP-S8.1: set when this peer is a linked device; the member it acts for. */
+  member?: string;
+}
+/** HUP-S8.1: one linked device under a member, as the cluster daemon admits it. */
+export interface ClusterDevice {
+  device: string;
+  index: number;
+  label: string;
+  issuedAt: number;
+  online: boolean;
+}
+/** HUP-S8.1: a cluster member with its linked devices. */
+export interface ClusterMemberDevices {
+  member: string;
+  role: string;
+  online: boolean;
+  devices: ClusterDevice[];
+}
+/** HUP-S8.1: a DeviceLink this machine knows (no signatures cross the bridge). */
+export interface DeviceLinkView {
+  device: string;
+  member: string;
+  wallet: string;
+  index: number;
+  label: string;
+  issuedAt: number;
+  thisDevice: boolean;
+}
+/** HUP-S8.1: this machine's device address (null before its key exists) + known links. */
+export interface DeviceLinks {
+  thisDevice: string | null;
+  links: DeviceLinkView[];
+  revoked: string[];
 }
 export interface ClusterStatus {
   groupId: string;
@@ -797,6 +869,22 @@ export interface ClusterDomain {
   /** Co-pin a CID across the Group roster. */
   shareFile(groupId: string, cid: string): Promise<void>;
   leave(groupId: string): Promise<void>;
+  /** HUP-S8.1: the group's members with their linked devices (live). */
+  devices(groupId: string): Promise<ClusterMemberDevices[]>;
+  /** HUP-S8.1: this machine's device key address + the links it knows. Never mints a key. */
+  myDevices(): Promise<DeviceLinks>;
+  /** HUP-S8.1: open the wallet ceremony that links THIS machine. Signs nothing. */
+  linkDeviceRequest(label: string): Promise<CeremonyView>;
+  /** HUP-S8.1: the person approved; complete + store the link. */
+  linkDeviceApprove(id: string, rawAck: boolean): Promise<DeviceLinks>;
+  /** HUP-S8.1: the person declined; nothing was signed. */
+  linkDeviceReject(id: string): Promise<void>;
+  /** HUP-S8.1: revoke a device of yours (permanent for that device key). */
+  revokeDevice(device: string): Promise<DeviceLinks>;
+  /** HUP-S8.1: this machine's signed link as a code to paste on another of YOUR devices. */
+  exportDeviceLink(): Promise<string>;
+  /** HUP-S8.1: add another of your own devices from its code (verified before it is stored). */
+  importDeviceLink(code: string): Promise<DeviceLinks>;
 }
 
 // ── C-21 train-together: group federated training (lane s5) ──
@@ -901,6 +989,28 @@ export interface AgentHarnessDomain {
   /** HUP-S1.4 — validate a member-edited brief against its track (required gates and the workflow
    *  can't be edited away). A refusal rejects with `BRIEF_REFUSED: <reason>`. */
   briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
+  /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
+  workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
+  /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */
+  workflowStatus(sessionId: string, runId: string): Promise<WorkflowRunView>;
+  /** HUP-S3.4 — whether learning is on in the sidecar, and whether publishing is. */
+  learnStatus(): Promise<LearnStatus>;
+  /** HUP-S3.4 — proposals waiting for the member (`all`: every kept one). */
+  learnProposals(all?: boolean): Promise<LearnProposal[]>;
+  /** HUP-S3.4 — propose a skill or memory from a VERIFIED run of that session. */
+  learnPropose(sessionId: string, runId: string, content: LearnContent): Promise<LearnProposal>;
+  /** HUP-S3.4 — accept (HIC-1, recorded first). `acknowledged` names the conflicts accepted anyway.
+   *  A refusal rejects with a message starting `LEARN_REFUSED: `. */
+  learnAccept(id: string, acknowledged: string[]): Promise<LearnAcceptResult>;
+  /** HUP-S3.4 — reject (recorded, final). */
+  learnReject(id: string, reason: string): Promise<void>;
+  /** HUP-S3.4 — the learned-memory ledger, with each memory's place in the memory graph. */
+  learnMemories(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — store learned memories that are still waiting for the memory store. */
+  learnStorePending(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
+   *  `PUBLISH_DISABLED: ` while publishing is off. */
+  learnPublish(id: string, version: string): Promise<void>;
 }
 
 // HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types
@@ -1340,6 +1450,56 @@ export interface EscalationDomain {
   registryStatus(): Promise<EscalationRegistryStatus>;
 }
 
+// ---- HUP-S5.5 / S6.1 — signed first-run components. Mirrors Rust `components.rs`. ----
+
+export interface ComponentsInstalled {
+  name: string;
+  version: string;
+  previous: string | null;
+  installedAt: number;
+}
+
+export interface ComponentsBundleTool {
+  name: string;
+  version: string;
+  license: string;
+  /** Platforms with a measured hash. */
+  measuredPlatforms: string[];
+  /** This machine's entry: measured | to_be_measured | to_be_built | upstream_unavailable | none. */
+  thisPlatform: string;
+}
+
+export interface ComponentsStatus {
+  /** false until the component signing key is set at the key ceremony; updates refuse until then. */
+  keyConfigured: boolean;
+  keyFingerprint: string | null;
+  keyNote: string;
+  platform: string | null;
+  freshness: "never_checked" | "fresh" | "stale" | "expired";
+  manifestAgeSecs: number | null;
+  browserMayOpenWeb: boolean;
+  installed: ComponentsInstalled[];
+  bundle: ComponentsBundleTool[];
+  libraries: { name: string; sha256: string }[];
+  sla: {
+    criticalHours: number;
+    highDays: number;
+    mediumDays: number;
+    lowDays: number;
+    staleAfterDays: number;
+    pendingOwnerSignoff: boolean;
+  };
+  manifestUrl: string;
+}
+
+export interface ComponentsDomain {
+  /** Read-only. null = no component store here (web preview), never an invented one. */
+  status(): Promise<ComponentsStatus | null>;
+  /** Verify-then-swap update of one component. Refuses while the key is not configured. */
+  update(name: string): Promise<string>;
+  rollback(name: string): Promise<string>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
@@ -1354,4 +1514,5 @@ export interface CxBridge {
   contracts: ContractsDomain;
   social: SocialDomain;
   invites: InvitesDomain;
+  components: ComponentsDomain;
 }

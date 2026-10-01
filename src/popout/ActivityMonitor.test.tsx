@@ -105,4 +105,31 @@ describe("HUP-S7.6 Activity monitor", () => {
     expect(rootEl?.style.color).toBe("var(--tx-1)");
     expect(rootEl?.style.background).toBe("var(--srf-0)");
   });
+
+  it("HUP-S1.9: lists each worker process with its restarts and how it last ended", () => {
+    const el = render(
+      <ActivityMonitor
+        snapshot={buildMonitorSnapshot({
+          ...inputs,
+          workers: [
+            { kind: "toolchain", state: "running", healthy: true, pid: 7, restarts: 1, lastExit: "killed by signal 9", lastError: null, runningSinceMs: 1, detail: null },
+            { kind: "browser", state: "not_built", healthy: null, pid: null, restarts: null, lastExit: null, lastError: null, runningSinceMs: null, detail: "arrives with HUP-S5.1" },
+          ],
+        })}
+        now={10_000}
+        onStop={vi.fn()}
+      />,
+    );
+    const rows = Array.from(el.querySelectorAll('[data-testid="mon-worker-row"]')).map((r) => r.textContent);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("toolchain");
+    expect(rows[0]).toContain("restarted 1 time (last exit: killed by signal 9)");
+    expect(rows[1]).toContain("not built yet");
+  });
+
+  it("HUP-S1.9: unread workers say so instead of showing an empty list", () => {
+    const el = render(<ActivityMonitor snapshot={buildMonitorSnapshot(inputs)} now={10_000} onStop={vi.fn()} />);
+    expect(el.querySelectorAll('[data-testid="mon-worker-row"]')).toHaveLength(0);
+    expect(byTestId(el, "mon-workers")?.textContent).toMatch(/could not be read/i);
+  });
 });

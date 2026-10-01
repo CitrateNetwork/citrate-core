@@ -1,8 +1,9 @@
 // =====================================================================
 // citrate-core — Settings surface (1:1 from design/CitrateCore.dc.html
-// SETTINGS section). Eight sections behind a left sub-nav (sSec):
-// Account & RBAC, Connections, AI providers, Node configuration,
-// API endpoints & keys, Keys & security, Memberships & billing, App.
+// SETTINGS section). Nine sections behind a left sub-nav (sSec):
+// Account & RBAC, Connections, AI providers, MCP servers (HUP-S4.4), Node configuration,
+// API endpoints & keys, Keys & security, Budgets (HUP-S2.3), Memberships & billing,
+// Privacy & recovery (HUP-S10.5), App.
 //
 // Honesty rule (Rule 1 / I-3 · Q-A.1): EVERY control is ONE of —
 //   (a) a REAL working action (config toggles, AI-provider keyring flow,
@@ -29,9 +30,19 @@ import { AppState, fmtSaltFromWei } from "../shell/state";
 import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
+import { ComponentUpdates } from "../components/ComponentUpdates";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { EscalationSettings } from "./EscalationSettings";
+import { BudgetsPanel } from "../budgets/BudgetsPanel";
+import { McpServersPanel } from "./McpServersPanel";
+import { desktopMcpIo } from "./mcpServers";
+import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
+import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
+import { WebSearchSettings } from "./WebSearchSettings";
+import { PrivacySection } from "../privacy/PrivacySection";
+import { TelemetryConsent } from "../privacy/TelemetryConsent";
+import { desktopPrivacyIo } from "../privacy/privacyIo";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -134,10 +145,14 @@ const SECS: [string, string][] = [
   ["connections", "Connections"],
   ["ai", "AI providers"],
   ["escalation", "Escalation & spend"],
+  ["mcp", "MCP servers"],
+  ["web", "Web search & decisions"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
+  ["budgets", "Budgets"],
   ["billing", "Memberships & billing"],
+  ["privacy", "Privacy & recovery"],
   ["app", "App"],
 ];
 
@@ -695,6 +710,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {/* ---------- Escalation endpoints + daily spend budget (HUP-S1.5) ---------- */}
         {s.sSec === "escalation" && <EscalationSettings />}
 
+        {/* ---------- Web search & decisions (HUP-S5.2 / S5.3) ---------- */}
+        {s.sSec === "web" && <WebSearchSettings />}
+
         {/* ---------- Node configuration ---------- */}
         {s.sSec === "node" && (
           <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -821,6 +839,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 {s.socketPath}
               </span>
             </div>
+            {/* HUP-S4.2 — this node as an MCP server (off by default; loopback; connect token). */}
+            <NodeMcpPanel io={desktopNodeMcpIo} />
           </div>
         )}
 
@@ -971,6 +991,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         )}
 
         {/* ---------- Memberships & billing ---------- */}
+        {/* ---------- Budgets (HUP-S2.3) ---------- */}
+        {s.sSec === "budgets" && <BudgetsPanel />}
+
         {s.sSec === "billing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1056,6 +1079,11 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
+        {/* ---------- MCP servers (HUP-S4.4) ---------- */}
+        {s.sSec === "mcp" && <McpServersPanel io={desktopMcpIo} />}
+        {/* ---------- Privacy & recovery (HUP-S10.5) ---------- */}
+        {s.sSec === "privacy" && <PrivacySection io={desktopPrivacyIo} now={() => new Date()} toast={(m) => store.toast(m)} />}
+
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1117,31 +1145,21 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 automatic update checks are not available in this build · citrate-core 0.1.0-proto
               </span>
             </div>
+            {/* HUP-S5.5 / S6.1 — signed first-run components (toolchain today, browser later). */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
+              <span className="eyebrow">Components · signed tools</span>
+              <ComponentUpdates toast={(m) => store.toast(m)} />
+            </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Telemetry</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <button
-                  className={btnCls(!s.telemetry)}
-                  onClick={() => {
-                    writeConfig(store, { telemetry: false });
-                    store.save();
-                  }}
-                >
-                  off
-                </button>
-                <button
-                  className={btnCls(s.telemetry)}
-                  onClick={() => {
-                    writeConfig(store, { telemetry: true });
-                    store.save();
-                  }}
-                >
-                  crash reports only
-                </button>
-              </span>
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
-                default off · never message content, never keys, never addresses
-              </span>
+              {/* HUP-S10.5 — the consent screen: off by default, lists exactly what a report sends. */}
+              <TelemetryConsent
+                enabled={s.telemetry}
+                onChange={(on) => {
+                  writeConfig(store, { telemetry: on });
+                  store.save();
+                }}
+              />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
               <span className="eyebrow">Diagnostics</span>

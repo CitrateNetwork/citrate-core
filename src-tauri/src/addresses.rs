@@ -60,6 +60,11 @@ struct Addresses {
     /// HUP-S1.5: absent from the book until the post-reroll redeploy pins it (federation F-4).
     #[serde(rename = "InferenceRouter", default)]
     inference_router: String,
+    /// HUP-S7.4: optional. Absent or empty means "not available in this build".
+    #[serde(rename = "AgentSBT", default)]
+    agent_sbt: String,
+    #[serde(rename = "OrganizationSBT", default)]
+    organization_sbt: String,
 }
 
 fn book() -> &'static Book {
@@ -87,6 +92,8 @@ fn book() -> &'static Book {
         b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
         b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
         b.addresses.inference_router = b.addresses.inference_router.to_ascii_lowercase();
+        b.addresses.agent_sbt = b.addresses.agent_sbt.to_ascii_lowercase();
+        b.addresses.organization_sbt = b.addresses.organization_sbt.to_ascii_lowercase();
         b.genesis_hash = b.genesis_hash.to_ascii_lowercase();
         b
     })
@@ -155,6 +162,23 @@ pub fn inference_router() -> Option<&'static str> {
     (!a.is_empty()).then_some(a)
 }
 
+/// Optional pin: `None` when the book has no entry (an older or partial book), never a guess.
+fn optional(a: &'static str) -> Option<&'static str> {
+    (!a.is_empty()).then_some(a)
+}
+
+/// `AgentSBT` — Hermes's on-chain identity (HUP-S7.4). Optional: the onboarding identity step
+/// stays off when the book has no entry.
+pub fn agent_sbt() -> Option<&'static str> {
+    optional(&book().addresses.agent_sbt)
+}
+
+/// `OrganizationSBT` — the parent organization registry AgentSBT checks at mint. Optional.
+#[allow(dead_code)]
+pub fn organization_sbt() -> Option<&'static str> {
+    optional(&book().addresses.organization_sbt)
+}
+
 /// `IPFSIncentivesV3` — the model-storage bond contract (CX-S2.2 `registerModel`). REROLL-SENSITIVE:
 /// sourced here from the address book (never hardcoded) so a genesis reroll is an address-book
 /// update, not a code change + rebuild.
@@ -221,6 +245,33 @@ mod tests {
                 "accessors must return lowercase"
             );
         }
+    }
+
+    /// HUP-S7.4: the optional AgentSBT pins are well formed, lowercase, distinct from every
+    /// required pin, and `None` (never "") when absent.
+    #[test]
+    fn optional_agent_pins_are_well_formed_when_present() {
+        for a in [agent_sbt(), organization_sbt()].into_iter().flatten() {
+            assert!(is_address(a), "not an address: {a}");
+            assert_eq!(a, a.to_ascii_lowercase());
+            for req in [
+                citrate_member_sbt(),
+                membership_stake_vault(),
+                validator_registry(),
+                citrate_wallet_factory(),
+                liquid_staking_pool(),
+            ] {
+                assert_ne!(
+                    a, req,
+                    "an optional pin shares an address with a required one"
+                );
+            }
+        }
+        if let (Some(a), Some(o)) = (agent_sbt(), organization_sbt()) {
+            assert_ne!(a, o);
+        }
+        assert_eq!(optional(""), None);
+        assert_eq!(optional("0xab"), Some("0xab"));
     }
 
     #[test]
