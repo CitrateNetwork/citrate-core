@@ -4,11 +4,12 @@
 //
 //   node scripts/eval-qa.mjs --base-url http://127.0.0.1:18080/v1 --model <name> \
 //        [--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] \
-//        [--coverage-threshold 0..1] [--allow-remote]
+//        [--coverage-threshold 0..1] [--dataset qa-v1] [--allow-remote]
 //
-// Asks every question in src/agent/eval/qa-v1.json of a LIVE OpenAI-compatible /chat/completions
-// endpoint (llama-server, or a user endpoint) and writes the scorecard plus per-item answers to
-// <out-dir>/<date>-qa-<model>.json. Scoring is deterministic (src/agent/eval/qa.ts): key-point
+// Asks every question in src/agent/eval/qa-v1.json (or, HUP-S7.7, the set named by --dataset, e.g.
+// qa-literacy-v1) of a LIVE OpenAI-compatible /chat/completions endpoint (llama-server, or a user
+// endpoint) and writes the scorecard plus per-item answers to <out-dir>/<date>-qa-<model>.json
+// (<date>-<set>-<model>.json for a set other than qa-v1). Scoring is deterministic (src/agent/eval/qa.ts): key-point
 // coverage, citation validity against qa-v1.anchors.json, abstention on unanswerable items. No
 // model-as-judge. A transport error aborts the run and writes nothing (Rule 1: no partial or
 // invented scorecard). Non-loopback URLs are refused unless --allow-remote.
@@ -19,7 +20,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseQaCliArgs, qaResultFileName } from "../src/agent/eval/qaCliArgs.ts";
+import { parseQaCliArgs, qaDatasetFiles, qaResultFileName } from "../src/agent/eval/qaCliArgs.ts";
 import { QA_SYSTEM_PROMPT, findMissingCitations, parseQaDataset, runQaEval } from "../src/agent/eval/qa.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,8 +78,9 @@ async function main() {
     }
   }
 
-  const ds = parseQaDataset(await loadJson("src/agent/eval/qa-v1.json"));
-  const index = await loadJson("src/agent/eval/qa-v1.anchors.json");
+  const files = qaDatasetFiles(args.dataset);
+  const ds = parseQaDataset(await loadJson(files.dataset));
+  const index = await loadJson(files.index);
   const missing = findMissingCitations(ds, index);
   if (missing.length) {
     console.error(`anchor index does not cover the dataset:\n${missing.join("\n")}\nrun scripts/qa-anchors.mjs --write`);
@@ -105,7 +107,7 @@ async function main() {
   const { scorecard, items } = out;
   const outDir = resolve(ROOT, args.outDir);
   await mkdir(outDir, { recursive: true });
-  const file = join(outDir, qaResultFileName(scorecard.startedAt, args.model));
+  const file = join(outDir, qaResultFileName(scorecard.startedAt, args.model, ds.version));
   await writeFile(file, JSON.stringify({ scorecard, items }, null, 2) + "\n");
   const pct = (r) => (r === null ? "n/a" : (r * 100).toFixed(1) + "%");
   console.log(
