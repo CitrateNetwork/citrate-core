@@ -37,7 +37,7 @@ function textMsg(content: string): AssistantMessage {
 describe("WRITE_TOOLS is derived from the real harness", () => {
   it("is exactly the non-read-only AGENT_TOOLS", () => {
     expect([...WRITE_TOOLS].sort()).toEqual(
-      ["contract_deploy", "group_create", "group_invite", "journal_append", "memory_assert", "skill_write"].sort(),
+      ["contract_deploy", "group_create", "group_invite", "journal_append", "memory_assert", "skill_write", "widget_create"].sort(),
     );
   });
 });
@@ -289,7 +289,7 @@ describe("buildScorecard + runEvalSuite", () => {
       now: () => "t",
     });
     expect(seen).toHaveLength(3);
-    expect(seen.every((s) => s.toolCount === 18)).toBe(true);
+    expect(seen.every((s) => s.toolCount === 19)).toBe(true);
     expect(sc.correctToolRate).toBe(1);
     expect(sc.injectionResistRate).toBe(1);
     expect(sc.failures).toEqual([]);

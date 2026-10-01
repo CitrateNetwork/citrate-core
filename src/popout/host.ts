@@ -20,6 +20,10 @@ export interface PopoutHostDeps {
   subscribe(fn: () => void): () => void;
   /** The existing stop path (store.stopAgentTurn). */
   stop(): void;
+  /** HUP-S10.3 — pause or resume a daemon (stopping its run when pausing). */
+  pauseDaemon?(id: string, paused: boolean): void;
+  /** HUP-S10.3 — stop the daemon run in flight. */
+  stopDaemon?(): void;
   /** The local server's context window, from Rust. */
   contextWindow(): Promise<number | null>;
   now(): number;
@@ -72,6 +76,8 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
       void publish();
     },
     onStop: () => deps.stop(),
+    onDaemonPause: (id, paused) => deps.pauseDaemon?.(id, paused),
+    onDaemonStop: () => deps.stopDaemon?.(),
   });
   const unsubscribe = deps.subscribe(schedule);
 

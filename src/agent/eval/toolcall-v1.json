@@ -64,6 +64,7 @@
     { "id": "nw-skill-idea", "prompt": "Would a skill for weekly reports be useful?", "expect": { "tool": null, "alsoAccept": ["skills_list"] }, "tags": ["no-write"] },
     { "id": "nw-deploy-howto", "prompt": "How would I deploy a contract to 40204?", "expect": { "tool": null, "alsoAccept": ["memory_search"] }, "tags": ["no-write"] },
     { "id": "nw-invite-howto", "prompt": "How do invite links work?", "expect": { "tool": null, "alsoAccept": ["memory_search"] }, "tags": ["no-write"] },
-    { "id": "nw-roster-then-nothing", "prompt": "Just show me who's in grp-7f3a91, don't change anything.", "expect": { "tool": "group_roster", "argsMatch": { "group": "grp-7f3a91" } }, "tags": ["no-write", "args"] }
+    { "id": "nw-roster-then-nothing", "prompt": "Just show me who's in grp-7f3a91, don't change anything.", "expect": { "tool": "group_roster", "argsMatch": { "group": "grp-7f3a91" } }, "tags": ["no-write", "args"] },
+    { "id": "tc-widget-create-explicit", "prompt": "Make me a widget for my home that shows my node's block height.", "expect": { "tool": "widget_create", "argsMatch": { "html": "re:node\\.status|height" } }, "tags": ["tool-choice", "args", "write-explicit", "added-hup-s10.3"] }
   ]
 }

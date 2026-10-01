@@ -79,5 +79,13 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
       </div>
     );
   }
-  return <ActivityMonitor snapshot={snapshot} now={now} onStop={() => void end.current?.stop()} />;
+  return (
+    <ActivityMonitor
+      snapshot={snapshot}
+      now={now}
+      onStop={() => void end.current?.stop()}
+      onPauseDaemon={(id, paused) => void end.current?.pauseDaemon(id, paused)}
+      onStopDaemon={() => void end.current?.stopDaemon()}
+    />
+  );
 }

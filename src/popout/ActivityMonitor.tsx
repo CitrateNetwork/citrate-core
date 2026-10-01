@@ -7,7 +7,7 @@
 // Styled only with the register tokens (--srf/--tx/--line), so it reads in the dark register.
 // =====================================================================
 import type { CSSProperties, ReactNode } from "react";
-import { formatElapsed, type MonitorSnapshot } from "./monitorSnapshot";
+import { formatElapsed, type DaemonsSection, type MonitorSnapshot } from "./monitorSnapshot";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -34,7 +34,67 @@ const TOOL_STATE_COLOR: Record<string, string> = {
   abandoned: "var(--tx-3)",
 };
 
-export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSnapshot; now: number; onStop: () => void }) {
+const clock = (ms: number) => new Date(ms).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+/** HUP-S10.3 — scheduled daemons: status, today's budget use, next run, and Pause / Resume / Stop. */
+function Daemons({ d, onPause, onStopRun }: { d: DaemonsSection; onPause?: (id: string, paused: boolean) => void; onStopRun?: () => void }) {
+  const running = d.rows.some((r) => r.running);
+  return (
+    <div data-testid="mon-daemons" style={{ paddingTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="mono" style={{ ...label, flex: 1 }}>Daemons{d.allPaused ? " · all paused" : ""}</span>
+        {running && onStopRun ? (
+          <button className="btn btn-sm" data-testid="mon-daemon-stop" onClick={onStopRun} style={{ color: "var(--danger)", borderColor: "var(--danger)", background: "transparent" }}>
+            Stop the daemon run
+          </button>
+        ) : null}
+      </div>
+      {d.blocked ? <div style={{ ...note, paddingTop: 4 }}>Runs are held: {d.blocked}.</div> : null}
+      {d.error ? <div role="alert" style={{ ...note, color: "var(--danger)", paddingTop: 4 }}>{d.error}</div> : null}
+      {d.rows.length === 0 ? (
+        <div style={{ ...note, paddingTop: 4 }}>No daemons. Create one on the Hermes home.</div>
+      ) : (
+        <ul style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 6 }}>
+          {d.rows.map((r) => (
+            <li key={r.id} data-testid="mon-daemon-row" style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 6 }}>
+              <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{r.name}</span>
+                <span className="mono" style={{ color: r.running ? "var(--accent-text)" : "var(--tx-2)" }}>{r.status}</span>
+                {onPause ? (
+                  <button className="btn btn-sm" data-testid="mon-daemon-pause" onClick={() => onPause(r.id, !r.paused)} disabled={d.allPaused}>
+                    {r.paused ? "Resume" : "Pause"}
+                  </button>
+                ) : null}
+              </span>
+              <span className="mono" style={{ color: "var(--tx-3)" }}>
+                {r.runsToday} of {r.maxRuns} runs · {fmt(r.tokensToday)} of {fmt(r.maxTokens)} tokens (estimated) · spend 0 SALT
+              </span>
+              <span style={note}>
+                {r.nextRunAt !== null ? "Next: " + clock(r.nextRunAt) : "No run scheduled"}
+                {r.lastOutcome ? " · last: " + r.lastOutcome.replace("_", " ") : ""}
+                {r.lastNote ? " · " + r.lastNote : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function ActivityMonitor({
+  snapshot,
+  now,
+  onStop,
+  onPauseDaemon,
+  onStopDaemon,
+}: {
+  snapshot: MonitorSnapshot;
+  now: number;
+  onStop: () => void;
+  onPauseDaemon?: (id: string, paused: boolean) => void;
+  onStopDaemon?: () => void;
+}) {
   const { model, provider, tier, context, turn, spend } = snapshot;
   const running = turn.state === "running";
   const ctxWindow = context.windowTokens !== null ? `${fmt(context.windowTokens)} tokens` : "unknown";
@@ -104,6 +164,7 @@ export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSn
       {turn.state === "idle" && turn.outcome ? (
         <div style={{ ...note, paddingTop: 8 }}>Last turn: {turn.outcome === "stopped" ? "stopped by you" : turn.outcome}.</div>
       ) : null}
+      <Daemons d={snapshot.daemons} onPause={onPauseDaemon} onStopRun={onStopDaemon} />
     </div>
   );
 }

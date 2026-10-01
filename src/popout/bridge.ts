@@ -17,7 +17,15 @@ export const POPOUT_EVENT = "citrate-popout";
 export const BRIDGE_VERSION = 1 as const;
 export const MAIN_LABEL = "main";
 
-export type ToMain = { v: 1; type: "popout.ready"; kind: PopoutKind } | { v: 1; type: "monitor.stop" };
+export type ToMain =
+  | { v: 1; type: "popout.ready"; kind: PopoutKind }
+  | { v: 1; type: "monitor.stop" }
+  // HUP-S10.3: pause or resume one daemon, or stop the daemon run in flight.
+  | { v: 1; type: "daemon.pause"; id: string; paused: boolean }
+  | { v: 1; type: "daemon.stop" };
+
+/** A daemon id as Rust mints it: "d" + 16 lowercase hex. */
+const DAEMON_ID = /^d[0-9a-f]{16}$/;
 export type ToPopout = { v: 1; type: "monitor.snapshot"; snapshot: MonitorSnapshot };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -26,6 +34,10 @@ export function parseToMain(raw: unknown): ToMain | null {
   if (!isObj(raw) || raw.v !== BRIDGE_VERSION) return null;
   if (raw.type === "monitor.stop") return { v: 1, type: "monitor.stop" };
   if (raw.type === "popout.ready" && isPopoutKind(raw.kind)) return { v: 1, type: "popout.ready", kind: raw.kind };
+  if (raw.type === "daemon.stop") return { v: 1, type: "daemon.stop" };
+  if (raw.type === "daemon.pause" && typeof raw.id === "string" && DAEMON_ID.test(raw.id) && typeof raw.paused === "boolean") {
+    return { v: 1, type: "daemon.pause", id: raw.id, paused: raw.paused };
+  }
   return null;
 }
 
@@ -61,7 +73,12 @@ export interface MainEnd {
 
 export async function createMainEnd(
   t: BridgeTransport,
-  handlers: { onReady: (kind: PopoutKind) => void; onStop: () => void },
+  handlers: {
+    onReady: (kind: PopoutKind) => void;
+    onStop: () => void;
+    onDaemonPause?: (id: string, paused: boolean) => void;
+    onDaemonStop?: () => void;
+  },
 ): Promise<MainEnd> {
   let open = true;
   const unlisten = await t.listen((raw) => {
@@ -69,7 +86,9 @@ export async function createMainEnd(
     const msg = parseToMain(raw);
     if (!msg) return;
     if (msg.type === "popout.ready") handlers.onReady(msg.kind);
-    else handlers.onStop();
+    else if (msg.type === "monitor.stop") handlers.onStop();
+    else if (msg.type === "daemon.pause") handlers.onDaemonPause?.(msg.id, msg.paused);
+    else handlers.onDaemonStop?.();
   });
   return {
     async sendSnapshot(snapshot) {
@@ -87,6 +106,8 @@ export async function createMainEnd(
 export interface PopoutEnd {
   ready(): Promise<void>;
   stop(): Promise<void>;
+  pauseDaemon(id: string, paused: boolean): Promise<void>;
+  stopDaemon(): Promise<void>;
   close(): void;
 }
 
@@ -105,6 +126,8 @@ export async function createPopoutEnd(
   return {
     ready: () => send({ v: 1, type: "popout.ready", kind }),
     stop: () => send({ v: 1, type: "monitor.stop" }),
+    pauseDaemon: (id, paused) => send({ v: 1, type: "daemon.pause", id, paused }),
+    stopDaemon: () => send({ v: 1, type: "daemon.stop" }),
     close() {
       open = false;
       unlisten();

@@ -47,6 +47,8 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 | pop-out to main | `popout.ready {kind}` | send me the current state |
 | pop-out to main | `monitor.stop` | stop the running turn |
 | main to monitor | `monitor.snapshot {snapshot}` | the monitor's whole view, rebuilt on every change (coalesced to one per 150 ms) |
+| pop-out to main | `daemon.pause {id, paused}` | HUP-S10.3: pause (stopping its run) or resume one daemon; `id` must be `d` + 16 hex |
+| pop-out to main | `daemon.stop` | HUP-S10.3: stop the daemon run in flight (the daemon stays scheduled) |
 
 ## Activity monitor: data sources (Rule 7)
 
@@ -62,6 +64,7 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 | Tool calls | `store.sendChat`'s tool callback, start and end | n/a |
 | Elapsed | the turn's real start time | n/a |
 | Spend | 0 for the local model and the demo agent | "unknown" for the gateway: not metered in the app yet |
+| Daemons (HUP-S10.3) | `daemons_list` (Rust `daemons.rs`: status, today's runs and estimated tokens against the budget, next run, last outcome) and the runner's state (why runs are held) | "No daemons" when there are none; see `docs/WIDGETS_AND_DAEMONS.md` |
 
 ## Stop
 

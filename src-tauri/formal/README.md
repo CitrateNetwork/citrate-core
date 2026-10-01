@@ -359,3 +359,53 @@ Mutation check (`python3 src-tauri/formal/DeployGate_mutants.py`), all 7 killed:
 - The evidence parsers are folded into the verdict `Evaluate` writes; the Rust tests cover
   them (every "not installed" or tool error is a failing item).
 - The store's size bound is not modelled. Eviction revokes open ceremonies like NOT_READY.
+
+
+# DaemonBudget formal model (HUP-S10.3)
+
+Model of daemons inside a budget: `src-tauri/src/daemons.rs` (`DaemonBook`), the runner
+(`src/daemons/runner.ts`) and the daemon turn's HIC rules (`src/daemons/turn.ts`). Design:
+`docs/WIDGETS_AND_DAEMONS.md`.
+
+- `DaemonBudget.tla`: the model. `Fire` (a schedule minute passes), `Claim` (the runner's tick,
+  only when not paused, nothing in flight and the day's run and token budgets are not used up;
+  the allowance is `min(PerRun, MaxTokens - tokens)`), `Skip` (due but not claimable), `Finish`
+  (charged what it used, at most the allowance plus one model round, because the runner stops a
+  run once its estimate passes the allowance), `Abandon` (a run never reported back, charged its
+  allowance), pause and resume (one or all; resuming drops missed minutes), `Propose` and
+  `Decide` (an effect a run proposes runs only on Approve), `NewDay`. There is no spend action.
+- `DaemonBudget.cfg`: two daemons, two days, `MaxRuns = 2`, `MaxTokens = 3`, `PerRun = 2`,
+  `Over = 1`, two effects.
+- `DaemonBudget_mutants.py`: the mutation check.
+
+| Invariant | Meaning | Rust / TS tests |
+|---|---|---|
+| `RunsWithinCap` | runs today never exceed the day's cap | `the_daily_run_budget_runs_out_and_says_so` |
+| `TokensBounded` | tokens today exceed the cap by at most one model round | `a_run_that_overshoots_is_charged_what_it_used`, runner `stops a run at its token allowance` |
+| `AllowanceWithinDay` | a run's allowance never reaches past what is left of the day | `the_daily_token_budget_runs_out_and_caps_the_last_run` |
+| `NoEmptyRun` | no run starts with nothing left | `the_daily_token_budget_runs_out_and_caps_the_last_run` |
+| `SpendZero` | a daemon never spends | `a_spend_budget_above_zero_is_refused`, `daemonAvailability` (local model only) |
+| `OneInFlight` | one run in flight per daemon | `only_one_run_of_a_daemon_is_in_flight` |
+| `NoStartWhilePaused` | a paused daemon (or "pause all") never starts a run | `a_paused_daemon_never_fires_and_does_not_catch_up_on_resume`, `pausing_everything_stops_every_daemon` |
+| `EffectsOnlyApproved` | nothing a daemon proposes runs without the member's approval | turn `marks every other tool HIC-required`, sidecar `an_unattended_session_asks_before_its_first_effectful_call` |
+
+Run (2026-10-01, TLC2 2.19, `scripts/run-tlc.sh DaemonBudget`): **no error**, 11,655,489 states
+generated, 909,376 distinct, depth 23, 9 s wall clock.
+
+Mutation check (`python3 src-tauri/formal/DaemonBudget_mutants.py`), all 10 killed:
+
+| Mutant | Break | Caught by |
+|---|---|---|
+| M01 | `Claim` ignores the run budget | `RunsWithinCap` |
+| M02 | `Claim` ignores the token budget | `NoEmptyRun` |
+| M03 | the allowance is `PerRun` even near the day's end | `AllowanceWithinDay` |
+| M04 | the runner does not stop a run at its allowance | `TokensBounded` |
+| M05 | `Claim` ignores a run in flight | `OneInFlight` |
+| M06 | `Claim` ignores a paused daemon | `NoStartWhilePaused` |
+| M07 | `Claim` ignores "pause all" | `NoStartWhilePaused` |
+| M08 | a declined effect runs | `EffectsOnlyApproved` |
+| M09 | a proposed effect runs at once | `EffectsOnlyApproved` |
+| M10 | a run spends | `SpendZero` |
+
+Abstractions: schedules, the time of day, the 24 h catch-up window and the 30 minute stale-run
+timer are folded into the nondeterministic `Fire` and `Abandon`; token amounts are small naturals.

@@ -891,6 +891,11 @@ export interface AgentHarnessDomain {
   /** Hand back a core-hosted tool's result after core's own gates ran it. */
   sessionToolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   sessionStop(id: string): Promise<void>;
+  /** HUP-S10.3 — open a session for a scheduled daemon run: the chat session body marked
+   *  `unattended`, so every effectful call needs the member's explicit decision. Local model only. */
+  sessionOpenUnattended(systemPrompt: string, toolsJson: string): Promise<string>;
+  /** HUP-S10.3 — close a session (a finished daemon run). */
+  sessionClose(id: string): Promise<void>;
   /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
    *  gates). Rejects when the sidecar isn't running. */
   tracks(): Promise<InterviewTrack[]>;

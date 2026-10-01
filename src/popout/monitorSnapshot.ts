@@ -7,10 +7,13 @@
 //   - tier: the hardware tier report (bridge.tier.recommend, a local probe)
 //   - context window: the local llama-server's --ctx-size, read from Rust (popout_monitor_facts)
 //   - spend: local inference is free; gateway metering is not wired into the app yet
+//   - daemons (HUP-S10.3): Rust daemons.rs via daemons_list (status, today's ledger, next run) and
+//     the runner's state (why runs are held). Daemon tokens are estimated (characters / 4).
 // Where the app has no real number the field is null and the monitor says "unknown" with the
 // reason. Token usage is null for every provider today: no provider reports usage to the app.
 // =====================================================================
 import { type ToolRow, type TurnActivity, type TurnPhase } from "../shell/slices/turnActivity";
+import type { DaemonsView } from "../daemons/api";
 
 export type ProviderClass = "local" | "gateway" | "demo" | "unknown";
 
@@ -34,6 +37,58 @@ export interface MonitorSnapshot {
     why: string;
   };
   spend: { amount: number | null; unit: string; note: string };
+  /** HUP-S10.3 — scheduled daemons. */
+  daemons: DaemonsSection;
+}
+
+/** HUP-S10.3 — one daemon as the monitor shows it. */
+export interface DaemonRow {
+  id: string;
+  name: string;
+  status: string;
+  paused: boolean;
+  running: boolean;
+  runsToday: number;
+  maxRuns: number;
+  /** Estimated (characters / 4): no provider reports usage yet. */
+  tokensToday: number;
+  maxTokens: number;
+  nextRunAt: number | null;
+  lastOutcome: string | null;
+  lastNote: string | null;
+}
+
+export interface DaemonsSection {
+  allPaused: boolean;
+  /** Why the runner is holding runs (e.g. the local model is not serving), or null. */
+  blocked: string | null;
+  error: string | null;
+  rows: DaemonRow[];
+}
+
+export const NO_DAEMONS: DaemonsSection = { allPaused: false, blocked: null, error: null, rows: [] };
+
+/** Build the monitor's daemon section from the list Rust reported and the runner's state. */
+export function daemonsSection(view: DaemonsView | null, runner: { blocked: string | null; error: string | null }): DaemonsSection {
+  return {
+    allPaused: view?.allPaused ?? false,
+    blocked: runner.blocked,
+    error: runner.error,
+    rows: (view?.daemons ?? []).map((d) => ({
+      id: d.id,
+      name: d.name,
+      status: d.status,
+      paused: d.paused,
+      running: d.running,
+      runsToday: d.runsToday,
+      maxRuns: d.budget.maxRunsPerDay,
+      tokensToday: d.tokensToday,
+      maxTokens: d.budget.maxTokensPerDay,
+      nextRunAt: d.nextRunMs,
+      lastOutcome: d.lastOutcome,
+      lastNote: d.lastNote,
+    })),
+  };
 }
 
 export interface MonitorInputs {
@@ -47,6 +102,8 @@ export interface MonitorInputs {
   /** The local server's context window from Rust, or null when it could not be read. */
   localCtxTokens: number | null;
   now: number;
+  /** HUP-S10.3 — the daemon section; absent = no daemons. */
+  daemons?: DaemonsSection;
 }
 
 /** `ChatProvider.kind` → where its inference runs. */
@@ -134,6 +191,7 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
       why: waitingReason(a),
     },
     spend: spendFor(kind),
+    daemons: i.daemons ?? NO_DAEMONS,
   };
 }
 
@@ -169,5 +227,29 @@ export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   if (!(turn.outcome === null || ["answered", "failed", "stopped"].includes(turn.outcome as string))) return false;
   if (!Array.isArray(turn.tools) || !turn.tools.every(isToolRow) || typeof turn.why !== "string") return false;
   if (!isObj(spend) || !numOrNull(spend.amount) || typeof spend.unit !== "string" || typeof spend.note !== "string") return false;
-  return true;
+  return isDaemonsSection(v.daemons);
+}
+
+const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+
+function isDaemonRow(v: unknown): v is DaemonRow {
+  return (
+    isObj(v) &&
+    typeof v.id === "string" &&
+    typeof v.name === "string" &&
+    typeof v.status === "string" &&
+    typeof v.paused === "boolean" &&
+    typeof v.running === "boolean" &&
+    num(v.runsToday) &&
+    num(v.maxRuns) &&
+    num(v.tokensToday) &&
+    num(v.maxTokens) &&
+    numOrNull(v.nextRunAt) &&
+    strOrNull(v.lastOutcome) &&
+    strOrNull(v.lastNote)
+  );
+}
+
+function isDaemonsSection(v: unknown): v is DaemonsSection {
+  return isObj(v) && typeof v.allPaused === "boolean" && strOrNull(v.blocked) && strOrNull(v.error) && Array.isArray(v.rows) && v.rows.every(isDaemonRow);
 }
