@@ -281,6 +281,9 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S4.3: the MCP allowlist file (`hermes_mcp.rs`). Passed as `CITRATE_HERMES_MCP` only while
+    /// the file exists, so with no MCP server enabled the child runs no MCP at all.
+    mcp_config_path: Option<PathBuf>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -312,6 +315,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            mcp_config_path: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -328,6 +332,12 @@ impl HermesManager {
     /// catalog. Absent → the env is not set (unchanged default behavior).
     pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
         self.capsules_dir = Some(dir);
+        self
+    }
+
+    /// HUP-S4.3: name the MCP allowlist file. The env is set at spawn only if the file exists then.
+    pub fn with_mcp_config_path(mut self, path: PathBuf) -> Self {
+        self.mcp_config_path = Some(path);
         self
     }
 
@@ -398,6 +408,13 @@ impl HermesManager {
             spec.env.push((
                 HERMES_CAPSULES_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
+            ));
+        }
+        // HUP-S4.3: hand the child the MCP allowlist only when one is written (default: none).
+        if let Some(path) = self.mcp_config_path.as_ref().filter(|p| p.is_file()) {
+            spec.env.push((
+                crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
+                path.to_string_lossy().to_string(),
             ));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -1038,6 +1055,11 @@ use std::sync::OnceLock;
 /// binary + the 0600 bearer/crash paths); one instance for the process lifetime.
 static HERMES: OnceLock<HermesManager> = OnceLock::new();
 
+/// HUP-S4.3: whether this session's Hermes sidecar is running (false if never started).
+pub fn sidecar_running() -> bool {
+    HERMES.get().is_some_and(|m| m.is_running())
+}
+
 /// Stop the hermes sidecar if this session started it (called on graceful app teardown). Idempotent
 /// and a no-op if it was never started.
 pub fn shutdown() {
@@ -1071,7 +1093,9 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_capsules_dir(capsules_dir)
+        .with_mcp_config_path(crate::hermes_mcp::config_path(&base));
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
@@ -1087,6 +1111,11 @@ pub async fn hermes_start(app_h: tauri::AppHandle) -> std::result::Result<Hermes
 /// Blocking body of [`hermes_start`]; reached only through [`crate::blocking::off_main`].
 pub fn hermes_start_sync(app: tauri::AppHandle) -> std::result::Result<HermesStatus, String> {
     let m = manager(&app)?;
+    // HUP-S4.3: bring the MCP allowlist in line with the member's settings before the child reads
+    // it. A write failure means no MCP this session (logged), never a failed start.
+    if let Err(e) = crate::hermes_mcp::sync_for_app(&app) {
+        eprintln!("hermes: MCP allowlist not updated: {e}");
+    }
     m.start().map_err(|e| e.to_string())?;
     Ok(m.status())
 }

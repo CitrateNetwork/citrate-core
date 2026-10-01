@@ -787,3 +787,23 @@ fn hermes_control_calls_are_bounded() {
     assert!(HERMES_CONTROL_TIMEOUT >= Duration::from_secs(5));
     assert!(HERMES_CONTROL_TIMEOUT <= Duration::from_secs(60));
 }
+
+#[test]
+fn mcp_env_is_set_only_while_the_allowlist_file_exists() {
+    // HUP-S4.3: no file → no CITRATE_HERMES_MCP (the sidecar runs no MCP, unchanged default).
+    let (mgr, dir) = stub_manager("mcpenv");
+    let cfg = dir.join("hermes").join("mcp.json");
+    let mgr = mgr.with_mcp_config_path(cfg.clone());
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert!(!env.contains_key(crate::hermes_mcp::MCP_CONFIG_ENV));
+
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    std::fs::write(&cfg, br#"{"servers":[]}"#).unwrap();
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(
+        env.get(crate::hermes_mcp::MCP_CONFIG_ENV).map(String::as_str),
+        Some(cfg.to_string_lossy().as_ref())
+    );
+}

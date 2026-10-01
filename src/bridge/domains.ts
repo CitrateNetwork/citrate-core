@@ -11,6 +11,7 @@
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
+import type { VerifiedSourceView } from "../agent/verifiedSource";
 import type {
   AppConfig,
   KeyringStatus,
@@ -856,6 +857,33 @@ export interface RegistrySkill {
   owner: string;
 }
 
+/** HUP-S4.3 — which MCP servers Hermes may use (core writes the sidecar's allowlist). Mirrors the
+ *  Rust `McpSettings`. Both default off (default pending owner sign-off). */
+export interface HermesMcpSettings {
+  mem: boolean;
+  scan: boolean;
+}
+
+/** HUP-S4.3 — one server row (Rust `McpServerView`). */
+export interface HermesMcpServer {
+  name: string;
+  label: string;
+  transport: string;
+  enabled: boolean;
+  available: boolean;
+  detail: string;
+}
+
+/** HUP-S4.3 — the settings view (Rust `McpView`). */
+export interface HermesMcpView {
+  settings: HermesMcpSettings;
+  servers: HermesMcpServer[];
+  /** An allowlist file is in place for the next Hermes start. */
+  configWritten: boolean;
+  /** Hermes is running and reads the allowlist only at start. */
+  restartRequired: boolean;
+}
+
 export interface AgentHarnessDomain {
   /** Sidecar a Hermes agent (keyless; every chain effect stays ceremony-gated). */
   start(): Promise<void>;
@@ -901,6 +929,10 @@ export interface AgentHarnessDomain {
   /** HUP-S1.4 — validate a member-edited brief against its track (required gates and the workflow
    *  can't be edited away). A refusal rejects with `BRIEF_REFUSED: <reason>`. */
   briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
+  /** HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan). Rejects outside the app. */
+  mcpSettings(): Promise<HermesMcpView>;
+  /** HUP-S4.3 — save the member's choice; takes effect at the next Hermes start. */
+  mcpSet(settings: HermesMcpSettings): Promise<HermesMcpView>;
 }
 
 // HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types
@@ -1174,6 +1206,9 @@ export interface ContractsDomain {
   gateLookup(bytecodeHex: string, constructorArgsHex?: string): Promise<DeployGateLookup>;
   /** HUP-S6.4 — hand verifier outputs to core; core parses them and stores the verdict. */
   gateSubmit(inputs: DeployGateInputs): Promise<DeployGateRecord>;
+  /** HUP-S4.3 — a contract's verified source/ABI/compiler from CitrateScan (read-only). Rejects
+   *  only when the lookup itself fails; "not verified" is a normal answer. */
+  verifiedSource(address: string): Promise<VerifiedSourceView>;
 }
 
 /** A scrubbed diagnostic bundle (Telemetry WP-T.2/T.3). Mirrors the Rust DiagnosticBundle. */

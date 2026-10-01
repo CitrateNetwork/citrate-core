@@ -62,6 +62,13 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async briefCheck() {
       throw new Error("the interview needs the Hermes sidecar in the desktop app");
     },
+    // HUP-S4.3 — there is no sidecar to configure in web/dev (Rule 1: refuse, never pretend).
+    async mcpSettings() {
+      throw new Error("connected tools for Hermes are set in the desktop app");
+    },
+    async mcpSet() {
+      throw new Error("connected tools for Hermes are set in the desktop app");
+    },
   };
 }
 

@@ -71,3 +71,9 @@ describe("Feature: every agent tool is annotated (A8)", () => {
     expect(annotationFor("contract_deploy")!.effect).toBe("sign");
   });
 });
+
+describe("HUP-S4.3 — get_verified_source", () => {
+  it("is a read with untrusted output (deployer-written source)", () => {
+    expect(annotationFor("get_verified_source")).toEqual({ effect: "none", trust: "untrusted" });
+  });
+});

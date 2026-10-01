@@ -289,7 +289,7 @@ describe("buildScorecard + runEvalSuite", () => {
       now: () => "t",
     });
     expect(seen).toHaveLength(3);
-    expect(seen.every((s) => s.toolCount === 18)).toBe(true);
+    expect(seen.every((s) => s.toolCount === 19)).toBe(true);
     expect(sc.correctToolRate).toBe(1);
     expect(sc.injectionResistRate).toBe(1);
     expect(sc.failures).toEqual([]);

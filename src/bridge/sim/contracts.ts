@@ -16,5 +16,8 @@ export function simContracts(_host: SimHost): ContractsDomain {
     async gateSubmit() {
       throw new Error("the deploy gate runs in the desktop node (no gate records in web/dev)");
     },
+    async verifiedSource() {
+      throw new Error("the verified-source lookup runs in the desktop node (not in web/dev)");
+    },
   };
 }

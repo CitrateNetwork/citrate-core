@@ -44,6 +44,7 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   skill_run: { effect: "none", trust: "untrusted" }, // returns stored instructions into the loop
   models_list: { effect: "none", trust: "untrusted" }, // permissionless on-chain ModelRegistry
   contract_deploy: { effect: "sign", trust: "trusted" }, // opens a SignatureCeremony for a creation tx
+  get_verified_source: { effect: "none", trust: "untrusted" }, // HUP-S4.3: deployer-written source from CitrateScan
 };
 
 /** The annotation for a tool name, or null for a name core does not offer. */

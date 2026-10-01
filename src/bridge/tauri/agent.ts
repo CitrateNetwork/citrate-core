@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView } from "../domains";
 import type { CeremonyView } from "../types";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
@@ -79,6 +79,13 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   briefCheck(brief) {
     return invoke<{ ok: boolean; markdown: string }>("hermes_brief_check", { brief });
+  },
+  // HUP-S4.3 — MCP servers Hermes may use; core writes the sidecar's allowlist file.
+  mcpSettings() {
+    return invoke<HermesMcpView>("hermes_mcp_settings");
+  },
+  mcpSet(settings) {
+    return invoke<HermesMcpView>("hermes_mcp_set", { settings });
   },
 };
 

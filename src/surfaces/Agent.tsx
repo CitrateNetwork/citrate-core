@@ -29,6 +29,7 @@ import {
 import type { AgentApproval } from "../bridge/domains";
 import type { DeployGateLookup } from "../agent/deployGate";
 import { DeployGateCard } from "../shell/DeployGateCard";
+import { HermesMcpPanel } from "../components/HermesMcpCard";
 
 type Tab = "overview" | "contracts";
 
@@ -298,6 +299,9 @@ export function Agent({ store, s }: SurfaceProps) {
                   })
                 )}
               </div>
+
+              {/* HUP-S4.3 — MCP servers Hermes may use (memory graph, CitrateScan); both off by default. */}
+              <HermesMcpPanel />
 
               {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
                   These are the skills published on-chain (SkillRegistry 0x896cd293…); Hermes ships

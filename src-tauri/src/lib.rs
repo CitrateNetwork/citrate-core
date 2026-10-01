@@ -37,10 +37,12 @@ mod deploy_gate;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
+mod hermes_mcp;
 mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
+pub mod mem_mcp_bridge;
 mod membership;
 mod memory;
 mod model;
@@ -62,6 +64,7 @@ mod telemetry;
 mod tier;
 mod transfer;
 mod validator;
+mod verified_source;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
 // command names once here + in generate_handler! below; each lane fills in its own module's
 // bodies (never this file). See .agentile/cx-ownership.map.
@@ -459,6 +462,8 @@ pub fn run() {
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
+            // HUP-S4.3 — get_verified_source (read-only CitrateScan lookup).
+            verified_source::contract_verified_source,
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
@@ -507,6 +512,9 @@ pub fn run() {
             hermes::hermes_brief_check,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
+            hermes_mcp::hermes_mcp_settings,
+            hermes_mcp::hermes_mcp_set,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an
