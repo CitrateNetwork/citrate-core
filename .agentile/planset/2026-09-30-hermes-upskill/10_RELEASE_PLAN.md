@@ -11,6 +11,14 @@ companions: 05_SPRINTS_AND_WPS.md, gates.yaml
 
 # Release plan: 0.4.0 → 0.5.0
 
+> **Superseded in part (D-41, owner, 2026-10-01): one release, v0.5.0.** There are no point
+> releases between 0.4.1 and 0.5.0. Every user story is finished, the integration branch is
+> tested and QA'd end to end, and it ships once as **v0.5.0**. The 0.4.2–0.4.7 rows below are
+> kept as **internal milestones** (planning and burndown groupings only): no version bump, no
+> tag, no signed-release ceremony, no updater manifest, and no mirror run at those points.
+> 0.4.1 (already shipped) stays the last public release until 0.5.0. Internal QA builds of the
+> integration branch may be made for testing; they are not published.
+
 The Hermes Upskill program is managed as the full **0.4.x → 0.5.0** release line
 (owner, 2026-09-30). `main` is at **0.4.0** (`28a74ba`, the fresh-keys reroll build).
 **0.5.0 ships only when every gate in [gates.yaml](gates.yaml) is `met` with evidence**
@@ -21,28 +29,29 @@ The Hermes Upskill program is managed as the full **0.4.x → 0.5.0** release li
 ```
 main (0.4.0) ─────────────────────────────────────────────────────► main (0.5.0)
    └── release/0.5.0-hermes-upskill   (integration branch; planset lives here)
-          ├── hup/s0-stabilize        ─PR→ release/0.5.0-hermes-upskill  → tag v0.4.1
-          ├── hup/s1-one-agent        ─PR→ …                              → tag v0.4.2
-          └── …
+          ├── hup/s0-stabilize        ─PR→ release/0.5.0-hermes-upskill  → tag v0.4.1 (shipped)
+          ├── hup/s1-one-agent        ─PR→ …                              (milestone only, no tag)
+          └── …                                                           → one tag: v0.5.0
 ```
 
 - **Integration branch:** `release/0.5.0-hermes-upskill`. Sprint branches are
   `hup/s<N>-<slug>`; each WP lands as a PR into the integration branch. The owner merges
   (CLAUDE.md rule 4).
-- **Point releases:** at each milestone, the integration branch is PR'd to `main`, and
-  the owner merges and runs the signed-release ceremony (macOS notarize, GitHub release,
-  DO mirror, parity gate). Tags are cut from `main` only.
+- **One release (D-41):** the integration branch is PR'd to `main` once, when every gate is
+  met and QA is done; the owner merges and runs the signed-release ceremony (macOS notarize,
+  GitHub release, DO mirror, parity gate) for **v0.5.0** only. Tags are cut from `main` only.
+  (Superseded: point releases at each milestone.)
 - **Sync:** `main` is merged into the integration branch after every release or hotfix,
   never rebased (the branch is shared).
 - **Federation work** (chain, runtime, cluster, memories, pool, settlement) follows
   its own repo branches, tracked in the private federation sprint. Its pins bump through
   `manifest.toml` + `pin-bump.sh`.
 - **Version bump points:** `package.json`, `src-tauri/Cargo.toml`,
-  `src-tauri/tauri.conf.json` (+ bundle configs), bumped in the milestone PR.
+  `src-tauri/tauri.conf.json` (+ bundle configs), bumped once, 0.4.1 → 0.5.0, in the release PR.
 
 ## Milestones
 
-| Version | Sprints | Gate(s) | What a user gets |
+| Milestone (internal since D-41; only 0.4.1 and 0.5.0 ship) | Sprints | Gate(s) | What it adds |
 |---|---|---|---|
 | **0.4.1** | HUP-S0 Stabilize | gate1: g1-approval-audit, g1-no-block, g1-downloads, g1-render, g1-sidebar | No pinwheel; downloads finish + resume; clean markdown + real streaming; ~10-item sidebar |
 | **0.4.2** | HUP-S1 One agent | gate1 rest; gate0 formal (small bounds) | One Hermes across app/CLI/MCP; interview → brief; verifier-decided outcomes; tiered model; per-tier scorecard |
@@ -56,7 +65,7 @@ main (0.4.0) ──────────────────────�
 Milestones can merge (e.g. 0.4.3 split into two point releases) without renumbering
 0.5.0. A milestone never ships with an open High from the red-team register.
 
-## Release hygiene per milestone
+## Release hygiene (milestones: items 1-4; the v0.5.0 release: all, plus a full QA pass)
 
 1. Gate criteria for the milestone are `met` with evidence paths.
 2. `cargo test --workspace --locked` and `vitest` counts are recorded in the sprint
