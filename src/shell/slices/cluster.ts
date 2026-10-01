@@ -10,7 +10,14 @@
 // =====================================================================
 import { createSlice } from "./createSlice";
 import { bridge } from "../../bridge";
-import type { ClusterPeer, ClusterStatus, Group, PinRow } from "../../bridge/domains";
+import type {
+  ClusterMemberDevices,
+  ClusterPeer,
+  ClusterStatus,
+  DeviceLinks,
+  Group,
+  PinRow,
+} from "../../bridge/domains";
 
 export interface ClusterState {
   /** Your groups, for the picker. */
@@ -33,6 +40,12 @@ export interface ClusterState {
   sharing: string | null;
   /** The last user-facing error, or null when clear. */
   error: string | null;
+  /** HUP-S8.1: this machine's device key + the device links it knows (null until loaded). */
+  myDevices: DeviceLinks | null;
+  /** HUP-S8.1: the selected group's members with their linked devices (live). */
+  memberDevices: ClusterMemberDevices[];
+  /** HUP-S8.1: a device revoke is in flight (the device address), or null. */
+  revoking: string | null;
 }
 
 const initial: ClusterState = {
@@ -46,6 +59,9 @@ const initial: ClusterState = {
   joining: false,
   sharing: null,
   error: null,
+  myDevices: null,
+  memberDevices: [],
+  revoking: null,
 };
 
 export const clusterSlice = createSlice<ClusterState>(initial);
@@ -78,6 +94,75 @@ export async function selectClusterGroup(groupId: string): Promise<void> {
     if (clusterSlice.get().selectedId === groupId) {
       clusterSlice.set({ loading: false, error: message(e) });
     }
+  }
+}
+
+/**
+ * HUP-S8.1 — load this machine's device key address and the links it knows. Never mints a key.
+ * Errors are caught into `error` (an un-provisioned keyring surfaces honestly).
+ */
+export async function loadMyDevices(): Promise<void> {
+  try {
+    const myDevices = await bridge.cluster.myDevices();
+    clusterSlice.set({ myDevices });
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+  }
+}
+
+/**
+ * HUP-S8.1 — load the selected group's members with their devices. A daemon that predates device
+ * links has no `devices` op: that is not an error for the rest of the surface, so it reads as an
+ * empty list (the peers list still shows every authorized address).
+ */
+export async function loadMemberDevices(groupId: string): Promise<void> {
+  try {
+    const memberDevices = await bridge.cluster.devices(groupId);
+    if (clusterSlice.get().selectedId === groupId) clusterSlice.set({ memberDevices });
+  } catch {
+    if (clusterSlice.get().selectedId === groupId) clusterSlice.set({ memberDevices: [] });
+  }
+}
+
+/** HUP-S8.1 — revoke one of your devices (permanent for that device key), then refresh. */
+export async function revokeMyDevice(device: string): Promise<void> {
+  clusterSlice.set({ revoking: device, error: null });
+  try {
+    const myDevices = await bridge.cluster.revokeDevice(device);
+    clusterSlice.set({ myDevices, revoking: null });
+    const id = clusterSlice.get().selectedId;
+    if (id) await Promise.all([selectClusterGroup(id), loadMemberDevices(id)]);
+  } catch (e) {
+    clusterSlice.set({ revoking: null, error: message(e) });
+  }
+}
+
+/**
+ * HUP-S8.1 — add another of your own devices from the code it showed (pairing by copy/paste until
+ * the fleet wizard's QR pairing lands). Core verifies all three signatures and that the device is
+ * yours before storing it; the mesh picks it up on the next roster update.
+ */
+export async function importDeviceCode(code: string): Promise<boolean> {
+  clusterSlice.set({ error: null });
+  try {
+    const myDevices = await bridge.cluster.importDeviceLink(code.trim());
+    clusterSlice.set({ myDevices });
+    const id = clusterSlice.get().selectedId;
+    if (id) await loadMemberDevices(id);
+    return true;
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+    return false;
+  }
+}
+
+/** HUP-S8.1 — this machine's link code (to paste on another of your devices), or null + error. */
+export async function exportDeviceCode(): Promise<string | null> {
+  try {
+    return await bridge.cluster.exportDeviceLink();
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+    return null;
   }
 }
 

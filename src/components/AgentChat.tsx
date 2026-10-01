@@ -12,8 +12,13 @@ import { LoaderMark } from "./LoaderMark";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { InterviewCard, looksLikeBuildAsk } from "./InterviewCard";
+import { FileChangeCard } from "./FileChangeCard";
+import { agentUndo, undoChange } from "../shell/slices/agentUndo";
 import { bridge } from "../bridge";
 import { openPopout } from "../popout/appHost";
+import { BrowserControls } from "./BrowserControls";
+import { tauriBrowserApi } from "../popout/browserApi";
+import { BRIDGE_MODE } from "../bridge/mode";
 import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
 import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
@@ -29,6 +34,7 @@ const DOT_FOR_KIND: Record<string, string> = { local: "#37d67a", real: "#37d67a"
 
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const models = modelsSlice.use();
+  const undo = agentUndo.use();
   const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
@@ -136,6 +142,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           <span aria-hidden style={{ color: "var(--tx-3)" }}>{pickerOpen ? "▴" : "▾"}</span>
         </button>
       </div>
+      {/* HUP-S5.1 + S5.6: Hermes's browser controls. Render nothing while the browser is off (the default). */}
+      {BRIDGE_MODE === "tauri" && <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} />}
       {pickerOpen && (
         <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
           <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />
@@ -165,6 +173,12 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 </button>
               </span>
             )}
+            {/* HUP-S2.9: the files the agent changed in this reply, each with Undo. */}
+            {undo.cards
+              .filter((c) => c.msgId === m.id)
+              .map((c) => (
+                <FileChangeCard key={c.session + ":" + c.seq} card={c} onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)} />
+              ))}
             {m.chips && m.chips.length > 0 && (
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
                 {m.chips.map((c, i) => {

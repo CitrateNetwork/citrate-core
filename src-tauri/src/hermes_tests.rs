@@ -620,30 +620,41 @@ fn capsules_env_absent_by_default_but_set_when_configured() {
 }
 
 #[test]
-fn seed_starter_capsules_copies_absent_skills_and_never_clobbers() {
+fn seed_starter_capsules_installs_only_pinned_capsules_hup_s2_5() {
     let root = tmp_dir("seed");
     let bundled = root.join("bundled");
     let dest = root.join("dest");
-    // A bundled starter skill "hello" with the runnable files.
+    // A bundled "hello" whose archive is not the pinned build: refused, not copied.
     let hello = bundled.join("hello");
     std::fs::create_dir_all(&hello).unwrap();
     std::fs::write(hello.join("manifest.toml"), b"name = \"hello\"\n").unwrap();
     std::fs::write(hello.join("hello.cps"), b"CPSFAKE").unwrap();
+    assert_eq!(
+        seed_starter_capsules(&bundled, &dest),
+        0,
+        "an unpinned archive is not installed"
+    );
+    assert!(!dest.join("hello").exists());
 
-    // First seed: hello is copied over.
-    let n = seed_starter_capsules(&bundled, &dest);
-    assert_eq!(n, 1, "one skill dir seeded");
+    // The real bundled starters are pinned: both install, and the member's own capsule stays.
+    std::fs::create_dir_all(dest.join("mine")).unwrap();
+    std::fs::write(dest.join("mine").join("mine.cps"), b"MINE").unwrap();
+    let shipped = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("capsules");
+    assert_eq!(seed_starter_capsules(&shipped, &dest), 3);
     assert!(dest.join("hello").join("hello.cps").exists());
-    assert!(dest.join("hello").join("manifest.toml").exists());
+    assert!(dest.join("echo-chain").join("echo-chain.cps").exists());
+    assert_eq!(
+        std::fs::read(dest.join("mine").join("mine.cps")).unwrap(),
+        b"MINE"
+    );
 
-    // A user edits their copy; a re-seed must NOT clobber it (existing skill is left alone).
+    // A seeded copy edited afterwards no longer matches its pin: the next seed restores it.
     std::fs::write(dest.join("hello").join("hello.cps"), b"USER_EDITED").unwrap();
-    let n2 = seed_starter_capsules(&bundled, &dest);
-    assert_eq!(n2, 1);
+    assert_eq!(seed_starter_capsules(&shipped, &dest), 3);
     assert_eq!(
         std::fs::read(dest.join("hello").join("hello.cps")).unwrap(),
-        b"USER_EDITED",
-        "existing skill must never be overwritten"
+        std::fs::read(shipped.join("hello").join("hello.cps")).unwrap(),
+        "an unverified copy is replaced by the verified bundled one"
     );
 }
 

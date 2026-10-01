@@ -39,7 +39,6 @@ const MCP_LABEL: Record<string, { name: string; scope: string }> = {
 const SAAS: { id: string; name: string; scope: string }[] = [
   { id: "slack", name: "Slack", scope: "post + read in channels your agent joins" },
   { id: "linear", name: "Linear", scope: "issues + cycles — read + create" },
-  { id: "gcal", name: "Google Calendar", scope: "events — read + propose" },
   { id: "gmail", name: "Gmail", scope: "read + draft (never send without approval)" },
 ];
 
@@ -133,7 +132,8 @@ export function Connections({ store }: SurfaceProps) {
     store.toast("Endpoint saved as a draft — HMAC-signed delivery turns on when the webhook backend ships.");
   };
 
-  const known = new Set(Object.keys(MCP_LABEL));
+  // HUP-S10.2: Google Sheets + Calendar are listed in Settings > Connections (with their setup state).
+  const known = new Set([...Object.keys(MCP_LABEL), "gsheets", "gcal"]);
   const mcpRows = Object.keys(MCP_LABEL).map((id) => {
     const info = mcp.find((c) => c.service === id);
     return { id, ...MCP_LABEL[id], connected: !!info?.connected };
@@ -283,6 +283,9 @@ export function Connections({ store }: SurfaceProps) {
       {/* ---- SaaS tools (NOT WIRED) ---- */}
       <Section title="SaaS tools" flag="pending backend">
         <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+          <div data-testid="saas-google-note" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 12, color: "var(--tx-2)", lineHeight: 1.5 }}>
+            Google Calendar and Google Sheets connect in Settings, Connections. They stay off until this build has a Google OAuth client id.
+          </div>
           {SAAS.map((sa) => (
             <div key={sa.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
               <span style={{ flex: 1, minWidth: 0 }}>

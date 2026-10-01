@@ -6,6 +6,22 @@ import { COACH_STEPS } from "../data/seed";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ApprovalCardView, HicBanner } from "./ApprovalCardView";
 import { DeployGateCard } from "./DeployGateCard";
+import { ModalDialog } from "./ModalDialog";
+
+// HUP-S10.6 (a11y): both approval dialogs render inside ModalDialog (named modal dialog, focus
+// trap, Escape = decline, focus starts on the safe choice and returns to the opener on close).
+const PANEL = { width: "100%", maxWidth: 480, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", overflow: "hidden", display: "flex", flexDirection: "column" } as const;
+let cerSeq = 0;
+const cerIds = new WeakMap<object, number>();
+/** A stable per-request number, so initial focus is applied once per request and phase. */
+function cerKey(head: object): number {
+  let n = cerIds.get(head);
+  if (n === undefined) {
+    n = ++cerSeq;
+    cerIds.set(head, n);
+  }
+  return n;
+}
 
 // ============================ SIGNATURE CEREMONY ============================
 export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
@@ -17,12 +33,23 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
     ? ["recording your approval", "writing to the local store", "checkpointing"]
     : ["signing — keystore in OS keyring", "broadcasting UserOp", "awaiting inclusion"];
 
+  const reviewing = s.cerPhase === "review";
+  const key = "cer-" + cerKey(head);
+
   return (
-    <div data-register="charter" style={{ position: "fixed", inset: 0, background: "rgba(14,15,12,.44)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 24 }}>
-      <div className="cc-fade-up" style={{ width: "100%", maxWidth: 480, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+    <ModalDialog
+      register="charter"
+      zIndex={60}
+      panelStyle={PANEL}
+      labelledBy={reviewing ? key + "-title" : key + "-kind"}
+      describedBy={reviewing ? key + "-by" : undefined}
+      // Escape is a decline (the safe direction), only while reviewing; it never approves.
+      onEscape={reviewing ? () => { store.finishCer("declined"); store.toast("Declined. Nothing was signed."); } : undefined}
+      focusKey={key + ":" + s.cerPhase}
+    >
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderBottom: "2px solid var(--line-strong)" }}>
           <img src={markBlack} alt="" style={{ width: 18, height: 18 }} />
-          <span className="mono" style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "var(--tx-2)" }}>
+          <span id={key + "-kind"} className="mono" style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "var(--tx-2)" }}>
             Signature ceremony
           </span>
           <span style={{ flex: 1 }}></span>
@@ -34,8 +61,10 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
         {s.cerPhase === "review" && (
           <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
             <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 440, fontSize: 20, lineHeight: 1.2 }}>{head.title}</div>
-              <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
+              <h2 id={key + "-title"} style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 440, fontSize: 20, lineHeight: 1.2 }}>
+                {head.title}
+              </h2>
+              <div id={key + "-by"} className="mono" style={{ fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
                 requested by {head.requester}
               </div>
             </div>
@@ -70,22 +99,8 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
               </div>
             )}
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", paddingTop: 2 }}>
-              <button
-                className="btn btn-ghost"
-                ref={(el) => {
-                  if (el && head && s.cerPhase === "review") {
-                    try {
-                      el.focus();
-                    } catch {
-                      /* ignore */
-                    }
-                  }
-                }}
-                onClick={() => {
-                  store.finishCer("declined");
-                  store.toast("Declined — nothing was signed");
-                }}
-              >
+              {/* Decline is the default-focused button; Approve never is (T2). */}
+              <button className="btn btn-ghost" data-autofocus onClick={() => { store.finishCer("declined"); store.toast("Declined. Nothing was signed."); }}>
                 Decline
               </button>
               <button className="btn btn-primary" onClick={() => store.approveCer()}>
@@ -93,7 +108,7 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
               </button>
             </div>
             {s.queue.length > 1 && (
-              <div className="mono" style={{ fontSize: 10, color: "var(--tx-3)", textAlign: "right" }}>
+              <div className="mono" role="status" style={{ fontSize: 10, color: "var(--tx-3)", textAlign: "right" }}>
                 {s.queue.length - 1} more request{s.queue.length > 2 ? "s" : ""} waiting
               </div>
             )}
@@ -102,16 +117,17 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
 
         {s.cerPhase === "busy" && (
           <div style={{ padding: "30px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-            <div style={{ width: 84, height: 84 }}>
+            <div aria-hidden="true" style={{ width: 84, height: 84 }}>
               <LoaderMark size={84} />
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 280 }}>
+            <div role="status" aria-live="polite" aria-label="Signing progress" style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 280 }}>
               {stepLabels.map((label, i) => {
                 const on = s.cerStep > i;
                 const active = s.cerStep === i;
                 return (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span
+                      aria-hidden="true"
                       style={{
                         width: 16,
                         height: 16,
@@ -131,6 +147,7 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
                     </span>
                     <span className="mono" style={{ fontSize: 11.5, color: on || active ? "var(--tx-1)" : "var(--tx-3)" }}>
                       {label}
+                      <span className="sr-only">{on ? " (done)" : active ? " (in progress)" : " (waiting)"}</span>
                     </span>
                   </div>
                 );
@@ -140,8 +157,8 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
         )}
 
         {s.cerPhase === "done" && (
-          <div style={{ padding: "26px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-            <span className="cc-stamp" style={{ width: 44, height: 44, borderRadius: 999, background: "var(--ok-bg)", border: "1.5px solid var(--ok)", color: "var(--ok)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+          <div role="status" style={{ padding: "26px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+            <span className="cc-stamp" aria-hidden="true" style={{ width: 44, height: 44, borderRadius: 999, background: "var(--ok-bg)", border: "1.5px solid var(--ok)", color: "var(--ok)", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
               <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                 <path d="M5 12 L10 17 L19 8"></path>
               </svg>
@@ -152,8 +169,7 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
             </span>
           </div>
         )}
-      </div>
-    </div>
+    </ModalDialog>
   );
 }
 
@@ -182,8 +198,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
   ];
 
   return (
-    <div data-register="charter" style={{ position: "fixed", inset: 0, background: "rgba(14,15,12,.44)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 62, padding: 24 }}>
-      <div className="cc-fade-up" role="dialog" aria-modal="true" aria-label="Wallet action review" style={{ width: "100%", maxWidth: 480, background: "#ffffff", border: "1px solid var(--line-2)", borderRadius: "var(--r-3)", boxShadow: "var(--shadow-lift)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+    <ModalDialog register="charter" zIndex={62} panelStyle={PANEL} labelledBy="wallet-review-title" describedBy="wallet-review-sub" onEscape={() => void store.rejectWalletReview()} focusKey={"wr:" + v.id}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderBottom: "2px solid var(--line-strong)" }}>
           <img src={markBlack} alt="" style={{ width: 18, height: 18 }} />
           <span className="mono" style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "var(--tx-2)" }}>
@@ -197,8 +212,10 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
 
         <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
           <div>
-            <div style={{ fontFamily: "var(--font-display)", fontWeight: 440, fontSize: 20, lineHeight: 1.2 }}>You are about to sign</div>
-            <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
+            <h2 id="wallet-review-title" style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 440, fontSize: 20, lineHeight: 1.2 }}>
+              You are about to sign
+            </h2>
+            <div id="wallet-review-sub" className="mono" style={{ fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
               nothing has been signed yet — approve to continue
             </div>
           </div>
@@ -250,19 +267,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", paddingTop: 2 }}>
             {/* Reject is the DEFAULT-focused button (T2 — Approve must never be the
                 default action for a money signature). */}
-            <button
-              className="btn btn-ghost"
-              ref={(el) => {
-                if (el && s.walletReview) {
-                  try {
-                    el.focus();
-                  } catch {
-                    /* ignore */
-                  }
-                }
-              }}
-              onClick={() => void store.rejectWalletReview()}
-            >
+            <button className="btn btn-ghost" data-autofocus onClick={() => void store.rejectWalletReview()}>
               Reject
             </button>
             <button className="btn btn-primary" disabled={!approveEnabled} onClick={() => void store.approveWalletReview()}>
@@ -270,8 +275,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }
 

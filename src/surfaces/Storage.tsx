@@ -145,6 +145,54 @@ function ConstellationOffline({ store, s, state }: SurfaceProps & { state: "load
   );
 }
 
+/** HUP-S3.1 — skip reasons from the Rust importer, in plain words. */
+const KNOWLEDGE_SKIP_TEXT: Record<string, string> = {
+  "no-bundle": "Built-in knowledge: not included in this build.",
+  "not-semantic": "Built-in knowledge: waits for the bundled search model.",
+  "already-imported": "Built-in knowledge ready.",
+  "in-progress": "Built-in knowledge: an import is already running.",
+};
+
+/** HUP-S3.1 — status of the first-run knowledge-corpus import. Shows only what the importer
+ *  reported (its own counts, its own skip reason or error). Nothing before the first attempt. */
+function KnowledgeImportStatus({ store, s }: SurfaceProps) {
+  const k = s.knowledgeImport;
+  if (!k || k.state === "idle") return null;
+  const style = { fontSize: 10.5, color: "var(--tx-3)" } as const;
+  if (k.state === "running") {
+    const counts = k.total > 0 ? ` ${k.done} / ${k.total}` : "";
+    return (
+      <span className="mono" style={style}>
+        Importing built-in knowledge{k.tenant ? `: ${k.tenant}` : ""}{counts}
+      </span>
+    );
+  }
+  if (k.state === "imported") {
+    return (
+      <span className="mono" style={style}>
+        Built-in knowledge imported ({k.nodesAdded} entries).
+      </span>
+    );
+  }
+  if (k.state === "skipped") {
+    const text = (k.message && KNOWLEDGE_SKIP_TEXT[k.message]) || `Built-in knowledge skipped (${k.message ?? "no reason given"}).`;
+    return (
+      <span className="mono" style={style}>
+        {text}
+      </span>
+    );
+  }
+  return (
+    <span className="mono" style={{ ...style, color: "var(--warn, var(--tx-3))", display: "inline-flex", gap: 8, alignItems: "center" }}>
+      Built-in knowledge import failed: {k.message ?? "unknown error"}
+      {/* Rust stops a running daemon for the import and restarts it afterwards. */}
+      <button className="btn btn-ghost btn-sm" onClick={() => void store.importKnowledge()}>
+        Retry
+      </button>
+    </span>
+  );
+}
+
 export function Storage({ store, s }: SurfaceProps) {
   // Q-A.4a: on mount, read the REAL daemon status (socket path + semantic flag +
   // supervisor state) THEN fetch the constellation. A transport failure (daemon not
@@ -228,6 +276,8 @@ export function Storage({ store, s }: SurfaceProps) {
           </span>
         </span>
       </div>
+
+      <KnowledgeImportStatus store={store} s={s} />
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 300px", gap: 16, flex: 1, minHeight: 420 }}>
         {/* constellation canvas */}
