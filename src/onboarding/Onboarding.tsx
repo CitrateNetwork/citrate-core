@@ -4,6 +4,7 @@ import { LoaderMark } from "../components/LoaderMark";
 import { TierPanel } from "./TierPanel";
 import { PersonaPicker } from "../components/PersonaPicker";
 import { bridge } from "../bridge";
+import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 
@@ -982,6 +983,10 @@ function S6({ store, s }: { store: Store; s: AppState }) {
       {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && (
         <ModelStep store={store} s={s} />
       )}
+
+      {/* HUP-S7.4 (US-7.1) — give Hermes an on-chain identity (AgentSBT), approved in the
+          Signature Ceremony. Optional and never blocking: "Enter your dashboard" stays above. */}
+      {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && <AgentIdentityStep store={store} />}
       {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && (
         <PersonaStep store={store} s={s} />
       )}

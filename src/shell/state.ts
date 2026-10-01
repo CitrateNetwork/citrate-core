@@ -218,7 +218,7 @@ export interface CerSpec {
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke";
+  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
@@ -582,6 +582,22 @@ export interface AppState {
   memDaemonError: string | null;
   memSocketPath: string | null;
   memSemantic: boolean;
+  /**
+   * HUP-S3.1 runtime state of the first-run knowledge-corpus import (NOT persisted). `done`/`total`
+   * are the importer's own per-tenant progress counts; `message` is the skip reason or the failure
+   * text, shown as-is. Counts are never fabricated: they come only from the importer.
+   */
+  knowledgeImport: KnowledgeImportState;
+}
+
+/** HUP-S3.1 — see `AppState.knowledgeImport`. */
+export interface KnowledgeImportState {
+  state: "idle" | "running" | "imported" | "skipped" | "failed";
+  tenant: string | null;
+  done: number;
+  total: number;
+  nodesAdded: number;
+  message: string | null;
 }
 
 /** One tenant's real node count + its parsed nodes, from the memory daemon. */
@@ -776,6 +792,7 @@ export function freshState(pid: string): AppState {
     memDaemonError: null,
     memSocketPath: null,
     memSemantic: false,
+    knowledgeImport: { state: "idle", tenant: null, done: 0, total: 0, nodesAdded: 0, message: null },
   };
   const today = new Date().toISOString().slice(0, 10);
   if (P.fresh) {

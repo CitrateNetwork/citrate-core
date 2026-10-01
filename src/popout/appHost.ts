@@ -4,7 +4,8 @@
 // Desktop app only. The monitor's inputs are the live store, the turn activity slice, the tier
 // report and the model router (the same sources the chat header uses); the context window comes
 // from Rust (`popout_monitor_facts`, the local llama-server's --ctx-size); Stop is
-// `store.stopAgentTurn`. In the web preview there are no windows to open, and it says so.
+// `store.stopAgentTurn`; the worker processes come from Rust (`hermes_workers`, HUP-S1.9). In the
+// web preview there are no windows to open, and it says so.
 // =====================================================================
 import { invoke } from "../bridge/tauri/invoke";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -17,6 +18,7 @@ import { resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
 import type { PopoutKind } from "./kinds";
+import type { WorkerRow } from "./monitorSnapshot";
 
 let hostPromise: Promise<PopoutHost> | null = null;
 
@@ -46,6 +48,8 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
       },
       stop: () => store.stopAgentTurn(),
       contextWindow: async () => (await invoke<{ localCtxTokens: number }>("popout_monitor_facts")).localCtxTokens,
+      // HUP-S1.9: the sidecar's worker processes (Rust → the sidecar's GET /workers).
+      workers: () => invoke<WorkerRow[]>("hermes_workers"),
       now: () => Date.now(),
     }))();
   return hostPromise;

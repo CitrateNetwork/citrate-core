@@ -35,6 +35,8 @@ sha2 = "0.10"
 # deterministic secret from the sealed entropy, NOT a signature. Already compiled transitively
 # (hkdf/hmac are in Cargo.lock) — promoting to a direct dep adds no new compiled crate.
 hkdf = "0.12"
+# HUP-S2.3: HMAC-SHA256 integrity tag on the web-signing budget file (already in Cargo.lock via hkdf).
+hmac = "0.12"
 base64 = "0.22"
 sha3 = "0.10"
 bip39 = { version = "1.2", features = ["std", "zeroize"] }
