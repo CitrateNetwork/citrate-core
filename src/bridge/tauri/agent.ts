@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesPersona, TrackWorkflow } from "../domains";
 import type { CeremonyView } from "../types";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
@@ -79,6 +79,15 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   briefCheck(brief) {
     return invoke<{ ok: boolean; markdown: string }>("hermes_brief_check", { brief });
+  },
+  personas() {
+    return invoke<HermesPersona[]>("hermes_personas");
+  },
+  personaCheck(persona) {
+    return invoke<HermesPersona>("hermes_persona_check", { persona });
+  },
+  workflows() {
+    return invoke<TrackWorkflow[]>("hermes_workflows");
   },
 };
 

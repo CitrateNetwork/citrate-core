@@ -1,0 +1,180 @@
+// HUP-S3.3 + S3.7 (core half): personas and track workflows read from the sidecar, and a custom
+// persona checked by it. Core bounds the input first; a 422 surfaces as PERSONA_REFUSED with the
+// sidecar's reason.
+
+use super::*;
+use crate::hermes::{ControlResp, HermesControl, HermesError, HermesManager};
+use std::sync::Mutex as StdMutex;
+
+#[derive(Default)]
+struct Recorder {
+    posts: StdMutex<Vec<(String, String)>>,
+    gets: StdMutex<Vec<String>>,
+    reply: StdMutex<Vec<(u16, String)>>,
+}
+struct RecControl(std::sync::Arc<Recorder>);
+impl HermesControl for RecControl {
+    fn get(&self, url: &str, _b: &str) -> std::result::Result<ControlResp, HermesError> {
+        self.0.gets.lock().unwrap().push(url.to_string());
+        let (status, body) = self
+            .0
+            .reply
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or((200, "[]".into()));
+        Ok(ControlResp { status, body })
+    }
+    fn post(
+        &self,
+        url: &str,
+        _b: &str,
+        body: &str,
+    ) -> std::result::Result<ControlResp, HermesError> {
+        self.0
+            .posts
+            .lock()
+            .unwrap()
+            .push((url.to_string(), body.to_string()));
+        let (status, body) = self
+            .0
+            .reply
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or((200, "{}".into()));
+        Ok(ControlResp { status, body })
+    }
+}
+
+fn mgr(rec: std::sync::Arc<Recorder>) -> HermesManager {
+    let dir = std::env::temp_dir().join(format!(
+        "hpersona-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"))
+        .with_control(Box::new(RecControl(rec)));
+    m.set_token_for_test("deadbeef");
+    m
+}
+
+const PERSONA: &str = r#"{"id":"builder","role":"Builder","name":"Graft",
+ "name_status":"placeholder, pending owner sign-off","summary":"Ships code and dApps.",
+ "voice":"Direct.","tone":"Practical.","style_rules":["Lead with the change."],
+ "default_track":"full-project","default_workflow":"hello-mint",
+ "tool_emphasis":["forge_test"],"skills":["solidity"],"tts_voice":null,
+ "prompt_fragment":"Persona: Graft\n","name_pending_sign_off":true,"custom":false}"#;
+
+fn custom() -> CustomPersonaInput {
+    CustomPersonaInput {
+        id: "custom-night-owl".into(),
+        name: "Night Owl".into(),
+        summary: "Late-night pair programmer.".into(),
+        voice: "Quiet.".into(),
+        tone: "Dry.".into(),
+        style_rules: vec!["Lead with the answer.".into()],
+        default_track: "code".into(),
+        tool_emphasis: vec![],
+        skills: vec![],
+        tts_voice: None,
+    }
+}
+
+#[test]
+fn personas_are_read_from_the_sidecar_with_their_fragment_and_pending_flag() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    *rec.reply.lock().unwrap() = vec![(200, format!("[{PERSONA}]"))];
+    let m = mgr(rec.clone());
+    let ps = personas(&m).unwrap();
+    assert_eq!(ps.len(), 1);
+    assert_eq!(ps[0].name, "Graft");
+    assert!(ps[0].name_pending_sign_off);
+    assert_eq!(ps[0].default_workflow, "hello-mint");
+    assert!(ps[0].prompt_fragment.starts_with("Persona: Graft"));
+    assert!(rec.gets.lock().unwrap()[0].ends_with("/personas"));
+}
+
+#[test]
+fn workflows_are_read_from_the_sidecar() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    let body = r#"[{"id":"contract-build","track":"smart-contract","title":"Contract build",
+      "summary":"s","is_default":true,"evidence":"tool-report","tools":["forge_test"],
+      "verifier_names":["forge_test: all tests pass"],
+      "steps":[{"id":"tests","instruction":"i","max_attempts":3,"verifier_names":["forge_test: all tests pass"]}]}]"#;
+    *rec.reply.lock().unwrap() = vec![(200, body.into())];
+    let m = mgr(rec.clone());
+    let ws = workflows(&m).unwrap();
+    assert_eq!(ws[0].evidence, "tool-report");
+    assert_eq!(ws[0].steps[0].max_attempts, 3);
+    assert!(rec.gets.lock().unwrap()[0].ends_with("/workflows"));
+}
+
+#[test]
+fn a_custom_persona_is_posted_for_the_sidecar_to_check() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    let reply = PERSONA
+        .replace("\"builder\"", "\"custom-night-owl\"")
+        .replace("\"custom\":false", "\"custom\":true");
+    *rec.reply.lock().unwrap() = vec![(200, reply)];
+    let m = mgr(rec.clone());
+    let v = persona_check(&m, &custom()).unwrap();
+    assert!(v.custom);
+    let posts = rec.posts.lock().unwrap();
+    assert!(posts[0].0.ends_with("/personas/check"));
+    let sent: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+    assert_eq!(sent["persona"]["id"], "custom-night-owl");
+    assert_eq!(sent["persona"]["style_rules"][0], "Lead with the answer.");
+}
+
+#[test]
+fn a_sidecar_refusal_reads_persona_refused_with_its_reason() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    *rec.reply.lock().unwrap() = vec![(
+        422,
+        r#"{"error":"\"Graft\" is a shipped persona's name; pick another"}"#.into(),
+    )];
+    let m = mgr(rec);
+    let e = persona_check(&m, &custom()).unwrap_err();
+    assert!(e.starts_with("PERSONA_REFUSED: "), "{e}");
+    assert!(e.contains("shipped persona"), "{e}");
+}
+
+#[test]
+fn core_bounds_a_custom_persona_before_it_reaches_the_sidecar() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    let m = mgr(rec.clone());
+    let mut c = custom();
+    c.id = "night-owl".into();
+    assert!(
+        persona_check(&m, &c).is_err(),
+        "custom ids start with custom-"
+    );
+    let mut c = custom();
+    c.style_rules = vec!["x".repeat(301)];
+    assert!(persona_check(&m, &c).is_err(), "rules are bounded");
+    let mut c = custom();
+    c.style_rules = vec!["r".into(); 13];
+    assert!(persona_check(&m, &c).is_err(), "at most 12 rules");
+    let mut c = custom();
+    c.name = "n".repeat(41);
+    assert!(persona_check(&m, &c).is_err(), "name is bounded");
+    let mut c = custom();
+    c.default_track = "Not A Slug".into();
+    assert!(persona_check(&m, &c).is_err());
+    let mut c = custom();
+    c.tts_voice = Some("bad voice; x".into());
+    assert!(persona_check(&m, &c).is_err());
+    assert!(
+        rec.posts.lock().unwrap().is_empty(),
+        "nothing out-of-bounds is sent"
+    );
+}
+
+#[test]
+fn not_running_is_an_honest_error() {
+    let dir = std::env::temp_dir().join(format!("hpersona-nr-{}", std::process::id()));
+    let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"));
+    assert!(personas(&m).is_err());
+}

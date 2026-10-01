@@ -37,7 +37,8 @@ import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter
 import { formatJournalForAgent } from "../agent/journalRead";
 import { fenceUntrusted } from "../agent/untrusted";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
-import type { Brief, GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
+import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -844,7 +845,12 @@ export class Store {
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
           },
-          () => AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
+          // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
+          () =>
+            composeSystemPrompt(
+              AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
+              this.state.hermesPersona,
+            ),
           () => annotatedAgentTools(),
         );
         this.reflectProvider();
@@ -1939,6 +1945,31 @@ export class Store {
     this.scrollChat();
   }
 
+  /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for
+   *  the default voice. Only the prompt's voice changes; tools, approvals and gates do not. A running
+   *  sidecar session keeps its prompt, so the provider is rebuilt to open a fresh one. */
+  chooseHermesPersona(p: HermesPersona | null): void {
+    this.setState({ hermesPersona: p });
+    this.save();
+    if (this.state.hermesSidecarLoop) void this.rebuildProvider();
+  }
+
+  /** HUP-S3.3 (US-3.3 AC3) — keep a member-defined persona the sidecar accepted (replaces one with
+   *  the same id). Shipped personas are never stored here. */
+  addCustomPersona(p: HermesPersona): void {
+    if (!p.custom || !p.id.startsWith("custom-")) return;
+    this.setState((s) => ({ customPersonas: s.customPersonas.filter((k) => k.id !== p.id).concat([p]) }));
+    this.save();
+  }
+
+  /** HUP-S3.3 — remove a custom persona; if it was the chosen one, go back to the default voice. */
+  removeCustomPersona(id: string): void {
+    const wasChosen = this.state.hermesPersona?.id === id;
+    this.setState((s) => ({ customPersonas: s.customPersonas.filter((k) => k.id !== id) }));
+    if (wasChosen) this.chooseHermesPersona(null);
+    else this.save();
+  }
+
   /** HUP-S0.7 — retry a failed turn: drop the failed reply and its user message, then resend. */
   async retryChat(failedId: string): Promise<void> {
     const msgs = this.state.chatMsgs;
@@ -2012,10 +2043,14 @@ export class Store {
     );
     try {
       const run = provider.send({
-        messages: this.state.chatMsgs
-          .filter((m) => !m.streaming && !m.error)
-          .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
-          .concat([{ role: "user", content: text }]),
+        // HUP-S3.3: the chosen persona rides as one leading system message (none = unchanged).
+        messages: withPersonaMessage(
+          this.state.chatMsgs
+            .filter((m) => !m.streaming && !m.error)
+            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
+            .concat([{ role: "user", content: text }]),
+          this.state.hermesPersona,
+        ),
         signal: ac.signal,
         callbacks: {
           onStatus: (st) => {

@@ -505,6 +505,9 @@ pub fn run() {
             hermes::hermes_tracks,
             hermes::hermes_brief_create,
             hermes::hermes_brief_check,
+            hermes::personas::hermes_personas,
+            hermes::personas::hermes_workflows,
+            hermes::personas::hermes_persona_check,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).

@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { Brief, PendingWithdrawal } from "../bridge/domains";
+import type { Brief, HermesPersona, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -498,6 +498,11 @@ export interface AppState {
   hermesSidecarLoop: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
+  /** HUP-S3.3 + S3.7 — the chosen Hermes persona (its sidecar view, fragment included), or null for
+   *  the default voice (the default: nothing about the prompt changes). Persisted. */
+  hermesPersona: HermesPersona | null;
+  /** HUP-S3.3 (US-3.3 AC3) — member-defined personas, each checked by the sidecar. Persisted. */
+  customPersonas: HermesPersona[];
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -754,6 +759,8 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: false,
     hermesBrief: null,
+    hermesPersona: null,
+    customPersonas: [],
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -898,7 +905,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "hermesPersona", "customPersonas", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {

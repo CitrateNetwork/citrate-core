@@ -29,6 +29,7 @@ import { AppState, fmtSaltFromWei } from "../shell/state";
 import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
+import { PersonaPicker } from "../components/PersonaPicker";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 
@@ -1073,6 +1074,18 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
                 Uses your local model. Tools still run here, behind the same approvals. Needs the Hermes sidecar running. Off by default until the parity checks pass.
               </span>
+            </div>
+            {/* HUP-S3.3 + S3.7 — Hermes persona (voice). Default: Hermes's own voice, nothing changes. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              <span className="eyebrow">Hermes · persona</span>
+              <PersonaPicker
+                api={bridge.agentHarness}
+                chosen={s.hermesPersona}
+                custom={s.customPersonas}
+                onChoose={(p) => store.chooseHermesPersona(p)}
+                onAddCustom={(p) => store.addCustomPersona(p)}
+                onRemoveCustom={(id) => store.removeCustomPersona(id)}
+              />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>
