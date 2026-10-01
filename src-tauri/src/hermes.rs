@@ -14,7 +14,7 @@
 //! commands stay honest `not wired` until then. Managed as a process-wide singleton in this module,
 //! so no state wiring in the (s0-owned) `lib.rs` — Lane D stays race-free.
 //
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -93,6 +93,10 @@ pub enum HermesError {
     /// PBA-L7b-003: the sidecar's head is no longer the action the member reviewed (a timeout
     /// eviction or a newer effect changed it). Nothing was resolved; the member must re-review.
     Stale,
+    /// HUP-S1.4: the sidecar refused a brief request (422): no track fits the goal, an answer is not
+    /// one of its choices, or an edit dropped a required gate. Carries the sidecar's reason verbatim
+    /// so the interview card can show it inline.
+    BriefRefused(String),
 }
 
 impl std::fmt::Display for HermesError {
@@ -117,6 +121,7 @@ impl std::fmt::Display for HermesError {
                 f,
                 "STALE_APPROVAL: the agent's pending action is no longer the one you reviewed (it expired or was replaced), so the agent did not receive this decision"
             ),
+            HermesError::BriefRefused(m) => write!(f, "BRIEF_REFUSED: {m}"),
         }
     }
 }
@@ -145,9 +150,10 @@ pub trait HermesControl: Send + Sync {
     fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp>;
 }
 
-/// Production control transport over blocking `ureq`. On a non-2xx ureq surfaces the response (we map
-/// it to [`HermesError::Control`]); a transport failure (refused/timeout) maps to
-/// [`HermesError::Transport`] and never carries the bearer.
+/// Production control transport over blocking `ureq`. A non-2xx is returned as a normal response
+/// (`http_status_as_error(false)`) so its status AND body reach the caller, which maps it to a typed
+/// error; a transport failure (refused/timeout) maps to [`HermesError::Transport`] and never carries
+/// the bearer.
 pub struct UreqControl;
 
 impl UreqControl {
@@ -171,12 +177,13 @@ impl HermesControl for UreqControl {
         match ureq::get(url)
             .config()
             .timeout_global(Some(HERMES_CONTROL_TIMEOUT))
+            .http_status_as_error(false)
             .build()
             .header("Authorization", &format!("Bearer {bearer}"))
             .call()
         {
             Ok(resp) => Self::read(resp),
-            // ureq returns Err on non-2xx; recover the status/body rather than losing it.
+            // Defensive: with http_status_as_error(false) ureq returns non-2xx as Ok; keep the status if not.
             Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
                 status: code,
                 body: String::new(),
@@ -189,6 +196,7 @@ impl HermesControl for UreqControl {
         match ureq::post(url)
             .config()
             .timeout_global(Some(HERMES_CONTROL_TIMEOUT))
+            .http_status_as_error(false)
             .build()
             .header("Authorization", &format!("Bearer {bearer}"))
             .header("Content-Type", "application/json")
@@ -667,6 +675,80 @@ impl HermesManager {
             "{}",
         )?)?;
         Ok(())
+    }
+
+    // --- HUP-S1.4 interviewer: tracks + briefs (runtime agent-loop::interview) -------------------
+
+    /// Map a brief-route response: 2xx → decoded body; 422 → [`HermesError::BriefRefused`] with the
+    /// sidecar's `{error}` reason; anything else → the usual typed `Control` error.
+    fn decode_brief<T: serde::de::DeserializeOwned>(resp: ControlResp) -> Result<T> {
+        if resp.status == 422 {
+            let reason = serde_json::from_str::<serde_json::Value>(&resp.body)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| "the sidecar refused this brief".to_string());
+            return Err(HermesError::BriefRefused(
+                reason.chars().take(300).collect(),
+            ));
+        }
+        Self::decode(resp)
+    }
+
+    /// `GET /tracks` — the bundled interview tracks (question sets, persona, skills, workflow, gates).
+    pub fn tracks(&self) -> Result<Vec<Track>> {
+        let bearer = self.bearer()?;
+        let resp = self
+            .control
+            .get(&format!("{}/tracks", self.control_url()), &bearer)?;
+        Self::decode(resp)
+    }
+
+    /// `POST /briefs` — answers → brief. Unanswered questions take their defaults (an empty map is
+    /// "just use defaults"); with no `track` the sidecar suggests one from the goal (422 if none fits).
+    pub fn brief_create(
+        &self,
+        track: Option<&str>,
+        goal: &str,
+        answers: &BTreeMap<String, String>,
+    ) -> Result<BriefDraft> {
+        let bad = |msg: String| HermesError::Control { status: 400, msg };
+        if let Some(t) = track {
+            valid_slug(t, "track id").map_err(bad)?;
+        }
+        valid_goal(goal).map_err(bad)?;
+        if answers.len() > MAX_BRIEF_ANSWERS {
+            return Err(bad(format!("at most {MAX_BRIEF_ANSWERS} answers")));
+        }
+        for (id, a) in answers {
+            valid_slug(id, "question id").map_err(bad)?;
+            valid_len(a, MAX_BRIEF_ANSWER_CHARS, "an answer").map_err(bad)?;
+        }
+        let bearer = self.bearer()?;
+        let mut body = serde_json::json!({ "goal": goal, "answers": answers });
+        if let Some(t) = track {
+            body["track"] = serde_json::Value::String(t.to_string());
+        }
+        let resp = self.control.post(
+            &format!("{}/briefs", self.control_url()),
+            &bearer,
+            &body.to_string(),
+        )?;
+        Self::decode_brief(resp)
+    }
+
+    /// `POST /briefs/check` — validate a member-edited brief against its track. The sidecar owns
+    /// the rules (gates and workflow can't be edited away); core only bounds the sizes first.
+    pub fn brief_check(&self, brief: &Brief) -> Result<BriefChecked> {
+        validate_brief_shape(brief).map_err(|msg| HermesError::Control { status: 400, msg })?;
+        let bearer = self.bearer()?;
+        let body = serde_json::json!({ "brief": brief }).to_string();
+        let resp = self.control.post(
+            &format!("{}/briefs/check", self.control_url()),
+            &bearer,
+            &body,
+        )?;
+        Self::decode_brief(resp)
     }
 
     // --- S6.3 ceremony bridge -------------------------------------------------------------------
@@ -1159,6 +1241,182 @@ pub fn hermes_resolve_sync(
 }
 
 // ---------------------------------------------------------------------------
+// HUP-S1.4 — interviewer DTOs, input bounds and commands (runtime agent-loop::interview)
+// ---------------------------------------------------------------------------
+//
+// These mirror the sidecar's wire shapes exactly (snake_case, as `agent-loop::interview` serializes
+// them) so a brief round-trips webview → core → sidecar unchanged. Core bounds sizes; the sidecar
+// owns the semantics (choices, required gates, fixed workflow).
+
+const MAX_BRIEF_GOAL_CHARS: usize = 2000;
+const MAX_BRIEF_ANSWER_CHARS: usize = 500;
+const MAX_BRIEF_ANSWERS: usize = 16;
+const MAX_BRIEF_LIST: usize = 32;
+const MAX_BRIEF_ITEM_CHARS: usize = 200;
+
+/// One interview question. `choices` empty means free text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrackQuestion {
+    pub id: String,
+    pub ask: String,
+    #[serde(default)]
+    pub choices: Vec<String>,
+    pub default: String,
+}
+
+/// An interview track (a goal family that selects a workflow).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Track {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub persona: String,
+    pub skills: Vec<String>,
+    pub workflow: String,
+    /// False until the workflow ships; the card says so instead of pretending (Rule 1).
+    pub workflow_available: bool,
+    #[serde(default)]
+    pub ships_in: Option<String>,
+    pub gates: Vec<String>,
+    pub questions: Vec<TrackQuestion>,
+}
+
+/// One answered question in a brief.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BriefConstraint {
+    pub id: String,
+    pub ask: String,
+    pub answer: String,
+    pub from_default: bool,
+}
+
+/// The brief the member reads and edits before anything is built.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Brief {
+    pub track: String,
+    pub goal: String,
+    pub constraints: Vec<BriefConstraint>,
+    pub persona: String,
+    pub skills: Vec<String>,
+    pub workflow: String,
+    pub workflow_available: bool,
+    #[serde(default)]
+    pub ships_in: Option<String>,
+    pub gates: Vec<String>,
+}
+
+/// `POST /briefs` reply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BriefDraft {
+    pub brief: Brief,
+    pub markdown: String,
+}
+
+/// `POST /briefs/check` reply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BriefChecked {
+    pub ok: bool,
+    pub markdown: String,
+}
+
+/// A track or question id: `[a-z0-9_-]`, 1..=64 (lowercase slugs, as the bundled tracks use).
+fn valid_slug(s: &str, what: &str) -> std::result::Result<(), String> {
+    if !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    {
+        Ok(())
+    } else {
+        Err(format!("invalid {what}"))
+    }
+}
+
+fn valid_len(s: &str, max: usize, what: &str) -> std::result::Result<(), String> {
+    if s.chars().count() > max {
+        Err(format!("{what} is longer than {max} characters"))
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_goal(goal: &str) -> std::result::Result<(), String> {
+    if goal.trim().is_empty() {
+        return Err("a brief needs a goal".into());
+    }
+    valid_len(goal, MAX_BRIEF_GOAL_CHARS, "the goal")
+}
+
+fn valid_list(items: &[String], what: &str) -> std::result::Result<(), String> {
+    if items.len() > MAX_BRIEF_LIST {
+        return Err(format!("at most {MAX_BRIEF_LIST} {what}"));
+    }
+    for i in items {
+        valid_len(i, MAX_BRIEF_ITEM_CHARS, what)?;
+    }
+    Ok(())
+}
+
+/// Size/shape bounds on an edited brief before it goes to the sidecar for the real check.
+fn validate_brief_shape(b: &Brief) -> std::result::Result<(), String> {
+    valid_slug(&b.track, "track id")?;
+    valid_goal(&b.goal)?;
+    valid_len(&b.persona, MAX_BRIEF_ITEM_CHARS, "the persona")?;
+    valid_len(&b.workflow, MAX_BRIEF_ITEM_CHARS, "the workflow")?;
+    if let Some(v) = &b.ships_in {
+        valid_len(v, MAX_BRIEF_ITEM_CHARS, "ships_in")?;
+    }
+    valid_list(&b.skills, "skills")?;
+    valid_list(&b.gates, "gates")?;
+    if b.constraints.len() > MAX_BRIEF_ANSWERS {
+        return Err(format!("at most {MAX_BRIEF_ANSWERS} answers"));
+    }
+    for c in &b.constraints {
+        valid_slug(&c.id, "question id")?;
+        valid_len(&c.ask, MAX_BRIEF_ANSWER_CHARS, "a question")?;
+        valid_len(&c.answer, MAX_BRIEF_ANSWER_CHARS, "an answer")?;
+    }
+    Ok(())
+}
+
+/// **hermes_tracks** — the interview tracks the sidecar serves.
+#[tauri::command]
+pub async fn hermes_tracks(app: tauri::AppHandle) -> std::result::Result<Vec<Track>, String> {
+    crate::blocking::off_main(move || manager(&app)?.tracks().map_err(|e| e.to_string())).await
+}
+
+/// **hermes_brief_create** — answers → brief (unanswered questions take their defaults; no track
+/// lets the sidecar suggest one). Builds nothing.
+#[tauri::command]
+pub async fn hermes_brief_create(
+    app: tauri::AppHandle,
+    track: Option<String>,
+    goal: String,
+    answers: BTreeMap<String, String>,
+) -> std::result::Result<BriefDraft, String> {
+    crate::blocking::off_main(move || {
+        manager(&app)?
+            .brief_create(track.as_deref(), &goal, &answers)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **hermes_brief_check** — validate a member-edited brief (a refusal reads `BRIEF_REFUSED: …`).
+#[tauri::command]
+pub async fn hermes_brief_check(
+    app: tauri::AppHandle,
+    brief: Brief,
+) -> std::result::Result<BriefChecked, String> {
+    crate::blocking::off_main(move || {
+        manager(&app)?
+            .brief_check(&brief)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
 // HUP-S1.1c — session body builder + commands (ADR loop-in-sidecar)
 // ---------------------------------------------------------------------------
 
@@ -1322,6 +1580,11 @@ pub async fn hermes_session_stop(
 ) -> std::result::Result<(), String> {
     crate::blocking::off_main(move || manager(&app)?.session_stop(&id).map_err(|e| e.to_string()))
         .await
+}
+
+#[cfg(test)]
+mod brief_tests {
+    include!("hermes_brief_tests.rs");
 }
 
 #[cfg(test)]
