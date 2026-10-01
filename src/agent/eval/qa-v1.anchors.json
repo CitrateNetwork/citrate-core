@@ -1,0 +1,645 @@
+{
+  "version": "qa-v1",
+  "sources": {
+    "citrate-docs": {
+      "repo": "CitrateNetwork/citrate-docs",
+      "commit": "73ea7c56bc2087058ecc58eae5dbf734c86da072",
+      "files": {
+        "content/aa/guardians.md": {
+          "blob": "add3aa7cbd19c94c852cc47f5f9ff0848124a24b",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "nomination-rules",
+            "http-routes",
+            "guardianrecoverymodule",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/aa/passkeys.md": {
+          "blob": "45528d94196be36718e3ca792144414f2f1085c2",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "counterfactual-address",
+            "webauthnp256validator-how-a-passkey-authorizes-an-operation",
+            "citrateecdsavalidator-the-eoa-path",
+            "kernel-v3-account-and-the-first-operation",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/aa/paymaster.md": {
+          "blob": "e7ffab297e06c1c3ae0295a0b38eeba13b58c5c7",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "categories",
+            "caps-and-accounting",
+            "eligibility-the-registrar-gate",
+            "bundler-topology",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/apps/memories.md": {
+          "blob": "5a9c2ec5a3328d28966c87d3ebda3d358e115ab0",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "the-webapp",
+            "connecting-an-agent-over-mcp",
+            "reference",
+            "webapp-surfaces",
+            "mcp-tools",
+            "gateway-and-engine",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/apps/wallet-extension.md": {
+          "blob": "972647849311668b56649ad629f3bffb548f46b8",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/cli.md": {
+          "blob": "e831a5ade91be62e107052994417a1b0673d6eea",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "account-clisrccommandsaccountrs",
+            "model-clisrccommandsmodelrs",
+            "contract-clisrccommandscontractrs",
+            "network-clisrccommandsnetworkrs",
+            "governance-clisrccommandsgovernancers",
+            "advanced-clisrccommandsadvancedrs",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/consensus.md": {
+          "blob": "56c4edc9a97920415778789cd5162772cc95f8d8",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "current-status",
+            "reference",
+            "ghostdag-engine-srcghostdagrs",
+            "parameters-srctypesrs",
+            "proposer-election-srcecvrfrs-srcvrfrs",
+            "depth-based-finality-srcfinalityrs",
+            "committee-checkpoint-finality-srccheckpointrs-specified-not-running",
+            "example",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/economics.md": {
+          "blob": "dc15b5029726fe8242ab1828941c25b7462e3185",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/genesis.md": {
+          "blob": "55018dc169f7ae34f879d8abbfc3766a6db7e69c",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/lvm.md": {
+          "blob": "4ac7ce1925e8e962de2ab2e08e1bab33bc965246",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "the-mvcc-primitives",
+            "scheduling",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/network.md": {
+          "blob": "bd535adbc6dad3266cb637339220d61e30db95d4",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/precompiles-zkp.md": {
+          "blob": "ab54b2a85bc899800c2911a87c86167a646dd3c1",
+          "anchors": [
+            "what-it-is",
+            "verification-0x0107-to-0x0109",
+            "hosted-inference-0x0100-to-0x0106",
+            "deterministic-q1616-compute-0x010a-to-0x010f",
+            "attestation-gate",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/precompiles.md": {
+          "blob": "4d4d3cf0f43a3b60225c06a1bfcb44ad83bc0c9e",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "tensor-primitives",
+            "x402-payment-precompiles",
+            "belnap-q16-lattice-aggregation",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/rpc.md": {
+          "blob": "abda91c68ce5702d7c261404323d2600d945f4e8",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "ethereum-compatible-eth_",
+            "chain-and-dag-chain_-citrate_",
+            "economics-citrate_",
+            "ai-citrate_",
+            "network-and-operations-citrate_",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/sequencer.md": {
+          "blob": "4b9a9e18b0d8b58c844136f502371622756b007e",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "mempool-srcmempoolrs",
+            "transaction-validator-srcvalidatorrs",
+            "block-builder-srcblock_builderrs",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/chain/storage.md": {
+          "blob": "165c1179b986c951fc0ab80564fd455c7e754a39",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "rocksdb-backend-srcdb",
+            "chain-store-srcchain",
+            "state-srcstate-srcstate_managerrs",
+            "pruning-srcpruning",
+            "ipfs-model-storage-and-pinning-srcipfs",
+            "caching-srccache",
+            "at-rest-encryption",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/compute/agent-runtime.md": {
+          "blob": "a987035d3035356cc7edb15ca59361b97bb1969a",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "the-diagnostic-citrate-agent-doctor",
+            "the-recorder-recorderclient",
+            "the-approval-gate-approvalqueue",
+            "the-cron-daemon-and-tripwires",
+            "the-capsule-loader",
+            "environment-variables",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/compute/gateway.md": {
+          "blob": "83714cdf19388f9de3d2dd1717d87ff41045b269",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "run-modes-and-where-they-live",
+            "routes-the-operator-runs",
+            "configuration",
+            "the-x402-settlement-path-from-the-operators-side",
+            "pieces-that-are-designed-but-not-complete-at-this-sha",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/compute/node-agent.md": {
+          "blob": "3b8db964db9c71905d73fb255a6e966e7f458037",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "computejson-cratesconfigsrclibrs",
+            "environment-variables",
+            "bidder-cratesbiddersrclibrs",
+            "heartbeat-cratesheartbeatsrclibrs",
+            "supervision-http-cratessupervisionsrcserverrs",
+            "marketplace-calls-crateschainio",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/compute/pool.md": {
+          "blob": "8078376fcd90c5e532b67aa16cd1d79d4addc7b7",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "the-two-crates",
+            "how-the-coordinator-decides",
+            "coordinator-environment-variables",
+            "worker-environment-variables",
+            "what-the-worker-library-already-contains",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/contracts/governance.md": {
+          "blob": "f744de492f6179beb8d06dfc762ae626182983b4",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "treasurygovernor",
+            "disputeresolution",
+            "agentdecisionregistry",
+            "specregistry",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/contracts/security.md": {
+          "blob": "dc67dd8a3c43c03a01970913cd89fd5f3c61d3bf",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "kycregistry",
+            "teeattestationregistry",
+            "nematocystslashing",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/contracts/x402.md": {
+          "blob": "cbab56307d6b84b79e58196b40377633a6536988",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "x402facilitator",
+            "x402paywall",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/core/for-agents.md": {
+          "blob": "96ddc74f078692e6dc8caaf922cc42cf79cce8b1",
+          "anchors": [
+            "the-one-rule-that-makes-this-safe",
+            "what-an-agent-can-drive",
+            "connecting-an-external-agent",
+            "a-note-on-running-unattended"
+          ]
+        },
+        "content/core/getting-started.md": {
+          "blob": "061206194611b233a07d8b56498ace45d7534a17",
+          "anchors": [
+            "install-and-open",
+            "step-0-welcome",
+            "step-1-sign-in",
+            "step-2-verify-identity",
+            "step-3-membership",
+            "step-4-account-ready",
+            "step-5-grant-and-stake",
+            "step-6-node-ignition",
+            "after-onboarding"
+          ]
+        },
+        "content/core/overview.md": {
+          "blob": "f10ef908b52a0ebcfc890515c17ef8c970b3bdd4",
+          "anchors": [
+            "what-is-inside-the-window",
+            "how-it-is-built",
+            "what-it-connects-to",
+            "where-to-go-next"
+          ]
+        },
+        "content/core/run-a-node.md": {
+          "blob": "ef4bb59656d9681e1113607e6755192144b989e2",
+          "anchors": [
+            "the-node-surface",
+            "what-the-node-needs",
+            "how-it-stays-correct",
+            "keeping-it-healthy",
+            "running-it-headless"
+          ]
+        },
+        "content/core/safety.md": {
+          "blob": "399e07fdf38aa94fc21f28a762951ae1ed973b77",
+          "anchors": [
+            "where-your-keys-live",
+            "how-signing-works",
+            "back-up-your-recovery-phrase",
+            "updates",
+            "what-to-expose",
+            "a-safe-operation-checklist"
+          ]
+        },
+        "content/core/tour.md": {
+          "blob": "7966bc7edc6bc52b2000973952b3ddfd7f6cfc8e",
+          "anchors": [
+            "you",
+            "dashboard",
+            "account",
+            "storage",
+            "files",
+            "models",
+            "agent",
+            "connections",
+            "journal",
+            "your-groups",
+            "groups",
+            "comms",
+            "cluster",
+            "train",
+            "community",
+            "more",
+            "commissary",
+            "settings",
+            "alf",
+            "next"
+          ]
+        },
+        "content/core/troubleshooting.md": {
+          "blob": "fd4e35c137d7998e3dc4fae21619e6842ba5c3e2",
+          "anchors": [
+            "the-node-will-not-come-online-or-shows-zero-peers",
+            "the-node-syncs-but-the-height-looks-wrong-or-you-suspect-a-fork",
+            "the-node-uses-a-lot-of-memory-while-catching-up",
+            "the-window-opens-blank-on-linux",
+            "an-update-prompt-fails-or-an-update-banner-appears-repeatedly",
+            "a-signing-prompt-will-not-let-me-approve",
+            "on-device-ai-does-not-respond",
+            "where-to-get-more-detail"
+          ]
+        },
+        "content/methodology/rules.md": {
+          "blob": "e9ac976cc3dc2212fa5bc5b3a5f19b1d8e4bf9c0",
+          "anchors": [
+            "what-it-is",
+            "reference",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/methodology/workflow.md": {
+          "blob": "0b3b59c16cf63c4ebabcb652238d81b21e9d4bd8",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/operators/rewards.md": {
+          "blob": "3dd42dc79982b1ccf60bf7a5e9621a43d86f0169",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "the-block-reward-and-its-four-pools",
+            "institutional-operators",
+            "reputation",
+            "slashing",
+            "what-the-node-agent-does-to-keep-you-safe",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/operators/run-a-node.md": {
+          "blob": "0665876aa5987bed4c06cf5d7ef9beb93b622102",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "configuration",
+            "producer-memory-health",
+            "monitoring",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/research/gradient-papers.md": {
+          "blob": "2664d8c4f86dbbcf855dfd958342933f3b27a915",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "design-rationale",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/research/learning.md": {
+          "blob": "4a7dd9f40688af0b3df7b04c83c25083d3d69c73",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "the-learning-cycle-and-its-four-phases",
+            "how-the-cycle-records-its-result",
+            "reference",
+            "design-rationale",
+            "failure-modes",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/research/mentorship.md": {
+          "blob": "f8730ca04f161f85331106550d3590275c0b068e",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "design-rationale",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/research/paraconsistent.md": {
+          "blob": "5dc8cc29ba1b89b8f99f33eb387471060cd97777",
+          "anchors": [
+            "what-it-is",
+            "the-four-values",
+            "how-the-implementation-works",
+            "how-it-maps-to-the-network",
+            "reference",
+            "design-rationale",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/sdks/overview.md": {
+          "blob": "e47ab2b73eb49399fb2aaaec3c2d34514028b00b",
+          "anchors": [
+            "the-packages",
+            "what-each-sdk-gives-you",
+            "where-kyc-is-required-and-where-it-is-not",
+            "status"
+          ]
+        },
+        "content/start/agentile.md": {
+          "blob": "7b263115ead36950984f0692cc3c54f5bfdfcfa8",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/start/primer.md": {
+          "blob": "c6d5d9cb2d936d4a2e2288b576e760e932e62044",
+          "anchors": [
+            "what-it-is",
+            "blue-score-not-height",
+            "confirmation-by-depth",
+            "merge-parents",
+            "accounts-without-a-seed-phrase",
+            "salt-the-unit-you-count-in",
+            "how-to-use-it",
+            "reference",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        },
+        "content/start/roadmap.md": {
+          "blob": "1bfdee1a02b0827b67a3df4d3f6a6742550490e7",
+          "anchors": [
+            "what-it-is",
+            "how-to-use-it",
+            "reference",
+            "design-rationale",
+            "access-and-canon",
+            "source-and-verification"
+          ]
+        }
+      }
+    },
+    "citrate-chain": {
+      "repo": "CitrateNetwork/citrate-chain",
+      "commit": "0aab474b437389ccd54c41c26378f1b3197ec4e5",
+      "files": {
+        "README.md": {
+          "blob": "ef8d086abb2cfdaf312c82c1504808e18856f409",
+          "anchors": [
+            "citrate-chain",
+            "what-it-is",
+            "prerequisites",
+            "build-from-source",
+            "run-locally",
+            "deploy-the-contract-book-locally",
+            "connect-it-locally---the-differentiator",
+            "configuration",
+            "links",
+            "license"
+          ]
+        }
+      }
+    },
+    "agentile-skills": {
+      "repo": "CitrateNetwork/agentile-skills",
+      "commit": "69d99d2ab97d764143346899295a14f9b7168269",
+      "files": {
+        "README.md": {
+          "blob": "9e5c12342edf2ec72f35ba1d379c5e5ff23ccd81",
+          "anchors": [
+            "agentile-skills",
+            "install",
+            "pinning-to-a-known-good-version",
+            "the-agentile-plugin-the-method-portable",
+            "the-citrate-federation-plugin-citrate-specific",
+            "the-intended-loop",
+            "adopting-the-loop",
+            "repo-status",
+            "license",
+            "open-source-and-access"
+          ]
+        }
+      }
+    }
+  }
+}
