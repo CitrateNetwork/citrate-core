@@ -62,6 +62,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   "withdraw-claim": "Withdrawal claim",
   claim: "Claim",
   "wallet-link": "Wallet link",
+  "device-link": "Device link",
   agent: "Agent action",
   social: "Verify identity",
   deploy: "Deploy contract",
@@ -3308,6 +3309,23 @@ export class Store {
   }
 
   /**
+   * HUP-S8.1 — link THIS machine to your Citrate member identity. Opens the personal_sign ceremony
+   * over the DeviceLink text (the wallet signs only after the person approves at the review gate)
+   * and STOPS. On approve, core adds the member + device signatures and stores the link. `onDone`
+   * refreshes the Cluster surface after either outcome. No funds move.
+   */
+  async linkThisDevice(label: string, onDone?: () => void): Promise<void> {
+    let view: CeremonyView;
+    try {
+      view = await bridge.cluster.linkDeviceRequest(label);
+    } catch (err) {
+      this.toast("Couldn't start the device link: " + String((err as Error).message ?? err));
+      return;
+    }
+    this.openWalletReview("device-link", "Link this device to your Citrate identity", view, "no funds move", () => onDone?.());
+  }
+
+  /**
    * ADR-2026-08-30 (D3) — verify a linked social identity: open a ceremony over the wallet-signed
    * IdentityBinding, show it at the review gate, and on approve record the binding (flips verified).
    * Rule 3: the wallet signs at the ceremony; nothing signs here. `onDone` refreshes the surface
@@ -3541,6 +3559,28 @@ export class Store {
       }
       return;
     }
+    // HUP-S8.1 — a DEVICE LINK is a personal_sign, not a tx: route it to the dedicated command,
+    // which takes the ceremony signature, adds the member + device signatures and stores the link.
+    if (r.kind === "device-link") {
+      try {
+        const res = await bridge.cluster.linkDeviceApprove(r.view.id, ack);
+        this.setState({ walletReview: null });
+        this.addActivity(r.label, "no funds moved", "");
+        const label = res.links.find((l) => l.thisDevice)?.label;
+        this.toast(label ? `This device is linked as “${label}”.` : "This device is linked.");
+        await r.onResolved?.(true);
+      } catch (err) {
+        try {
+          await bridge.cluster.linkDeviceReject(r.view.id);
+        } catch {
+          /* best-effort cleanup */
+        }
+        this.setState({ walletReview: null });
+        this.toast("Device not linked: " + String((err as Error).message ?? err));
+        await r.onResolved?.(false);
+      }
+      return;
+    }
     // A SOCIAL identity verification (ADR D3) is a personal_sign, not a tx: the wallet signs the
     // IdentityBinding at the ceremony and the binding is recorded — it must never reach
     // signing.broadcast. Route it to the dedicated command, which signs, records, and flips verified.
@@ -3652,6 +3692,7 @@ export class Store {
       // The link path has its own reject: it also drops the one-time challenge
       // nonce, so a declined link cannot be resumed with a stale nonce.
       if (r.kind === "wallet-link") await bridge.wallet.linkReject(r.view.id);
+      else if (r.kind === "device-link") await bridge.cluster.linkDeviceReject(r.view.id);
       else await bridge.signing.reject(r.view.id);
       // A declined social verification also drops its pending-bind entry (nonce is one-time).
       if (r.kind === "social") await bridge.social.verifyForget(r.view.id);

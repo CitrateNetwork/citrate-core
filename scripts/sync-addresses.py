@@ -47,7 +47,9 @@ REQUIRED = [
 # OPTIONAL names are emitted only when the book carries them (the cooperative
 # contracts deploy from a separate repo). The app treats an absent one as
 # "unavailable", never as a guessed address.
-OPTIONAL = ["PatronageLedger", "ModelCooperative"]
+# HUP-S7.4: AgentSBT (Hermes identity) and its parent OrganizationSBT are optional too: the
+# onboarding identity step stays off while either is absent or has no code.
+OPTIONAL = ["PatronageLedger", "ModelCooperative", "AgentSBT", "OrganizationSBT"]
 
 ADDR = re.compile(r"^0x[0-9a-fA-F]{40}$")
 HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
