@@ -43,6 +43,7 @@ gates:
       - {id: g1-render, desc: "Markdown golden tests + real SSE streaming", met: false}
       - {id: g1-sidebar, desc: "Sidebar per D-34 with nav tests", met: false}
       - {id: g1-loop, desc: "Loop in sidecar; UI/CLI/MCP share a session", met: false}
+      - {id: g1-wallet-unlink, desc: "Wallet unlink (S1.11, #117) merged after identity#31 + primary_wallet fix deployed; unlink tests green", met: false}
       - {id: g1-eval, desc: "Per-tier eval on synthetic tool-call tasks: T1+ >=90% valid tool calls, >=80% step success; T0 guided-tier bar set from its baseline", met: false, evidence: eval/}
   - id: gate2
     name: Controlled + knowledgeable (S2, S3, S4)
