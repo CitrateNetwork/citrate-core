@@ -13,6 +13,7 @@ import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { InterviewCard, looksLikeBuildAsk } from "./InterviewCard";
 import { bridge } from "../bridge";
+import { openPopout } from "../popout/appHost";
 import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
 import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
@@ -113,6 +114,16 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             {s.modelState === "verifying" ? "local model · verifying" : `local model · ${modelPct}%`}
           </span>
         )}
+        {/* HUP-S7.6: the Activity monitor pop-out ("why am I waiting", Stop). */}
+        <button
+          className="mono"
+          data-testid="open-activity-monitor"
+          onClick={() => void openPopout("monitor")}
+          title="Open the Activity monitor in its own window"
+          style={{ fontSize: 10, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--tx-2)", background: "transparent", border: "1px solid var(--line-1)", borderRadius: 999, padding: "3px 9px", cursor: "pointer" }}
+        >
+          Monitor
+        </button>
         <button
           className="mono"
           data-testid="model-chip"

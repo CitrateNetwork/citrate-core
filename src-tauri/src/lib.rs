@@ -47,6 +47,8 @@ mod model;
 mod model_register;
 mod model_registry;
 mod node;
+// HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
+mod popout;
 mod provisioning;
 mod sbt_art;
 mod seam;
@@ -669,6 +671,8 @@ pub fn run() {
             seam::membership_entitlement,
             seam::commissary_catalog,
             seam::comms_connections,
+            popout::popout_open,
+            popout::popout_monitor_facts,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -46,13 +46,60 @@ export interface ToolCallMeta {
   hicReason?: string;
 }
 
+/** HUP-S7.6 — progress a provider reports beyond its status (the Activity monitor shows it). */
+export type TurnActivityEvent = { kind: "step"; step: number };
+
 export interface SendOpts {
   messages: { role: string; content: string }[];
+  /** HUP-S7.6 — aborted when the member presses Stop. A provider that honours it stops before its
+   *  next model request or tool call and rejects with `TurnStopped`. */
+  signal?: AbortSignal;
   callbacks: {
     onStatus: (status: ChatStatus) => void;
     onToken: (text: string) => void;
     onToolCall: (call: ToolCall, meta?: ToolCallMeta) => Promise<string>;
+    /** HUP-S7.6 — optional progress reports (a provider without steps never calls it). */
+    onActivity?: (ev: TurnActivityEvent) => void;
   };
+}
+
+/** HUP-S7.6 — the turn was stopped by the member. Not a failure of the model or the transport. */
+export class TurnStopped extends Error {
+  constructor() {
+    super("stopped by you");
+    this.name = "TurnStopped";
+  }
+}
+
+/** Throw `TurnStopped` if the member already pressed Stop. */
+export function throwIfStopped(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new TurnStopped();
+}
+
+/**
+ * HUP-S7.6 — wait for `p`, but reject with `TurnStopped` as soon as `signal` aborts. The awaited
+ * work itself is not cancelled (a Tauri invoke cannot be); its late result is discarded.
+ */
+export function untilStopped<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) {
+    p.catch(() => undefined);
+    return Promise.reject(new TurnStopped());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new TurnStopped());
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
 }
 
 export interface ChatProvider {
@@ -482,16 +529,20 @@ export function createAgentProvider(
   return {
     kind: "agent",
     label: "provider · " + providerId + " · agentic",
-    async send({ messages, callbacks }) {
+    async send({ messages, callbacks, signal }) {
       callbacks.onStatus("thinking");
       const contextJson = JSON.stringify(getContext());
       const convo: ConvoMsg[] = messages.map((m) => ({ role: m.role, content: m.content }));
 
       for (let turn = 0; turn < AGENT_MAX_TURNS; turn++) {
+        // HUP-S7.6: Stop ends the loop before the next model request.
+        throwIfStopped(signal);
+        callbacks.onActivity?.({ kind: "step", step: turn + 1 });
         let raw: string;
         try {
-          raw = await inferTools(providerId, JSON.stringify(convo), JSON.stringify(AGENT_TOOLS), contextJson);
+          raw = await untilStopped(inferTools(providerId, JSON.stringify(convo), JSON.stringify(AGENT_TOOLS), contextJson), signal);
         } catch (e) {
+          if (e instanceof TurnStopped) throw e;
           callbacks.onStatus("error");
           throw e;
         }
@@ -510,6 +561,7 @@ export function createAgentProvider(
           callbacks.onStatus("streaming");
           let out = "";
           for (const token of tokenize(content)) {
+            throwIfStopped(signal);
             out += token;
             callbacks.onToken(token);
             await wait(8 + Math.random() * 18);
@@ -529,10 +581,13 @@ export function createAgentProvider(
             arguments: tc.function?.arguments || "{}",
           };
           callbacks.onStatus("tool");
+          // HUP-S7.6: Stop ends the loop before the next tool call runs.
+          throwIfStopped(signal);
           let result: string;
           try {
-            result = await callbacks.onToolCall(call);
+            result = await untilStopped(callbacks.onToolCall(call), signal);
           } catch (e) {
+            if (e instanceof TurnStopped) throw e;
             // A tool failure is fed back to the model (it can recover or explain),
             // never silently swallowed.
             result = "tool error: " + (e instanceof Error ? e.message : String(e));

@@ -861,6 +861,8 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tauri-plugin-updater",
+ "tauri-utils",
+ "toml 0.9.12+spec-1.1.0",
  "ureq",
  "url",
  "zeroize",
