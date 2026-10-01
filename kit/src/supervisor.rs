@@ -329,6 +329,16 @@ impl SidecarSpec {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        // On Windows a console sidecar (ipfs, mem-mcp, the node, …) spawned from a
+        // GUI app pops a visible empty console window per child. CREATE_NO_WINDOW
+        // suppresses it; stdout/stderr are already piped above, so no output is
+        // lost (the log ring still gets every line). cfg-gated: a no-op on Unix.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         cmd
     }
 }
