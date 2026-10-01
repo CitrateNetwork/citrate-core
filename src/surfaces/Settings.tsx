@@ -31,6 +31,7 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { EscalationSettings } from "./EscalationSettings";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -132,6 +133,7 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["ai", "AI providers"],
+  ["escalation", "Escalation & spend"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
@@ -689,6 +691,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             </p>
           </div>
         )}
+
+        {/* ---------- Escalation endpoints + daily spend budget (HUP-S1.5) ---------- */}
+        {s.sSec === "escalation" && <EscalationSettings />}
 
         {/* ---------- Node configuration ---------- */}
         {s.sSec === "node" && (

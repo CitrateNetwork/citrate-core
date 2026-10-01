@@ -57,6 +57,9 @@ struct Addresses {
     model_registry: String,
     #[serde(rename = "SkillRegistry", default)]
     skill_registry: String,
+    /// HUP-S1.5: absent from the book until the post-reroll redeploy pins it (federation F-4).
+    #[serde(rename = "InferenceRouter", default)]
+    inference_router: String,
 }
 
 fn book() -> &'static Book {
@@ -83,6 +86,7 @@ fn book() -> &'static Book {
         b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
         b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
         b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
+        b.addresses.inference_router = b.addresses.inference_router.to_ascii_lowercase();
         b.genesis_hash = b.genesis_hash.to_ascii_lowercase();
         b
     })
@@ -141,6 +145,14 @@ pub fn model_registry() -> &'static str {
 #[allow(dead_code)]
 pub fn skill_registry() -> &'static str {
     &book().addresses.skill_registry
+}
+
+/// `InferenceRouter` — the registry escalation route (HUP-S1.5). `None` while the book has no pin
+/// (it is not deployed on the current chain yet); the escalation router then reports the registry
+/// route as disabled.
+pub fn inference_router() -> Option<&'static str> {
+    let a = book().addresses.inference_router.as_str();
+    (!a.is_empty()).then_some(a)
 }
 
 /// `IPFSIncentivesV3` — the model-storage bond contract (CX-S2.2 `registerModel`). REROLL-SENSITIVE:

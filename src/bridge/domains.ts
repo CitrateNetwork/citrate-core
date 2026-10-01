@@ -1246,9 +1246,104 @@ export interface TierDomain {
   setOverride(tier: TierId | null): Promise<TierId | null>;
 }
 
+// ---- HUP-S1.5 — the escalation router (US-1.5). Mirrors Rust `escalation.rs`. ----
+// Amounts are integer micro-USD. Prices are member-entered (per 1M tokens) and unverified.
+
+export interface EscalationEndpointInput {
+  label: string;
+  baseUrl: string;
+  model: string;
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+}
+
+/** A member endpoint. Never carries the key (it is sealed in the OS keyring by core). */
+export interface EscalationEndpoint extends EscalationEndpointInput {
+  id: string;
+  /** "label · host" — what every price card names. */
+  destination: string;
+}
+
+export type EscalationMode = "budget" | "confirmed";
+
+export interface EscalationSpendRecord {
+  escalationId: string;
+  endpointId: string;
+  destination: string;
+  quotedMicros: number;
+  chargedMicros: number;
+  mode: EscalationMode;
+  outcome: "answered" | "not_sent" | "failed" | "unknown";
+  usageReported: boolean;
+  exceededQuote: boolean;
+  atMs: number;
+}
+
+export interface EscalationBudget {
+  capMicros: number;
+  usedMicros: number;
+  remainingMicros: number;
+  /** Member-confirmed (HIC-1) spend today, outside the cap. */
+  confirmedMicros: number;
+  periodStartMs: number;
+  periodEndMs: number;
+  maxCapMicros: number;
+  /** The ledger file could not be read: every escalation asks until the cap is set again. */
+  unreadable: boolean;
+  history: EscalationSpendRecord[];
+}
+
+/** The price card shown before an escalation runs. */
+export interface EscalationQuote {
+  quoteId: string;
+  endpointId: string;
+  destination: string;
+  model: string;
+  costMicros: number;
+  costLabel: string;
+  withinBudget: boolean;
+  remainingMicros: number;
+  capMicros: number;
+  maxTokens: number;
+  promptBytes: number;
+  expiresMs: number;
+}
+
+export interface EscalationRun {
+  escalationId: string;
+  content: string;
+  destination: string;
+  mode: EscalationMode;
+  chargedMicros: number;
+  chargedLabel: string;
+  usageReported: boolean;
+  exceededQuote: boolean;
+  remainingMicros: number;
+}
+
+export interface EscalationRegistryStatus {
+  enabled: boolean;
+  reason: string;
+  missing: string[];
+}
+
+export interface EscalationDomain {
+  endpoints(): Promise<EscalationEndpoint[]>;
+  /** The key goes to core once and is sealed in the OS keyring; it is never returned. */
+  addEndpoint(input: EscalationEndpointInput, apiKey: string): Promise<EscalationEndpoint>;
+  removeEndpoint(id: string): Promise<void>;
+  budget(): Promise<EscalationBudget>;
+  setBudget(capMicros: number): Promise<EscalationBudget>;
+  quote(endpointId: string, prompt: string, system?: string | null, maxTokens?: number | null): Promise<EscalationQuote>;
+  /** Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. */
+  run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean): Promise<EscalationRun>;
+  registryStatus(): Promise<EscalationRegistryStatus>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
   tier: TierDomain;
+  escalation: EscalationDomain;
   telemetry: TelemetryDomain;
   storage: StorageDomain;
   groups: GroupsDomain;

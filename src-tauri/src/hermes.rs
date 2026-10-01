@@ -148,6 +148,18 @@ pub struct ControlResp {
 pub trait HermesControl: Send + Sync {
     fn get(&self, url: &str, bearer: &str) -> Result<ControlResp>;
     fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp>;
+    /// HUP-S1.5: a POST whose answer may take longer than [`HERMES_CONTROL_TIMEOUT`] (one escalation
+    /// to a remote model). Transports without their own deadline handling use `post`.
+    fn post_with_timeout(
+        &self,
+        url: &str,
+        bearer: &str,
+        body: &str,
+        timeout: Duration,
+    ) -> Result<ControlResp> {
+        let _ = timeout;
+        self.post(url, bearer, body)
+    }
 }
 
 /// Production control transport over blocking `ureq`. A non-2xx is returned as a normal response
@@ -172,7 +184,36 @@ impl UreqControl {
 /// wedged sidecar: fail the call instead of hanging the command.
 pub(crate) const HERMES_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// HUP-S1.5 — deadline for `POST /escalations` (the sidecar allows 120 s for the remote model plus
+/// up to 10 s waiting for a slot).
+pub(crate) const HERMES_ESCALATION_TIMEOUT: Duration = Duration::from_secs(150);
+
 impl HermesControl for UreqControl {
+    fn post_with_timeout(
+        &self,
+        url: &str,
+        bearer: &str,
+        body: &str,
+        timeout: Duration,
+    ) -> Result<ControlResp> {
+        match ureq::post(url)
+            .config()
+            .timeout_global(Some(timeout))
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &format!("Bearer {bearer}"))
+            .header("Content-Type", "application/json")
+            .send(body)
+        {
+            Ok(resp) => Self::read(resp),
+            Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
+                status: code,
+                body: String::new(),
+            }),
+            Err(e) => Err(HermesError::Transport(e.to_string())),
+        }
+    }
+
     fn get(&self, url: &str, bearer: &str) -> Result<ControlResp> {
         match ureq::get(url)
             .config()
@@ -595,6 +636,19 @@ impl HermesManager {
             .to_string();
         valid_session_id(&id).map_err(HermesError::Decode)?;
         Ok(id)
+    }
+
+    /// HUP-S1.5 — `POST /escalations` with a body from `escalation::sidecar_body` (it carries the
+    /// endpoint key for this one request; it is never logged). Returns the raw status + body: the
+    /// caller reads the sidecar's `sent` flag to settle the spend reservation.
+    pub fn escalate(&self, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control.post_with_timeout(
+            &format!("{}/escalations", self.control_url()),
+            &bearer,
+            body,
+            HERMES_ESCALATION_TIMEOUT,
+        )
     }
 
     /// `POST /sessions/:id/messages` — start one turn (the sidecar answers 409 while busy).
@@ -1075,6 +1129,21 @@ fn manager<R: tauri::Runtime>(
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
+}
+
+/// HUP-S1.5 — run one escalation through the sidecar. `Err(false)`: nothing reached the sidecar
+/// (it is not running), so nothing was sent; `Err(true)`: the call failed in flight, so the request
+/// may have reached the provider.
+pub(crate) fn sidecar_escalate<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    body: &str,
+) -> std::result::Result<(u16, String), bool> {
+    let mgr = manager(app).map_err(|_| false)?;
+    match mgr.escalate(body) {
+        Ok(r) => Ok((r.status, r.body)),
+        Err(HermesError::NotRunning) => Err(false),
+        Err(_) => Err(true),
+    }
 }
 
 /// Start the sidecar (idempotent). Returns the local lifecycle status.
