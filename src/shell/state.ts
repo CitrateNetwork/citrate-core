@@ -225,6 +225,12 @@ export interface WalletReview {
   /** True once the user has ticked the raw-mode ack (undecodable calldata). */
   rawAck: boolean;
   /**
+   * True from the moment Approve hands the ceremony to the signer until the signer returns.
+   * While set, the review cannot be declined (Reject / Escape are no-ops) and the modal shows
+   * a signing state: the outcome is reported only once it is known, never assumed.
+   */
+  approving?: boolean;
+  /**
    * Called after the review resolves (approved=true on a successful broadcast, false on
    * reject/failure). Used by an AGENT-originated chain effect (CX-S6.3) to release the keyless
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
