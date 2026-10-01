@@ -22,7 +22,14 @@ gates:
           federation sprint 2026-09-30-hup-hermes-upskill.md.
       - id: g0-rule3-adr
         desc: Rule-3 amendment ADR signed off (@rule8) before any budgeted signature ships
-        met: false
+        met: true
+        evidence: docs/adr/ADR-2026-09-30-rule3-budgetable-signatures.md
+        note: >-
+          Accepted 2026-10-01. All five sign-off rows by the owner (federation lead, @rule8,
+          core + runtime maintainer on 2026-09-30; formal-methods row by owner override on
+          2026-10-01, no independent formal reviewer available). WebSigningBudget.tla is
+          TLC-green on all 5 configs (core#129, re-run after the release merge); an independent
+          formal review is a recommended follow-up. O-1..O-5 accepted as proposed.
       - id: g0-formal
         desc: AgentLoop, FolderGrant, WebSigningBudget, SkillPersistence, DeployGate, SpendBudget, AnchorBatch, DeviceLink written and TLC-checked at small bounds (full proofs close with their WPs)
         met: false

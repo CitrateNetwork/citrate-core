@@ -2,7 +2,7 @@
 created: 2026-09-30T00:00:00Z
 branch: hup/s2-rule3-adr
 author: Larry Klosowski + Claude Opus 5.5
-status: proposed, 4 of 5 sign-offs recorded 2026-09-30 (owner, @rule8, core, runtime); formal-methods review of WebSigningBudget.tla pending
+status: accepted 2026-10-01 (5 of 5 rows; formal-methods row by owner override, see Sign-off)
 planset: 2026-09-30-hermes-upskill
 wp: HUP-S2.0
 decisions: D-6 (amended), D-12 (amended), D-23 (amended); red-team corrections 1, 2, 3, 6
@@ -14,15 +14,18 @@ blocks: HUP-S1.5 (x402), HUP-S2.3 (SIWE budgets), HUP-S7.3 (nightly anchor)
 
 ## Status
 
-**Proposed, 4 of 5 sign-offs recorded (2026-09-30).** The owner, acting as federation lead, @rule8
-security reviewer, and core and runtime maintainer, accepted this ADR and the proposed answers to
-O-1 to O-5. The formal-methods row is open until `WebSigningBudget.tla` is TLC-green and reviewed
-(D9). Nothing in this ADR is implemented. The only budget code in the tree today is
+**Accepted (2026-10-01).** The owner, acting as federation lead, @rule8 security reviewer, and core
+and runtime maintainer, accepted this ADR and the proposed answers to O-1 to O-5 on 2026-09-30. On
+2026-10-01 the owner, as admin and owner, signed the formal-methods row by override because no
+independent formal-methods reviewer was available. `WebSigningBudget.tla` (D9) is TLC-green on all
+five configurations and mutation-checked, but it has not had an independent formal review; that
+review remains a recommended follow-up, not a precondition. Nothing in this ADR is implemented yet. The only budget code in the tree today is
 the dormant `SessionBudget` primitive in `kit/src/ceremony.rs`, which no production signer
 path calls. The CORE-G2 tripwire
 (`kit/src/ceremony_tests.rs::core_g2_session_budget_is_not_wired_into_the_production_signer`)
 enforces that. This ADR becomes binding only once the sign-off block at the end is
-complete. Until then, every signature stays HIC-1, exactly as it is now.
+complete. The block is now complete, so the ADR binds the S2.3 / S1.5 / S7.3 work; until that work
+ships and passes its own gates, every signature stays HIC-1, exactly as it is now.
 
 ## Context
 
@@ -495,4 +498,4 @@ named people, not by an agent.
 | Federation lead / owner | Larry Klosowski (@SaulBuilds) | accept (O-1 to O-5 as proposed) | 2026-09-30 | Owner instruction 2026-09-30, recorded by the agent; confirmed by approving this PR |
 | citrate-core maintainer (ceremony + custody) | Larry Klosowski (@SaulBuilds) | accept | 2026-09-30 | Owner instruction 2026-09-30, recorded by the agent; confirmed by approving this PR |
 | citrate-agent-runtime maintainer (sidecar boundary) | Larry Klosowski (@SaulBuilds) | accept | 2026-09-30 | Owner instruction 2026-09-30, recorded by the agent; confirmed by approving this PR |
-| Formal-methods reviewer (`WebSigningBudget.tla`) | | | | |
+| Formal-methods reviewer (`WebSigningBudget.tla`) | Larry Klosowski (@SaulBuilds), **owner override** | accept | 2026-10-01 | Owner instruction 2026-10-01, recorded by the agent: no independent formal reviewer available, so the owner signed as admin. Evidence: TLC green on all 5 configs after merge into release (2026-10-01; ~133M distinct states), mutation checks in core#129. Independent formal review: recommended follow-up |
