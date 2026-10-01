@@ -6,6 +6,7 @@
 // store's gated handler (`onToolCall` → `store.handleTool`, i.e. the same approval gates as today)
 // and posts the result back. It never talks to the model and never decides an approval.
 // =====================================================================
+import { parseFileChange, isFileTool } from "./fileChanges";
 import { TurnStopped, untilStopped, type ChatProvider, type SendOpts, type ToolCall, type ToolCallMeta } from "./harness";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
@@ -58,6 +59,9 @@ export function createSidecarProvider(
   // `tool_result` event for that id). A second announcement of one of these is ignored. Ids leave
   // the set once recorded, because the sidecar may reuse ids (call_0, call_1, …) on later steps.
   const inFlight = new Set<string>();
+  // HUP-S2.9: sidecar-hosted file tool calls of the current turn (call id -> tool name), so their
+  // results can be reported as undoable file changes. Core never runs these calls.
+  const sidecarFileCalls = new Map<string, string>();
 
   // HUP-S7.6: turns run one at a time. A stopped turn keeps draining its session events (to its
   // `done`) after the caller has moved on, so the next turn starts from the right sequence number
@@ -74,6 +78,7 @@ export function createSidecarProvider(
     // from an earlier turn must not block a new call with the same id. Replays are still dropped
     // by seq below.
     inFlight.clear();
+    sidecarFileCalls.clear();
     if (!sessionId) {
       sessionId = await api.open(systemPrompt(), JSON.stringify(tools()));
       lastSeq = 0;
@@ -129,8 +134,20 @@ export function createSidecarProvider(
             continue;
           }
           if (type === "tool_result") {
-            inFlight.delete(String(ev.call_id));
+            const callId = String(ev.call_id);
+            inFlight.delete(callId);
+            const fileTool = sidecarFileCalls.get(callId);
+            if (fileTool !== undefined) {
+              sidecarFileCalls.delete(callId);
+              // A change that happened is reported even while a stopped turn drains: it can be undone.
+              const change = ev.status === "ok" ? parseFileChange(fileTool, ev.content) : null;
+              if (change) callbacks.onActivity?.({ kind: "file_change", change });
+            }
             continue;
+          }
+          if (type === "tool_call" && ev.host === "sidecar") {
+            const c = ev.call as { id?: unknown; name?: unknown } | undefined;
+            if (c && typeof c.id === "string" && typeof c.name === "string" && isFileTool(c.name)) sidecarFileCalls.set(c.id, c.name);
           }
           if (stopping) continue; // draining a stopped turn: nothing else is acted on
           if (type === "step_start") {

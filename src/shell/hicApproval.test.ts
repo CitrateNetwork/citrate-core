@@ -195,9 +195,12 @@ describe("Feature: a hic:\"required\" call waits for a member click", () => {
     expect(callers).toEqual(["shell/Chrome.tsx", "shell/store.ts"]);
     const chrome = readFileSync(join(root, "shell/Chrome.tsx"), "utf8").split("\n");
     const uses = chrome.map((l, i) => [l, i] as const).filter(([l]) => /\b(finishCer|approveCer)\(/.test(l));
-    for (const [, i] of uses) {
+    for (const [l, i] of uses) {
       const ctx = chrome.slice(Math.max(0, i - 2), i + 1).join("\n");
-      expect(ctx, "a ceremony resolve outside a click handler").toMatch(/onClick=/);
+      // HUP-S10.6: a decline may also come from the member's Escape key (onEscape); Approve only from a click.
+      if (/\bapproveCer\(/.test(l)) expect(ctx, "an approve outside a click handler").toMatch(/onClick=/);
+      else expect(ctx, "a ceremony resolve outside a click or Escape handler").toMatch(/onClick=|onEscape=/);
+      expect(l, "Escape must never approve").not.toMatch(/onEscape=.*(approveCer\(|["'`]approved["'`])/);
     }
     const storeSrc = readFileSync(join(root, "shell/store.ts"), "utf8");
     // inside store.ts, finishCer is called only from approveCer (the Approve button's handler)
@@ -224,7 +227,12 @@ describe("Feature: a hic:\"required\" call waits for a member click", () => {
     const chrome = readFileSync(join(root, "shell/Chrome.tsx"), "utf8").split("\n");
     const uses = chrome.map((l, i) => [l, i] as const).filter(([l]) => resolver.test(l));
     expect(uses.length).toBeGreaterThan(0);
-    for (const [l] of uses) expect(l, "a wallet-review resolve outside a click handler").toMatch(/onClick=/);
+    for (const [l] of uses) {
+      // HUP-S10.6: Reject may also come from the member's Escape key (onEscape); Approve only from a click.
+      if (/\bapproveWalletReview\(/.test(l)) expect(l, "an approve outside a click handler").toMatch(/onClick=[^]*approveWalletReview\(/);
+      else expect(l, "a wallet-review resolve outside a click or Escape handler").toMatch(/onClick=|onEscape=/);
+      expect(l, "Escape must never approve").not.toMatch(/onEscape=.*approveWalletReview\(/);
+    }
     const storeSrc = readFileSync(join(root, "shell/store.ts"), "utf8");
     // store.ts only defines them; it never calls them itself
     expect(storeSrc.match(/this\.(approveWalletReview|rejectWalletReview)\(/g) ?? []).toHaveLength(0);

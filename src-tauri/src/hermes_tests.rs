@@ -620,30 +620,41 @@ fn capsules_env_absent_by_default_but_set_when_configured() {
 }
 
 #[test]
-fn seed_starter_capsules_copies_absent_skills_and_never_clobbers() {
+fn seed_starter_capsules_installs_only_pinned_capsules_hup_s2_5() {
     let root = tmp_dir("seed");
     let bundled = root.join("bundled");
     let dest = root.join("dest");
-    // A bundled starter skill "hello" with the runnable files.
+    // A bundled "hello" whose archive is not the pinned build: refused, not copied.
     let hello = bundled.join("hello");
     std::fs::create_dir_all(&hello).unwrap();
     std::fs::write(hello.join("manifest.toml"), b"name = \"hello\"\n").unwrap();
     std::fs::write(hello.join("hello.cps"), b"CPSFAKE").unwrap();
+    assert_eq!(
+        seed_starter_capsules(&bundled, &dest),
+        0,
+        "an unpinned archive is not installed"
+    );
+    assert!(!dest.join("hello").exists());
 
-    // First seed: hello is copied over.
-    let n = seed_starter_capsules(&bundled, &dest);
-    assert_eq!(n, 1, "one skill dir seeded");
+    // The real bundled starters are pinned: both install, and the member's own capsule stays.
+    std::fs::create_dir_all(dest.join("mine")).unwrap();
+    std::fs::write(dest.join("mine").join("mine.cps"), b"MINE").unwrap();
+    let shipped = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("capsules");
+    assert_eq!(seed_starter_capsules(&shipped, &dest), 3);
     assert!(dest.join("hello").join("hello.cps").exists());
-    assert!(dest.join("hello").join("manifest.toml").exists());
+    assert!(dest.join("echo-chain").join("echo-chain.cps").exists());
+    assert_eq!(
+        std::fs::read(dest.join("mine").join("mine.cps")).unwrap(),
+        b"MINE"
+    );
 
-    // A user edits their copy; a re-seed must NOT clobber it (existing skill is left alone).
+    // A seeded copy edited afterwards no longer matches its pin: the next seed restores it.
     std::fs::write(dest.join("hello").join("hello.cps"), b"USER_EDITED").unwrap();
-    let n2 = seed_starter_capsules(&bundled, &dest);
-    assert_eq!(n2, 1);
+    assert_eq!(seed_starter_capsules(&shipped, &dest), 3);
     assert_eq!(
         std::fs::read(dest.join("hello").join("hello.cps")).unwrap(),
-        b"USER_EDITED",
-        "existing skill must never be overwritten"
+        std::fs::read(shipped.join("hello").join("hello.cps")).unwrap(),
+        "an unverified copy is replaced by the verified bundled one"
     );
 }
 
@@ -786,4 +797,76 @@ fn pba_l7b_003_stale_message_does_not_claim_nothing_happened() {
 fn hermes_control_calls_are_bounded() {
     assert!(HERMES_CONTROL_TIMEOUT >= Duration::from_secs(5));
     assert!(HERMES_CONTROL_TIMEOUT <= Duration::from_secs(60));
+}
+
+#[test]
+fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
+    // HUP-S4.3 + S4.4 integration: the sidecar reads exactly one CITRATE_HERMES_MCP file, so when
+    // both the built-in servers (mem/scan) and the member's reviewed servers are on, the child gets
+    // one file listing both, never two env entries where the last silently wins.
+    let (mgr, dir) = stub_manager("mcpboth");
+    let hermes = dir.join("hermes");
+    std::fs::create_dir_all(&hermes).unwrap();
+    let builtin = hermes.join("mcp.json");
+    let user = hermes.join(crate::mcp_servers::ALLOWLIST_FILE);
+    std::fs::write(&builtin, br#"{"servers":[{"name":"scan","transport":"http","url":"https://explorer.citrate.ai/api/mcp","allow_write_tools":false}]}"#).unwrap();
+    std::fs::write(&user, br#"{"servers":[{"name":"notes","transport":"stdio","command":"/usr/bin/true","args":[],"env":{},"allow_write_tools":false}]}"#).unwrap();
+    let mgr = mgr
+        .with_mcp_config_path(builtin.clone())
+        .with_mcp_allowlist(user.clone());
+    let env = mgr.spec_env_for_test();
+    let mcp: Vec<&String> = env
+        .iter()
+        .filter(|(k, _)| k == crate::hermes_mcp::MCP_CONFIG_ENV)
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(
+        mcp.len(),
+        1,
+        "exactly one allowlist reaches the child: {mcp:?}"
+    );
+    let text = std::fs::read_to_string(mcp[0]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let names: Vec<&str> = v["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(names, ["scan", "notes"]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(mcp[0]).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    // Only one side on: its own file is used as is.
+    std::fs::remove_file(&user).unwrap();
+    let env = mgr.spec_env_for_test();
+    let mcp: Vec<&String> = env
+        .iter()
+        .filter(|(k, _)| k == crate::hermes_mcp::MCP_CONFIG_ENV)
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(mcp, [&builtin.to_string_lossy().to_string()]);
+}
+
+#[test]
+fn mcp_env_is_set_only_while_the_allowlist_file_exists() {
+    // HUP-S4.3: no file → no CITRATE_HERMES_MCP (the sidecar runs no MCP, unchanged default).
+    let (mgr, dir) = stub_manager("mcpenv");
+    let cfg = dir.join("hermes").join("mcp.json");
+    let mgr = mgr.with_mcp_config_path(cfg.clone());
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert!(!env.contains_key(crate::hermes_mcp::MCP_CONFIG_ENV));
+
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    std::fs::write(&cfg, br#"{"servers":[]}"#).unwrap();
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(
+        env.get(crate::hermes_mcp::MCP_CONFIG_ENV).map(String::as_str),
+        Some(cfg.to_string_lossy().as_ref())
+    );
 }

@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { Brief, PendingWithdrawal } from "../bridge/domains";
+import type { Brief, HermesPersona, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -218,7 +218,7 @@ export interface CerSpec {
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke";
+  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
@@ -498,6 +498,11 @@ export interface AppState {
   hermesSidecarLoop: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
+  /** HUP-S3.3 + S3.7 — the chosen Hermes persona (its sidecar view, fragment included), or null for
+   *  the default voice (the default: nothing about the prompt changes). Persisted. */
+  hermesPersona: HermesPersona | null;
+  /** HUP-S3.3 (US-3.3 AC3) — member-defined personas, each checked by the sidecar. Persisted. */
+  customPersonas: HermesPersona[];
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -577,6 +582,22 @@ export interface AppState {
   memDaemonError: string | null;
   memSocketPath: string | null;
   memSemantic: boolean;
+  /**
+   * HUP-S3.1 runtime state of the first-run knowledge-corpus import (NOT persisted). `done`/`total`
+   * are the importer's own per-tenant progress counts; `message` is the skip reason or the failure
+   * text, shown as-is. Counts are never fabricated: they come only from the importer.
+   */
+  knowledgeImport: KnowledgeImportState;
+}
+
+/** HUP-S3.1 — see `AppState.knowledgeImport`. */
+export interface KnowledgeImportState {
+  state: "idle" | "running" | "imported" | "skipped" | "failed";
+  tenant: string | null;
+  done: number;
+  total: number;
+  nodesAdded: number;
+  message: string | null;
 }
 
 /** One tenant's real node count + its parsed nodes, from the memory daemon. */
@@ -754,6 +775,8 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: false,
     hermesBrief: null,
+    hermesPersona: null,
+    customPersonas: [],
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -769,6 +792,7 @@ export function freshState(pid: string): AppState {
     memDaemonError: null,
     memSocketPath: null,
     memSemantic: false,
+    knowledgeImport: { state: "idle", tenant: null, done: 0, total: 0, nodesAdded: 0, message: null },
   };
   const today = new Date().toISOString().slice(0, 10);
   if (P.fresh) {
@@ -898,7 +922,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "hermesPersona", "customPersonas", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {

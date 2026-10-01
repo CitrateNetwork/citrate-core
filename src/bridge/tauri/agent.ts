@@ -8,8 +8,10 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow } from "../domains";
 import type { CeremonyView } from "../types";
+import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
+import type { LearnAcceptResult, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView } from "../../agent/learn";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
 // parses (an object/array/number), otherwise the raw text as a JSON string value; empty → {}.
@@ -71,6 +73,12 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   async sessionStop(id) {
     await invoke("hermes_session_stop", { id });
   },
+  sessionOpenUnattended(systemPrompt, toolsJson) {
+    return invoke<string>("hermes_session_open_unattended", { systemPrompt, toolsJson });
+  },
+  async sessionClose(id) {
+    await invoke("hermes_session_close", { id });
+  },
   tracks() {
     return invoke<InterviewTrack[]>("hermes_tracks");
   },
@@ -79,6 +87,64 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   briefCheck(brief) {
     return invoke<{ ok: boolean; markdown: string }>("hermes_brief_check", { brief });
+  },
+  // HUP-S4.3 — MCP servers Hermes may use; core writes the sidecar's allowlist file.
+  mcpSettings() {
+    return invoke<HermesMcpView>("hermes_mcp_settings");
+  },
+  mcpSet(settings) {
+    return invoke<HermesMcpView>("hermes_mcp_set", { settings });
+  },
+  // HUP-S2.9 — undo for agent file changes (the sidecar's checkpoint routes, through Rust).
+  checkpoints(id) {
+    return invoke<CheckpointList>("hermes_checkpoints", { id });
+  },
+  undoStep(id, seq) {
+    return invoke<UndoOutcome>("hermes_undo_step", { id, seq });
+  },
+  undoSession(id) {
+    return invoke<UndoOutcome>("hermes_undo_session", { id });
+  },
+  // HUP-S3.4 — verified workflow runs + verified self-learning (src-tauri/src/hermes_learn.rs).
+  workflowRun(sessionId, workflow) {
+    return invoke<string>("hermes_workflow_run", { sessionId, workflowJson: JSON.stringify(workflow) });
+  },
+  workflowStatus(sessionId, runId) {
+    return invoke<WorkflowRunView>("hermes_workflow_status", { sessionId, runId });
+  },
+  learnStatus() {
+    return invoke<LearnStatus>("hermes_learn_status");
+  },
+  async learnProposals(all = false) {
+    const v = await invoke<{ proposals?: LearnProposal[] }>("hermes_learn_proposals", { all });
+    return Array.isArray(v?.proposals) ? v.proposals : [];
+  },
+  learnPropose(sessionId, runId, content) {
+    return invoke<LearnProposal>("hermes_learn_propose", { sessionId, runId, contentJson: JSON.stringify(content) });
+  },
+  learnAccept(id, acknowledged) {
+    return invoke<LearnAcceptResult>("hermes_learn_accept", { id, acknowledged });
+  },
+  async learnReject(id, reason) {
+    await invoke("hermes_learn_reject", { id, reason });
+  },
+  learnMemories() {
+    return invoke<LearnedMemory[]>("hermes_learn_memories");
+  },
+  learnStorePending() {
+    return invoke<LearnedMemory[]>("hermes_learn_store_pending");
+  },
+  async learnPublish(id, version) {
+    await invoke("hermes_learn_publish", { id, version });
+  },
+  personas() {
+    return invoke<HermesPersona[]>("hermes_personas");
+  },
+  personaCheck(persona) {
+    return invoke<HermesPersona>("hermes_persona_check", { persona });
+  },
+  workflows() {
+    return invoke<TrackWorkflow[]>("hermes_workflows");
   },
 };
 

@@ -103,7 +103,7 @@ fn now_unix_ms() -> u64 {
 /// it matches what `comms-relay::redeem_invite` computes from the invitee's raw token — otherwise the
 /// self-admit never matches. Distinct from `invite_seal::token_hash` (SHA-256), which keys the
 /// CONNECT-S1 claims-inbox (both sides client-computed there, so that one need not match the relay).
-fn blake3_token_hash(token: &str) -> String {
+pub(crate) fn blake3_token_hash(token: &str) -> String {
     hex::encode(blake3::hash(token.as_bytes()).as_bytes())
 }
 
@@ -128,7 +128,7 @@ fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join("pending.json"))
 }
 
-fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
+pub(crate) fn load(app: &tauri::AppHandle) -> Vec<PendingInvite> {
     match store_path(app).ok().and_then(|p| std::fs::read(p).ok()) {
         Some(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         None => Vec::new(),

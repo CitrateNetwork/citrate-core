@@ -32,3 +32,14 @@ describe("CX bridge contract — agentHarness (frozen CX-S0.2)", () => {
     }
   });
 });
+
+describe("HUP-S4.3 — Hermes MCP settings seam", () => {
+  it("exposes mcpSettings + mcpSet; sim is honest (no sidecar to configure)", async () => {
+    expect(typeof bridge.agentHarness.mcpSettings).toBe("function");
+    expect(typeof bridge.agentHarness.mcpSet).toBe("function");
+    if (bridge.mode === "sim") {
+      await expect(bridge.agentHarness.mcpSettings()).rejects.toThrow(/desktop app/i);
+      await expect(bridge.agentHarness.mcpSet({ mem: true, scan: true })).rejects.toThrow(/desktop app/i);
+    }
+  });
+});
