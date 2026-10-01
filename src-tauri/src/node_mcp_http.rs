@@ -8,7 +8,7 @@
 //! `application/json` (the spec allows JSON or SSE; this server needs no streaming). `GET` is 405
 //! (no server-initiated stream is offered) and `DELETE` ends a session. One request per
 //! connection (`Connection: close`). Bounded: 16 KiB of headers, 1 MiB body, 32 concurrent
-//! connections, 15 s socket timeouts.
+//! connections, 15 s socket timeouts and a 15 s whole-request deadline.
 //!
 //! **stdio shim.** `citrate-core --mcp-stdio` (see `main.rs`) reads newline-delimited JSON-RPC on
 //! stdin, forwards each message to the loopback endpoint with the token from
@@ -35,6 +35,9 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 const MAX_SESSIONS: usize = 64;
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(15);
+/// The whole request (headers and body) must arrive within this time, so a client that trickles
+/// bytes cannot hold a connection slot for longer than this plus one socket timeout.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 
 /// The loopback URL for a port.
 pub fn endpoint_url(port: u16) -> String {
@@ -208,6 +211,7 @@ fn reason(status: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         406 => "Not Acceptable",
+        408 => "Request Timeout",
         411 => "Length Required",
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
@@ -253,6 +257,15 @@ fn write_response(mut stream: TcpStream, r: &HttpResponse) -> std::io::Result<()
 
 /// Read one HTTP/1.1 request (bounded). `Err` carries the response to send instead.
 pub fn read_request(stream: &mut impl Read) -> Result<HttpRequest, HttpResponse> {
+    read_request_by(stream, std::time::Instant::now() + REQUEST_DEADLINE)
+}
+
+/// [`read_request`] with an explicit whole-request deadline (408 once it passes).
+pub fn read_request_by(
+    stream: &mut impl Read,
+    deadline: std::time::Instant,
+) -> Result<HttpRequest, HttpResponse> {
+    let late = || std::time::Instant::now() >= deadline;
     let mut buf = Vec::with_capacity(2048);
     let mut chunk = [0u8; 2048];
     let header_end = loop {
@@ -261,6 +274,9 @@ pub fn read_request(stream: &mut impl Read) -> Result<HttpRequest, HttpResponse>
         }
         if buf.len() > MAX_HEADER_BYTES {
             return Err(simple(400, "headers too large"));
+        }
+        if late() {
+            return Err(simple(408, "request not received in time"));
         }
         let n = stream
             .read(&mut chunk)
@@ -303,6 +319,9 @@ pub fn read_request(stream: &mut impl Read) -> Result<HttpRequest, HttpResponse>
     }
     let mut body = buf[header_end + 4..].to_vec();
     while body.len() < len {
+        if late() {
+            return Err(simple(408, "request not received in time"));
+        }
         let n = stream
             .read(&mut chunk)
             .map_err(|_| simple(400, "could not read the body"))?;

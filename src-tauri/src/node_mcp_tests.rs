@@ -1500,3 +1500,73 @@ fn the_stdio_shim_endpoint_resolves_to_loopback_or_refuses() {
         Ok("http://127.0.0.1:47204/mcp")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Review hardening (adversarial review of HUP-S4.2 + S8.5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_chunked_body_is_refused_before_it_is_read() {
+    let raw = b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+    let r = crate::node_mcp_http::read_request(&mut &raw[..]);
+    assert_eq!(r.map(|_| 0).unwrap_or_else(|e| e.status), 411);
+}
+
+/// A reader that trickles one header byte per read and never finishes the header.
+struct Trickle;
+impl std::io::Read for Trickle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        buf[0] = b'a';
+        Ok(1)
+    }
+}
+
+#[test]
+fn a_trickled_request_hits_a_whole_request_deadline() {
+    let start = std::time::Instant::now();
+    let deadline = start + std::time::Duration::from_millis(60);
+    let r = crate::node_mcp_http::read_request_by(&mut Trickle, deadline);
+    assert_eq!(r.map(|_| 0).unwrap_or_else(|e| e.status), 408);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "the deadline bounds the whole request, not each read"
+    );
+}
+
+#[test]
+fn delete_cannot_end_another_tokens_session() {
+    let sv = serve();
+    let sid = open_session(&sv);
+    let other = sv.state.create_token("Other").expect("issue").connect_token;
+    let (st, _, _) = http(
+        sv.port,
+        "DELETE",
+        &[auth(&other), ("Mcp-Session-Id", sid.clone())],
+        "",
+    );
+    assert_eq!(st, 404, "another token cannot end this session");
+    let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string();
+    let (st, _, _) = http(
+        sv.port,
+        "POST",
+        &[auth(&sv.token), json_ct(), ("Mcp-Session-Id", sid)],
+        &list,
+    );
+    assert_eq!(st, 200, "the owner's session is still open");
+    sv.state.stop();
+}
+
+#[test]
+fn bidi_controls_never_reach_approval_text() {
+    let rlo = "pay\u{202E}evil";
+    assert!(crate::node_mcp_token::normalize_label(rlo).is_err());
+    assert!(crate::node_mcp_tools::parse_label(rlo, "for_handle").is_err());
+    assert!(crate::node_mcp_tools::parse_label("a\u{2066}b", "for_handle").is_err());
+    let c = CallerCtx {
+        token_id: "t".into(),
+        token_label: "Claude Code".into(),
+        client_name: Some("x\u{202E}\u{2067}\u{200F}y".into()),
+    };
+    assert_eq!(c.origin(), "mcp:Claude Code via xy");
+}

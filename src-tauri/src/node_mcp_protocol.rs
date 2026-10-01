@@ -94,7 +94,7 @@ impl CallerCtx {
     pub fn origin(&self) -> String {
         let clean = |s: &str| -> String {
             s.chars()
-                .filter(|c| !c.is_control())
+                .filter(|c| !tools::is_unsafe_display_char(*c))
                 .take(48)
                 .collect::<String>()
         };

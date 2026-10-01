@@ -421,10 +421,20 @@ pub fn parse_cid(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-/// A short free-text label (invite `for_handle`): 1..=64 chars, no control characters.
+/// Characters that must never appear in text shown on an approval card: control characters and
+/// the Unicode bidirectional overrides, isolates and marks (they can reorder what the member reads).
+pub fn is_unsafe_display_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// A short free-text label (invite `for_handle`): 1..=64 chars, no control or bidi characters.
 pub fn parse_label(s: &str, what: &str) -> Result<String, String> {
     let t = s.trim();
-    if t.is_empty() || t.chars().count() > 64 || t.chars().any(|c| c.is_control()) {
+    if t.is_empty() || t.chars().count() > 64 || t.chars().any(is_unsafe_display_char) {
         return Err(format!(
             "{what} must be 1 to 64 characters with no control characters"
         ));

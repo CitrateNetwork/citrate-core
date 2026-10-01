@@ -90,8 +90,11 @@ A write returns `{requestId, state: "pending"}`. The client polls `request_statu
   that token; a session cannot be used with another token.
 - JSON-RPC batches are refused (MCP 2025-06-18); protocol versions 2025-06-18, 2025-03-26 and
   2024-11-05 are accepted.
-- Bounds: 16 KiB headers, 1 MiB body, 32 connections, 64 sessions, 16 pending requests in
-  total, 15 minutes before a pending request expires (its ceremony is closed).
+- Bounds: 16 KiB headers, 1 MiB body, a 15 s deadline for the whole request, 32 connections,
+  64 sessions, 16 pending requests in total, 15 minutes before a pending request expires (its
+  ceremony is closed).
+- Text shown on an approval card (token labels, the client name, an invite's `for_handle`) may
+  not contain control characters or Unicode text-direction characters.
 - Arguments are validated against each tool's schema before anything touches the node; unknown
   arguments are refused.
 - The member's `personal` memory tenant is not searchable over MCP.
@@ -110,12 +113,16 @@ A write returns `{requestId, state: "pending"}`. The client polls `request_statu
 
 - The default port `47204`.
 - Whether a token may be scoped to the member's personal memory (today: never).
+- The bounds above (16 pending requests, 15-minute expiry, 16 live tokens, 5,000-block
+  `get_logs` range, 32 connections, 64 sessions) are conservative defaults.
 
 ## Demo transcript
 
 Recorded 2026-10-01 with the real server in a test harness whose chain reads go to the live
 public 40204 RPC (`cargo test --lib node_mcp_demo -- --ignored --nocapture`, served on port
-47299). Tokens are elided.
+47299). Tokens are elided. In the app, a public-RPC answer's `source` reads
+`public-rpc (this node is not running or still syncing)`; the test harness reports the shorter
+`public-rpc`.
 
 Claude Code as the client (HTTP transport, bearer header):
 

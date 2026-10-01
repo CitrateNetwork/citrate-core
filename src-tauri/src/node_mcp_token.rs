@@ -97,7 +97,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Validate and normalise a label: trimmed, 1..=48 chars, no control characters.
+/// Validate and normalise a label: trimmed, 1..=48 chars, no control or bidi characters.
 pub fn normalize_label(label: &str) -> Result<String, String> {
     let t = label.trim();
     if t.is_empty() {
@@ -106,8 +106,8 @@ pub fn normalize_label(label: &str) -> Result<String, String> {
     if t.chars().count() > MAX_LABEL_CHARS {
         return Err(format!("Labels are at most {MAX_LABEL_CHARS} characters."));
     }
-    if t.chars().any(|c| c.is_control()) {
-        return Err("Labels cannot contain control characters.".to_string());
+    if t.chars().any(crate::node_mcp_tools::is_unsafe_display_char) {
+        return Err("Labels cannot contain control or text-direction characters.".to_string());
     }
     Ok(t.to_string())
 }
