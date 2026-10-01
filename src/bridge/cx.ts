@@ -11,6 +11,7 @@ import type { CxBridge } from "./domains";
 import type { SimHost } from "./sim";
 
 import { tauriModelsCatalog } from "./tauri/models";
+import { tauriTier } from "./tauri/tier";
 import { tauriTelemetry } from "./tauri/telemetry";
 import { tauriStorage } from "./tauri/storage";
 import { tauriGroups } from "./tauri/comms";
@@ -22,6 +23,7 @@ import { tauriSocial } from "./tauri/social";
 import { tauriInvites } from "./tauri/invites";
 
 import { simModelsCatalog } from "./sim/models";
+import { simTier } from "./sim/tier";
 import { simTelemetry } from "./sim/telemetry";
 import { simStorage } from "./sim/storage";
 import { simGroups } from "./sim/comms";
@@ -36,6 +38,7 @@ import { simInvites } from "./sim/invites";
 export function cxTauri(): CxBridge {
   return {
     modelsCatalog: tauriModelsCatalog,
+    tier: tauriTier,
     telemetry: tauriTelemetry,
     storage: tauriStorage,
     groups: tauriGroups,
@@ -53,6 +56,7 @@ export function cxTauri(): CxBridge {
 export function cxSim(host: SimHost): CxBridge {
   return {
     modelsCatalog: simModelsCatalog(host),
+    tier: simTier(host),
     telemetry: simTelemetry(host),
     storage: simStorage(host),
     groups: simGroups(host),

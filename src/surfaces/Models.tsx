@@ -17,7 +17,8 @@ import {
   selectModel,
   type ModelSourceId,
 } from "../shell/slices/models";
-import type { ModelDescriptor } from "../bridge/domains";
+import { tierSlice, isRecommendedModel } from "../shell/slices/tier";
+import type { ModelDescriptor, TierId } from "../bridge/domains";
 
 function humanBytes(n: number): string {
   if (!n || n < 0) return "—";
@@ -42,6 +43,8 @@ const SEARCH_SUGGESTIONS: Record<ModelSourceId, string[]> = {
 
 export function Models({ store }: SurfaceProps) {
   const st = modelsSlice.use();
+  // HUP-S1.6 — the tier in effect (probed at onboarding); labels matching models, never downloads.
+  const tier = tierSlice.use().report;
   const [source, setSource] = useState<ModelSourceId>("hf");
   const [query, setQuery] = useState("");
 
@@ -124,6 +127,7 @@ export function Models({ store }: SurfaceProps) {
                 key={m.id}
                 model={m}
                 active={st.activeId === m.id}
+                recommendedTier={isRecommendedModel(m.file, tier) ? (tier?.effective ?? null) : null}
                 busy={st.selectingId === m.id}
                 actionLabel={st.activeId === m.id ? "In use" : st.selectingId === m.id ? "Switching…" : "Use"}
                 actionDisabled={st.activeId === m.id || st.selectingId != null}
@@ -257,6 +261,7 @@ export function Models({ store }: SurfaceProps) {
 function ModelRow({
   model,
   active,
+  recommendedTier = null,
   busy,
   actionLabel,
   actionDisabled,
@@ -264,6 +269,8 @@ function ModelRow({
 }: {
   model: ModelDescriptor;
   active: boolean;
+  /** HUP-S1.6 — set when this model matches the machine's tier in effect. */
+  recommendedTier?: TierId | null;
   busy: boolean;
   actionLabel: string;
   actionDisabled: boolean;
@@ -286,6 +293,7 @@ function ModelRow({
         <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
           {model.repo || model.source} · {humanBytes(model.sizeBytes)}
           {active ? " · active" : ""}
+          {recommendedTier ? ` · recommended for this machine (${recommendedTier})` : ""}
         </span>
       </div>
       <button
