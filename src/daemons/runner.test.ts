@@ -201,3 +201,104 @@ describe("daemon runner", () => {
     expect(r.state().error).toContain("could not be read");
   });
 });
+
+describe("daemon runner: pausing claims that have not started yet (review)", () => {
+  function queued() {
+    const api = fakeApi([[claim(), claim({ daemonId: "d2", runId: "r2" })]]);
+    let started!: () => void;
+    const begun = new Promise<void>((res) => (started = res));
+    const ran: string[] = [];
+    const turn: DaemonTurn = (c, signal) => {
+      ran.push(c.daemonId);
+      if (c.daemonId !== "d1") return Promise.resolve("ran anyway");
+      return new Promise((_, reject) => {
+        started();
+        signal.addEventListener("abort", () => reject(new TurnStopped()));
+      });
+    };
+    return { api, begun, ran, turn };
+  }
+
+  it("pausing a daemon whose claim is still queued in this tick never runs it", async () => {
+    const { api, begun, ran, turn } = queued();
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    await r.pause("d2"); // d2 is claimed but waiting behind d1
+    r.stopRunning(); // let d1 end
+    await t;
+    expect(ran).toEqual(["d1"]);
+    const d2 = api.finished.find((f) => f.id === "d2");
+    expect(d2).toEqual({ id: "d2", runId: "r2", tokens: 0, outcome: "stopped", note: expect.stringMatching(/paused/) });
+  });
+
+  it("pause all stops the run in flight and every claim still queued in this tick", async () => {
+    const { api, begun, ran, turn } = queued();
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    r.stopAll();
+    await t;
+    expect(ran).toEqual(["d1"]);
+    expect(api.finished.map((f) => [f.id, f.outcome, f.tokens > 0 ? "charged" : "free"])).toEqual([
+      ["d1", "stopped", "free"],
+      ["d2", "stopped", "free"],
+    ]);
+  });
+
+  it("a later tick runs claims normally again after a pause all", async () => {
+    const api = fakeApi([[claim()], [claim({ daemonId: "d2", runId: "r2" })]]);
+    const ran: string[] = [];
+    const r = createDaemonRunner(deps(api, async (c) => (ran.push(c.daemonId), "ok")));
+    r.stopAll(); // nothing running: no effect on later ticks
+    await r.tick();
+    await r.tick();
+    expect(ran).toEqual(["d1", "d2"]);
+  });
+
+  it("a daemon paused during one tick runs again on a later tick once its claim comes back", async () => {
+    const api = fakeApi([[claim(), claim({ daemonId: "d2", runId: "r2" })], [claim({ daemonId: "d2", runId: "r3" })]]);
+    let started!: () => void;
+    const begun = new Promise<void>((res) => (started = res));
+    const ran: string[] = [];
+    const turn: DaemonTurn = (c, signal) => {
+      ran.push(c.runId);
+      if (c.runId !== "r1") return Promise.resolve("ok");
+      return new Promise((_, reject) => {
+        started();
+        signal.addEventListener("abort", () => reject(new TurnStopped()));
+      });
+    };
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    await r.pause("d2");
+    r.stopRunning();
+    await t;
+    await r.tick(); // resumed in Rust, which claims it again
+    expect(ran).toEqual(["r1", "r3"]);
+  });
+
+  it("after a pause all during one tick, a later tick (after resume) runs its claims", async () => {
+    const api = fakeApi([[claim()], [claim({ daemonId: "d2", runId: "r2" })]]);
+    let started!: () => void;
+    const begun = new Promise<void>((res) => (started = res));
+    const ran: string[] = [];
+    const turn: DaemonTurn = (c, signal) => {
+      ran.push(c.runId);
+      if (c.runId !== "r1") return Promise.resolve("ok");
+      return new Promise((_, reject) => {
+        started();
+        signal.addEventListener("abort", () => reject(new TurnStopped()));
+      });
+    };
+    const r = createDaemonRunner(deps(api, turn));
+    const t = r.tick();
+    await begun;
+    r.stopAll();
+    await t;
+    await r.tick();
+    expect(ran).toEqual(["r1", "r2"]);
+    expect(api.finished.map((f) => f.outcome)).toEqual(["stopped", "answered"]);
+  });
+});

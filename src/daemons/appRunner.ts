@@ -99,7 +99,7 @@ export function setAllDaemonsPaused(paused: boolean): Promise<string | null> {
   if (!api) return Promise.resolve("daemons need the desktop app");
   return act(async () => {
     await api.setAllPaused(paused, Date.now());
-    if (paused) runner?.stopRunning();
+    if (paused) runner?.stopAll();
   });
 }
 
@@ -107,7 +107,8 @@ export function deleteDaemon(id: string): Promise<string | null> {
   const api = daemonsApi();
   if (!api) return Promise.resolve("daemons need the desktop app");
   return act(async () => {
-    if (runner?.state().running?.daemonId === id) await runner.pause(id);
+    // Pausing first also keeps a claim of this tick that has not started from running.
+    if (runner) await runner.pause(id);
     await api.remove(id);
   });
 }

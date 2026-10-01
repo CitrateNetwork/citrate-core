@@ -110,6 +110,8 @@ budget. Rust (`src-tauri/src/daemons.rs`) owns every schedule, budget and ledger
 - One run in flight per daemon. Missed minutes while the app was closed catch up **once**, and
   only minutes in the last 24 hours count.
 - A paused daemon (or "Pause all") never fires, and resuming does not replay the minutes it missed.
+  A claim the runner already holds for this tick but has not started is dropped when its daemon is
+  paused (or on "Pause all"), and reported "stopped" with 0 tokens (review fix, `runner.ts`).
 - Daemons run **only on the local model** (the in-app loop or the Hermes sidecar loop). With any
   other provider the runner claims nothing and says why ("Runs are held: ...").
 

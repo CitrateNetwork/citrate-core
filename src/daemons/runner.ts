@@ -7,7 +7,9 @@
 // run's life:
 //   - over budget: the token meter passes the run's allowance -> the run is stopped ("over_budget")
 //   - deadline: a run longer than `runTimeoutMs` is stopped ("timed_out")
-//   - pause: pausing a running daemon stops its run ("stopped")
+//   - pause: pausing a running daemon stops its run ("stopped"); a claim of this tick that has
+//     not started yet is never run once its daemon is paused, or after "pause all" (reported
+//     "stopped" with 0 tokens)
 //   - anything else that throws -> "failed", with the reason as the note
 // Nothing is claimed while no local model can run, so a daemon never falls back to a paid gateway
 // (spend budget 0). How a turn runs (the provider, the HIC rules for tool calls) is the store's
@@ -46,6 +48,8 @@ export interface DaemonRunner {
   pause(id: string): Promise<void>;
   /** Stop the running run (the Activity monitor's Stop for a daemon run) without pausing. */
   stopRunning(): void;
+  /** "Pause all": stop the running run and every claim of this tick that has not started yet. */
+  stopAll(): void;
   state(): RunnerState;
   lastReply(id: string): string | null;
 }
@@ -66,6 +70,9 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
   let current: { claim: Claim; ac: AbortController; reason: StopReason | null } | null = null;
   const st: RunnerState = { running: null, blockedReason: null, error: null };
   const replies = new Map<string, string>();
+  // Claims of the current tick that must not start: daemons paused mid-tick, or all after "pause all".
+  const held = new Set<string>();
+  let holdAll = false;
 
   const stop = (reason: StopReason) => {
     if (!current || current.ac.signal.aborted) return;
@@ -73,7 +80,17 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
     current.ac.abort();
   };
 
+  async function holdBack(claim: Claim): Promise<void> {
+    try {
+      await deps.api.finishRun(claim.daemonId, claim.runId, 0, "stopped", "stopped: you paused this daemon before its run started", deps.now());
+    } catch (e) {
+      st.error = "could not record a daemon run's end: " + (e instanceof Error ? e.message : String(e));
+    }
+    deps.onChange();
+  }
+
   async function runOne(claim: Claim): Promise<void> {
+    if (holdAll || held.has(claim.daemonId)) return holdBack(claim);
     const ac = new AbortController();
     current = { claim, ac, reason: null };
     st.running = { daemonId: claim.daemonId, runId: claim.runId, name: claim.name, startedMs: deps.now(), tokensAllowed: claim.tokensAllowed };
@@ -135,14 +152,21 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
         for (const c of claims) await runOne(c);
       } finally {
         ticking = false;
+        held.clear();
+        holdAll = false;
       }
     },
     async pause(id) {
       await deps.api.setPaused(id, true, deps.now());
+      if (ticking) held.add(id);
       if (current?.claim.daemonId === id) stop("paused");
       deps.onChange();
     },
     stopRunning() {
+      stop("stopped");
+    },
+    stopAll() {
+      if (ticking) holdAll = true;
       stop("stopped");
     },
     state: () => ({ ...st, running: st.running ? { ...st.running } : null }),
