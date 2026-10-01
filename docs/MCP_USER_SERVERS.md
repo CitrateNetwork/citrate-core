@@ -53,7 +53,11 @@ The sidecar must be running for a check ("Start Hermes to check a server" otherw
 
 Validation runs twice: in core (so the form can show errors without the sidecar) and
 in the runtime (`agent-mcp-host::user`, the source of truth), which re-checks every
-probe and the allowlist on load and fails closed.
+probe with the full user-entry rules. When the sidecar loads the allowlist file at
+start it applies the allowlist's base rules (types, absolute command, URL scheme,
+limits) and fails closed on an invalid file; the user-only rules (reserved names,
+loader env names, env references) are applied by core when it writes the file and
+by the probe, not again at load.
 
 ## Files
 
@@ -71,6 +75,22 @@ Under `<app local data>/hermes/`, both written `0600`:
 `mcp_server_review` (45 s webview deadline: the probe is bounded at 20 s in the
 sidecar), `mcp_server_enable`, `mcp_servers_runtime` (what the running sidecar
 loaded). All async (`blocking::off_main`), all in the main-window ACL only.
+
+## Owner decisions (pending owner sign-off)
+
+These are conservative placeholders. They refuse more than they allow and change
+nothing for members who never add a server.
+
+- **Reserved server names** (`RESERVED_SERVER_NAMES` in runtime
+  `agent-mcp-host/src/user.rs`, mirrored in core `src-tauri/src/mcp_servers.rs`),
+  chosen from planset 02 §5.
+- **Loader env denylist** (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH`, ...). It
+  refuses some legitimate uses, such as `NODE_OPTIONS` for memory flags; pass those
+  as program arguments instead.
+- **Env values stored as plain text** in the two `0600` files above, rather than a
+  hand-off through the keyring at spawn time.
+- **Checking needs Hermes running**, and changes apply at the next Hermes start.
+- **Masks show length only**, never any characters of the value.
 
 ## Not done
 

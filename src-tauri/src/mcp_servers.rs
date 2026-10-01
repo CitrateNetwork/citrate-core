@@ -4,7 +4,7 @@
 //! reviewed it:
 //!
 //! 1. **Save** (add or edit): the entry is validated (the same rules as the runtime's
-//!    `agent-mcp-host::user`, which re-validates on every probe and on load) and stored DISABLED.
+//!    `agent-mcp-host::user`, which re-validates on every probe) and stored DISABLED.
 //!    Any change to what runs (command, args, working folder, URL, env, write tools) drops a
 //!    previous review, so an edited server is disabled until reviewed again.
 //! 2. **Review**: core asks the running Hermes sidecar for a dry-run probe (`POST /mcp/probe`):
@@ -41,8 +41,10 @@ pub const ALLOWLIST_FILE: &str = "mcp-allowlist.json";
 /// The runtime's limit on configured servers (`agent-mcp-host::config::MAX_SERVERS`).
 pub const MAX_SERVERS: usize = 16;
 
-// Mirrors `agent-mcp-host::user` (the source of truth; the sidecar re-validates every probe and the
-// allowlist on load, failing closed).
+// Mirrors `agent-mcp-host::user` (the source of truth; the sidecar re-validates every probe with these
+// rules, and the allowlist on load with the base rules, failing closed).
+// Pending owner sign-off: the reserved names, the loader env denylist and the limits below are
+// conservative placeholders (docs/MCP_USER_SERVERS.md, "Owner decisions").
 const RESERVED_SERVER_NAMES: &[&str] = &[
     "citrate",
     "citrate-node",
