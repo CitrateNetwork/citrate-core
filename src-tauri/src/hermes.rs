@@ -39,6 +39,10 @@ const CITRATE_CHAIN_ID: u64 = 40204;
 #[path = "agent_tools.rs"]
 pub mod agent_tools;
 
+// HUP-S1.9 — the sidecar's worker processes (GET /workers), read for the Activity monitor.
+#[path = "hermes_workers.rs"]
+pub mod workers;
+
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
 pub const HERMES_CONTROL_ADDR: &str = "127.0.0.1:19700";

@@ -2,12 +2,13 @@
 // citrate-core — Activity monitor pop-out view (HUP-S7.6, US-7.4)
 //
 // A pure view over one MonitorSnapshot ("why am I waiting"): model and tier, the context meter,
-// the current step and tool calls, elapsed time, spend, and a Stop button that is always visible.
+// the current step and tool calls, elapsed time, spend, the agent's worker processes (HUP-S1.9),
+// and a Stop button that is always visible.
 // Every unknown value is shown as "unknown" with its reason; nothing is invented (Rule 1).
 // Styled only with the register tokens (--srf/--tx/--line), so it reads in the dark register.
 // =====================================================================
 import type { CSSProperties, ReactNode } from "react";
-import { formatElapsed, type MonitorSnapshot } from "./monitorSnapshot";
+import { formatElapsed, workerLine, type MonitorSnapshot } from "./monitorSnapshot";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -35,7 +36,7 @@ const TOOL_STATE_COLOR: Record<string, string> = {
 };
 
 export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSnapshot; now: number; onStop: () => void }) {
-  const { model, provider, tier, context, turn, spend } = snapshot;
+  const { model, provider, tier, context, turn, spend, workers } = snapshot;
   const running = turn.state === "running";
   const ctxWindow = context.windowTokens !== null ? `${fmt(context.windowTokens)} tokens` : "unknown";
   const ctxUsed = context.usedTokens !== null ? `${fmt(context.usedTokens)} used` : "used: unknown";
@@ -100,6 +101,29 @@ export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSn
             ))}
           </ul>
         )}
+      </div>
+      <div style={{ paddingTop: 8 }} data-testid="mon-workers">
+        <span className="mono" style={label}>Worker processes</span>
+        <div style={{ ...note, paddingTop: 4 }}>{workers.note}</div>
+        {workers.rows && workers.rows.length > 0 ? (
+          <ul style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
+            {workers.rows.map((w) => (
+              <li key={w.kind} data-testid="mon-worker-row" style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--tx-1)" }}>
+                <span className="mono" style={{ minWidth: 72 }}>{w.kind}</span>
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    overflowWrap: "anywhere",
+                    color: w.state === "failed" || w.healthy === false ? "var(--danger)" : w.state === "running" ? "var(--tx-1)" : "var(--tx-2)",
+                  }}
+                >
+                  {workerLine(w)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
       {turn.state === "idle" && turn.outcome ? (
         <div style={{ ...note, paddingTop: 8 }}>Last turn: {turn.outcome === "stopped" ? "stopped by you" : turn.outcome}.</div>

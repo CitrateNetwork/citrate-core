@@ -66,6 +66,8 @@ const LONG: Record<string, number> = {
   hermes_tracks: 45_000,
   hermes_brief_create: 45_000,
   hermes_brief_check: 45_000,
+  // HUP-S1.9: the sidecar's worker report (same loopback control bound).
+  hermes_workers: 45_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.

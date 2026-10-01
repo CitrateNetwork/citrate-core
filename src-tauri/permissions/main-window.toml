@@ -127,6 +127,7 @@ commands.allow = [
   "hermes_brief_check",
   "hermes_bridge_pending",
   "hermes_resolve",
+  "hermes_workers",
   "node_status",
   "node_start",
   "node_stop",
