@@ -51,7 +51,7 @@ pub const DEFAULT_LLAMA_PORT: u16 = 18080;
 
 /// The default context window (`--ctx-size`). A modest window keeps memory
 /// bounded on member hardware; the real value can be tuned in a later WP.
-const DEFAULT_CTX_SIZE: u32 = 8192;
+pub(crate) const DEFAULT_CTX_SIZE: u32 = 8192;
 
 /// How often the liveness probe checks the server's `/health` while Running.
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);

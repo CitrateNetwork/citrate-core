@@ -1,0 +1,116 @@
+{
+  "sources": [
+    {
+      "label": "trailofbits",
+      "upstream": "https://github.com/trailofbits/skills",
+      "commit": "a56045e9ae00b3506cacefea0f672aab0a1a6e3c",
+      "license": "CC-BY-SA-4.0",
+      "local": ".claude/plugins/marketplaces/trailofbits",
+      "pin_method": "vendored-snapshot: citrate-labs .claude/ tree; every blob under plugins/ equals upstream at commit"
+    },
+    {
+      "label": "frontend-skills",
+      "upstream": "https://github.com/saulbuilds/frontend-skills",
+      "commit": "c5c5dea7cebaaf801a90a04e1f15123d29de61c1",
+      "license": "MIT (README statement, no LICENSE file); impeccable and hyperframes Apache-2.0; frontend-design own LICENSE.txt",
+      "local": "frontend-skills",
+      "pin_method": "git-checkout"
+    },
+    {
+      "label": "agentile-skills",
+      "upstream": "https://github.com/CitrateNetwork/agentile-skills",
+      "commit": "59dbd75490db6ea674cacf7814c6359d0c8bc267",
+      "license": "Apache-2.0",
+      "local": "agentile-skills",
+      "pin_method": "git-checkout"
+    },
+    {
+      "label": "hermes-skills",
+      "upstream": "https://github.com/NousResearch/hermes-agent (via CitrateNetwork/testing-hermes-design)",
+      "commit": "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37",
+      "license": "MIT",
+      "local": "testing-hermes-design/skills",
+      "pin_method": "git-checkout"
+    },
+    {
+      "label": "hermes-optional",
+      "upstream": "https://github.com/NousResearch/hermes-agent (via CitrateNetwork/testing-hermes-design)",
+      "commit": "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37",
+      "license": "MIT",
+      "local": "testing-hermes-design/optional-skills",
+      "pin_method": "git-checkout"
+    }
+  ],
+  "decisions": {
+    "frontend-skills/impeccable": {
+      "verdict": "include-with-scripts-stripped",
+      "reason": "the body and references call bundled scripts through a {{scripts_path}} placeholder (context loader, live browser mode, pin); the Hermes loader does not substitute it and those steps cannot run stripped; the design guidance and reference docs still apply; owner to confirm or exclude"
+    },
+    "trailofbits/plugins/agentic-actions-auditor/skills/agentic-actions-auditor": {
+      "verdict": "include-as-is",
+      "reason": "flag hits are detection patterns the auditor looks for (agent sandbox flags, subshell vectors), not instructions to the agent"
+    },
+    "trailofbits/plugins/burpsuite-project-parser/skills/burpsuite-project-parser": {
+      "verdict": "exclude",
+      "reason": "a wrapper around its bundled script (22 body references); nothing usable ships with the script stripped"
+    },
+    "trailofbits/plugins/claude-in-chrome-troubleshooting/skills/claude-in-chrome-troubleshooting": {
+      "verdict": "exclude",
+      "reason": "troubleshoots another agent host browser extension; not applicable to Hermes"
+    },
+    "trailofbits/plugins/culture-index/skills/interpreting-culture-index": {
+      "verdict": "exclude",
+      "reason": "personality and hiring-profile analysis of people; outside every Hermes track and handles personal data"
+    },
+    "trailofbits/plugins/devcontainer-setup/skills/devcontainer-setup": {
+      "verdict": "exclude",
+      "reason": "its bundled templates pipe remote installers into a shell and configure a coding agent with permission prompts bypassed; also specific to another agent host"
+    },
+    "trailofbits/plugins/firebase-apk-scanner/skills/firebase-apk-scanner": {
+      "verdict": "exclude",
+      "reason": "a wrapper around a scanner script that lives outside the skill directory and actively probes third-party endpoints; nothing usable ships without it"
+    },
+    "trailofbits/plugins/let-fate-decide/skills/let-fate-decide": {
+      "verdict": "exclude",
+      "reason": "injects random card draws into planning on vague prompts; conflicts with verifier-decided outcomes (D-22) and the interviewer (S1.4)"
+    },
+    "trailofbits/plugins/modern-python/skills/modern-python": {
+      "verdict": "include-as-is",
+      "reason": "flag hits are upstream installer one-liners quoted in reference docs; any shell step runs only through the gated shell tool"
+    },
+    "trailofbits/plugins/seatbelt-sandboxer/skills/seatbelt-sandboxer": {
+      "verdict": "include-as-is",
+      "reason": "the credential path appears in a negative test that the generated sandbox must deny"
+    },
+    "trailofbits/plugins/second-opinion/skills/second-opinion": {
+      "verdict": "exclude",
+      "reason": "drives third-party model CLIs with their approval prompts turned off and sends code to external providers; conflicts with HIC levels and egress opt-in"
+    },
+    "trailofbits/plugins/skill-improver/skills/skill-improver": {
+      "verdict": "exclude",
+      "reason": "edits skill files in an autonomous loop; conflicts with proposal-plus-accept self-learning (S3.4)"
+    },
+    "trailofbits/plugins/static-analysis/skills/semgrep": {
+      "verdict": "convert-script-to-capsule",
+      "reason": "merge_sarif.py is a pure SARIF merge (it shells out only to an optional external merger); fits a WASM capsule; ships stripped until the capsule exists",
+      "capsule": "sarif-merge"
+    },
+    "trailofbits/plugins/testing-handbook-skills/skills/libafl": {
+      "verdict": "include-as-is",
+      "reason": "the pipe-to-shell hit is the upstream rustup installer quoted as a setup step; shell runs only through the gated shell tool"
+    },
+    "trailofbits/plugins/trailmark/skills/diagramming-code": {
+      "verdict": "exclude",
+      "reason": "a wrapper around its bundled diagram script (8 body references); nothing usable ships with the script stripped"
+    },
+    "trailofbits/plugins/yara-authoring/skills/yara-rule-authoring": {
+      "verdict": "convert-script-to-capsule",
+      "reason": "credential-path hits are malware detection strings; the bundled linter and atom analyzer are pure functions over a rule file and fit a WASM capsule; ships stripped until the capsule exists",
+      "capsule": "yara-lint"
+    },
+    "trailofbits/plugins/zeroize-audit/skills/zeroize-audit": {
+      "verdict": "exclude",
+      "reason": "25 bundled executables under tools/ drive the workflow (compiler emit and diff steps); stripped, its steps cannot run; revisit as a native toolset"
+    }
+  }
+}

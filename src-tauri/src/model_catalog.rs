@@ -249,6 +249,20 @@ pub fn model_file_from_id(id: &str) -> Result<String, String> {
             .map(|(_repo, file)| file.to_string())
             .ok_or_else(|| format!("malformed github id: {id}"));
     }
+    // `read_local_models` lists on-disk models as `local:<file>`. Accept exactly one plain
+    // `.gguf` filename in the models dir — never a path, a hidden file, or a partial download.
+    if let Some(file) = id.strip_prefix("local:") {
+        let plain = !file.is_empty()
+            && file.len() <= 255
+            && file.ends_with(".gguf")
+            && !file.starts_with('.')
+            && !file.contains(['/', '\\', '\0']);
+        return if plain {
+            Ok(file.to_string())
+        } else {
+            Err(format!("malformed local model id: {id}"))
+        };
+    }
     Err(format!("unknown model id source: {id}"))
 }
 

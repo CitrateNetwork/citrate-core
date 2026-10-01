@@ -291,3 +291,41 @@ fn interrupted_catalog_downloads_are_listed_as_resumable() {
 fn a_missing_models_dir_has_no_partials() {
     assert!(read_partial_downloads(std::path::Path::new("/nonexistent/citrate/models")).is_empty());
 }
+
+/// Bug (owner, 2026-10-01): "Use this model" on a downloaded model failed with
+/// "unknown model id source: local:Qwen3.8-27B-GSQ-RCO-IQ2_S-mtp.gguf". `read_local_models` emits
+/// `local:<file>` ids, so select must map them to their on-disk file (and nothing else).
+#[test]
+fn local_ids_from_the_models_list_map_to_their_file() {
+    assert_eq!(
+        model_file_from_id("local:Qwen3.8-27B-GSQ-RCO-IQ2_S-mtp.gguf").unwrap(),
+        "Qwen3.8-27B-GSQ-RCO-IQ2_S-mtp.gguf"
+    );
+    assert_eq!(model_file_from_id("local:a.gguf").unwrap(), "a.gguf");
+    // Every id the listing produces is accepted back by select.
+    let dir = std::env::temp_dir().join(format!("local-ids-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    for m in read_local_models(&dir).unwrap() {
+        assert_eq!(model_file_from_id(&m.id).unwrap(), m.file);
+    }
+}
+
+#[test]
+fn local_ids_are_a_single_plain_gguf_filename() {
+    for bad in [
+        "local:",
+        "local:../x.gguf",
+        "local:sub/x.gguf",
+        "local:sub\\x.gguf",
+        "local:/etc/x.gguf",
+        "local:.hidden.gguf",
+        "local:x.gguf.part",
+        "local:x.bin",
+        "local:..",
+        "local:x\0.gguf",
+    ] {
+        assert!(model_file_from_id(bad).is_err(), "{bad:?}");
+    }
+    let long = format!("local:{}.gguf", "a".repeat(300));
+    assert!(model_file_from_id(&long).is_err());
+}

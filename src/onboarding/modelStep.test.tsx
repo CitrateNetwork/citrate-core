@@ -126,3 +126,18 @@ describe("store.verifyModel — ready is earned only from a real verify (Rule 1)
     spy.mockRestore();
   });
 });
+
+describe("HUP-S1.6 ModelStep — hardware tier at onboarding (US-1.6)", () => {
+  it("shows the probe's tier + rationale inside the model step", async () => {
+    const { tierSlice } = await import("../shell/slices/tier");
+    const { sampleReport } = await import("../shell/slices/tierTestReport");
+    tierSlice.set({ report: sampleReport(), loaded: true, saving: false, error: null });
+    const html = renderToStaticMarkup(<ModelStep store={noopStore} s={modelState({ modelState: "notPresent" })} />);
+    expect(html).toContain('data-testid="tier-panel"');
+    expect(html).toContain("Your machine: T2");
+    expect(html).toContain('data-testid="tier-override"');
+    // The existing Gemma default flow is untouched.
+    expect(html).toContain("huggingface.co/ggml-org/gemma-4-E4B-it-GGUF");
+    tierSlice.set({ report: null, loaded: false });
+  });
+});

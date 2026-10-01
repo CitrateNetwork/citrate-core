@@ -106,6 +106,7 @@ any of these requires a superseding ADR.
 | D-38 | Journal package | For **app users**: a daily analysis + retro journal of their work, exported as a private encrypted bundle |
 | D-39 | Scope discipline | Scoped by **work, not time**. Every feature is completed and tested end to end before the program closes |
 | D-40 | Home | This planset (citrate-core) + a federation sprint file for the cross-repo work |
+| D-41 | Release cadence (owner, 2026-10-01) | **One release: v0.5.0.** No point releases after 0.4.1. All user stories are finished, the integration branch is tested and QA'd, then it ships once. 0.4.2–0.4.7 are internal milestones only (see 10_RELEASE_PLAN). **Amended 2026-10-01 (owner):** one interim release, **0.4.2**, cut from the integration branch after a packaged QA pass (it carries the downloaded-model fix, the dark-register text fix and the rebuilt Hermes runtime); then nothing until 0.5.0 |
 
 ## Architecture at a glance
 

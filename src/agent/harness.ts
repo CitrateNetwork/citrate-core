@@ -37,12 +37,21 @@ export interface AgentContext {
   tier: string;
 }
 
+/**
+ * HUP-S2.4 — what the sidecar says about a call beyond the call itself. `hic: "required"` means
+ * the session read untrusted content and this call needs the member's explicit decision.
+ */
+export interface ToolCallMeta {
+  hic?: "required";
+  hicReason?: string;
+}
+
 export interface SendOpts {
   messages: { role: string; content: string }[];
   callbacks: {
     onStatus: (status: ChatStatus) => void;
     onToken: (text: string) => void;
-    onToolCall: (call: ToolCall) => Promise<string>;
+    onToolCall: (call: ToolCall, meta?: ToolCallMeta) => Promise<string>;
   };
 }
 

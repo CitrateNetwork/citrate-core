@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
+import { TierPanel } from "./TierPanel";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 
@@ -1023,6 +1024,9 @@ export function ModelStep({ store, s }: { store: Store; s: AppState }) {
         Run chat on-device with a bundled llama-server, no data leaves this machine. The download is streamed and resumable, and
         verified against a pinned SHA-256 before it is ever used. While it downloads — or if you skip — chat runs on the gateway.
       </p>
+
+      {/* HUP-S1.6 (US-1.6) — the local hardware probe's tier + rationale, with a persisted override. */}
+      <TierPanel />
 
       {(s.modelState === "notPresent" || s.modelState === "error") && !s.modelSkipped && (
         <div style={{ display: "flex", gap: 10 }}>

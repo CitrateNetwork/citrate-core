@@ -22,11 +22,22 @@ gates:
           federation sprint 2026-09-30-hup-hermes-upskill.md.
       - id: g0-rule3-adr
         desc: Rule-3 amendment ADR signed off (@rule8) before any budgeted signature ships
-        met: false
+        met: true
+        evidence: docs/adr/ADR-2026-09-30-rule3-budgetable-signatures.md
+        note: >-
+          Accepted 2026-10-01. All five sign-off rows by the owner (federation lead, @rule8,
+          core + runtime maintainer on 2026-09-30; formal-methods row by owner override on
+          2026-10-01, no independent formal reviewer available). WebSigningBudget.tla is
+          TLC-green on all 5 configs (core#129, re-run after the release merge); an independent
+          formal review is a recommended follow-up. O-1..O-5 accepted as proposed.
       - id: g0-formal
         desc: AgentLoop, FolderGrant, WebSigningBudget, SkillPersistence, DeployGate, SpendBudget, AnchorBatch, DeviceLink written and TLC-checked at small bounds (full proofs close with their WPs)
         met: false
         evidence: src-tauri/formal/
+        note: >-
+          Partial 2026-09-30: AgentLoop written + TLC-green (1,258 distinct states, mutation-checked;
+          scripts/run-tlc.sh AgentLoop). Remaining: FolderGrant, WebSigningBudget, SkillPersistence,
+          DeployGate, SpendBudget, AnchorBatch, DeviceLink.
     reviewers: [Larry Klosowski (owner)]
   - id: gate1
     name: Stable + one agent (S0, S1)
@@ -39,6 +50,7 @@ gates:
       - {id: g1-render, desc: "Markdown golden tests + real SSE streaming", met: false}
       - {id: g1-sidebar, desc: "Sidebar per D-34 with nav tests", met: false}
       - {id: g1-loop, desc: "Loop in sidecar; UI/CLI/MCP share a session", met: false}
+      - {id: g1-wallet-unlink, desc: "Wallet unlink (S1.11, #117) merged after identity#31 + primary_wallet fix deployed; unlink tests green", met: false}
       - {id: g1-eval, desc: "Per-tier eval on synthetic tool-call tasks: T1+ >=90% valid tool calls, >=80% step success; T0 guided-tier bar set from its baseline", met: false, evidence: eval/}
   - id: gate2
     name: Controlled + knowledgeable (S2, S3, S4)
