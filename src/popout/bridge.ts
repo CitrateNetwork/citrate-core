@@ -4,8 +4,10 @@
 // The typed channel between the main window and its pop-outs. Every message carries a version and
 // is validated on receipt; anything malformed is dropped whole. The pop-outs hold no app commands
 // at all (their capability grants only these events), so this channel is the only thing a pop-out
-// can do: announce it is ready, ask the main window to stop the running turn, and (HUP-S2.9) ask it
-// to undo an agent file change.
+// can do: announce it is ready, ask the main window to stop the running turn (the Activity
+// monitor) or to stop Hermes's browser (the Browser, HUP-S5.1), and (HUP-S2.9) ask it to undo an
+// agent file change. Decisions on browser actions and origin consent are never taken over this
+// channel: they stay in the main window.
 //
 // Transport: Tauri events addressed to one window label (`emitTo`), heard by that window only
 // (`getCurrentWebviewWindow().listen`). Tests use an in-memory transport.
@@ -14,6 +16,7 @@ import { isPopoutKind, popoutLabel, type PopoutKind } from "./kinds";
 import { isMonitorSnapshot, type MonitorSnapshot } from "./monitorSnapshot";
 import { isUndoPanel, isUndoTarget, type UndoPanel } from "./undoPanel";
 import { validSessionId } from "../agent/fileChanges";
+import { parseBrowserView, type BrowserView } from "./browserView";
 
 /** The one event name the channel uses (both directions). */
 export const POPOUT_EVENT = "citrate-popout";
@@ -24,17 +27,20 @@ export type ToMain =
   | { v: 1; type: "popout.ready"; kind: PopoutKind }
   | { v: 1; type: "monitor.stop" }
   /** HUP-S2.9: undo one step (`seq`) or the whole session (`seq: null`). */
-  | { v: 1; type: "monitor.undo.request"; session: string; seq: number | null };
+  | { v: 1; type: "monitor.undo.request"; session: string; seq: number | null }
+  | { v: 1; type: "browser.stop" };
 export type ToPopout =
   | { v: 1; type: "monitor.snapshot"; snapshot: MonitorSnapshot }
   /** HUP-S2.9: the agent session's recent file changes. */
-  | { v: 1; type: "monitor.undo"; panel: UndoPanel };
+  | { v: 1; type: "monitor.undo"; panel: UndoPanel }
+  | { v: 1; type: "browser.view"; view: BrowserView };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 export function parseToMain(raw: unknown): ToMain | null {
   if (!isObj(raw) || raw.v !== BRIDGE_VERSION) return null;
   if (raw.type === "monitor.stop") return { v: 1, type: "monitor.stop" };
+  if (raw.type === "browser.stop") return { v: 1, type: "browser.stop" };
   if (raw.type === "popout.ready" && isPopoutKind(raw.kind)) return { v: 1, type: "popout.ready", kind: raw.kind };
   if (raw.type === "monitor.undo.request" && validSessionId(raw.session) && "seq" in raw && isUndoTarget(raw.seq)) {
     return { v: 1, type: "monitor.undo.request", session: raw.session, seq: raw.seq };
@@ -48,6 +54,10 @@ export function parseToPopout(raw: unknown): ToPopout | null {
     return { v: 1, type: "monitor.snapshot", snapshot: raw.snapshot };
   }
   if (raw.type === "monitor.undo" && isUndoPanel(raw.panel)) return { v: 1, type: "monitor.undo", panel: raw.panel };
+  if (raw.type === "browser.view") {
+    const view = parseBrowserView(raw.view);
+    return view ? { v: 1, type: "browser.view", view } : null;
+  }
   return null;
 }
 
@@ -71,12 +81,18 @@ export async function tauriTransport(): Promise<BridgeTransport> {
 export interface MainEnd {
   sendSnapshot(snapshot: MonitorSnapshot): Promise<void>;
   sendUndoPanel(panel: UndoPanel): Promise<void>;
+  sendBrowserView(view: BrowserView): Promise<void>;
   close(): void;
 }
 
 export async function createMainEnd(
   t: BridgeTransport,
-  handlers: { onReady: (kind: PopoutKind) => void; onStop: () => void; onUndo?: (session: string, seq: number | null) => void },
+  handlers: {
+    onReady: (kind: PopoutKind) => void;
+    onStop: () => void;
+    onUndo?: (session: string, seq: number | null) => void;
+    onBrowserStop?: () => void;
+  },
 ): Promise<MainEnd> {
   let open = true;
   const unlisten = await t.listen((raw) => {
@@ -85,6 +101,7 @@ export async function createMainEnd(
     if (!msg) return;
     if (msg.type === "popout.ready") handlers.onReady(msg.kind);
     else if (msg.type === "monitor.undo.request") handlers.onUndo?.(msg.session, msg.seq);
+    else if (msg.type === "browser.stop") handlers.onBrowserStop?.();
     else handlers.onStop();
   });
   return {
@@ -98,6 +115,11 @@ export async function createMainEnd(
       const msg: ToPopout = { v: 1, type: "monitor.undo", panel };
       await t.send(popoutLabel("monitor"), msg);
     },
+    async sendBrowserView(view) {
+      if (!open) return;
+      const msg: ToPopout = { v: 1, type: "browser.view", view };
+      await t.send(popoutLabel("browser"), msg);
+    },
     close() {
       open = false;
       unlisten();
@@ -109,6 +131,8 @@ export interface PopoutEnd {
   ready(): Promise<void>;
   stop(): Promise<void>;
   undo(session: string, seq: number | null): Promise<void>;
+  /** HUP-S5.1: ask the main window to stop Hermes's browser. */
+  stopBrowser(): Promise<void>;
   close(): void;
 }
 
@@ -117,6 +141,7 @@ export async function createPopoutEnd(
   kind: PopoutKind,
   onSnapshot: (s: MonitorSnapshot) => void,
   onUndoPanel?: (p: UndoPanel) => void,
+  onBrowserView?: (v: BrowserView) => void,
 ): Promise<PopoutEnd> {
   let open = true;
   const unlisten = await t.listen((raw) => {
@@ -124,13 +149,15 @@ export async function createPopoutEnd(
     const msg = parseToPopout(raw);
     if (!msg) return;
     if (msg.type === "monitor.snapshot") onSnapshot(msg.snapshot);
-    else onUndoPanel?.(msg.panel);
+    else if (msg.type === "monitor.undo") onUndoPanel?.(msg.panel);
+    else onBrowserView?.(msg.view);
   });
   const send = (msg: ToMain) => (open ? t.send(MAIN_LABEL, msg) : Promise.resolve());
   return {
     ready: () => send({ v: 1, type: "popout.ready", kind }),
     stop: () => send({ v: 1, type: "monitor.stop" }),
     undo: (session, seq) => send({ v: 1, type: "monitor.undo.request", session, seq }),
+    stopBrowser: () => send({ v: 1, type: "browser.stop" }),
     close() {
       open = false;
       unlisten();

@@ -74,7 +74,7 @@ describe("HUP-S5.4 pop-out root", () => {
 
   it("a kind without a view says it is not built yet", async () => {
     const f = fake();
-    const el = await render(<PopoutRoot kind="browser" transport={async () => f.t} />);
+    const el = await render(<PopoutRoot kind="contract" transport={async () => f.t} />);
     expect(el.textContent).toMatch(/not built yet/i);
   });
 

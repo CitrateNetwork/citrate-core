@@ -166,7 +166,7 @@ pub fn local_base_url(port: u16) -> String {
 /// `http://127.0.0.1:@evil.com/v1`, and `http://127.0.0.1.evil.com/v1` (host is a
 /// subdomain of `evil.com`) all FAIL host_str() equality / userinfo emptiness,
 /// mirroring the rigor of [`validate_https_base_url`].
-fn loopback_url_is_safe(url: &str) -> bool {
+pub(crate) fn loopback_url_is_safe(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url) else {
         return false;
     };
@@ -579,6 +579,29 @@ impl AiManager {
         let cfg: ProviderConfig =
             serde_json::from_str(&blob).map_err(|_| AiError::KeyringUnavailable)?;
         Ok(cfg)
+    }
+
+    /// HUP-S10.1: the STORED base URL of a configured provider (non-secret; shown as the cost and
+    /// destination line of a media route).
+    pub(crate) fn provider_base_url(&self, provider_id: &str) -> Result<String> {
+        Ok(self.read_config(provider_id)?.base_url.clone())
+    }
+
+    /// HUP-S10.1: POST `body` to `{stored baseURL}{path}` with the sealed key (media generation).
+    /// Invariant 3 holds: the base URL is the stored one and `path` is a fixed `'static` path
+    /// chosen by core (`/images/generations`), never a caller-supplied URL.
+    pub(crate) fn post_to_provider(
+        &self,
+        provider_id: &str,
+        path: &'static str,
+        body: &Value,
+    ) -> Result<String> {
+        if !path.starts_with('/') || path.contains("..") || path.contains(['?', '#', '@']) {
+            return Err(AiError::BadBaseUrl);
+        }
+        let cfg = self.read_config(provider_id)?;
+        let url = format!("{}{path}", cfg.base_url);
+        self.http.post_json(&url, &cfg.api_key, body)
     }
 
     /// The current default provider id, if one is set.

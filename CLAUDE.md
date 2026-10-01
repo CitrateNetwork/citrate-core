@@ -32,6 +32,9 @@ Start at `.agentile/AGENT_ENTRY.md`. Canonical truth is the federation planset
    sidecar, daemon, or remote service ever holds a user key or signs directly.
    (The recoverable EIP-155 tx-signing form is deferred to B1.4; B1.2 signs via
    the message path under the lean `crypto` build.)
+   One closed-list exception: ADR-2026-09-30-rule3-budgetable-signatures (accepted). A hardened
+   SIWE sign-in may be auto-signed inside a member-granted, capped, revocable, recorded budget,
+   only via `SignatureCeremony::request_siwe_budgeted` (HUP-S2.3, docs/WEB_SIGNING_BUDGETS.md).
 4. **Never commit to main.** All work on a feature branch + PR via `gh`.
    Commit with explicit paths only (`git add <paths>`, never `-A`/`.`).
    Never merge anything — the owner merges.

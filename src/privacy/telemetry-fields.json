@@ -1,0 +1,23 @@
+{
+  "format": "citrate-telemetry-fields",
+  "version": 1,
+  "default": "off",
+  "endpoint": "https://telemetry.citrate.ai/report",
+  "sends": "Only when you prepare a report, review it, and press Send. Nothing is sent in the background.",
+  "fields": [
+    { "key": "reportId", "what": "A random id made for this one report. It is not stored and not linked to you." },
+    { "key": "appVersion", "what": "The app version, for example 0.4.2." },
+    { "key": "os", "what": "The operating system family: macos, linux or windows." },
+    { "key": "crashTail", "what": "The last lines of the app's own crash log, if it crashed." },
+    { "key": "nodeLogTail", "what": "The last lines of the node's crash records, if it crashed." },
+    { "key": "uiErrors", "what": "Recent error messages from the app's screens." }
+  ],
+  "neverSent": [
+    "Chat, journal or message content",
+    "Keys, passphrases or recovery phrases",
+    "Wallet addresses and transaction hashes (replaced with a redaction mark)",
+    "Email addresses and access tokens (replaced with a redaction mark)",
+    "Your home folder path (replaced with ~)",
+    "Your account id, IP-based location or device identifiers"
+  ]
+}
