@@ -34,9 +34,11 @@ const UNBOUNDED = new Set<string>([
   "model_serve_start", // spawns the llama-server sidecar
   "memory_ingest_docs", // first-run bulk docs preload
   "memory_seed_context", // first-run bulk memory writes
+  "memory_import_knowledge", // HUP-S3.1: first-run knowledge-corpus import (drives its own progress events)
   "model_catalog_download", // HUP-S0.2: catalog GGUF download (drives its own progress events)
   "storage_add", // HUP-S0.2: adding a large file to IPFS
   "storage_retrieve", // HUP-S0.2: retrieving a large file from IPFS
+  "node_mcp_decide", // HUP-S4.2: an approved MCP transaction signs, broadcasts and polls its receipt (up to ~60s)
 ]);
 
 /** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so
@@ -58,6 +60,8 @@ const LONG: Record<string, number> = {
   hermes_stop: 45_000,
   // HUP-S1.1c: session calls; events is a long-poll capped at 20 s Rust-side.
   hermes_session_open: 45_000,
+  // HUP-S8.2: pairing tries up to 6 address hints at 2.5 s each, then a 5 s exchange (Rust-bounded).
+  fleet_pair_join: 30_000,
   hermes_session_send: 45_000,
   hermes_session_events: 45_000,
   hermes_session_tool_result: 45_000,
@@ -68,6 +72,9 @@ const LONG: Record<string, number> = {
   hermes_brief_check: 45_000,
   // HUP-S1.9: the sidecar's worker report (same loopback control bound).
   hermes_workers: 45_000,
+  // HUP-S4.4: the MCP dry-run check (probe bounded at 20 s in the sidecar, control call at 30 s).
+  mcp_server_review: 45_000,
+  mcp_servers_runtime: 45_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.
