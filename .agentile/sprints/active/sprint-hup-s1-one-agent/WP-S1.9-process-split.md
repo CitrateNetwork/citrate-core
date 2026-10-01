@@ -65,3 +65,16 @@ add a hop with no new isolation boundary, so the split is loop versus tool worke
 - The browser worker slot is reserved; the browser tools are HUP-S5.1.
 - `harness.ts` is **kept**. Retiring it waits on the owner's turn-cap decision (6 in `harness.ts`
   vs 8 as the sidecar session default), pending owner sign-off.
+- Worker restart and health defaults (5 restarts per 60 s, 250 ms to 10 s backoff, ping every
+  5 s with a 2 s timeout, kill after 2 misses, 10 s first ping, 3 s shutdown grace) are
+  conservative placeholders, pending owner sign-off.
+
+## Review notes (fan-out 4 adversarial review)
+
+- Recount: the runtime workspace on the base (`hup/n3-folder-grants` plus this lane before the
+  review fix) measured 1246 passed, not 1248; the "baseline 1214" above was derived, not
+  measured. After the review fix (runtime commit 648d577: an over-long wire message is answered
+  with an error instead of being dropped) the workspace is 1248 passed, 0 failed.
+- The Activity monitor's worker poll keeps running after the monitor window is closed (the
+  host has no window-closed signal yet), so "while the monitor is open" means "once it has been
+  opened" for now.
