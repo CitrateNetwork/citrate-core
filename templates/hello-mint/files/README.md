@@ -37,5 +37,11 @@ npm run dev
 40204. `VITE_CONTRACT_ADDRESS` is the deployed contract; until it is set, the page
 says the contract is not deployed yet.
 
+The fork keeps chain id 40204, so a wallet cannot tell the fork and chain 40204
+apart by chain id. The page reads from the RPC set here, but the mint
+transaction goes wherever the wallet's own 40204 network points. In fork mode,
+point the wallet's network at the fork RPC first, or the mint is sent to
+chain 40204 itself.
+
 This template contains no deploy step. Deploying goes through Citrate's deploy
 gate and a signature you approve in the app.

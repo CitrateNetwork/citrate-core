@@ -119,3 +119,28 @@ one past it, so each harness has a "past the cap" handler, not just a clamped
 mint. And the same Foundry footgun bit twice in one hour; the fix is a habit
 (read values before `expectRevert`), and it is now a comment in the template the
 agent will copy from.
+
+## Adversarial review (2026-10-01)
+
+Reran on this branch: citrate-templates 33 tests (32 plus 1 new), clippy 1.98.1
+clean, `verify-templates.sh` over all 6 templates green (forge build and test, and
+the hello-mint app `tsc --noEmit` plus `vite build`), core `tsc --noEmit` clean,
+vitest 801 passed / 3 skipped. Ten renderer guard mutations were each caught except
+the symlink check, which is backed by the "not a regular file" refusal (equivalent
+mutant). Two contract mutations on a rendered erc1155 (no per-id cap, withdraw not
+owner-only) were each caught by forge tests.
+
+Fixes made in review:
+
+- The renderer claimed a failed render writes nothing, but an I/O failure partway
+  through the write phase left a partial tree. `render` now records every file and
+  directory it creates (including missing parents of the output directory) and
+  removes them on failure. Test: `a_write_failure_partway_leaves_nothing_behind`
+  (seen failing first; both "no undo" and "no directory undo" mutants caught).
+- hello-mint fork mode: the fork keeps chain id 40204, so the wallet sends the mint
+  to whatever its own 40204 network points at. The page now says so in fork mode,
+  and the project README explains it. A real guard (for example a distinct fork
+  chain id, or checking the wallet's RPC against the fork) is left to S6.4/S6.6.
+
+Not run in review: core `cargo test --workspace` (free disk was 7 GB, near the
+6 GB stop line; the change touches only the standalone citrate-templates crate).

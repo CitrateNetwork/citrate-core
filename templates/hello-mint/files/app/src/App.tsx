@@ -10,6 +10,12 @@ export function App({ deployment }: { deployment: Deployment }) {
         <p className="network">
           {deployment.target === "fork" ? "Local fork of Citrate (chain 40204)" : "Citrate (chain 40204)"}
         </p>
+        {deployment.target === "fork" && (
+          <p className="hint">
+            The fork uses the same chain id as Citrate. Point your wallet&apos;s Citrate network at {deployment.rpcUrl}{" "}
+            before minting, or the transaction goes to the live chain.
+          </p>
+        )}
       </header>
       <MintCard deployment={deployment} />
     </main>

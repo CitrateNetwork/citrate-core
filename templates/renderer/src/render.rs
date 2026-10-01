@@ -644,7 +644,9 @@ impl TemplateSet {
     }
 
     /// Render template `id` with parameters `raw` for `tier` into `out`, which must
-    /// be absent or an empty directory. On any error nothing is written.
+    /// be absent or an empty directory. On any error nothing is left behind: a
+    /// refusal happens before the first write, and if a write fails partway every
+    /// file and directory this call created is removed again.
     pub fn render(
         &self,
         id: &str,
@@ -664,27 +666,79 @@ impl TemplateSet {
             if rd.next().is_some() {
                 return Err(RenderError::OutputNotEmpty(out.to_path_buf()));
             }
-        } else {
-            fs::create_dir_all(out)
-                .map_err(|e| RenderError::Io(format!("create {}: {e}", out.display())))?;
         }
 
-        for (rel, body) in &files {
-            let path = out.join(rel);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| RenderError::Io(format!("create {}: {e}", parent.display())))?;
+        let mut made = Created::default();
+        match write_tree(out, &files, &mut made) {
+            Ok(()) => Ok(report),
+            Err(e) => {
+                made.undo();
+                Err(e)
             }
-            let mut f = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(|e| RenderError::Io(format!("create {}: {e}", path.display())))?;
-            f.write_all(body.as_bytes())
-                .map_err(|e| RenderError::Io(format!("write {}: {e}", path.display())))?;
         }
-        Ok(report)
     }
+}
+
+/// Files and directories one render created, in creation order.
+#[derive(Default)]
+struct Created {
+    dirs: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+impl Created {
+    /// Remove everything recorded, newest first. Directories are removed only
+    /// when empty, so nothing this render did not create is ever deleted.
+    fn undo(&self) {
+        for f in self.files.iter().rev() {
+            let _ = fs::remove_file(f);
+        }
+        for d in self.dirs.iter().rev() {
+            let _ = fs::remove_dir(d);
+        }
+    }
+}
+
+/// Create `dir` and any missing ancestors one level at a time, recording each.
+fn make_dirs(dir: &Path, made: &mut Created) -> Result<(), RenderError> {
+    let mut missing = Vec::new();
+    let mut cur = Some(dir);
+    while let Some(p) = cur {
+        if p.as_os_str().is_empty() || p.is_dir() {
+            break;
+        }
+        missing.push(p.to_path_buf());
+        cur = p.parent();
+    }
+    for p in missing.into_iter().rev() {
+        fs::create_dir(&p).map_err(|e| RenderError::Io(format!("create {}: {e}", p.display())))?;
+        made.dirs.push(p);
+    }
+    Ok(())
+}
+
+/// Write every planned file under `out` with `create_new`, recording what it made.
+fn write_tree(
+    out: &Path,
+    files: &[(String, String)],
+    made: &mut Created,
+) -> Result<(), RenderError> {
+    make_dirs(out, made)?;
+    for (rel, body) in files {
+        let path = out.join(rel);
+        if let Some(parent) = path.parent() {
+            make_dirs(parent, made)?;
+        }
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| RenderError::Io(format!("create {}: {e}", path.display())))?;
+        made.files.push(path.clone());
+        f.write_all(body.as_bytes())
+            .map_err(|e| RenderError::Io(format!("write {}: {e}", path.display())))?;
+    }
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {

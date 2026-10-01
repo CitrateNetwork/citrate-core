@@ -573,6 +573,51 @@ mod fixtures {
         assert!(!out.path().exists());
     }
 
+    /// A write that fails partway (here: a layer file `x` and a template
+    /// directory `x/` collide on disk) must not leave a partial tree behind,
+    /// including any parent directories the render created.
+    #[test]
+    fn a_write_failure_partway_leaves_nothing_behind() {
+        let r = root_with("fx-partial", "{{ct:name}}");
+        let made = fs::create_dir_all(r.path().join("_common/clash"))
+            .and_then(|_| fs::write(r.path().join("_common/clash/x"), "layer file"))
+            .and_then(|_| fs::create_dir_all(r.path().join("t1/files/x")))
+            .and_then(|_| fs::write(r.path().join("t1/files/x/y"), "own file"))
+            .and_then(|_| {
+                fs::write(
+                    r.path().join("t1/template.json"),
+                    r#"{"id":"t1","kind":"contract","title":"T","description":"d","layers":["clash"],"params":{"name":{}}}"#,
+                )
+            });
+        if let Err(e) = made {
+            panic!("{e}");
+        }
+        let s = match TemplateSet::open(r.path()) {
+            Ok(s) => s,
+            Err(e) => panic!("{e}"),
+        };
+
+        // Output absent, with a missing parent: everything created is removed.
+        let base = Scratch::new("fx-partial-out");
+        let out = base.path().join("nested/project");
+        let res = s.render("t1", &params(&[("name", "Lemon")]), Tier::T0, &out);
+        assert!(matches!(res, Err(RenderError::Io(_))), "{res:?}");
+        assert!(!base.path().exists(), "partial output left behind");
+
+        // Output an existing empty directory: it is kept, and left empty.
+        let empty = Scratch::new("fx-partial-empty");
+        if let Err(e) = fs::create_dir_all(empty.path()) {
+            panic!("{e}");
+        }
+        let res = s.render("t1", &params(&[("name", "Lemon")]), Tier::T0, empty.path());
+        assert!(matches!(res, Err(RenderError::Io(_))), "{res:?}");
+        let left = match fs::read_dir(empty.path()) {
+            Ok(rd) => rd.count(),
+            Err(e) => panic!("{e}"),
+        };
+        assert_eq!(left, 0, "partial output left in the empty directory");
+    }
+
     #[test]
     fn a_manifest_with_an_unknown_param_is_refused() {
         let s = Scratch::new("fx-manifest");
