@@ -180,14 +180,18 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
 // Approve is NEVER default-focused (T2 ceremony-spoofing invariant); undecodable
 // calldata (requiresRawAck) hides the decoded fields behind an explicit raw-mode
 // ack that must be ticked before Approve enables. On Approve → store broadcasts;
-// on Reject → nothing is signed. In web-dev the modal still shows (truthful flow)
+// on Reject → nothing is signed. Once Approve is pressed the review shows a signing
+// state (Reject / Escape disabled) until the signer returns the real outcome. In web-dev the modal still shows (truthful flow)
 // but approving honestly reports "settles only in the desktop app".
 export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
   const r = s.walletReview;
   if (!r) return null;
   const v = r.view;
   const raw = v.requiresRawAck;
-  const approveEnabled = !raw || r.rawAck;
+  // Signing has started: the ceremony is with the signer and can no longer be declined, so
+  // Reject / Escape are disabled and the outcome is shown only once it is known.
+  const signing = r.approving === true;
+  const approveEnabled = (!raw || r.rawAck) && !signing;
 
   const rows: [string, string][] = [
     ["Action", v.decoded.action || "—"],
@@ -198,7 +202,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
   ];
 
   return (
-    <ModalDialog register="charter" zIndex={62} panelStyle={PANEL} labelledBy="wallet-review-title" describedBy="wallet-review-sub" onEscape={() => void store.rejectWalletReview()} focusKey={"wr:" + v.id}>
+    <ModalDialog register="charter" zIndex={62} panelStyle={PANEL} labelledBy="wallet-review-title" describedBy="wallet-review-sub" onEscape={signing ? undefined : () => void store.rejectWalletReview()} focusKey={"wr:" + v.id}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 20px", borderBottom: "2px solid var(--line-strong)" }}>
           <img src={markBlack} alt="" style={{ width: 18, height: 18 }} />
           <span className="mono" style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "var(--tx-2)" }}>
@@ -216,7 +220,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
               You are about to sign
             </h2>
             <div id="wallet-review-sub" className="mono" style={{ fontSize: 11, color: "var(--tx-3)", marginTop: 4 }}>
-              nothing has been signed yet — approve to continue
+              {signing ? "signing — wait for the result; this can no longer be cancelled" : "nothing has been signed yet — approve to continue"}
             </div>
           </div>
 
@@ -234,7 +238,7 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
                 This action&apos;s calldata could not be decoded. You would be signing raw bytes — the app cannot show you what they do. Only proceed if you trust the source.
               </span>
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
-                <input type="checkbox" checked={r.rawAck} onChange={(e) => store.setWalletReviewRawAck(e.target.checked)} />
+                <input type="checkbox" checked={r.rawAck} disabled={signing} onChange={(e) => store.setWalletReviewRawAck(e.target.checked)} />
                 <span>I understand this is raw, undecodable calldata.</span>
               </label>
               <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)", wordBreak: "break-all" }}>
@@ -267,11 +271,11 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", paddingTop: 2 }}>
             {/* Reject is the DEFAULT-focused button (T2 — Approve must never be the
                 default action for a money signature). */}
-            <button className="btn btn-ghost" data-autofocus onClick={() => void store.rejectWalletReview()}>
+            <button className="btn btn-ghost" disabled={signing} data-autofocus onClick={() => void store.rejectWalletReview()}>
               Reject
             </button>
-            <button className="btn btn-primary" disabled={!approveEnabled} onClick={() => void store.approveWalletReview()}>
-              Approve
+            <button className="btn btn-primary" disabled={!approveEnabled} aria-busy={signing || undefined} onClick={() => void store.approveWalletReview()}>
+              {signing ? "Signing…" : "Approve"}
             </button>
           </div>
         </div>
