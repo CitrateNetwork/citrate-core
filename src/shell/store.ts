@@ -36,7 +36,7 @@ import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { fenceUntrusted } from "../agent/untrusted";
-import { ESCALATE_TOOL_NAME, escalationApproval, runEscalationTool, withEscalationTool } from "../agent/escalation";
+import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import type { Brief, GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
@@ -2160,7 +2160,7 @@ export class Store {
         args as Record<string, unknown>,
         hic,
       );
-      status = /declined/.test(result) ? "declined" : "ok";
+      status = isEscalationDeclined(result) ? "declined" : "ok";
     } else if (call.name === "memory_assert") {
       // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
       // isn't bundled yet), so an approval here does NOT durably write anything. Show

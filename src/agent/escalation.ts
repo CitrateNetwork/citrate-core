@@ -21,6 +21,14 @@ import { fieldsCard, type ApprovalCard, type CardRow } from "./approvalCards";
 
 export const ESCALATE_TOOL_NAME = "escalate_plan";
 
+/** How a member decline starts, so callers can tell it from an answer that merely mentions one. */
+export const ESCALATION_DECLINED_PREFIX = "The member declined the escalation";
+
+/** True when `runEscalationTool` returned because the member declined (nothing was sent). */
+export function isEscalationDeclined(result: string): boolean {
+  return result.startsWith(ESCALATION_DECLINED_PREFIX);
+}
+
 /** The answer budget for one escalation (tokens). Core caps it at 8192. */
 export const ESCALATION_MAX_TOKENS = 2048;
 
@@ -125,7 +133,7 @@ export async function runEscalationTool(deps: EscalationDeps, args: Record<strin
   }
 
   const ask = async (reason: string): Promise<boolean> => (await deps.confirm(quote, reason, question)) === "approved";
-  const declined = () => `The member declined the escalation to ${quote.destination} (up to ${quote.costLabel}); nothing was sent.`;
+  const declined = () => `${ESCALATION_DECLINED_PREFIX} to ${quote.destination} (up to ${quote.costLabel}); nothing was sent.`;
 
   let confirmed = false;
   if (hic) {

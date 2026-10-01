@@ -80,6 +80,25 @@ describe("escalate_plan in store.handleTool (HUP-S1.5)", () => {
     expect(r).toHaveBeenCalledWith("q-1", 5000, true, true);
   });
 
+  it("the chip says declined only when the member declined, not when the answer mentions it", async () => {
+    vi.spyOn(bridge.escalation, "quote").mockResolvedValue(quote(true));
+    vi.spyOn(bridge.escalation, "run").mockResolvedValue({ ...run("budget"), content: "The provider declined to cache this; plan B follows." });
+    vi.spyOn(store, "toast").mockImplementation(() => {});
+    store.setState({ chatMsgs: [{ id: "m1", role: "assistant", text: "", chips: [] } as never] });
+    await store.handleTool(call, "m1", noop);
+    const chips = (store.state.chatMsgs.find((m) => m.id === "m1") as unknown as { chips: { status: string }[] }).chips;
+    expect(chips.map((c) => c.status)).toEqual(["ok"]);
+  });
+
+  it("a member decline still marks the chip declined", async () => {
+    vi.spyOn(bridge.escalation, "quote").mockResolvedValue(quote(false));
+    vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+    store.setState({ chatMsgs: [{ id: "m1", role: "assistant", text: "", chips: [] } as never] });
+    await store.handleTool(call, "m1", noop);
+    const chips = (store.state.chatMsgs.find((m) => m.id === "m1") as unknown as { chips: { status: string }[] }).chips;
+    expect(chips.map((c) => c.status)).toEqual(["declined"]);
+  });
+
   it("no endpoint: honest text, no quote, no card", async () => {
     vi.spyOn(bridge.escalation, "endpoints").mockResolvedValue([]);
     const q = vi.spyOn(bridge.escalation, "quote");
