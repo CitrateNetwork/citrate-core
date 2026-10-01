@@ -13,7 +13,7 @@ use std::path::Path;
 /// The one pinned ingest endpoint (WP-T.5 — a standalone service, isolated from the money
 /// path, no IP logging). Pinned in Rust so the webview can never redirect a send. Not live
 /// until the DGX stands it up; until then `telemetry_send` fails honestly (Rule 1).
-const TELEMETRY_INGEST_URL: &str = "https://telemetry.citrate.ai/report";
+pub(crate) const TELEMETRY_INGEST_URL: &str = "https://telemetry.citrate.ai/report";
 
 /// The local crash file the panic hook appends to (under the app data dir).
 const CRASH_FILE: &str = "diagnostics/last-panic.log";
@@ -266,6 +266,20 @@ pub fn diagnostics_bundle_sync<R: tauri::Runtime>(
     ))
 }
 
+/// POST an already re-scrubbed report to `url`. The URL is always the pinned ingest endpoint in
+/// production; it is a parameter only so the offline test (HUP-S10.5) can prove a send with no
+/// network fails with an honest message instead of hanging or pretending. Bounded at 20 s.
+pub(crate) fn post_report(url: &str, clean: &str) -> std::result::Result<(), String> {
+    ureq::post(url)
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .build()
+        .header("content-type", "application/json")
+        .send(clean)
+        .map(|_| ())
+        .map_err(|e| format!("couldn't send the report: {e}"))
+}
+
 /// **Command — telemetry_send.** The ONE pinned HTTPS POST. The UI calls this ONLY after the
 /// member reviewed the bundle and explicitly consented (ConsentGate, WP-T.1) — this command
 /// does not re-gate, but it is the sole egress path and the URL is Rust-pinned. Sends exactly
@@ -276,15 +290,9 @@ pub async fn telemetry_send(bundle_json: String) -> std::result::Result<(), Stri
     // PBA-L7b-014: never forward webview JSON verbatim — re-validate + re-scrub in Rust first.
     let home = std::env::var("HOME").unwrap_or_default();
     let clean = rescrub_bundle_json(&bundle_json, &home)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        ureq::post(TELEMETRY_INGEST_URL)
-            .header("content-type", "application/json")
-            .send(&clean)
-            .map(|_| ())
-            .map_err(|e| format!("couldn't send the report: {e}"))
-    })
-    .await
-    .map_err(|e| format!("telemetry_send: background task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || post_report(TELEMETRY_INGEST_URL, &clean))
+        .await
+        .map_err(|e| format!("telemetry_send: background task failed: {e}"))?
 }
 
 #[cfg(test)]

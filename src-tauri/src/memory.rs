@@ -587,15 +587,40 @@ impl MemoryManager {
         // store to BGE (CITRATE_MEM_EMBED=bge) so semantic recall is real, not
         // lexical. Absent the model, neither is set and the daemon stays lexical
         // (honest — `semantic` in the status reflects this).
-        if let Some(dir) = &self.model_dir {
-            spec.env.push((
-                "CITRATE_BGE_MODEL_DIR".to_string(),
-                dir.to_string_lossy().to_string(),
-            ));
-            spec.env
-                .push(("CITRATE_MEM_EMBED".to_string(), "bge".to_string()));
-        }
+        spec.env.extend(self.embedder_env());
         spec
+    }
+
+    /// The embedder environment the daemon gets: the bundled BGE model dir +
+    /// `CITRATE_MEM_EMBED=bge` when the model is present, else nothing (lexical).
+    /// HUP-S3.1: the knowledge-corpus importer gets the same, so imported nodes
+    /// are embedded in the same space the daemon searches.
+    pub(crate) fn embedder_env(&self) -> Vec<(String, String)> {
+        match &self.model_dir {
+            Some(dir) => vec![
+                (
+                    "CITRATE_BGE_MODEL_DIR".to_string(),
+                    dir.to_string_lossy().to_string(),
+                ),
+                ("CITRATE_MEM_EMBED".to_string(), "bge".to_string()),
+            ],
+            None => Vec::new(),
+        }
+    }
+
+    /// HUP-S3.1: the bundled `mem-mcp` binary (it also implements `import-corpus`).
+    pub(crate) fn daemon_bin(&self) -> &std::path::Path {
+        &self.bin
+    }
+
+    /// HUP-S3.1: the per-user store dir the importer writes.
+    pub(crate) fn store_path(&self) -> &std::path::Path {
+        &self.store_path
+    }
+
+    /// HUP-S3.1: whether a supervisor is live (the importer needs the store lock).
+    pub(crate) fn is_running_now(&self) -> bool {
+        self.sup.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
     /// Start the daemon under the supervisor. Idempotent-ish: `AlreadyRunning`

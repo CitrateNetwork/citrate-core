@@ -609,6 +609,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         assertSimAllowed("memory.seedContext");
         return { authored: 0, skipped: "not-running" };
       },
+      // HUP-S3.1 — the web preview bundles no knowledge corpus: honest skip, never a fake import.
+      async importKnowledge() {
+        assertSimAllowed("memory.importKnowledge");
+        return { state: "skipped", skipped: "no-bundle", nodesAdded: 0, edgesAdded: 0, tenantsImported: [], tenantsSkipped: [] };
+      },
     },
 
     // CORE-AI1 — the web preview has NO OS keyring and reaches no provider, so
