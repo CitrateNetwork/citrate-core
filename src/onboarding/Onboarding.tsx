@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import marqueeBlack from "../assets/brand/citrate_marquee_black.svg";
 import { LoaderMark } from "../components/LoaderMark";
 import { TierPanel } from "./TierPanel";
+import { AgentIdentityStep } from "./AgentIdentityStep";
 import { Store } from "../shell/store";
 import { AppState, fmtSaltFromWei } from "../shell/state";
 
@@ -980,6 +981,10 @@ function S6({ store, s }: { store: Store; s: AppState }) {
       {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && (
         <ModelStep store={store} s={s} />
       )}
+
+      {/* HUP-S7.4 (US-7.1) — give Hermes an on-chain identity (AgentSBT), approved in the
+          Signature Ceremony. Optional and never blocking: "Enter your dashboard" stays above. */}
+      {(s.node === "syncing" ? s.peers > 0 : s.node === "validating" || s.node === "synced") && <AgentIdentityStep store={store} />}
     </div>
   );
 }

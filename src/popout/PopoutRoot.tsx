@@ -4,8 +4,10 @@
 // A pop-out runs this instead of the app. It never builds the app store (which would start the
 // app's polling and write the member's saved state): it only talks to the main window over the
 // typed bridge. Its capability grants no app commands, so the bridge is all it can use.
+// HUP-S10.6 (a11y): the document is titled after the pop-out, and every state (not built,
+// waiting, failed) is a <main> landmark with an <h1>, with a polite status or an alert.
 // =====================================================================
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPopoutEnd, type BridgeTransport, type PopoutEnd } from "./bridge";
 import { POPOUT_TITLES, type PopoutKind } from "./kinds";
 import type { MonitorSnapshot } from "./monitorSnapshot";
@@ -21,11 +23,31 @@ const shell = {
   fontSize: 13,
 };
 
+const para = { margin: 0, color: "var(--tx-1)" };
+
+/** The landmark + heading every non-monitor state renders inside. */
+function Frame({ title, children }: { title: string; children: ReactNode }) {
+  const id = useId();
+  return (
+    <main data-register="instrument" aria-labelledby={id} style={{ ...shell, display: "flex", flexDirection: "column", gap: 8 }}>
+      <h1 id={id} style={{ fontSize: 14, fontWeight: 500, margin: 0 }}>
+        {title}
+      </h1>
+      {children}
+    </main>
+  );
+}
+
 export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: () => Promise<BridgeTransport> }) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const end = useRef<PopoutEnd | null>(null);
+
+  // Screen readers announce the document title for the window; name it after the pop-out.
+  useEffect(() => {
+    document.title = POPOUT_TITLES[kind];
+  }, [kind]);
 
   useEffect(() => {
     if (kind !== "monitor") return;
@@ -60,23 +82,27 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
 
   if (kind !== "monitor") {
     return (
-      <div data-register="instrument" style={shell}>
-        The {POPOUT_TITLES[kind]} pop-out is not built yet.
-      </div>
+      <Frame title={POPOUT_TITLES[kind]}>
+        <p style={para}>The {POPOUT_TITLES[kind]} pop-out is not built yet.</p>
+      </Frame>
     );
   }
   if (failed) {
     return (
-      <div data-register="instrument" role="alert" style={shell}>
-        The Activity monitor could not connect to the main window: {failed}
-      </div>
+      <Frame title={POPOUT_TITLES[kind]}>
+        <p role="alert" style={para}>
+          The Activity monitor could not connect to the main window: {failed}
+        </p>
+      </Frame>
     );
   }
   if (!snapshot) {
     return (
-      <div data-register="instrument" style={shell}>
-        Waiting for the main window…
-      </div>
+      <Frame title={POPOUT_TITLES[kind]}>
+        <p role="status" aria-live="polite" style={para}>
+          Waiting for the main window…
+        </p>
+      </Frame>
     );
   }
   return <ActivityMonitor snapshot={snapshot} now={now} onStop={() => void end.current?.stop()} />;
