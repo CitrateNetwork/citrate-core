@@ -420,7 +420,7 @@ export function listResources(dir) {
 
 /** Patterns that must never pass without a recorded review decision. */
 const RED_FLAGS = [
-  ["pipe-to-shell", /\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba|z)?sh\b|\biex\s*\(\s*(irm|iwr|invoke-)/i],
+  ["pipe-to-shell", /\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(ba|z)?sh\b|\biex\s*\(\s*(irm|iwr|invoke-)|\b(irm|iwr|invoke-(restmethod|webrequest))\b[^\n|]*\|\s*(iex|invoke-expression)\b/i],
   ["safety-disable", /ignore (all |any )?(previous|prior|above) instructions|disable (the )?(safety|sandbox|approvals?)|--dangerously[-\w]*|bypass[-_ ]?permissions|skip[-_ ]?permissions|--yolo\b/i],
   ["exfil-endpoint", /webhook\.site|requestbin|pipedream\.net|ngrok\.io|pastebin\.com|interactsh|burpcollaborator|oast\.(fun|pro|live)/i],
   ["credential-path", /~\/\.ssh\/|id_(rsa|ed25519)\b|\.aws\/credentials|\.netrc\b|security find-(generic|internet)-password|keychain dump|\.git-credentials|seed phrase|mnemonic phrase/i],

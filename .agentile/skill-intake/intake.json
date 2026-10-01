@@ -42,6 +42,10 @@
     }
   ],
   "decisions": {
+    "frontend-skills/impeccable": {
+      "verdict": "include-with-scripts-stripped",
+      "reason": "the body and references call bundled scripts through a {{scripts_path}} placeholder (context loader, live browser mode, pin); the Hermes loader does not substitute it and those steps cannot run stripped; the design guidance and reference docs still apply; owner to confirm or exclude"
+    },
     "trailofbits/plugins/agentic-actions-auditor/skills/agentic-actions-auditor": {
       "verdict": "include-as-is",
       "reason": "flag hits are detection patterns the auditor looks for (agent sandbox flags, subshell vectors), not instructions to the agent"

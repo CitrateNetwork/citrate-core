@@ -1300,7 +1300,7 @@ source = "frontend-skills"
 commit = "c5c5dea7cebaaf801a90a04e1f15123d29de61c1"
 path = "impeccable"
 verdict = "include-with-scripts-stripped"
-reason = "ships without its scripts and executable files"
+reason = "the body and references call bundled scripts through a {{scripts_path}} placeholder (context loader, live browser mode, pin); the Hermes loader does not substitute it and those steps cannot run stripped; the design guidance and reference docs still apply; owner to confirm or exclude"
 skill_md_sha256 = "1618b38636473ae14011af272029241c99d8baaaff2f0d16b979e1bb2e30208d"
 refs = [
   { path = "LICENSE", sha256 = "02bb8c3b4e70190e3986c0404ad2fd8d639b4f534252d82379cc1b502b6d1812" },
