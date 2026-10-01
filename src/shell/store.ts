@@ -3682,7 +3682,7 @@ export class Store {
   /** Toggle the raw-mode ack for an undecodable-calldata review (gates Approve). */
   setWalletReviewRawAck(rawAck: boolean): void {
     const r = this.state.walletReview;
-    if (!r) return;
+    if (!r || r.approving) return;
     this.setState({ walletReview: { ...r, rawAck } });
   }
 
@@ -3700,10 +3700,16 @@ export class Store {
     const ack = rawAck ?? r.rawAck;
     // Fail closed: undecodable calldata requires the explicit raw-mode ack before
     // ANY broadcast (T2 — no signing blind). Keep the review open.
+    // One signature per review: a second Approve while the first is with the signer is ignored.
+    if (r.approving) return;
     if (r.view.requiresRawAck && !ack) {
       this.toast("Undecodable calldata — tick “I understand this is raw” to approve.");
       return;
     }
+    // From here the ceremony is with the signer and can no longer be declined. Mark the review
+    // as signing so Reject / Escape cannot report "nothing was signed" for a signature that may
+    // still complete; every branch below clears the review with the REAL outcome.
+    this.setState({ walletReview: { ...r, approving: true } });
     // A wallet LINK is not a transaction: it is a personal_sign whose proof is
     // POSTed to the authority. It must never reach signing.broadcast, which would
     // try to send a tx. Route it to the dedicated command, which signs, submits,
@@ -3866,10 +3872,14 @@ export class Store {
   /**
    * Reject the pending wallet review → broadcast NOTHING, release the ceremony,
    * clear the review. The human declined; no signature is produced.
+   *
+   * A no-op once Approve has handed the ceremony to the signer (`approving`): the signature
+   * may still complete, so declining then would tell the member nothing was signed when that
+   * is not known. The approve path reports the true outcome when the signer returns.
    */
   async rejectWalletReview(): Promise<void> {
     const r = this.state.walletReview;
-    if (!r) return;
+    if (!r || r.approving) return;
     this.setState({ walletReview: null });
     try {
       // The link path has its own reject: it also drops the one-time challenge
