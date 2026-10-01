@@ -182,8 +182,11 @@ fn every_effect_and_trust_value_the_runtime_knows_is_accepted() {
 }
 
 #[test]
-fn the_session_body_does_not_claim_hic_awareness_yet() {
-    // Core opts into `hicAware` only once no approval route for a hic:"required" call is automatic.
+fn the_session_body_claims_hic_awareness() {
+    // Owner decision 2026-10-01: core claims `hicAware` by default. Safe because a hic:"required"
+    // call resolves only through the member's Approve/Decline click (src/shell/hicApproval.test.ts
+    // pins that there is no automatic or budget route); without it the sidecar would silently
+    // decline every effectful call after taint.
     let v: serde_json::Value = serde_json::from_str(&build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m").unwrap()).unwrap();
-    assert!(v.get("hicAware").is_none(), "{v}");
+    assert_eq!(v["hicAware"], serde_json::Value::Bool(true), "{v}");
 }
