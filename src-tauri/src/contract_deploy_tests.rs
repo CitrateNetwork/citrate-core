@@ -53,3 +53,83 @@ fn value_defaults_to_zero_and_encodes_as_hex() {
     let v2: serde_json::Value = serde_json::from_str(&raw2).unwrap();
     assert_eq!(v2["value"], "0xde0b6b3a7640000"); // 1 SALT in wei
 }
+
+// ---------------------------------------------------------------- HUP-S6.4 D-4 deploy gate
+
+/// The deploy body consults the gate BEFORE it touches the wallet or opens a ceremony, and it
+/// checks the gate against the same `initcode` bytes the creation tx carries (no second parse).
+#[test]
+fn contract_deploy_requires_a_ready_gate_before_any_ceremony() {
+    let src = include_str!("contract_deploy.rs");
+    let body = src
+        .split("pub fn contract_deploy_sync(")
+        .nth(1)
+        .expect("contract_deploy_sync exists");
+    let gate_at = body
+        .find(".require_ready(&initcode)")
+        .expect("the deploy body checks the D-4 gate on the initcode");
+    let wallet_at = body.find("address_auto_unlocked").expect("wallet read");
+    let cer_at = body.find(".request(intent)").expect("ceremony request");
+    let encode_at = body.find("encode_deploy_tx_json(").expect("tx encode");
+    assert!(
+        gate_at < wallet_at && gate_at < cer_at && gate_at < encode_at,
+        "gate first"
+    );
+    // The ceremony is opened INSIDE the gate store (re-checked under its lock, and remembered so
+    // a later NOT READY for this hash rejects it).
+    let open_at = body
+        .find(".open_ceremony(&initcode,")
+        .expect("ceremony opened through the gate store");
+    assert!(open_at < cer_at, "request happens inside open_ceremony");
+    assert_eq!(
+        body.matches(".request(").count(),
+        1,
+        "exactly one ceremony request"
+    );
+    // The tx is encoded from the very `initcode` the gate checked.
+    assert!(
+        body[encode_at..].contains("&initcode"),
+        "the ceremony carries the gated bytes"
+    );
+}
+
+#[test]
+fn deploy_proposal_flattens_the_ceremony_view_and_adds_the_gate() {
+    let view =
+        crate::ceremony::SignatureCeremony::new().request(crate::ceremony::SignatureIntent {
+            origin: "local-user".into(),
+            kind: crate::ceremony::IntentKind::Transaction,
+            chain_id: 40204,
+            raw: encode_deploy_tx_json(
+                "0x1111111111111111111111111111111111111111",
+                &[0x60, 0x00],
+                0,
+                21000,
+            ),
+        });
+    let gate = crate::deploy_gate::GateRecord {
+        initcode_hash: "0xaa".into(),
+        binding_hash: "0xbb".into(),
+        compiler: crate::deploy_gate::CompilerSettings {
+            solc_version: "0.8.28".into(),
+            optimizer: true,
+            optimizer_runs: 200,
+            evm_version: "cancun".into(),
+            via_ir: false,
+        },
+        verdict: crate::deploy_gate::Verdict::Ready,
+        items: vec![],
+        evaluated_at_ms: 1,
+    };
+    let p = DeployProposal {
+        ceremony: view.clone(),
+        gate,
+    };
+    let v = serde_json::to_value(&p).expect("serializes");
+    // A superset of CeremonyView: existing callers keep reading id / chainId / decoded.
+    assert_eq!(v["id"], view.id);
+    assert_eq!(v["chainId"], 40204);
+    assert!(v["decoded"].is_object());
+    assert_eq!(v["gate"]["verdict"], "READY");
+    assert_eq!(v["gate"]["initcodeHash"], "0xaa");
+}

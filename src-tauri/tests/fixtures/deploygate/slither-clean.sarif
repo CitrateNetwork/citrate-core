@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Slither",
+          "informationUri": "https://github.com/crytic/slither",
+          "version": "0.11.6",
+          "rules": [
+            {
+              "id": "2-1-missing-zero-check",
+              "name": "missing-zero-check",
+              "properties": {
+                "precision": "high",
+                "security-severity": "3.0"
+              },
+              "shortDescription": {
+                "text": "Missing zero address validation"
+              },
+              "help": {
+                "text": "Check that the address is not zero."
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "2-1-missing-zero-check",
+          "message": {
+            "text": "HelloMint.constructor(address).owner_ (src/HelloMint.sol#9) lacks a zero-check on :\n\t\t- owner = owner_ (src/HelloMint.sol#10)\n",
+            "markdown": "[HelloMint.constructor(address).owner_](src/HelloMint.sol#L9) lacks a zero-check on :\n\t\t- [owner = owner_](src/HelloMint.sol#L10)\n"
+          },
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/HelloMint.sol"
+                },
+                "region": {
+                  "startLine": 9,
+                  "endLine": 9
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "id": "84f53ae65ba34042beac435e87363b62e0ed38a55b1129ca6a82fb96e25e0513"
+          }
+        }
+      ]
+    }
+  ]
+}
