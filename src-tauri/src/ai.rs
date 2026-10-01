@@ -727,24 +727,46 @@ impl AiManager {
 /// is a JSON array of `{role, content}`; `context_json` is an opaque JSON snapshot
 /// of the app's live state (stringified into the context system line). A malformed
 /// `messages_json` fails closed rather than sending a garbage body.
+/// The ONE leading system message: the prompt, the live context, then any system-role text that
+/// arrived in the history. Exactly one system message, first: several chat templates (Qwen family
+/// under llama-server `--jinja`) reject a later system message with a server error, which surfaced
+/// as "ai: provider returned an error" on local models.
+fn leading_system_message(prompt: &str, context_json: &str, history: &[Value]) -> Value {
+    let mut content = format!(
+        "{prompt}\n\nLive app context (JSON snapshot of the member's node/wallet/membership): {context_json}"
+    );
+    for m in history {
+        if m.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(extra) = m.get("content").and_then(Value::as_str) {
+                content.push_str("\n\n");
+                content.push_str(extra);
+            }
+        }
+    }
+    json!({ "role": "system", "content": content })
+}
+
 fn build_chat_body(model: &str, messages_json: &str, context_json: &str) -> Result<Value> {
     // The caller's chat history (validated to be an array of message objects).
     let history: Value = serde_json::from_str(messages_json).map_err(|_| AiError::BadResponse)?;
     let history = history.as_array().ok_or(AiError::BadResponse)?;
 
-    let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 2);
-    messages.push(json!({ "role": "system", "content": AGENT_SYSTEM_PROMPT_REAL }));
-    // The live context as a system line. Passed through verbatim as a string so the
-    // model sees the real snapshot; we do not fabricate any field.
-    messages.push(json!({
-        "role": "system",
-        "content": format!("Live app context (JSON snapshot of the member's node/wallet/membership): {context_json}"),
-    }));
+    let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 1);
+    // The live context rides in the single leading system message, verbatim, so the model sees
+    // the real snapshot; we do not fabricate any field.
+    messages.push(leading_system_message(
+        AGENT_SYSTEM_PROMPT_REAL,
+        context_json,
+        history,
+    ));
     for m in history {
         // Only forward well-formed {role, content} entries (defensive; never send a
-        // malformed message shape to the provider).
+        // malformed message shape to the provider). System text was folded above.
         let role = m.get("role").and_then(Value::as_str);
         let content = m.get("content").and_then(Value::as_str);
+        if role == Some("system") {
+            continue;
+        }
         if let (Some(role), Some(content)) = (role, content) {
             messages.push(json!({ "role": role, "content": content }));
         }
@@ -775,16 +797,19 @@ fn build_chat_body_with_tools(
         return Err(AiError::BadResponse);
     }
 
-    let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 2);
-    messages.push(json!({ "role": "system", "content": AGENT_SYSTEM_PROMPT_TOOLS }));
-    messages.push(json!({
-        "role": "system",
-        "content": format!("Live app context (JSON snapshot of the member's node/wallet/membership): {context_json}"),
-    }));
+    let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 1);
+    messages.push(leading_system_message(
+        AGENT_SYSTEM_PROMPT_TOOLS,
+        context_json,
+        history,
+    ));
     for m in history {
         let Some(role) = m.get("role").and_then(Value::as_str) else {
             continue;
         };
+        if role == "system" {
+            continue; // folded into the leading system message
+        }
         // Forward the shapes the tool protocol needs, defensively:
         //  - assistant with tool_calls (content may be null),
         //  - tool result with tool_call_id + content,

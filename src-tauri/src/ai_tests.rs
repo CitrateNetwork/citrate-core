@@ -265,8 +265,8 @@ fn chat_posts_openai_body_to_stored_endpoint_with_bearer() {
     let msgs = body["messages"].as_array().unwrap();
     assert_eq!(msgs[0]["role"], "system", "real tool-less system prompt first");
     assert!(
-        msgs[1]["content"].as_str().unwrap().contains("validating"),
-        "the live context is injected as a system line"
+        msgs[0]["content"].as_str().unwrap().contains("validating"),
+        "the live context rides in the one leading system message"
     );
     let last = msgs.last().unwrap();
     assert_eq!(last["role"], "user");
@@ -718,4 +718,55 @@ fn parsed_replies_are_sanitized() {
     let msg: Value = serde_json::from_str(&parse_chat_message(&resp).unwrap()).unwrap();
     assert_eq!(msg["content"], "Hi");
     assert_eq!(parse_completion(&resp).unwrap(), "Hi");
+}
+
+
+// Bug (owner, 2026-10-01): local models answered "ai: provider returned an error" while the gateway
+// worked. The body carried TWO system messages (prompt, then the live context); Qwen-family
+// `--jinja` chat templates raise "System message must be at the beginning" → llama-server 500.
+// Contract: exactly one system message, first, holding the prompt AND the live context; any
+// system-role message in the history is folded into it, never forwarded later.
+fn system_positions(body: &Value) -> Vec<usize> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m["role"] == "system")
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[test]
+fn chat_bodies_carry_exactly_one_leading_system_message_with_the_context() {
+    let history = json!([{ "role": "user", "content": "are you working?" }]).to_string();
+    let ctx = json!({ "node": { "height": 57993 } }).to_string();
+    for body in [
+        build_chat_body("m", &history, &ctx).unwrap(),
+        build_chat_body_with_tools("m", &history, TOOLS_SPEC, &ctx).unwrap(),
+    ] {
+        assert_eq!(system_positions(&body), vec![0], "{body}");
+        let sys = body["messages"][0]["content"].as_str().unwrap();
+        assert!(sys.contains("57993"), "live context inside the system message");
+        assert_eq!(body["messages"].as_array().unwrap().last().unwrap()["content"], "are you working?");
+    }
+}
+
+#[test]
+fn a_system_message_in_the_history_is_folded_into_the_leading_one() {
+    let history = json!([
+        { "role": "user", "content": "hi" },
+        { "role": "system", "content": "Brief: Lemon Drops" },
+        { "role": "assistant", "content": "hello" }
+    ])
+    .to_string();
+    for body in [
+        build_chat_body("m", &history, "{}").unwrap(),
+        build_chat_body_with_tools("m", &history, TOOLS_SPEC, "{}").unwrap(),
+    ] {
+        assert_eq!(system_positions(&body), vec![0], "{body}");
+        assert!(body["messages"][0]["content"].as_str().unwrap().contains("Brief: Lemon Drops"));
+        let roles: Vec<&str> = body["messages"].as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["system", "user", "assistant"]);
+    }
 }
