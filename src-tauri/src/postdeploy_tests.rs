@@ -410,6 +410,75 @@ fn vercel_export_never_replaces_a_folder_it_did_not_write() {
     assert!(dir.join("mine.txt").is_file());
 }
 
+#[cfg(unix)]
+#[test]
+fn vercel_export_never_follows_a_link_out_of_the_app() {
+    let d = project();
+    let p = open_project(d.path()).unwrap();
+    switch_site_to_citrate(&p, ADDR).unwrap();
+    let outside = d.path().join("secret.txt");
+    std::fs::write(&outside, "secret").unwrap();
+    std::os::unix::fs::symlink(&outside, p.app_dir.join("src/leak.txt")).unwrap();
+    let out = vercel_export(&p).unwrap();
+    let dir = std::path::PathBuf::from(&out.dir);
+    assert!(dir.join("src/main.tsx").is_file());
+    assert!(
+        std::fs::symlink_metadata(dir.join("src/leak.txt")).is_err(),
+        "a link in app/ is skipped, never copied or followed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_build_folder_that_is_itself_a_link_is_refused() {
+    let d = project();
+    let p = open_project(d.path()).unwrap();
+    let elsewhere = d.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("index.html"), "<html></html>").unwrap();
+    std::fs::remove_dir_all(p.app_dir.join("dist")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, p.app_dir.join("dist")).unwrap();
+    let e = collect_site_files(&p.app_dir.join("dist")).unwrap_err();
+    assert!(e.contains("link"), "{e}");
+}
+
+#[test]
+fn a_build_over_the_file_bound_is_refused() {
+    let d = project();
+    let p = open_project(d.path()).unwrap();
+    let many = p.app_dir.join("dist/many");
+    std::fs::create_dir_all(&many).unwrap();
+    for i in 0..MAX_SITE_FILES {
+        std::fs::write(many.join(format!("f{i}.txt")), "x").unwrap();
+    }
+    let e = collect_site_files(&p.app_dir.join("dist")).unwrap_err();
+    assert!(e.contains("too large"), "{e}");
+}
+
+/// A one-method RPC transport answering `eth_getCode` with fixed code.
+struct CodeRpc(&'static str);
+
+impl crate::rpc::RpcTransport for CodeRpc {
+    fn call(&self, body: serde_json::Value) -> Result<serde_json::Value, crate::rpc::RpcError> {
+        assert_eq!(body["method"], "eth_getCode");
+        Ok(serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": self.0}))
+    }
+}
+
+#[test]
+fn the_site_is_switched_only_when_the_address_holds_code() {
+    let d = project();
+    let p = open_project(d.path()).unwrap();
+    let none = crate::rpc::RpcClient::with_transport(CodeRpc("0x"));
+    let e = switch_site_checked(&none, &p, ADDR).unwrap_err();
+    assert!(e.contains("no contract code"), "{e}");
+    assert_eq!(site_contract(&p).unwrap(), None, "nothing was written");
+    let code = crate::rpc::RpcClient::with_transport(CodeRpc("0x6080604052"));
+    let sw = switch_site_checked(&code, &p, ADDR).unwrap();
+    assert_eq!(sw.address, ADDR_CK);
+    assert_eq!(site_contract(&p).unwrap().as_deref(), Some(ADDR));
+}
+
 // ---- forge standard JSON ----
 
 #[test]

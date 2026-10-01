@@ -124,8 +124,9 @@ fn read_target_is_chain_40204_or_a_loopback_fork_only() {
         "http://[::1]:8545",
     ] {
         let t = parse_target(Some(ok)).unwrap();
-        assert_eq!(t, ReadTarget::Fork(ok.to_string()));
-        assert_eq!(t.rpc_url(), ok);
+        // The URL that is checked is the URL that is used: its normalized serialization.
+        assert_eq!(t, ReadTarget::Fork(format!("{ok}/")));
+        assert_eq!(t.rpc_url(), format!("{ok}/"));
     }
     for bad in [
         "https://127.0.0.1:8545",
@@ -137,6 +138,32 @@ fn read_target_is_chain_40204_or_a_loopback_fork_only() {
         "not a url",
     ] {
         assert!(parse_target(Some(bad)).is_err(), "{bad:?} must be refused");
+    }
+}
+
+#[test]
+fn a_fork_url_is_used_exactly_as_it_was_checked() {
+    // Inputs another URL parser may read differently (a backslash before `@`, embedded
+    // whitespace). Whatever is accepted is handed to the transport in the checked, normalized
+    // form, so the host the guard saw is the host that is called.
+    for tricky in [
+        "http://127.0.0.1:8545\\@example.com",
+        "http://127.0.0.1:8545\t",
+        "http://local\thost:8545",
+        " http://localhost:8545/x\n",
+    ] {
+        if let Ok(t) = parse_target(Some(tricky)) {
+            let used = t.rpc_url();
+            assert!(
+                !used.contains('\\') && !used.chars().any(char::is_whitespace),
+                "{tricky:?} was passed on as {used:?}"
+            );
+            let host = url::Url::parse(&used)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_default();
+            assert!(LOOPBACK_HOSTS.contains(&host.as_str()), "{used:?}");
+        }
     }
 }
 

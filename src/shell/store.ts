@@ -9,6 +9,7 @@
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
 import { useSyncExternalStore } from "react";
+import { toFunctionSelector } from "viem";
 import {
   Activity,
   AppState,
@@ -3100,6 +3101,17 @@ export class Store {
    */
   async proposeContractCall(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
     if (this.state.walletReview) throw new Error("another approval is already waiting in the main window; finish it first");
+    // The label becomes the review's title, so the main window checks it against the calldata
+    // instead of trusting the pop-out: its selector must equal the call's first 4 bytes.
+    let selector = "";
+    try {
+      selector = toFunctionSelector(input.label);
+    } catch {
+      selector = "";
+    }
+    if (!selector || selector.toLowerCase() !== input.calldata.slice(0, 10).toLowerCase()) {
+      throw new Error("the call's name does not match its calldata; nothing was proposed");
+    }
     const view = await bridge.contracts.proposeWrite(input.address, input.calldata, input.valueWei);
     this.openWalletReview("contract-call", "Contract call · " + input.label, view);
     return { proposed: true };

@@ -96,3 +96,30 @@ IPFS gateway path (`/ipfs/<cid>/`).
   commands. The planset's `getVerifiedSource` tool for the citratescan MCP is not added here;
   the reader uses the explorer's existing public contract endpoint.
 - The browser pop-out preview of the switched site is S5.1's.
+- US-6.3 AC2 says Hermes "can run view calls". Today the member runs view calls in the reader
+  and Hermes explains; no agent tool lets Hermes run a view call itself. That part of AC2 is
+  open, as is AC1's `getVerifiedSource` MCP tool.
+
+## Owner decisions (pending owner sign-off)
+
+Conservative defaults, marked in code comments; none changes anything for members until used:
+
+- Public IPFS gateway shown next to the CID: `https://ipfs.io` (`postdeploy.rs`
+  `PUBLIC_GATEWAY`). The owner may prefer a Citrate-run gateway.
+- Reader write gas: `eth_estimateGas` plus 20 % headroom, capped at 15,000,000
+  (`contract_reader.rs` `MAX_WRITE_GAS`, `with_headroom`).
+- Site pin bounds: 2,000 files / 100 MB; Vercel export bound: 5,000 files.
+- Vercel export prints `npx vercel deploy --prod`; the owner may prefer preview deploys.
+
+## Adversarial review (2026-10-01)
+
+Small fixes made by the reviewer on this branch, each red first:
+
+- The write's review title (the function signature sent by the pop-out) is now checked in the
+  main window: its selector must equal the calldata's first 4 bytes, or nothing is proposed.
+- A fork read target is handed to the RPC transport in its checked, normalized form, not as
+  the raw text.
+- `app/dist` that is itself a link is refused when pinning (links inside it already were).
+- New tests for paths that had none: the site switch refuses an address without code (the
+  check moved into `switch_site_checked` behind an RPC seam), the Vercel export skips links in
+  `app/`, and the pin's file-count bound.

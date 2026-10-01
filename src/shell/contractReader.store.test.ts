@@ -35,14 +35,23 @@ describe("Feature: a Contract reader write goes through the ceremony", () => {
 
   it("Given core refuses (the estimate failed), then the error reaches the reader and no review opens", async () => {
     vi.spyOn(bridge.contracts, "proposeWrite").mockRejectedValue(new Error("the write was not proposed: execution reverted"));
-    await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint" })).rejects.toThrow(/not proposed/);
+    await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint(uint256)" })).rejects.toThrow(/not proposed/);
     expect(store.state.walletReview).toBeNull();
   });
 
   it("Given a review is already open, then a second proposal is refused", async () => {
     vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue(view as never);
-    await store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint" });
-    await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint" })).rejects.toThrow(/already waiting/);
+    await store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint(uint256)" });
+    await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint(uint256)" })).rejects.toThrow(/already waiting/);
+  });
+
+  it("Given a label whose selector does not match the calldata, then nothing is proposed (the review title is checked in the main window)", async () => {
+    const propose = vi.spyOn(bridge.contracts, "proposeWrite").mockResolvedValue(view as never);
+    // 0xa9059cbb is transfer(address,uint256); the label claims a harmless read-like name.
+    await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa9059cbb", valueWei: "0", label: "mint(uint256)" })).rejects.toThrow(/does not match/);
+    await expect(store.proposeContractCall({ address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "not a signature" })).rejects.toThrow(/does not match/);
+    expect(propose).not.toHaveBeenCalled();
+    expect(store.state.walletReview).toBeNull();
   });
 });
 

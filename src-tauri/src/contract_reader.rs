@@ -25,6 +25,8 @@ pub const READER_ORIGIN: &str = "local-user:contract-reader";
 /// Calldata larger than this is refused (a function call, not a payload upload).
 pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;
 /// The highest gas limit a reader write may carry (a block-sized call is never proposed).
+/// This cap and the 20 % headroom in [`with_headroom`] are conservative defaults, pending owner
+/// sign-off.
 pub const MAX_WRITE_GAS: u64 = 15_000_000;
 /// The smallest gas limit a write carries (the intrinsic cost of a transaction).
 const MIN_WRITE_GAS: u64 = 21_000;
@@ -129,7 +131,9 @@ pub fn parse_target(s: Option<&str>) -> Result<ReadTarget, String> {
             "reads go to chain 40204 or to a local fork at an http:// loopback address".to_string(),
         );
     }
-    Ok(ReadTarget::Fork(raw.to_string()))
+    // Hand on the URL that was checked (its normalized serialization), never the raw text,
+    // which another URL parser could read with a different host.
+    Ok(ReadTarget::Fork(url.to_string()))
 }
 
 // ---------------------------------------------------------------------------

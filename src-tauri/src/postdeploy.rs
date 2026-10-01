@@ -37,14 +37,16 @@ pub const EXPORT_DIR: &str = "vercel-export";
 const EXPORT_MARKER: &str = ".citrate-vercel-export";
 /// The IPFS folder name the site is added under (the CID is this folder's).
 const SITE_ROOT: &str = "site";
-/// Bounds on what a site pin uploads.
+/// Bounds on what a site pin uploads. Conservative defaults, pending owner sign-off.
 const MAX_SITE_FILES: usize = 2_000;
 const MAX_SITE_BYTES: u64 = 100 * 1024 * 1024;
 /// Bounds on what a Vercel export copies (sources only; dependencies are installed by Vercel).
+/// Conservative default, pending owner sign-off.
 const MAX_EXPORT_FILES: usize = 5_000;
 /// The bundled kubo daemon's local gateway (ipfs.rs moves it to this port).
 const LOCAL_GATEWAY: &str = "http://127.0.0.1:48080";
 /// A public gateway. It can serve the site only while some node that has it is reachable.
+/// Placeholder pending owner sign-off (the owner may prefer a Citrate-run gateway).
 const PUBLIC_GATEWAY: &str = "https://ipfs.io";
 /// Folders and files of `app/` that a Vercel export leaves out.
 const EXPORT_SKIP: [&str; 5] = ["node_modules", "dist", ".vercel", ".env.local", ".git"];
@@ -454,6 +456,13 @@ fn forge_standard_json(p: &HelloMintProject, address: &str) -> Result<String, St
 /// Every file of the built site (`app/dist`), relative paths with `/`, sorted. Symlinks are
 /// refused (never followed), and the site must have an `index.html` at its root.
 pub fn collect_site_files(dist: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+    // The build folder itself must not be a link either (it would pin whatever it points at).
+    if std::fs::symlink_metadata(dist).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!(
+            "the build folder is a link ({}); links are not pinned",
+            dist.display()
+        ));
+    }
     if !dist.join("index.html").is_file() {
         return Err(
             "the page is not built yet: run npm run build in the app folder first".to_string(),
@@ -842,12 +851,21 @@ pub fn postdeploy_switch_site_sync(
     address: String,
 ) -> std::result::Result<SiteSwitch, String> {
     let p = open_project(Path::new(&project_dir))?;
-    let address = normalize_address(&address)?;
-    let size = crate::contract_reader::code_size(&crate::rpc::RpcClient::citrate(), &address)?;
+    switch_site_checked(&crate::rpc::RpcClient::citrate(), &p, &address)
+}
+
+/// Switch the site only after `client` (40204 in production) shows code at `address`.
+pub fn switch_site_checked<T: crate::rpc::RpcTransport>(
+    client: &crate::rpc::RpcClient<T>,
+    p: &HelloMintProject,
+    address: &str,
+) -> std::result::Result<SiteSwitch, String> {
+    let address = normalize_address(address)?;
+    let size = crate::contract_reader::code_size(client, &address)?;
     if size == 0 {
         return Err("there is no contract code at this address on chain 40204 yet".to_string());
     }
-    let path = switch_site_to_citrate(&p, &address)?;
+    let path = switch_site_to_citrate(p, &address)?;
     Ok(SiteSwitch {
         env_path: path.display().to_string(),
         address: checksum_address(&address),
