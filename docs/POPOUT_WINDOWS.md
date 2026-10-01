@@ -89,3 +89,9 @@ The Stop button sends `monitor.stop`; the main window runs `store.stopAgentTurn(
   stream wired into the monitor (the sidecar emits `verifier` events; the core provider does not
   forward them yet).
 - A Stop button in the main chat itself is not part of this work.
+
+## Accessibility
+
+Checks and results for the pop-out framework and the Activity monitor (landmarks, window title,
+focus order, live regions, contrast, reduced motion) are recorded in
+[A11Y_AUDIT_HUP_S10_6_2026-10-01.md](A11Y_AUDIT_HUP_S10_6_2026-10-01.md).

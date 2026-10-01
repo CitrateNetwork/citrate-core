@@ -3,7 +3,9 @@
 //
 // Opens pop-outs through the guarded Rust command, answers a ready Activity monitor with snapshots
 // of real state as it changes, and runs the existing Stop path when the monitor asks. A pop-out
-// closing does nothing here: closing a window never stops or changes any work.
+// closing does nothing here: closing a window never stops or changes any work. HUP-S1.9: while the
+// monitor is open the host also polls the agent sidecar's worker processes and republishes when
+// their state changes (a worker crash and restart is not a store change).
 // HUP-S5.1: while a Browser pop-out is alive (it re-announces itself every few seconds), the host
 // polls Hermes's browser through Rust (status and the latest screencast frame) and sends the pop-out
 // checked views; the pop-out's Stop runs the browser's stop. When the announcements stop, so does
@@ -12,7 +14,7 @@
 // =====================================================================
 import { createMainEnd, type BridgeTransport, type MainEnd } from "./bridge";
 import { isPopoutKind, type PopoutKind } from "./kinds";
-import { buildMonitorSnapshot, type MonitorInputs } from "./monitorSnapshot";
+import { buildMonitorSnapshot, type MonitorInputs, type WorkerRow } from "./monitorSnapshot";
 import { BROWSER_OFF, parseBrowserFrame, parseBrowserStatus, type BrowserFrame, type BrowserState } from "./browserView";
 
 /** HUP-S5.1: Hermes's browser, through the Rust commands. */
@@ -35,7 +37,7 @@ export interface PopoutHostDeps {
   /** Ask Rust to open (or focus) the pop-out window of this kind. */
   openWindow(kind: PopoutKind): Promise<void>;
   /** The live inputs for a monitor snapshot (everything except the context window and the clock). */
-  inputs(): Omit<MonitorInputs, "localCtxTokens" | "now">;
+  inputs(): Omit<MonitorInputs, "localCtxTokens" | "now" | "workers">;
   /** Subscribe to changes of anything `inputs()` reads; returns an unsubscribe. */
   subscribe(fn: () => void): () => void;
   /** The existing stop path (store.stopAgentTurn). */
@@ -43,6 +45,11 @@ export interface PopoutHostDeps {
   /** The local server's context window, from Rust. */
   contextWindow(): Promise<number | null>;
   now(): number;
+  /** HUP-S1.9: the agent sidecar's worker processes, from Rust (hermes_workers). A worker crash
+   *  is not a store change, so the host polls this while the monitor is open. */
+  workers?(): Promise<WorkerRow[]>;
+  /** How often to poll `workers` while the monitor is open (default 5000 ms). */
+  workersPollMs?: number;
   /** Coalesce bursts of changes into one snapshot per this many ms. */
   throttleMs?: number;
   /** HUP-S5.1: Hermes's browser. Absent (web preview, tests), the Browser pop-out shows "off". */
@@ -62,6 +69,25 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
   let ctx: number | null | undefined; // undefined = not read yet
   let timer: ReturnType<typeof setTimeout> | null = null;
   const throttle = deps.throttleMs ?? 150;
+  let workers: WorkerRow[] | null = null; // null = not read (or the read failed)
+  let workersKey = "";
+  let poll: ReturnType<typeof setInterval> | null = null;
+
+  const readWorkers = async (): Promise<boolean> => {
+    if (!deps.workers) return false;
+    let next: WorkerRow[] | null;
+    try {
+      const v = await deps.workers();
+      next = Array.isArray(v) ? v : null;
+    } catch {
+      next = null; // honest: unknown, shown as such
+    }
+    const key = JSON.stringify(next);
+    if (key === workersKey) return false;
+    workersKey = key;
+    workers = next;
+    return true;
+  };
 
   const readCtx = async (): Promise<number | null> => {
     if (ctx !== undefined) return ctx;
@@ -79,7 +105,7 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
     if (disposed || !monitorOpen || !end) return;
     const localCtxTokens = await readCtx();
     if (disposed) return;
-    await end.sendSnapshot(buildMonitorSnapshot({ ...deps.inputs(), localCtxTokens, now: deps.now() })).catch(() => undefined);
+    await end.sendSnapshot(buildMonitorSnapshot({ ...deps.inputs(), localCtxTokens, workers, now: deps.now() })).catch(() => undefined);
   };
   const schedule = () => {
     if (disposed || !monitorOpen || timer !== null) return;
@@ -159,7 +185,18 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
       }
       if (kind !== "monitor") return;
       monitorOpen = true;
-      void publish();
+      void (async () => {
+        await readWorkers();
+        await publish();
+      })();
+      if (deps.workers && poll === null) {
+        poll = setInterval(() => {
+          if (disposed) return;
+          void readWorkers().then((changed) => {
+            if (changed) schedule();
+          });
+        }, deps.workersPollMs ?? 5000);
+      }
     },
     onStop: () => deps.stop(),
     onBrowserStop: () => {
@@ -177,6 +214,7 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
       disposed = true;
       if (timer !== null) clearTimeout(timer);
       if (browserTimer !== null) clearTimeout(browserTimer);
+      if (poll !== null) clearInterval(poll);
       unsubscribe();
       end?.close();
     },

@@ -4,7 +4,8 @@
 // Desktop app only. The monitor's inputs are the live store, the turn activity slice, the tier
 // report and the model router (the same sources the chat header uses); the context window comes
 // from Rust (`popout_monitor_facts`, the local llama-server's --ctx-size); Stop is
-// `store.stopAgentTurn`. In the web preview there are no windows to open, and it says so.
+// `store.stopAgentTurn`; the worker processes come from Rust (`hermes_workers`, HUP-S1.9). In the
+// web preview there are no windows to open, and it says so.
 // HUP-S5.1: the Browser pop-out reads Hermes's browser through the `hermes_browser_*` commands;
 // its Stop runs `hermes_browser_stop`, and a failure is shown to the member.
 // =====================================================================
@@ -20,6 +21,7 @@ import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
 import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
+import type { WorkerRow } from "./monitorSnapshot";
 
 let hostPromise: Promise<PopoutHost> | null = null;
 
@@ -57,6 +59,8 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
             store.toast("Could not stop the browser: " + (e instanceof Error ? e.message : String(e)));
           }),
       },
+      // HUP-S1.9: the sidecar's worker processes (Rust → the sidecar's GET /workers).
+      workers: () => invoke<WorkerRow[]>("hermes_workers"),
       now: () => Date.now(),
     }))();
   return hostPromise;

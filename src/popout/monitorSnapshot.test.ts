@@ -86,3 +86,50 @@ describe("HUP-S7.6 monitor snapshot", () => {
     expect(formatElapsed(5000, 1000)).toBe("0s");
   });
 });
+
+// HUP-S1.9 — the sidecar's worker processes (toolchain now, browser reserved) on the monitor.
+import { isMonitorSnapshot, workerLine, type WorkerRow } from "./monitorSnapshot";
+
+describe("HUP-S1.9 worker processes in the snapshot", () => {
+  const toolchain: WorkerRow = {
+    kind: "toolchain", state: "running", healthy: true, pid: 4242, restarts: 1,
+    lastExit: "killed by signal 9", lastError: null, runningSinceMs: 1, detail: null,
+  };
+  const browser: WorkerRow = {
+    kind: "browser", state: "not_built", healthy: null, pid: null, restarts: null,
+    lastExit: null, lastError: null, runningSinceMs: null, detail: "the browser worker arrives with HUP-S5.1",
+  };
+
+  it("carries the rows as read and says each worker is its own process", () => {
+    const s = buildMonitorSnapshot({ ...base, workers: [toolchain, browser] });
+    expect(s.workers.rows).toEqual([toolchain, browser]);
+    expect(s.workers.note).toMatch(/separate process/i);
+    expect(isMonitorSnapshot(s)).toBe(true);
+  });
+
+  it("unread workers are unknown, an empty list means Hermes is not running", () => {
+    const unread = buildMonitorSnapshot(base);
+    expect(unread.workers.rows).toBeNull();
+    expect(unread.workers.note).toMatch(/could not be read/i);
+    expect(isMonitorSnapshot(unread)).toBe(true);
+    const none = buildMonitorSnapshot({ ...base, workers: [] });
+    expect(none.workers.rows).toEqual([]);
+    expect(none.workers.note).toMatch(/not running/i);
+  });
+
+  it("a restart is stated with how the last process ended", () => {
+    expect(workerLine(toolchain)).toBe("running, restarted 1 time (last exit: killed by signal 9)");
+    expect(workerLine({ ...toolchain, restarts: 0, lastExit: null })).toBe("running");
+    expect(workerLine({ ...toolchain, state: "failed", restarts: 5, lastError: "gave up after 5 restarts" })).toBe(
+      "failed, restarted 5 times (last exit: killed by signal 9; gave up after 5 restarts)",
+    );
+    expect(workerLine(browser)).toBe("not built yet (the browser worker arrives with HUP-S5.1)");
+    expect(workerLine({ ...toolchain, healthy: false })).toMatch(/not answering health checks/);
+  });
+
+  it("rejects a snapshot whose worker rows are malformed", () => {
+    const s = buildMonitorSnapshot({ ...base, workers: [toolchain] });
+    expect(isMonitorSnapshot({ ...s, workers: { rows: [{ kind: 1 }], note: "x" } })).toBe(false);
+    expect(isMonitorSnapshot({ ...s, workers: undefined })).toBe(false);
+  });
+});
