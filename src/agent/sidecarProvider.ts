@@ -6,7 +6,7 @@
 // store's gated handler (`onToolCall` → `store.handleTool`, i.e. the same approval gates as today)
 // and posts the result back. It never talks to the model and never decides an approval.
 // =====================================================================
-import type { ChatProvider, SendOpts, ToolCall, ToolCallMeta } from "./harness";
+import { TurnStopped, untilStopped, type ChatProvider, type SendOpts, type ToolCall, type ToolCallMeta } from "./harness";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
 export interface SidecarSessionApi {
@@ -59,25 +59,40 @@ export function createSidecarProvider(
   // the set once recorded, because the sidecar may reuse ids (call_0, call_1, …) on later steps.
   const inFlight = new Set<string>();
 
-  return {
-    kind: "sidecar",
-    label: "Hermes (sidecar loop · preview)",
-    async send(opts: SendOpts) {
-      const { callbacks } = opts;
-      const last = [...opts.messages].reverse().find((m) => m.role === "user");
-      const text = last?.content ?? "";
-      callbacks.onStatus("thinking");
-      // A finished (or failed) turn leaves no core call legitimately waiting, so an id left over
-      // from an earlier turn must not block a new call with the same id. Replays are still dropped
-      // by seq below.
-      inFlight.clear();
-      if (!sessionId) {
-        sessionId = await api.open(systemPrompt(), JSON.stringify(tools()));
-        lastSeq = 0;
-      }
-      const id = sessionId;
-      await api.send(id, text);
+  // HUP-S7.6: turns run one at a time. A stopped turn keeps draining its session events (to its
+  // `done`) after the caller has moved on, so the next turn starts from the right sequence number
+  // and never sees the stopped turn's events.
+  let previous: Promise<unknown> = Promise.resolve();
 
+  async function runTurn(opts: SendOpts): Promise<{ role: string; content: string }> {
+    const { callbacks, signal } = opts;
+    const last = [...opts.messages].reverse().find((m) => m.role === "user");
+    const text = last?.content ?? "";
+    if (signal?.aborted) throw new TurnStopped();
+    callbacks.onStatus("thinking");
+    // A finished (or failed) turn leaves no core call legitimately waiting, so an id left over
+    // from an earlier turn must not block a new call with the same id. Replays are still dropped
+    // by seq below.
+    inFlight.clear();
+    if (!sessionId) {
+      sessionId = await api.open(systemPrompt(), JSON.stringify(tools()));
+      lastSeq = 0;
+    }
+    const id = sessionId;
+    await api.send(id, text);
+
+    // HUP-S7.6: Stop goes through the session's own stop route (it ends the turn and releases a
+    // waiting tool); from then on this turn only drains its events to `done` and runs nothing.
+    let stopping = false;
+    const stopOnce = () => {
+      if (stopping) return;
+      stopping = true;
+      api.stop(id).catch(() => undefined);
+    };
+    signal?.addEventListener("abort", stopOnce, { once: true });
+    if (signal?.aborted) stopOnce();
+
+    try {
       let final = "";
       let failure: string | null = null;
       let idle = 0;
@@ -89,15 +104,31 @@ export function createSidecarProvider(
         const fresh = page.events.filter((e) => e.seq > seen);
         if (fresh.length === 0) {
           idle = page.busy ? 0 : idle + 1;
-          if (idle >= MAX_IDLE_POLLS) throw new Error("the agent session stopped responding");
+          if (idle >= MAX_IDLE_POLLS) {
+            if (stopping) break;
+            throw new Error("the agent session stopped responding");
+          }
           continue;
         }
         idle = 0;
         let finished = false;
         for (const { event: ev } of fresh) {
           const type = String(ev.type);
-          if (type === "step_start") callbacks.onStatus("thinking");
-          else if (type === "tool_call") {
+          if (type === "done") {
+            finished = true;
+            if (!stopping && ev.outcome !== "answered" && ev.outcome !== "stopped") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
+            continue;
+          }
+          if (type === "tool_result") {
+            inFlight.delete(String(ev.call_id));
+            continue;
+          }
+          if (stopping) continue; // draining a stopped turn: nothing else is acted on
+          if (type === "step_start") {
+            callbacks.onStatus("thinking");
+            const step = Number(ev.step);
+            if (Number.isFinite(step)) callbacks.onActivity?.({ kind: "step", step });
+          } else if (type === "tool_call") {
             callbacks.onStatus("tool");
             const call = ev.call as ToolCall;
             // Only calls the loop dispatched to core carry host "core"; refused ones carry null.
@@ -118,35 +149,49 @@ export function createSidecarProvider(
                       ? { hic: "required", hicReason: typeof ev.hic_reason === "string" ? ev.hic_reason : undefined }
                       : undefined;
                   const normalized = { ...call, arguments: args };
-                  result = await (meta ? callbacks.onToolCall(normalized, meta) : callbacks.onToolCall(normalized));
+                  result = await untilStopped(meta ? callbacks.onToolCall(normalized, meta) : callbacks.onToolCall(normalized), signal);
                   status = statusOf(result);
                 } catch (e) {
+                  if (e instanceof TurnStopped) {
+                    // The stop route already released this call; no result is posted for it.
+                    stopOnce();
+                    continue;
+                  }
                   result = e instanceof Error ? e.message : String(e);
                   status = "error";
                 }
               }
+              if (stopping) continue;
               await api.toolResult(id, call.id, status, result);
             }
-          } else if (type === "tool_result") {
-            inFlight.delete(String(ev.call_id));
           } else if (type === "final") {
             final = String(ev.content ?? "");
             callbacks.onStatus("streaming");
             callbacks.onToken(final);
           } else if (type === "error") failure = String(ev.message ?? "the agent failed");
-          else if (type === "done") {
-            finished = true;
-            if (ev.outcome !== "answered" && ev.outcome !== "stopped") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
-          }
         }
         if (finished) break;
       }
+      if (stopping) throw new TurnStopped();
       if (failure) {
         callbacks.onStatus("error");
         throw new Error(failure);
       }
       callbacks.onStatus("done");
       return { role: "assistant", content: final };
+    } finally {
+      signal?.removeEventListener("abort", stopOnce);
+    }
+  }
+
+  return {
+    kind: "sidecar",
+    label: "Hermes (sidecar loop · preview)",
+    send(opts: SendOpts) {
+      const work = previous.catch(() => undefined).then(() => runTurn(opts));
+      previous = work;
+      // The caller hears about a Stop at once; the drain above finishes in the background.
+      return untilStopped(work, opts.signal);
     },
   };
 }

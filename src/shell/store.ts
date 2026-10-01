@@ -28,7 +28,7 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT } from "../agent/harness";
+import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
@@ -44,6 +44,7 @@ import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
 import { parseJoinLink, resolveJoinCode, parseClaimLink } from "../surfaces/referral";
 import { groupsSlice } from "./slices/groups";
+import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 /**
@@ -1948,9 +1949,35 @@ export class Store {
     await this.sendChat(text);
   }
 
+  /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
+  private turnAbort: AbortController | null = null;
+
+  /** HUP-S7.6 — the active provider's kind (`ChatProvider.kind`), for the Activity monitor. */
+  activeProviderKind(): string {
+    return this.provider?.kind ?? "demo";
+  }
+
+  /**
+   * HUP-S7.6 — Stop the running agent turn (the Activity monitor's Stop button). The chat returns
+   * to ready at once; the provider stops before its next model request or tool call (the sidecar
+   * through its session stop route); tool calls the stopped turn asks for afterwards are not run.
+   * Approvals already open stay open for the member to decide. A no-op when nothing is running.
+   */
+  stopAgentTurn(): void {
+    const ac = this.turnAbort;
+    if (!ac || ac.signal.aborted) return;
+    markStopping();
+    ac.abort();
+  }
+
   async sendChat(text: string): Promise<void> {
     text = (text || "").trim();
     if (!text || this.state.chatStatus !== "ready" || !this.provider) return;
+    const provider = this.provider;
+    const ac = new AbortController();
+    this.turnAbort = ac;
+    const stopped = () => ac.signal.aborted;
+    beginTurn(provider.kind, provider.label);
     const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
@@ -1978,38 +2005,72 @@ export class Store {
       patch((m) => ({ ...m, text: m.text + add }));
       this.scrollChat();
     };
+    // HUP-S7.6: Stop resolves this at once, so a wedged model request never holds the chat.
+    const stopSignal = new Promise<"stopped">((resolve) =>
+      ac.signal.addEventListener("abort", () => resolve("stopped"), { once: true }),
+    );
     try {
-      await this.provider.send({
+      const run = provider.send({
         messages: this.state.chatMsgs
           .filter((m) => !m.streaming && !m.error)
           .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
           .concat([{ role: "user", content: text }]),
+        signal: ac.signal,
         callbacks: {
           onStatus: (st) => {
+            // HUP-S7.6: a stopped turn's late callbacks change nothing.
+            if (stopped()) return;
+            notePhase(st);
             if (st === "streaming") ensure();
             this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : (st as AppState["chatStatus"]) });
           },
           onToken: (tk) => {
+            if (stopped()) return;
             ensure();
             // HUP-S0.4: keep the model's markdown intact (bold used to be stripped per token).
             pending += tk;
             if (flushTimer === null) flushTimer = setTimeout(flush, 32);
           },
-          onToolCall: (call, meta) => {
+          onToolCall: async (call, meta) => {
+            // HUP-S7.6: a call from a stopped turn is not run.
+            if (stopped()) return "stopped by the member before this ran; nothing was done.";
             flush();
-            return this.handleTool(call, asstId, ensure, meta);
+            toolStarted(call.id, call.name);
+            try {
+              const result = await this.handleTool(call, asstId, ensure, meta);
+              toolFinished(call.id, true);
+              return result;
+            } catch (e) {
+              toolFinished(call.id, false);
+              throw e;
+            }
+          },
+          onActivity: (ev) => {
+            if (!stopped() && ev.kind === "step") noteStep(ev.step);
           },
         },
       });
+      // The stopped turn may still settle later; that settlement is discarded.
+      run.catch(() => undefined);
+      const winner = await Promise.race([run.then(() => "done" as const), stopSignal]);
+      if (winner === "stopped") throw new TurnStopped();
       flush();
+      endTurn("answered");
     } catch (e) {
       flush();
-      // HUP-S0.7: a failed/timed-out turn stays visible with Retry (it used to vanish silently).
-      console.error(e);
       ensure();
-      const reason = e instanceof Error ? e.message : String(e);
-      patch((m) => ({ ...m, error: reason || "the agent did not answer", retryText: text }));
+      if (e instanceof TurnStopped || stopped()) {
+        patch((m) => ({ ...m, error: "stopped by you", retryText: text }));
+        endTurn("stopped");
+      } else {
+        // HUP-S0.7: a failed/timed-out turn stays visible with Retry (it used to vanish silently).
+        console.error(e);
+        const reason = e instanceof Error ? e.message : String(e);
+        patch((m) => ({ ...m, error: reason || "the agent did not answer", retryText: text }));
+        endTurn("failed");
+      }
     }
+    if (this.turnAbort === ac) this.turnAbort = null;
     patch((m) => ({ ...m, streaming: false }));
     this.setState({ chatStatus: "ready" });
     this.scrollChat();
