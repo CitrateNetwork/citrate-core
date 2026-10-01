@@ -211,6 +211,25 @@ fn valid_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// One store writer at a time: an update runs `recover()` (which clears every staging
+/// directory) and rewrites `state.json`, so a second update or a rollback running alongside it
+/// could delete the first one's staging tree or lose its state write. A second writer is
+/// refused rather than queued, so the member sees why.
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn with_store_lock(
+    f: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    let _guard = match STORE_LOCK.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err("a component update or rollback is already running".to_string())
+        }
+    };
+    f()
+}
+
 fn fetch_vec(f: &dyn Fetcher, url: &str, max: u64) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     f.fetch(url, max, &mut buf).map_err(|e| e.to_string())?;
@@ -223,6 +242,16 @@ pub(crate) fn components_update_sync(root: &Path, name: &str, now: u64) -> Resul
     let key = TrustRoot::production().map_err(|e| e.to_string())?;
     let platform =
         Platform::current().ok_or_else(|| "this platform has no component builds".to_string())?;
+    with_store_lock(|| update_locked(root, name, platform, &key, now))
+}
+
+fn update_locked(
+    root: &Path,
+    name: &str,
+    platform: Platform,
+    key: &TrustRoot,
+    now: u64,
+) -> Result<String, String> {
     let store = Store::open(root).map_err(|e| e.to_string())?;
     store.recover().map_err(|e| e.to_string())?;
     let fetcher = HttpsFetcher::default();
@@ -232,18 +261,10 @@ pub(crate) fn components_update_sync(root: &Path, name: &str, now: u64) -> Resul
         .map_err(|_| "the manifest signature is not text".to_string())?;
     let seen = store.state().map_err(|e| e.to_string())?.last_manifest;
     let vm =
-        verify_manifest(&manifest, &sig, &key, seen.as_ref(), now).map_err(|e| e.to_string())?;
+        verify_manifest(&manifest, &sig, key, seen.as_ref(), now).map_err(|e| e.to_string())?;
     store.record_manifest(&vm).map_err(|e| e.to_string())?;
     match store
-        .install(
-            &vm,
-            name,
-            platform,
-            &key,
-            &fetcher,
-            &EntrypointsPresent,
-            now,
-        )
+        .install(&vm, name, platform, key, &fetcher, &EntrypointsPresent, now)
         .map_err(|e| e.to_string())?
     {
         InstallOutcome::Installed { version, previous } => Ok(match previous {
@@ -261,9 +282,11 @@ pub(crate) fn components_rollback_sync(root: &Path, name: &str) -> Result<String
     if !root.join("state.json").exists() {
         return Err(format!("{name} has no previous version to roll back to"));
     }
-    let store = Store::open(root).map_err(|e| e.to_string())?;
-    let v = store.rollback(name).map_err(|e| e.to_string())?;
-    Ok(format!("{name} rolled back to {}", v.version))
+    with_store_lock(|| {
+        let store = Store::open(root).map_err(|e| e.to_string())?;
+        let v = store.rollback(name).map_err(|e| e.to_string())?;
+        Ok(format!("{name} rolled back to {}", v.version))
+    })
 }
 
 #[tauri::command]

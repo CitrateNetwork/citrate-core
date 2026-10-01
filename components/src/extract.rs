@@ -5,7 +5,8 @@
 //! (hard links, devices and FIFOs are refused); a path may appear once; set-id bits and
 //! group/other write bits are dropped. Symlinks are created after every file and directory, so
 //! no file is ever written through an archive symlink; each symlink target must stay inside
-//! the tree both lexically and after resolution, and must exist.
+//! the tree both lexically and after resolution, and must exist; no link is placed under
+//! another archive link.
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -277,6 +278,10 @@ fn make_symlinks(dest: &Path, links: &[(PathBuf, String)]) -> Result<(), Compone
                 rel.display()
             )));
         }
+        // Every link is placed under real directories only: a parent path that passes through
+        // an earlier archive symlink could place this link (or create directories) outside the
+        // tree before the resolution check below runs.
+        parent_has_no_symlink(dest, rel)?;
         let at = dest.join(rel);
         if let Some(parent) = at.parent() {
             fs::create_dir_all(parent).map_err(io)?;
@@ -299,6 +304,30 @@ fn make_symlinks(dest: &Path, links: &[(PathBuf, String)]) -> Result<(), Compone
                 "{} -> {target} resolves outside the tree",
                 rel.display()
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses `rel` when any existing ancestor of it inside `dest` is a symlink.
+#[cfg(unix)]
+fn parent_has_no_symlink(dest: &Path, rel: &Path) -> Result<(), ComponentError> {
+    let mut at = dest.to_path_buf();
+    let Some(parent) = rel.parent() else {
+        return Ok(());
+    };
+    for part in parent.iter() {
+        at.push(part);
+        match fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(unsafe_entry(format!(
+                    "{}: a link may not be placed under another link",
+                    rel.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(io(e)),
         }
     }
     Ok(())

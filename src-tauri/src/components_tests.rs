@@ -63,3 +63,17 @@ fn the_manifest_urls_are_https_and_separate_from_the_app_updater() {
     assert!(COMPONENT_MANIFEST_SIG_URL.starts_with(COMPONENT_MANIFEST_URL));
     assert!(!COMPONENT_MANIFEST_URL.contains("/updater/"), "component manifests live apart from the app updater feed");
 }
+
+#[test]
+fn store_writes_are_serialized_and_a_second_one_is_refused_while_one_runs() {
+    // An update runs `recover()` (which clears staging) and rewrites state.json; a second
+    // update or a rollback running at the same time would delete the first one's staging tree
+    // or lose its state write. Only one store writer at a time.
+    let first = with_store_lock(|| {
+        let second = with_store_lock(|| Ok("ran".to_string()));
+        assert!(second.unwrap_err().contains("already running"));
+        Ok("first".to_string())
+    });
+    assert_eq!(first.as_deref(), Ok("first"));
+    assert_eq!(with_store_lock(|| Ok("again".to_string())).as_deref(), Ok("again"));
+}

@@ -256,3 +256,26 @@ fn a_symlink_that_climbs_out_and_back_in_is_refused() {
         "{err:?}"
     );
 }
+
+#[test]
+fn no_symlink_is_ever_created_through_another_archive_symlink() {
+    // `q -> .` and `p -> q/..` are each lexically inside the tree, but `p` resolves to the
+    // directory holding the tree. A later link under `p/` would then be created outside the
+    // tree before any check after unpacking could run. A link whose parent path passes
+    // through an archive symlink is refused before anything is created.
+    let bytes = tar_gz(&[
+        Entry::Symlink("q", "."),
+        Entry::Symlink("p", "q/.."),
+        Entry::Symlink("p/planted", "q"),
+    ]);
+    let (t, r) = run("linkparent", ArchiveFormat::TarGz, &bytes);
+    let err = r.unwrap_err();
+    assert!(
+        matches!(err, ComponentError::UnsafeArchiveEntry(_)),
+        "{err:?}"
+    );
+    assert!(
+        std::fs::symlink_metadata(t.path().join("planted")).is_err(),
+        "a link was created outside the tree"
+    );
+}

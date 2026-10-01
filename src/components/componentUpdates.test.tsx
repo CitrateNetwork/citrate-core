@@ -76,6 +76,13 @@ describe("ComponentUpdatesView", () => {
     expect(html).not.toContain("foundry");
   });
 
+  it("does not claim a browser block that nothing enforces yet", () => {
+    // The open-web rule is computed (browserMayOpenWeb) but no managed browser reads it yet.
+    const html = render(status());
+    expect(html).not.toContain("The managed browser stays off the open web");
+    expect(html).toContain("not enforced yet");
+  });
+
   it("uses no em-dashes in member-facing text", () => {
     expect(render(status())).not.toContain("—");
     expect(render(null)).not.toContain("—");

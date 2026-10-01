@@ -134,10 +134,14 @@ not built yet (an owner decision below).
 Advisory sources to watch: the upstream security advisories of each component, the GitHub
 advisory database, and the Chromium release blog for the browser.
 
-**Client side** (enforced in code, `components/src/policy.rs`):
+**Client side** (computed in code, `components/src/policy.rs`):
 
 - a manifest older than **3 days** shows "updates are stale";
-- an **expired** manifest, or none ever checked, keeps the managed browser off the open web;
+- an **expired** manifest, or none ever checked, is to keep the managed browser off the open
+  web. Today this is computed (`browserMayOpenWeb` in `components_status`) and shown in
+  Settings, but no managed browser reads it yet: the block is not enforced. Whoever wires it
+  must not block members while the component key slot is still empty (every machine is
+  "never checked" until the first signed manifest exists);
 - the manifest lifetime is capped at 31 days, so a frozen feed cannot keep a client "current".
 
 ## Owner decisions

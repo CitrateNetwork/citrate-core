@@ -110,8 +110,8 @@ export function ComponentUpdatesView({
       <span style={note}>
         Security fixes for bundled components: critical within {sla.criticalHours} h, high within {sla.highDays} days,
         medium within {sla.mediumDays} days, low within {sla.lowDays} days.
-        {sla.pendingOwnerSignoff ? " These values are placeholders, pending owner sign-off." : ""} The managed browser stays
-        off the open web until a current signed manifest has been checked.
+        {sla.pendingOwnerSignoff ? " These values are placeholders, pending owner sign-off." : ""} Planned rule, not
+        enforced yet: the managed browser stays off the open web until a current signed manifest has been checked.
       </span>
       {error && <span style={{ ...note, color: "var(--warn)" }}>{error}</span>}
     </div>
