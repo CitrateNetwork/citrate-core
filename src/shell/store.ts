@@ -28,8 +28,10 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "../agent/harness";
+import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT } from "../agent/harness";
 import { createSidecarProvider } from "../agent/sidecarProvider";
+import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { fenceUntrusted } from "../agent/untrusted";
@@ -44,6 +46,13 @@ import { parseJoinLink, resolveJoinCode, parseClaimLink } from "../surfaces/refe
 import { groupsSlice } from "./slices/groups";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
+/**
+ * HUP-S2.4 — tools whose handler always stops at a member approval of its own (a ceremony, or the
+ * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
+ * Every other tool is held behind an explicit card before it runs when the call is hic:"required".
+ */
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy"]);
+
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
   stake: "Stake",
@@ -834,7 +843,7 @@ export class Store {
             stop: (id) => h.sessionStop(id),
           },
           () => AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
-          () => AGENT_TOOLS,
+          () => annotatedAgentTools(),
         );
         this.reflectProvider();
         return;
@@ -1986,9 +1995,9 @@ export class Store {
             pending += tk;
             if (flushTimer === null) flushTimer = setTimeout(flush, 32);
           },
-          onToolCall: (call) => {
+          onToolCall: (call, meta) => {
             flush();
-            return this.handleTool(call, asstId, ensure);
+            return this.handleTool(call, asstId, ensure, meta);
           },
         },
       });
@@ -2013,7 +2022,7 @@ export class Store {
     });
   }
 
-  async handleTool(call: ToolCall, asstId: string, ensure: () => void): Promise<string> {
+  async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta): Promise<string> {
     let args: Record<string, string> = {};
     try {
       args = JSON.parse(call.arguments || "{}");
@@ -2022,12 +2031,43 @@ export class Store {
     }
     let status = "ok";
     let result = "ok";
-    if (call.name === "memory_assert") {
+    // HUP-S2.4 — every approval carries a card generated from the tool's annotations. A call the
+    // sidecar marked hic:"required" (its session read untrusted content) is decided only by the
+    // member's click: tools that ask anyway carry the HIC reason on their one ceremony; any other
+    // tool is held behind an explicit card first (fail closed).
+    const ann = annotationFor(call.name);
+    const hic: HicRequirement | undefined =
+      meta?.hic === "required" ? { reason: meta.hicReason || "this action needs your explicit approval" } : undefined;
+    const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card });
+    let held = false;
+    if (hic && !SELF_GATED_TOOLS.has(call.name)) {
+      const r = await ask(
+        {
+          origin: "chat agent",
+          requester: "dashboard agent · tool " + call.name,
+          title: "Approve an agent action",
+          chainless: true,
+          rows: [],
+          cost: "none — no chain transaction",
+          sponsor: "explicit decision required",
+          sponsorColor: "var(--tx-3)",
+        },
+        cardForCall(call.name, ann, args as Record<string, unknown>),
+      );
+      if (r !== "approved") {
+        held = true;
+        status = r;
+        result = `The member declined ${call.name}; nothing was done.`;
+      }
+    }
+    if (held) {
+      // declined at the HIC card — the tool did not run
+    } else if (call.name === "memory_assert") {
       // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
       // isn't bundled yet), so an approval here does NOT durably write anything. Show
       // the real approval ceremony, but the copy must not imply a durable write
       // occurred — it is a preview of the write the real agent would queue.
-      const r = await this.requestSig({
+      const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool memory_assert",
         title: "Approve a memory write (demo — not durable)",
@@ -2040,13 +2080,16 @@ export class Store {
         cost: "none — demo mode does not write to the memory graph",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      });
+      }, fieldsCard("memory_assert", ann, { fact: args.fact || "" }, "remember a fact in your personal memory"));
       status = r;
       result = r;
     } else if (call.name === "journal_append") {
       const entry = args.entry || "work note";
       const today = new Date().toISOString().slice(0, 10);
-      const r = await this.requestSig({
+      const page = (this.state.jPages || []).find((p) => p.id === "d-" + today);
+      const before = page ? page.blocks.join("\n") : "";
+      const after = (before ? before + "\n" : "") + "@agent " + entry;
+      const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool journal_append",
         title: "Write to your journal",
@@ -2059,7 +2102,7 @@ export class Store {
         cost: "none — local journal write",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      });
+      }, diffCard("journal_append", ann, "journal/" + today, before, after));
       if (r === "approved") {
         this.setState((st) => {
           const pages = st.jPages.slice();
@@ -2134,7 +2177,7 @@ export class Store {
       // PBA-L7b-002: creating a group is a state change the member approves; the agent proposes.
       const kind = ["channel", "dm", "forum"].indexOf(args.kind) >= 0 ? (args.kind as "channel" | "dm" | "forum") : "channel";
       const name = args.name || "New group";
-      const r = await this.requestSig({
+      const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool group_create",
         title: "Create an encrypted group",
@@ -2147,7 +2190,7 @@ export class Store {
         cost: "none — local group creation",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      });
+      }, fieldsCard("group_create", ann, { name, kind }, "create the encrypted group “" + name + "”"));
       status = r;
       if (r !== "approved") {
         result = "the member declined creating the group; nothing was created.";
@@ -2165,7 +2208,7 @@ export class Store {
       // model context, where an injected instruction could exfiltrate it.
       const group = args.group || "";
       const forHandle = args.forHandle || "shared link";
-      const r = await this.requestSig({
+      const r = await ask({
         origin: "chat agent",
         requester: "dashboard agent · tool group_invite",
         title: "Mint a one-click invite link",
@@ -2178,7 +2221,7 @@ export class Store {
         cost: "none — no chain transaction",
         sponsor: "no chain transaction",
         sponsorColor: "var(--tx-3)",
-      });
+      }, fieldsCard("group_invite", ann, { group: group || "(none given)", for: forHandle }, "mint a one-click invite link to group " + (group || "(none given)")));
       status = r;
       if (r !== "approved") {
         result = "the member declined minting an invite link; no link exists.";
@@ -2215,37 +2258,72 @@ export class Store {
       const name = String(args.name || "");
       const description = String(args.description || "");
       const instructions = String(args.instructions || "");
-      try {
-        const skill = await bridge.agentSkills.write(name, description, instructions, false);
-        result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (!msg.startsWith("SKILL_EXISTS")) {
-          result = "couldn't save the skill: " + msg;
-        } else {
-          const r = await this.requestSig({
+      const existingBody = () => bridge.agentSkills.read(name).catch(() => "");
+      if (hic) {
+        // HIC: even a new skill (normally saved without asking) waits for the member, who sees the
+        // diff against whatever is saved under that name.
+        const before = await existingBody();
+        const r = await ask(
+          {
             origin: "chat agent",
             requester: "dashboard agent · tool skill_write",
-            title: "Overwrite a saved skill",
+            title: before ? "Overwrite a saved skill" : "Save a new skill",
             chainless: true,
             rows: [
-              { k: "Skill", v: "“" + name + "” (already exists — this REPLACES it)" },
-              { k: "New instructions", v: instructions.slice(0, 600) + (instructions.length > 600 ? " …" : "") },
+              { k: "Skill", v: "“" + name + "”" },
               { k: "Store", v: "local file on this device" },
             ],
             cost: "none — local file",
             sponsor: "no chain transaction",
             sponsorColor: "var(--tx-3)",
-          });
-          status = r;
-          if (r !== "approved") {
-            result = `The member declined; the existing skill "${name}" was not overwritten.`;
+          },
+          diffCard("skill_write", ann, "skills/" + name, before, instructions),
+        );
+        status = r;
+        if (r !== "approved") {
+          result = `The member declined; the skill "${name}" was not saved.`;
+        } else {
+          try {
+            const skill = await bridge.agentSkills.write(name, description, instructions, before !== "");
+            result = `Saved the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+          } catch (e) {
+            result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
+          }
+        }
+      } else {
+        try {
+          const skill = await bridge.agentSkills.write(name, description, instructions, false);
+          result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!msg.startsWith("SKILL_EXISTS")) {
+            result = "couldn't save the skill: " + msg;
           } else {
-            try {
-              const skill = await bridge.agentSkills.write(name, description, instructions, true);
-              result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
-            } catch (e2) {
-              result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
+            const before = await existingBody();
+            const r = await ask({
+              origin: "chat agent",
+              requester: "dashboard agent · tool skill_write",
+              title: "Overwrite a saved skill",
+              chainless: true,
+              rows: [
+                { k: "Skill", v: "“" + name + "” (already exists — this REPLACES it)" },
+                { k: "New instructions", v: instructions.slice(0, 600) + (instructions.length > 600 ? " …" : "") },
+                { k: "Store", v: "local file on this device" },
+              ],
+              cost: "none — local file",
+              sponsor: "no chain transaction",
+              sponsorColor: "var(--tx-3)",
+            }, diffCard("skill_write", ann, "skills/" + name, before, instructions));
+            status = r;
+            if (r !== "approved") {
+              result = `The member declined; the existing skill "${name}" was not overwritten.`;
+            } else {
+              try {
+                const skill = await bridge.agentSkills.write(name, description, instructions, true);
+                result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+              } catch (e2) {
+                result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
+              }
             }
           }
         }
@@ -2275,7 +2353,10 @@ export class Store {
           bytecodeHex: args.bytecodeHex || "",
           ...(args.constructorArgsHex ? { constructorArgsHex: args.constructorArgsHex } : {}),
         });
-        this.openWalletReview("deploy", "Deploy contract", view);
+        this.openWalletReview("deploy", "Deploy contract", view, undefined, undefined, {
+          card: chainCard("contract_deploy", ann, view, "network gas"),
+          hic,
+        });
         result = "Proposed the contract deploy — it's waiting in the Signature Ceremony. Approve it to broadcast the creation tx to 40204; I never deploy on your behalf.";
       } catch (e) {
         result = "couldn't prepare the deploy: " + (e instanceof Error ? e.message : String(e));
@@ -3179,8 +3260,15 @@ export class Store {
    * or broadcasts here. Undecodable calldata (view.requiresRawAck) starts with
    * rawAck=false so Approve is blocked until the explicit raw-mode ack.
    */
-  openWalletReview(kind: WalletReview["kind"], label: string, view: CeremonyView, spendSummary?: string, onResolved?: WalletReview["onResolved"]): void {
-    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved } });
+  openWalletReview(
+    kind: WalletReview["kind"],
+    label: string,
+    view: CeremonyView,
+    spendSummary?: string,
+    onResolved?: WalletReview["onResolved"],
+    extra?: { card?: ApprovalCard; hic?: HicRequirement },
+  ): void {
+    this.setState({ walletReview: { kind, label, view, spendSummary, rawAck: false, onResolved, ...(extra?.card ? { card: extra.card } : {}), ...(extra?.hic ? { hic: extra.hic } : {}) } });
   }
 
   /**
@@ -3191,7 +3279,7 @@ export class Store {
    * way. Nothing signs here (Rule 3); the sidecar holds no key.
    */
   async reviewAgentApproval(
-    ap: { id: string; kind: "code" | "chain" | "shell"; summary: string; to?: string; data?: string },
+    ap: { id: string; kind: "code" | "chain" | "shell"; summary: string; to?: string; data?: string; argv?: string[]; cwd?: string },
     onDone?: () => void,
   ): Promise<void> {
     // PBA-L7b-003: every resolve is BOUND to ap.id (the item the member is looking at). If the
@@ -3247,8 +3335,11 @@ export class Store {
     ];
     if (ap.to) rows.push({ k: "Target", v: ap.to });
     if (ap.data) rows.push({ k: "Calldata", v: ap.data.length > 202 ? ap.data.slice(0, 202) + " … (" + (ap.data.length - 2) / 2 + " bytes)" : ap.data });
-    if (!ap.to && !ap.data) rows.push({ k: "Arguments", v: "not exposed by the agent runtime — approving releases exactly call " + ap.id + ", nothing else" });
+    // HUP-S2.4: a shell effect whose exact argv the runtime exposes gets the command card.
+    const argv = ap.kind === "shell" && Array.isArray(ap.argv) && ap.argv.length > 0 && ap.argv.every((a) => typeof a === "string") ? ap.argv : null;
+    if (!ap.to && !ap.data && !argv) rows.push({ k: "Arguments", v: "not exposed by the agent runtime — approving releases exactly call " + ap.id + ", nothing else" });
     const outcome = await this.requestSig({
+      ...(argv ? { card: commandCard("agent runtime", { effect: "write", trust: "trusted" }, argv, ap.cwd) } : {}),
       origin: "agent:hermes",
       requester: "agent runtime",
       title: ap.summary,

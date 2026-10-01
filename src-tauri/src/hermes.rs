@@ -1432,10 +1432,47 @@ pub fn valid_session_id(id: &str) -> std::result::Result<(), String> {
     }
 }
 
+/// HUP-S2.4 / A8 — the `effect` / `trust` annotations every core tool must carry into a sidecar
+/// session (the runtime's `ToolAnnotations` shape). They drive the sidecar's taint downgrade, so a
+/// tool without both is refused here rather than left to the runtime's safe default: the webview
+/// keeps one reviewed annotation per tool. Only the two values plus the derived `read_only` hint are
+/// forwarded; anything else in the object (a `host`, other hints) is dropped.
+fn session_tool_annotations(
+    tool: &serde_json::Value,
+    function: &serde_json::Value,
+    name: &str,
+) -> std::result::Result<serde_json::Value, String> {
+    let ann = tool
+        .get("annotations")
+        .or_else(|| function.get("annotations"))
+        .and_then(|a| a.as_object())
+        .ok_or_else(|| format!("tool {name} needs effect/trust annotations"))?;
+    let effect = match ann.get("effect").and_then(|v| v.as_str()) {
+        Some(e @ ("none" | "write" | "spend" | "sign")) => e,
+        _ => {
+            return Err(format!(
+                "tool {name} annotation effect must be none, write, spend or sign"
+            ))
+        }
+    };
+    let trust = match ann.get("trust").and_then(|v| v.as_str()) {
+        Some(t @ ("trusted" | "untrusted")) => t,
+        _ => {
+            return Err(format!(
+                "tool {name} annotation trust must be trusted or untrusted"
+            ))
+        }
+    };
+    Ok(serde_json::json!({ "effect": effect, "trust": trust, "read_only": effect == "none" }))
+}
+
 /// Build the `POST /sessions` body. The webview supplies ONLY the system prompt and tool specs
 /// (OpenAI `{type:"function",function:{…}}` wrappers or bare `{name,description,parameters}`); the
 /// model endpoint, key and model name come from Rust-owned serve state; every tool is stamped
 /// `host: "core"` so it executes through citrate-core's approval gates, never in the sidecar.
+/// Each tool must carry `effect` / `trust` annotations (HUP-S2.4 / A8), forwarded as given. The body
+/// does not set `hicAware`: core claims it only once no approval route for a `hic: "required"`
+/// call is automatic.
 pub fn build_session_body(
     system_prompt: &str,
     tools_json: &str,
@@ -1478,7 +1515,8 @@ pub fn build_session_body(
         if !parameters.is_object() {
             return Err(format!("tool {name} parameters must be a JSON object"));
         }
-        tools.push(serde_json::json!({ "name": name, "description": description, "parameters": parameters, "host": "core" }));
+        let annotations = session_tool_annotations(t, f, name)?;
+        tools.push(serde_json::json!({ "name": name, "description": description, "parameters": parameters, "host": "core", "annotations": annotations }));
     }
     Ok(serde_json::json!({
         "model": model,

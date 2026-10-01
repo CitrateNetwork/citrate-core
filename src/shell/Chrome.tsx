@@ -4,6 +4,7 @@ import { Store } from "./store";
 import { AppState, ORIGIN_COLORS, PERSONAS, short } from "./state";
 import { COACH_STEPS } from "../data/seed";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { ApprovalCardView, HicBanner } from "./ApprovalCardView";
 
 // ============================ SIGNATURE CEREMONY ============================
 export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
@@ -37,6 +38,8 @@ export function SignatureCeremony({ store, s }: { store: Store; s: AppState }) {
                 requested by {head.requester}
               </div>
             </div>
+            {head.hic && <HicBanner hic={head.hic} />}
+            {head.card && <ApprovalCardView card={head.card} />}
             <div style={{ border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", overflow: "hidden" }}>
               {head.rows.map((cr, i) => (
                 <div key={i} style={{ display: "flex", gap: 14, padding: "9px 14px", borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
@@ -198,6 +201,10 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
               nothing has been signed yet — approve to continue
             </div>
           </div>
+
+          {r.hic && <HicBanner hic={r.hic} />}
+          {/* HUP-S2.4: the chain card's rows ARE the decoded view shown below; only its summary line is added here. */}
+          {r.card && <ApprovalCardView card={r.card} showRows={false} />}
 
           {raw ? (
             // Undecodable calldata — Rule 1: DO NOT dress it as legible. Show the raw

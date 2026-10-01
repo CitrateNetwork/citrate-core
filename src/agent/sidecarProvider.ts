@@ -6,7 +6,7 @@
 // store's gated handler (`onToolCall` → `store.handleTool`, i.e. the same approval gates as today)
 // and posts the result back. It never talks to the model and never decides an approval.
 // =====================================================================
-import type { ChatProvider, SendOpts, ToolCall } from "./harness";
+import type { ChatProvider, SendOpts, ToolCall, ToolCallMeta } from "./harness";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
 export interface SidecarSessionApi {
@@ -111,7 +111,14 @@ export function createSidecarProvider(
                 status = "error";
               } else {
                 try {
-                  result = await callbacks.onToolCall({ ...call, arguments: args });
+                  // HUP-S2.4: a call the loop marked hic:"required" reaches the store's handler
+                  // with that mark, and the handler holds it for an explicit member decision.
+                  const meta: ToolCallMeta | undefined =
+                    ev.hic === "required"
+                      ? { hic: "required", hicReason: typeof ev.hic_reason === "string" ? ev.hic_reason : undefined }
+                      : undefined;
+                  const normalized = { ...call, arguments: args };
+                  result = await (meta ? callbacks.onToolCall(normalized, meta) : callbacks.onToolCall(normalized));
                   status = statusOf(result);
                 } catch (e) {
                   result = e instanceof Error ? e.message : String(e);
