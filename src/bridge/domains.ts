@@ -11,6 +11,7 @@
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
+import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
 import type {
   AppConfig,
   KeyringStatus,
@@ -901,6 +902,28 @@ export interface AgentHarnessDomain {
   /** HUP-S1.4 — validate a member-edited brief against its track (required gates and the workflow
    *  can't be edited away). A refusal rejects with `BRIEF_REFUSED: <reason>`. */
   briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
+  /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
+  workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
+  /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */
+  workflowStatus(sessionId: string, runId: string): Promise<WorkflowRunView>;
+  /** HUP-S3.4 — whether learning is on in the sidecar, and whether publishing is. */
+  learnStatus(): Promise<LearnStatus>;
+  /** HUP-S3.4 — proposals waiting for the member (`all`: every kept one). */
+  learnProposals(all?: boolean): Promise<LearnProposal[]>;
+  /** HUP-S3.4 — propose a skill or memory from a VERIFIED run of that session. */
+  learnPropose(sessionId: string, runId: string, content: LearnContent): Promise<LearnProposal>;
+  /** HUP-S3.4 — accept (HIC-1, recorded first). `acknowledged` names the conflicts accepted anyway.
+   *  A refusal rejects with a message starting `LEARN_REFUSED: `. */
+  learnAccept(id: string, acknowledged: string[]): Promise<LearnAcceptResult>;
+  /** HUP-S3.4 — reject (recorded, final). */
+  learnReject(id: string, reason: string): Promise<void>;
+  /** HUP-S3.4 — the learned-memory ledger, with each memory's place in the memory graph. */
+  learnMemories(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — store learned memories that are still waiting for the memory store. */
+  learnStorePending(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
+   *  `PUBLISH_DISABLED: ` while publishing is off. */
+  learnPublish(id: string, version: string): Promise<void>;
 }
 
 // HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types

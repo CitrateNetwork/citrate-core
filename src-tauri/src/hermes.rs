@@ -281,6 +281,10 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S3.4: the learn data folder and the member's skills folder, passed to the child as
+    /// `CITRATE_HERMES_LEARN_DIR` / `CITRATE_HERMES_LEARN_SKILLS_DIR` (and the skills folder as
+    /// `CITRATE_HERMES_SKILLS`, so accepted skills load in later sessions). `None` = learning off.
+    learn_dirs: Option<(PathBuf, PathBuf)>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -312,6 +316,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            learn_dirs: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -329,6 +334,27 @@ impl HermesManager {
     pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
         self.capsules_dir = Some(dir);
         self
+    }
+
+    /// HUP-S3.4: turn on verified self-learning in the child (see `learn_dirs`).
+    pub fn with_learn_dirs(mut self, learn_dir: PathBuf, skills_dir: PathBuf) -> Self {
+        self.learn_dirs = Some((learn_dir, skills_dir));
+        self
+    }
+
+    /// HUP-S3.4: a bearer-authed `GET` on the control plane, for `hermes_learn`. `path` starts with
+    /// `/` and is built from validated ids only.
+    pub(crate) fn control_get(&self, path: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .get(&format!("{}{path}", self.control_url()), &bearer)
+    }
+
+    /// HUP-S3.4: a bearer-authed `POST` on the control plane, for `hermes_learn`.
+    pub(crate) fn control_post(&self, path: &str, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
     /// Test hook: inject a mock control transport so the command wiring is verified without a real
@@ -399,6 +425,10 @@ impl HermesManager {
                 HERMES_CAPSULES_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
             ));
+        }
+        if let Some((learn, skills)) = &self.learn_dirs {
+            spec.env
+                .extend(crate::hermes_learn::learn_env(learn, skills));
         }
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
@@ -1049,7 +1079,7 @@ pub fn shutdown() {
 /// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
 /// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
 /// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
-fn manager<R: tauri::Runtime>(
+pub(crate) fn manager<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<&'static HermesManager, String> {
     if let Some(h) = HERMES.get() {
@@ -1071,7 +1101,12 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    // HUP-S3.4: verified self-learning. Proposals and the HIC decision log live under
+    // `hermes/learn`, accepted skills under `hermes/skills`. Nothing is learned unless the member
+    // accepts a proposal backed by a verified workflow run.
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_capsules_dir(capsules_dir)
+        .with_learn_dirs(base.join("learn"), base.join("skills"));
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))

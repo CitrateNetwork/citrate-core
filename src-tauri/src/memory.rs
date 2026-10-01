@@ -661,7 +661,7 @@ impl MemoryManager {
 
     /// Whether the supervisor believes the daemon is `Running` (so a socket call
     /// is worth attempting). Not `pub` — callers use recall/search/neighbors.
-    fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         let guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         matches!(
             guard.as_ref().map(|s| s.status().state),
@@ -885,6 +885,22 @@ impl MemoryManager {
                 None
             },
         })
+    }
+
+    /// HUP-S3.4: `memory.propose_edge` — record a QUARANTINED edge between two nodes (advisory,
+    /// never load-bearing until confirmed). Used to link a learned memory to the one it
+    /// contradicts, so both stay visible and neither is merged away.
+    pub fn propose_edge(
+        &self,
+        from_prefix: &str,
+        to_prefix: &str,
+        kind: &str,
+        evidence: &str,
+    ) -> Result<String> {
+        self.transport.call_tool(
+            "memory.propose_edge",
+            json!({ "from_prefix": from_prefix, "to_prefix": to_prefix, "kind": kind, "evidence": evidence }),
+        )
     }
 
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
