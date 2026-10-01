@@ -623,6 +623,34 @@ pub fn mint_tx_json(from: &str, contract: &str, calldata: &[u8], gas: u64) -> St
     .to_string()
 }
 
+/// The pending-ceremony tx for a member whose readiness is `st`: refuses with the
+/// member-facing reason unless `st.available` (and then never asks the node for gas), else
+/// builds the exact `mintAgent` calldata, estimates gas through `estimate` and adds the
+/// margin. Pure apart from `estimate`; signs nothing.
+pub fn prepare_mint_tx(
+    st: &AgentSbtStatus,
+    parent_org: u64,
+    key: &[u8; 32],
+    estimate: impl FnOnce(Value) -> Result<u64, String>,
+) -> Result<String, String> {
+    if !st.available {
+        return Err(st.message.clone());
+    }
+    let contract = st
+        .contract
+        .as_deref()
+        .ok_or_else(|| message_for(MintState::NotInBook, ""))?;
+    let calldata = member_calldata(&st.member, parent_org, key)?;
+    let gas = estimate(json!({"from": st.member, "to": contract, "data": hex_data(&calldata)}))
+        .map_err(|e| format!("could not estimate gas for the identity mint: {e}"))?;
+    Ok(mint_tx_json(
+        &st.member,
+        contract,
+        &calldata,
+        with_gas_margin(gas),
+    ))
+}
+
 // ------------------------------------------------------------------ commands
 
 /// The parent org id in effect (env override or the placeholder).
@@ -679,16 +707,11 @@ pub async fn agent_sbt_mint(
         if !st.available {
             return Err(st.message);
         }
-        let contract = st
-            .contract
-            .ok_or_else(|| message_for(MintState::NotInBook, ""))?;
         let key = identity_key(&app_h)?;
-        let calldata = member_calldata(&st.member, parent_org()?, &key)?;
         let rpc = RpcClient::citrate();
-        let estimate = rpc
-            .estimate_gas(json!({"from": st.member, "to": contract, "data": hex_data(&calldata)}))
-            .map_err(|e| format!("could not estimate gas for the identity mint: {e}"))?;
-        let raw = mint_tx_json(&st.member, &contract, &calldata, with_gas_margin(estimate));
+        let raw = prepare_mint_tx(&st, parent_org()?, &key, |q| {
+            rpc.estimate_gas(q).map_err(|e| e.to_string())
+        })?;
         let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         Ok(ceremony.0.request(crate::ceremony::SignatureIntent {

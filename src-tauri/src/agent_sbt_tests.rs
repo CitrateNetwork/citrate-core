@@ -363,6 +363,73 @@ fn mint_tx_json_is_from_and_to_the_member_with_zero_value() {
     assert_eq!(v["chainId"], "0x9d0c");
 }
 
+fn status_with(state: MintState, available: bool, contract: Option<&str>) -> AgentSbtStatus {
+    AgentSbtStatus {
+        contract: contract.map(str::to_string),
+        member: MEMBER.to_string(),
+        did: agent_did(MEMBER).ok(),
+        parent_org_id: "7".into(),
+        balance: Some("0".into()),
+        tokens: Some(Vec::new()),
+        tokens_note: None,
+        state,
+        available,
+        message: message_for(state, ""),
+    }
+}
+
+/// Review fix (S7.4): the mint command refuses, with the member-facing reason and without
+/// asking the node for gas, whenever readiness says the mint is not available.
+#[test]
+fn mint_request_refuses_when_not_available_and_never_estimates() {
+    let c = "0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b";
+    for (state, contract) in [
+        (MintState::OrgNotActive, Some(c)),
+        (MintState::NotIssuer, Some(c)),
+        (MintState::Minted, Some(c)),
+        (MintState::NotInBook, None),
+        (MintState::ChainUnreachable, Some(c)),
+    ] {
+        let st = status_with(state, false, contract);
+        let mut asked = false;
+        let r = prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |_| {
+            asked = true;
+            Ok(100_000)
+        });
+        assert_eq!(r, Err(message_for(state, "")), "{state:?}");
+        assert!(
+            !asked,
+            "{state:?}: no gas estimate when the mint is refused"
+        );
+    }
+    // `available` is the gate even if a state were inconsistent with it.
+    let st = status_with(MintState::Ready, false, Some(c));
+    assert!(prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |_| Ok(1)).is_err());
+}
+
+#[test]
+fn mint_request_when_ready_builds_the_exact_tx_with_margin() {
+    let c = "0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b";
+    let st = status_with(MintState::Ready, true, Some(c));
+    let mut seen = None;
+    let raw = prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |q| {
+        seen = Some(q);
+        Ok(100_000)
+    })
+    .expect("ready");
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!(v["from"], MEMBER);
+    assert_eq!(v["to"], c);
+    assert_eq!(v["data"], format!("0x{MINT_CAST}"));
+    assert_eq!(v["gas"], format!("0x{:x}", 125_000));
+    let q = seen.expect("estimated");
+    assert_eq!(q["data"], format!("0x{MINT_CAST}"));
+    assert_eq!(q["from"], MEMBER);
+    // A failed estimate is surfaced, never a guessed gas limit.
+    let e = prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |_| Err("boom".into()));
+    assert!(e.expect_err("estimate failed").contains("boom"));
+}
+
 #[test]
 fn gas_margin_adds_a_quarter_and_never_overflows() {
     assert_eq!(with_gas_margin(100_000), 125_000);
