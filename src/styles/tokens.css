@@ -62,6 +62,22 @@
   --info: #4cc3d5;    --info-bg: rgba(76,195,213,.12);
 
   --focus-ring: 0 0 0 3px rgba(142,204,9,.4);
+
+  /* foundation.css design tokens, remapped to this register. foundation.css colours p, code,
+     .t-body and friends with --fg-* (light-paper ink by default); without these, chat paragraphs
+     and inline code rendered near-black on the dark-green panels. */
+  --fg-1: var(--tx-1);
+  --fg-2: var(--tx-2);
+  --fg-3: var(--tx-3);
+  --fg-on-dark: var(--tx-1);
+  --fg-accent: var(--accent-text);
+  --bg-1: var(--srf-0);
+  --bg-2: var(--srf-1);
+  --bg-3: var(--srf-2);
+  --bg-inverse: var(--tx-1);
+  --border-1: var(--line-1);
+  --border-2: var(--line-2);
+  --border-strong: var(--line-strong);
 }
 
 /* Zone hues (categorical, both registers — ALF handoff) */
