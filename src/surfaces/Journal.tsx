@@ -19,10 +19,13 @@
 // store.setState. onJNew / onJEdit / onJPin are inline handlers in the
 // design's view derivation, reproduced here 1:1 against existing state.
 // =====================================================================
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { LoaderMark } from "../components/LoaderMark";
 import { SurfaceProps } from "./shared";
 import { JournalPage } from "../shell/state";
+import { applyHermesSummary, ensureDailyEntry, hermesDayLines } from "../journal/dailyEntry";
+import { JournalVaultPanel } from "../journal/JournalVaultPanel";
+import { desktopJournalIo } from "../journal/encryptedExport";
 
 // ---------- dictation (ported from design initSpeech/toggleMic) ----------
 // The design keeps a single SpeechRecognition instance on the logic
@@ -125,6 +128,8 @@ export function Journal({ store, s }: SurfaceProps) {
   // instance; here they are component-local refs since store.ts is frozen.
   const jTextRef = useRef<HTMLTextAreaElement | null>(null);
   const jTitleRef = useRef<HTMLInputElement | null>(null);
+  // HUP-S10.4 — which passphrase panel is open (component-local; never persisted).
+  const [vault, setVault] = useState<null | "export" | "import">(null);
 
   const jPages = s.jPages || [];
   const jSelPage: JournalPage | null = jPages.find((p) => p.id === s.jSel) || jPages[0] || null;
@@ -196,6 +201,29 @@ export function Journal({ store, s }: SurfaceProps) {
     store.setState({ jPages: jPages.concat([{ id, title: "Untitled", kind: "page", pinned: false, blocks: [""] }]), jSel: id, jEditing: true });
   };
 
+  // HUP-S10.4 — the one-per-day entry: select today's page, creating it once.
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const onJToday = () => {
+    const st = store.state;
+    const r = ensureDailyEntry(st.jPages || [], todayStr());
+    if (r.created) store.setState({ jPages: r.pages, jSel: r.id, jEditing: false });
+    else store.setState({ jSel: r.id, jEditing: false });
+    store.save();
+  };
+  // HUP-S10.4 — "what Hermes did today", from records on this device only.
+  const isTodayEntry = !!jSelPage && jSelPage.kind === "daily" && jSelPage.id === "d-" + todayStr();
+  const onJSummary = () => {
+    const st = store.state;
+    const day = todayStr();
+    const pages = st.jPages || [];
+    const lines = hermesDayLines({ pages, activity: st.activity || [], today: day });
+    store.setState({
+      jPages: pages.map((p) => (p.id === "d-" + day ? { ...p, blocks: applyHermesSummary(p.blocks, lines) } : p)),
+    });
+    store.save();
+    store.toast(lines.length ? "Summary added from local records. Edit it like any bullet." : "Nothing recorded today; the entry says so.");
+  };
+
   const jPinDisabled = !jSelPage || jSelPage.pinned || s.jEditing;
   const jPinLabel = jSelPage && jSelPage.pinned ? "Pinned" : "Pin securely";
   // Pinning is NOT wired to a real pin daemon / bond tx yet — the old path
@@ -254,6 +282,23 @@ export function Journal({ store, s }: SurfaceProps) {
     { label: "Plain text", ext: ".txt", go: () => store.exportJournal("txt") },
     { label: "PDF (print)", ext: ".pdf", go: () => store.exportJournal("pdf") },
     { label: "Word", ext: ".doc", go: () => store.exportJournal("doc") },
+    // HUP-S10.4 — the whole journal, sealed with a passphrase (desktop app).
+    {
+      label: "Encrypted file",
+      ext: ".citrate-journal",
+      go: () => {
+        store.setState({ jExportOpen: false });
+        setVault("export");
+      },
+    },
+    {
+      label: "Import encrypted file",
+      ext: "open",
+      go: () => {
+        store.setState({ jExportOpen: false });
+        setVault("import");
+      },
+    },
   ];
 
   // capture & chat panel
@@ -290,6 +335,9 @@ export function Journal({ store, s }: SurfaceProps) {
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24, flex: 1 }}>Journal</span>
+          <button data-testid="j-today" className="btn btn-ghost btn-sm" onClick={onJToday} title="Open today's entry (one per day)">
+            Today
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={onJNew}>
             + Page
           </button>
@@ -328,7 +376,7 @@ export function Journal({ store, s }: SurfaceProps) {
         </div>
         <div style={{ flex: 1 }}></div>
         <p style={{ fontSize: 11, lineHeight: 1.55, color: "var(--tx-3)", margin: 0, borderTop: "1px solid var(--line-1)", paddingTop: 12 }}>
-          Local and off-chain — stored locally on this device (browser localStorage). Agents and the harness write here only with your approval. Encrypted data-dir persistence and PIN-daemon snapshots are not wired yet.
+          Local and off-chain — stored locally on this device (browser localStorage). Agents and the harness write here only with your approval. A copy leaves this device only when you make an encrypted export with your own passphrase. Encrypted data-dir persistence and PIN-daemon snapshots are not wired yet.
         </p>
       </div>
 
@@ -366,6 +414,11 @@ export function Journal({ store, s }: SurfaceProps) {
               </span>
             )}
           </span>
+          {isTodayEntry && jViewing && (
+            <button data-testid="j-summary" className="btn btn-ghost btn-sm" onClick={onJSummary} title="Summarize today from records on this device">
+              Hermes summary
+            </button>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={onJPin} disabled={jPinDisabled}>
             {jPinLabel}
           </button>
@@ -373,6 +426,24 @@ export function Journal({ store, s }: SurfaceProps) {
             {jEditLabel}
           </button>
         </div>
+
+        {vault && (
+          <div style={{ paddingTop: 14 }}>
+            <JournalVaultPanel
+              key={vault}
+              kind={vault}
+              pages={jPages}
+              io={desktopJournalIo}
+              now={() => new Date()}
+              onImported={(pages) => {
+                store.setState({ jPages: pages });
+                store.save();
+              }}
+              onDone={(m) => store.toast(m)}
+              onClose={() => setVault(null)}
+            />
+          </div>
+        )}
 
         {jViewing && (
           <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "18px 20px", display: "flex", flexDirection: "column", gap: 2 }}>

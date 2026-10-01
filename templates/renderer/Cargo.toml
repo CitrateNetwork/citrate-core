@@ -1,0 +1,29 @@
+# citrate-templates: HUP-S6.2 / S6.9 contract + dApp template renderer.
+#
+# Fills a template under `templates/<id>/` with strictly validated parameters
+# (name, symbol, supply, price, owner) and the per-tier Medusa budget, and writes
+# the result into an empty directory. It never fetches dependencies, compiles,
+# deploys or signs: it only produces source files. A plain library + CLI with no
+# Tauri dependency, so the app and the toolchain sidecar can both call it.
+[package]
+license = "BUSL-1.1"
+name = "citrate-templates"
+version = "0.1.0"
+description = "citrate-templates: strict renderer for the HUP contract and dApp templates (S6.2) and the per-tier Medusa budgets (S6.9)."
+authors = ["Citrate Network"]
+edition = "2021"
+publish = false
+
+[lib]
+name = "citrate_templates"
+path = "src/lib.rs"
+
+[[bin]]
+name = "citrate-templates"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sha3 = "0.10"

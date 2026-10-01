@@ -37,8 +37,10 @@ mod deploy_gate;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
+mod hf_auth;
 mod ipc_name;
 mod ipfs;
+mod journal_export;
 mod membership;
 mod memory;
 mod model;
@@ -49,6 +51,7 @@ mod provisioning;
 mod sbt_art;
 mod seam;
 mod serve;
+mod serve_plan;
 mod shell;
 mod skill_registry;
 mod skills_local;
@@ -627,6 +630,9 @@ pub fn run() {
             skills_local::skills_local_write,
             skills_local::skills_local_read,
             skills_local::skills_local_delete,
+            // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
+            journal_export::journal_export_encrypted,
+            journal_export::journal_import_encrypted,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable

@@ -1,0 +1,14 @@
+{
+  "id": "governor",
+  "kind": "contract",
+  "title": "Governor + votes token (OpenZeppelin)",
+  "description": "An OpenZeppelin v5.7.0 ERC-20 votes token (fixed supply minted to the owner address) and a Governor with simple counting, a 4% quorum, a 1 day voting delay and a 1 week voting period. Both use a timestamp clock, so the timings do not depend on block times. No timelock: proposals execute from the Governor itself.",
+  "layers": ["foundry"],
+  "params": {
+    "name": {},
+    "symbol": {},
+    "supply": { "default": "1000000", "min": 1, "max": 1000000000000 },
+    "owner": {}
+  },
+  "medusa": true
+}
