@@ -1207,3 +1207,27 @@ fn crash_record_stderr_tail_comes_from_ring() {
         "crash-record stderr tail did not capture the child's stderr from the ring: {records:?}"
     );
 }
+
+/// Windows bundles each externalBin as `<name>.exe`; the resolver must try that
+/// first. On macOS/Linux (empty suffix) the candidate list is just the bare name.
+#[test]
+fn sidecar_candidates_try_exe_suffix_first_on_windows() {
+    assert_eq!(
+        super::sidecar_candidate_names("citrate", ".exe"),
+        vec!["citrate.exe".to_string(), "citrate".to_string()]
+    );
+    assert_eq!(
+        super::sidecar_candidate_names("citrate", ""),
+        vec!["citrate".to_string()]
+    );
+    assert_eq!(
+        super::sidecar_candidate_names("llama-server", std::env::consts::EXE_SUFFIX)
+            .first()
+            .map(String::as_str),
+        Some(if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        })
+    );
+}

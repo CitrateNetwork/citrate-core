@@ -54,6 +54,19 @@ use std::time::Duration;
 // externalBin resolution — the ONE correct place to find a bundled sidecar.
 // ---------------------------------------------------------------------------
 
+/// File names to try for the bundled sidecar `name`: `<name><exe_suffix>` first,
+/// then the bare `name`. `exe_suffix` is `std::env::consts::EXE_SUFFIX`: ".exe"
+/// on Windows (the externalBin is `<name>.exe` on disk), "" on macOS/Linux,
+/// where this is just `[name]`.
+pub fn sidecar_candidate_names(name: &str, exe_suffix: &str) -> Vec<String> {
+    let suffixed = format!("{name}{exe_suffix}");
+    if suffixed == name {
+        vec![name.to_string()]
+    } else {
+        vec![suffixed, name.to_string()]
+    }
+}
+
 /// Resolve a bundled Tauri `externalBin` sidecar by its bundled name.
 ///
 /// Tauri v2 installs `externalBin` **next to the app's main executable**
@@ -79,14 +92,7 @@ pub fn resolve_external_bin<R: tauri::Runtime>(
     // Unix layout is unchanged. Without the suffixed candidate the packaged
     // Windows app cannot find any sidecar (`<name>` has no extension on disk)
     // and panics in the setup hook.
-    let names: Vec<String> = {
-        let suffixed = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-        if suffixed == name {
-            vec![name.to_string()]
-        } else {
-            vec![suffixed, name.to_string()]
-        }
-    };
+    let names = sidecar_candidate_names(name, std::env::consts::EXE_SUFFIX);
     // 1) Next to the current executable (Contents/MacOS/<name>) — the real
     //    externalBin home in a packaged app.
     if let Ok(exe) = std::env::current_exe() {
