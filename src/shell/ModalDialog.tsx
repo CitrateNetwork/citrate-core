@@ -10,7 +10,9 @@
 //   • Tab / Shift+Tab wrap inside the dialog, and focus that lands outside is pulled back in;
 //   • Escape calls `onEscape` when the caller allows it (only ever a decline, never an approval);
 //   • on close, focus returns to the element that had it before the dialog opened.
-// When two dialogs are open at once, only the most recently opened one traps focus.
+// When two dialogs are open at once, only the one drawn on top (highest zIndex; the most recently
+// opened among equals) traps focus, so the keyboard never acts on a dialog hidden behind another.
+// A held Escape (key repeat) is ignored, so one press declines one request, not a whole queue.
 // =====================================================================
 import { useEffect, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
@@ -28,8 +30,13 @@ export function focusablesIn(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.closest("[inert]") && el.getAttribute("aria-hidden") !== "true");
 }
 
-// Open dialogs, most recent last. Only the top one traps focus.
-const openDialogs: HTMLElement[] = [];
+// Open dialogs, most recent last. Only the top one (highest zIndex, then most recent) traps focus.
+const openDialogs: { el: HTMLElement; z: number }[] = [];
+function topDialog(): HTMLElement | null {
+  let top: { el: HTMLElement; z: number } | null = null;
+  for (const d of openDialogs) if (!top || d.z >= top.z) top = d;
+  return top ? top.el : null;
+}
 
 export type ModalDialogProps = {
   /** id of the element that names the dialog (its heading). */
@@ -56,9 +63,13 @@ export function ModalDialog({ labelledBy, label, describedBy, onEscape, focusKey
     const el = panel.current;
     if (!el) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    openDialogs.push(el);
+    const entry = { el, z: zIndex };
+    openDialogs.push(entry);
+    // A dialog drawn over this one may already hold focus; hand it back to that one.
+    const top = topDialog();
+    if (top && top !== el && !top.contains(document.activeElement)) (focusablesIn(top)[0] ?? top).focus();
     const onFocusIn = (e: FocusEvent) => {
-      if (openDialogs[openDialogs.length - 1] !== el) return;
+      if (topDialog() !== el) return;
       const t = e.target;
       if (t instanceof Node && el.contains(t)) return;
       const first = focusablesIn(el)[0] ?? el;
@@ -67,16 +78,21 @@ export function ModalDialog({ labelledBy, label, describedBy, onEscape, focusKey
     document.addEventListener("focusin", onFocusIn);
     return () => {
       document.removeEventListener("focusin", onFocusIn);
-      const i = openDialogs.lastIndexOf(el);
+      const i = openDialogs.lastIndexOf(entry);
       if (i >= 0) openDialogs.splice(i, 1);
-      if (opener && opener.isConnected) opener.focus();
+      // Restore only when the focus was ours (it falls to <body> as the panel leaves the DOM);
+      // a dialog that still holds focus on top keeps it.
+      const active = document.activeElement;
+      const ours = !active || active === document.body || el.contains(active);
+      if (ours && opener && opener.isConnected) opener.focus();
     };
+    // zIndex is fixed per call site, so registering once per mount is enough.
   }, []);
 
-  // Initial focus: the safe choice, once per focusKey.
+  // Initial focus: the safe choice, once per focusKey (only when this dialog is on top).
   useEffect(() => {
     const el = panel.current;
-    if (!el) return;
+    if (!el || topDialog() !== el) return;
     const target = el.querySelector<HTMLElement>("[data-autofocus]") ?? el;
     target.focus();
   }, [focusKey]);
@@ -85,7 +101,7 @@ export function ModalDialog({ labelledBy, label, describedBy, onEscape, focusKey
     const el = panel.current;
     if (!el) return;
     if (e.key === "Escape") {
-      if (onEscape) {
+      if (onEscape && !e.repeat) {
         e.preventDefault();
         e.stopPropagation();
         onEscape();

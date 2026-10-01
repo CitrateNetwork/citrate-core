@@ -31,7 +31,8 @@
   --accent-text: #517505;      /* AA accent text on paper (HUP-S10.6: was #5a8205, 4.0:1 on --srf-0) */
   --accent-wash: #e8f3c6;
 
-  /* HUP-S10.6: --ok and --warn darkened to AA on their washes (were #4f8a05 3.7:1, #b07b00 3.3:1). */
+  /* HUP-S10.6: --ok and --warn darkened to AA on their washes (were #4f8a05 3.7:1, #b07b00 3.3:1).
+     The four darkened charter values here are pending owner sign-off; the test pins the AA floor. */
   --ok: #467904;      --ok-bg: #ecf5d4;
   --warn: #8f6400;    --warn-bg: #fff1c4;
   --danger: #a72414;  --danger-bg: #f6e1de;

@@ -200,7 +200,7 @@ describe("Feature: a hic:\"required\" call waits for a member click", () => {
       // HUP-S10.6: a decline may also come from the member's Escape key (onEscape); Approve only from a click.
       if (/\bapproveCer\(/.test(l)) expect(ctx, "an approve outside a click handler").toMatch(/onClick=/);
       else expect(ctx, "a ceremony resolve outside a click or Escape handler").toMatch(/onClick=|onEscape=/);
-      expect(l, "Escape must never approve").not.toMatch(/onEscape=.*approveCer\(/);
+      expect(l, "Escape must never approve").not.toMatch(/onEscape=.*(approveCer\(|["'`]approved["'`])/);
     }
     const storeSrc = readFileSync(join(root, "shell/store.ts"), "utf8");
     // inside store.ts, finishCer is called only from approveCer (the Approve button's handler)

@@ -241,3 +241,44 @@ describe("HUP-S10.6 DeployGateCard: verdict is text and named", () => {
     expect(items.some((t) => /^pass/.test(t))).toBe(true);
   });
 });
+
+describe("HUP-S10.6 review follow-up: held keys and stacked dialogs", () => {
+  it("a held Escape (key repeat) does not decline the next request in the queue", () => {
+    const f = fakeStore();
+    mount(<SignatureCeremony store={asStore(f)} s={ceremonyStates[3][1]} />);
+    const target = document.activeElement ?? document.body;
+    const ev = new KeyboardEvent("keydown", { key: "Escape", repeat: true, bubbles: true, cancelable: true });
+    target.dispatchEvent(ev);
+    expect(f.finishCer).not.toHaveBeenCalled();
+    press("Escape");
+    expect(f.finishCer).toHaveBeenCalledTimes(1);
+  });
+
+  it("with both dialogs open, the keyboard stays in the one drawn on top (wallet review), whatever opened last", () => {
+    const s = { ...reviewStates[0][1], queue: ceremonyStates[0][1].queue, cerPhase: "review" as const };
+    const f = fakeStore();
+    // the wallet review opens first, then a ceremony request arrives
+    const m = mount(<WalletReviewModal store={asStore(f)} s={s} />);
+    mount(<SignatureCeremony store={asStore(f)} s={s} />);
+    const wallet = m.host.querySelector('[role="dialog"]');
+    expect(wallet?.contains(document.activeElement)).toBe(true);
+    press("Escape");
+    expect(f.rejectWalletReview).toHaveBeenCalledTimes(1);
+    expect(f.finishCer).not.toHaveBeenCalled();
+  });
+
+  it("a dialog closing underneath does not pull focus out of the one on top", () => {
+    const s = { ...reviewStates[1][1], queue: ceremonyStates[0][1].queue, cerPhase: "review" as const };
+    const f = fakeStore();
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const c = mount(<SignatureCeremony store={asStore(f)} s={s} />);
+    const m = mount(<WalletReviewModal store={asStore(f)} s={s} />);
+    const wallet = m.host.querySelector('[role="dialog"]');
+    expect(wallet?.contains(document.activeElement)).toBe(true);
+    const held = document.activeElement;
+    c.rerender(<SignatureCeremony store={asStore(f)} s={{ ...s, queue: [] }} />);
+    expect(document.activeElement).toBe(held);
+  });
+});
