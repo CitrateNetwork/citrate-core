@@ -149,6 +149,7 @@ commands.allow = [
   "memory_neighbors",
   "memory_ingest_docs",
   "memory_seed_context",
+  "memory_import_knowledge",
   "memory_constellation",
   "agent_earnings",
   "wallet_ensure_ready",

@@ -43,6 +43,8 @@ mod ipfs;
 mod journal_export;
 mod membership;
 mod memory;
+// HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
+mod knowledge_import;
 mod model;
 mod model_register;
 mod model_registry;
@@ -574,6 +576,9 @@ pub fn run() {
             // Seed the constellation tenants (chain-state + personal) with real network/node/stake
             // facts on daemon-connect, so the graph has content on open (gated + idempotent).
             memory::memory_seed_context,
+            // HUP-S3.1 — first-run import of the bundled knowledge corpus (verified by the
+            // importer against its manifest; idempotent; progress on memory://knowledge-import-progress).
+            knowledge_import::memory_import_knowledge,
             memory::memory_constellation,
             // seam domains — honest Unavailable until each later phase (A1.3).
             // memory_assert stays a seam stub: the assert WRITE path routes

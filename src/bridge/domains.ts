@@ -373,6 +373,40 @@ export interface SeedReport {
   /** "not-semantic" | "not-running" | "already-seeded" when nothing was authored. */
   skipped?: string;
 }
+/** HUP-S3.1 — one progress line from the first-run knowledge-corpus import (mirrors the Rust
+ *  `ImportLine`; the importer's JSON-lines contract lives in citrate-memories `mem_corpus::progress`). */
+export type KnowledgeImportLine =
+  | { event: "verified"; bundle_digest: string; tenants: number; nodes: number; edges: number }
+  | { event: "tenant_start"; tenant: string; nodes: number; edges: number }
+  | { event: "progress"; tenant: string; done: number; total: number }
+  | { event: "tenant_skipped"; tenant: string; reason: string }
+  | { event: "tenant_done"; tenant: string }
+  | {
+      event: "done";
+      bundle_digest: string;
+      embed_model: string;
+      nodes_added: number;
+      nodes_merged: number;
+      edges_added: number;
+      tenants_imported: string[];
+      tenants_skipped: string[];
+    }
+  | { event: "error"; stage: string; message: string };
+
+/** HUP-S3.1 — what the first-run knowledge import did. Counts come only from the importer. */
+export interface KnowledgeImportReport {
+  state: "imported" | "skipped" | "failed";
+  /** "no-bundle" | "not-semantic" | "already-imported" | "in-progress" when nothing ran. */
+  skipped?: string | null;
+  error?: string | null;
+  bundleDigest?: string | null;
+  embedModel?: string | null;
+  nodesAdded: number;
+  edgesAdded: number;
+  tenantsImported: string[];
+  tenantsSkipped: string[];
+}
+
 export interface MemoryDomain {
   status(): Promise<MemoryStatus>;
   start(): Promise<void>;
@@ -388,6 +422,10 @@ export interface MemoryDomain {
   ingestDocs(): Promise<DocsIngestReport>;
   /** Seed the constellation tenants with real network/node/stake facts on daemon-connect. */
   seedContext(facts: SeedFacts): Promise<SeedReport>;
+  /** HUP-S3.1 — import the bundled knowledge corpus into the local store (first run; idempotent,
+   *  verified against its manifest in Rust). Must run while the daemon is stopped; Rust stops and
+   *  restarts a running daemon itself. `onProgress` receives each importer line. */
+  importKnowledge(onProgress?: (line: KnowledgeImportLine) => void): Promise<KnowledgeImportReport>;
 }
 
 /** CORE-AI1 (@rule8) — non-secret status of a configured AI provider. Carries the
