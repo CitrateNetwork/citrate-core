@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { PendingWithdrawal } from "../bridge/domains";
+import type { Brief, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -129,6 +129,14 @@ export interface ChatMsg {
   error?: string;
   /** HUP-S0.7 — the user text to resend on Retry. */
   retryText?: string;
+  /** HUP-S1.4 — an accepted brief, shown as a card in the thread (text holds its markdown). */
+  brief?: Brief;
+}
+/** HUP-S1.4 — the last brief the member accepted (persisted; nothing is built from it yet). */
+export interface AcceptedBrief {
+  brief: Brief;
+  markdown: string;
+  acceptedAt: number;
 }
 export interface Activity {
   id: string;
@@ -477,6 +485,8 @@ export interface AppState {
   aiDefault: string;
   /** HUP-S1.1c — run Hermes's loop in the sidecar (preview; off until the S1.9 parity suite passes). */
   hermesSidecarLoop: boolean;
+  /** HUP-S1.4 — the last accepted interview brief (persisted). */
+  hermesBrief: AcceptedBrief | null;
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -732,6 +742,7 @@ export function freshState(pid: string): AppState {
     // non-secret default route id is kept here (AI1, invariant 2).
     aiDefault: "gateway",
     hermesSidecarLoop: false,
+    hermesBrief: null,
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -876,7 +887,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {
