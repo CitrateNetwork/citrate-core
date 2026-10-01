@@ -522,6 +522,21 @@ impl HermesManager {
         serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))
     }
 
+    /// HUP-S5.1: a raw bearer-authed GET of `path` (e.g. `/browser/status`). The caller maps the
+    /// status (see `browser.rs`).
+    pub(crate) fn control_get_path(&self, path: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .get(&format!("{}{path}", self.control_url()), &bearer)
+    }
+
+    /// HUP-S5.1: a raw bearer-authed POST of `body` to `path`.
+    pub(crate) fn control_post_path(&self, path: &str, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .post(&format!("{}{path}", self.control_url()), &bearer, body)
+    }
+
     /// `GET /status` — the sidecar's running/skills/pending snapshot.
     pub fn remote_status(&self) -> Result<RemoteStatus> {
         let bearer = self.bearer()?;
@@ -1049,6 +1064,13 @@ pub fn shutdown() {
 /// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
 /// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
 /// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
+/// HUP-S5.1: the Hermes manager for sibling modules (`browser.rs`).
+pub(crate) fn manager_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<&'static HermesManager, String> {
+    manager(app)
+}
+
 fn manager<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<&'static HermesManager, String> {

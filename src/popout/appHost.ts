@@ -5,6 +5,8 @@
 // report and the model router (the same sources the chat header uses); the context window comes
 // from Rust (`popout_monitor_facts`, the local llama-server's --ctx-size); Stop is
 // `store.stopAgentTurn`. In the web preview there are no windows to open, and it says so.
+// HUP-S5.1: the Browser pop-out reads Hermes's browser through the `hermes_browser_*` commands;
+// its Stop runs `hermes_browser_stop`, and a failure is shown to the member.
 // =====================================================================
 import { invoke } from "../bridge/tauri/invoke";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -16,6 +18,7 @@ import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelR
 import { resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
+import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
 
 let hostPromise: Promise<PopoutHost> | null = null;
@@ -46,6 +49,14 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
       },
       stop: () => store.stopAgentTurn(),
       contextWindow: async () => (await invoke<{ localCtxTokens: number }>("popout_monitor_facts")).localCtxTokens,
+      browser: {
+        status: () => tauriBrowserApi.status(),
+        frame: (after) => tauriBrowserApi.frame(after),
+        stop: () =>
+          tauriBrowserApi.stop().catch((e) => {
+            store.toast("Could not stop the browser: " + (e instanceof Error ? e.message : String(e)));
+          }),
+      },
       now: () => Date.now(),
     }))();
   return hostPromise;
