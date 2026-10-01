@@ -20,6 +20,10 @@ import {
   retrieveCid,
   LOCAL_PIN_MARKER,
 } from "../shell/slices/storage";
+import { MediaPanel } from "../agent/media/MediaPanel";
+import { desktopMediaIo } from "../agent/media/media";
+import { openPopout } from "../popout/appHost";
+import { startMediaHost } from "../popout/mediaHost";
 import type { PinRow } from "../bridge/domains";
 
 function humanBytes(n: number): string {
@@ -199,6 +203,16 @@ export function StorageFiles({ store }: SurfaceProps) {
       {st.lastRetrievedPath && (
         <div className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.5 }}>Saved to {st.lastRetrievedPath}</div>
       )}
+
+      {/* HUP-S10.1 — media generation; results go to a granted folder and open in the Media player. */}
+      <div className="surface" id="files-media" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+        <span className="eyebrow">Media · images and video</span>
+        <MediaPanel
+          io={desktopMediaIo}
+          openPlayer={() => openPopout("media")}
+          onSaved={() => void startMediaHost()?.then((h) => h.refresh()).catch(() => undefined)}
+        />
+      </div>
     </div>
   );
 }

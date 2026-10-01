@@ -72,6 +72,13 @@ const LONG: Record<string, number> = {
   agent_grants_revoke: 270_000,
   agent_grants_full_access_confirm: 270_000,
   agent_grants_reset: 270_000,
+  // HUP-S10.1: one image generation; Rust bounds it at 600 s (local server) / 300 s (provider).
+  media_generate_image: 630_000,
+  // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.
+  gsheets_read: 20_000,
+  gsheets_append: 20_000,
+  gcal_list: 20_000,
+  gcal_create: 20_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.

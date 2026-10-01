@@ -87,6 +87,8 @@ Settings uses. Connected servers mount as tools the agent proposes with.
 | **GitHub** | WIRED | GitHub OAuth App (PKCE) → client id in CONFIG; scopes `repo`, `read:org` |
 | **Google Drive** | WIRED | Google Cloud OAuth client (Desktop) → client id; scope `drive.readonly` (+ `drive.file` for writes); **verified-app review** for sensitive scopes |
 | **Notion** | WIRED | Notion public integration → OAuth client id; select workspace pages |
+| **Google Sheets** (HUP-S10.2) | WIRED, off until configured | reuse the Google client above (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`); scope `spreadsheets`; Settings keeps Connect disabled and says why until the client is configured. Reads a range; member-confirmed appends use `valueInputOption=RAW` (no formula ever runs) |
+| **Google Calendar** (HUP-S10.2) | WIRED, off until configured | same Google client; scope `calendar.events`; lists the primary calendar in the Journal > Schedule week view next to Hermes's own schedule; member-created events only |
 | **Custom (stdio / https)** | PARTIAL | none — user-supplied; needs `config.write mcpServers` persistence + a spawn/allowlist path |
 
 **Left to build**: custom-server persistence (write to the MCP config + spawn stdio / mount
@@ -108,7 +110,7 @@ No new wiring — Connections links out to where these already live.
 
 ---
 
-## 4. SaaS tools — Slack, Linear, Google Calendar, Gmail   ·  **NOT WIRED**
+## 4. SaaS tools — Slack, Linear, Gmail   ·  **NOT WIRED**
 
 Same OAuth + keyring pattern as §2. Each becomes an agent tool whose writes stop at the ceremony.
 
@@ -116,7 +118,6 @@ Same OAuth + keyring pattern as §2. Each becomes an agent tool whose writes sto
 |---|---|---|---|
 | **Slack** | OAuth 2.0 (bot + user scopes) | Slack app → client id/secret (**confidential → relay**); scopes `chat:write`, `channels:read` | posting is a ceremony-gated effect |
 | **Linear** | OAuth 2.0 PKCE | Linear OAuth app → client id | `issues:create`, `read` |
-| **Google Calendar** | OAuth 2.0 (Google client) | reuse the Google client from §2; scope `calendar.events` | verified-app review for write scopes |
 | **Gmail** | OAuth 2.0 (Google client) | scope `gmail.readonly` + `gmail.compose` | **never auto-send** — draft only, send stops at the ceremony |
 
 **Node/app to build**: extend the `connections`/`social` pattern with these service ids, a token
@@ -148,7 +149,7 @@ owner's own systems.
       **Notion**, **Linear**. Record client ids in `CONFIG`.
 - [ ] Stand up a **thin token-exchange relay** you host for confidential-client providers
       (**LinkedIn**, **Slack**) — client secrets live there, never on the desktop.
-- [ ] Submit **Google verified-app review** for any sensitive Drive/Gmail/Calendar scopes.
+- [ ] Submit **Google verified-app review** for any sensitive Drive/Gmail/Calendar/Sheets scopes (`spreadsheets` and `calendar.events` are sensitive scopes).
 - [ ] Confirm keyring service-id namespace `ai.citrate.core.connections.<service>` and add
       `@rule8` sign-off (these are credential surfaces — treasury/keys review applies).
 - [ ] Decide webhook secret handling + the event taps to expose (§5).

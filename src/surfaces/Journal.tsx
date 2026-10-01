@@ -26,6 +26,8 @@ import { JournalPage } from "../shell/state";
 import { applyHermesSummary, ensureDailyEntry, hermesDayLines } from "../journal/dailyEntry";
 import { JournalVaultPanel } from "../journal/JournalVaultPanel";
 import { desktopJournalIo } from "../journal/encryptedExport";
+import { SchedulePanel } from "../agent/schedule/SchedulePanel";
+import { desktopScheduleIo } from "../agent/schedule/schedule";
 
 // ---------- dictation (ported from design initSpeech/toggleMic) ----------
 // The design keeps a single SpeechRecognition instance on the logic
@@ -130,6 +132,8 @@ export function Journal({ store, s }: SurfaceProps) {
   const jTitleRef = useRef<HTMLInputElement | null>(null);
   // HUP-S10.4 — which passphrase panel is open (component-local; never persisted).
   const [vault, setVault] = useState<null | "export" | "import">(null);
+  // HUP-S10.2: Hermes's schedule (and Google Calendar when connected), shown as a week calendar.
+  const [showSchedule, setShowSchedule] = useState(false);
 
   const jPages = s.jPages || [];
   const jSelPage: JournalPage | null = jPages.find((p) => p.id === s.jSel) || jPages[0] || null;
@@ -341,6 +345,9 @@ export function Journal({ store, s }: SurfaceProps) {
           <button className="btn btn-ghost btn-sm" onClick={onJNew}>
             + Page
           </button>
+          <button data-testid="j-schedule" className="btn btn-ghost btn-sm" aria-pressed={showSchedule} onClick={() => setShowSchedule((v) => !v)} title="Hermes's schedule as a calendar">
+            Schedule
+          </button>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <span className="eyebrow" style={{ padding: "0 2px 4px" }}>
@@ -426,6 +433,12 @@ export function Journal({ store, s }: SurfaceProps) {
             {jEditLabel}
           </button>
         </div>
+
+        {showSchedule && (
+          <div style={{ paddingTop: 14 }} id="journal-schedule">
+            <SchedulePanel io={desktopScheduleIo} />
+          </div>
+        )}
 
         {vault && (
           <div style={{ paddingTop: 14 }}>

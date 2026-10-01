@@ -41,6 +41,9 @@ mod grant_status;
 mod hf_auth;
 mod ipc_name;
 mod ipfs;
+mod google_workspace;
+mod hermes_schedule;
+mod media;
 mod journal_export;
 mod membership;
 mod memory;
@@ -643,6 +646,26 @@ pub fn run() {
             agent_grants::agent_grants_full_access_prepare,
             agent_grants::agent_grants_full_access_confirm,
             agent_grants::agent_grants_reset,
+            // HUP-S10.2 — Hermes's own schedule (local), shown as a calendar.
+            hermes_schedule::hermes_schedule_list,
+            hermes_schedule::hermes_schedule_add,
+            hermes_schedule::hermes_schedule_remove,
+            hermes_schedule::hermes_schedule_set_enabled,
+            hermes_schedule::hermes_schedule_reset,
+            hermes_schedule::hermes_schedule_due,
+            // HUP-S10.2 — Google Sheets + Calendar through Connections (disabled until configured).
+            google_workspace::google_workspace_status,
+            google_workspace::gsheets_read,
+            google_workspace::gsheets_append,
+            google_workspace::gcal_list,
+            google_workspace::gcal_create,
+            // HUP-S10.1 — media generation tiers, gallery, and the Media pop-out's data.
+            media::media_options,
+            media::media_set_settings,
+            media::media_generate_image,
+            media::media_gallery,
+            media::media_read,
+            media::media_save_copy,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable

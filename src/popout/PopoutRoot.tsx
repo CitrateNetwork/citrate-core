@@ -10,6 +10,8 @@ import { createPopoutEnd, type BridgeTransport, type PopoutEnd } from "./bridge"
 import { POPOUT_TITLES, type PopoutKind } from "./kinds";
 import type { MonitorSnapshot } from "./monitorSnapshot";
 import { ActivityMonitor } from "./ActivityMonitor";
+import { MediaPlayer } from "./MediaPlayer";
+import { mediaTauriTransport } from "./mediaBridge";
 
 const shell = {
   minHeight: "100vh",
@@ -21,7 +23,16 @@ const shell = {
   fontSize: 13,
 };
 
-export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: () => Promise<BridgeTransport> }) {
+export function PopoutRoot({
+  kind,
+  transport,
+  mediaTransport = mediaTauriTransport,
+}: {
+  kind: PopoutKind;
+  transport: () => Promise<BridgeTransport>;
+  /** HUP-S10.1: the Media player's own channel (injected for tests). */
+  mediaTransport?: () => Promise<BridgeTransport>;
+}) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -58,6 +69,7 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
     return () => clearInterval(t);
   }, [kind]);
 
+  if (kind === "media") return <MediaPlayer transport={mediaTransport} />;
   if (kind !== "monitor") {
     return (
       <div data-register="instrument" style={shell}>

@@ -100,9 +100,10 @@ impl PopoutKind {
     }
 
     /// Whether this kind has a view yet. The others ship in later work packages (S5.1 browser,
-    /// S6.7 contract reader, S10.1 media); until then they are refused, never opened empty.
+    /// S6.7 contract reader); until then they are refused, never opened empty. HUP-S10.1 added
+    /// the Media player.
     pub(crate) fn available(self) -> bool {
-        matches!(self, PopoutKind::Monitor)
+        matches!(self, PopoutKind::Monitor | PopoutKind::Media)
     }
 
     /// The first-open size (logical px).
