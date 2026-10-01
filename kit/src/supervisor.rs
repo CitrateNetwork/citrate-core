@@ -43,6 +43,8 @@
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -319,6 +321,8 @@ impl SidecarSpec {
     /// child's inherited stdout is otherwise dropped). stdin is null.
     fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.bin);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         cmd.args(&self.args);
         for (k, v) in &self.env {
             cmd.env(k, v);
