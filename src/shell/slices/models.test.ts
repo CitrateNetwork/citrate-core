@@ -42,3 +42,17 @@ describe("HUP-S0.3 resumable downloads", () => {
     expect(modelsSlice.get().partials).toEqual([]);
   });
 });
+
+describe("HUP-S0.3b gated Hugging Face repos", () => {
+  it("surfaces the backend's gated-repo message verbatim (where to add the token)", async () => {
+    // The Rust side (hf_auth.rs FetchError::Gated) owns this text; the slice must not mangle it.
+    const gated =
+      "This model needs a Hugging Face token with access. Add it in Settings › Connections " +
+      "(connect Hugging Face), and accept the model's terms on its Hugging Face page if it asks.";
+    vi.spyOn(bridge.modelsCatalog, "download").mockRejectedValue(gated);
+    vi.spyOn(bridge.modelsCatalog, "partials").mockResolvedValue([]);
+    await downloadModel("hf:org/gated/m.gguf");
+    expect(modelsSlice.get().error).toBe(gated);
+    expect(modelsSlice.get().downloadingId).toBeNull();
+  });
+});

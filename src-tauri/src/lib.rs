@@ -36,6 +36,7 @@ mod contract_deploy;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
+mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod membership;
