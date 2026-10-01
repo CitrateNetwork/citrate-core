@@ -35,5 +35,13 @@ TS dispatches and core's handler hides the mistake), the per-reply tool bound, a
 loop has none). `config_divergences` lists wiring differences outside the loop (default turn cap,
 live-context freshness, cross-turn history) that need an owner decision.
 
+## Scope
+
+The `loop` and `sidecar` runners exercise the wire parser and `run_turn`. They do not exercise
+the sidecar session layer (its own config, such as the default `max_steps`, and the core-host
+`tool_results` round trip) or this repo's `../sidecarProvider.ts`, which turns the loop's events
+into calls on the store's gated handlers. A green run is loop parity, not end-to-end parity of the
+live core + sidecar path; that needs its own test before `harness.ts` is retired.
+
 This suite does not retire `harness.ts` or change the default provider. Retirement is an owner
 call after a live run of the sidecar loop.
