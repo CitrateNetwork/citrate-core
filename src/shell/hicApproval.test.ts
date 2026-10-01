@@ -204,4 +204,29 @@ describe("Feature: a hic:\"required\" call waits for a member click", () => {
     expect(storeSrc.match(/this\.finishCer\(/g) ?? []).toHaveLength(1);
     expect(storeSrc.match(/this\.approveCer\(/g) ?? []).toHaveLength(0);
   });
+
+  it("Given the source tree, then a hic:\"required\" deploy's wallet review resolves only from the modal's Approve and Reject buttons", () => {
+    // contract_deploy carries its HIC reason on the wallet review, so that review's resolvers get the
+    // same tripwire as the ceremony's: no timer, effect or other code path may call them.
+    const root = join(__dirname, "..");
+    const files: string[] = [];
+    const walk = (d: string) => {
+      for (const f of readdirSync(d)) {
+        const p = join(d, f);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (/\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f)) files.push(p);
+      }
+    };
+    walk(root);
+    const resolver = /\b(approveWalletReview|rejectWalletReview)\(/;
+    const callers = files.filter((f) => resolver.test(readFileSync(f, "utf8"))).map((f) => f.slice(root.length + 1)).sort();
+    expect(callers).toEqual(["shell/Chrome.tsx", "shell/store.ts"]);
+    const chrome = readFileSync(join(root, "shell/Chrome.tsx"), "utf8").split("\n");
+    const uses = chrome.map((l, i) => [l, i] as const).filter(([l]) => resolver.test(l));
+    expect(uses.length).toBeGreaterThan(0);
+    for (const [l] of uses) expect(l, "a wallet-review resolve outside a click handler").toMatch(/onClick=/);
+    const storeSrc = readFileSync(join(root, "shell/store.ts"), "utf8");
+    // store.ts only defines them; it never calls them itself
+    expect(storeSrc.match(/this\.(approveWalletReview|rejectWalletReview)\(/g) ?? []).toHaveLength(0);
+  });
 });
