@@ -1471,8 +1471,10 @@ fn session_tool_annotations(
 /// model endpoint, key and model name come from Rust-owned serve state; every tool is stamped
 /// `host: "core"` so it executes through citrate-core's approval gates, never in the sidecar.
 /// Each tool must carry `effect` / `trust` annotations (HUP-S2.4 / A8), forwarded as given. The body
-/// does not set `hicAware`: core claims it only once no approval route for a `hic: "required"`
-/// call is automatic.
+/// sets `hicAware: true`: a `hic: "required"` call (an effectful call after the session read
+/// untrusted content) resolves only through the member's explicit Approve/Decline click, with no
+/// automatic or budget route (pinned by `src/shell/hicApproval.test.ts`). Any future budget path
+/// (HUP-S2.3) must keep refusing hic-required calls, or this flag must come off.
 pub fn build_session_body(
     system_prompt: &str,
     tools_json: &str,
@@ -1527,6 +1529,7 @@ pub fn build_session_body(
         // inside the local model's real context window (llama-server --ctx-size).
         "maxToolsPerRequest": 8,
         "contextTokens": crate::serve::DEFAULT_CTX_SIZE,
+        "hicAware": true,
     })
     .to_string())
 }
