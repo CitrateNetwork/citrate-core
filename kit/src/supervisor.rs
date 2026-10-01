@@ -73,24 +73,42 @@ pub fn resolve_external_bin<R: tauri::Runtime>(
 ) -> std::result::Result<PathBuf, String> {
     use tauri::Manager;
     let mut tried: Vec<String> = Vec::new();
+    // Try the platform executable suffix first, then the bare name. On Windows
+    // the bundled externalBin is `<name>.exe` (EXE_SUFFIX = ".exe"); on
+    // macOS/Linux EXE_SUFFIX is "" so this collapses to the bare name and the
+    // Unix layout is unchanged. Without the suffixed candidate the packaged
+    // Windows app cannot find any sidecar (`<name>` has no extension on disk)
+    // and panics in the setup hook.
+    let names: Vec<String> = {
+        let suffixed = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        if suffixed == name {
+            vec![name.to_string()]
+        } else {
+            vec![suffixed, name.to_string()]
+        }
+    };
     // 1) Next to the current executable (Contents/MacOS/<name>) — the real
     //    externalBin home in a packaged app.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let cand = dir.join(name);
+            for n in &names {
+                let cand = dir.join(n);
+                if cand.exists() {
+                    return Ok(cand);
+                }
+                tried.push(cand.display().to_string());
+            }
+        }
+    }
+    // 2) Resource dir fallback (Contents/Resources/<name>).
+    if let Ok(res) = app.path().resource_dir() {
+        for n in &names {
+            let cand = res.join(n);
             if cand.exists() {
                 return Ok(cand);
             }
             tried.push(cand.display().to_string());
         }
-    }
-    // 2) Resource dir fallback (Contents/Resources/<name>).
-    if let Ok(res) = app.path().resource_dir() {
-        let cand = res.join(name);
-        if cand.exists() {
-            return Ok(cand);
-        }
-        tried.push(cand.display().to_string());
     }
     Err(format!(
         "bundled sidecar '{name}' not found (tried: {})",
