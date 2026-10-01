@@ -34,8 +34,10 @@ fn mgr(rec: std::sync::Arc<Recorder>) -> HermesManager {
     m
 }
 
-const TOOLS: &str = r#"[{"type":"function","function":{"name":"node_status","description":"Read node vitals","parameters":{"type":"object","properties":{}}}},
- {"name":"group_invite","description":"Mint an invite","parameters":{"type":"object"},"host":"sidecar"}]"#;
+// HUP-S2.4/A8: every tool carries effect/trust annotations (top-level beside an OpenAI `function`
+// wrapper, or on a flat spec).
+const TOOLS: &str = r#"[{"type":"function","function":{"name":"node_status","description":"Read node vitals","parameters":{"type":"object","properties":{}}},"annotations":{"effect":"none","trust":"trusted"}},
+ {"name":"group_invite","description":"Mint an invite","parameters":{"type":"object"},"host":"sidecar","annotations":{"effect":"write","trust":"trusted"}}]"#;
 
 #[test]
 fn the_session_body_takes_the_endpoint_from_rust_and_stamps_every_tool_core() {
@@ -122,4 +124,66 @@ fn a_refused_open_surfaces_the_sidecar_status() {
     let m = mgr(rec);
     let err = m.session_open("{}").unwrap_err().to_string();
     assert!(err.contains("503"), "{err}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// HUP-S2.4 / A8 — tool annotations ride the session body to the sidecar's taint downgrade
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn annotations_are_carried_through_with_the_host_still_stamped_core() {
+    let body = build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let tools = v["tools"].as_array().unwrap();
+    assert_eq!(tools[0]["annotations"]["effect"], "none");
+    assert_eq!(tools[0]["annotations"]["trust"], "trusted");
+    assert_eq!(tools[0]["annotations"]["read_only"], true);
+    assert_eq!(tools[1]["annotations"]["effect"], "write");
+    assert_eq!(tools[1]["annotations"]["read_only"], false);
+    assert!(tools.iter().all(|t| t["host"] == "core"));
+}
+
+#[test]
+fn an_annotation_cannot_smuggle_a_host_or_extra_hints() {
+    let t = r#"[{"name":"a","parameters":{},"annotations":{"effect":"none","trust":"trusted","host":"sidecar","destructive":false}}]"#;
+    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", t, "http://127.0.0.1:1/v1", "", "m").unwrap()).unwrap();
+    let a = &v["tools"][0]["annotations"];
+    assert!(a.get("host").is_none(), "{a}");
+    assert!(a.get("destructive").is_none(), "only core-derived hints are sent: {a}");
+    assert_eq!(v["tools"][0]["host"], "core");
+}
+
+#[test]
+fn a_tool_without_complete_annotations_is_refused() {
+    for bad in [
+        r#"[{"name":"a","parameters":{}}]"#,
+        r#"[{"name":"a","parameters":{},"annotations":{"effect":"write"}}]"#,
+        r#"[{"name":"a","parameters":{},"annotations":{"trust":"trusted"}}]"#,
+        r#"[{"name":"a","parameters":{},"annotations":"none"}]"#,
+        r#"[{"name":"a","parameters":{},"annotations":{"effect":"burn","trust":"trusted"}}]"#,
+        r#"[{"name":"a","parameters":{},"annotations":{"effect":"none","trust":"mostly"}}]"#,
+        r#"[{"name":"a","parameters":{},"annotations":{"effect":"NONE","trust":"trusted"}}]"#,
+    ] {
+        let err = build_session_body("p", bad, "http://127.0.0.1:1/v1", "", "m").unwrap_err();
+        assert!(err.contains("annotation"), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn every_effect_and_trust_value_the_runtime_knows_is_accepted() {
+    for effect in ["none", "write", "spend", "sign"] {
+        for trust in ["trusted", "untrusted"] {
+            let t = format!(r#"[{{"name":"a","parameters":{{}},"annotations":{{"effect":"{effect}","trust":"{trust}"}}}}]"#);
+            let v: serde_json::Value = serde_json::from_str(&build_session_body("p", &t, "http://127.0.0.1:1/v1", "", "m").unwrap()).unwrap();
+            assert_eq!(v["tools"][0]["annotations"]["effect"], effect);
+            assert_eq!(v["tools"][0]["annotations"]["trust"], trust);
+        }
+    }
+}
+
+#[test]
+fn the_session_body_does_not_claim_hic_awareness_yet() {
+    // Core opts into `hicAware` only once no approval route for a hic:"required" call is automatic.
+    let v: serde_json::Value = serde_json::from_str(&build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m").unwrap()).unwrap();
+    assert!(v.get("hicAware").is_none(), "{v}");
 }

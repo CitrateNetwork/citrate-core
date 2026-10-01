@@ -15,6 +15,7 @@ import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
 import type { UserSkill } from "../agent/userSkills";
+import type { ApprovalCard, HicRequirement } from "../agent/approvalCards";
 import { BRIDGE_MODE } from "../bridge/mode";
 
 export const STORAGE_KEY = "citrate-core-proto-v2";
@@ -191,6 +192,10 @@ export interface CerSpec {
   warning?: string;
   chainless?: boolean;
   apply?: (hash: string) => void;
+  /** HUP-S2.4 — the card generated from the tool's annotations (diff / chain / command / fields). */
+  card?: ApprovalCard;
+  /** HUP-S2.4 — set when the sidecar marked the call hic:"required": explicit decision only. */
+  hic?: HicRequirement;
 }
 
 /**
@@ -216,6 +221,9 @@ export interface WalletReview {
    * sidecar's blocked action via `hermes_resolve` only after the human decided at the ceremony.
    */
   onResolved?: (approved: boolean) => void | Promise<void>;
+  /** HUP-S2.4 — the chain card (from the decoder's view) and, for a hic:"required" call, why. */
+  card?: ApprovalCard;
+  hic?: HicRequirement;
 }
 
 export interface AppState {
