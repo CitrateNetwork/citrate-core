@@ -35,7 +35,9 @@ export const NON_OBJECT_ARGUMENTS =
  * it); anything else must parse to a JSON object. `null` means "do not run this call".
  */
 function objectArguments(raw: unknown): string | null {
-  const text = typeof raw === "string" ? raw : "";
+  // The loop always sends arguments as a JSON string; any other shape is not run.
+  if (typeof raw !== "string") return null;
+  const text = raw;
   if (text.trim() === "") return "{}";
   try {
     const v: unknown = JSON.parse(text);
@@ -65,10 +67,13 @@ export function createSidecarProvider(
       const last = [...opts.messages].reverse().find((m) => m.role === "user");
       const text = last?.content ?? "";
       callbacks.onStatus("thinking");
+      // A finished (or failed) turn leaves no core call legitimately waiting, so an id left over
+      // from an earlier turn must not block a new call with the same id. Replays are still dropped
+      // by seq below.
+      inFlight.clear();
       if (!sessionId) {
         sessionId = await api.open(systemPrompt(), JSON.stringify(tools()));
         lastSeq = 0;
-        inFlight.clear();
       }
       const id = sessionId;
       await api.send(id, text);

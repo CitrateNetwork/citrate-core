@@ -110,6 +110,39 @@ describe("HUP-S1 A5 sidecar provider against a recorded session", () => {
     expect(posted).toEqual([{ callId: "x1", status: "error", content: expect.stringMatching(/JSON object/) }]);
   });
 
+  it.each([
+    ["an object (not a JSON string)", { q: "height" }],
+    ["a number value", 7],
+    ["missing", undefined],
+  ])("a core call whose arguments field is %s is not run; core posts an error", async (_label, args) => {
+    const { api, posted } = sessionApi([
+      { events: [{ seq: 1, event: { type: "tool_call", step: 1, host: "core", call: { id: "y1", name: "memory_search", arguments: args } } }], lastSeq: 1, busy: true },
+      { events: [{ seq: 2, event: { type: "final", content: "k" } }, { seq: 3, event: { type: "done", outcome: "answered" } }], lastSeq: 3, busy: false },
+    ]);
+    const { ran, callbacks } = handlers();
+    await createSidecarProvider(api, () => "p", () => []).send({ ...user("x"), callbacks });
+    expect(ran).toEqual([]);
+    expect(posted).toEqual([{ callId: "y1", status: "error", content: expect.stringMatching(/JSON object/) }]);
+  });
+
+  it("a call id left waiting by a failed turn does not block the same id in the next turn", async () => {
+    // Turn 1: posting c's result fails, so the turn rejects before the loop's tool_result is seen.
+    const call = { id: "call_0", name: "node_status", arguments: "{}" };
+    const { api, posted } = sessionApi([
+      { events: [{ seq: 1, event: { type: "tool_call", step: 1, host: "core", call } }], lastSeq: 1, busy: true },
+      { events: [{ seq: 2, event: { type: "tool_call", step: 1, host: "core", call } }, { seq: 3, event: { type: "tool_result", step: 1, call_id: "call_0", status: "ok", content: "{}" } }, { seq: 4, event: { type: "final", content: "k" } }, { seq: 5, event: { type: "done", outcome: "answered" } }], lastSeq: 5, busy: false },
+    ]);
+    const post = api.toolResult as unknown as ReturnType<typeof vi.fn>;
+    post.mockImplementationOnce(async () => { throw new Error("bridge unavailable"); });
+    const p = createSidecarProvider(api, () => "p", () => []);
+    const first = handlers();
+    await expect(p.send({ ...user("one"), callbacks: first.callbacks })).rejects.toThrow(/bridge unavailable/);
+    const second = handlers();
+    await p.send({ ...user("two"), callbacks: second.callbacks });
+    expect(second.ran.map((r) => r.id)).toEqual(["call_0"]);
+    expect(posted.map((r) => r.callId)).toEqual(["call_0"]);
+  });
+
   it("a re-delivered page does not run its calls again", async () => {
     const pages = paged(TURNS[0]);
     // The page holding c1's tool_call arrives twice (a replay of already-seen seqs).
