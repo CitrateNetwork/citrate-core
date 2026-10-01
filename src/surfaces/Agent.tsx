@@ -29,6 +29,7 @@ import {
 import type { AgentApproval } from "../bridge/domains";
 import type { DeployGateLookup } from "../agent/deployGate";
 import { DeployGateCard } from "../shell/DeployGateCard";
+import { LearnedPanel } from "../shell/LearnedPanel";
 
 type Tab = "overview" | "contracts";
 
@@ -376,6 +377,9 @@ export function Agent({ store, s }: SurfaceProps) {
                   ))
                 )}
               </div>
+
+              {/* HUP-S3.4 — what Hermes proposes to keep, with the verifier evidence; you decide. */}
+              <LearnedPanel store={store} running={running} />
 
               {/* recent runs */}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>

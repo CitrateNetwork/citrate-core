@@ -5,7 +5,22 @@ import { bridge } from "../index";
 describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
   it("exposes the cluster domain with its frozen methods", () => {
     expect(bridge.cluster).toBeDefined();
-    for (const m of ["status", "join", "peers", "shareFile", "leave"] as const) {
+    for (const m of [
+      "status",
+      "join",
+      "peers",
+      "shareFile",
+      "leave",
+      // HUP-S8.1
+      "devices",
+      "myDevices",
+      "linkDeviceRequest",
+      "linkDeviceApprove",
+      "linkDeviceReject",
+      "revokeDevice",
+      "exportDeviceLink",
+      "importDeviceLink",
+    ] as const) {
       expect(typeof bridge.cluster[m]).toBe("function");
     }
   });
@@ -14,6 +29,16 @@ describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
       const s = await bridge.cluster.status("g");
       expect(s.online).toBe(0);
       expect(await bridge.cluster.peers("g")).toEqual([]);
+    }
+  });
+  it("sim device linking is honest-empty and refuses to fake a link (HUP-S8.1)", async () => {
+    if (bridge.mode === "sim") {
+      expect(await bridge.cluster.devices("g")).toEqual([]);
+      expect(await bridge.cluster.myDevices()).toEqual({ thisDevice: null, links: [], revoked: [] });
+      await expect(bridge.cluster.linkDeviceRequest("laptop")).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.revokeDevice("aa")).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.exportDeviceLink()).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.importDeviceLink("{}")).rejects.toThrow(/desktop app/);
     }
   });
 });

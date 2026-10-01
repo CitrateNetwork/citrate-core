@@ -14,6 +14,9 @@ import { ModelPicker } from "./ModelPicker";
 import { InterviewCard, looksLikeBuildAsk } from "./InterviewCard";
 import { bridge } from "../bridge";
 import { openPopout } from "../popout/appHost";
+import { BrowserControls } from "./BrowserControls";
+import { tauriBrowserApi } from "../popout/browserApi";
+import { BRIDGE_MODE } from "../bridge/mode";
 import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
 import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
@@ -136,6 +139,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           <span aria-hidden style={{ color: "var(--tx-3)" }}>{pickerOpen ? "▴" : "▾"}</span>
         </button>
       </div>
+      {/* HUP-S5.1 + S5.6: Hermes's browser controls. Render nothing while the browser is off (the default). */}
+      {BRIDGE_MODE === "tauri" && <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} />}
       {pickerOpen && (
         <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
           <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />

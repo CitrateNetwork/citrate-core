@@ -827,6 +827,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "citrate-components"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake2",
+ "ed25519-dalek",
+ "flate2",
+ "hex",
+ "lzma-rs",
+ "minisign-verify",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "ureq",
+]
+
+[[package]]
 name = "citrate-core"
 version = "0.4.2"
 dependencies = [
@@ -836,6 +855,7 @@ dependencies = [
  "bip39",
  "blake3",
  "citrate-commd",
+ "citrate-components",
  "citrate-core-kit",
  "citrate-wallet-core",
  "ed25519-dalek",
@@ -846,12 +866,14 @@ dependencies = [
  "keyring",
  "libc",
  "p256",
+ "qrcode",
  "rand 0.8.7",
  "rlp",
  "serde",
  "serde_json",
  "sha2",
  "sha3",
+ "socket2",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
@@ -879,6 +901,7 @@ dependencies = [
  "citrate-wallet-core",
  "hex",
  "hkdf",
+ "hmac",
  "jsonwebtoken",
  "k256",
  "keyring",
@@ -1097,6 +1120,21 @@ checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc32fast"
@@ -2910,6 +2948,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "lzma-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e"
+dependencies = [
+ "byteorder",
+ "crc",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3717,6 +3765,12 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-xml"
@@ -5282,7 +5336,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
