@@ -11,7 +11,7 @@ export function DeployGateCard({ record, initcodeHash }: { record: DeployGateRec
     ? { fg: "var(--ok)", bg: "var(--ok-bg)", bd: "var(--ok)" }
     : { fg: "var(--danger)", bg: "var(--danger-bg)", bd: "var(--danger)" };
   return (
-    <div data-testid="deploy-gate-card" style={{ border: "1px solid " + tone.bd, borderRadius: "var(--r-1)", overflow: "hidden" }}>
+    <div data-testid="deploy-gate-card" role="group" aria-label={"Deploy gate: " + m.verdict} style={{ border: "1px solid " + tone.bd, borderRadius: "var(--r-1)", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: tone.bg }}>
         <span className="mono" style={{ ...label, color: tone.fg }}>
           Deploy gate
