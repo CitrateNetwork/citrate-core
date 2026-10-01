@@ -190,4 +190,9 @@ commands.allow = [
   "comms_connections",
   "popout_open",
   "popout_monitor_facts",
+  "hermes_chain_status",
+  "hermes_chain_settings_set",
+  "hermes_metering_daily",
+  "hermes_anchor_approve",
+  "hermes_anchor_reject",
 ]

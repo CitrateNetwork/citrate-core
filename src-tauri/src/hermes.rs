@@ -38,6 +38,9 @@ const CITRATE_CHAIN_ID: u64 = 40204;
 // new module needs no `mod` line in the (s0-owned) lib.rs; the file is still `agent_tools.rs`.
 #[path = "agent_tools.rs"]
 pub mod agent_tools;
+// HUP-S7.3/S7.5: the sidecar's metering + anchor routes (core side).
+#[path = "hermes_chain.rs"]
+pub mod chain;
 
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
@@ -281,6 +284,9 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S7.3/S7.5: the base folder for the sidecar's metering log, decision records and anchor
+    /// ledger (see `hermes_chain`). `None` (tests) leaves those env vars unset.
+    chain_data_dir: Option<PathBuf>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -312,6 +318,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            chain_data_dir: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -399,6 +406,12 @@ impl HermesManager {
                 HERMES_CAPSULES_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
             ));
+        }
+        if let Some(base) = &self.chain_data_dir {
+            for (k, dir) in chain::data_dirs(base) {
+                spec.env
+                    .push((k.to_string(), dir.to_string_lossy().to_string()));
+            }
         }
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
@@ -1071,7 +1084,9 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_capsules_dir(capsules_dir)
+        .with_chain_data_dir(base.clone());
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
