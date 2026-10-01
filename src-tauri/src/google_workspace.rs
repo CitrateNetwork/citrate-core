@@ -16,7 +16,9 @@
 //! connected" without touching the network. An expired token is never sent (the member is asked
 //! to reconnect; this build has no refresh-token flow).
 //!
-//! Writes (append, create) are member actions in the app. Hermes gets read-only tools.
+//! Writes (append, create) are member actions in the app. In this build only Calendar has an
+//! in-app view (Journal > Schedule lists events and adds one); the Sheets commands have no view
+//! and Hermes has no Google tools yet.
 //!
 //! Data sources (Rule 7): `https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{range}` and
 //! `https://www.googleapis.com/calendar/v3/calendars/primary/events`.

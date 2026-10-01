@@ -87,7 +87,7 @@ Settings uses. Connected servers mount as tools the agent proposes with.
 | **GitHub** | WIRED | GitHub OAuth App (PKCE) → client id in CONFIG; scopes `repo`, `read:org` |
 | **Google Drive** | WIRED | Google Cloud OAuth client (Desktop) → client id; scope `drive.readonly` (+ `drive.file` for writes); **verified-app review** for sensitive scopes |
 | **Notion** | WIRED | Notion public integration → OAuth client id; select workspace pages |
-| **Google Sheets** (HUP-S10.2) | WIRED, off until configured | reuse the Google client above (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`); scope `spreadsheets`; Settings keeps Connect disabled and says why until the client is configured. Reads a range; member-confirmed appends use `valueInputOption=RAW` (no formula ever runs) |
+| **Google Sheets** (HUP-S10.2) | CONNECT WIRED, off until configured; no in-app view or Hermes tool yet (the read/append commands exist) | reuse the Google client above (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`); scope `spreadsheets`; Settings keeps Connect disabled and says why until the client is configured. Reads a range; member-confirmed appends use `valueInputOption=RAW` (no formula ever runs) |
 | **Google Calendar** (HUP-S10.2) | WIRED, off until configured | same Google client; scope `calendar.events`; lists the primary calendar in the Journal > Schedule week view next to Hermes's own schedule; member-created events only |
 | **Custom (stdio / https)** | PARTIAL | none — user-supplied; needs `config.write mcpServers` persistence + a spawn/allowlist path |
 

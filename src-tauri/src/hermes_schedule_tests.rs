@@ -256,3 +256,19 @@ fn entry(id: &str, start: u64, mins: u32, repeat: Repeat, until: Option<u64>) ->
         created_at: T0,
     }
 }
+
+#[test]
+fn an_exhausted_id_counter_refuses_the_add_and_leaves_the_file_alone() {
+    let s = ScheduleStore::new(tmp());
+    let sch = Schedule {
+        next_id: u64::MAX,
+        ..Schedule::default()
+    };
+    std::fs::write(s.file(), serde_json::to_string(&sch).unwrap()).unwrap();
+    let before = std::fs::read_to_string(s.file()).unwrap();
+    let err = s
+        .add_entry(input("One more", T0, Repeat::None), T0)
+        .unwrap_err();
+    assert!(matches!(err, ScheduleError::Invalid(_)), "{err:?}");
+    assert_eq!(std::fs::read_to_string(s.file()).unwrap(), before);
+}

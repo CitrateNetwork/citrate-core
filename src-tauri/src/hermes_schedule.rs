@@ -2,8 +2,8 @@
 //!
 //! A schedule entry is something Hermes is meant to do, or remind the member of, at a time: a
 //! one-off or a daily or weekly repeat. The member adds, pauses and removes entries in the
-//! Schedule view; Hermes reads them (the `schedule_list` chat tool, read-only). Nothing here runs
-//! anything: the daemons lane (HUP-S10.3) asks [`ScheduleStore::due`] which starts fell between
+//! Schedule view (Journal > Schedule). Hermes has no chat tool for the schedule in this build; the
+//! only reader besides the view is the `due` query. Nothing here runs anything: the daemons lane (HUP-S10.3) asks [`ScheduleStore::due`] which starts fell between
 //! its last check and now, and decides what to do under its own budgets and HIC rules.
 //!
 //! Storage: `<app data>/agent/hermes-schedule.json` (versioned, owner-only, written through a
@@ -408,7 +408,9 @@ impl ScheduleStore {
             origin: n.origin,
             created_at: now,
         };
-        s.next_id += 1;
+        s.next_id = s.next_id.checked_add(1).ok_or_else(|| {
+            invalid("the schedule has run out of entry ids; reset it to start again")
+        })?;
         s.entries.push(e.clone());
         self.save_schedule(&s)?;
         Ok(e)

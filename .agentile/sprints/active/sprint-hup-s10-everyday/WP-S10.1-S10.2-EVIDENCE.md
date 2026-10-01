@@ -86,3 +86,15 @@ Schedule: 200 entries, 1,000 occurrences per listing or due query, 92-day listin
 - Hermes chat tools for the schedule and Google Calendar are not added (the sidecar sheet tools
   are); the scheduler that acts on due entries is HUP-S10.3.
 - Sheet writes are not covered by the undo checkpoints yet (S2.9 follow-up).
+
+## Review follow-up (2026-10-01, adversarial review)
+
+- **US-10.2 AC2 is partial for Sheets.** Calendar is wired end to end (connect, list, add from
+  Journal > Schedule). Sheets has the connect flow and the `gsheets_read` / `gsheets_append`
+  commands, but no in-app view calls them and Hermes has no Google tool. The Settings row and the
+  Connections runbook now say so instead of promising reads and appends.
+- Module docs corrected: the schedule has no Hermes chat tool yet, and Hermes has no Google tools.
+- The schedule's entry-id counter is now checked: an exhausted counter refuses the add and leaves
+  the file as it was (`an_exhausted_id_counter_refuses_the_add_and_leaves_the_file_alone`).
+- Runtime `agent-office`: `.xlsx` cells are now streamed and only cells inside the limits are held
+  (branch `hup/n4-media-sheets`, commit `f556223`), with xlsx row, column and cell-text limit tests.
