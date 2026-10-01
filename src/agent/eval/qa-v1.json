@@ -1,0 +1,3278 @@
+{
+  "version": "qa-v1",
+  "provenance": {
+    "author": "Larry Klosowski + Claude Opus 5.5",
+    "created": "2026-09-30",
+    "purpose": "HUP-S3.5 Citrate QA eval set v1 (US-3.1 'it knows Citrate out of the box'): 150 hand-authored questions over ten categories with answer key points and citations (source repo + repo-relative path + heading anchor) into public Citrate material pinned by commit. About 10% are unanswerable probes whose right answer is that the topic is not documented. Scored deterministically by src/agent/eval/qa.ts: key-point coverage, citation validity against qa-v1.anchors.json, and abstention; no model-as-judge.",
+    "disjointFromTraining": true,
+    "note": "Planset 05 'Eval provenance': must stay disjoint from any E9 training trajectories; never copy into training data. Sources are public-tier only (citrate-docs, citrate-chain, agentile-skills); no private audit material. To change an item, make qa-v2; do not edit v1 in place. scripts/qa-anchors.mjs --check re-derives the anchor index and verifies every key point appears in its cited section."
+  },
+  "sources": {
+    "citrate-docs": {
+      "repo": "CitrateNetwork/citrate-docs",
+      "commit": "73ea7c56bc2087058ecc58eae5dbf734c86da072",
+      "visibility": "public"
+    },
+    "citrate-chain": {
+      "repo": "CitrateNetwork/citrate-chain",
+      "commit": "0aab474b437389ccd54c41c26378f1b3197ec4e5",
+      "visibility": "public"
+    },
+    "agentile-skills": {
+      "repo": "CitrateNetwork/agentile-skills",
+      "commit": "69d99d2ab97d764143346899295a14f9b7168269",
+      "visibility": "public"
+    }
+  },
+  "items": [
+    {
+      "id": "qa-chain-chain-id",
+      "question": "What is the Citrate Network chain id, and what does eth_chainId return for it?",
+      "category": "chain-basics",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "40204"
+        ],
+        [
+          "0x9d0c"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/genesis.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-native-token",
+      "question": "What is the native token of the Citrate Network, how many decimals does it have, and what is its total supply cap?",
+      "category": "chain-basics",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "SALT"
+        ],
+        [
+          "18"
+        ],
+        [
+          "one trillion",
+          "1000000000000",
+          "1 trillion"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/economics.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-ghostdag-k",
+      "question": "Which consensus protocol orders the Citrate BlockDAG, and what is its default k (k-cluster width)?",
+      "category": "chain-basics",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "GhostDAG"
+        ],
+        [
+          "18"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/consensus.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-blue-score",
+      "question": "On Citrate, what is the ordering key for blocks instead of height, and which field of citrate_getDagStats tells you the head?",
+      "category": "chain-basics",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "blue score"
+        ],
+        [
+          "maxBlueScore"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/start/primer.md",
+          "anchor": "blue-score-not-height"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-max-parents",
+      "question": "How many parents may a Citrate block name in total, and how many of those can be merge parents?",
+      "category": "chain-basics",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "10",
+          "ten"
+        ],
+        [
+          "nine",
+          "9"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/consensus.md",
+          "anchor": "what-it-is"
+        },
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/sequencer.md",
+          "anchor": "block-builder-srcblock_builderrs"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-finality-status",
+      "question": "Does the Citrate testnet have protocol finality today?",
+      "category": "chain-basics",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "probabilistic"
+        ],
+        [
+          "specified, not running",
+          "not running"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/consensus.md",
+          "anchor": "current-status"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-checkpoint-params",
+      "question": "In the designed committee checkpoint finality, what are the committee size, the quorum threshold, and the checkpoint interval?",
+      "category": "chain-basics",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "100",
+          "one hundred"
+        ],
+        [
+          "67",
+          "sixty-seven"
+        ],
+        [
+          "50"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/consensus.md",
+          "anchor": "committee-checkpoint-finality-srccheckpointrs-specified-not-running"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-block-time",
+      "question": "What block time does the Citrate testnet configuration set, and what block interval is actually measured?",
+      "category": "chain-basics",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "1 s",
+          "one-second",
+          "one second"
+        ],
+        [
+          "2 s",
+          "two seconds",
+          "about 2"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/genesis.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-genesis-params",
+      "question": "What are the base fee per gas and the gas limit in the Citrate genesis block?",
+      "category": "chain-basics",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "1 gwei"
+        ],
+        [
+          "30000000",
+          "30 million"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/genesis.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-mainnet-target",
+      "question": "When is Citrate mainnet targeted, and does the chain id change between testnet and mainnet?",
+      "category": "chain-basics",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Q2 2027"
+        ],
+        [
+          "40204"
+        ],
+        [
+          "permanent",
+          "does not change"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/start/roadmap.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-lvm-hardfork",
+      "question": "Which EVM hardfork specification does the Citrate LVM run, and what does that enable for Solidity 0.8.25+?",
+      "category": "chain-basics",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "CANCUN"
+        ],
+        [
+          "MCOPY"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/lvm.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-state-root",
+      "question": "Does Citrate use a Merkle-Patricia trie for world state? How is the state root computed?",
+      "category": "chain-basics",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "flat"
+        ],
+        [
+          "SHA3-256"
+        ],
+        [
+          "sorted"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/storage.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-p2p-noise",
+      "question": "Which protocol encrypts and authenticates Citrate peer-to-peer connections, and over what transport?",
+      "category": "chain-basics",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Noise"
+        ],
+        [
+          "TCP"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/network.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-chain-unans-salt-price",
+      "question": "What is SALT's current trading price on Coinbase?",
+      "category": "chain-basics",
+      "difficulty": "easy",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-chain-unans-mainnet-height",
+      "question": "At exactly which block height will the Citrate testnet switch over to mainnet?",
+      "category": "chain-basics",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-stake-min-validator-stake",
+      "question": "What is the minimum validator stake on Citrate?",
+      "category": "staking-validators",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "32000 SALT",
+          "32k SALT"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/rewards.md",
+          "anchor": "the-block-reward-and-its-four-pools"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-reward-pools",
+      "question": "A Citrate block reward is a base reward plus four bonus pools. What are the four pools?",
+      "category": "staking-validators",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "validator performance"
+        ],
+        [
+          "AI contribution"
+        ],
+        [
+          "network health"
+        ],
+        [
+          "long-term staking"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/rewards.md",
+          "anchor": "the-block-reward-and-its-four-pools"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-pool-percentages",
+      "question": "What default share of the base block reward goes to the validator performance pool and to the AI contribution pool?",
+      "category": "staking-validators",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "30%",
+          "30 percent"
+        ],
+        [
+          "25%",
+          "25 percent"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/rewards.md",
+          "anchor": "the-block-reward-and-its-four-pools"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-halving",
+      "question": "How often does the Citrate base block reward halve?",
+      "category": "staking-validators",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "2100000",
+          "2.1 million"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/economics.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-institutional-slashing",
+      "question": "Under the institutional penalty schedule, what share of stake is slashed for equivocation, for an invalid state transition, and for transaction censorship?",
+      "category": "staking-validators",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "10%"
+        ],
+        [
+          "15%"
+        ],
+        [
+          "5%"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/rewards.md",
+          "anchor": "slashing"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-slash-deactivation",
+      "question": "At what cumulative slash is an institutional operator deactivated, and is downtime a slashable offense for institutional operators?",
+      "category": "staking-validators",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "50%"
+        ],
+        [
+          "not a slashable",
+          "not slashable"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/rewards.md",
+          "anchor": "slashing"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-nematocyst-tiers",
+      "question": "What are the three NematocystSlashing tiers and their base penalties?",
+      "category": "staking-validators",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Latency"
+        ],
+        [
+          "Inconsistency"
+        ],
+        [
+          "Byzantine"
+        ],
+        [
+          "5%"
+        ],
+        [
+          "20%"
+        ],
+        [
+          "100%"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/security.md",
+          "anchor": "nematocystslashing"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-correlation-multiplier",
+      "question": "How does the NematocystSlashing correlation multiplier work: what window does it use and what are its floor and cap?",
+      "category": "staking-validators",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "50 blocks"
+        ],
+        [
+          "1x"
+        ],
+        [
+          "3x"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/security.md",
+          "anchor": "nematocystslashing"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-provider-min-stake",
+      "question": "What is the minimum stake to become a slashable provider in NematocystSlashing?",
+      "category": "staking-validators",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "100 SALT"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/security.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-producer-today",
+      "question": "Who produces blocks on the public Citrate testnet today, and is stake-gated proposer eligibility switched on?",
+      "category": "staking-validators",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "single block producer"
+        ],
+        [
+          "off by default"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/consensus.md",
+          "anchor": "current-status"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-vrf",
+      "question": "Which verifiable random function does Citrate use for proposer eligibility, and which RFC defines it?",
+      "category": "staking-validators",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "ECVRF"
+        ],
+        [
+          "RFC 9381"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/consensus.md",
+          "anchor": "proposer-election-srcecvrfrs-srcvrfrs"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-validator-registry-env",
+      "question": "Which configuration turns on stake-gated proposer eligibility on a Citrate node?",
+      "category": "staking-validators",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "CITRATE_VALIDATOR_REGISTRY",
+          "validator registry"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/consensus.md",
+          "anchor": "current-status"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-reputation",
+      "question": "How is an operator's reputation expressed on Citrate, and when does the node-agent raise an alert about it?",
+      "category": "staking-validators",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "basis points"
+        ],
+        [
+          "10000"
+        ],
+        [
+          "five percent",
+          "5%"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/rewards.md",
+          "anchor": "reputation"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-core-grant-stake",
+      "question": "During Citrate Core onboarding, what happens to the grant that membership releases?",
+      "category": "staking-validators",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "validator stake"
+        ],
+        [
+          "membership token"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/getting-started.md",
+          "anchor": "step-5-grant-and-stake"
+        }
+      ]
+    },
+    {
+      "id": "qa-stake-unans-apy",
+      "question": "What annual percentage yield (APY) does staking SALT pay validators?",
+      "category": "staking-validators",
+      "difficulty": "easy",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-wallet-keyring-standard",
+      "question": "Which account standard and account implementation is Citrate Keyring built on?",
+      "category": "wallet",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "ERC-4337"
+        ],
+        [
+          "Kernel v3"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/passkeys.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-passkey-validator",
+      "question": "What kind of credential is a Citrate passkey, and which on-chain validator verifies it?",
+      "category": "wallet",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "P-256"
+        ],
+        [
+          "WebAuthnP256Validator"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/passkeys.md",
+          "anchor": "webauthnp256validator-how-a-passkey-authorizes-an-operation"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-counterfactual",
+      "question": "When is a Citrate Keyring smart account actually deployed, and how is its address known in advance?",
+      "category": "wallet",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "first operation",
+          "first outgoing",
+          "lazily"
+        ],
+        [
+          "CREATE2"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/passkeys.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-guardians-range",
+      "question": "How many guardians can a person nominate for Citrate Keyring recovery, and can Citrate itself be one of them?",
+      "category": "wallet",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "two and seven",
+          "2 and 7",
+          "2 to 7",
+          "two to seven",
+          "2-7"
+        ],
+        [
+          "never a guardian",
+          "cannot be a guardian",
+          "not a guardian"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/guardians.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-guardian-timelock",
+      "question": "Does the GuardianRecoveryModule impose a timelock on recovery?",
+      "category": "wallet",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "no timelock"
+        ],
+        [
+          "synchronous"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/guardians.md",
+          "anchor": "guardianrecoverymodule"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-paymaster-categories",
+      "question": "What are the three sponsorship categories of the Citrate paymaster?",
+      "category": "wallet",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Standard"
+        ],
+        [
+          "Recovery"
+        ],
+        [
+          "First-op",
+          "first operation"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/paymaster.md",
+          "anchor": "categories"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-paymaster-caps",
+      "question": "What are the shipped default dailyCap and firstOpCap of CitratePaymaster?",
+      "category": "wallet",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0.01 ether"
+        ],
+        [
+          "0.02 ether"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/paymaster.md",
+          "anchor": "caps-and-accounting"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-gas-sponsorship",
+      "question": "Is there a native gas-sponsorship operation on Citrate? How is gas sponsored for Keyring accounts?",
+      "category": "wallet",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "no native"
+        ],
+        [
+          "ERC-4337"
+        ],
+        [
+          "paymaster"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/paymaster.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-edu-forwarder",
+      "question": "Which mechanism sponsors student actions in the education stack, as opposed to the ERC-4337 paymaster?",
+      "category": "wallet",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "EIP-2771"
+        ],
+        [
+          "forwarder"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/aa/paymaster.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-ext-eth-sign",
+      "question": "Does the Citrate Keyring browser extension support eth_sign?",
+      "category": "wallet",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "disabled",
+          "refused"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/wallet-extension.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-ext-encryption",
+      "question": "How does the Citrate Keyring extension encrypt the local account key at rest?",
+      "category": "wallet",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "AES-256-GCM"
+        ],
+        [
+          "Argon2id"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/wallet-extension.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-ext-chain-fixed",
+      "question": "Can the Citrate Keyring extension switch to another network?",
+      "category": "wallet",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "fixed"
+        ],
+        [
+          "40204"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/wallet-extension.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-core-keys",
+      "question": "Where does Citrate Core keep your account keys?",
+      "category": "wallet",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "operating system keyring",
+          "OS keyring"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/safety.md",
+          "anchor": "where-your-keys-live"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-ext-typed-data",
+      "question": "Does the Citrate Keyring extension support eth_signTypedData_v4?",
+      "category": "wallet",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "not yet supported",
+          "Specified"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/wallet-extension.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-wallet-unans-hardware",
+      "question": "Which Ledger and Trezor hardware wallet models does the Citrate Keyring extension support?",
+      "category": "wallet",
+      "difficulty": "easy",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-node-rpc-ports",
+      "question": "What are the default JSON-RPC and WebSocket bind addresses of a Citrate node?",
+      "category": "node-ops",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "127.0.0.1:8545"
+        ],
+        [
+          "127.0.0.1:8546"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-p2p-port",
+      "question": "Which port must be reachable outbound for a Citrate Core node to find peers?",
+      "category": "node-ops",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "30303"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/run-a-node.md",
+          "anchor": "what-the-node-needs"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-metrics-addr",
+      "question": "What is the default Prometheus metrics address of a Citrate node, and which variable sets it?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0.0.0.0:9100"
+        ],
+        [
+          "CITRATE_METRICS_ADDR"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "configuration"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-operator-token",
+      "question": "What must you set before serving admin RPC on a non-loopback bind?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "CITRATE_OPERATOR_TOKEN"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "failure-modes"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-producer-memory",
+      "question": "What resident memory is healthy for a producing Citrate node, and above what level should you trip the circuit-breaker?",
+      "category": "node-ops",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "1.2 GB",
+          "1.05 GB"
+        ],
+        [
+          "2 GB"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "producer-memory-health"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-circuit-breaker",
+      "question": "How do you trip the producer memory circuit-breaker, and what does the node keep doing afterwards?",
+      "category": "node-ops",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "enabled = false"
+        ],
+        [
+          "restart"
+        ],
+        [
+          "reads"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "producer-memory-health"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-mismatched-binary",
+      "question": "Why should you never replace Citrate Core's node binary with one copied from elsewhere?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "fork"
+        ],
+        [
+          "different view of the ledger"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/troubleshooting.md",
+          "anchor": "the-node-syncs-but-the-height-looks-wrong-or-you-suspect-a-fork"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-linux-blank",
+      "question": "Citrate Core opens a blank window on Linux. What is the fix?",
+      "category": "node-ops",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "WEBKIT_DISABLE_DMABUF_RENDERER=1",
+          "WEBKIT_DISABLE_DMABUF_RENDERER"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/troubleshooting.md",
+          "anchor": "the-window-opens-blank-on-linux"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-node-log",
+      "question": "Where does Citrate Core write the node log that the Node surface tails?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          ".citrate/core/node.log"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/run-a-node.md",
+          "anchor": "the-node-surface"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-mining-flag",
+      "question": "Does Citrate Core's shipped node configuration turn on the local [mining] flag? How does the node validate instead?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "off"
+        ],
+        [
+          "stake"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/run-a-node.md",
+          "anchor": "how-it-stays-correct"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-rust-pin",
+      "question": "Which Rust toolchain version does citrate-chain pin for building the node?",
+      "category": "node-ops",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "1.96.0"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-docker-testnet-ports",
+      "question": "Which host ports does the testnet Docker compose profile map for RPC and WebSocket?",
+      "category": "node-ops",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "18545"
+        ],
+        [
+          "18546"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-bootstrap",
+      "question": "How many testnet bootstrap nodes ship in the node configuration, and what is the public RPC hostname?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "four"
+        ],
+        [
+          "rpc.citrate.ai"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/operators/run-a-node.md",
+          "anchor": "configuration"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-node-agent-supervision",
+      "question": "What is the node-agent's default supervision bind address, and how often does it send a heartbeat?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "127.0.0.1:19600"
+        ],
+        [
+          "30 seconds",
+          "30-second"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/node-agent.md",
+          "anchor": "environment-variables"
+        },
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/node-agent.md",
+          "anchor": "heartbeat-cratesheartbeatsrclibrs"
+        }
+      ]
+    },
+    {
+      "id": "qa-node-unans-ec2",
+      "question": "Which AWS EC2 instance type does Citrate recommend for running a validator?",
+      "category": "node-ops",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-ai-models",
+      "question": "Which embedding model backs citrate_getTextEmbedding, and what is the default chat model?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "bge-m3"
+        ],
+        [
+          "mistral-7b-instruct-v0.3"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/rpc.md",
+          "anchor": "ai-citrate_"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-embedding-cap",
+      "question": "How many inputs can a single citrate_getTextEmbedding call take, and what error does a larger batch return?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "256"
+        ],
+        [
+          "invalid params",
+          "-32602"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/rpc.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-hosted-receipt",
+      "question": "Does a call to the hosted-inference precompiles (0x0100 to 0x0106) return a cryptographic proof that the output is correct?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "signed receipt"
+        ],
+        [
+          "attestation"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "hosted-inference-0x0100-to-0x0106"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-attestation-default",
+      "question": "What is the attestation gate's default behaviour on mainnet validator binaries?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "always-reject"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "attestation-gate"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-proof-verify",
+      "question": "Which precompile verifies an inference proof, and with which proof system?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0x0108"
+        ],
+        [
+          "Halo2-KZG"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "verification-0x0107-to-0x0109"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-tensor-commit",
+      "question": "What commitment does the 0x0107 TENSOR_COMMIT precompile produce?",
+      "category": "ai-inference",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Poseidon"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "verification-0x0107-to-0x0109"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-q16-ops",
+      "question": "Name the six deterministic Q16.16 compute primitives at 0x010A to 0x010F.",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "matmul"
+        ],
+        [
+          "dot"
+        ],
+        [
+          "softmax"
+        ],
+        [
+          "relu"
+        ],
+        [
+          "linear"
+        ],
+        [
+          "transpose"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles-zkp.md",
+          "anchor": "deterministic-q1616-compute-0x010a-to-0x010f"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-gateway-modes",
+      "question": "What are the two run modes of the Citrate Inference Gateway?",
+      "category": "ai-inference",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "marketplace"
+        ],
+        [
+          "local-proxy"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/gateway.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-gateway-paid",
+      "question": "Does the released inference gateway binary serve the x402-paid routes?",
+      "category": "ai-inference",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "not mounted"
+        ],
+        [
+          "build_router"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/gateway.md",
+          "anchor": "routes-the-operator-runs"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-gateway-retries",
+      "question": "How many providers does the gateway try for a paid request before it returns a 503?",
+      "category": "ai-inference",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "MAX_PROVIDER_ATTEMPTS",
+          "three",
+          "(3)"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/gateway.md",
+          "anchor": "the-x402-settlement-path-from-the-operators-side"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-pool-epoch",
+      "question": "In the compute pool, how long is a coordinator epoch?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "100 blocks"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/pool.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-pool-member-select",
+      "question": "How does the compute-pool coordinator choose which member serves a job?",
+      "category": "ai-inference",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "keccak256"
+        ],
+        [
+          "mod",
+          "modulo"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/pool.md",
+          "anchor": "how-the-coordinator-decides"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-node-agent-keys",
+      "question": "Does the Citrate node-agent hold signing keys? How does it get on-chain writes made?",
+      "category": "ai-inference",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "no signing keys",
+          "holds no"
+        ],
+        [
+          "SignatureRequest"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/node-agent.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-ai-unans-gpt4-price",
+      "question": "What is the per-token price in SALT for GPT-4 inference on the Citrate gateway?",
+      "category": "ai-inference",
+      "difficulty": "easy",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-ai-unans-embedding-fee",
+      "question": "How much SALT does a single citrate_getTextEmbedding call cost?",
+      "category": "ai-inference",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-mem-memrizz-what",
+      "question": "What is Memrizz and how do agents connect to it?",
+      "category": "memory",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "DAG"
+        ],
+        [
+          "MCP"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-planes",
+      "question": "What are the two planes of the Memrizz memory store?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Derived"
+        ],
+        [
+          "Asserted"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-read-tools",
+      "question": "Name some of the read tools the Memrizz MCP server exposes.",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "memory.recall"
+        ],
+        [
+          "memory.search"
+        ],
+        [
+          "memory.verify"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "mcp-tools"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-write-tools",
+      "question": "Which Memrizz MCP tools write to memory?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "memory.assert"
+        ],
+        [
+          "memory.propose_edge"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "mcp-tools"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-encryption",
+      "question": "How is Memrizz memory content encrypted at rest?",
+      "category": "memory",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "XChaCha20-Poly1305"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "failure-modes"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-operator",
+      "question": "Can the Memrizz platform operator role read an Org's memory content?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "no access"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-mcp-endpoint",
+      "question": "What is the Streamable-HTTP endpoint for the Memrizz MCP server?",
+      "category": "memory",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "/mcp/u/:sub",
+          "/mcp/u/"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "connecting-an-agent-over-mcp"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-oidc",
+      "question": "Which signing algorithm is pinned for Memrizz OIDC tokens, and where is it read from?",
+      "category": "memory",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "RS256"
+        ],
+        [
+          "configuration"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "failure-modes"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-review-center",
+      "question": "What is the Memrizz Review Center?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "HIC",
+          "Human In Control"
+        ],
+        [
+          "edge proposals"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "webapp-surfaces"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-core-storage",
+      "question": "What is the Storage surface in Citrate Core?",
+      "category": "memory",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "memory graph"
+        ],
+        [
+          "device",
+          "local"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/tour.md",
+          "anchor": "storage"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-audit",
+      "question": "How does Memrizz record reads, writes, and denials?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "hash-chained",
+          "hash chain"
+        ],
+        [
+          "audit log"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-core-journal",
+      "question": "What is the Journal surface in Citrate Core for?",
+      "category": "memory",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "plain language",
+          "plain-language"
+        ],
+        [
+          "agent"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/tour.md",
+          "anchor": "journal"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-memrizz-provenance",
+      "question": "What does every Memrizz MCP response carry alongside the content?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "provenance"
+        ],
+        [
+          "trust tier"
+        ],
+        [
+          "freshness watermark"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/apps/memories.md",
+          "anchor": "mcp-tools"
+        }
+      ]
+    },
+    {
+      "id": "qa-mem-unans-retention",
+      "question": "How many days does Memrizz keep deleted memories before purging them?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-mem-unans-max-orgs",
+      "question": "What is the maximum number of Orgs a single Memrizz deployment supports?",
+      "category": "memory",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-agentile-rule-count",
+      "question": "How many Agentile rules are there, and how are they numbered?",
+      "category": "agentile-hic",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "14",
+          "fourteen"
+        ],
+        [
+          "0 through 13",
+          "0 to 13",
+          "zero through thirteen",
+          "0-13"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/start/agentile.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-rule1",
+      "question": "What does Agentile Rule 1 forbid in production paths?",
+      "category": "agentile-hic",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "mocks"
+        ],
+        [
+          "stubs"
+        ],
+        [
+          "TODOs"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/methodology/rules.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-rule5-frontmatter",
+      "question": "Which frontmatter fields must every Agentile document carry?",
+      "category": "agentile-hic",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "created"
+        ],
+        [
+          "branch"
+        ],
+        [
+          "author"
+        ],
+        [
+          "status"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/methodology/rules.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-rule10",
+      "question": "What does Agentile Rule 10 require before a force-push, delete, or rotation?",
+      "category": "agentile-hic",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "human sign-off",
+          "sign-off"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/methodology/rules.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-rule12-drift",
+      "question": "Under Agentile, what comes first when adding a cross-repo dependency?",
+      "category": "agentile-hic",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "[[drift]]",
+          "drift"
+        ],
+        [
+          "manifest"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/methodology/rules.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-rule4",
+      "question": "Under Agentile, where does a workstream's status live?",
+      "category": "agentile-hic",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "sprint file",
+          "sprints/active"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/methodology/rules.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-sprint-close",
+      "question": "How is an Agentile sprint closed?",
+      "category": "agentile-hic",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "completed/"
+        ],
+        [
+          "archived"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/methodology/workflow.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-adr-path",
+      "question": "Where do Agentile architectural decision records go, and how are they named?",
+      "category": "agentile-hic",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "ADR-YYYY-MM-DD"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/methodology/workflow.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-hic-meaning",
+      "question": "What does HIC stand for in Citrate Core, and what is the single approval path every signature goes through?",
+      "category": "agentile-hic",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Human In Control"
+        ],
+        [
+          "SignatureCeremony"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/overview.md",
+          "anchor": "how-it-is-built"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-ceremony-rules",
+      "question": "What rules does the SignatureCeremony enforce?",
+      "category": "agentile-hic",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "one human approval per signature"
+        ],
+        [
+          "fails closed",
+          "fail closed"
+        ],
+        [
+          "no sidecar",
+          "sidecar ever signs"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/safety.md",
+          "anchor": "how-signing-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-agent-cannot-sign",
+      "question": "Can the on-device agent in Citrate Core sign a transaction by itself?",
+      "category": "agentile-hic",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "cannot sign",
+          "holds no key",
+          "keyless"
+        ],
+        [
+          "approval"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/core/for-agents.md",
+          "anchor": "the-one-rule-that-makes-this-safe"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-approval-tiers",
+      "question": "In the agent runtime's ApprovalQueue, how many signers does each risk tier need?",
+      "category": "agentile-hic",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "auto-approve"
+        ],
+        [
+          "one signer"
+        ],
+        [
+          "two"
+        ],
+        [
+          "officer roles"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/agent-runtime.md",
+          "anchor": "the-approval-gate-approvalqueue"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-break-glass",
+      "question": "What constraints apply to the agent runtime's break-glass path?",
+      "category": "agentile-hic",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "72-hour"
+        ],
+        [
+          "ITAR"
+        ],
+        [
+          "quorum"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/compute/agent-runtime.md",
+          "anchor": "the-approval-gate-approvalqueue"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-skills-integrity",
+      "question": "How does the agentile-skills marketplace keep SKILL.md content from changing without review?",
+      "category": "agentile-hic",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "skills.lock"
+        ],
+        [
+          "SHA-256"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "agentile-skills",
+          "path": "README.md",
+          "anchor": "pinning-to-a-known-good-version"
+        }
+      ]
+    },
+    {
+      "id": "qa-agentile-unans-velocity",
+      "question": "What story-point velocity target does Agentile set for each sprint?",
+      "category": "agentile-hic",
+      "difficulty": "easy",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-dev-sdk-canonical",
+      "question": "What is the canonical JavaScript/TypeScript SDK package for Citrate?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "@citratelabs/sdk"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/sdks/overview.md",
+          "anchor": "the-packages"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-sdk-deprecated",
+      "question": "Should a new project use @citratelabs/citrate-js?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "deprecated"
+        ],
+        [
+          "@citratelabs/sdk"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/sdks/overview.md",
+          "anchor": "the-packages"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-python-sdk",
+      "question": "What is the Python SDK package for Citrate called, and is it canonical?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "citrate-labs-sdk"
+        ],
+        [
+          "non-canonical",
+          "not canonical"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/sdks/overview.md",
+          "anchor": "the-packages"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-kyc-required",
+      "question": "Which SDK-driven actions require KYC on Citrate, and under which entitlement tier?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "commercial.kyc"
+        ],
+        [
+          "selling compute"
+        ],
+        [
+          "validator staking"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/sdks/overview.md",
+          "anchor": "where-kyc-is-required-and-where-it-is-not"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-cli-defaults",
+      "question": "What are the citrate CLI's default RPC endpoint and keystore location?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "localhost:8545"
+        ],
+        [
+          ".citrate/keystore"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/cli.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-cli-faucet",
+      "question": "Is the testnet faucet a subcommand of the citrate CLI?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "citrate-faucet"
+        ],
+        [
+          "separate"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/cli.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-cli-abi",
+      "question": "Which types does the citrate CLI's built-in ABI encoder support?",
+      "category": "devtools-contracts",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "address"
+        ],
+        [
+          "bool"
+        ],
+        [
+          "bytes32"
+        ],
+        [
+          "uint"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/cli.md",
+          "anchor": "contract-clisrccommandscontractrs"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-governance-precompile",
+      "question": "At which address is the governance precompile that citrate governance encodes calls to?",
+      "category": "devtools-contracts",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0x0000000000000000000000000000000000001003",
+          "1003"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/cli.md",
+          "anchor": "governance-clisrccommandsgovernancers"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-x402-precompile",
+      "question": "At which address is the x402 EIP712_VERIFY precompile, and what does it cost in gas?",
+      "category": "devtools-contracts",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0x0200"
+        ],
+        [
+          "3450"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "x402-payment-precompiles"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-facilitator-fee",
+      "question": "What is the maximum fee X402Facilitator can charge?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "1000"
+        ],
+        [
+          "ten percent",
+          "10%"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/x402.md",
+          "anchor": "x402facilitator"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-paywall-ttl",
+      "question": "What is the default access window granted by X402Paywall after a payment?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "1 day",
+          "one day",
+          "24 hours"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/x402.md",
+          "anchor": "x402paywall"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-foundry-pins",
+      "question": "Which solc version and EVM version are citrate-chain's Foundry contracts pinned to?",
+      "category": "devtools-contracts",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0.8.36"
+        ],
+        [
+          "cancun"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-chain",
+          "path": "README.md",
+          "anchor": "deploy-the-contract-book-locally"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-rpc-namespaces",
+      "question": "What are the three JSON-RPC namespaces a Citrate node serves?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "eth_"
+        ],
+        [
+          "chain_"
+        ],
+        [
+          "citrate_"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/rpc.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-dev-unans-hardhat",
+      "question": "What is the npm package name of Citrate's official Hardhat plugin?",
+      "category": "devtools-contracts",
+      "difficulty": "easy",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-dev-unans-rust-sdk",
+      "question": "What is the crates.io package name of the official Citrate Rust SDK?",
+      "category": "devtools-contracts",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-fl-belnap-values",
+      "question": "What are the four Belnap values Citrate uses in paraconsistent aggregation?",
+      "category": "paraconsensus-fl",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "True"
+        ],
+        [
+          "False"
+        ],
+        [
+          "Both"
+        ],
+        [
+          "Neither"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "the-four-values"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-both-meaning",
+      "question": "In Citrate's paraconsistent aggregation, what does the Belnap value Both mean?",
+      "category": "paraconsensus-fl",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "disagree"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "the-four-values"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-trust-weights",
+      "question": "How are trust weights for learning sources derived in paraconsistent aggregation?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "blue score"
+        ],
+        [
+          "softmax"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/paraconsistent.md",
+          "anchor": "how-the-implementation-works"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-ooda",
+      "question": "What are the four phases of the Citrate Orchard learning cycle?",
+      "category": "paraconsensus-fl",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Observe"
+        ],
+        [
+          "Orient"
+        ],
+        [
+          "Decide"
+        ],
+        [
+          "Act"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/learning.md",
+          "anchor": "the-learning-cycle-and-its-four-phases"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-macro-phases",
+      "question": "What are the network-wide learning macro-phases, in order?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Collection"
+        ],
+        [
+          "RoutingActive"
+        ],
+        [
+          "FullSystem"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/learning.md",
+          "anchor": "the-learning-cycle-and-its-four-phases"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-learning-root",
+      "question": "Which hash produces the learning_root, and does the block hash include it?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "SHA3-256"
+        ],
+        [
+          "excludes",
+          "excluded",
+          "not included"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/learning.md",
+          "anchor": "how-the-cycle-records-its-result"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-learning-quorum",
+      "question": "What does the learning orchestrator record when a checkpoint is below quorum?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "zero"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/learning.md",
+          "anchor": "failure-modes"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-learning-defaults",
+      "question": "What are the citrate-learning defaults for embedding dimension, minimum participants, and LoRA rank?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "768"
+        ],
+        [
+          "3",
+          "three"
+        ],
+        [
+          "16"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/learning.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-inv4",
+      "question": "Which invariant guarantees that learning can never alter the ledger state, and which TLA+ spec checks it?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "INV-4",
+          "StateRootIndependent"
+        ],
+        [
+          "StrobilationCheckpoint"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/learning.md",
+          "anchor": "how-the-cycle-records-its-result"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-mentor-constants",
+      "question": "In mentor matching, what are MIN_ACCURACY_GAP and MAX_MENTEES_PER_MENTOR?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0.05"
+        ],
+        [
+          "3",
+          "three"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/mentorship.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-mentor-adapter",
+      "question": "What does a mentor produce for its mentee in the mentorship protocol?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "delta adapter"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/mentorship.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-belnap-precompile",
+      "question": "Which precompile aggregates Belnap-q16 contributions, and what is its gas cost?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "0x0110"
+        ],
+        [
+          "2000 + 50"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/precompiles.md",
+          "anchor": "belnap-q16-lattice-aggregation"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-gradient-thesis",
+      "question": "What single thesis do the Gradient Papers argue?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "ledger"
+        ],
+        [
+          "learning network"
+        ],
+        [
+          "gradient"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/gradient-papers.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-fl-unans-dp-epsilon",
+      "question": "What differential-privacy epsilon does Citrate Orchard apply when publishing embeddings?",
+      "category": "paraconsensus-fl",
+      "difficulty": "hard",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-fl-unans-alf-rounds",
+      "question": "How many federated learning rounds has the ALF cooperative completed so far?",
+      "category": "paraconsensus-fl",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    },
+    {
+      "id": "qa-gov-four-contracts",
+      "question": "Which four contracts make up the Citrate governance surface?",
+      "category": "governance",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "TreasuryGovernor"
+        ],
+        [
+          "DisputeResolution"
+        ],
+        [
+          "AgentDecisionRegistry"
+        ],
+        [
+          "SpecRegistry"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-proposal-threshold",
+      "question": "How much voting power do you need to open a TreasuryGovernor proposal?",
+      "category": "governance",
+      "difficulty": "easy",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "10000 SALT"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "treasurygovernor"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-periods",
+      "question": "What are TreasuryGovernor's voting period and execution delay?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "50400"
+        ],
+        [
+          "7200"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "treasurygovernor"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-quorum",
+      "question": "What quorum and approval thresholds does TreasuryGovernor use?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "10%"
+        ],
+        [
+          "60%"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "treasurygovernor"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-emergency",
+      "question": "What extra requirement applies to emergency proposals in TreasuryGovernor?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "three times",
+          "3x",
+          "3 times"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "treasurygovernor"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-two-step",
+      "question": "How is governance authority handed over in the Governable mixin?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "transferGovernance"
+        ],
+        [
+          "acceptGovernance"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "what-it-is"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-dispute-timeout",
+      "question": "What happens if a party stalls in a DisputeResolution dispute?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "timeoutDispute"
+        ],
+        [
+          "challenger wins"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "disputeresolution"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-dispute-deadline",
+      "question": "What is DisputeResolution's default round deadline?",
+      "category": "governance",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "150 blocks"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "disputeresolution"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-trust-tiers",
+      "question": "What trust tiers does AgentDecisionRegistry derive, and how is the trust score computed?",
+      "category": "governance",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "Untrusted"
+        ],
+        [
+          "Standard"
+        ],
+        [
+          "Trusted"
+        ],
+        [
+          "twice disputes",
+          "minus twice"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "agentdecisionregistry"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-specregistry",
+      "question": "What does SpecRegistry map an operation domain to?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "IPFS"
+        ],
+        [
+          "Gherkin"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "specregistry"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-voting-power",
+      "question": "How is voting power computed in TreasuryGovernor?",
+      "category": "governance",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "SALT balance"
+        ],
+        [
+          "stSALT"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "treasurygovernor"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-exec-types",
+      "question": "Which TreasuryGovernor proposal types execute on-chain, and what happens to the others?",
+      "category": "governance",
+      "difficulty": "hard",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "TreasurySpend"
+        ],
+        [
+          "proposeCall",
+          "Call"
+        ],
+        [
+          "off-chain multisig",
+          "multisig"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/contracts/governance.md",
+          "anchor": "how-to-use-it"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-cli-governance",
+      "question": "Which subcommands does citrate governance offer?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "set-admin"
+        ],
+        [
+          "queue-param"
+        ],
+        [
+          "execute-param"
+        ],
+        [
+          "get-param"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/chain/cli.md",
+          "anchor": "governance-clisrccommandsgovernancers"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-constitution-paper",
+      "question": "Which Gradient Paper sets out the constitutional law of the Citrate organization, and through what is it enforced?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": true,
+      "keyPoints": [
+        [
+          "BR1J"
+        ],
+        [
+          "treasury governor"
+        ]
+      ],
+      "citations": [
+        {
+          "source": "citrate-docs",
+          "path": "content/research/gradient-papers.md",
+          "anchor": "reference"
+        }
+      ]
+    },
+    {
+      "id": "qa-gov-unans-proposals-passed",
+      "question": "How many treasury proposals have passed on the Citrate testnet so far?",
+      "category": "governance",
+      "difficulty": "medium",
+      "answerable": false,
+      "keyPoints": [],
+      "citations": [],
+      "note": "Not covered by the pinned public sources; the correct answer says it is not documented."
+    }
+  ]
+}
