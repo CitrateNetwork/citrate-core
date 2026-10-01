@@ -152,7 +152,8 @@ pub fn header_for(
 // Fetch with manual redirects
 // ---------------------------------------------------------------------------
 
-/// Per-hop timeouts (each `None` leaves ureq's default).
+/// Request timeouts (each `None` leaves ureq's default). `connect` and `recv_response` apply to
+/// each hop; `global` is ONE deadline for the whole redirect chain, final body included.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timeouts {
     pub connect: Option<std::time::Duration>,
@@ -226,14 +227,29 @@ pub fn fetch(
 ) -> Result<ureq::http::Response<ureq::Body>, FetchError> {
     let mut current = url::Url::parse(url).map_err(|_| FetchError::BadUrl)?;
     let mut hops: u32 = 0;
+    let deadline = timeouts
+        .global
+        .and_then(|g| std::time::Instant::now().checked_add(g));
     loop {
+        let global = match deadline {
+            Some(d) => {
+                let left = d.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err(FetchError::Transport(
+                        "the model server timed out".to_string(),
+                    ));
+                }
+                Some(left)
+            }
+            None => None,
+        };
         let mut req = ureq::get(current.as_str())
             .config()
             .max_redirects(0)
             .http_status_as_error(false)
             .timeout_connect(timeouts.connect)
             .timeout_recv_response(timeouts.recv_response)
-            .timeout_global(timeouts.global)
+            .timeout_global(global)
             .build();
         if let Some(r) = range {
             req = req.header("Range", r);

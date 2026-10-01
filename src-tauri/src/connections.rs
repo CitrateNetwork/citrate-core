@@ -1451,4 +1451,13 @@ mod tests {
         vault.lock();
         assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
     }
+
+    #[test]
+    fn hup_s0_3b_sealed_access_token_is_none_for_an_empty_token() {
+        let vault = fresh_vault();
+        let rec = serde_json::json!({ "access_token": "", "expires_at": null });
+        let mut bytes = serde_json::to_vec(&rec).unwrap();
+        vault.put(&slot(Service::HuggingFace), &mut bytes).unwrap();
+        assert!(sealed_access_token(Service::HuggingFace, &vault).is_none());
+    }
 }

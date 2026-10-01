@@ -32,6 +32,11 @@ struct TestServer {
 
 impl TestServer {
     fn start(responses: Vec<String>) -> TestServer {
+        TestServer::start_with_delay(responses, std::time::Duration::ZERO)
+    }
+
+    /// Like [`TestServer::start`], but waits `delay` after reading each request head.
+    fn start_with_delay(responses: Vec<String>, delay: std::time::Duration) -> TestServer {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let seen = Arc::new(StdMutex::new(Vec::new()));
@@ -54,6 +59,7 @@ impl TestServer {
                     head.push_str(&line);
                 }
                 seen2.lock().expect("lock").push(head);
+                std::thread::sleep(delay);
                 let mut stream = reader.into_inner();
                 let _ = stream.write_all(resp.as_bytes());
                 let _ = stream.flush();
@@ -116,8 +122,14 @@ fn hf_scope_allows_only_the_exact_hf_origins_over_https() {
     let s = AuthScope::huggingface();
     assert!(s.allows(&url("https://huggingface.co/org/repo/resolve/main/m.gguf")));
     assert!(s.allows(&url("https://hf.co/org/repo/resolve/main/m.gguf")));
-    assert!(s.allows(&url("https://HUGGINGFACE.CO/x")), "host compare is case-insensitive");
-    assert!(s.allows(&url("https://huggingface.co:443/x")), "explicit default port");
+    assert!(
+        s.allows(&url("https://HUGGINGFACE.CO/x")),
+        "host compare is case-insensitive"
+    );
+    assert!(
+        s.allows(&url("https://huggingface.co:443/x")),
+        "explicit default port"
+    );
 }
 
 #[test]
@@ -133,6 +145,8 @@ fn hf_scope_rejects_cdn_lookalike_downgrade_port_and_userinfo() {
         "https://evilhuggingface.co/x",
         "https://xhf.co/x",
         "http://huggingface.co/x",
+        "http://huggingface.co:443/x",
+        "http://hf.co:443/x",
         "https://huggingface.co:8443/x",
         "https://user@huggingface.co/x",
         "https://user:pw@hf.co/x",
@@ -147,7 +161,9 @@ fn header_for_is_none_off_scope_and_bearer_on_scope() {
     let t = token();
     let s = AuthScope::huggingface();
     assert_eq!(
-        header_for(&s, Some(&t), &url("https://huggingface.co/x")).as_deref().map(String::as_str),
+        header_for(&s, Some(&t), &url("https://huggingface.co/x"))
+            .as_deref()
+            .map(String::as_str),
         Some("Bearer hf_test_token_value")
     );
     assert!(header_for(&s, Some(&t), &url("https://cdn-lfs.hf.co/x")).is_none());
@@ -176,7 +192,10 @@ fn gated_message_points_at_settings_connections_and_has_no_em_dash() {
         let msg = FetchError::Gated { token_sent: sent }.to_string();
         assert!(msg.contains("Hugging Face token"), "{msg}");
         assert!(msg.contains("Settings › Connections"), "{msg}");
-        assert!(!msg.contains('\u{2014}'), "no em-dash in user-facing text: {msg}");
+        assert!(
+            !msg.contains('\u{2014}'),
+            "no em-dash in user-facing text: {msg}"
+        );
         assert!(!msg.contains(TOK));
     }
 }
@@ -219,7 +238,9 @@ fn cross_origin_redirect_strips_authorization() {
     );
     assert!(!cdn_reqs[0].contains(TOK));
     assert!(
-        cdn_reqs[0].to_ascii_lowercase().contains("range: bytes=0-7"),
+        cdn_reqs[0]
+            .to_ascii_lowercase()
+            .contains("range: bytes=0-7"),
         "the Range header survives the redirect: {}",
         cdn_reqs[0]
     );
@@ -244,7 +265,9 @@ fn same_origin_relative_redirect_keeps_authorization() {
     let reqs = hub.requests();
     assert_eq!(reqs.len(), 2);
     assert!(reqs[1].starts_with("GET /api/resolve-cache/models/org/repo/abc/m.gguf"));
-    assert!(reqs.iter().all(|h| h.contains("Bearer hf_test_token_value")));
+    assert!(reqs
+        .iter()
+        .all(|h| h.contains("Bearer hf_test_token_value")));
 }
 
 #[test]
@@ -274,8 +297,14 @@ fn redirect_back_onto_the_hub_after_leaving_it_re_attaches_only_on_the_hub() {
 fn no_token_sends_no_authorization_anywhere() {
     let hub = TestServer::start(vec![ok_body("200 OK", "GGUF")]);
     let scope = AuthScope::exact_for_tests(&hub.origin());
-    let resp = fetch(&format!("{}/x", hub.origin()), None, &scope, None, &timeouts())
-        .expect("fetch");
+    let resp = fetch(
+        &format!("{}/x", hub.origin()),
+        None,
+        &scope,
+        None,
+        &timeouts(),
+    )
+    .expect("fetch");
     assert_eq!(read_all(resp), "GGUF");
     assert!(!has_auth(&hub.requests()[0]));
 }
@@ -284,8 +313,14 @@ fn no_token_sends_no_authorization_anywhere() {
 fn gated_401_without_token_is_the_honest_gated_error() {
     let hub = TestServer::start(vec![status_only("401 Unauthorized")]);
     let scope = AuthScope::exact_for_tests(&hub.origin());
-    let err = fetch(&format!("{}/x", hub.origin()), None, &scope, None, &timeouts())
-        .expect_err("401 must fail");
+    let err = fetch(
+        &format!("{}/x", hub.origin()),
+        None,
+        &scope,
+        None,
+        &timeouts(),
+    )
+    .expect_err("401 must fail");
     assert_eq!(err, FetchError::Gated { token_sent: false });
 }
 
@@ -324,8 +359,14 @@ fn a_403_from_the_cdn_is_not_reported_as_gated() {
 fn non_2xx_final_status_is_an_error() {
     let hub = TestServer::start(vec![status_only("500 Internal Server Error")]);
     let scope = AuthScope::exact_for_tests(&hub.origin());
-    let err = fetch(&format!("{}/x", hub.origin()), None, &scope, None, &timeouts())
-        .expect_err("500 must fail");
+    let err = fetch(
+        &format!("{}/x", hub.origin()),
+        None,
+        &scope,
+        None,
+        &timeouts(),
+    )
+    .expect_err("500 must fail");
     assert_eq!(err, FetchError::Status(500));
 }
 
@@ -334,18 +375,54 @@ fn redirect_loop_is_bounded() {
     let responses: Vec<String> = (0..=MAX_REDIRECTS).map(|_| redirect_to("/again")).collect();
     let hub = TestServer::start(responses);
     let scope = AuthScope::exact_for_tests(&hub.origin());
-    let err = fetch(&format!("{}/x", hub.origin()), None, &scope, None, &timeouts())
-        .expect_err("loop must fail");
+    let err = fetch(
+        &format!("{}/x", hub.origin()),
+        None,
+        &scope,
+        None,
+        &timeouts(),
+    )
+    .expect_err("loop must fail");
     assert_eq!(err, FetchError::TooManyRedirects);
     assert_eq!(hub.requests().len() as u32, MAX_REDIRECTS + 1);
+}
+
+#[test]
+fn global_timeout_bounds_the_whole_redirect_chain_not_each_hop() {
+    // Each hop answers after 400 ms; an 11-hop chain would take ~4.4 s if the global cap were
+    // re-armed per hop. The cap is one deadline for the whole chain, so it fails near 1 s.
+    let responses: Vec<String> = (0..=MAX_REDIRECTS).map(|_| redirect_to("/again")).collect();
+    let hub = TestServer::start_with_delay(responses, std::time::Duration::from_millis(400));
+    let scope = AuthScope::exact_for_tests(&hub.origin());
+    let t = Timeouts {
+        connect: Some(std::time::Duration::from_secs(5)),
+        recv_response: Some(std::time::Duration::from_secs(5)),
+        global: Some(std::time::Duration::from_secs(1)),
+    };
+    let started = std::time::Instant::now();
+    let err = fetch(&format!("{}/x", hub.origin()), None, &scope, None, &t)
+        .expect_err("the chain must time out");
+    assert!(matches!(err, FetchError::Transport(_)), "got {err:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(2500),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!((hub.requests().len() as u32) < MAX_REDIRECTS);
 }
 
 #[test]
 fn redirect_to_a_non_http_scheme_is_refused() {
     let hub = TestServer::start(vec![redirect_to("file:///etc/passwd")]);
     let scope = AuthScope::exact_for_tests(&hub.origin());
-    let err = fetch(&format!("{}/x", hub.origin()), None, &scope, None, &timeouts())
-        .expect_err("file: redirect must fail");
+    let err = fetch(
+        &format!("{}/x", hub.origin()),
+        None,
+        &scope,
+        None,
+        &timeouts(),
+    )
+    .expect_err("file: redirect must fail");
     assert_eq!(err, FetchError::BadRedirect);
 }
 
@@ -353,8 +430,14 @@ fn redirect_to_a_non_http_scheme_is_refused() {
 fn redirect_without_location_is_refused() {
     let hub = TestServer::start(vec![status_only("302 Found")]);
     let scope = AuthScope::exact_for_tests(&hub.origin());
-    let err = fetch(&format!("{}/x", hub.origin()), None, &scope, None, &timeouts())
-        .expect_err("no Location must fail");
+    let err = fetch(
+        &format!("{}/x", hub.origin()),
+        None,
+        &scope,
+        None,
+        &timeouts(),
+    )
+    .expect_err("no Location must fail");
     assert_eq!(err, FetchError::BadRedirect);
 }
 
@@ -373,7 +456,10 @@ fn transport_for(hub: &TestServer, path: &str, tok: Option<HfToken>) -> UreqMode
 #[test]
 fn transport_segment_strips_authorization_on_the_cdn_hop_and_keeps_the_206_gate() {
     let cdn = TestServer::start(vec![ok_body("206 Partial Content", "GGUF")]);
-    let hub = TestServer::start(vec![redirect_to(&format!("{}/xet/blob?sig=abc", cdn.origin()))]);
+    let hub = TestServer::start(vec![redirect_to(&format!(
+        "{}/xet/blob?sig=abc",
+        cdn.origin()
+    ))]);
     let t = transport_for(&hub, "/org/repo/resolve/main/m.gguf", Some(token()));
     let mut r = t.get_range(0, 4).expect("segment");
     let mut got = String::new();
@@ -381,7 +467,9 @@ fn transport_segment_strips_authorization_on_the_cdn_hop_and_keeps_the_206_gate(
     assert_eq!(got, "GGUF");
     assert!(has_auth(&hub.requests()[0]));
     assert!(!has_auth(&cdn.requests()[0]), "{}", cdn.requests()[0]);
-    assert!(cdn.requests()[0].to_ascii_lowercase().contains("range: bytes=0-3"));
+    assert!(cdn.requests()[0]
+        .to_ascii_lowercase()
+        .contains("range: bytes=0-3"));
 }
 
 #[test]
@@ -409,7 +497,10 @@ fn transport_gated_repo_surfaces_the_honest_message_and_is_not_retried() {
     let hub = TestServer::start(vec![status_only("401 Unauthorized")]);
     let t = transport_for(&hub, "/org/gated/resolve/main/m.gguf", None);
     let err = t.get_range(0, 4).err().expect("gated");
-    assert!(matches!(err, ModelError::Gated { token_sent: false }), "{err}");
+    assert!(
+        matches!(err, ModelError::Gated { token_sent: false }),
+        "{err}"
+    );
     assert!(err.to_string().contains("Settings › Connections"));
 
     // The download loop returns a gated error at once (no backoff retries against a 401).
@@ -419,7 +510,10 @@ fn transport_gated_repo_surfaces_the_honest_message_and_is_not_retried() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let hub2 = TestServer::start(vec![status_only("403 Forbidden"), status_only("403 Forbidden")]);
+    let hub2 = TestServer::start(vec![
+        status_only("403 Forbidden"),
+        status_only("403 Forbidden"),
+    ]);
     let mgr = crate::model::ModelManager::new(
         dir.clone(),
         Box::new(transport_for(&hub2, "/m.gguf", Some(token()))),
@@ -428,8 +522,15 @@ fn transport_gated_repo_surfaces_the_honest_message_and_is_not_retried() {
     )
     .with_retry_backoff(|_| std::time::Duration::ZERO);
     let err = mgr.download().expect_err("gated");
-    assert!(matches!(err, ModelError::Gated { token_sent: true }), "{err}");
-    assert_eq!(hub2.requests().len(), 1, "a gated answer is final, not retried");
+    assert!(
+        matches!(err, ModelError::Gated { token_sent: true }),
+        "{err}"
+    );
+    assert_eq!(
+        hub2.requests().len(),
+        1,
+        "a gated answer is final, not retried"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
