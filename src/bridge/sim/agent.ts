@@ -35,6 +35,33 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async resolve() {
       /* sim: no sidecar effect to release */
     },
+    // HUP-S1.1c — no sidecar in web/dev: refuse honestly (Rule 1), never fake a turn.
+    async sessionOpen() {
+      throw new Error("the sidecar agent loop needs the desktop app");
+    },
+    async sessionSend() {
+      throw new Error("the sidecar agent loop needs the desktop app");
+    },
+    async sessionEvents() {
+      return { events: [], lastSeq: 0, busy: false };
+    },
+    async sessionToolResult() {
+      throw new Error("the sidecar agent loop needs the desktop app");
+    },
+    async sessionStop() {
+      /* nothing running */
+    },
+    // HUP-S1.4 — the tracks and briefs are served by the sidecar; web/dev has none. Refuse honestly
+    // rather than inventing a question set or a brief (Rule 1).
+    async tracks() {
+      throw new Error("the interview needs the Hermes sidecar in the desktop app");
+    },
+    async briefCreate() {
+      throw new Error("the interview needs the Hermes sidecar in the desktop app");
+    },
+    async briefCheck() {
+      throw new Error("the interview needs the Hermes sidecar in the desktop app");
+    },
   };
 }
 

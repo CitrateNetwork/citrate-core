@@ -880,6 +880,77 @@ export interface AgentHarnessDomain {
    *  PBA-L7b-003: BOUND to the reviewed call `id` — if the sidecar's head is no longer that call the
    *  promise rejects with a message starting `STALE_APPROVAL` and NOTHING is resolved (re-review). */
   resolve(approve: boolean, id: string): Promise<void>;
+  /** HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar). Open a session on the LOCAL
+   *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
+   *  tool runs in core through its approval gates). Returns the session id. */
+  sessionOpen(systemPrompt: string, toolsJson: string): Promise<string>;
+  sessionSend(id: string, text: string): Promise<void>;
+  /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
+  sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
+  /** Hand back a core-hosted tool's result after core's own gates ran it. */
+  sessionToolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
+  sessionStop(id: string): Promise<void>;
+  /** HUP-S1.4 — the interview tracks the sidecar serves (question sets, persona, skills, workflow,
+   *  gates). Rejects when the sidecar isn't running. */
+  tracks(): Promise<InterviewTrack[]>;
+  /** HUP-S1.4 — answers → brief. Unanswered questions take their defaults (empty answers = "just use
+   *  defaults"); no `track` lets the sidecar suggest one from the goal. A refusal (no track fits, an
+   *  answer outside its choices) rejects with a message starting `BRIEF_REFUSED: `. Builds nothing. */
+  briefCreate(track: string | null, goal: string, answers: Record<string, string>): Promise<BriefDraft>;
+  /** HUP-S1.4 — validate a member-edited brief against its track (required gates and the workflow
+   *  can't be edited away). A refusal rejects with `BRIEF_REFUSED: <reason>`. */
+  briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
+}
+
+// HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types
+// verbatim (snake_case), so a brief round-trips webview → core → sidecar unchanged.
+export interface InterviewQuestion {
+  id: string;
+  ask: string;
+  /** Empty = free text; otherwise the answer must be one of these. */
+  choices: string[];
+  default: string;
+}
+export interface InterviewTrack {
+  id: string;
+  title: string;
+  summary: string;
+  persona: string;
+  skills: string[];
+  workflow: string;
+  /** False until the workflow ships; the UI says so (Rule 1). */
+  workflow_available: boolean;
+  ships_in?: string | null;
+  gates: string[];
+  questions: InterviewQuestion[];
+}
+export interface BriefConstraint {
+  id: string;
+  ask: string;
+  answer: string;
+  from_default: boolean;
+}
+export interface Brief {
+  track: string;
+  goal: string;
+  constraints: BriefConstraint[];
+  persona: string;
+  skills: string[];
+  workflow: string;
+  workflow_available: boolean;
+  ships_in?: string | null;
+  gates: string[];
+}
+export interface BriefDraft {
+  brief: Brief;
+  markdown: string;
+}
+
+/** HUP-S1.1c — one page of a sidecar session's event log. */
+export interface SessionEventsPage {
+  events: { seq: number; event: Record<string, unknown> }[];
+  lastSeq: number;
+  busy: boolean;
 }
 
 // ── Local instruction-skills (Hermes "write & run skills"). A skill is a markdown playbook the agent
@@ -1115,8 +1186,59 @@ export interface TelemetryDomain {
   send(bundleJson: string): Promise<void>;
 }
 
+// ---- HUP-S1.6 — hardware tier (02_ARCHITECTURE §3, US-1.6). Mirrors Rust `tier.rs`. ----
+
+export type TierId = "T0" | "T1" | "T2";
+
+/** What this machine reported. `null` = could not be read — shown as unknown, never guessed. */
+export interface HardwareFacts {
+  os: string;
+  arch: string;
+  totalRamBytes: number | null;
+  /** true on Apple Silicon (the GPU shares system memory); null = not known either way. */
+  unifiedMemory: boolean | null;
+  /** Largest dedicated GPU memory (NVIDIA only today); null = unknown / none. */
+  gpuVramBytes: number | null;
+  diskFreeBytes: number | null;
+}
+
+export interface TierProfile {
+  tier: TierId;
+  /** Display-only model family for the tier (S1.7 finalizes the picks). */
+  modelHint: string;
+  /** Normalized filename fragments identifying a matching model file. */
+  modelMatch: string[];
+  ctxTokens: number;
+}
+
+export interface TierRecommendation extends TierProfile {
+  rationale: string[];
+  /** T0: the guided / escalate tier. */
+  guided: boolean;
+  usableBytes: number | null;
+}
+
+export interface TierReport {
+  facts: HardwareFacts;
+  recommendation: TierRecommendation;
+  /** The persisted user choice, or null when the recommendation applies. */
+  overrideTier: TierId | null;
+  /** The tier in effect (override ?? recommendation). */
+  effective: TierId;
+  profiles: TierProfile[];
+}
+
+export interface TierDomain {
+  /** Probe this machine locally (no network) and recommend a tier. null = no hardware read is
+   *  possible here (web preview) — never a fabricated machine. */
+  recommend(): Promise<TierReport | null>;
+  /** Persist the user's tier choice (null clears it). Stores only the tier id. */
+  setOverride(tier: TierId | null): Promise<TierId | null>;
+}
+
 export interface CxBridge {
   modelsCatalog: ModelsCatalogDomain;
+  tier: TierDomain;
   telemetry: TelemetryDomain;
   storage: StorageDomain;
   groups: GroupsDomain;

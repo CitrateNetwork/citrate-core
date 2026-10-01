@@ -27,6 +27,10 @@ gates:
         desc: AgentLoop, FolderGrant, WebSigningBudget, SkillPersistence, DeployGate, SpendBudget, AnchorBatch, DeviceLink written and TLC-checked at small bounds (full proofs close with their WPs)
         met: false
         evidence: src-tauri/formal/
+        note: >-
+          Partial 2026-09-30: AgentLoop written + TLC-green (1,258 distinct states, mutation-checked;
+          scripts/run-tlc.sh AgentLoop). Remaining: FolderGrant, WebSigningBudget, SkillPersistence,
+          DeployGate, SpendBudget, AnchorBatch, DeviceLink.
     reviewers: [Larry Klosowski (owner)]
   - id: gate1
     name: Stable + one agent (S0, S1)
