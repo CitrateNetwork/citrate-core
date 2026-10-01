@@ -48,9 +48,10 @@ not per device.
 - `POST /faucet {address}` sends a fixed **10 SALT** (`DRIP_AMOUNT`) from the faucet's own hot
   wallet, as a legacy transaction at 1 gwei.
 - Cooldowns: **24 h per recipient address and 1 h per client IP**, reserved atomically before the
-  send and persisted to disk so a restart does not reset them (`faucet/src/cooldowns.rs`).
+  send (`faucet/src/cooldowns.rs`). They are persisted to disk, so a restart does not reset them,
+  only when the deployment sets `FAUCET_COOLDOWN_FILE`; otherwise they live in memory.
 - An optional CAPTCHA (`FAUCET_TURNSTILE_SECRET`; when set, a request without a valid
-  `turnstile_token` is refused), a CORS origin allowlist, an optional address allowlist, and a
+  `turnstile_token` is refused), a CORS origin allowlist, an optional address allowlist (`FAUCET_WHITELIST`), and a
   trusted-proxy list for the client IP.
 
 The faucet's key is an operations key of that service. It is not a member key and is never in

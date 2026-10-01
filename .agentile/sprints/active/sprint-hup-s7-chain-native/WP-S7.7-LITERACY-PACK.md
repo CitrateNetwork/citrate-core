@@ -39,7 +39,7 @@ gas constants from each precompile file, and the address book `contracts/address
   2026-10-01 08:50 UTC) through a throwaway contract's constructor inside `eth_estimateGas`, which
   reverts with the result so nothing is deployed. Output: values 0.8125, 0.0, 0.125, -0.5625 and
   states True, Both, Neither, True, matching the hand calculation.
-- `0x0100` and `0x0101` called from contract code return success with empty data (not bridged).
+- `0x0100` and `0x0101` give contract code no result (not bridged); callers must check `ok` and the return length.
 - `0x0120` with malformed input returns the all-zero word; `0x0107`, `0x0111`, `0x0130` with a
   one-byte input fail and consume the forwarded gas.
 - A top-level `eth_call` whose `to` is any precompile, including the standard `0x02`, returns `0x`.

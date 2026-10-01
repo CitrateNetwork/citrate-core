@@ -232,3 +232,35 @@ describe("the literacy skills under src-tauri/skills", () => {
     });
   }
 });
+
+// Review fix: the 0x0110 worked example must be internally consistent, so a reader who copies it
+// gets an input the precompile accepts and an output of the documented size.
+describe("citrate-belnap-aggregate worked example", () => {
+  const text = readFileSync(join(skillsRoot, "citrate-belnap-aggregate", "SKILL.md"), "utf8");
+  const hexBlockAfter = (marker: RegExp): { header: RegExpMatchArray; hex: string } => {
+    const header = text.match(marker);
+    if (!header || header.index === undefined) throw new Error(`marker ${marker} not found`);
+    const fence = text.indexOf("```text\n", header.index);
+    const end = text.indexOf("\n```", fence + 8);
+    const hex = text.slice(fence + 8, end).replace(/\s+/g, "").replace(/^0x/, "");
+    return { header, hex };
+  };
+
+  it("declares the input's true byte length, which matches 24 + 16 n dim + 8 n", () => {
+    const { header, hex } = hexBlockAfter(/Input \((\d+) bytes/);
+    expect(hex).toMatch(/^[0-9a-f]+$/);
+    const bytes = hex.length / 2;
+    const dim = parseInt(hex.slice(0, 8), 16);
+    const n = parseInt(hex.slice(8, 16), 16);
+    expect(Number(header[1])).toBe(bytes);
+    expect(bytes).toBe(24 + 16 * n * dim + 8 * n);
+  });
+  it("shows an output of exactly 9 * dim bytes: dim i64 values, then dim state bytes", () => {
+    const input = hexBlockAfter(/Input \((\d+) bytes/).hex;
+    const dim = parseInt(input.slice(0, 8), 16);
+    const { hex } = hexBlockAfter(/Output returned by chain 40204/);
+    expect(hex.length / 2).toBe(9 * dim);
+    const states = hex.slice(16 * dim).match(/../g)?.map((b) => parseInt(b, 16));
+    expect(states).toEqual([1, 3, 0, 1]);
+  });
+});

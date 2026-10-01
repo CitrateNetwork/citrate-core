@@ -69,9 +69,9 @@ means the confident sources agree the dimension is negative.
 
 ## Gas
 
-`2000 + 50 * dim` before the chain's `pba_hardening_height` activation and
-`2000 + 50 * dim * max(n, 1)` at and after it
-(`citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn gas_for`). A malformed input
+The formula is in `citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn gas_for`:
+`2000 + 50 * dim`, scaled by `max(n, 1)` from a chain activation height onward. Budget for the
+larger figure, `2000 + 50 * dim * max(n, 1)`. A malformed input
 still costs at least the 2000 base. If you forward too little gas or the input is malformed, the
 precompile errors, and like any failing precompile the STATICCALL returns false and consumes the
 gas it was given, so forward a bounded amount.
@@ -96,7 +96,7 @@ Expected, by hand:
 - d3: p0 and p1 are confident and both oppose, p2 is not confident: **True**, with value
   -0.5 - 0.25 + 0.1875 = **-0.5625**.
 
-Input (480 bytes):
+Input (240 bytes, shown as 480 hex digits):
 
 ```text
 0x0000000400000003000000000001000000000000000100000000000000004000ffffffffffff000000000000000080
@@ -108,7 +108,7 @@ cd
 ```
 
 Output returned by chain 40204 on 2026-10-01 (block 61,978, 08:50 UTC, called from contract code with
-STATICCALL; the call succeeded and the whole STATICCALL including call overhead used 2,627 gas):
+STATICCALL; the call succeeded):
 
 ```text
 0x000000000000d000 0000000000000000 0000000000002000 ffffffffffff7000 01 03 00 01

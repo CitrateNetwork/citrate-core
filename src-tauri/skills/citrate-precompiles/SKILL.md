@@ -33,10 +33,9 @@ are summaries; where they differ from the code, the code wins.
 The EVM bridge registers only the 16 addresses in `PURE_PRECOMPILE_ADDRESSES`
 (`citrate-chain:core/execution/src/revm_adapter.rs#fn register_citrate_precompiles`). Everything
 else in the Citrate ranges, notably the hosted-inference family `0x0100` to `0x0106`, is **not
-bridged**. Observed on chain 40204 on 2026-10-01 from contract code: a STATICCALL to `0x0100` or
-`0x0101` succeeded and returned **empty data**, exactly like a call to an empty account. After the
-chain's hardening activation (`pba_hardening_height`) those reserved addresses are registered as
-precompiles that always fail (`citrate-chain:core/execution/src/precompiles/mod.rs#pub fn reserved_unbridged_addresses`).
+bridged**: contract code gets no result from them. Depending on the node build, a call to one of
+these reserved addresses either fails or succeeds with **empty data**, like a call to an empty
+account (`citrate-chain:core/execution/src/precompiles/mod.rs#pub fn reserved_unbridged_addresses`).
 Either way: **always check `ok` and the length of the return data**. Never treat empty data as a
 result.
 
@@ -54,7 +53,7 @@ result.
 | `0x010D` | TENSOR_RELU_Q16 | Q16.16 ReLU | `1000 + 1` per element | yes |
 | `0x010E` | TENSOR_LINEAR_Q16 | Q16.16 linear layer | `5000 + 4` per multiply-add `+ 1` per bias | yes |
 | `0x010F` | TENSOR_TRANSPOSE_Q16 | Q16.16 transpose | `1000 + 1` per element | yes |
-| `0x0110` | BELNAP_AGGREGATE | Belnap-FOUR aggregation: Q16 values plus one state per dimension | `2000 + 50 * dim` (times `n` after hardening) | yes |
+| `0x0110` | BELNAP_AGGREGATE | Belnap-FOUR aggregation: Q16 values plus one state per dimension | `2000 + 50 * dim`, times `n` from an activation height | yes |
 | `0x0111` | ROUTING_INFERENCE | fixed 768-128-3 Q16 MLP forward pass, returns mentor id, adapter id, confidence | `5000 + 4` per parameter (465,324 at the canonical shape) | yes |
 | `0x0120` | ED25519_VERIFY | strict RFC 8032 Ed25519 verify, 32-byte 0/1 word | flat 2000, message at most 8 KiB | yes |
 | `0x0130` | FOLD_COMMD_VERIFY | recursive-fold CommD proof verifier | `2000000 + 50` per byte | yes (address); feature-gated, not consensus-active |
