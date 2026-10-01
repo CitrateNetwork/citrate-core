@@ -184,7 +184,7 @@ describe("HUP-S7.6 sidecar loop honours Stop", () => {
     expect(calls).not.toContain("result:c1");
   });
 
-  it("the next turn starts after the stopped one drained, from the right sequence number", async () => {
+  it("the next turn starts after the stopped one drained, in a fresh session", async () => {
     const ac = new AbortController();
     const { a, calls } = api(
       [
@@ -202,7 +202,60 @@ describe("HUP-S7.6 sidecar loop honours Stop", () => {
     const out = await second;
     expect(out.content).toBe("fresh");
     expect(calls.indexOf("send:two")).toBeGreaterThan(calls.indexOf("stop"));
-    expect(calls).toContain("events:2");
+    // The stopped turn drained to its `done` (events after seq 1) before the next turn began, and
+    // the next turn did not reuse the stopped session (its stop switch stays on).
+    expect(calls.indexOf("events:1")).toBeLessThan(calls.indexOf("send:two"));
+    expect(a.open).toHaveBeenCalledTimes(2);
+  });
+
+  // The sidecar's per-session stop switch is one-way: once a session is stopped, every later turn
+  // in it ends at once with outcome "stopped". A fake that behaves the same way.
+  function stickyStopApi(onSend?: (text: string) => void) {
+    let opened = 0;
+    const stopped = new Set<string>();
+    const sent = new Map<string, number>();
+    const a: SidecarSessionApi = {
+      open: vi.fn(async () => "s" + ++opened),
+      send: vi.fn(async (id: string, text: string) => { sent.set(id, (sent.get(id) ?? 0) + 1); onSend?.(text); }),
+      events: vi.fn(async (id: string, after: number) => {
+        // Each turn in this fake writes two events, so turn n starts after seq 2(n-1).
+        const base = ((sent.get(id) ?? 1) - 1) * 2;
+        if (after >= base + 2) return { events: [], lastSeq: after, busy: false };
+        const evs = stopped.has(id)
+          ? [{ seq: base + 1, event: { type: "step_start", step: 0 } }, { seq: base + 2, event: { type: "done", outcome: "stopped" } }]
+          : [{ seq: base + 1, event: { type: "final", content: "fresh answer" } }, { seq: base + 2, event: { type: "done", outcome: "answered" } }];
+        return { events: evs, lastSeq: base + 2, busy: false };
+      }),
+      toolResult: vi.fn(async () => {}),
+      stop: vi.fn(async (id: string) => { stopped.add(id); }),
+    };
+    return a;
+  }
+
+  it("after a Stop the next turn gets a real answer, not the stopped session's empty one", async () => {
+    const ac = new AbortController();
+    const a = stickyStopApi((text) => { if (text === "one") ac.abort(); });
+    const p = createSidecarProvider(a, () => "p", () => []);
+    const cbs = () => ({ onStatus: vi.fn(), onToken: vi.fn(), onToolCall: vi.fn(async () => "r") });
+    await p.send({ messages: [{ role: "user", content: "warm up" }], callbacks: cbs() });
+    // The member presses Stop while turn "one" runs; the session's stop route is called.
+    await expect(p.send({ messages: [{ role: "user", content: "one" }], signal: ac.signal, callbacks: cbs() })).rejects.toBeInstanceOf(TurnStopped);
+    expect(a.stop).toHaveBeenCalledWith("s1");
+    const out = await p.send({ messages: [{ role: "user", content: "two" }], callbacks: cbs() });
+    expect(out.content).toBe("fresh answer");
+  });
+
+  it("a turn the member did not stop that ends 'stopped' is shown as a failure, never an empty answer", async () => {
+    const a = stickyStopApi();
+    const p = createSidecarProvider(a, () => "p", () => []);
+    const cbs = () => ({ onStatus: vi.fn(), onToken: vi.fn(), onToolCall: vi.fn(async () => "r") });
+    await p.send({ messages: [{ role: "user", content: "warm up" }], callbacks: cbs() });
+    await a.stop("s1"); // stopped from elsewhere (the sidecar's own stop or the global stop)
+    await expect(p.send({ messages: [{ role: "user", content: "two" }], callbacks: cbs() })).rejects.toThrow(/stopped/i);
+    // ...and the turn after that runs in a fresh session.
+    const out = await p.send({ messages: [{ role: "user", content: "three" }], callbacks: cbs() });
+    expect(out.content).toBe("fresh answer");
+    expect(a.open).toHaveBeenCalledTimes(2);
   });
 
   it("reports step_start as a step", async () => {

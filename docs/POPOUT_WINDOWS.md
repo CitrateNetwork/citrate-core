@@ -71,7 +71,9 @@ The Stop button sends `monitor.stop`; the main window runs `store.stopAgentTurn(
 - the in-app loop stops before its next model request or tool call (an in-flight model request
   cannot be cancelled; its late answer is discarded);
 - the sidecar loop calls the session's stop route (`hermes_session_stop`), drains its events to
-  `done`, and runs no tool call after Stop; the next turn starts only after that drain;
+  `done`, and runs no tool call after Stop; the next turn starts only after that drain, in a fresh
+  sidecar session (a session's stop switch stays on, so a stopped session is not reused; the new
+  session does not carry the earlier conversation);
 - a tool call the stopped turn asks for afterwards is not run;
 - an approval card already open stays open for the member to decide.
 

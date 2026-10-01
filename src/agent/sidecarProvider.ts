@@ -105,7 +105,11 @@ export function createSidecarProvider(
         if (fresh.length === 0) {
           idle = page.busy ? 0 : idle + 1;
           if (idle >= MAX_IDLE_POLLS) {
-            if (stopping) break;
+            if (stopping) {
+              // The stop route was called on this session, so it is not reused (see `done` below).
+              if (sessionId === id) sessionId = null;
+              break;
+            }
             throw new Error("the agent session stopped responding");
           }
           continue;
@@ -116,7 +120,12 @@ export function createSidecarProvider(
           const type = String(ev.type);
           if (type === "done") {
             finished = true;
-            if (!stopping && ev.outcome !== "answered" && ev.outcome !== "stopped") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
+            if (ev.outcome === "stopped") {
+              // A session's stop switch stays on, so every later turn in it would end at once with
+              // an empty answer. Leave it; the next turn opens a fresh session.
+              if (sessionId === id) sessionId = null;
+              if (!stopping) failure = failure ?? "the agent session was stopped; send again to start a fresh one";
+            } else if (!stopping && ev.outcome !== "answered") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
             continue;
           }
           if (type === "tool_result") {

@@ -45,3 +45,12 @@ found unkillable and removed.
 - No run in the packaged app and no click-through on a real machine.
 - The ACL proof uses Tauri's resolver over the source files in a test; the running app's ACL comes
   from the same files through `tauri-build`, which validated them at build time.
+
+## Review fix (adversarial review, 2026-10-01)
+
+The sidecar's per-session stop switch is one-way: after a Stop, every later turn in that session
+ended at once with outcome `stopped`, which the provider returned as an empty answer. Red: two new
+tests in `src/shell/stopTurn.test.ts` (a fake session whose stop stays on) received `''` instead of
+the answer. Fix: after a turn that ends `stopped`, the provider forgets the session and the next
+turn opens a fresh one; a turn the member did not stop that ends `stopped` is shown as a failure
+("send again to start a fresh one"). Mutants (drop-session removed, failure removed) both killed.
