@@ -16,8 +16,10 @@ Hermes may keep a skill or a memory from its own work, under four rules:
 3. **Publishing is HIC-1.** Sending a saved skill to the on-chain SkillRegistry goes through the
    Signature Ceremony, one approval per publish. It is off for now (see below).
 4. **Contradictions are surfaced, never merged.** A memory that disagrees with one you already
-   have must be acknowledged, and then both are kept as Belnap `both`: neither is relied on until
-   you resolve it.
+   have must be acknowledged, and then both are kept as Belnap `both` (unresolved) in the
+   learned-memory ledger and linked by a quarantined `contradicts` edge in the memory graph.
+   Nothing is merged or overwritten. The app does not yet hide a contradicted memory from
+   memory recall, and there is no screen to resolve one yet.
 
 ## How it flows
 

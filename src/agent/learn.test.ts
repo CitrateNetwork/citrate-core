@@ -107,7 +107,7 @@ describe("Feature: contradictions are surfaced, never merged (AC4)", () => {
     expect(acknowledgedFor(p, acked)).toEqual([]);
   });
 
-  it("Given a contradicted memory in the ledger, then its row says neither claim is relied on", () => {
+  it("Given a contradicted memory in the ledger, then its row says both are kept and unresolved, and claims nothing it does not enforce", () => {
     const mem: LearnedMemory = {
       proposalId: "lp-000000000000000000000002",
       key: "deploy chain",
@@ -123,6 +123,9 @@ describe("Feature: contradictions are surfaced, never merged (AC4)", () => {
     };
     const r = memoryRowModel(mem);
     expect(r.belnapLabel).toMatch(/unresolved/);
+    expect(r.belnapLabel).toMatch(/both are kept/);
+    // Nothing hides a contradicted memory from recall yet, so the label must not promise it.
+    expect(r.belnapLabel).not.toMatch(/rel(y|ied) on/);
     expect(r.tone).toBe("warn");
     expect(memoryRowModel({ ...mem, belnap: "true" }).belnapLabel).toBeNull();
     expect(memoryRowModel({ ...mem, belnap: "true", graph: { state: "pending" } }).graphLabel).toMatch(/Waiting/);

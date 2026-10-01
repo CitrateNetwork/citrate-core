@@ -19,10 +19,10 @@
 //!   learned-memory ledger (`<app data>/hermes/learned-memories.json`, keyed by proposal id, so a
 //!   second accept of the same proposal is not a duplicate) and stores it in the member's memory
 //!   graph (`memory.assert` into the `personal` tenant). A contradiction is Belnap `both`: the new
-//!   memory AND the one it contradicts are marked `both` in the ledger (neither is relied on until
-//!   the member resolves it) and the two graph nodes are linked by a quarantined `contradicts`
-//!   edge. Nothing is merged or overwritten. When the memory daemon is not running, the memory waits
-//!   in the ledger as `pending` and is stored by `hermes_learn_store_pending`.
+//!   memory AND the one it contradicts are marked `both` (unresolved) in the ledger, and the two
+//!   graph nodes are linked by a quarantined `contradicts` edge. Nothing is merged or overwritten.
+//!   When the memory daemon is not running, the memory waits in the ledger as `pending` and is
+//!   stored by `hermes_learn_store_pending`.
 //! - **Publishing** an accepted skill to the on-chain SkillRegistry is an HIC-1 action: the sidecar
 //!   records the decision and builds calldata only, core checks the payload (target, owner, chain,
 //!   selector, no value, no broadcast) and opens a PENDING SignatureCeremony; the member signs and
@@ -265,7 +265,7 @@ pub struct LearnedMemory {
     pub proposal_id: String,
     pub key: String,
     pub value: String,
-    /// "true" | "both" (contradicted, not relied on until the member resolves it).
+    /// "true" | "both" (contradicted and unresolved; both memories are kept).
     pub belnap: String,
     /// Proposal ids of the learned memories this one contradicts (both directions).
     pub contradicts: Vec<String>,
@@ -499,7 +499,7 @@ impl Ledger {
                 detail: None,
             },
         };
-        // Belnap `both` on both sides: the memory it contradicts is no longer relied on either.
+        // Belnap `both` on both sides: the memory it contradicts is marked unresolved too.
         if belnap == "both" {
             for other in &contradicts {
                 if let Some(o) = self.find_mut(other) {

@@ -181,7 +181,7 @@ export function LearnedPanel({ store, running }: { store: Toaster; running: bool
           if (r.memory) {
             return r.memory.graph.state === "stored"
               ? r.memory.belnap === "both"
-                ? "Memory kept. It contradicts an earlier one, so neither is relied on until you resolve it."
+                ? "Memory kept. It contradicts an earlier one; both are kept and marked unresolved."
                 : "Memory kept in your memory graph."
               : "Memory kept. It goes into your memory graph when the memory store is running.";
           }

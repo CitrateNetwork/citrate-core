@@ -191,7 +191,7 @@ fn a_contradiction_is_both_on_both_sides_and_linked_not_merged() {
     assert_eq!(e.belnap, "both");
     assert_eq!(e.contradicts, vec![P1.to_string()]);
     let old = ledger.entries.iter().find(|x| x.proposal_id == P1).unwrap();
-    assert_eq!(old.belnap, "both", "the earlier memory is no longer relied on either");
+    assert_eq!(old.belnap, "both", "the earlier memory is marked unresolved too");
     assert!(old.contradicts.contains(&P2.to_string()));
     assert_eq!(ledger.entries.len(), 2, "both claims are kept");
     let edges = g.edges.lock().unwrap().clone();

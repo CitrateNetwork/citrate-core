@@ -82,7 +82,7 @@ export function LearnProposalCard({ proposal, publish, acked, busy, onAck, onAcc
                 )}
                 <span>
                   <strong style={{ fontWeight: 500 }}>{c.label}.</strong> {c.detail}
-                  {!c.blocking && " Accepting keeps both; a contradicted memory is marked as unresolved and neither is relied on."}
+                  {!c.blocking && " Accepting keeps both; both are marked unresolved and linked as contradicting, and nothing is merged."}
                 </span>
               </label>
             ))}

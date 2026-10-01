@@ -68,7 +68,7 @@ export interface LearnedMemory {
   proposalId: string;
   key: string;
   value: string;
-  /** "true", or "both": contradicted, not relied on until you resolve it. */
+  /** "true", or "both": contradicted and unresolved (both memories are kept). */
   belnap: "true" | "both";
   contradicts: string[];
   contentSha256: string;
@@ -254,7 +254,7 @@ export function memoryRowModel(m: LearnedMemory): { title: string; value: string
   return {
     title: m.key,
     value: m.value,
-    belnapLabel: m.belnap === "both" ? "Contradiction, unresolved: Hermes does not rely on this or the memory it contradicts" : null,
+    belnapLabel: m.belnap === "both" ? "Contradiction, unresolved: both are kept and linked as contradicting; nothing was merged or overwritten" : null,
     graphLabel,
     tone,
   };
