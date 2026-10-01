@@ -1061,9 +1061,6 @@ pub fn shutdown() {
     }
 }
 
-/// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
-/// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
-/// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
 /// HUP-S5.1: the Hermes manager for sibling modules (`browser.rs`).
 pub(crate) fn manager_for<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1071,6 +1068,9 @@ pub(crate) fn manager_for<R: tauri::Runtime>(
     manager(app)
 }
 
+/// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
+/// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
+/// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
 fn manager<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<&'static HermesManager, String> {
