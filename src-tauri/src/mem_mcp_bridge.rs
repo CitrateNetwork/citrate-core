@@ -257,10 +257,20 @@ pub fn run_bridge<R: BufRead + Send + 'static>(
                         };
                         write_line(&output, &out_line);
                         if key.is_some() {
-                            let _ =
-                                outstanding.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                                    n.checked_sub(1)
-                                });
+                            // Saturating decrement (compare_exchange loop: works on every
+                            // supported toolchain without the renamed update helper).
+                            let mut n = outstanding.load(Ordering::SeqCst);
+                            while n > 0 {
+                                match outstanding.compare_exchange(
+                                    n,
+                                    n - 1,
+                                    Ordering::SeqCst,
+                                    Ordering::SeqCst,
+                                ) {
+                                    Ok(_) => break,
+                                    Err(current) => n = current,
+                                }
+                            }
                         }
                     }
                     Err(e)
