@@ -232,11 +232,18 @@ fn write_marker(store_path: &Path, digest: &str) -> Result<(), String> {
 }
 
 /// Decide, then (if needed) run the importer. Does not touch the daemon; see
-/// [`import_with_manager`] for the stop/restart around it.
+/// [`import_with_manager`] for the stop/restart around it (production takes the
+/// import slot there, before the daemon is touched, so this entry is test-only).
+#[cfg(test)]
 pub fn run_plan(plan: &ImportPlan, on_line: impl FnMut(&ImportLine)) -> KnowledgeImportReport {
     let Some(_gate) = ImportGuard::acquire(&plan.store_path) else {
         return KnowledgeImportReport::skipped("in-progress", None);
     };
+    run_plan_locked(plan, on_line)
+}
+
+/// [`run_plan`] for a caller that already holds the store's [`ImportGuard`].
+fn run_plan_locked(plan: &ImportPlan, on_line: impl FnMut(&ImportLine)) -> KnowledgeImportReport {
     match decide(plan) {
         Decision::Skip(r) => r,
         Decision::Run { corpus_dir, digest } => run_importer(plan, &corpus_dir, &digest, on_line),
@@ -430,15 +437,20 @@ pub fn import_with_manager(
         env: mgr.embedder_env(),
         first_line_timeout: FIRST_LINE_TIMEOUT,
     };
+    // Take the store's import slot BEFORE touching the daemon: a caller that loses
+    // the race must neither stop nor restart a daemon around someone else's import.
+    let Some(_gate) = ImportGuard::acquire(&plan.store_path) else {
+        return KnowledgeImportReport::skipped("in-progress", None);
+    };
     // Only stop the daemon when there is real work to do.
     if !needs_run(&plan) {
-        return run_plan(&plan, on_line);
+        return run_plan_locked(&plan, on_line);
     }
     let was_running = mgr.is_running_now();
     if was_running {
         mgr.stop();
     }
-    let mut report = run_plan(&plan, on_line);
+    let mut report = run_plan_locked(&plan, on_line);
     if was_running {
         if let Err(e) = mgr.start() {
             let note = format!("memory daemon restart after import failed: {e}");

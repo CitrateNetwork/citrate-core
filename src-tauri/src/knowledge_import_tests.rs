@@ -240,6 +240,24 @@ fn exit_zero_without_a_done_line_is_a_failure() {
 
 #[cfg(unix)]
 #[test]
+fn a_done_line_with_a_failing_exit_is_still_a_failure() {
+    // Review hardening: the exit status is checked even when a done line arrived.
+    let dir = tmp_dir("doneexit");
+    let p = plan(&dir, fake_importer(&dir, &done_lines(FIXTURE_DIGEST), 3));
+    let r = run_plan(&p, |_| {});
+    assert_eq!(r.state, "failed", "{r:?}");
+    assert!(
+        r.error
+            .as_deref()
+            .unwrap()
+            .contains("exited unsuccessfully"),
+        "{r:?}"
+    );
+    assert!(!marker_path(&p.store_path).exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn a_done_line_for_another_corpus_is_a_failure() {
     let dir = tmp_dir("mismatch");
     let p = plan(&dir, fake_importer(&dir, &done_lines(&"a".repeat(64)), 0));
@@ -391,6 +409,50 @@ fn a_running_daemon_is_stopped_for_the_import_and_restarted() {
     // Second call: marker matches, so the daemon is not stopped at all.
     let r2 = import_with_manager(&mgr, Some(fixture_corpus()), |_| {});
     assert_eq!(r2.skipped.as_deref(), Some("already-imported"));
+    assert!(mgr.is_running_now());
+    mgr.stop();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_import_already_in_flight_never_stops_the_running_daemon() {
+    // Review hardening: a second caller that loses the race must not stop (or later
+    // restart) the daemon around an import it is not running.
+    let dir = tmp_dir("inflight");
+    let bin = daemon_and_importer(&dir);
+    let model = dir.join("bge");
+    std::fs::create_dir_all(&model).unwrap();
+    let store = dir.join("memory/store.bge.memdag");
+    let mgr = crate::memory::MemoryManager::new(
+        Box::new(MemKeyring::default()),
+        bin,
+        store.clone(),
+        dir.join("memory/memdag.sock"),
+        dir.join("memory/crash.jsonl"),
+        Box::new(NoTransport),
+    )
+    .with_model_dir(Some(model));
+    mgr.start().unwrap();
+    for _ in 0..50 {
+        if dir.join("daemon.pid").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let pid_before = std::fs::read_to_string(dir.join("daemon.pid")).unwrap();
+    let held = ImportGuard::acquire(&store).unwrap();
+    let r = import_with_manager(&mgr, Some(fixture_corpus()), |_| {});
+    drop(held);
+    assert_eq!(r.skipped.as_deref(), Some("in-progress"), "{r:?}");
+    // A respawned daemon writes its own pid shortly after start: watch for it.
+    for _ in 0..20 {
+        let pid_after = std::fs::read_to_string(dir.join("daemon.pid")).unwrap();
+        assert_eq!(
+            pid_before, pid_after,
+            "the daemon was stopped and respawned"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(mgr.is_running_now());
     mgr.stop();
 }

@@ -743,7 +743,18 @@ export class Store {
    * importer's own lines; the result (imported / skipped with a reason / failed with the error) is
    * folded into `knowledgeImport` exactly as reported. Never throws.
    */
-  async importKnowledge(): Promise<void> {
+  importKnowledge(): Promise<void> {
+    // One import at a time: an overlapping caller (launch auto-start + a Start/Retry click) awaits the
+    // same run instead of seeing "in-progress" and starting the daemon while the store is held.
+    if (!this.knowledgeImportRun) {
+      this.knowledgeImportRun = this.runKnowledgeImport().finally(() => {
+        this.knowledgeImportRun = null;
+      });
+    }
+    return this.knowledgeImportRun;
+  }
+
+  private async runKnowledgeImport(): Promise<void> {
     const base = { tenant: null, done: 0, total: 0, nodesAdded: 0, message: null };
     this.setState({ knowledgeImport: { ...base, state: "running" } });
     try {
@@ -1987,6 +1998,8 @@ export class Store {
 
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
   private turnAbort: AbortController | null = null;
+  /** HUP-S3.1: the in-flight knowledge import, shared by overlapping callers. */
+  private knowledgeImportRun: Promise<void> | null = null;
 
   /** HUP-S7.6 — the active provider's kind (`ChatProvider.kind`), for the Activity monitor. */
   activeProviderKind(): string {

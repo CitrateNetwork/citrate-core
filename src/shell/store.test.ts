@@ -349,6 +349,34 @@ describe("store memory daemon (Q-A.4a) — real status read, honest offline", ()
     imp.mockRestore();
   });
 
+  it("HUP-S3.1: overlapping starts share ONE import and no daemon start runs while it is in flight", async () => {
+    // Launch auto-start + a Start/Retry click must not let the second caller see "in-progress"
+    // and start the daemon while the first import still holds the store.
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const imp = vi.spyOn(bridge.memory, "importKnowledge").mockImplementation(async () => {
+      order.push("import");
+      await gate;
+      order.push("import-done");
+      return { state: "imported", nodesAdded: 1, edgesAdded: 0, tenantsImported: ["refs"], tenantsSkipped: [] };
+    });
+    const start = vi.spyOn(bridge.memory, "start").mockImplementation(async () => {
+      order.push("start");
+    });
+    const a = store.startMemoryDaemon();
+    const b = store.startMemoryDaemon();
+    const c = store.importKnowledge();
+    await Promise.resolve();
+    release();
+    await Promise.all([a, b, c]);
+    expect(imp).toHaveBeenCalledTimes(1);
+    expect(order.indexOf("import-done")).toBeLessThan(order.indexOf("start"));
+    expect(store.getSnapshot().knowledgeImport.state).toBe("imported");
+    imp.mockRestore();
+    start.mockRestore();
+  });
+
   it("HUP-S3.1: in sim the import is an honest skip", async () => {
     await store.startMemoryDaemon();
     expect(store.getSnapshot().knowledgeImport.state).toBe("skipped");
