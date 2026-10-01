@@ -16,5 +16,36 @@ export function simContracts(_host: SimHost): ContractsDomain {
     async gateSubmit() {
       throw new Error("the deploy gate runs in the desktop node (no gate records in web/dev)");
     },
+    // HUP-S6.6 / S6.7 — the Contract reader and the post-deploy steps need the desktop node.
+    async source() {
+      throw new Error("reading a contract needs the desktop node (no chain in web/dev)");
+    },
+    async codeSize() {
+      throw new Error("reading a contract needs the desktop node (no chain in web/dev)");
+    },
+    async viewCall() {
+      throw new Error("reading a contract needs the desktop node (no chain in web/dev)");
+    },
+    async proposeWrite() {
+      throw new Error("a contract call needs the desktop node (no chain in web/dev)");
+    },
+    async postdeployStatus() {
+      throw new Error("the post-deploy steps need the desktop node (no project files in web/dev)");
+    },
+    async postdeployReceipt() {
+      throw new Error("the post-deploy steps need the desktop node (no chain in web/dev)");
+    },
+    async postdeployVerify() {
+      throw new Error("the post-deploy steps need the desktop node (no project files in web/dev)");
+    },
+    async postdeploySwitchSite() {
+      throw new Error("the post-deploy steps need the desktop node (no project files in web/dev)");
+    },
+    async postdeployPinSite() {
+      throw new Error("the post-deploy steps need the desktop node (no IPFS in web/dev)");
+    },
+    async postdeployVercelExport() {
+      throw new Error("the post-deploy steps need the desktop node (no project files in web/dev)");
+    },
   };
 }

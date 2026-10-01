@@ -10,6 +10,8 @@ import { createPopoutEnd, type BridgeTransport, type PopoutEnd } from "./bridge"
 import { POPOUT_TITLES, type PopoutKind } from "./kinds";
 import type { MonitorSnapshot } from "./monitorSnapshot";
 import { ActivityMonitor } from "./ActivityMonitor";
+import { ContractReader } from "./ContractReader";
+import { createContractClient, type ContractClient } from "./contractChannel";
 
 const shell = {
   minHeight: "100vh",
@@ -58,6 +60,7 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
     return () => clearInterval(t);
   }, [kind]);
 
+  if (kind === "contract") return <ContractReaderWindow transport={transport} />;
   if (kind !== "monitor") {
     return (
       <div data-register="instrument" style={shell}>
@@ -80,4 +83,48 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
     );
   }
   return <ActivityMonitor snapshot={snapshot} now={now} onStop={() => void end.current?.stop()} />;
+}
+
+/** HUP-S6.7 — the Contract reader window: its requests go to the main window over the channel. */
+function ContractReaderWindow({ transport }: { transport: () => Promise<BridgeTransport> }) {
+  const [client, setClient] = useState<ContractClient | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let made: ContractClient | null = null;
+    void (async () => {
+      try {
+        const c = await createContractClient(await transport());
+        if (cancelled) {
+          c.close();
+          return;
+        }
+        made = c;
+        setClient(c);
+      } catch (err) {
+        if (!cancelled) setFailed(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      made?.close();
+    };
+  }, [transport]);
+
+  if (failed) {
+    return (
+      <div data-register="instrument" role="alert" style={shell}>
+        The Contract reader could not connect to the main window: {failed}
+      </div>
+    );
+  }
+  if (!client) {
+    return (
+      <div data-register="instrument" style={shell}>
+        Connecting to the main window…
+      </div>
+    );
+  }
+  return <ContractReader client={client} />;
 }

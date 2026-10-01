@@ -75,12 +75,23 @@ fn the_typescript_allowlist_matches_this_one() {
 }
 
 #[test]
-fn only_the_activity_monitor_has_a_view_today() {
+fn the_contract_reader_and_activity_monitor_have_views_today() {
+    // HUP-S6.7 adds the Contract reader view.
     let ready: Vec<PopoutKind> = PopoutKind::ALL
         .into_iter()
         .filter(|k| k.available())
         .collect();
-    assert_eq!(ready, [PopoutKind::Monitor]);
+    assert_eq!(ready, [PopoutKind::Contract, PopoutKind::Monitor]);
+}
+
+#[test]
+fn the_main_window_may_open_the_contract_reader() {
+    assert_eq!(
+        check_open_request("main", "contract"),
+        Ok(PopoutKind::Contract)
+    );
+    let err = check_open_request("popout-contract", "contract").expect_err("pop-out caller");
+    assert!(err.contains("main window"), "{err}");
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +118,7 @@ fn unknown_kinds_are_refused_by_name() {
 
 #[test]
 fn kinds_without_a_view_are_refused_honestly() {
-    for k in ["browser", "contract", "diff", "media"] {
+    for k in ["browser", "diff", "media"] {
         let err = check_open_request("main", k).expect_err(k);
         assert!(err.contains("not built yet"), "{err}");
     }

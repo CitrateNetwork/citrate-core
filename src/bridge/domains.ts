@@ -1174,6 +1174,80 @@ export interface ContractsDomain {
   gateLookup(bytecodeHex: string, constructorArgsHex?: string): Promise<DeployGateLookup>;
   /** HUP-S6.4 — hand verifier outputs to core; core parses them and stores the verdict. */
   gateSubmit(inputs: DeployGateInputs): Promise<DeployGateRecord>;
+  /** HUP-S6.7 — CitrateScan's verified source and ABI for an address (`contract_source`). */
+  source(address: string): Promise<ContractSourceView>;
+  /** HUP-S6.7 — deployed code size at `address` on `target` ("citrate" or a loopback fork URL). */
+  codeSize(target: string, address: string): Promise<number>;
+  /** HUP-S6.7 — a read-only eth_call; resolves with the raw `0x` return data. */
+  viewCall(target: string, address: string, calldata: string): Promise<string>;
+  /** HUP-S6.7 — a write call on 40204 as a PENDING SignatureCeremony (nothing signs here). */
+  proposeWrite(address: string, calldata: string, valueWei: string): Promise<CeremonyView>;
+  /** HUP-S6.6 — where a hello-mint project stands after its deploy (local reads). */
+  postdeployStatus(projectDir: string): Promise<PostDeployStatus>;
+  /** HUP-S6.6 — the deploy tx's receipt on 40204; null while pending. */
+  postdeployReceipt(txHash: string): Promise<DeployReceiptView | null>;
+  /** HUP-S6.6 — submit the project contract's source to CitrateScan's verifier. */
+  postdeployVerify(projectDir: string, address: string, constructorArgsHex?: string): Promise<VerifyOutcomeView>;
+  /** HUP-S6.6 — point the page at chain 40204 and the deployed contract. */
+  postdeploySwitchSite(projectDir: string, address: string): Promise<{ envPath: string; address: string }>;
+  /** HUP-S6.6 — pin the built page to the app's IPFS daemon. */
+  postdeployPinSite(projectDir: string): Promise<SitePinView>;
+  /** HUP-S6.6 — write the Vercel-ready export folder (no account actions). */
+  postdeployVercelExport(projectDir: string): Promise<VercelExportView>;
+}
+
+/** HUP-S6.7 — what CitrateScan says about an address. Mirrors Rust `contract_reader::VerifiedSource`. */
+export interface ContractSourceView {
+  status: "verified" | "partial" | "unverified" | "notContract";
+  isContract: boolean;
+  codeSize: number | null;
+  contractName: string | null;
+  compilerVersion: string | null;
+  abi: unknown[] | null;
+  source: string | null;
+  note: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::PostDeployStatus`. */
+export interface PostDeployStatus {
+  contractName: string;
+  siteContract: string | null;
+  built: boolean;
+  exportDir: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::DeployReceipt`. */
+export interface DeployReceiptView {
+  txHash: string;
+  blockNumber: number;
+  status: number | null;
+  contractAddress: string | null;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::VerifyOutcome`. */
+export interface VerifyOutcomeView {
+  status: "verified" | "partial" | "failed" | "unavailable";
+  guid: string | null;
+  matchType: string | null;
+  contractName: string | null;
+  message: string;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::SitePin`. */
+export interface SitePinView {
+  cid: string;
+  files: number;
+  bytes: number;
+  localGatewayUrl: string;
+  publicGatewayUrl: string;
+  note: string;
+}
+
+/** HUP-S6.6 — mirrors Rust `postdeploy::VercelExport`. */
+export interface VercelExportView {
+  dir: string;
+  files: number;
+  commands: string[];
 }
 
 /** A scrubbed diagnostic bundle (Telemetry WP-T.2/T.3). Mirrors the Rust DiagnosticBundle. */

@@ -33,6 +33,8 @@ mod ai;
 mod blocking;
 mod connections;
 mod contract_deploy;
+// HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
+mod contract_reader;
 mod deploy_gate;
 mod docs_ingest;
 mod earnings;
@@ -47,6 +49,8 @@ mod model;
 mod model_register;
 mod model_registry;
 mod node;
+// HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
+mod postdeploy;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
 mod popout;
 mod provisioning;
@@ -462,6 +466,18 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            // HUP-S6.6 — post-deploy steps for a hello-mint project.
+            postdeploy::postdeploy_status,
+            postdeploy::postdeploy_receipt,
+            postdeploy::postdeploy_verify,
+            postdeploy::postdeploy_switch_site,
+            postdeploy::postdeploy_pin_site,
+            postdeploy::postdeploy_vercel_export,
+            // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
+            contract_reader::contract_source,
+            contract_reader::contract_code_size,
+            contract_reader::contract_view_call,
+            contract_reader::contract_write_propose,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
