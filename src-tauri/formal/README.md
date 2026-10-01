@@ -172,6 +172,8 @@ Re-checked on the same date with this script: `ConsentGate`, `MemoryPack`, `Mode
 
 # WebSigningBudget formal model (HUP-S2.3, formal half)
 
+Implementation (HUP-S2.3) and the test that pins each property: `docs/WEB_SIGNING_BUDGETS.md`.
+
 TLA+ model of the signing side of the **proposed** Rule-3 amendment,
 `docs/adr/ADR-2026-09-30-rule3-budgetable-signatures.md` (section D9). It models a design,
 not code: nothing in the tree calls a budget, the ADR's sign-off block is not complete (the
@@ -391,3 +393,51 @@ Policy and runbook: `docs/COMPONENT_UPDATER.md`.
 `scripts/run-tlc.sh ComponentSwap all`: `ComponentSwap.cfg` 265 states generated, 130 distinct,
 depth 12, no error; `ComponentSwap_Wide.cfg` 1119 generated, 517 distinct, depth 14, no error.
 `python3 src-tauri/formal/ComponentSwap_mutants.py`: 9 of 9 mutants killed (M01..M09).
+
+# AnchorSettle (HUP-S7.3, core half)
+
+The runtime's `citrate-agent-runtime/agent-anchor/formal/AnchorBatch.tla` proves the batch side
+(what a day's root covers, no re-batching, no double anchor in the ledger). `AnchorSettle.tla`
+covers what core adds: the registry may not be deployed, the member turns anchoring on and off,
+the scheduler raises one approval card per day, an approval is single use and signs once with the
+anchor key, a receipt may stay unmined or revert, and a day is marked anchored only on a mined,
+successful receipt.
+
+## Files
+
+- `AnchorSettle.tla`, `AnchorSettle.cfg` (2 days, up to 3 cards per day)
+- `AnchorSettle_mutants.py` (one mutant per guard, each run with only its target invariant)
+
+## Invariants and the code they mirror
+
+| Invariant | Meaning | Code / tests |
+|---|---|---|
+| `AnchoredOnlyOnConfirmedReceipt` | a day is anchored only after a mined receipt with status 1 | `chain_agent::settle`, `ceremony::anchor::receipt_confirms`; `a_day_is_marked_anchored_only_on_a_mined_successful_receipt`, `a_reverted_or_unmined_receipt_never_confirms` |
+| `SingleUseCard` | one approval, one signature | `AnchorCeremony::approve_and_broadcast` consumes first; `approve_signs_with_the_anchor_key_and_reports_the_receipt` |
+| `NoSignatureBeforeDeploy` | nothing is signed for a registry that is not in the address book | `apply_settings`, `anchor_gate`; `nothing_can_be_turned_on_before_its_registry_is_deployed`, `a_tick_that_is_not_ready_touches_nothing` |
+| `NoPendingCardWhileOff`, `NothingSignedWhileOff` | turning anchoring off drops pending cards unsigned | `drop_pending_when_off`; `turning_anchoring_off_drops_every_pending_card_unsigned` |
+| `NoCardAfterAnchored` | an anchored day never gets another card | sidecar plan `already_anchored`; `request_from_plan` returns `None` for any plan that is not `ready` |
+| `AtMostOneInFlight` | a day never has two anchor transactions waiting on the chain | `nightly_tick_with` skips in-flight days; `a_day_waiting_on_its_receipt_never_gets_a_second_card` |
+
+## Run result (2026-10-01)
+
+`scripts/run-tlc.sh AnchorSettle`: **No error found**, 8,271 states generated, 3,146 distinct,
+depth 24.
+
+Mutation check (`python3 src-tauri/formal/AnchorSettle_mutants.py`), all 7 killed:
+
+| Mutant | Break | Caught by |
+|---|---|---|
+| M01 | settle accepts any receipt | `AnchoredOnlyOnConfirmedReceipt` |
+| M02 | approve does not consume the card | `SingleUseCard` |
+| M03 | the setting turns on (and cards are raised) before the registry is deployed | `NoSignatureBeforeDeploy` |
+| M04 | turning off keeps pending cards | `NoPendingCardWhileOff` |
+| M05 | same, seen as a signature while off | `NothingSignedWhileOff` |
+| M06 | the scheduler ignores the ledger and the receipt | `NoCardAfterAnchored` |
+| M07 | a new card while the last anchor's receipt is pending | `AtMostOneInFlight` |
+
+## Abstractions
+
+- The batch itself (root, proofs, pruning) is AnchorBatch's job and is not repeated here.
+- Gas, the delegate binding and unattended (HIC-2) approval are open owner decisions (ADR O-5);
+  the model has every anchor wait for an explicit approval, which is what the code does.

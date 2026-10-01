@@ -62,6 +62,41 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async briefCheck() {
       throw new Error("the interview needs the Hermes sidecar in the desktop app");
     },
+    // HUP-S3.4 — learning needs the sidecar and its decision log; web/dev has neither. Honest
+    // empty lists and refusals, never an invented proposal (Rule 1).
+    async workflowRun() {
+      throw new Error("verified workflows need the Hermes sidecar in the desktop app");
+    },
+    async workflowStatus() {
+      throw new Error("verified workflows need the Hermes sidecar in the desktop app");
+    },
+    async learnStatus() {
+      return {
+        sidecar: { enabled: false, error: "learning needs the Hermes sidecar in the desktop app" },
+        publish: { enabled: false, note: "Publishing needs the desktop app." },
+      };
+    },
+    async learnProposals() {
+      return [];
+    },
+    async learnPropose() {
+      throw new Error("learning needs the Hermes sidecar in the desktop app");
+    },
+    async learnAccept() {
+      throw new Error("learning needs the Hermes sidecar in the desktop app");
+    },
+    async learnReject() {
+      throw new Error("learning needs the Hermes sidecar in the desktop app");
+    },
+    async learnMemories() {
+      return [];
+    },
+    async learnStorePending() {
+      return [];
+    },
+    async learnPublish() {
+      throw new Error("PUBLISH_DISABLED: publishing needs the desktop app");
+    },
   };
 }
 
