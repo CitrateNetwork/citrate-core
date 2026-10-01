@@ -148,8 +148,8 @@ consented) — fixed by keeping consent as a historical record.
 
 TLA+ model of the signing side of the **proposed** Rule-3 amendment,
 `docs/adr/ADR-2026-09-30-rule3-budgetable-signatures.md` (section D9). It models a design,
-not code: nothing in the tree calls a budget, the ADR is not accepted, and every signature
-is still HIC-1. The spec is the gate the ADR sets before any B-1 or B-2 wiring can merge.
+not code: nothing in the tree calls a budget, the ADR's sign-off block is not complete (the
+formal-methods row is open), and every signature is still HIC-1. The spec is the gate the ADR sets before any B-1 or B-2 wiring can merge.
 
 ## Files
 
@@ -157,11 +157,14 @@ is still HIC-1. The spec is the gate the ADR sets before any B-1 or B-2 wiring c
 - `WebSigningBudget.cfg`: the ADR's small bounds, every request kind (SIWE, x402, `Tx`,
   `Permit`), strict taint rule, 2 requests, symmetry on recipients and nonces.
 - `WebSigningBudget_Siwe.cfg`: SIWE only, 3 requests, 2 origins (1 allowlisted), 3
-  provenances, domain/URI binding, Resources, 2 nonces.
+  provenances, domain/URI binding, Resources, 3 nonces (so a third sign-in to one origin,
+  after a revoke and re-grant, can reach the per-origin rolling rate).
 - `WebSigningBudget_X402.cfg`: x402 only, 4 requests, so the per-signature, rolling
   per-recipient, rolling global and `max_count` caps all bind while the window slides.
 - `WebSigningBudget_O3.cfg`: owner decision O-3 accepted (same-origin content does not taint a
-  sign-in to that origin), taint from either origin or `"ext"`.
+  sign-in to that origin), taint from either origin or `"ext"`. The owner accepted the O-3
+  exemption on 2026-09-30 (ADR sign-off block), so this config checks the accepted reading;
+  the other configs keep the strict rule, which is the stronger property.
 - `WebSigningBudget_Live.cfg`: liveness (`FallThroughLive`) without symmetry, smaller bounds.
 - `WebSigningBudget_mutants.py`: the mutation check (below).
 
@@ -191,7 +194,7 @@ auto-sign critical sections.
 | `NonceUnique` | no (origin, nonce) pair is auto-signed twice | M05: drop the ledger check |
 | `NoCapabilityDelegation` | no auto-signed SIWE carries Resources (ReCap) | M06: drop the Resources check |
 | `RecipientPinned` | the x402 payee is the recipient pinned in the paying budget | M07: drop the `to = recipient` check |
-| `NeverExceedsCaps` | `used ≤ max_count`; value ≤ per-signature max; per-recipient and global sums ≤ caps in **every** window up to now; SIWE per-origin window count and burst gap | M08: per-signature; M09: `max_count`; M10: calendar-day window instead of rolling; M11: global cap; M12: SIWE burst gap |
+| `NeverExceedsCaps` | `used ≤ max_count`; value ≤ per-signature max; per-recipient and global sums ≤ caps in **every** window up to now; SIWE per-origin window count and burst gap | M08: per-signature; M09: `max_count`; M10: calendar-day window instead of rolling; M11: global cap; M12: SIWE burst gap; M23: SIWE per-origin rolling rate |
 | `ReservedBeforeSigned` | there are never more signatures than reservations | (structural) |
 | `RevokeImmediate` | no auto-sign under a (budget, generation) after its revoke committed (history variable) | M13: revoke without taking the budget lock |
 | `ExpiredInert` | no auto-sign at or after the budget's expiry | M14: no expiry re-check before the signer |
@@ -211,15 +214,17 @@ auto-sign critical sections.
 | `WebSigningBudget.cfg` | 37,916,870 | 7,828,872 | 21 | 1 min 36 s | no error |
 | `WebSigningBudget_Live.cfg` | 10,609,496 | 2,361,774 | 21 | 8 min 11 s | no error (temporal properties hold) |
 | `WebSigningBudget_O3.cfg` | 131,030,726 | 23,191,496 | 24 | 5 min 59 s | no error |
-| `WebSigningBudget_Siwe.cfg` | 15,669,387 | 3,799,870 | 23 | 30 s | no error |
+| `WebSigningBudget_Siwe.cfg` (3 nonces, review fix, 2026-10-01Z) | 21,454,563 | 5,077,204 | 26 | 54 s | no error |
 | `WebSigningBudget_X402.cfg` | 381,276,329 | 95,058,700 | 31 | 16 min 50 s | no error |
 
-Mutation check, `python3 src-tauri/formal/WebSigningBudget_mutants.py` (38 s): **22 of 22
-mutants caught**, each by the invariant it targets, with counterexamples of 4 to 13 states.
+Mutation check, `python3 src-tauri/formal/WebSigningBudget_mutants.py` (about 40 s): **23 of
+23 mutants caught**, each by the invariant it targets, with counterexamples of 4 to 15 states.
 M13's trace is the race the dedicated lock exists for: Decide (auto-sign holds the lock),
 Revoke commits, Sign. One bound note from the first pass: with `max_count` 2 and only 2
 nonces, the SIWE config can never reach a third sign-in to one origin, so M09 is checked in
-the x402 config, where the same `BudgetLive` guard binds.
+the x402 config, where the same `BudgetLive` guard binds. Review note: for the same reason the
+per-origin rolling rate (`SiweWindowMax`) never bound in any config with 2 nonces, and removing
+its guard went undetected; the SIWE config now has 3 nonces and M23 covers that guard.
 
 ## Abstractions (what this model does not prove)
 
@@ -233,6 +238,13 @@ the x402 config, where the same `BudgetLive` guard binds.
 - Budget voiding on wallet unlink, reroll, failed re-verification or a sidecar identity change
   is modelled only as `RevokeAll`.
 - No refinement mapping to `ConsentGate.tla` yet (D9 says it refines it where the gates overlap).
+- The x402 per-request bindings of D3 other than recipient pinning and value (`validity_max`,
+  i.e. `validBefore - now`, `validAfter <= now`, `from`, `chainId`, and the asset-domain
+  allowlist) are not modelled: `Values` are base units of one allowlisted asset. Like the SIWE
+  parse checks, they are per-request and stateless and belong in unit and property tests.
+- No invariant distinguishes a grant that takes the budget lock from one that does not (A-6):
+  with `Idle` removed from `Grant`, `RevokeImmediate` still holds in the combined config,
+  because a grant only opens a new generation. The lock on grant is the safer reading, not a checked property.
 
 ## Ambiguities in the ADR (the model takes the safer reading; owner to confirm)
 

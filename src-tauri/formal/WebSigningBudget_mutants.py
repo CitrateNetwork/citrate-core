@@ -77,6 +77,8 @@ M = [
  ("M22", "BudgetMonotone", "WebSigningBudget", "PROPERTY",
   [('    /\\ UNCHANGED <<clock, budget, ledger, resv, records, signed, revokes, taint>>\n\n\\* Every record still',
     '    /\\ budget\' = [s \\in Slots |-> [budget[s] EXCEPT !.used = 0]]\n    /\\ UNCHANGED <<clock, ledger, resv, records, signed, revokes, taint>>\n\n\\* Every record still')]),
+ ("M23", "NeverExceedsCaps", "WebSigningBudget_Siwe", "INVARIANT",
+  [('    /\\ SiweWin(rq.origin, clock) < SiweWindowMax \\* D2 #21 rolling rate\n', '')]),
 ]
 only = set(sys.argv[1:])
 failed = 0
