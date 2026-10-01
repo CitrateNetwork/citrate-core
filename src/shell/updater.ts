@@ -97,6 +97,16 @@ type PluginUpdate = {
  * React hook: auto-check on mount (Tauri only) + every {@link UPDATE_CHECK_INTERVAL_MS},
  * expose install/dismiss/recheck. In sim/web the hook stays "idle" forever.
  */
+/**
+ * True when the updater failed only because the release feed has no entry for
+ * this OS/arch (e.g. the unsigned Windows build, which ships no updater
+ * artifacts). That means "no updates published for this build", not an error.
+ * Network, signature and download errors do not match.
+ */
+export function isNoPlatformInFeed(msg: string): boolean {
+  return /found in the response .?platforms.? object|platform[^.]*not (?:found|available)/i.test(msg);
+}
+
 export function useAppUpdate() {
   const [state, setState] = useState<UpdateState>(INITIAL_UPDATE_STATE);
   const pending = useRef<PluginUpdate | null>(null);
@@ -124,7 +134,18 @@ export function useAppUpdate() {
         dismissed: false,
       }));
     } catch (e) {
-      patch({ status: "error", error: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      // A manifest that doesn't list this OS/arch means updates simply aren't
+      // published for this build (e.g. the unsigned Windows build: no updater
+      // artifacts, no signing key, no windows-* platform in the feed). That is
+      // expected, not a failure the user should see — treat it as up-to-date so
+      // the "Update failed" banner never appears. Real errors (network,
+      // signature, download) still surface. Mac/Linux are listed, so unaffected.
+      if (isNoPlatformInFeed(msg)) {
+        setState((s) => (s.status === "downloading" || s.status === "ready" ? s : { ...s, status: "uptodate", error: null }));
+        return;
+      }
+      patch({ status: "error", error: msg });
     }
   }, [patch]);
 
