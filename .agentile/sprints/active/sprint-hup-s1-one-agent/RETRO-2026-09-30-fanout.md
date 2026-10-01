@@ -165,7 +165,7 @@ signed commit. None of the reviews was a rubber stamp.
 | A2 | Pick persona names for the tracks/brief surfaces | Larry (owner) |
 | A3 | @rule8 sign-off on the S2.0 ADR (core#122): answer O-1 to O-5. O-3 decides whether SIWE budgets are usable at all | @rule8 reviewer + federation lead |
 | A4 | Rebuild the hermes binary from the runtime stack after merge; until then nothing here is live in the app | Larry / DGX for Linux |
-| A5 | File the S1.9 HIGH finding privately (security repo), then fix it with an end-to-end core-provider test, sequenced with S2.7 | next runtime+core WP (agent) |
+| A5 | File the S1.9 HIGH finding privately (security repo), then fix it with an end-to-end core-provider test, sequenced with S2.7. **Update 2026-09-30:** filed privately; loop fix in runtime#20 (merge before #16); core end-to-end test + defense in depth still open | next runtime+core WP (agent) |
 | A6 | Live parity run on the packaged app before retiring `harness.ts`; decide turn cap (6 vs 8) and context freshness | agent run, owner decision |
 | A7 | Run S1.7 / S1.10 eval + injection suites against a real local model | agent, on a real machine |
 | A8 | Core follow-ups: annotate `AGENT_TOOLS` (effect/trust), S2.4 explicit-approval card, then `hicAware:true`; the brief's message role | core WP + owner decision |
