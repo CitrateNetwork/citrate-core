@@ -193,6 +193,8 @@ pub fn sidecar_env(s: &HermesWebSettings, hermes_dir: &Path) -> Vec<(String, Str
             put("CITRATE_HERMES_JEV_NON_WEB", "1".into());
         }
     }
+    // The content-free decision log is on only with search or Jev; its retention and rotation
+    // are pending owner sign-off.
     if s.search_enabled || s.jev_enabled {
         put(
             "CITRATE_HERMES_DECIDE_LOG",

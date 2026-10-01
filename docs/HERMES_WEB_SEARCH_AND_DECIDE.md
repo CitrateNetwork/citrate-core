@@ -32,6 +32,17 @@ never override the control bind, the bearer file or the capsule folder.
 Keys are files the member chooses (core passes the path and never reads or returns the key).
 Keeping them in the custody vault is pending owner sign-off.
 
+## Pending owner sign-off
+
+Conservative placeholders; the defaults change nothing for members:
+
+- Key custody (above): member-chosen key files today, the custody vault later.
+- The Jev endpoint and model come from the `system1-agents` adapter; confirm the vendor and its
+  terms before any member opts in.
+- The decision metering log `<app data>/hermes/decisions.jsonl` (on only with search or Jev, no
+  content): retention and rotation.
+- The `read_url` and SearXNG limits listed in `agent-search/README.md`.
+
 ## Not done here
 
 - SearXNG is not bundled (HUP-S5.5, the signed component updater). Until then search reports
