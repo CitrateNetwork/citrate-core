@@ -178,6 +178,8 @@ commands.allow = [
   "recovery_kit_restore_file",
   "local_data_plan",
   "local_data_delete",
+  "agent_sbt_status",
+  "agent_sbt_mint",
   "model_status",
   "model_download",
   "model_verify",

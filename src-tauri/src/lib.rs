@@ -29,8 +29,10 @@ pub use citrate_core_kit::{
 mod activity;
 mod addresses;
 mod agent;
+mod agent_sbt;
 mod ai;
 mod blocking;
+mod capsule_pins;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
@@ -648,6 +650,10 @@ pub fn run() {
             recovery_kit::recovery_kit_restore_file,
             local_data::local_data_plan,
             local_data::local_data_delete,
+            // HUP-S7.4 — Hermes identity: AgentSBT status read + the onboarding mint (a pending
+            // SignatureCeremony; signs nothing here).
+            agent_sbt::agent_sbt_status,
+            agent_sbt::agent_sbt_mint,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable
