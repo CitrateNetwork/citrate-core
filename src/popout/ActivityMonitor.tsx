@@ -5,8 +5,12 @@
 // the current step and tool calls, elapsed time, spend, and a Stop button that is always visible.
 // Every unknown value is shown as "unknown" with its reason; nothing is invented (Rule 1).
 // Styled only with the register tokens (--srf/--tx/--line), so it reads in the dark register.
+// HUP-S10.6 (a11y): a <main> landmark named by its <h1>; each fact is a group named by its label;
+// the tool-call list is named; Stop is first in the tab order and its accessible name says what it
+// does (or why it cannot be pressed). The "why" line is the only live region: the elapsed clock
+// ticks every second and must not be announced each time.
 // =====================================================================
-import type { CSSProperties, ReactNode } from "react";
+import { useId, type CSSProperties, type ReactNode } from "react";
 import { formatElapsed, type MonitorSnapshot } from "./monitorSnapshot";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -16,9 +20,10 @@ const value: CSSProperties = { fontSize: 13, color: "var(--tx-1)" };
 const note: CSSProperties = { fontSize: 11, color: "var(--tx-2)" };
 
 function Row({ name, testId, children, hint }: { name: string; testId: string; children: ReactNode; hint?: string }) {
+  const id = useId();
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "8px 0", borderBottom: "1px solid var(--line-1)" }}>
-      <span className="mono" style={label}>{name}</span>
+    <div role="group" aria-labelledby={id} style={{ display: "flex", flexDirection: "column", gap: 3, padding: "8px 0", borderBottom: "1px solid var(--line-1)" }}>
+      <span id={id} className="mono" style={label}>{name}</span>
       <span data-testid={testId} style={value}>
         {children}
         {hint ? <span style={{ ...note, display: "block" }}>{hint}</span> : null}
@@ -41,21 +46,28 @@ export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSn
   const ctxUsed = context.usedTokens !== null ? `${fmt(context.usedTokens)} used` : "used: unknown";
   const spendText = spend.amount !== null ? `${spend.amount} ${spend.unit}` : "unknown";
   const endAt = turn.state === "idle" ? turn.endedAt ?? now : now;
+  const headingId = useId();
+  const toolsId = useId();
+  const stopName = running ? "Stop the running turn" : turn.state === "stopping" ? "Stopping the turn" : "Stop (nothing is running)";
 
   return (
-    <div
+    <main
+      aria-labelledby={headingId}
       data-testid="activity-monitor"
       data-register="instrument"
       style={{ minHeight: "100vh", boxSizing: "border-box", padding: "14px 16px", background: "var(--srf-0)", color: "var(--tx-1)", fontFamily: "var(--font-sans)", display: "flex", flexDirection: "column", gap: 4 }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, paddingBottom: 8 }}>
-        <span style={{ fontSize: 14, fontWeight: 500, flex: 1 }}>Activity monitor</span>
+        <h1 id={headingId} style={{ fontSize: 14, fontWeight: 500, flex: 1, margin: 0 }}>
+          Activity monitor
+        </h1>
         <button
           className="btn btn-sm"
           data-testid="mon-stop"
           onClick={onStop}
           disabled={!running}
-          title={running ? "Stop the running turn" : turn.state === "stopping" ? "Stopping the turn" : "Nothing is running"}
+          aria-label={stopName}
+          title={stopName}
           style={{ color: running ? "var(--danger)" : "var(--tx-3)", borderColor: running ? "var(--danger)" : "var(--line-2)", background: "transparent" }}
         >
           {turn.state === "stopping" ? "Stopping…" : "Stop"}
@@ -86,11 +98,13 @@ export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSn
       </Row>
 
       <div style={{ paddingTop: 8 }}>
-        <span className="mono" style={label}>Tool calls</span>
+        <span id={toolsId} className="mono" style={label}>
+          Tool calls
+        </span>
         {turn.tools.length === 0 ? (
           <div style={{ ...note, paddingTop: 4 }}>None this turn.</div>
         ) : (
-          <ul style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
+          <ul aria-labelledby={toolsId} style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
             {turn.tools.map((t) => (
               <li key={t.id + ":" + t.startedAt} data-testid="mon-tool-row" style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--tx-1)" }}>
                 <span className="mono" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{t.name}</span>
@@ -104,6 +118,6 @@ export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSn
       {turn.state === "idle" && turn.outcome ? (
         <div style={{ ...note, paddingTop: 8 }}>Last turn: {turn.outcome === "stopped" ? "stopped by you" : turn.outcome}.</div>
       ) : null}
-    </div>
+    </main>
   );
 }

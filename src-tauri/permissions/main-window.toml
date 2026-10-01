@@ -171,6 +171,8 @@ commands.allow = [
   "skills_local_delete",
   "journal_export_encrypted",
   "journal_import_encrypted",
+  "agent_sbt_status",
+  "agent_sbt_mint",
   "model_status",
   "model_download",
   "model_verify",

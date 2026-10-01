@@ -31,7 +31,8 @@ export function ApprovalCardView({ card, showRows = true }: { card: ApprovalCard
             {card.path}
             {card.created ? " · new file" : ""}
           </div>
-          <pre className="mono" style={{ margin: 0, padding: "6px 0", maxHeight: 220, overflow: "auto", fontSize: 11.5, lineHeight: 1.5 }}>
+          {/* HUP-S10.6: a scrollable region must be reachable and named for keyboard members. */}
+          <pre className="mono" tabIndex={0} role="region" aria-label={"Changes to " + card.path} style={{ margin: 0, padding: "6px 0", maxHeight: 220, overflow: "auto", fontSize: 11.5, lineHeight: 1.5 }}>
             {card.lines.map((l, i) => (
               <div
                 key={i}
