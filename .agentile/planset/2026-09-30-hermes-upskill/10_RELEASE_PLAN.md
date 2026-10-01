@@ -18,6 +18,13 @@ companions: 05_SPRINTS_AND_WPS.md, gates.yaml
 > tag, no signed-release ceremony, no updater manifest, and no mirror run at those points.
 > 0.4.1 (already shipped) stays the last public release until 0.5.0. Internal QA builds of the
 > integration branch may be made for testing; they are not published.
+>
+> **Amendment (owner, 2026-10-01): one interim release, 0.4.2.** Cut from
+> `release/0.5.0-hermes-upskill` once the downloaded-model fix (#133) and the dark-register text
+> fix (#134) landed, with the Hermes sidecar rebuilt from runtime `main` (`3d75efb`). Gate: a
+> hands-on QA pass on a signed, notarized Mac build before publishing; then the DGX team builds
+> Linux and mirrors. The sidecar-loop preview stays off by default in 0.4.2. After 0.4.2, D-41
+> holds again: the next release is 0.5.0.
 
 The Hermes Upskill program is managed as the full **0.4.x → 0.5.0** release line
 (owner, 2026-09-30). `main` is at **0.4.0** (`28a74ba`, the fresh-keys reroll build).
