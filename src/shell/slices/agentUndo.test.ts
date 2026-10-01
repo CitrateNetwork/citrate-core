@@ -86,6 +86,15 @@ describe("HUP-S2.9 agent undo slice", () => {
     expect(agentUndo.get().panel.last).toEqual({ ok: true, text: "Undone: restored 2 files." });
   });
 
+  it("undo all marks only the steps the sidecar undid; a pruned step's card is not claimed as undone", async () => {
+    recordFileChange(fc(1), "m2");
+    recordFileChange(fc(2), "m3");
+    const a = api({ undoSession: vi.fn(async () => ({ ...ok([2], ["notes.md"]), prunedThrough: 1 })) });
+    await undoSession(a, "s4-cafe");
+    expect(agentUndo.get().cards.map((c) => c.state)).toEqual(["applied", "undone"]);
+    expect(agentUndo.get().panel.last?.text).toContain("up to step 1, were pruned");
+  });
+
   it("the panel says so when undo is not enabled, and when there is no agent session yet", async () => {
     await refreshUndoPanel(api());
     expect(agentUndo.get().panel).toMatchObject({ enabled: false, steps: [] });
