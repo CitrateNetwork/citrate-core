@@ -121,11 +121,14 @@ fn shape(address: &str, v: &Value, explorer_truncated: bool) -> Result<VerifiedS
         .and_then(Value::as_str)
         .ok_or_else(|| "CitrateScan answered without a verification status".to_string())?;
     if !KNOWN_STATUSES.contains(&status) {
-        return Err(format!(
-            "CitrateScan sent an unknown verification status {status:?}"
-        ));
+        // The remote string is not echoed: error text reaches the model outside the fence.
+        return Err("CitrateScan sent a verification status this app does not know".to_string());
     }
-    let verified = status == "verified" && v.get("verified").and_then(Value::as_bool) == Some(true);
+    let flag = v.get("verified").and_then(Value::as_bool) == Some(true);
+    if status == "verified" && !flag {
+        return Err("CitrateScan sent a contradictory verification answer".to_string());
+    }
+    let verified = status == "verified" && flag;
     let (source, core_truncated) = match str_field(v, "source")
         .filter(|_| status != "unverified" && status != "unavailable")
     {

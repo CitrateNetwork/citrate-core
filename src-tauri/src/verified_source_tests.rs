@@ -134,7 +134,34 @@ fn an_unknown_status_is_an_error_not_a_guess() {
         200,
         new_route_body("trusted", true, true),
     )]);
+    let err = lookup(&http, BASE, ADDR).expect_err("unknown status");
+    // The error text reaches the model unfenced, so it never echoes the remote string.
+    assert!(!err.contains("trusted"), "{err}");
+}
+
+#[test]
+fn a_verified_status_without_the_verified_flag_is_an_error_not_a_verified_answer() {
+    let http = Scripted::new(vec![(
+        "/source",
+        200,
+        new_route_body("verified", false, true),
+    )]);
     assert!(lookup(&http, BASE, ADDR).is_err());
+}
+
+#[test]
+fn source_and_abi_sent_with_an_unverified_or_unavailable_status_are_dropped() {
+    for status in ["unverified", "unavailable"] {
+        let http = Scripted::new(vec![("/source", 200, new_route_body(status, false, true))]);
+        let v = lookup(&http, BASE, ADDR).expect("lookup");
+        assert_eq!(v.status, status);
+        assert!(!v.verified);
+        assert!(
+            v.source.is_none(),
+            "{status}: source must not reach the agent"
+        );
+        assert!(v.abi.is_none(), "{status}: abi must not reach the agent");
+    }
 }
 
 #[test]
