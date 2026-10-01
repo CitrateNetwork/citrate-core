@@ -1,0 +1,645 @@
+{
+  "scorecard": {
+    "datasetVersion": "qa-literacy-v1",
+    "model": "gemma-4-E4B-it-Q4_0",
+    "startedAt": "2026-10-01T18:40:05.423Z",
+    "n": 30,
+    "passRate": 0.1,
+    "keyPointCoverage": 0.018518518518518517,
+    "citationHitRate": 0,
+    "citationValidity": null,
+    "abstentionRate": 1,
+    "falseAbstentionRate": 1,
+    "byCategory": {
+      "ai-inference": {
+        "n": 4,
+        "passRate": 0
+      },
+      "agentile-hic": {
+        "n": 2,
+        "passRate": 0
+      },
+      "devtools-contracts": {
+        "n": 10,
+        "passRate": 0.2
+      },
+      "paraconsensus-fl": {
+        "n": 14,
+        "passRate": 0.07142857142857142
+      }
+    },
+    "failures": [
+      "qa-lit-knowledge-order",
+      "qa-lit-truth-order",
+      "qa-lit-join-meet",
+      "qa-lit-negation",
+      "qa-lit-lattice-laws",
+      "qa-lit-reduction",
+      "qa-lit-independent-outputs",
+      "qa-lit-in-circuit",
+      "qa-lit-output-size",
+      "qa-lit-q16-repr",
+      "qa-lit-q16-saturation",
+      "qa-lit-precompile-vs-reference",
+      "qa-lit-safety-invariant",
+      "qa-lit-learning-page",
+      "qa-lit-signature-page",
+      "qa-lit-x402-page",
+      "qa-lit-how-to-call",
+      "qa-lit-x402-bad-sig",
+      "qa-lit-eip712-gas",
+      "qa-lit-batch-gas",
+      "qa-lit-tensor-format",
+      "qa-lit-compute-ops",
+      "qa-lit-hosted-receipt",
+      "qa-lit-attestation-default",
+      "qa-lit-verify-trio",
+      "qa-lit-approval-quorum",
+      "qa-lit-auditor-role"
+    ],
+    "failureReasons": {
+      "qa-lit-knowledge-order": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-truth-order": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-join-meet": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-negation": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-lattice-laws": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-reduction": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-independent-outputs": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-in-circuit": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-output-size": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-q16-repr": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-q16-saturation": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-precompile-vs-reference": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-safety-invariant": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-learning-page": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-signature-page": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-x402-page": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-how-to-call": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-x402-bad-sig": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-eip712-gas": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-batch-gas": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-tensor-format": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-compute-ops": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-hosted-receipt": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-attestation-default": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-verify-trio": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-approval-quorum": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-auditor-role": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ]
+    },
+    "tier": "T0"
+  },
+  "items": [
+    {
+      "id": "qa-lit-knowledge-order",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify how the four values are arranged in the knowledge ordering within the Belnap bilattice implementation of Citrate."
+    },
+    {
+      "id": "qa-lit-truth-order",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The bundled Citrate documentation does not specify how the four values are arranged in the truth ordering within the Belnap bilattice implementation."
+    },
+    {
+      "id": "qa-lit-join-meet",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the specific functions of the `join` and `meet` operations on Belnap values within Citrate's learning engine."
+    },
+    {
+      "id": "qa-lit-negation",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover Belnap negation or its effect on four values."
+    },
+    {
+      "id": "qa-lit-lattice-laws",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify which algebraic laws the property tests check for the Belnap join and meet operations."
+    },
+    {
+      "id": "qa-lit-reduction",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover how per-source Belnap classifications are reduced to a single state vector, nor does it specify when the resulting state is \"Both.\""
+    },
+    {
+      "id": "qa-lit-independent-outputs",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover why a dimension of the aggregated embedding can be numerically near zero and still be labeled Both."
+    },
+    {
+      "id": "qa-lit-in-circuit",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the documentation for Citrate does not contain information regarding the verifiable, in-circuit form of the Belnap aggregation."
+    },
+    {
+      "id": "qa-lit-output-size",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I cannot answer this question as the bundled Citrate documentation does not contain information regarding the return size or content of the `0x0110 BELNAP_AGGREGATE` precompile function."
+    },
+    {
+      "id": "qa-lit-q16-repr",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the underlying type or the method for recovering the real value in Citrate's Q16 fixed-point library."
+    },
+    {
+      "id": "qa-lit-q16-saturation",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the behavior of Citrate's Q16 arithmetic regarding overflow or division by zero."
+    },
+    {
+      "id": "qa-lit-precompile-vs-reference",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify whether the output of the `0x0110` precompile is byte-identical to the off-chain f32 Belnap reference."
+    },
+    {
+      "id": "qa-lit-safety-invariant",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not contain information regarding the learning safety invariant from Paper II section 7.1 or what it guarantees about the state root."
+    },
+    {
+      "id": "qa-lit-learning-page",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the address range used by the Citrate precompile page for learning."
+    },
+    {
+      "id": "qa-lit-signature-page",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not specify a precompile address range for signature verification or the signature scheme used for verification."
+    },
+    {
+      "id": "qa-lit-x402-page",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the address range for x402 payment precompiles or the signature standards they verify."
+    },
+    {
+      "id": "qa-lit-how-to-call",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "Based on the Citrate documentation:\n\n**How a contract calls a Citrate precompile:**\n\nThe documentation does not specify the exact mechanism by which a contract calls a Citrate precompile.\n\n**Where exact encodings come from:**\n\nThe documentation does not specify the source for exact encodings."
+    },
+    {
+      "id": "qa-lit-x402-bad-sig",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the return value of an x402 verifier precompile when the signature is bad."
+    },
+    {
+      "id": "qa-lit-eip712-gas",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The gas cost for the `0x0200 EIP712_VERIFY` precompile is not documented in the Citrate documentation."
+    },
+    {
+      "id": "qa-lit-batch-gas",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the provided Citrate documentation does not contain information regarding how gas is computed for the `0x0202 BATCH_PAYMENT_VERIFY` precompile."
+    },
+    {
+      "id": "qa-lit-tensor-format",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The provided Citrate documentation does not contain information regarding the ranks accepted by the canonical tensor format or the reason the format is frozen."
+    },
+    {
+      "id": "qa-lit-compute-ops",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the specific fixed-point operations provided by the 0x010A to 0x010F precompiles."
+    },
+    {
+      "id": "qa-lit-hosted-receipt",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The provided Citrate documentation does not specify whether a `hosted-inference` precompile call in the range `0x0100` to `0x0106` returns a proof that the output is correct."
+    },
+    {
+      "id": "qa-lit-attestation-default",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover the attestation gate's default behaviour on mainnet validator binaries."
+    },
+    {
+      "id": "qa-lit-verify-trio",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "I am sorry, but the documentation does not contain information regarding the functions of the precompiles 0x0107, 0x0108, or 0x0109."
+    },
+    {
+      "id": "qa-lit-approval-quorum",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The Citrate documentation does not specify how a tool call's risk tier sets the exact number of signatures required by the agent runtime's approval gate."
+    },
+    {
+      "id": "qa-lit-auditor-role",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The documentation does not cover whether the Auditor role can approve an action in the agent runtime's approval gate."
+    },
+    {
+      "id": "qa-lit-unans-hardening-height",
+      "category": "devtools-contracts",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not specify the block height at which precompile hardening activation takes effect on chain 40204."
+    },
+    {
+      "id": "qa-lit-unans-belnap-call-count",
+      "category": "paraconsensus-fl",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not contain information regarding the specific call count of the 0x0110 Belnap precompile on chain 40204."
+    },
+    {
+      "id": "qa-lit-unans-x402-volume",
+      "category": "devtools-contracts",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The documentation does not contain information regarding the total SALT value settled by the x402 facilitator on chain 40204."
+    }
+  ]
+}

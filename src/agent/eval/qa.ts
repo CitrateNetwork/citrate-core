@@ -315,6 +315,32 @@ export function citationValid(ref: CitedRef, index: AnchorIndex): boolean {
   return ref.anchor === undefined || f.anchors.includes(ref.anchor);
 }
 
+// ------------------------------------------------------------------ abstention
+
+/**
+ * "The documentation does not cover / specify / contain ... X" and "I do not have documentation":
+ * the plain not-documented statement QA_SYSTEM_PROMPT asks for. The shared W3.4 refusal markers
+ * (`admitsUncertainty`) only match the literal "not documented", so the first live run
+ * (2026-10-01) scored every one of these abstentions as a failure. Bounded to one sentence; a
+ * statement of what the docs DO say ("the documentation specifies 40204") does not match.
+ */
+const NOT_DOCUMENTED_RE = new RegExp(
+  [
+    // "<the (bundled) docs / documentation / materials / sources> ... does not | do not | doesn't | don't <verb>"
+    String.raw`\b(?:documentation|docs|documents|materials|sources)\b[^.!?\n]{0,40}?\b(?:does not|do not|doesn't|don't|did not|didn't)\s+` +
+      String.raw`(?:contain|cover|specify|mention|include|provide|state|describe|say|list|detail|give|document|address|define|discuss)\b`,
+    // "I do not have (any) documentation", "there is no documentation"
+    String.raw`\b(?:do not|don't) have (?:any )?(?:documentation|docs|information)\b`,
+    String.raw`\bthere (?:is|are) no (?:documentation|docs|information)\b`,
+  ].join("|"),
+  "i",
+);
+
+/** True when the answer says the topic is not documented (W3.4 markers, or the QA phrasings above). */
+export function admitsNotDocumented(answer: string): boolean {
+  return admitsUncertainty(answer) || NOT_DOCUMENTED_RE.test(answer.replace(/[‘’]/g, "'"));
+}
+
 export interface QaItemScore {
   id: string;
   category: QaCategory;
@@ -347,7 +373,7 @@ export function scoreQaItem(
   const cited = [...extractCitations(answer), ...extraCitations];
   const citedValid = cited.filter((r) => citationValid(r, index)).length;
   const citedInvalid = cited.length - citedValid;
-  const abstained = admitsUncertainty(answer);
+  const abstained = admitsNotDocumented(answer);
   const reasons: string[] = [];
   if (citedInvalid > 0) reasons.push(`${citedInvalid} citation(s) do not resolve`);
 

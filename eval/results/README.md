@@ -13,6 +13,21 @@ renamed from the script's UTC-dated default (`2026-10-01-<model>.json`) to
 in the scorecard: they come from the `llama-server` per-request `print_timing` log lines for the
 same run (80 requests each).
 
+## 2026-10-01 runs (HUP-S3.5)
+
+Each run has a record with YAML frontmatter (model, quant, tier, ctx, date, hardware, commands):
+
+| Record | Status | Scorecards |
+|---|---|---|
+| [2026-10-01-gemma-4-E4B-it-Q4_0-T0.run.md](2026-10-01-gemma-4-E4B-it-Q4_0-T0.run.md) | done | Citrate QA `qa-v1` (150), literacy `qa-literacy-v1` (30), tool calls + injection (80) |
+| [2026-10-01-Qwen3.8-27B-Q4_0-T1.run.md](2026-10-01-Qwen3.8-27B-Q4_0-T1.run.md) | blocked | none: Metal out of memory with the app's own model resident |
+
+Serve flags follow the tier-driven serve plan (HUP-S1.6). In short: on T0 the model abstained on
+149 of 150 QA questions because the QA path gives it no bundled documentation yet (HUP-S3.1), so the
+Citrate QA baseline is 10 % pass (the 15 unanswerable probes) and gate g2-knowledge is not met. The
+QA scorer was fixed in the same WP so that "the documentation does not cover X" counts as an
+abstention; see the T0 record.
+
 ## Machine
 
 Apple M2 Max, 32 GB unified memory, macOS 15.6.1. The Citrate Core app's own `llama-server` was
