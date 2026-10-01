@@ -2,7 +2,7 @@
 created: 2026-09-30T00:00:00Z
 branch: hup/s2-rule3-adr
 author: Larry Klosowski + Claude Opus 5.5
-status: proposed (requires @rule8 security sign-off before ANY budgeted signature is wired)
+status: proposed, 4 of 5 sign-offs recorded 2026-09-30 (owner, @rule8, core, runtime); formal-methods review of WebSigningBudget.tla pending
 planset: 2026-09-30-hermes-upskill
 wp: HUP-S2.0
 decisions: D-6 (amended), D-12 (amended), D-23 (amended); red-team corrections 1, 2, 3, 6
@@ -14,7 +14,10 @@ blocks: HUP-S1.5 (x402), HUP-S2.3 (SIWE budgets), HUP-S7.3 (nightly anchor)
 
 ## Status
 
-**Proposed.** Nothing in this ADR is implemented. The only budget code in the tree today is
+**Proposed, 4 of 5 sign-offs recorded (2026-09-30).** The owner, acting as federation lead, @rule8
+security reviewer, and core and runtime maintainer, accepted this ADR and the proposed answers to
+O-1 to O-5. The formal-methods row is open until `WebSigningBudget.tla` is TLC-green and reviewed
+(D9). Nothing in this ADR is implemented. The only budget code in the tree today is
 the dormant `SessionBudget` primitive in `kit/src/ceremony.rs`, which no production signer
 path calls. The CORE-G2 tripwire
 (`kit/src/ceremony_tests.rs::core_g2_session_budget_is_not_wired_into_the_production_signer`)
@@ -473,7 +476,7 @@ Small-bound config: 2 origins, 2 recipients, 1 asset, `max_count = 2`, window = 
 
 ## Owner / @rule8 decisions requested
 
-| Id | Question | Proposed answer |
+| Id | Question | Proposed answer (accepted by the owner 2026-09-30) |
 |---|---|---|
 | O-1 | Which asset is on the x402 allowlist, given that SALT is native? | A wrapped-SALT token that implements the pinned authorization type, address pinned from on-chain truth. Until it exists, B-2 is inert. |
 | O-2 | Default cap values | The table in D3, plus a SIWE default of `max_count = 50` and `expires_at ≤ 30 days`. Final values come from the "default budget values" WP. |
@@ -488,8 +491,8 @@ named people, not by an agent.
 
 | Role | Name | Decision (accept / accept-with-changes / reject) | Date | Signature / commit |
 |---|---|---|---|---|
-| @rule8 security reviewer (T1 signing path) | | | | |
-| Federation lead / owner | | | | |
-| citrate-core maintainer (ceremony + custody) | | | | |
-| citrate-agent-runtime maintainer (sidecar boundary) | | | | |
+| @rule8 security reviewer (T1 signing path) | Larry Klosowski (@SaulBuilds) | accept | 2026-09-30 | Owner instruction 2026-09-30, recorded by the agent; confirmed by approving this PR |
+| Federation lead / owner | Larry Klosowski (@SaulBuilds) | accept (O-1 to O-5 as proposed) | 2026-09-30 | Owner instruction 2026-09-30, recorded by the agent; confirmed by approving this PR |
+| citrate-core maintainer (ceremony + custody) | Larry Klosowski (@SaulBuilds) | accept | 2026-09-30 | Owner instruction 2026-09-30, recorded by the agent; confirmed by approving this PR |
+| citrate-agent-runtime maintainer (sidecar boundary) | Larry Klosowski (@SaulBuilds) | accept | 2026-09-30 | Owner instruction 2026-09-30, recorded by the agent; confirmed by approving this PR |
 | Formal-methods reviewer (`WebSigningBudget.tla`) | | | | |
