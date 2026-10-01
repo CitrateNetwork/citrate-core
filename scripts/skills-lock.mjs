@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // HUP-S3.6 — reproducible generator and drift check for skills.lock.
 //
 // skills.lock pins every third-party skill reviewed for the bundled corpus: where it came from
