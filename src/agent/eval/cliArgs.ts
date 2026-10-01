@@ -14,11 +14,13 @@ export interface EvalCliArgs {
   allowRemote: boolean;
   tier?: "T0" | "T1" | "T2";
   outDir: string;
+  /** HUP-S9.4: the LoRA adapter the endpoint serves for this run (a candidate run for the eval gate). */
+  adapterSha256?: string;
 }
 
 export const EVAL_CLI_USAGE =
   "usage: node scripts/eval-tools.mjs --base-url <http://127.0.0.1:18080/v1> --model <name> " +
-  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--allow-remote]";
+  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--adapter-sha256 <hex>] [--allow-remote]";
 
 function parseHttpUrl(raw: string): URL | null {
   let u: URL;
@@ -42,7 +44,7 @@ export function isLoopbackUrl(raw: string): boolean {
   return octets.every((o) => o <= 255) && octets[0] === 127;
 }
 
-const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir"]);
+const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--adapter-sha256"]);
 
 /** Parse argv (without the node + script entries). Throws with a readable message on error. */
 export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
@@ -80,6 +82,10 @@ export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
   if (tier !== undefined && tier !== "T0" && tier !== "T1" && tier !== "T2") {
     throw new Error(`--tier must be T0, T1 or T2 (got ${tier})`);
   }
+  const adapterRaw = vals["--adapter-sha256"];
+  if (adapterRaw !== undefined && !/^[0-9a-fA-F]{64}$/.test(adapterRaw)) {
+    throw new Error(`--adapter-sha256 takes the adapter file's sha256 as 64 hex characters (got ${adapterRaw})`);
+  }
   const out: EvalCliArgs = {
     baseUrl: baseUrl.replace(/\/+$/, ""),
     model,
@@ -88,11 +94,17 @@ export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
   };
   if (apiKeyEnv !== undefined) out.apiKeyEnv = apiKeyEnv;
   if (tier !== undefined) out.tier = tier;
+  if (adapterRaw !== undefined) out.adapterSha256 = adapterRaw.toLowerCase();
   return out;
 }
 
-/** `<YYYY-MM-DD>-<model>.json`, with the model name reduced to a safe single path segment. */
-export function resultFileName(isoDate: string, model: string): string {
+/**
+ * `<YYYY-MM-DD>-<model>.json`, with the model name reduced to a safe single path segment. A
+ * candidate run with a LoRA adapter (HUP-S9.4) adds `-lora-<first 12 hex>` so it never overwrites
+ * the base run it is compared against.
+ */
+export function resultFileName(isoDate: string, model: string, adapterSha256?: string): string {
   const safe = model.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.\./g, "__");
-  return `${isoDate.slice(0, 10)}-${safe}.json`;
+  const lora = adapterSha256 ? `-lora-${adapterSha256.slice(0, 12)}` : "";
+  return `${isoDate.slice(0, 10)}-${safe}${lora}.json`;
 }

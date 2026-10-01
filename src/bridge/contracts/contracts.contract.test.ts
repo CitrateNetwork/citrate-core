@@ -81,3 +81,61 @@ describe("HUP-S6.4 — the D-4 deploy gate seam", () => {
     }
   });
 });
+
+describe("HUP-S4.3 — verified source seam", () => {
+  beforeEach(() => invokeMock.mockReset());
+
+  it("verifiedSource → contract_verified_source with the address", async () => {
+    invokeMock.mockResolvedValueOnce({ status: "unverified", verified: false });
+    const r = await tauriContracts.verifiedSource("0x" + "a".repeat(40));
+    expect(invokeMock).toHaveBeenCalledWith("contract_verified_source", { address: "0x" + "a".repeat(40) });
+    expect(r.status).toBe("unverified");
+  });
+
+  it("sim is honest — the lookup runs in the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.verifiedSource("0x" + "a".repeat(40))).rejects.toThrow(/desktop node/i);
+    }
+  });
+});
+
+describe("HUP-S6.6 / S6.7 — the Contract reader and post-deploy seams", () => {
+  beforeEach(() => invokeMock.mockReset());
+  const ADDR = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+
+  it("reader calls map to their commands with camelCase keys", async () => {
+    invokeMock.mockResolvedValue(null);
+    await tauriContracts.source(ADDR);
+    expect(invokeMock).toHaveBeenLastCalledWith("contract_source", { address: ADDR });
+    await tauriContracts.codeSize("citrate", ADDR);
+    expect(invokeMock).toHaveBeenLastCalledWith("contract_code_size", { target: "citrate", address: ADDR });
+    await tauriContracts.viewCall("http://127.0.0.1:8545", ADDR, "0x06fdde03");
+    expect(invokeMock).toHaveBeenLastCalledWith("contract_view_call", { target: "http://127.0.0.1:8545", address: ADDR, calldata: "0x06fdde03" });
+    await tauriContracts.proposeWrite(ADDR, "0xa0712d68", "0");
+    expect(invokeMock).toHaveBeenLastCalledWith("contract_write_propose", { address: ADDR, calldata: "0xa0712d68", valueWei: "0" });
+  });
+
+  it("post-deploy calls map to their commands", async () => {
+    invokeMock.mockResolvedValue(null);
+    await tauriContracts.postdeployStatus("/p");
+    expect(invokeMock).toHaveBeenLastCalledWith("postdeploy_status", { projectDir: "/p" });
+    await tauriContracts.postdeployReceipt("0xabc");
+    expect(invokeMock).toHaveBeenLastCalledWith("postdeploy_receipt", { txHash: "0xabc" });
+    await tauriContracts.postdeployVerify("/p", ADDR);
+    expect(invokeMock).toHaveBeenLastCalledWith("postdeploy_verify", { projectDir: "/p", address: ADDR, constructorArgsHex: null });
+    await tauriContracts.postdeploySwitchSite("/p", ADDR);
+    expect(invokeMock).toHaveBeenLastCalledWith("postdeploy_switch_site", { projectDir: "/p", address: ADDR });
+    await tauriContracts.postdeployPinSite("/p");
+    expect(invokeMock).toHaveBeenLastCalledWith("postdeploy_pin_site", { projectDir: "/p" });
+    await tauriContracts.postdeployVercelExport("/p");
+    expect(invokeMock).toHaveBeenLastCalledWith("postdeploy_vercel_export", { projectDir: "/p" });
+  });
+
+  it("sim is honest — reads and post-deploy steps need the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.source(ADDR)).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.proposeWrite(ADDR, "0xa0712d68", "0")).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.postdeployPinSite("/p")).rejects.toThrow(/desktop node/i);
+    }
+  });
+});

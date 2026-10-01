@@ -1917,6 +1917,11 @@ fn a_zero_op_budget_covers_nothing() {
 /// reachable, so it is the only place wiring the budget into auto-approve can take effect — and
 /// scoping avoids false positives from unrelated `.consume(` calls elsewhere. To lift this gate,
 /// wire the budget AND update this test in the same reviewed change.
+///
+/// HUP-S2.3 note: the SIWE-only `WebSigningBudget` path (`request_siwe_budgeted`, ADR-2026-09-30,
+/// accepted) is a separate, closed-list mechanism with its own tripwire
+/// (`budget_tripwire_the_budget_modules_never_reach_a_signer`). It does not use `SessionBudget`,
+/// which stays dormant and is still guarded here.
 #[test]
 fn core_g2_session_budget_is_not_wired_into_the_production_signer() {
     let ceremony_non_test = strip_test_module(include_str!("ceremony.rs"));

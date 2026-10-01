@@ -16,6 +16,8 @@ export interface QaCliArgs {
   allowRemote: boolean;
   tier?: "T0" | "T1" | "T2";
   outDir: string;
+  /** HUP-S9.4: the LoRA adapter the endpoint serves for this run (a candidate run for the eval gate). */
+  adapterSha256?: string;
   /** Minimum key-point coverage for an answerable item to pass (scorer default 0.6). */
   coverageThreshold?: number;
   /** HUP-S7.7: which QA set to run, by version name (default qa-v1). */
@@ -33,7 +35,7 @@ export function qaDatasetFiles(name = "qa-v1"): { dataset: string; index: string
 
 export const QA_CLI_USAGE =
   "usage: node scripts/eval-qa.mjs --base-url <http://127.0.0.1:18080/v1> --model <name> " +
-  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--coverage-threshold 0..1] [--dataset qa-v1] [--allow-remote]";
+  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--coverage-threshold 0..1] [--dataset qa-v1] [--adapter-sha256 <hex>] [--allow-remote]";
 
 function parseHttpUrl(raw: string): URL | null {
   let u: URL;
@@ -57,7 +59,7 @@ export function isLoopbackUrl(raw: string): boolean {
   return octets.every((o) => o <= 255) && octets[0] === 127;
 }
 
-const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--coverage-threshold", "--dataset"]);
+const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--adapter-sha256", "--coverage-threshold", "--dataset"]);
 
 /** Parse argv (without the node + script entries). Throws with a readable message on error. */
 export function parseQaCliArgs(argv: string[]): QaCliArgs {
@@ -107,6 +109,10 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
   if (dataset !== undefined && !QA_SET_NAME_RE.test(dataset)) {
     throw new Error(`--dataset takes a QA set name such as qa-v1 or qa-literacy-v1 (got ${dataset})`);
   }
+  const adapterRaw = vals["--adapter-sha256"];
+  if (adapterRaw !== undefined && !/^[0-9a-fA-F]{64}$/.test(adapterRaw)) {
+    throw new Error(`--adapter-sha256 takes the adapter file's sha256 as 64 hex characters (got ${adapterRaw})`);
+  }
   const out: QaCliArgs = {
     baseUrl: baseUrl.replace(/\/+$/, ""),
     model,
@@ -115,6 +121,7 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
   };
   if (apiKeyEnv !== undefined) out.apiKeyEnv = apiKeyEnv;
   if (tier !== undefined) out.tier = tier;
+  if (adapterRaw !== undefined) out.adapterSha256 = adapterRaw.toLowerCase();
   if (coverageThreshold !== undefined) out.coverageThreshold = coverageThreshold;
   if (dataset !== undefined) out.dataset = dataset;
   return out;
@@ -124,8 +131,10 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
  * `<YYYY-MM-DD>-qa-<model>.json` for qa-v1, `<YYYY-MM-DD>-<set>-<model>.json` for any other set,
  * with the model name reduced to a safe single path segment.
  */
-export function qaResultFileName(isoDate: string, model: string, dataset = "qa-v1"): string {
+export function qaResultFileName(isoDate: string, model: string, dataset = "qa-v1", adapterSha256?: string): string {
   const safe = model.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.\./g, "__");
   const set = dataset === "qa-v1" || !QA_SET_NAME_RE.test(dataset) ? "qa" : dataset;
-  return `${isoDate.slice(0, 10)}-${set}-${safe}.json`;
+  // HUP-S9.4: a LoRA candidate run never overwrites the base run it is compared against.
+  const lora = adapterSha256 ? `-lora-${adapterSha256.slice(0, 12)}` : "";
+  return `${isoDate.slice(0, 10)}-${set}-${safe}${lora}.json`;
 }

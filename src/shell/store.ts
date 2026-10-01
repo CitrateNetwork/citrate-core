@@ -9,6 +9,7 @@
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
 import { useSyncExternalStore } from "react";
+import { toFunctionSelector } from "viem";
 import {
   Activity,
   AppState,
@@ -31,13 +32,18 @@ import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
+import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
+import type { FlRoundPlan } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { fenceUntrusted } from "../agent/untrusted";
+import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
-import type { Brief, GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
+import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -51,6 +57,7 @@ import type { Claim } from "../daemons/api";
 import { widgetsApi, refreshWidgets } from "../widgets/api";
 import { isWidgetQuery, WIDGET_QUERIES } from "../widgets/catalog";
 import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
+import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 /**
@@ -58,7 +65,7 @@ import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, to
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
  * Every other tool is held behind an explicit card before it runs when the call is hic:"required".
  */
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "widget_create"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, "widget_create"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -67,11 +74,13 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   "withdraw-claim": "Withdrawal claim",
   claim: "Claim",
   "wallet-link": "Wallet link",
+  "device-link": "Device link",
   agent: "Agent action",
   social: "Verify identity",
   deploy: "Deploy contract",
   "directory-publish": "Publish to directory",
   "directory-revoke": "Remove from directory",
+  "contract-call": "Contract call",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -725,6 +734,9 @@ export class Store {
    */
   async startMemoryDaemon(): Promise<void> {
     this.setState({ memDaemon: "idle", memDaemonError: null });
+    // HUP-S3.1: import the bundled knowledge corpus BEFORE the daemon takes the store lock. Idempotent
+    // and gated in Rust; a failure is shown and never blocks the daemon from starting.
+    await this.importKnowledge();
     try {
       await bridge.memory.start();
     } catch (err) {
@@ -736,6 +748,49 @@ export class Store {
     if (state === "running") {
       await this.refreshConstellation();
       void this.seedMemoryGraph();
+    }
+  }
+
+  /**
+   * HUP-S3.1 — first-run import of the bundled knowledge corpus (public docs, papers, Agentile,
+   * reviewed skills, Solidity references) into the local memory store. Progress comes from the
+   * importer's own lines; the result (imported / skipped with a reason / failed with the error) is
+   * folded into `knowledgeImport` exactly as reported. Never throws.
+   */
+  importKnowledge(): Promise<void> {
+    // One import at a time: an overlapping caller (launch auto-start + a Start/Retry click) awaits the
+    // same run instead of seeing "in-progress" and starting the daemon while the store is held.
+    if (!this.knowledgeImportRun) {
+      this.knowledgeImportRun = this.runKnowledgeImport().finally(() => {
+        this.knowledgeImportRun = null;
+      });
+    }
+    return this.knowledgeImportRun;
+  }
+
+  private async runKnowledgeImport(): Promise<void> {
+    const base = { tenant: null, done: 0, total: 0, nodesAdded: 0, message: null };
+    this.setState({ knowledgeImport: { ...base, state: "running" } });
+    try {
+      const r = await bridge.memory.importKnowledge((line) => {
+        if (line.event === "progress" || line.event === "tenant_start") {
+          const done = line.event === "progress" ? line.done : 0;
+          const total = line.event === "progress" ? line.total : line.nodes;
+          this.setState({ knowledgeImport: { ...this.state.knowledgeImport, state: "running", tenant: line.tenant, done, total } });
+        }
+      });
+      this.setState({
+        knowledgeImport: {
+          ...base,
+          state: r.state,
+          nodesAdded: r.nodesAdded,
+          message: r.state === "failed" ? (r.error ?? "knowledge import failed") : (r.skipped ?? null),
+        },
+      });
+    } catch (err) {
+      this.setState({
+        knowledgeImport: { ...base, state: "failed", message: String((err as Error)?.message ?? err) },
+      });
     }
   }
 
@@ -841,6 +896,11 @@ export class Store {
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       if (kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri") {
         const h = bridge.agentHarness;
+        // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint.
+        const escalationReady = await bridge.escalation
+          .endpoints()
+          .then((e) => e.length > 0)
+          .catch(() => false);
         this.provider = createSidecarProvider(
           {
             open: (p, t) => h.sessionOpen(p, t),
@@ -849,8 +909,9 @@ export class Store {
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
           },
-          () => AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
-          () => annotatedAgentTools(),
+          // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
+          () => this.sidecarSystemPrompt(),
+          () => withEscalationTool(annotatedAgentTools(), escalationReady),
         );
         this.reflectProvider();
         return;
@@ -1944,6 +2005,40 @@ export class Store {
     this.scrollChat();
   }
 
+  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context, then the
+   *  chosen persona's fragment (none = exactly the base prompt and context). */
+  sidecarSystemPrompt(): string {
+    return composeSystemPrompt(
+      AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
+      this.state.hermesPersona,
+    );
+  }
+
+  /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for
+   *  the default voice. Only the prompt's voice changes; tools, approvals and gates do not. A running
+   *  sidecar session keeps its prompt, so the provider is rebuilt to open a fresh one. */
+  chooseHermesPersona(p: HermesPersona | null): void {
+    this.setState({ hermesPersona: p });
+    this.save();
+    if (this.state.hermesSidecarLoop) void this.rebuildProvider();
+  }
+
+  /** HUP-S3.3 (US-3.3 AC3) — keep a member-defined persona the sidecar accepted (replaces one with
+   *  the same id). Shipped personas are never stored here. */
+  addCustomPersona(p: HermesPersona): void {
+    if (!p.custom || !p.id.startsWith("custom-")) return;
+    this.setState((s) => ({ customPersonas: s.customPersonas.filter((k) => k.id !== p.id).concat([p]) }));
+    this.save();
+  }
+
+  /** HUP-S3.3 — remove a custom persona; if it was the chosen one, go back to the default voice. */
+  removeCustomPersona(id: string): void {
+    const wasChosen = this.state.hermesPersona?.id === id;
+    this.setState((s) => ({ customPersonas: s.customPersonas.filter((k) => k.id !== id) }));
+    if (wasChosen) this.chooseHermesPersona(null);
+    else this.save();
+  }
+
   /** HUP-S0.7 — retry a failed turn: drop the failed reply and its user message, then resend. */
   async retryChat(failedId: string): Promise<void> {
     const msgs = this.state.chatMsgs;
@@ -1957,6 +2052,8 @@ export class Store {
 
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
   private turnAbort: AbortController | null = null;
+  /** HUP-S3.1: the in-flight knowledge import, shared by overlapping callers. */
+  private knowledgeImportRun: Promise<void> | null = null;
 
   /** HUP-S7.6 — the active provider's kind (`ChatProvider.kind`), for the Activity monitor. */
   activeProviderKind(): string {
@@ -2045,10 +2142,14 @@ export class Store {
     );
     try {
       const run = provider.send({
-        messages: this.state.chatMsgs
-          .filter((m) => !m.streaming && !m.error)
-          .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
-          .concat([{ role: "user", content: text }]),
+        // HUP-S3.3: the chosen persona rides as one leading system message (none = unchanged).
+        messages: withPersonaMessage(
+          this.state.chatMsgs
+            .filter((m) => !m.streaming && !m.error)
+            .map((m) => ({ role: m.who === "You" ? "user" : "assistant", content: m.text }))
+            .concat([{ role: "user", content: text }]),
+          this.state.hermesPersona,
+        ),
         signal: ac.signal,
         callbacks: {
           onStatus: (st) => {
@@ -2080,6 +2181,13 @@ export class Store {
             }
           },
           onActivity: (ev) => {
+            if (ev.kind === "file_change") {
+              // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
+              ensure();
+              recordFileChange(ev.change, asstId);
+              void refreshUndoPanel(bridge.agentHarness);
+              return;
+            }
             if (!stopped() && ev.kind === "step") noteStep(ev.step);
           },
         },
@@ -2157,6 +2265,37 @@ export class Store {
     }
     if (held) {
       // declined at the HIC card — the tool did not run
+    } else if (call.name === ESCALATE_TOOL_NAME) {
+      // HUP-S1.5 — price first: a notice within today's budget (HIC-2), or the member's approval when
+      // over budget or when the task holds untrusted content (HIC-1). Core enforces the same order.
+      const e = bridge.escalation;
+      result = await runEscalationTool(
+        {
+          endpoints: () => e.endpoints(),
+          quote: (id, prompt, system, maxTokens) => e.quote(id, prompt, system, maxTokens),
+          run: (q, shown, confirmed, tainted) => e.run(q, shown, confirmed, tainted),
+          confirm: (q, reason, question) => {
+            const a = escalationApproval(q, reason, question);
+            return ask(
+              {
+                origin: "chat agent",
+                requester: "dashboard agent · tool " + ESCALATE_TOOL_NAME,
+                title: a.title,
+                chainless: true,
+                rows: a.rows,
+                cost: a.cost,
+                sponsor: "paid by you to your provider, not a chain transaction",
+                sponsorColor: "var(--warn)",
+              },
+              a.card,
+            );
+          },
+          notice: (text) => this.toast(text),
+        },
+        args as Record<string, unknown>,
+        hic,
+      );
+      status = isEscalationDeclined(result) ? "declined" : "ok";
     } else if (call.name === "memory_assert") {
       // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
       // isn't bundled yet), so an approval here does NOT durably write anything. Show
@@ -2494,6 +2633,48 @@ export class Store {
         result = JSON.stringify({ local }) + "\n" + fenceUntrusted("on-chain ModelRegistry entries", reg);
       } catch (e) {
         result = "model list unavailable: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "get_verified_source") {
+      // HUP-S4.3 — READ: CitrateScan's verified source/ABI/compiler, fenced as untrusted data.
+      if (!isAddress(args.address)) {
+        result = "get_verified_source needs a contract address (0x + 40 hex). Nothing was looked up.";
+      } else {
+        try {
+          result = formatVerifiedSourceForAgent(await bridge.contracts.verifiedSource(args.address));
+        } catch (e) {
+          result = "verified-source lookup unavailable: " + (e instanceof Error ? e.message : String(e));
+        }
+        }
+    } else if (call.name === "fl_round_plan") {
+      // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
+      try {
+        const plan = await bridge.flRounds.plan(proposalFromToolArgs(args as Record<string, unknown>));
+        result = formatPlanForAgent(plan);
+      } catch (e) {
+        result = "couldn't plan a round: " + (e instanceof Error ? e.message : String(e));
+      }
+    } else if (call.name === "fl_round_start") {
+      // HUP-S9.4 (HIC-1): the member decides on a card showing core's plan; only an Approve asks
+      // core to record the start for that exact hash. A hic:"required" reason rides the same card.
+      let plan: FlRoundPlan | null = null;
+      try {
+        plan = await bridge.flRounds.lookupPlan(String(args.planHash || ""));
+      } catch (e) {
+        result = "couldn't find that plan: " + (e instanceof Error ? e.message : String(e));
+      }
+      if (plan) {
+        const p = plan;
+        const out = await approveAndStartRound(
+          { requestSig: (spec) => this.requestSig(spec), start: (h) => bridge.flRounds.start(h) },
+          p,
+          "chat agent",
+          (spec) => {
+            const card = fieldsCard("fl_round_start", ann, { coordinator: spec.rows[0]?.v ?? "", plan: p.planHash }, "join the federated round of plan " + p.planHash.slice(0, 12));
+            return hic ? { ...spec, card, hic } : { ...spec, card };
+          },
+        );
+        status = out.status;
+        result = out.message;
       }
     } else if (call.name === "contract_deploy") {
       // WRITE: assemble the creation tx as a PENDING ceremony the member approves (Rule 3).
@@ -3178,6 +3359,57 @@ export class Store {
   }
 
   /**
+   * HUP-S6.7 — a write call the member set up in the Contract reader pop-out. Core estimates the
+   * gas and opens a PENDING ceremony (bridge.contracts.proposeWrite → contract_write_propose);
+   * this STOPS at the WalletReviewModal in the main window, where the member sees the decoded call
+   * and approves or rejects it. Nothing signs here (Rule 3). A refusal (the estimate failed, no
+   * wallet) is thrown back to the reader as the honest reason; no review opens.
+   */
+  async proposeContractCall(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
+    if (this.state.walletReview) throw new Error("another approval is already waiting in the main window; finish it first");
+    // The label becomes the review's title, so the main window checks it against the calldata
+    // instead of trusting the pop-out: its selector must equal the call's first 4 bytes.
+    let selector = "";
+    try {
+      selector = toFunctionSelector(input.label);
+    } catch {
+      selector = "";
+    }
+    if (!selector || selector.toLowerCase() !== input.calldata.slice(0, 10).toLowerCase()) {
+      throw new Error("the call's name does not match its calldata; nothing was proposed");
+    }
+    const view = await bridge.contracts.proposeWrite(input.address, input.calldata, input.valueWei);
+    this.openWalletReview("contract-call", "Contract call · " + input.label, view);
+    return { proposed: true };
+  }
+
+  /**
+   * HUP-S6.7 — Hermes explains a contract function for the Contract reader. One turn on the
+   * active provider with the reader's prompt (the contract text is fenced as untrusted data by
+   * contractReader/explain.ts). Every tool call is refused, so an explanation can never act. It
+   * refuses when only the demo provider is connected and when a chat turn is running.
+   */
+  async explainContract(prompt: string): Promise<{ text: string; by: string }> {
+    const provider = this.provider;
+    if (!provider || provider.kind === "demo") throw new Error("Hermes has no model connected, so it cannot explain this contract yet");
+    if (this.state.chatStatus !== "ready") throw new Error("Hermes is busy with a chat turn; try again when it finishes");
+    let streamed = "";
+    const out = await provider.send({
+      messages: [{ role: "user", content: prompt }],
+      callbacks: {
+        onStatus: () => {},
+        onToken: (tk) => {
+          streamed += tk;
+        },
+        onToolCall: async () => "Tools are not available while explaining a contract. Answer from the data given.",
+      },
+    });
+    const text = (out.content || streamed).trim();
+    if (!text) throw new Error("Hermes returned no explanation");
+    return { text, by: provider.label };
+  }
+
+  /**
    * W1.3 (@rule8) — activate the member's node as a block-producing validator
    * (bond-clone model). Builds the pending `MemberBond.activate(pubkey, sig)` ceremony
    * (bridge.node.registerValidator → node_register_validator: reads the live nonce,
@@ -3344,6 +3576,23 @@ export class Store {
     }
     // Q-E.1 (@rule8, P0) — STOP: surface the decoded claim for human approval.
     this.openWalletReview("withdraw-claim", "Claim withdrawal", view);
+  }
+
+  /**
+   * HUP-S8.1 — link THIS machine to your Citrate member identity. Opens the personal_sign ceremony
+   * over the DeviceLink text (the wallet signs only after the person approves at the review gate)
+   * and STOPS. On approve, core adds the member + device signatures and stores the link. `onDone`
+   * refreshes the Cluster surface after either outcome. No funds move.
+   */
+  async linkThisDevice(label: string, onDone?: () => void): Promise<void> {
+    let view: CeremonyView;
+    try {
+      view = await bridge.cluster.linkDeviceRequest(label);
+    } catch (err) {
+      this.toast("Couldn't start the device link: " + String((err as Error).message ?? err));
+      return;
+    }
+    this.openWalletReview("device-link", "Link this device to your Citrate identity", view, "no funds move", () => onDone?.());
   }
 
   /**
@@ -3580,6 +3829,28 @@ export class Store {
       }
       return;
     }
+    // HUP-S8.1 — a DEVICE LINK is a personal_sign, not a tx: route it to the dedicated command,
+    // which takes the ceremony signature, adds the member + device signatures and stores the link.
+    if (r.kind === "device-link") {
+      try {
+        const res = await bridge.cluster.linkDeviceApprove(r.view.id, ack);
+        this.setState({ walletReview: null });
+        this.addActivity(r.label, "no funds moved", "");
+        const label = res.links.find((l) => l.thisDevice)?.label;
+        this.toast(label ? `This device is linked as “${label}”.` : "This device is linked.");
+        await r.onResolved?.(true);
+      } catch (err) {
+        try {
+          await bridge.cluster.linkDeviceReject(r.view.id);
+        } catch {
+          /* best-effort cleanup */
+        }
+        this.setState({ walletReview: null });
+        this.toast("Device not linked: " + String((err as Error).message ?? err));
+        await r.onResolved?.(false);
+      }
+      return;
+    }
     // A SOCIAL identity verification (ADR D3) is a personal_sign, not a tx: the wallet signs the
     // IdentityBinding at the ceremony and the binding is recorded — it must never reach
     // signing.broadcast. Route it to the dedicated command, which signs, records, and flips verified.
@@ -3691,6 +3962,7 @@ export class Store {
       // The link path has its own reject: it also drops the one-time challenge
       // nonce, so a declined link cannot be resumed with a stale nonce.
       if (r.kind === "wallet-link") await bridge.wallet.linkReject(r.view.id);
+      else if (r.kind === "device-link") await bridge.cluster.linkDeviceReject(r.view.id);
       else await bridge.signing.reject(r.view.id);
       // A declined social verification also drops its pending-bind entry (nonce is one-time).
       if (r.kind === "social") await bridge.social.verifyForget(r.view.id);

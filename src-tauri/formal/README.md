@@ -172,6 +172,8 @@ Re-checked on the same date with this script: `ConsentGate`, `MemoryPack`, `Mode
 
 # WebSigningBudget formal model (HUP-S2.3, formal half)
 
+Implementation (HUP-S2.3) and the test that pins each property: `docs/WEB_SIGNING_BUDGETS.md`.
+
 TLA+ model of the signing side of the **proposed** Rule-3 amendment,
 `docs/adr/ADR-2026-09-30-rule3-budgetable-signatures.md` (section D9). It models a design,
 not code: nothing in the tree calls a budget, the ADR's sign-off block is not complete (the
@@ -360,7 +362,6 @@ Mutation check (`python3 src-tauri/formal/DeployGate_mutants.py`), all 7 killed:
   them (every "not installed" or tool error is a failing item).
 - The store's size bound is not modelled. Eviction revokes open ceremonies like NOT_READY.
 
-
 # DaemonBudget formal model (HUP-S10.3)
 
 Model of daemons inside a budget: `src-tauri/src/daemons.rs` (`DaemonBook`), the runner
@@ -409,3 +410,211 @@ Mutation check (`python3 src-tauri/formal/DaemonBudget_mutants.py`), all 10 kill
 
 Abstractions: schedules, the time of day, the 24 h catch-up window and the 30 minute stale-run
 timer are folded into the nondeterministic `Fire` and `Abandon`; token amounts are small naturals.
+
+# FlRoundGate (HUP-S9.4)
+
+Federated round start (HIC-1) and the LoRA eval gate, mirroring `src-tauri/src/fl_rounds.rs`.
+
+## Files
+
+- `FlRoundGate.tla`: the model.
+- `FlRoundGate.cfg`: safety (one plan, since plans are independent; two source files; two adapter
+  versions; two base models).
+- `FlRoundGate_Reach.cfg`, `FlRoundGate_ReachLoad.cfg`: non-vacuity (a round can start; an
+  adapter can load).
+- `FlRoundGate_mutants.py`: the mutation check.
+
+## What maps to what
+
+| Model | Code |
+|---|---|
+| `Plan(p)` | `fl_round_plan` (`build_plan` over a coordinator read; the plan hash binds what was read) |
+| `Approve(p)` | the member's Approve click on the plan's card (`store.ts`, `fl_round_start` tool and the Train surface) |
+| `Start(p)` | `start_round`: plan known and startable, not already started, coordinator re-read still open, settlement unchanged |
+| `CoordChange` | the coordinator moving at any time |
+| `Gate(f, d, b)` | `fl_adapter_gate` (`evaluate_adapter` + `record_gate`, keyed by sha256) and `must_unload_after_gate` |
+| `Load(v)` | `fl_adapter_load` (`authorize_load`: ACCEPT, same base, content-addressed copy re-hashed) |
+| `Swap(f, v)` | the member's source file changing on disk |
+| `DamageCopy(v, w)` | an app-store copy damaged while not served |
+| `CrashRestart` | the supervisor respawning llama-server with the same `--lora` argv |
+| `SelectBase(b)` | `select_model` dropping the adapter on a base change |
+
+## Invariants
+
+| Invariant | Meaning | Rust tests (`fl_rounds_tests.rs`) |
+|---|---|---|
+| `StartOnlyApproved` | no start without the member's approval of that plan | `start_requires_a_plan_core_built` (the command is reached only from the approval path) |
+| `StartOnlyWhatWasApproved` | a start happens only while work is open, as planned, under the settlement mode the member saw | `start_refuses_when_the_coordinator_changed_since_the_plan`, `start_refuses_a_settlement_mode_change`, `start_refuses_a_blocked_plan` |
+| `AtMostOneStart` | one authorization per plan | `start_refuses_a_stale_plan_and_a_second_start` |
+| `LoadedIsAccepted` | the configured adapter's latest record is ACCEPT for the served base | `load_needs_an_accepted_gate_for_this_exact_file_and_base`, `a_later_reject_revokes_an_earlier_accept`, `a_new_gate_record_unloads_the_served_adapter_unless_it_still_fits`, `serve_argv_carries_the_loaded_adapter_and_a_model_switch_clears_it` |
+| `ServedIsLoaded` | what llama-server actually read is the gated version, across source swaps and crash restarts | `a_source_swapped_after_the_gate_is_refused_and_after_load_is_not_served` |
+
+## Run result (2026-10-01)
+
+TLC2 Version 2.19 (rev 5a47802), `scripts/run-tlc.sh FlRoundGate`: **No error found**,
+24,204,496 states generated, 881,600 distinct, depth 15 (19 s).
+
+`FlRoundGate_Reach`: `NeverStarts` violated as expected. `FlRoundGate_ReachLoad`: `NeverLoads`
+violated as expected.
+
+The first draft of this model found a gap: re-gating a served adapter as ACCEPT with scorecards
+from a different base left it loaded. The fix is `must_unload_after_gate` (mutant M09 below is
+that first draft).
+
+Mutation check (`python3 src-tauri/formal/FlRoundGate_mutants.py`), all 13 killed:
+
+| Mutant | Break | Caught by |
+|---|---|---|
+| M01 | start without approval | `StartOnlyApproved` |
+| M02 | start without re-reading the coordinator | `StartOnlyWhatWasApproved` |
+| M03 | start under a settlement mode the member did not see | `StartOnlyWhatWasApproved` |
+| M04 | a second start for one plan | `AtMostOneStart` |
+| M05 | start a plan that was blocked when made | `StartOnlyWhatWasApproved` |
+| M06 | load accepts any recorded verdict | `LoadedIsAccepted` |
+| M07 | load ignores the measured base | `LoadedIsAccepted` |
+| M08 | a new gate record never unloads | `LoadedIsAccepted` |
+| M09 | only a REJECT unloads (first draft) | `LoadedIsAccepted` |
+| M10 | a base switch keeps the adapter | `LoadedIsAccepted` |
+| M11 | an existing copy is reused without re-hashing | `ServedIsLoaded` |
+| M12 | llama-server points at the member's source file | `ServedIsLoaded` |
+| M13 | the copy is not re-hashed after copying | `ServedIsLoaded` |
+
+## Abstractions
+
+- sha256 is assumed collision-free (versions stand for hashes).
+- Device fit, plan expiry (15 minutes) and the plan memory bound are not modelled; the Rust
+  tests cover them.
+- The app-owned adapter copy is assumed not to change while it is being served (the same trust
+  the model files get). A copy damaged while not served is re-hashed and replaced on load.
+- The eval decision itself is folded into the verdict `Gate` writes; `decide_eval_gate` is
+  covered by the Rust tests.
+
+# SpendBudget formal model (HUP-S1.5)
+
+TLA+ model of the escalation spend budget (`src-tauri/src/escalation.rs`: `Book`, `Ledger`;
+the sidecar half is citrate-agent-runtime `agent-escalation`). Written with the WP; the Rust unit
+tests in `escalation_tests.rs` mirror each invariant.
+
+## Files
+
+- `SpendBudget.tla`: the model.
+- `SpendBudget.cfg`: one endpoint, three escalations, prices {1, 2}, caps {0, 2, 3}, a clock over
+  days 0..2 that also moves backwards.
+- `SpendBudget_TwoEndpoints.cfg`: two endpoints (removal voids only that endpoint's quotes), two
+  escalations, one day boundary. The mutation check runs on this config.
+- `SpendBudget_mutants.py`: the mutation check (single worker, so the first violation is
+  deterministic; property mutants run without TypeOK so an earlier state-invariant failure cannot
+  hide the transition that breaks the property).
+
+## Invariants
+
+| Invariant | Meaning | Mutants that break it |
+|---|---|---|
+| `SpendWithinCap` | budgeted spend this period (`committed + reserved`) never exceeds the cap | M01 no cap check on a budget run; M02 the cap can be lowered below today's use; M03 settlement can charge more than the reservation |
+| `NoEscalationWithoutShownPrice` | every run used exactly the price the webview showed for that quote | M04 the run does not echo the shown price |
+| `EgressOptInOnly` | every run went to an endpoint the member had added at that moment | M05 removal keeps the endpoint's quotes and the run does not re-check the endpoint (each layer alone is redundant in the model; both are kept) |
+| `OverBudgetOrTaintedNeedsHic1` | a run that did not fit, or ran with untrusted context, was the member's decision | M06 taint ignored; M07 cap ignored |
+| `ReservedIsConsistent` | the in-flight counter equals this period's budget reservations | M08 an earlier period's reservation is settled against today |
+| `ResetOnlyAtPeriodBoundary` (action) | committed spend drops only when the period advances | M09 the clock moving backwards rolls the period; M10 changing the cap resets spend |
+| `PeriodMonotone` (action) | the period never moves backwards | M11 (as M09) |
+
+## Run results (2026-10-01 local, TLC 2.19 rev 5a47802, OpenJDK)
+
+`scripts/run-tlc.sh SpendBudget all`:
+
+| Config | Generated | Distinct | Time | Result |
+|---|---|---|---|---|
+| `SpendBudget.cfg` | 51,284,760 | 6,926,616 | 6 min 10 s | no error |
+| `SpendBudget_TwoEndpoints.cfg` | 1,898,882 | 243,840 | 3 s | no error |
+
+Mutation check, `python3 src-tauri/formal/SpendBudget_mutants.py` (about 25 s): **11 of 11
+mutants caught**, each by the invariant or property it targets.
+
+## Abstractions
+
+- Prices are abstract integers; the worst-case arithmetic, rounding and overflow are unit-tested.
+- Persistence is assumed write-ahead and durable; the restart and corrupt-file paths are
+  unit-tested (`a_corrupt_ledger_file_fails_closed_and_is_kept_aside`, round trip).
+- Quote expiry only removes quotes and is unit-tested.
+- The sidecar's own refusal of an under-reserved request is a second guard on `SpendWithinCap`,
+  tested in the runtime, not modelled.
+
+# ComponentSwap formal model (HUP-S5.5)
+
+TLA+ model of the signed component updater's install path (`components/src/install.rs`,
+`components/src/manifest.rs`): Begin (verify and record a manifest, refusing a lower sequence),
+Verify (size, SHA-256, artifact signature and health check folded into one outcome), Rename,
+Commit (the state-file rename, the only commit point), Crash at any step, Recover, Rollback.
+Policy and runbook: `docs/COMPONENT_UPDATER.md`.
+
+## Files
+
+- `ComponentSwap.tla`: the model.
+- `ComponentSwap.cfg`: three versions, one of them tampered, sequences 1..3.
+- `ComponentSwap_Wide.cfg`: four versions (three good), sequences 1..4, so pruning is reachable.
+- `ComponentSwap_mutants.py`: breaks one guard per mutant and expects TLC to find a violation.
+
+## Invariants and the code they mirror
+
+| Invariant | Meaning | Code / tests |
+|---|---|---|
+| `CurrentVerified` | Only a version that verified is ever current or previous | `Store::stage_and_swap`; `tests/install.rs` hash, size, signature, health cases |
+| `InstalledOnDisk` | What the state file names is always on disk, through crashes | rename before commit; `Store::recover`; `recover_removes_leftover_staging_and_unreferenced_versions` |
+| `OnlyVerifiedOnDisk` | Nothing unverified is placed among the version directories | staging under `.staging/` |
+| `JobIsNewest` | An install comes from the newest recorded manifest | `install` re-checks the sequence; `install_refuses_a_manifest_older_than_the_one_recorded` |
+| `BoundedDisk` | Between installs only current and previous are on disk | pruning after commit; `only_two_versions_are_kept_on_disk` |
+| `SeenMonotone` (action property) | The recorded sequence never goes down | `check_sequence`; `an_older_sequence_is_a_rollback_and_is_refused` |
+
+## Run result (2026-10-01)
+
+`scripts/run-tlc.sh ComponentSwap all`: `ComponentSwap.cfg` 265 states generated, 130 distinct,
+depth 12, no error; `ComponentSwap_Wide.cfg` 1119 generated, 517 distinct, depth 14, no error.
+`python3 src-tauri/formal/ComponentSwap_mutants.py`: 9 of 9 mutants killed (M01..M09).
+
+# AnchorSettle (HUP-S7.3, core half)
+
+The runtime's `citrate-agent-runtime/agent-anchor/formal/AnchorBatch.tla` proves the batch side
+(what a day's root covers, no re-batching, no double anchor in the ledger). `AnchorSettle.tla`
+covers what core adds: the registry may not be deployed, the member turns anchoring on and off,
+the scheduler raises one approval card per day, an approval is single use and signs once with the
+anchor key, a receipt may stay unmined or revert, and a day is marked anchored only on a mined,
+successful receipt.
+
+## Files
+
+- `AnchorSettle.tla`, `AnchorSettle.cfg` (2 days, up to 3 cards per day)
+- `AnchorSettle_mutants.py` (one mutant per guard, each run with only its target invariant)
+
+## Invariants and the code they mirror
+
+| Invariant | Meaning | Code / tests |
+|---|---|---|
+| `AnchoredOnlyOnConfirmedReceipt` | a day is anchored only after a mined receipt with status 1 | `chain_agent::settle`, `ceremony::anchor::receipt_confirms`; `a_day_is_marked_anchored_only_on_a_mined_successful_receipt`, `a_reverted_or_unmined_receipt_never_confirms` |
+| `SingleUseCard` | one approval, one signature | `AnchorCeremony::approve_and_broadcast` consumes first; `approve_signs_with_the_anchor_key_and_reports_the_receipt` |
+| `NoSignatureBeforeDeploy` | nothing is signed for a registry that is not in the address book | `apply_settings`, `anchor_gate`; `nothing_can_be_turned_on_before_its_registry_is_deployed`, `a_tick_that_is_not_ready_touches_nothing` |
+| `NoPendingCardWhileOff`, `NothingSignedWhileOff` | turning anchoring off drops pending cards unsigned | `drop_pending_when_off`; `turning_anchoring_off_drops_every_pending_card_unsigned` |
+| `NoCardAfterAnchored` | an anchored day never gets another card | sidecar plan `already_anchored`; `request_from_plan` returns `None` for any plan that is not `ready` |
+| `AtMostOneInFlight` | a day never has two anchor transactions waiting on the chain | `nightly_tick_with` skips in-flight days; `a_day_waiting_on_its_receipt_never_gets_a_second_card` |
+
+## Run result (2026-10-01)
+
+`scripts/run-tlc.sh AnchorSettle`: **No error found**, 8,271 states generated, 3,146 distinct,
+depth 24.
+
+Mutation check (`python3 src-tauri/formal/AnchorSettle_mutants.py`), all 7 killed:
+
+| Mutant | Break | Caught by |
+|---|---|---|
+| M01 | settle accepts any receipt | `AnchoredOnlyOnConfirmedReceipt` |
+| M02 | approve does not consume the card | `SingleUseCard` |
+| M03 | the setting turns on (and cards are raised) before the registry is deployed | `NoSignatureBeforeDeploy` |
+| M04 | turning off keeps pending cards | `NoPendingCardWhileOff` |
+| M05 | same, seen as a signature while off | `NothingSignedWhileOff` |
+| M06 | the scheduler ignores the ledger and the receipt | `NoCardAfterAnchored` |
+| M07 | a new card while the last anchor's receipt is pending | `AtMostOneInFlight` |
+
+## Abstractions
+
+- The batch itself (root, proofs, pruning) is AnchorBatch's job and is not repeated here.
+- Gas, the delegate binding and unattended (HIC-2) approval are open owner decisions (ADR O-5);
+  the model has every anchor wait for an explicit approval, which is what the code does.

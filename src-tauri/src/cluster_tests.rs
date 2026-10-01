@@ -235,3 +235,103 @@ fn shutdown_is_a_safe_noop_when_never_started() {
     // MANAGER singleton uninitialized in tests → graceful-teardown shutdown() is a clean no-op.
     super::shutdown();
 }
+
+// ---- HUP-S8.1: device links on the cluster IPC ----
+
+#[test]
+fn set_roster_without_links_serializes_exactly_as_before() {
+    // An older daemon must see the request it always did: no `devices`/`revocations` keys.
+    let req = Request::SetRoster {
+        group: "g".into(),
+        roster: vec![("aa".into(), "member".into())],
+        devices: vec![],
+        revocations: vec![],
+    };
+    assert_eq!(
+        serde_json::to_string(&req).expect("json"),
+        r#"{"op":"setRoster","group":"g","roster":[["aa","member"]]}"#
+    );
+}
+
+#[test]
+fn set_roster_carries_links_in_the_daemon_wire_shape() {
+    let link = crate::device_link::DeviceLinkWire {
+        member: "a1".into(),
+        device: "d1".into(),
+        wallet: "b1".into(),
+        index: 0,
+        label: "Studio Mac".into(),
+        issued_at: 7,
+        member_sig: "0xm".into(),
+        device_sig: "0xd".into(),
+        wallet_sig: "0xw".into(),
+    };
+    let rev = crate::device_link::RevocationWire {
+        member: "a1".into(),
+        device: "d2".into(),
+        revoked_at: 9,
+        member_sig: "0xr".into(),
+    };
+    let v: serde_json::Value = serde_json::to_value(Request::SetRoster {
+        group: "g".into(),
+        roster: vec![],
+        devices: vec![link],
+        revocations: vec![rev],
+    })
+    .expect("json");
+    assert_eq!(v["devices"][0]["issuedAt"], 7);
+    assert_eq!(v["devices"][0]["memberSig"], "0xm");
+    assert_eq!(v["devices"][0]["walletSig"], "0xw");
+    assert_eq!(v["revocations"][0]["revokedAt"], 9);
+    let v: serde_json::Value =
+        serde_json::to_value(Request::Devices { group: "g".into() }).expect("json");
+    assert_eq!(v["op"], "devices");
+}
+
+#[test]
+fn responses_parse_with_and_without_the_device_fields() {
+    // Older daemon: no `rejected`, no `member`.
+    let r: Response = serde_json::from_str(r#"{"type":"reconciled","evicted":[]}"#).expect("parse");
+    assert!(matches!(r, Response::Reconciled { ref rejected, .. } if rejected.is_empty()));
+    let r: Response =
+        serde_json::from_str(r#"{"type":"peers","peers":[{"address":"aa","online":true}]}"#)
+            .expect("parse");
+    assert!(matches!(r, Response::Peers { ref peers } if peers[0].member.is_none()));
+    // HUP-S8.1 daemon.
+    let r: Response = serde_json::from_str(
+        r#"{"type":"reconciled","evicted":["d2"],"rejected":["d2: revoked"]}"#,
+    )
+    .expect("parse");
+    assert!(matches!(r, Response::Reconciled { ref rejected, .. } if rejected.len() == 1));
+    let r: Response = serde_json::from_str(
+        r#"{"type":"peers","peers":[{"address":"d1","online":true,"member":"a1"}]}"#,
+    )
+    .expect("parse");
+    assert!(matches!(r, Response::Peers { ref peers } if peers[0].member.as_deref() == Some("a1")));
+    let r: Response = serde_json::from_str(
+        r#"{"type":"devices","members":[{"member":"a1","role":"member","online":false,
+            "devices":[{"device":"d1","index":0,"label":"Studio Mac","issuedAt":7,"online":true}]}]}"#,
+    )
+    .expect("parse");
+    match r {
+        Response::Devices { members } => {
+            assert_eq!(members[0].devices[0].label, "Studio Mac");
+            let out = serde_json::to_value(&members[0]).expect("json");
+            assert_eq!(out["devices"][0]["issuedAt"], 7, "the UI sees camelCase");
+        }
+        other => panic!("expected Devices, got {other:?}"),
+    }
+}
+
+#[test]
+fn peer_dto_omits_member_for_a_member_identity() {
+    let dto = ClusterPeerDto {
+        address: "aa".into(),
+        online: true,
+        member: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&dto).expect("json"),
+        r#"{"address":"aa","online":true}"#
+    );
+}

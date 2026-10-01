@@ -9,6 +9,8 @@
 //   - spend: local inference is free; gateway metering is not wired into the app yet
 //   - daemons (HUP-S10.3): Rust daemons.rs via daemons_list (status, today's ledger, next run) and
 //     the runner's state (why runs are held). Daemon tokens are estimated (characters / 4).
+//   - workers (HUP-S1.9): the agent sidecar's worker processes, read from Rust (hermes_workers →
+//     the sidecar's GET /workers, i.e. its own process supervisor)
 // Where the app has no real number the field is null and the monitor says "unknown" with the
 // reason. Token usage is null for every provider today: no provider reports usage to the app.
 // =====================================================================
@@ -16,6 +18,21 @@ import { type ToolRow, type TurnActivity, type TurnPhase } from "../shell/slices
 import type { DaemonsView } from "../daemons/api";
 
 export type ProviderClass = "local" | "gateway" | "demo" | "unknown";
+
+/** HUP-S1.9 — one of the agent sidecar's worker processes, as Rust reports it (hermes_workers). */
+export interface WorkerRow {
+  /** "toolchain" | "browser". */
+  kind: string;
+  /** "starting" | "running" | "restarting" | "failed" | "stopped" | "off" | "not_built". */
+  state: string;
+  healthy: boolean | null;
+  pid: number | null;
+  restarts: number | null;
+  lastExit: string | null;
+  lastError: string | null;
+  runningSinceMs: number | null;
+  detail: string | null;
+}
 
 export interface MonitorSnapshot {
   /** When the main window built this snapshot (ms since epoch). */
@@ -37,6 +54,8 @@ export interface MonitorSnapshot {
     why: string;
   };
   spend: { amount: number | null; unit: string; note: string };
+  /** HUP-S1.9: null rows = could not be read (unknown); [] = Hermes is not running. */
+  workers: { rows: WorkerRow[] | null; note: string };
   /** HUP-S10.3 — scheduled daemons. */
   daemons: DaemonsSection;
 }
@@ -101,6 +120,8 @@ export interface MonitorInputs {
   tier: string | null;
   /** The local server's context window from Rust, or null when it could not be read. */
   localCtxTokens: number | null;
+  /** HUP-S1.9: the sidecar's worker processes; null or absent = not read. */
+  workers?: WorkerRow[] | null;
   now: number;
   /** HUP-S10.3 — the daemon section; absent = no daemons. */
   daemons?: DaemonsSection;
@@ -138,6 +159,42 @@ export function contextFor(kind: string, localCtxTokens: number | null): Monitor
     return { usedTokens: null, windowTokens: null, usedNote, windowNote: "the gateway does not report its context window" };
   }
   return { usedTokens: null, windowTokens: null, usedNote, windowNote: "no model context for this provider" };
+}
+
+const WORKER_STATE_TEXT: Record<string, string> = {
+  starting: "starting",
+  running: "running",
+  restarting: "restarting",
+  failed: "failed",
+  stopped: "stopped",
+  off: "off",
+  not_built: "not built yet",
+};
+
+/** HUP-S1.9 — one worker's state in words, with its restart history and how it last ended. */
+export function workerLine(w: WorkerRow): string {
+  let line = WORKER_STATE_TEXT[w.state] ?? w.state;
+  if (w.state === "running" && w.healthy === false) line += ", not answering health checks";
+  const n = w.restarts ?? 0;
+  const why = [w.lastExit, w.state === "failed" ? w.lastError : null].filter((x): x is string => !!x);
+  if (n > 0) {
+    line += `, restarted ${n} ${n === 1 ? "time" : "times"}`;
+    if (why.length) line += ` (last exit: ${why.join("; ")})`;
+  } else if (w.state === "failed" && why.length) {
+    line += ` (${why.join("; ")})`;
+  }
+  if (w.detail && (w.state === "not_built" || w.state === "off")) line += ` (${w.detail})`;
+  return line;
+}
+
+export function workersFor(rows: WorkerRow[] | null | undefined): MonitorSnapshot["workers"] {
+  if (rows === null || rows === undefined) {
+    return { rows: null, note: "worker status could not be read" };
+  }
+  if (rows.length === 0) {
+    return { rows: [], note: "Hermes is not running, so no worker processes are running" };
+  }
+  return { rows, note: "each worker is a separate process; a crash restarts it without stopping Hermes" };
 }
 
 /** The one-line "why am I waiting" answer for the current turn. */
@@ -192,6 +249,7 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
     },
     spend: spendFor(kind),
     daemons: i.daemons ?? NO_DAEMONS,
+    workers: workersFor(i.workers),
   };
 }
 
@@ -212,6 +270,23 @@ function isToolRow(v: unknown): v is ToolRow {
   );
 }
 
+const boolOrNull = (v: unknown) => v === null || typeof v === "boolean";
+
+function isWorkerRow(v: unknown): v is WorkerRow {
+  return (
+    isObj(v) &&
+    typeof v.kind === "string" &&
+    typeof v.state === "string" &&
+    boolOrNull(v.healthy) &&
+    numOrNull(v.pid) &&
+    numOrNull(v.restarts) &&
+    strOrNull(v.lastExit) &&
+    strOrNull(v.lastError) &&
+    numOrNull(v.runningSinceMs) &&
+    strOrNull(v.detail)
+  );
+}
+
 export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   if (!isObj(v) || typeof v.at !== "number") return false;
   const { model, provider, context, turn, spend } = v;
@@ -227,6 +302,9 @@ export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   if (!(turn.outcome === null || ["answered", "failed", "stopped"].includes(turn.outcome as string))) return false;
   if (!Array.isArray(turn.tools) || !turn.tools.every(isToolRow) || typeof turn.why !== "string") return false;
   if (!isObj(spend) || !numOrNull(spend.amount) || typeof spend.unit !== "string" || typeof spend.note !== "string") return false;
+  const { workers } = v;
+  if (!isObj(workers) || typeof workers.note !== "string") return false;
+  if (!(workers.rows === null || (Array.isArray(workers.rows) && workers.rows.every(isWorkerRow)))) return false;
   return isDaemonsSection(v.daemons);
 }
 
