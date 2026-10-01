@@ -37,6 +37,7 @@ const UNBOUNDED = new Set<string>([
   "model_catalog_download", // HUP-S0.2: catalog GGUF download (drives its own progress events)
   "storage_add", // HUP-S0.2: adding a large file to IPFS
   "storage_retrieve", // HUP-S0.2: retrieving a large file from IPFS
+  "node_mcp_decide", // HUP-S4.2: an approved MCP transaction signs, broadcasts and polls its receipt (up to ~60s)
 ]);
 
 /** HUP-S0.2 — commands that are long but BOUNDED Rust-side get a deadline just above that bound, so
@@ -58,6 +59,8 @@ const LONG: Record<string, number> = {
   hermes_stop: 45_000,
   // HUP-S1.1c: session calls; events is a long-poll capped at 20 s Rust-side.
   hermes_session_open: 45_000,
+  // HUP-S8.2: pairing tries up to 6 address hints at 2.5 s each, then a 5 s exchange (Rust-bounded).
+  fleet_pair_join: 30_000,
   hermes_session_send: 45_000,
   hermes_session_events: 45_000,
   hermes_session_tool_result: 45_000,

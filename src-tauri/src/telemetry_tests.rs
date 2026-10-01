@@ -108,9 +108,22 @@ fn pba_l7b_014_telemetry_send_posts_only_the_rescrubbed_bundle() {
     let body = &src[start..];
     let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
     let rescrub = body.find("rescrub_bundle_json(&bundle_json").expect("send must re-scrub");
-    let post = body.find(".send(&clean)").expect("send must post the re-scrubbed value");
+    // HUP-S10.5 moved the POST into `post_report` (so the offline probe can drive it); the
+    // command must hand it only the re-scrubbed value, to the pinned URL.
+    let post = body
+        .find("post_report(TELEMETRY_INGEST_URL, &clean)")
+        .expect("send must post the re-scrubbed value to the pinned URL");
     assert!(rescrub < post);
+    assert!(
+        !body.contains("post_report(TELEMETRY_INGEST_URL, &bundle_json"),
+        "never post the raw webview JSON"
+    );
     assert!(!body.contains(".send(&bundle_json)"), "never post the raw webview JSON");
+    // `post_report` sends exactly the string it is given and nothing else.
+    let pstart = src.find("pub(crate) fn post_report(").expect("post_report exists");
+    let pbody = &src[pstart..];
+    let pbody = &pbody[..pbody.find("\n}\n").unwrap_or(pbody.len())];
+    assert!(pbody.contains(".send(clean)"), "post_report must send its argument verbatim");
 }
 
 /// Mutation hardening (cargo-mutants on rescrub_bundle_json): exact size bound and a strict
