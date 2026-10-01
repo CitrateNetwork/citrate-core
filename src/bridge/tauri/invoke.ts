@@ -58,6 +58,8 @@ const LONG: Record<string, number> = {
   hermes_stop: 45_000,
   // HUP-S1.1c: session calls; events is a long-poll capped at 20 s Rust-side.
   hermes_session_open: 45_000,
+  // HUP-S8.2: pairing tries up to 6 address hints at 2.5 s each, then a 5 s exchange (Rust-bounded).
+  fleet_pair_join: 30_000,
   hermes_session_send: 45_000,
   hermes_session_events: 45_000,
   hermes_session_tool_result: 45_000,

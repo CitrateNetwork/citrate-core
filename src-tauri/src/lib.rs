@@ -36,6 +36,10 @@ mod contract_deploy;
 mod deploy_gate;
 mod docs_ingest;
 mod earnings;
+mod fleet;
+mod fleet_mdns;
+mod fleet_pairing;
+mod fleet_tailscale;
 mod grant_status;
 mod hf_auth;
 mod ipc_name;
@@ -456,6 +460,16 @@ pub fn run() {
             // HUP-S1.6 — hardware tier recommendation + persisted override (local only).
             tier::tier_recommend,
             tier::tier_set_override,
+            // HUP-S8.2/S8.3 — fleet wizard: probe, opt-in mDNS, link/QR pairing, Tailscale (read-only).
+            fleet::fleet_probe,
+            fleet::fleet_set_label,
+            fleet::fleet_roster,
+            fleet::fleet_discovery_set,
+            fleet::fleet_discovery_browse,
+            fleet::fleet_pair_create,
+            fleet::fleet_pair_inspect,
+            fleet::fleet_pair_join,
+            fleet::fleet_tailscale,
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
