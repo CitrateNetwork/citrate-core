@@ -5,9 +5,12 @@
 // the current step and tool calls, elapsed time, spend, and a Stop button that is always visible.
 // Every unknown value is shown as "unknown" with its reason; nothing is invented (Rule 1).
 // Styled only with the register tokens (--srf/--tx/--line), so it reads in the dark register.
+// HUP-S2.9: with an undo panel it also lists the agent session's recent file changes, with Undo for
+// each and Undo all. The pop-out only asks; the main window runs the undo and sends the result.
 // =====================================================================
 import type { CSSProperties, ReactNode } from "react";
 import { formatElapsed, type MonitorSnapshot } from "./monitorSnapshot";
+import type { UndoPanel } from "./undoPanel";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -34,7 +37,79 @@ const TOOL_STATE_COLOR: Record<string, string> = {
   abandoned: "var(--tx-3)",
 };
 
-export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSnapshot; now: number; onStop: () => void }) {
+const STEP_STATUS_TEXT: Record<string, string> = {
+  committed: "changed",
+  interrupted: "may have changed",
+  prepared: "in progress",
+  undone: "undone",
+};
+
+function UndoSection({ panel, onUndo }: { panel: UndoPanel; onUndo: (session: string, seq: number | null) => void }) {
+  const session = panel.session;
+  const canUndo = panel.enabled && session !== null && !panel.busy;
+  const open = panel.steps.filter((st) => st.status !== "undone" && st.status !== "prepared").length;
+  return (
+    <div data-testid="mon-undo" style={{ paddingTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="mono" style={{ ...label, flex: 1 }}>File changes</span>
+        {panel.enabled && session !== null && panel.steps.length > 0 ? (
+          <button
+            className="btn btn-sm"
+            data-testid="mon-undo-all"
+            disabled={!canUndo || open === 0}
+            onClick={() => onUndo(session, null)}
+            title="Undo every change the agent made in this session"
+          >
+            Undo all
+          </button>
+        ) : null}
+      </div>
+      {!panel.enabled || session === null ? (
+        <div data-testid="mon-undo-note" style={{ ...note, paddingTop: 4 }}>{panel.note ?? "Undo is not available."}</div>
+      ) : panel.steps.length === 0 ? (
+        <div data-testid="mon-undo-note" style={{ ...note, paddingTop: 4 }}>No file changes in this session.</div>
+      ) : (
+        <ul style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
+          {panel.steps.map((st) => (
+            <li key={st.seq} data-testid="mon-undo-row" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--tx-1)" }}>
+              <span className="mono" style={{ color: "var(--tx-3)" }}>#{st.seq}</span>
+              <span className="mono" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{st.paths.join(", ")}</span>
+              <span className="mono" style={{ color: st.status === "undone" ? "var(--tx-3)" : "var(--tx-2)" }}>{STEP_STATUS_TEXT[st.status] ?? st.status}</span>
+              <button
+                className="btn btn-sm"
+                data-testid="mon-undo-step"
+                disabled={!canUndo || st.status === "undone" || st.status === "prepared"}
+                onClick={() => onUndo(session, st.seq)}
+              >
+                Undo
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {panel.busy ? <div style={{ ...note, paddingTop: 4 }}>Undoing…</div> : null}
+      {panel.last ? (
+        <div data-testid="mon-undo-last" role={panel.last.ok ? "status" : "alert"} style={{ ...note, paddingTop: 4, color: panel.last.ok ? "var(--tx-2)" : "var(--danger)" }}>
+          {panel.last.text}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function ActivityMonitor({
+  snapshot,
+  now,
+  onStop,
+  undo,
+  onUndo,
+}: {
+  snapshot: MonitorSnapshot;
+  now: number;
+  onStop: () => void;
+  undo?: UndoPanel | null;
+  onUndo?: (session: string, seq: number | null) => void;
+}) {
   const { model, provider, tier, context, turn, spend } = snapshot;
   const running = turn.state === "running";
   const ctxWindow = context.windowTokens !== null ? `${fmt(context.windowTokens)} tokens` : "unknown";
@@ -104,6 +179,7 @@ export function ActivityMonitor({ snapshot, now, onStop }: { snapshot: MonitorSn
       {turn.state === "idle" && turn.outcome ? (
         <div style={{ ...note, paddingTop: 8 }}>Last turn: {turn.outcome === "stopped" ? "stopped by you" : turn.outcome}.</div>
       ) : null}
+      {undo && onUndo ? <UndoSection panel={undo} onUndo={onUndo} /> : null}
     </div>
   );
 }

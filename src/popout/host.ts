@@ -9,6 +9,7 @@
 import { createMainEnd, type BridgeTransport, type MainEnd } from "./bridge";
 import { isPopoutKind, type PopoutKind } from "./kinds";
 import { buildMonitorSnapshot, type MonitorInputs } from "./monitorSnapshot";
+import type { UndoPanel } from "./undoPanel";
 
 export interface PopoutHostDeps {
   transport: BridgeTransport;
@@ -25,6 +26,13 @@ export interface PopoutHostDeps {
   now(): number;
   /** Coalesce bursts of changes into one snapshot per this many ms. */
   throttleMs?: number;
+  /** HUP-S2.9: the undo panel (its changes must reach `subscribe`), its refresh from the sidecar,
+   *  and the main window's undo path. Absent: the monitor shows no undo panel. */
+  undo?: {
+    panel(): UndoPanel;
+    refresh(): void;
+    request(session: string, seq: number | null): void;
+  };
 }
 
 export interface PopoutHost {
@@ -56,6 +64,7 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
     const localCtxTokens = await readCtx();
     if (disposed) return;
     await end.sendSnapshot(buildMonitorSnapshot({ ...deps.inputs(), localCtxTokens, now: deps.now() })).catch(() => undefined);
+    if (deps.undo && !disposed) await end.sendUndoPanel(deps.undo.panel()).catch(() => undefined);
   };
   const schedule = () => {
     if (disposed || !monitorOpen || timer !== null) return;
@@ -69,9 +78,11 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
     onReady: (kind) => {
       if (kind !== "monitor") return;
       monitorOpen = true;
+      deps.undo?.refresh();
       void publish();
     },
     onStop: () => deps.stop(),
+    onUndo: (session, seq) => deps.undo?.request(session, seq),
   });
   const unsubscribe = deps.subscribe(schedule);
 

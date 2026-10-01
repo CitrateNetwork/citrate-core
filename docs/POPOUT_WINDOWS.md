@@ -47,6 +47,8 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 | pop-out to main | `popout.ready {kind}` | send me the current state |
 | pop-out to main | `monitor.stop` | stop the running turn |
 | main to monitor | `monitor.snapshot {snapshot}` | the monitor's whole view, rebuilt on every change (coalesced to one per 150 ms) |
+| pop-out to main | `monitor.undo.request {session, seq}` | undo one agent file change (`seq`), or the whole session (`seq: null`) (HUP-S2.9) |
+| main to monitor | `monitor.undo {panel}` | the agent session's recent file changes, sent with each snapshot (HUP-S2.9) |
 
 ## Activity monitor: data sources (Rule 7)
 
@@ -62,6 +64,7 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 | Tool calls | `store.sendChat`'s tool callback, start and end | n/a |
 | Elapsed | the turn's real start time | n/a |
 | Spend | 0 for the local model and the demo agent | "unknown" for the gateway: not metered in the app yet |
+| File changes (HUP-S2.9) | the sidecar's checkpoint store, `hermes_checkpoints` (`GET /checkpoints/:session`), re-read when the monitor opens, after each agent file change and after each undo | "not enabled" (with the sidecar's reason) when the sidecar has no store or the file tools are off |
 
 ## Stop
 
@@ -77,6 +80,22 @@ The Stop button sends `monitor.stop`; the main window runs `store.stopAgentTurn(
 - a tool call the stopped turn asks for afterwards is not run;
 - an approval card already open stays open for the member to decide.
 
+## Undo for agent file changes (HUP-S2.9)
+
+The sidecar's file tools (`fs_write`, `fs_edit`, `fs_delete`, `fs_rename`) change files only inside
+folders the member granted for writing, after the default-deny list, and take an undo checkpoint
+around every change. Each change shows as a card under the agent reply that made it, with Undo; the
+monitor lists the session's recent steps with Undo for each and Undo all. The pop-out only asks
+(`monitor.undo.request`); the main window runs `hermes_undo_step` or `hermes_undo_session`.
+
+An undo is refused, with nothing restored, when a file changed after the agent's edit; the card and
+the monitor show the sidecar's reason. Undo is a member action, never an agent tool.
+
+Off by default: core passes the checkpoint store (`CITRATE_HERMES_CHECKPOINTS`, under the app's
+local data) but neither the file-tools switch nor a grants file, so the agent makes no file changes
+until a Grants screen exists and turning agent writes on is signed off. The runtime side is
+documented in `agent-sidecar/src/files.rs` (citrate-agent-runtime).
+
 ## Not done
 
 - Not run in the packaged app: covered by unit and component tests, the capability and ACL tests,
@@ -86,3 +105,6 @@ The Stop button sends `monitor.stop`; the main window runs `store.stopAgentTurn(
   stream wired into the monitor (the sidecar emits `verifier` events; the core provider does not
   forward them yet).
 - A Stop button in the main chat itself is not part of this work.
+- Undo (HUP-S2.9) has not been clicked through in the packaged app: the agent file tools are off by
+  default, so no member session produces a change yet. Covered by sidecar tests on a real
+  filesystem and by core unit and component tests.

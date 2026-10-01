@@ -10,6 +10,7 @@
 import { invoke } from "./invoke";
 import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft } from "../domains";
 import type { CeremonyView } from "../types";
+import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
 // parses (an object/array/number), otherwise the raw text as a JSON string value; empty → {}.
@@ -79,6 +80,16 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   briefCheck(brief) {
     return invoke<{ ok: boolean; markdown: string }>("hermes_brief_check", { brief });
+  },
+  // HUP-S2.9 — undo for agent file changes (the sidecar's checkpoint routes, through Rust).
+  checkpoints(id) {
+    return invoke<CheckpointList>("hermes_checkpoints", { id });
+  },
+  undoStep(id, seq) {
+    return invoke<UndoOutcome>("hermes_undo_step", { id, seq });
+  },
+  undoSession(id) {
+    return invoke<UndoOutcome>("hermes_undo_session", { id });
   },
 };
 

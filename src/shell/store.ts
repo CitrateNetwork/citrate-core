@@ -46,6 +46,7 @@ import { buildRoleNavigator } from "../surfaces/groupsNavigator";
 import { parseJoinLink, resolveJoinCode, parseClaimLink } from "../surfaces/referral";
 import { groupsSlice } from "./slices/groups";
 import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
+import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 /**
@@ -2047,6 +2048,13 @@ export class Store {
             }
           },
           onActivity: (ev) => {
+            if (ev.kind === "file_change") {
+              // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
+              ensure();
+              recordFileChange(ev.change, asstId);
+              void refreshUndoPanel(bridge.agentHarness);
+              return;
+            }
             if (!stopped() && ev.kind === "step") noteStep(ev.step);
           },
         },

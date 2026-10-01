@@ -12,6 +12,8 @@ import { store } from "../shell/store";
 import { turnActivity } from "../shell/slices/turnActivity";
 import { refreshTier, tierSlice } from "../shell/slices/tier";
 import { modelsSlice } from "../shell/slices/models";
+import { agentUndo, refreshUndoPanel, undoChange, undoSession } from "../shell/slices/agentUndo";
+import { bridge } from "../bridge";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
 import { resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
@@ -41,12 +43,20 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
         };
       },
       subscribe: (fn) => {
-        const offs = [store.subscribe(fn), turnActivity.subscribe(fn), tierSlice.subscribe(fn), modelsSlice.subscribe(fn)];
+        const offs = [store.subscribe(fn), turnActivity.subscribe(fn), tierSlice.subscribe(fn), modelsSlice.subscribe(fn), agentUndo.subscribe(fn)];
         return () => offs.forEach((off) => off());
       },
       stop: () => store.stopAgentTurn(),
       contextWindow: async () => (await invoke<{ localCtxTokens: number }>("popout_monitor_facts")).localCtxTokens,
       now: () => Date.now(),
+      // HUP-S2.9: the agent session's recent file changes, refreshed from the sidecar when the monitor
+      // opens; an undo the monitor asks for runs here, in the main window.
+      undo: {
+        panel: () => agentUndo.get().panel,
+        refresh: () => void refreshUndoPanel(bridge.agentHarness),
+        request: (session, seq) =>
+          void (seq === null ? undoSession(bridge.agentHarness, session) : undoChange(bridge.agentHarness, session, seq)),
+      },
     }))();
   return hostPromise;
 }

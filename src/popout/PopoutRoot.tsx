@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPopoutEnd, type BridgeTransport, type PopoutEnd } from "./bridge";
 import { POPOUT_TITLES, type PopoutKind } from "./kinds";
 import type { MonitorSnapshot } from "./monitorSnapshot";
+import type { UndoPanel } from "./undoPanel";
 import { ActivityMonitor } from "./ActivityMonitor";
 
 const shell = {
@@ -23,6 +24,7 @@ const shell = {
 
 export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: () => Promise<BridgeTransport> }) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
+  const [undoPanel, setUndoPanel] = useState<UndoPanel | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const end = useRef<PopoutEnd | null>(null);
@@ -33,7 +35,7 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
     void (async () => {
       try {
         const t = await transport();
-        const e = await createPopoutEnd(t, kind, (s) => setSnapshot(s));
+        const e = await createPopoutEnd(t, kind, (s) => setSnapshot(s), (p) => setUndoPanel(p));
         if (cancelled) {
           e.close();
           return;
@@ -79,5 +81,13 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
       </div>
     );
   }
-  return <ActivityMonitor snapshot={snapshot} now={now} onStop={() => void end.current?.stop()} />;
+  return (
+    <ActivityMonitor
+      snapshot={snapshot}
+      now={now}
+      onStop={() => void end.current?.stop()}
+      undo={undoPanel}
+      onUndo={(session, seq) => void end.current?.undo(session, seq)}
+    />
+  );
 }

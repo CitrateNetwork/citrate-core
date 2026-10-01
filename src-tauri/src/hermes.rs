@@ -38,6 +38,9 @@ const CITRATE_CHAIN_ID: u64 = 40204;
 // new module needs no `mod` line in the (s0-owned) lib.rs; the file is still `agent_tools.rs`.
 #[path = "agent_tools.rs"]
 pub mod agent_tools;
+/// HUP-S2.9: undo for agent file changes (the sidecar's `/checkpoints` routes).
+#[path = "hermes_undo.rs"]
+pub mod undo;
 
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
@@ -281,6 +284,8 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S2.9: the undo checkpoint store passed to the child as `CITRATE_HERMES_CHECKPOINTS`.
+    checkpoints_dir: Option<PathBuf>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -312,6 +317,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            checkpoints_dir: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -397,6 +403,12 @@ impl HermesManager {
         if let Some(dir) = &self.capsules_dir {
             spec.env.push((
                 HERMES_CAPSULES_ENV.to_string(),
+                dir.to_string_lossy().to_string(),
+            ));
+        }
+        if let Some(dir) = &self.checkpoints_dir {
+            spec.env.push((
+                undo::HERMES_CHECKPOINTS_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
             ));
         }
@@ -1071,7 +1083,9 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_capsules_dir(capsules_dir)
+        .with_checkpoints_dir(base.join("checkpoints"));
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
