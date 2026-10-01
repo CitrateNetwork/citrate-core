@@ -102,8 +102,8 @@ mod telemetry;
 mod tier;
 mod transfer;
 mod validator;
-mod widgets;
 mod verified_source;
+mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
 // command names once here + in generate_handler! below; each lane fills in its own module's
 // bodies (never this file). See .agentile/cx-ownership.map.
