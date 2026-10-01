@@ -108,6 +108,63 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// HUP-S4.3 + S4.4: the file the child gets when both the built-in servers (this module) and the
+/// member's reviewed servers (`mcp_servers.rs`) are on. It sits next to them in the Hermes dir.
+pub const EFFECTIVE_FILE: &str = "mcp-effective.json";
+
+/// HUP-S4.3 + S4.4: the one allowlist the sidecar reads (its MCP host reads exactly one file).
+/// Neither file: `None` (no MCP). One file: that file as is. Both: their `servers` lists joined into
+/// [`EFFECTIVE_FILE`] (0600), built-in servers first; member names never clash with the built-in
+/// ones (they are reserved). If either file cannot be read, nothing is passed (fail closed). A
+/// joined file left from an earlier start is removed whenever it is not needed, since it can hold
+/// the member's server credentials.
+pub fn effective_allowlist(builtin: Option<&Path>, user: Option<&Path>) -> Option<PathBuf> {
+    let dir = builtin
+        .or(user)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    let joined = dir.as_ref().map(|d| d.join(EFFECTIVE_FILE));
+    let drop_joined = || {
+        if let Some(j) = &joined {
+            let _ = std::fs::remove_file(j);
+        }
+    };
+    let b = builtin.filter(|p| p.is_file());
+    let u = user.filter(|p| p.is_file());
+    let (b, u) = match (b, u) {
+        (None, None) => {
+            drop_joined();
+            return None;
+        }
+        (Some(only), None) | (None, Some(only)) => {
+            drop_joined();
+            return Some(only.to_path_buf());
+        }
+        (Some(b), Some(u)) => (b, u),
+    };
+    let read = |p: &Path| -> Option<Vec<Value>> {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+        v.get("servers")?.as_array().cloned()
+    };
+    let (Some(mut servers), Some(more), Some(path)) = (read(b), read(u), joined.clone()) else {
+        eprintln!("hermes: an MCP allowlist could not be read; Hermes starts without MCP servers");
+        drop_joined();
+        return None;
+    };
+    servers.extend(more);
+    let written = serde_json::to_vec_pretty(&json!({ "servers": servers }))
+        .map_err(std::io::Error::other)
+        .and_then(|text| write_private(&path, &text));
+    match written {
+        Ok(()) => Some(path),
+        Err(e) => {
+            eprintln!("hermes: could not write the joined MCP allowlist ({e}); Hermes starts without MCP servers");
+            drop_joined();
+            None
+        }
+    }
+}
+
 /// Write (or remove) the allowlist so it matches `settings`. Returns the path when a file exists.
 pub fn sync_config_file(
     dir: &Path,

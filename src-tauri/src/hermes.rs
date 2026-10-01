@@ -60,9 +60,6 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 /// `./capsules` relative to its cwd — which is empty — so the agent boots with zero skills and can run
 /// nothing. citrate-core points it at the per-session capsule dir it seeds from the bundled starters.
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
-/// HUP-S4.4: env naming the MCP allowlist file the child reads (the runtime's `MCP_CONFIG_ENV`). Set
-/// only while the file exists, i.e. while the member has at least one reviewed, enabled server.
-pub const HERMES_MCP_ENV: &str = "CITRATE_HERMES_MCP";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
 
@@ -450,7 +447,8 @@ impl HermesManager {
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
-    /// HUP-S4.4: the MCP allowlist file (see [`HERMES_MCP_ENV`]).
+    /// HUP-S4.4: the member's MCP allowlist file (joined with the built-in one, see
+    /// [`crate::hermes_mcp::effective_allowlist`]).
     pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
         self.mcp_allowlist = Some(path);
         self
@@ -531,8 +529,12 @@ impl HermesManager {
                 dir.to_string_lossy().to_string(),
             ));
         }
-        // HUP-S4.3: hand the child the MCP allowlist only when one is written (default: none).
-        if let Some(path) = self.mcp_config_path.as_ref().filter(|p| p.is_file()) {
+        // HUP-S4.3 + S4.4: hand the child one MCP allowlist (built-in servers and the member's
+        // reviewed servers, joined when both are on), and only when one is written (default: none).
+        if let Some(path) = crate::hermes_mcp::effective_allowlist(
+            self.mcp_config_path.as_deref(),
+            self.mcp_allowlist.as_deref(),
+        ) {
             spec.env.push((
                 crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
                 path.to_string_lossy().to_string(),
@@ -547,13 +549,6 @@ impl HermesManager {
         if let Some((learn, skills)) = &self.learn_dirs {
             spec.env
                 .extend(crate::hermes_learn::learn_env(learn, skills));
-        }
-        // HUP-S4.4: the member's reviewed MCP servers, only when there are any.
-        if let Some(path) = self.mcp_allowlist.as_ref().filter(|p| p.is_file()) {
-            spec.env.push((
-                HERMES_MCP_ENV.to_string(),
-                path.to_string_lossy().to_string(),
-            ));
         }
         if let Some(base) = &self.chain_data_dir {
             for (k, dir) in chain::data_dirs(base) {

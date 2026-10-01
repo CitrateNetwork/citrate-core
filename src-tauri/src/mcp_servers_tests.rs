@@ -534,20 +534,20 @@ fn hermes_spec_carries_the_allowlist_path_only_when_the_file_exists() {
     );
     let env: BTreeMap<String, String> = mgr.spec_env_for_test().into_iter().collect();
     assert!(
-        !env.contains_key(crate::hermes::HERMES_MCP_ENV),
+        !env.contains_key(crate::hermes_mcp::MCP_CONFIG_ENV),
         "unset by default"
     );
     let mgr = mgr.with_mcp_allowlist(allow.clone());
     let env: BTreeMap<String, String> = mgr.spec_env_for_test().into_iter().collect();
     assert!(
-        !env.contains_key(crate::hermes::HERMES_MCP_ENV),
+        !env.contains_key(crate::hermes_mcp::MCP_CONFIG_ENV),
         "no file: still unset"
     );
     std::fs::create_dir_all(allow.parent().expect("parent")).expect("mkdir");
     std::fs::write(&allow, "{\"servers\": []}").expect("write");
     let env: BTreeMap<String, String> = mgr.spec_env_for_test().into_iter().collect();
     assert_eq!(
-        env.get(crate::hermes::HERMES_MCP_ENV).map(String::as_str),
+        env.get(crate::hermes_mcp::MCP_CONFIG_ENV).map(String::as_str),
         Some(allow.to_string_lossy().as_ref())
     );
     let _ = std::fs::remove_dir_all(&dir);
