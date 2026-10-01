@@ -318,9 +318,7 @@ pub async fn web_budget_revoke_all(app_h: tauri::AppHandle) -> Result<u32, Strin
 pub async fn web_budget_reset(app_h: tauri::AppHandle) -> Result<(), String> {
     crate::blocking::off_main(move || {
         let st = state::<WebBudgetState>(&app_h)?;
-        if st.gate().health() == web_budget::StoreHealth::Ok {
-            return Err("the budget file is healthy; nothing to reset".into());
-        }
+        // The kit refuses a healthy store under the budget lock (BudgetError::StoreHealthy).
         st.gate()
             .reset_after_integrity_failure(now_ms())
             .map_err(|e| e.to_string())

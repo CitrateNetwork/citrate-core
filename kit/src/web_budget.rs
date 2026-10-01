@@ -294,6 +294,8 @@ pub enum BudgetError {
     LiveBudgetExists,
     UnknownBudget,
     StoreUnavailable,
+    /// Reset was asked for while the store verifies: nothing to recover, so nothing is wiped.
+    StoreHealthy,
     Persist,
 }
 
@@ -314,6 +316,9 @@ impl std::fmt::Display for BudgetError {
                 f,
                 "budgets are off because the budget file could not be verified; every sign-in asks you"
             ),
+            BudgetError::StoreHealthy => {
+                write!(f, "the budget file is healthy; nothing to reset")
+            }
             BudgetError::Persist => write!(f, "the budget file could not be saved"),
         }
     }
@@ -646,8 +651,13 @@ impl BudgetGate {
 
     /// After an integrity failure, the member may reset: the unverifiable file is kept aside as
     /// `<file>.corrupt-<ms>`, a fresh key is sealed, and the store starts empty (no budgets).
+    /// A healthy store is never reset: the check runs under the budget lock, so a reset cannot
+    /// wipe live counters, the nonce ledger or the records.
     pub fn reset_after_integrity_failure(&self, now_ms: u64) -> Result<(), BudgetError> {
         let mut g = self.lock_inner();
+        if g.health == StoreHealth::Ok {
+            return Err(BudgetError::StoreHealthy);
+        }
         if self.path.exists() {
             let mut aside = self.path.clone().into_os_string();
             aside.push(format!(".corrupt-{now_ms}"));

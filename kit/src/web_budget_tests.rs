@@ -608,6 +608,27 @@ fn tampered_store_fails_closed_until_reset() {
 }
 
 #[test]
+fn reset_refuses_a_healthy_store_and_keeps_its_caps() {
+    // Reset exists only to recover from an integrity failure. On a healthy store it must not
+    // wipe counters, the nonce ledger or the records, whoever calls it.
+    let (g, p, _k) = open("reset-healthy");
+    let b = grant(&g, 3);
+    assert_eq!(
+        g.reset_after_integrity_failure(NOW),
+        Err(BudgetError::StoreHealthy)
+    );
+    let snap = g.snapshot(NOW, Some(WALLET));
+    assert_eq!(snap.budgets.len(), 1);
+    assert_eq!(snap.budgets[0].id, b.id);
+    assert!(p.exists());
+    let aside = std::fs::read_dir(p.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().contains(".corrupt-"));
+    assert!(!aside, "a healthy file is never moved aside");
+}
+
+#[test]
 fn keychain_unavailable_fails_closed() {
     let p = tmp_path("nokeychain");
     let k = MemKeyring {
