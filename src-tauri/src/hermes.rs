@@ -1659,12 +1659,13 @@ pub async fn hermes_session_open(
             serve.0.ctx_size(),
         )?;
         // HUP-S2.1: the member's folder grants travel with the session (an unreadable grant file
-        // sends an empty document: no folder access).
-        let grants = crate::agent_grants::GrantStore::for_app(&app)?.document_for_agent();
-        let body = crate::agent_grants::attach_grants(&body, &grants)?;
-        manager(&app)?
-            .session_open(&body)
-            .map_err(|e| e.to_string())
+        // sends an empty document: no folder access). Opened under the grant store's lock, so a
+        // change saved meanwhile is still sent to this session.
+        let store = crate::agent_grants::GrantStore::for_app(&app)?;
+        let m = manager(&app)?;
+        crate::agent_grants::open_with_grants(&store, &body, |b| {
+            m.session_open(b).map_err(|e| e.to_string())
+        })
     })
     .await
 }

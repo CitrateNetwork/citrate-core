@@ -473,3 +473,85 @@ fn with_no_sidecar_running_a_change_is_stored_and_reported_as_not_sent() {
     assert_eq!(out.updated, 0);
     assert!(out.failed.is_empty());
 }
+
+// --- one change at a time -------------------------------------------------------------------------
+
+/// Each change reads, modifies and writes the whole document. Two at once (a quick Revoke next to
+/// a new grant) must never lose either one: a lost revocation would quietly re-grant the folder.
+#[test]
+fn concurrent_changes_never_lose_a_revocation() {
+    let fx = Fx::new();
+    let none = |_: &GrantState| crate::hermes::GrantsPushOutcome::default();
+    for i in 0..60 {
+        let ids = fx.store().add_folder(&fx.app(), true, false, T0).unwrap();
+        let id = ids[0].clone();
+        let (a, b, app, rid) = (fx.store(), fx.store(), fx.app(), id.clone());
+        let t1 = std::thread::spawn(move || apply_change(&a, |s, _| s.revoke(&rid, T0 + 1), none));
+        let t2 = std::thread::spawn(move || {
+            apply_change(
+                &b,
+                |s, _| s.add_folder(&app, false, true, T0 + 1).map(|_| ()),
+                none,
+            )
+        });
+        t1.join().unwrap().unwrap();
+        t2.join().unwrap().unwrap();
+        let st = ok(fx.store().load());
+        let g = st.grants.iter().find(|g| g.id == id).unwrap();
+        assert!(
+            g.revoked_at.is_some(),
+            "iteration {i}: the revocation of {id} was lost"
+        );
+    }
+}
+
+/// A change saved while a session is opening must still reach that session: the session is only
+/// known (and pushed to) once its open returns.
+#[test]
+fn a_change_made_while_a_session_opens_still_reaches_it() {
+    let fx = Fx::new();
+    fx.store().add_folder(&fx.app(), true, false, T0).unwrap();
+    let rec = std::sync::Arc::new(Rec::default());
+    rec.reply
+        .lock()
+        .unwrap()
+        .push((201, r#"{"id":"s1-ab"}"#.into()));
+    let m = std::sync::Arc::new(hermes(rec.clone()));
+    let m2 = m.clone();
+    let store = fx.store();
+    let mut revoker = None;
+    let id = open_with_grants(&store, r#"{"model":"m"}"#, |b| {
+        // The member revokes while the open is in flight.
+        let s = fx.store();
+        let m3 = m2.clone();
+        revoker = Some(std::thread::spawn(move || {
+            apply_change(&s, |s, now| s.revoke("g-1", now), |d| m3.push_grants(d))
+        }));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        m2.session_open(b).map_err(|e| e.to_string())
+    })
+    .unwrap();
+    assert_eq!(id, "s1-ab");
+    let out = revoker.unwrap().join().unwrap().unwrap();
+    assert_eq!(
+        out.sync.updated, 1,
+        "the open session never received the revocation"
+    );
+    let posts = rec.posts.lock().unwrap();
+    let last: serde_json::Value = serde_json::from_str(&posts.last().unwrap().1).unwrap();
+    assert!(last["grants"][0]["revoked_at"].is_u64());
+}
+
+/// The writer refuses to store a document the loader would treat as corrupted.
+#[test]
+fn an_invalid_document_is_never_saved() {
+    let fx = Fx::new();
+    let store = fx.store();
+    store.add_folder(&fx.app(), true, false, T0).unwrap();
+    let mut st = ok(store.load());
+    st.grants[0].access = Access::Write;
+    st.grants[0].kind = GrantKind::FullAccess;
+    st.grants[0].expires_at = Some(T0 + 60);
+    assert!(matches!(store.save(&st), Err(GrantsError::Invalid(_))));
+    assert_eq!(ok(store.load()).grants[0].kind, GrantKind::Folder);
+}

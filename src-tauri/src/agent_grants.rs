@@ -638,9 +638,43 @@ pub struct GrantsChange {
     pub sync: crate::hermes::GrantsPushOutcome,
 }
 
-/// Send the current document to every open agent session (if the sidecar is running).
-fn push_after_change(store: &GrantStore) -> crate::hermes::GrantsPushOutcome {
-    crate::hermes::push_grants_to_sessions(&store.document_for_agent())
+/// One grant change (or one grant-carrying session open) at a time. Every change is a read, a
+/// modify and a write of the whole document, so two at once could otherwise lose one (a revocation
+/// undone by a concurrent grant). The lock also covers sending the result to the open sessions, so
+/// the sidecar receives documents in the order they were saved, and it covers a session open, so a
+/// change saved while a session is opening still reaches that session.
+fn store_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Apply `f` to the store, then send the new document with `push`, under [`store_lock`].
+pub(crate) fn apply_change(
+    store: &GrantStore,
+    f: impl FnOnce(&GrantStore, u64) -> Result<(), GrantsError>,
+    push: impl FnOnce(&GrantState) -> crate::hermes::GrantsPushOutcome,
+) -> Result<GrantsChange, String> {
+    let _one_at_a_time = store_lock();
+    f(store, now_secs()).map_err(|e| e.to_string())?;
+    let sync = push(&store.document_for_agent());
+    Ok(GrantsChange {
+        view: store.view(now_secs()),
+        sync,
+    })
+}
+
+/// Open an agent session with the current document attached (`open` does the `POST /sessions`
+/// and records the session), under [`store_lock`].
+pub(crate) fn open_with_grants(
+    store: &GrantStore,
+    body: &str,
+    open: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let _one_at_a_time = store_lock();
+    let body = attach_grants(body, &store.document_for_agent())?;
+    open(&body)
 }
 
 fn change<R: tauri::Runtime>(
@@ -648,13 +682,7 @@ fn change<R: tauri::Runtime>(
     f: impl FnOnce(&GrantStore, u64) -> Result<(), GrantsError>,
 ) -> Result<GrantsChange, String> {
     let store = GrantStore::for_app(app)?;
-    let now = now_secs();
-    f(&store, now).map_err(|e| e.to_string())?;
-    let sync = push_after_change(&store);
-    Ok(GrantsChange {
-        view: store.view(now_secs()),
-        sync,
-    })
+    apply_change(&store, f, crate::hermes::push_grants_to_sessions)
 }
 
 /// **agent_grants_view** — the Grants panel.

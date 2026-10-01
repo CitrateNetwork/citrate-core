@@ -96,3 +96,17 @@ Federation sprint issue #279.
   is queued for sessions that no longer exist.
 - The sidecar loop itself is still the opt-in preview (Settings > App), so members see no change
   until it is turned on.
+
+## Review fixes (adversarial review, 2026-10-01)
+
+- Grant changes now run one at a time (`store_lock` in `agent_grants.rs`): every change reads,
+  modifies and writes the whole document, so a Revoke next to a new grant could lose one of them.
+  The lock also covers sending the result to open sessions (they receive documents in save order)
+  and a grant-carrying session open (a change saved while a session opens still reaches it).
+- New tests: `concurrent_changes_never_lose_a_revocation`,
+  `a_change_made_while_a_session_opens_still_reaches_it` (both red with the lock removed), and
+  `an_invalid_document_is_never_saved` (kills the mutant that skips validation on save).
+- Still open: core's early refusal list is shorter than the sidecar's deny list. The sidecar now
+  sets such rows aside instead of refusing the whole document (runtime branch), but the panel can
+  still show a grant the agent can never use. Core needs the deny list itself (a Rule-12 drift
+  entry for `citrate-agent-guard`) or a check against the sidecar before saving.
