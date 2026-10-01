@@ -25,8 +25,8 @@ carry-in. WP definitions: [05 §HUP-S1](../../planset/2026-09-30-hermes-upskill/
 | S1.9 | Parity suite vs `harness.ts`; then retire the TS loop; one chat surface + one model picker (deferred from S0.8) | core, rt | todo |
 | S1.2 | Tool retrieval (BGE + keyword top-K) + tokenizer-true budget + compaction-must-shrink | rt | review (runtime#11; keyword selector — BGE retriever follows) |
 | S1.3 | Planner/executor + verifier framework + TLA+ `AgentLoop` | rt | review (runtime#12; TLA+ in core #119) |
-| S1.4 | Interviewer + editable brief | rt, core | todo |
-| S1.6 | sizeup tiering at onboarding | core, sz | todo |
+| S1.4 | Interviewer + editable brief | rt, core | doing (rt: runtime#14; core card next) |
+| S1.6 | sizeup tiering at onboarding | core, sz | review (core#121) |
 | S1.7 / S1.10 | Eval suite v1 (synthetic tool calls) + injection eval v1 | core | review (core#120) |
 | S1.8 | `citrate hermes chat/run/status/stop` CLI | rt | review (runtime#13) |
 | S1.5 | Escalation router (user endpoints + registry CID via x402) — blocked on S2.0 Rule-3 ADR + fed F-1/F-4 | rt, core | blocked |
@@ -42,6 +42,7 @@ citrate-core at `f4daf14` (v0.4.1): cargo 688 passed (6 ignored), vitest 568. Co
 
 ## Daily log
 
+- 2026-09-30: S1.4 runtime half (runtime#14): five bundled tracks + brief + sidecar /tracks, /briefs, /briefs/check + `hermes brief` CLI; runtime 666→680. S1.6 (core#121): hardware tier at onboarding, cargo 688→719 and vitest 568→590 on its branch; the tier does not drive serve.rs yet (waits on S1.7 model picks).
 - 2026-09-30: S1.8 CLI (runtime#13, stacked on #12). An end-to-end smoke with the real sidecar binary + CLI + a scripted model passed after fixing a sidecar panic it exposed: the blocking HTTP client was built in an async handler, which poisoned the sessions lock. Regression test added; runtime 660→666.
 - 2026-09-30: S1.1a+b (runtime#10: agent-loop crate + sidecar sessions, runtime 626→646) and S1.1c (core: 5 session commands + sidecar chat provider behind Settings › App preview toggle; cargo 688→694, vitest 568→573). Live use needs the hermes binary rebuilt from runtime#10.
 - 2026-09-30: Sprint opened after v0.4.1 froze on `main`. ADR "loop in sidecar" accepted. S1.1a
