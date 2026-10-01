@@ -12,6 +12,7 @@ import type { SimHost } from "./sim";
 
 import { tauriModelsCatalog } from "./tauri/models";
 import { tauriTier } from "./tauri/tier";
+import { tauriEscalation } from "./tauri/escalation";
 import { tauriTelemetry } from "./tauri/telemetry";
 import { tauriStorage } from "./tauri/storage";
 import { tauriGroups } from "./tauri/comms";
@@ -22,9 +23,11 @@ import { tauriAgentHarness, tauriAgentSkills } from "./tauri/agent";
 import { tauriContracts } from "./tauri/contracts";
 import { tauriSocial } from "./tauri/social";
 import { tauriInvites } from "./tauri/invites";
+import { tauriComponents } from "./tauri/components";
 
 import { simModelsCatalog } from "./sim/models";
 import { simTier } from "./sim/tier";
+import { simEscalation } from "./sim/escalation";
 import { simTelemetry } from "./sim/telemetry";
 import { simStorage } from "./sim/storage";
 import { simGroups } from "./sim/comms";
@@ -35,12 +38,14 @@ import { simAgentHarness, simAgentSkills } from "./sim/agent";
 import { simContracts } from "./sim/contracts";
 import { simSocial } from "./sim/social";
 import { simInvites } from "./sim/invites";
+import { simComponents } from "./sim/components";
 
 /** CX domains, tauri (real) side. */
 export function cxTauri(): CxBridge {
   return {
     modelsCatalog: tauriModelsCatalog,
     tier: tauriTier,
+    escalation: tauriEscalation,
     telemetry: tauriTelemetry,
     storage: tauriStorage,
     groups: tauriGroups,
@@ -52,6 +57,7 @@ export function cxTauri(): CxBridge {
     contracts: tauriContracts,
     social: tauriSocial,
     invites: tauriInvites,
+    components: tauriComponents,
   };
 }
 
@@ -60,6 +66,7 @@ export function cxSim(host: SimHost): CxBridge {
   return {
     modelsCatalog: simModelsCatalog(host),
     tier: simTier(host),
+    escalation: simEscalation(host),
     telemetry: simTelemetry(host),
     storage: simStorage(host),
     groups: simGroups(host),
@@ -71,5 +78,6 @@ export function cxSim(host: SimHost): CxBridge {
     contracts: simContracts(host),
     social: simSocial(host),
     invites: simInvites(host),
+    components: simComponents(host),
   };
 }

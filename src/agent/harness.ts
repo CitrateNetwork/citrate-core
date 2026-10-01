@@ -15,6 +15,8 @@
 // a later wave. This module is the seam, not a mock of chain data.
 // =====================================================================
 
+import type { FileChange } from "./fileChanges";
+
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
 
 export interface ToolCall {
@@ -47,7 +49,8 @@ export interface ToolCallMeta {
 }
 
 /** HUP-S7.6 — progress a provider reports beyond its status (the Activity monitor shows it). */
-export type TurnActivityEvent = { kind: "step"; step: number };
+/** HUP-S2.9 adds `file_change`: a sidecar file tool changed files under an undo checkpoint. */
+export type TurnActivityEvent = { kind: "step"; step: number } | { kind: "file_change"; change: FileChange };
 
 export interface SendOpts {
   messages: { role: string; content: string }[];

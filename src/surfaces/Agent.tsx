@@ -29,6 +29,10 @@ import {
 import type { AgentApproval } from "../bridge/domains";
 import type { DeployGateLookup } from "../agent/deployGate";
 import { DeployGateCard } from "../shell/DeployGateCard";
+import { PostDeployPanel } from "../shell/PostDeployPanel";
+import { bridge } from "../bridge";
+import { openContractReader } from "../popout/appHost";
+import { LearnedPanel } from "../shell/LearnedPanel";
 
 type Tab = "overview" | "contracts";
 
@@ -377,6 +381,9 @@ export function Agent({ store, s }: SurfaceProps) {
                 )}
               </div>
 
+              {/* HUP-S3.4 — what Hermes proposes to keep, with the verifier evidence; you decide. */}
+              <LearnedPanel store={store} running={running} />
+
               {/* recent runs */}
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Recent runs</div>
@@ -435,9 +442,19 @@ export function Agent({ store, s }: SurfaceProps) {
                 </span>
                 {gateRefusal && <DeployGateCard record={gateRefusal.record} initcodeHash={gateRefusal.initcodeHash} />}
               </div>
+              {/* HUP-S6.6 — after the deploy: verify, switch the site to 40204, pin, export. */}
+              <PostDeployPanel
+                ops={bridge.contracts}
+                lastDeployTx={s.activity.find((a) => a.kind === "Deploy contract")?.hash ?? null}
+                openReader={(address) => void openContractReader(address)}
+              />
               <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>On the network</span>
+                  {/* HUP-S6.7 — read any 40204 contract in its own window. */}
+                  <button className="btn btn-sm btn-ghost" data-testid="open-contract-reader" style={{ marginLeft: 10 }} onClick={() => void openContractReader()}>
+                    Contract reader
+                  </button>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>owned by your wallet</span>
                 </div>
                 <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>

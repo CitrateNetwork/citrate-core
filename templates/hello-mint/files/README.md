@@ -45,3 +45,24 @@ chain 40204 itself.
 
 This template contains no deploy step. Deploying goes through Citrate's deploy
 gate and a signature you approve in the app.
+
+## After the deploy
+
+Citrate's **After deploy** panel (Agent, Contracts) takes the project from here:
+
+1. finds the deployed address from the deploy receipt on chain 40204;
+2. submits the contract source to CitrateScan's verifier (it needs `forge`);
+3. switches the page to chain 40204 by writing `VITE_TARGET=citrate` and the
+   address into `app/.env.local`;
+4. pins the built page (`app/dist`, from `npm run build`) to the app's IPFS
+   node and shows the CID with gateway links;
+5. writes `vercel-export/`, a Vercel-ready copy of `app/` with `vercel.json`
+   and a `.env.production` for chain 40204. Deploy it with your own Vercel
+   account:
+
+```sh
+cd vercel-export
+npx vercel deploy --prod
+```
+
+Citrate never signs in to Vercel or deploys there for you.
