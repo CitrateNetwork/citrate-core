@@ -202,3 +202,15 @@ fn guidance_never_tells_the_member_to_change_tailscale_settings_for_them() {
         assert!(!s.text.contains('\u{2014}'), "no em-dash: {}", s.text);
     }
 }
+
+#[test]
+fn tailnet_addresses_are_hints_only_while_connected() {
+    let stopped = RUNNING.replace(
+        "\"BackendState\": \"Running\"",
+        "\"BackendState\": \"Stopped\"",
+    );
+    let r = parse_status(&stopped);
+    assert_eq!(r.state, TsState::Stopped);
+    assert!(!r.self_ips.is_empty());
+    assert!(tailnet_ipv4s(&r).is_empty());
+}

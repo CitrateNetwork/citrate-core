@@ -152,3 +152,13 @@ fn a_txt_without_tier_is_still_an_advert() {
     let m = parse(&encode_response(&a).unwrap()).unwrap();
     assert_eq!(adverts(&m), vec![a]);
 }
+
+#[test]
+fn record_counts_over_the_cap_are_refused_up_front() {
+    // 65 questions, no body: refused on the header count, not by running out of bytes.
+    let p = vec![0, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0, 0];
+    assert_eq!(parse(&p), Err(MdnsError::TooMany));
+    // 65 answers likewise.
+    let p = vec![0, 0, 0x84, 0, 0, 0, 0, 65, 0, 0, 0, 0];
+    assert_eq!(parse(&p), Err(MdnsError::TooMany));
+}

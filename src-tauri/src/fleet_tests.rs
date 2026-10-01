@@ -292,3 +292,50 @@ fn hints_dedupe_and_cap() {
     let none = build_hints(None, &[], 1);
     assert!(none.is_empty());
 }
+
+// ---- review additions: the issuer validates what arrives on the wire --------------------------
+
+fn send_line(port: u16, line: &str) -> JoinReply {
+    use std::io::{BufRead, BufReader, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.write_all(line.as_bytes()).unwrap();
+    s.write_all(b"\n").unwrap();
+    let mut reply = String::new();
+    BufReader::new(s).read_line(&mut reply).unwrap();
+    serde_json::from_str(reply.trim()).unwrap()
+}
+
+#[test]
+fn an_invalid_join_request_on_the_wire_is_refused_and_burns_nothing() {
+    let r = rig("badreq");
+    let link = link_for(&r);
+    // Well-formed JSON with a valid link, but a label carrying control characters and a tier
+    // outside T0..T2: the issuer must refuse it before redeeming the link.
+    let req = serde_json::json!({
+        "v": 1,
+        "link": link,
+        "deviceId": "d".repeat(32),
+        "label": "evil\u{1b}[2Jlabel",
+        "tier": "T9",
+    });
+    let reply = send_line(r.port, &req.to_string());
+    assert!(!reply.ok);
+    assert_eq!(reply.error, Some(PairError::Malformed));
+    assert_eq!(r.issuer.lock().unwrap().outstanding(r.now), 1);
+    assert!(!r.roster.exists());
+    // The link still works for the real machine afterwards.
+    let ok = join_link(&link, &me(&"d".repeat(32), "Linux box", Some("T1")), r.now);
+    assert!(ok.is_ok(), "{ok:?}");
+}
+
+#[test]
+fn a_broken_issuer_roster_never_burns_the_link() {
+    let r = rig("brokenroster");
+    let link = link_for(&r);
+    std::fs::write(&r.roster, b"{not json").unwrap();
+    let res = join_link(&link, &me(&"d".repeat(32), "Linux box", Some("T1")), r.now);
+    assert_eq!(res.err(), Some(JoinError::Refused(PairError::Malformed)));
+    assert_eq!(r.issuer.lock().unwrap().outstanding(r.now), 1);
+    // The unreadable file is left exactly as it was.
+    assert_eq!(std::fs::read(&r.roster).unwrap(), b"{not json");
+}
