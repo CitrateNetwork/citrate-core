@@ -21,18 +21,19 @@
   --srf-inset: #f1efe8;        /* wells, code, rails       */
   --tx-1: #0e0f0c;             /* primary text             */
   --tx-2: #555851;             /* secondary                */
-  --tx-3: #84867f;             /* tertiary / captions      */
+  --tx-3: #6b6d67;             /* tertiary / captions (HUP-S10.6: was #84867f, 3.3:1; now AA) */
   --line-1: #d9dad4;           /* hairlines                */
   --line-2: #c3c4be;           /* form fields, dividers    */
   --line-strong: #0e0f0c;      /* document rules           */
 
   --accent: #8ecc09;           /* the consequential moment */
   --accent-deep: #5a8205;
-  --accent-text: #5a8205;      /* AA accent text on paper  */
+  --accent-text: #517505;      /* AA accent text on paper (HUP-S10.6: was #5a8205, 4.0:1 on --srf-0) */
   --accent-wash: #e8f3c6;
 
-  --ok: #4f8a05;      --ok-bg: #ecf5d4;
-  --warn: #b07b00;    --warn-bg: #fff1c4;
+  /* HUP-S10.6: --ok and --warn darkened to AA on their washes (were #4f8a05 3.7:1, #b07b00 3.3:1). */
+  --ok: #467904;      --ok-bg: #ecf5d4;
+  --warn: #8f6400;    --warn-bg: #fff1c4;
   --danger: #a72414;  --danger-bg: #f6e1de;
   --info: #1b4965;    --info-bg: #dbe7ef;
 
@@ -204,4 +205,10 @@ button { font: inherit; }
     transition-duration: .01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* HUP-S10.6 — text for screen readers only (state words that the visuals show by colour). */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
