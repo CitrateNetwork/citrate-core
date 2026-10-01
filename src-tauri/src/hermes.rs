@@ -150,9 +150,10 @@ pub trait HermesControl: Send + Sync {
     fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp>;
 }
 
-/// Production control transport over blocking `ureq`. On a non-2xx ureq surfaces the response (we map
-/// it to [`HermesError::Control`]); a transport failure (refused/timeout) maps to
-/// [`HermesError::Transport`] and never carries the bearer.
+/// Production control transport over blocking `ureq`. A non-2xx is returned as a normal response
+/// (`http_status_as_error(false)`) so its status AND body reach the caller, which maps it to a typed
+/// error; a transport failure (refused/timeout) maps to [`HermesError::Transport`] and never carries
+/// the bearer.
 pub struct UreqControl;
 
 impl UreqControl {
@@ -182,7 +183,7 @@ impl HermesControl for UreqControl {
             .call()
         {
             Ok(resp) => Self::read(resp),
-            // ureq returns Err on non-2xx; recover the status/body rather than losing it.
+            // Defensive: with http_status_as_error(false) ureq returns non-2xx as Ok; keep the status if not.
             Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
                 status: code,
                 body: String::new(),

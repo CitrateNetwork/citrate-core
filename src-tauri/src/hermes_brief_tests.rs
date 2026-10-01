@@ -201,3 +201,28 @@ fn the_ureq_transport_keeps_the_body_of_a_refusal() {
     assert_eq!(resp.status, 422);
     assert!(resp.body.contains("no track fits"), "{:?}", resp.body);
 }
+
+/// The GET side of the production transport keeps a non-2xx body too (the sidecar's `{error}` on
+/// /tracks), so a refusal on a read is not reduced to a bare status.
+#[test]
+fn the_ureq_transport_keeps_the_body_of_a_get_refusal() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).unwrap();
+        let body = r#"{"error":"track file failed to load"}"#;
+        let resp = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        sock.write_all(resp.as_bytes()).unwrap();
+    });
+    let resp = UreqControl.get(&format!("http://{addr}/tracks"), "tok").unwrap();
+    server.join().unwrap();
+    assert_eq!(resp.status, 500);
+    assert!(resp.body.contains("track file failed to load"), "{:?}", resp.body);
+}
