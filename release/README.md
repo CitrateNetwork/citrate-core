@@ -26,7 +26,10 @@ Signatures (`.sig`) and build helpers (`bundle_dmg.sh`) are not artifacts. Symli
 The `dup` column is the bytes held by byte-identical copies inside one component.
 
 Exit codes: `0` within budget, `1` over budget (or a measured row with no budget under `--strict`),
-`2` usage error, unreadable budgets file, or no installer artifact in the bundle dir.
+`2` usage error, unreadable budgets file, no installer artifact in the bundle dir, or no artifact
+name that carries the arch (pass `--arch`; the check does not guess, since an unknown arch would
+match no budget row and pass). Same-size files are hashed in 8 MiB chunks to find duplicates, so a
+bundled file over 2 GiB is measured like any other.
 
 ```sh
 node scripts/size-budget.mjs                                  # target/release/bundle vs release/budgets.json

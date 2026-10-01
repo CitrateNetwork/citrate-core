@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   measureBundle,
+  measurePath,
   loadBudgets,
   validateBudgets,
   checkBudgets,
@@ -155,6 +156,46 @@ describe("measureBundle: errors", () => {
   it("throws on a missing dir and on a dir with no installer artifacts", () => {
     expect(() => measureBundle(path.join(tmp, "nope"))).toThrow(/not a directory/);
     expect(() => measureBundle(path.join(tmp, "empty"))).toThrow(/no installer artifacts/);
+  });
+
+  it("refuses to guess when no artifact name carries an arch, instead of passing every row as unbudgeted", () => {
+    // Only the updater was built and its name has no arch: without this refusal every row would
+    // be "macos-unknown/...", none would be gated, and the check would exit 0.
+    put("noarch/macos/Citrate Core.app.tar.gz", 4000);
+    expect(() => measureBundle(path.join(tmp, "noarch"))).toThrow(/--arch/);
+    expect(measureBundle(path.join(tmp, "noarch"), { arch: "aarch64" }).target.arch).toBe("aarch64");
+    const r = runCli(["--bundle-dir", path.join(tmp, "noarch"), "--budgets", path.join(repoRoot, "release", "budgets.json")]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/--arch/);
+  });
+});
+
+describe("measureBundle: large files", () => {
+  it("measures a component file over 2 GiB (a bundled model) without reading it whole into memory", () => {
+    // Sparse file: no disk blocks are written. fs.readFileSync refuses files over 2 GiB.
+    const big = path.join(tmp, "big/macos/Citrate Core.app/Contents/Resources/models/m.gguf");
+    put("big/dmg/Citrate Core_0.5.0_aarch64.dmg", 10);
+    put("big/macos/Citrate Core.app/Contents/MacOS/citrate-core", 10);
+    fs.mkdirSync(path.dirname(big), { recursive: true });
+    const size = 2 ** 31 + 4096;
+    fs.closeSync(fs.openSync(big, "w"));
+    fs.truncateSync(big, size);
+    const c = byId(measureBundle(path.join(tmp, "big")).components);
+    expect(c["macos-aarch64/resources/models"].bytes).toBe(size);
+    expect(c["macos-aarch64/resources/models"].dupBytes).toBe(0);
+  });
+
+  it("hashes every chunk of same-size files: a difference past the first chunk is not a duplicate", () => {
+    const n = 9 * 1024 * 1024; // larger than one 8 MiB read
+    const a = Buffer.alloc(n, 0x07);
+    const b = Buffer.from(a);
+    b[n - 1] = 0x08;
+    const d = path.join(tmp, "chunks");
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, "a.bin"), a);
+    fs.writeFileSync(path.join(d, "b.bin"), b);
+    fs.writeFileSync(path.join(d, "c.bin"), a);
+    expect(measurePath(d)).toEqual({ bytes: 3 * n, files: 3, dupBytes: n });
   });
 });
 

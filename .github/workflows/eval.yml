@@ -85,7 +85,8 @@ jobs:
             echo "::error::no endpoint: set the base_url input or the EVAL_BASE_URL repo secret"
             exit 2
           fi
-          if ! printf '%s' "$url" | grep -Eq '^https?://[^[:space:]]+$'; then
+          # Whole-string match: [^[:space:]] also excludes CR/LF, so nothing extra reaches GITHUB_ENV.
+          if [[ ! "$url" =~ ^https?://[^[:space:]]+$ ]]; then
             echo "::error::base URL must be a single http(s) URL"
             exit 2
           fi

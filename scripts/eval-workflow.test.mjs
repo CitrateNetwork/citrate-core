@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,6 +128,53 @@ describe("no other workflow runs the eval", () => {
       if (f === "eval.yml") continue;
       const body = fs.readFileSync(path.join(dir, f), "utf8");
       expect(body, f).not.toMatch(/eval-tools\.mjs|eval-qa\.mjs/);
+    }
+  });
+});
+
+describe("eval.yml endpoint check", () => {
+  // The "Resolve endpoint" step writes the URL into $GITHUB_ENV, one NAME=value per line, so a
+  // value with a line break would set extra variables for every later step. Run the step's own
+  // script under bash with a temp GITHUB_ENV and check what it accepts.
+  function resolveScript() {
+    const i = lines.findIndex((l) => /- name: Resolve endpoint/.test(l));
+    expect(i).toBeGreaterThan(-1);
+    const r = lines.findIndex((l, j) => j > i && /^\s+run: \|\s*$/.test(l));
+    const ind = /^(\s*)/.exec(lines[r + 1])[1].length;
+    const body = [];
+    for (let j = r + 1; j < lines.length; j++) {
+      const l = lines[j];
+      if (l.trim() !== "" && /^(\s*)/.exec(l)[1].length < ind) break;
+      body.push(l.slice(ind));
+    }
+    return body.join("\n");
+  }
+
+  function runResolve(url) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-resolve-"));
+    const envFile = path.join(dir, "env");
+    fs.writeFileSync(envFile, "");
+    const r = spawnSync("bash", ["-e", "-c", resolveScript()], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, GITHUB_ENV: envFile, EVAL_OUT: "out", INPUT_BASE_URL: url, SECRET_BASE_URL: "" },
+    });
+    const written = fs.readFileSync(envFile, "utf8");
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { status: r.status, written };
+  }
+
+  it("accepts one http(s) URL and writes exactly one line", () => {
+    const r = runResolve("https://eval.example/v1");
+    expect(r.status).toBe(0);
+    expect(r.written).toBe("EVAL_BASE_URL=https://eval.example/v1\n");
+  });
+
+  it("rejects a value with a line break, so nothing extra reaches GITHUB_ENV", () => {
+    for (const bad of ["https://eval.example/v1\nNODE_OPTIONS=x", "https://eval.example/v1\r\nX=1", "not a url", ""]) {
+      const r = runResolve(bad);
+      expect(r.status, JSON.stringify(bad)).toBe(2);
+      expect(r.written, JSON.stringify(bad)).toBe("");
     }
   });
 });

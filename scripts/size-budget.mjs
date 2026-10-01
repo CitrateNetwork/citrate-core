@@ -19,7 +19,8 @@
 // (they ship as links); "dup" is the bytes held by byte-identical copies inside a component.
 //
 // Exit 0: every gated row is within budget. Exit 1: a row is over budget (or, with --strict,
-// a measured row has no budget). Exit 2: usage error, unreadable budgets, or no artifacts.
+// a measured row has no budget). Exit 2: usage error, unreadable budgets, no artifacts, or no
+// arch in any artifact name and no --arch.
 // A budget of null means "measured and reported, not gated" (no baseline yet for that row).
 // No dependencies beyond Node's standard library.
 // =====================================================================
@@ -71,12 +72,23 @@ function listDir(p) {
 }
 
 const hashCache = new Map();
+const HASH_CHUNK = 8 * 1024 * 1024;
 
 function sha256File(p, st) {
   const key = `${p}\0${st.size}\0${st.mtimeMs}`;
   let h = hashCache.get(key);
   if (h === undefined) {
-    h = createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+    // Read in chunks: fs.readFileSync refuses files over 2 GiB, and a bundled model can be larger.
+    const hash = createHash("sha256");
+    const buf = Buffer.allocUnsafe(HASH_CHUNK);
+    const fd = fs.openSync(p, "r");
+    try {
+      let n;
+      while ((n = fs.readSync(fd, buf, 0, HASH_CHUNK, null)) > 0) hash.update(buf.subarray(0, n));
+    } finally {
+      fs.closeSync(fd);
+    }
+    h = hash.digest("hex");
     hashCache.set(key, h);
   }
   return h;
@@ -85,6 +97,7 @@ function sha256File(p, st) {
 /** Walk a file or dir without following symlinks. Returns {bytes, files, dupBytes}. */
 export function measurePath(p) {
   const seen = new Map(); // `${size}:${sha}` -> true
+  const firstOfSize = new Map(); // size -> [path, stat] of a file not hashed yet (hash only on a size match)
   let bytes = 0;
   let files = 0;
   let dupBytes = 0;
@@ -99,6 +112,15 @@ export function measurePath(p) {
     files += 1;
     bytes += st.size;
     if (st.size > 0) {
+      const first = firstOfSize.get(st.size);
+      if (first === undefined && !firstOfSize.has(st.size)) {
+        firstOfSize.set(st.size, [q, st]);
+        return;
+      }
+      if (first) {
+        seen.set(`${st.size}:${sha256File(first[0], first[1])}`, true);
+        firstOfSize.set(st.size, null);
+      }
       const key = `${st.size}:${sha256File(q, st)}`;
       if (seen.has(key)) dupBytes += st.size;
       else seen.set(key, true);
@@ -159,7 +181,11 @@ export function measureBundle(bundleDir, opts = {}) {
     throw new Error(`no installer artifacts (dmg, app.tar.gz, AppImage, deb, rpm, msi, nsis) under ${bundleDir}`);
   }
   const os = found[0].os;
-  const arch = opts.arch ?? found.map((f) => archFromName(f.name)).find((a) => a !== null) ?? "unknown";
+  const arch = opts.arch ?? found.map((f) => archFromName(f.name)).find((a) => a !== null);
+  if (!arch) {
+    // Guessing would key every row as "<os>-unknown/...": nothing gated, and the check would pass.
+    throw new Error(`cannot tell the arch from the artifact names under ${bundleDir}; pass --arch aarch64|x86_64`);
+  }
   const target = { os, arch };
   const artifacts = found.map((f) => ({
     id: `${f.os}-${arch}/${f.kind}`,
