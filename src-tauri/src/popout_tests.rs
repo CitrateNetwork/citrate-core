@@ -138,10 +138,9 @@ fn unknown_kinds_are_refused_by_name() {
 
 #[test]
 fn kinds_without_a_view_are_refused_honestly() {
-    for k in ["diff"] {
-        let err = check_open_request("main", k).expect_err(k);
-        assert!(err.contains("not built yet"), "{err}");
-    }
+    // The diff view is the one kind without a view after S5.1, S6.7 and S10.1.
+    let err = check_open_request("main", "diff").expect_err("diff");
+    assert!(err.contains("not built yet"), "{err}");
 }
 
 // ---------------------------------------------------------------------------
