@@ -11,6 +11,8 @@ import { useEffect, useRef, useState } from "react";
 import { LoaderMark } from "./LoaderMark";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
+import { InterviewCard, looksLikeBuildAsk } from "./InterviewCard";
+import { bridge } from "../bridge";
 import { modelsSlice, selectModel as sliceSelectModel, refreshRegistryModels, refreshLocalModels } from "../shell/slices/models";
 import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelRouterSources";
 import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
@@ -49,7 +51,17 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     void refreshRegistryModels();
   }, []);
 
-  const onSend = () => store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");
+  // HUP-S1.4 — "Plan it first": the interview card (track → questions → editable brief). `planGoal`
+  // is the goal the card opened with (null = closed). A build-style ask highlights the button; it
+  // never hijacks Send.
+  const [planGoal, setPlanGoal] = useState<string | null>(null);
+  const [buildAsk, setBuildAsk] = useState(false);
+  const openPlan = () => setPlanGoal(store.chatInputEl ? store.chatInputEl.value.trim() : "");
+
+  const onSend = () => {
+    setBuildAsk(false);
+    void store.sendChat(store.chatInputEl ? store.chatInputEl.value : "");
+  };
 
   // WP4.1 — on-device browser dictation; honest fallback elsewhere.
   const dictation = useRef<Dictation | null>(null);
@@ -124,7 +136,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: m.who === "You" ? "var(--tx-3)" : "var(--accent-text)" }}>
               {m.who}
             </span>
-            <div style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-1)", overflowWrap: "anywhere" }}>
+            <div
+              data-testid={m.brief ? "brief-card" : undefined}
+              style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--tx-1)", overflowWrap: "anywhere", ...(m.brief ? { border: "1px solid var(--line-2)", borderRadius: 8, padding: "10px 12px", background: "var(--srf-1)" } : {}) }}
+            >
               {/* HUP-S0.4: agent replies render as markdown while streaming too (no reflow jump at the
                   end; finished messages are memoized). Never restyle what the user typed. A div, not a
                   span: markdown is block content. */}
@@ -178,15 +193,33 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           ))}
         </div>
       )}
+      {planGoal !== null && (
+        <div style={{ padding: "0 16px 10px" }}>
+          <InterviewCard
+            key={planGoal}
+            goal={planGoal}
+            api={bridge.agentHarness}
+            onAccept={(brief, markdown) => {
+              store.acceptBrief(brief, markdown);
+              setPlanGoal(null);
+              setBuildAsk(false);
+              if (store.chatInputEl) store.chatInputEl.value = "";
+            }}
+            onCancel={() => setPlanGoal(null)}
+          />
+        </div>
+      )}
       <div style={{ display: "flex", gap: 10, padding: "12px 16px", borderTop: "1px solid var(--line-1)", alignItems: "center" }}>
         <span style={{ flex: 1, position: "relative", display: "flex" }}>
           <input
             ref={(el) => { store.chatInputEl = el; }}
             className="input"
             placeholder={micOn ? (micInterim || "Listening…") : "Ask about your node, wallet, or memory…"}
+            onChange={(e) => setBuildAsk(looksLikeBuildAsk(e.target.value))}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
+                setBuildAsk(false);
                 store.sendChat((e.target as HTMLInputElement).value);
               }
             }}
@@ -201,6 +234,15 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           style={micOn ? { color: "var(--ok)", borderColor: "var(--ok)" } : undefined}
         >
           {micOn ? "● Mic" : "Mic"}
+        </button>
+        <button
+          className={"btn " + (buildAsk ? "btn-secondary" : "btn-ghost")}
+          data-testid="plan-it-first"
+          onClick={openPlan}
+          aria-expanded={planGoal !== null}
+          title="Answer a few questions and edit a brief before Hermes builds anything"
+        >
+          Plan it first
         </button>
         <button className="btn btn-primary" onClick={onSend} disabled={chatBusy}>
           Send

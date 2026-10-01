@@ -66,6 +66,7 @@ S2/S3 and S7/S8 can run in parallel. The Rule-3 amendment ADR (S2.0) blocks ever
 | S1.7 | HUP eval suite v1: tool-call validity + workflow-step success per tier; pick the tier models | core | L | scorecard committed |
 | S1.9 | Process split (loop / browser / toolchain supervised separately) + parity test vs the current `harness.ts` behaviors | rt, core | M | parity suite |
 | S1.10 | Injection eval set v1 (malicious pages, skills, MCP output) scored per tier | core | M | scorecard |
+| S1.11 | **Wallet unlink** (handed off from the MAC session): the Wallet screen lists linked wallets from the identity registry (`GET /identity/:sub/wallets`), with a two-step Unlink (`DELETE …/wallets/:address`) whose confirmation states the pay-to / custody consequence (HIC); re-reads claim + balances + list afterwards; both commands off the main thread. PR #117. Depends on identity#31 deploy + the private `primary_wallet` follow-up (fed #293) | kit, core, identity | S | cargo +6, vitest +5, tripwire fails on both commands without the async fix |
 | S1.8 | CLI: `citrate hermes chat/run/status/stop` against the sidecar | rt | M | CLI tests |
 
 ## HUP-S2: Human in control

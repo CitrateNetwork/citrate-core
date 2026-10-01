@@ -51,6 +51,17 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async sessionStop() {
       /* nothing running */
     },
+    // HUP-S1.4 — the tracks and briefs are served by the sidecar; web/dev has none. Refuse honestly
+    // rather than inventing a question set or a brief (Rule 1).
+    async tracks() {
+      throw new Error("the interview needs the Hermes sidecar in the desktop app");
+    },
+    async briefCreate() {
+      throw new Error("the interview needs the Hermes sidecar in the desktop app");
+    },
+    async briefCheck() {
+      throw new Error("the interview needs the Hermes sidecar in the desktop app");
+    },
   };
 }
 
