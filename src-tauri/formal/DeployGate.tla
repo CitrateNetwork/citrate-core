@@ -29,6 +29,10 @@
 (*     they are folded into the code identity.                             *)
 (*   - the size bound on the store (eviction revokes, like NOT_READY) is   *)
 (*     not modelled; it only removes READY records.                        *)
+(*   - the per-hash bound on tracked open ceremonies is not modelled.     *)
+(*     Evaluate reaches every pending ceremony for c; the implementation   *)
+(*     keeps that true by rejecting the oldest ceremony on overflow        *)
+(*     (GateStore::open_ceremony), never by forgetting it.                 *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
 

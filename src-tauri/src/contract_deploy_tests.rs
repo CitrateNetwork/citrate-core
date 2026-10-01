@@ -78,8 +78,15 @@ fn contract_deploy_requires_a_ready_gate_before_any_ceremony() {
     // The ceremony is opened INSIDE the gate store (re-checked under its lock, and remembered so
     // a later NOT READY for this hash rejects it).
     let open_at = body
-        .find(".open_ceremony(&initcode,")
+        .find(".open_ceremony(")
         .expect("ceremony opened through the gate store");
+    assert!(
+        body[open_at..]
+            .trim_start_matches(".open_ceremony(")
+            .trim_start()
+            .starts_with("&initcode,"),
+        "the gate store opens the ceremony for the gated initcode"
+    );
     assert!(open_at < cer_at, "request happens inside open_ceremony");
     assert_eq!(
         body.matches(".request(").count(),

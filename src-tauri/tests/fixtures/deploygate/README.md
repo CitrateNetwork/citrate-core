@@ -21,7 +21,7 @@ were rewritten to `/work/hello-mint`.
 | `anvil-receipt.json`, `anvil-tx.json` | real: anvil 1.5.1, `cast send --create <initcode> --json` and `cast tx <hash> --json` |
 | `initcode.hex` | real: `HelloMint` creation bytecode followed by one ABI-encoded address argument |
 | `aderyn-*.handwritten.json` | hand-written: Aderyn is not installed on the build machine; the shape follows Aderyn's JSON report (`issue_count`, `high_issues.issues`, `low_issues.issues`) |
-| `medusa-*.handwritten.log` | hand-written: Medusa is not installed on the build machine; the lines follow Medusa's console output (`fuzz: elapsed: …, calls: …`, `Test summary: N test(s) passed, M test(s) failed`) |
+| `medusa-*.handwritten.txt` | hand-written: Medusa is not installed on the build machine (`.txt`, not `.log`: the repo ignores `*.log`); the lines follow Medusa's console output (`fuzz: elapsed: …, calls: …`, `Test summary: N test(s) passed, M test(s) failed`) |
 
 The hand-written fixtures must be replaced by real captures once Aderyn and Medusa ship
 in the toolchain bundle (HUP-S6.1). Until then the parsers for those two tools are tested

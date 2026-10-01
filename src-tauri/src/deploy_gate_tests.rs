@@ -16,10 +16,10 @@ const SLITHER_HIGH_SARIF: &str = include_str!("../tests/fixtures/deploygate/slit
 const ADERYN_CLEAN: &str =
     include_str!("../tests/fixtures/deploygate/aderyn-clean.handwritten.json");
 const ADERYN_HIGH: &str = include_str!("../tests/fixtures/deploygate/aderyn-high.handwritten.json");
-const MEDUSA_PASS: &str = include_str!("../tests/fixtures/deploygate/medusa-pass.handwritten.log");
-const MEDUSA_FAIL: &str = include_str!("../tests/fixtures/deploygate/medusa-fail.handwritten.log");
+const MEDUSA_PASS: &str = include_str!("../tests/fixtures/deploygate/medusa-pass.handwritten.txt");
+const MEDUSA_FAIL: &str = include_str!("../tests/fixtures/deploygate/medusa-fail.handwritten.txt");
 const MEDUSA_SHORT: &str =
-    include_str!("../tests/fixtures/deploygate/medusa-short.handwritten.log");
+    include_str!("../tests/fixtures/deploygate/medusa-short.handwritten.txt");
 const ANVIL_RECEIPT: &str = include_str!("../tests/fixtures/deploygate/anvil-receipt.json");
 const ANVIL_TX: &str = include_str!("../tests/fixtures/deploygate/anvil-tx.json");
 const INITCODE: &str = include_str!("../tests/fixtures/deploygate/initcode.hex");
@@ -650,10 +650,14 @@ fn open_ceremony_refuses_without_ready_and_never_calls_the_opener() {
     let store = GateStore::default();
     let ic = initcode_of(&green_inputs());
     let mut called = false;
-    let r = store.open_ceremony(&ic, || {
-        called = true;
-        Err("must not be reached".into())
-    });
+    let r = store.open_ceremony(
+        &ic,
+        || {
+            called = true;
+            Err("must not be reached".into())
+        },
+        |_| {},
+    );
     assert!(r.is_err());
     assert!(!called, "no ceremony is opened for an ungated bytecode");
 }
@@ -670,7 +674,7 @@ fn a_not_ready_record_rejects_the_open_ceremonies_for_that_hash() {
         .expect("records");
     let ic = initcode_of(&inp);
     let (rec, view) = store
-        .open_ceremony(&ic, || Ok(real_ceremony_view(&cer)))
+        .open_ceremony(&ic, || Ok(real_ceremony_view(&cer)), |_| {})
         .expect("opens");
     assert_eq!(rec.verdict, Verdict::Ready);
     assert!(cer.status(&view.id).is_some(), "pending");
@@ -709,7 +713,7 @@ fn a_not_ready_record_for_another_hash_revokes_nothing() {
         .record_and_revoke(evaluate(&inp, 1).expect("evaluates"), |_| {})
         .expect("records");
     let (_, view) = store
-        .open_ceremony(&initcode_of(&inp), || Ok(real_ceremony_view(&cer)))
+        .open_ceremony(&initcode_of(&inp), || Ok(real_ceremony_view(&cer)), |_| {})
         .expect("opens");
     let mut other = green_inputs();
     other.constructor_args_hex = Some(format!("0x{}", "00".repeat(31) + "bb"));
@@ -730,11 +734,15 @@ fn eviction_revokes_the_evicted_hash_ceremonies() {
         .record_and_revoke(evaluate(&inp, 0).expect("evaluates"), |_| {})
         .expect("records");
     let (_, _view) = store
-        .open_ceremony(&initcode_of(&inp), || {
-            Ok(real_ceremony_view(
-                &crate::ceremony::SignatureCeremony::new(),
-            ))
-        })
+        .open_ceremony(
+            &initcode_of(&inp),
+            || {
+                Ok(real_ceremony_view(
+                    &crate::ceremony::SignatureCeremony::new(),
+                ))
+            },
+            |_| {},
+        )
         .expect("opens");
     let mut revoked = 0;
     for i in 1..=(MAX_GATE_RECORDS as u64) {
@@ -757,11 +765,100 @@ fn open_ceremony_refuses_a_not_ready_record_and_never_calls_the_opener() {
         .expect("records");
     let mut called = false;
     let err = store
-        .open_ceremony(&initcode_of(&inp), || {
-            called = true;
-            Err("must not be reached".into())
-        })
+        .open_ceremony(
+            &initcode_of(&inp),
+            || {
+                called = true;
+                Err("must not be reached".into())
+            },
+            |_| {},
+        )
         .expect_err("NOT READY never opens a ceremony");
     assert!(!called);
     assert!(err.contains("Medusa campaign"), "{err}");
+}
+
+#[test]
+fn a_not_ready_record_rejects_every_open_ceremony_even_past_the_per_hash_bound() {
+    // Opening more deploy ceremonies for one hash than the store tracks must not leave an
+    // untracked one pending: a later NOT READY has to reach every ceremony for that hash.
+    let store = GateStore::default();
+    let cer = crate::ceremony::SignatureCeremony::new();
+    let inp = green_inputs();
+    store
+        .record(evaluate(&inp, 1).expect("evaluates"))
+        .expect("records");
+    let ic = initcode_of(&inp);
+    let mut ids = Vec::new();
+    for _ in 0..(MAX_OPEN_PER_HASH + 3) {
+        let (_, view) = store
+            .open_ceremony(
+                &ic,
+                || Ok(real_ceremony_view(&cer)),
+                |id| {
+                    let _ = cer.reject(id);
+                },
+            )
+            .expect("opens");
+        ids.push(view.id);
+    }
+    let mut bad = green_inputs();
+    bad.slither = ran(SLITHER_HIGH);
+    store
+        .record_and_revoke(evaluate(&bad, 2).expect("evaluates"), |id| {
+            let _ = cer.reject(id);
+        })
+        .expect("records");
+    for id in &ids {
+        assert!(
+            cer.status(id).is_none(),
+            "ceremony {id} is still pending after NOT READY"
+        );
+    }
+}
+
+#[test]
+fn slither_sarif_rule_id_prefix_alone_marks_high() {
+    // With no security-severity on the rule, the `0-` rule-id prefix alone still means High.
+    let stripped = SLITHER_HIGH_SARIF.replace(
+        "\"security-severity\": \"8.0\"",
+        "\"security-severity\": \"0.0\"",
+    );
+    assert_ne!(
+        stripped, SLITHER_HIGH_SARIF,
+        "fixture carries a High security-severity"
+    );
+    let mut inp = green_inputs();
+    inp.slither = ran(&stripped);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    assert_eq!(failing(&rec), vec![GateItemId::Slither]);
+    assert_eq!(
+        item(&rec, GateItemId::Slither).evidence.counts.get("high"),
+        Some(&1)
+    );
+}
+
+#[test]
+fn free_text_from_the_verifier_is_bounded_in_the_record() {
+    // The error message and tool version are verifier-supplied text that is stored in the
+    // record, shown on the card and quoted in the refusal: keep them short.
+    let mut inp = green_inputs();
+    inp.aderyn = ToolRun::Error {
+        message: "é".repeat(5_000),
+    };
+    inp.slither = ToolRun::Ran {
+        output: SLITHER_CLEAN.to_string(),
+        duration_ms: 1,
+        tool_version: Some("v".repeat(5_000)),
+    };
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    let reason = &item(&rec, GateItemId::Aderyn).reason;
+    assert!(reason.chars().count() <= 400, "{}", reason.len());
+    assert!(reason.ends_with('…'), "truncation is marked");
+    let version = item(&rec, GateItemId::Slither)
+        .evidence
+        .tool_version
+        .clone()
+        .expect("version kept");
+    assert!(version.chars().count() <= MAX_TOOL_TEXT_CHARS + 1);
 }

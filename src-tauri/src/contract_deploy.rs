@@ -146,9 +146,14 @@ pub fn contract_deploy_sync(
     };
     // Return the decoded view so the UI drives signing.broadcast(view.id) (the money-path
     // pattern) — nothing signs here (Rule 3). The gate record rides along for the review card.
-    let (gate_record, view) = gate
-        .0
-        .open_ceremony(&initcode, || Ok(ceremony.0.request(intent)))?;
+    // An already-decided ceremony cannot be rejected again; that error is expected and moot.
+    let (gate_record, view) = gate.0.open_ceremony(
+        &initcode,
+        || Ok(ceremony.0.request(intent)),
+        |id| {
+            let _ = ceremony.0.reject(id);
+        },
+    )?;
     Ok(DeployProposal {
         ceremony: view,
         gate: gate_record,

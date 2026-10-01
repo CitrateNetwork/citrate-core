@@ -44,6 +44,8 @@ pub const MAX_GATE_RECORDS: usize = 64;
 const BINDING_DOMAIN: &[u8] = b"citrate.deploygate.v1";
 /// Raw tool output larger than this is refused as evidence (keeps the store bounded).
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+/// Verifier-supplied free text (an error message, a tool version) kept in a record, in chars.
+const MAX_TOOL_TEXT_CHARS: usize = 300;
 
 /// The compiler settings the bytecode was built with. Part of the binding hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +337,16 @@ fn fail(reason: impl Into<String>) -> Parsed {
     }
 }
 
+/// `s` cut to [`MAX_TOOL_TEXT_CHARS`] chars, with `…` marking a cut.
+fn bounded(s: &str) -> String {
+    if s.chars().count() <= MAX_TOOL_TEXT_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(MAX_TOOL_TEXT_CHARS).collect();
+    out.push('…');
+    out
+}
+
 fn eval_tool(
     id: GateItemId,
     run: &ToolRun,
@@ -349,7 +361,10 @@ fn eval_tool(
             Evidence::default(),
         ),
         ToolRun::Error { message } => (
-            fail(format!("{tool} did not produce a report: {message}")),
+            fail(format!(
+                "{tool} did not produce a report: {}",
+                bounded(message)
+            )),
             Evidence::default(),
         ),
         ToolRun::Ran {
@@ -369,7 +384,7 @@ fn eval_tool(
                 counts: parsed.counts.clone(),
                 output_sha256: Some(digest),
                 duration_ms: Some(*duration_ms),
-                tool_version: tool_version.clone(),
+                tool_version: tool_version.as_deref().map(bounded),
             };
             (parsed, ev)
         }
@@ -568,9 +583,11 @@ fn parse_aderyn(out: &str) -> Parsed {
         (None, None) => {
             return fail("aderyn output is not an Aderyn JSON report (no High section)")
         }
-        (Some(a), Some(b)) if a != b => return fail(format!(
+        (Some(a), Some(b)) if a != b => {
+            return fail(format!(
             "aderyn report is inconsistent: issue_count.high = {a} but {b} High issue(s) listed"
-        )),
+        ))
+        }
         (Some(a), _) => a,
         (None, Some(b)) => b,
     };
@@ -877,8 +894,8 @@ struct StoreInner {
     open: HashMap<String, VecDeque<String>>,
 }
 
-/// Open ceremonies remembered per hash (oldest forgotten first; a forgotten id is one the
-/// member has long since decided or abandoned).
+/// Open ceremonies remembered per hash. Past this bound the oldest is revoked (rejected), never
+/// silently forgotten: a forgotten pending ceremony would escape a later NOT READY.
 const MAX_OPEN_PER_HASH: usize = 16;
 
 fn refusal(h: &str, rec: Option<&GateRecord>) -> Option<String> {
@@ -976,10 +993,13 @@ impl GateStore {
 
     /// Re-check READY for exactly this init code and, under the same lock, open the ceremony
     /// with `open` and remember its id for this hash. `open` is never called without READY.
+    /// When more than [`MAX_OPEN_PER_HASH`] ceremonies are tracked for the hash, the oldest is
+    /// passed to `revoke` (rejected) so every ceremony that can still be approved stays tracked.
     pub fn open_ceremony(
         &self,
         initcode: &[u8],
         open: impl FnOnce() -> Result<crate::ceremony::CeremonyView, String>,
+        mut revoke: impl FnMut(&str),
     ) -> Result<(GateRecord, crate::ceremony::CeremonyView), String> {
         let h = initcode_hash(initcode);
         let mut g = self.lock()?;
@@ -992,7 +1012,9 @@ impl GateStore {
         let ids = g.open.entry(h).or_default();
         ids.push_back(view.id.clone());
         while ids.len() > MAX_OPEN_PER_HASH {
-            ids.pop_front();
+            if let Some(old) = ids.pop_front() {
+                revoke(&old);
+            }
         }
         Ok((rec, view))
     }

@@ -1,0 +1,20 @@
+⇾ Reading the configuration file at: /work/hello-mint/medusa.json
+⇾ Compiling targets with crytic-compile
+⇾ Finished compiling targets in 3s
+⇾ Initializing corpus
+⇾ Fuzzing with 4 workers
+⇾ [NOT STARTED] Property Test: HelloMintInvariants.property_supply_never_exceeds_cap()
+⇾ fuzz: elapsed: 0s, calls: 0 (0/sec), seq/s: 0, branches hit: 0, corpus: 0, failures: 0/0, gas/s: 0
+⇾ fuzz: elapsed: 3s, calls: 15377 (5125/sec), seq/s: 153, branches hit: 39, corpus: 10, failures: 1/153, gas/s: 41012944
+⇾ fuzz: elapsed: 9s, calls: 50000 (6874/sec), seq/s: 166, branches hit: 39, corpus: 10, failures: 1/500, gas/s: 41420019
+⇾ Transaction test limit reached, halting now...
+⇾ Fuzzer stopped, test results follow below ...
+⇾ [FAILED] Property Test: HelloMintInvariants.property_supply_never_exceeds_cap()
+Test for method "HelloMintInvariants.property_supply_never_exceeds_cap()" failed after the following call sequence:
+[Call Sequence]
+1) HelloMintInvariants.mint(address,uint256)(0x0000000000000000000000000000000000010000, 115792089237316195423570985008687907853269984665640564039457584007913129639935)
+[Property Test Execution Trace]
+[Execution Trace]
+ => [call] HelloMintInvariants.property_supply_never_exceeds_cap()() (addr=0xA647ff3c36cFab592509E13860ab8c4F28781a66, value=0, sender=0x0000000000000000000000000000000000010000)
+         => [return (false)]
+⇾ Test summary: 0 test(s) passed, 1 test(s) failed
