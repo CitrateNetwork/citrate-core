@@ -79,3 +79,20 @@ override lets a member pick T2 on a 16 GB Mac. Planning against the tier's own u
 math, rather than trusting the tier's label, is what keeps that choice safe: the plan steps down
 and says why. Reading the GGUF header turned the "cap conservatively" fallback into a real
 number for every model the app offers today.
+
+## Review (2026-10-01, adversarial reviewer)
+
+Two fixes on this branch, each red first:
+
+- The context walk now always tries the 8192 floor. Before, a model trained for a length off the
+  power-of-two ladder (Qwen3-style 40960) halved 40960, 20480, 10240 and then stopped, so a
+  machine where 8192 fits got the "not enough free memory" fallback note. Test:
+  `a_trained_context_off_the_halving_ladder_still_tries_the_8192_floor` (one case plus a
+  completeness grid: whenever the floor fits, the plan fits).
+- A plan that cannot be computed (the app data dir or the stored tier setting cannot be read)
+  no longer blocks `model_serve_start` or `model_catalog_select`. The start proceeds on the
+  pre-plan default (8192, no `-ngl`) with a note, which is the behaviour before this WP. Test:
+  `a_plan_that_cannot_be_computed_never_blocks_the_model_start`.
+
+Mutation checks rerun by the reviewer, each killed: the `-ngl` push, the trained-context cap, the
+memory fit check, the floor step, the reply budget, and applying the plan at start.

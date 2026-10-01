@@ -596,7 +596,10 @@ pub async fn model_serve_start(app_h: tauri::AppHandle) -> std::result::Result<(
         let st1 = tauri::Manager::try_state::<crate::model::ModelState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         // HUP-S1.6: size the context + GPU offload for the effective tier and the active model.
-        let plan = crate::serve_plan::plan_for_model(&app_h, &st0.0.current_model_path())?;
+        let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(
+            &app_h,
+            &st0.0.current_model_path(),
+        ));
         model_serve_start_sync(st0, st1, plan)
     })
     .await

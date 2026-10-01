@@ -8,7 +8,7 @@
 //! ## Context size
 //! The target is the tier's context ([`crate::tier::profile`]: T0 16k, T1 32k, T2 64k), capped by
 //! the model's trained context (`<arch>.context_length` in the GGUF header, read by the bounded
-//! [`read_gguf_facts`]). The plan then walks DOWN by halves (target, target/2, …, 8192) and takes
+//! [`read_gguf_facts`]). The plan then walks DOWN by halves (target, target/2, …, never below 8192, and 8192 itself is always tried) and takes
 //! the largest context whose memory need fits the budget:
 //!
 //! `need(ctx) = model file bytes + RUNTIME_OVERHEAD + kv_bytes_per_token × ctx`
@@ -225,7 +225,7 @@ pub fn plan_serve(
         ));
     }
 
-    // Walk down by halves from the capped target to the floor; the largest fit wins.
+    // Walk down by halves from the capped target to the floor (inclusive); the largest fit wins.
     let mut ctx = capped;
     loop {
         if required_bytes(model_bytes, kv, ctx) <= budget_bytes {
@@ -244,11 +244,12 @@ pub fn plan_serve(
                 notes,
             };
         }
-        let next = ctx / 2;
-        if next < MIN_CTX || ctx <= MIN_CTX {
+        if ctx <= MIN_CTX {
             break;
         }
-        ctx = next;
+        // Halve, but always try the floor itself: a trained length off the power-of-two ladder
+        // (for example 40960) would otherwise skip 8192 and fall back while 8192 fits.
+        ctx = (ctx / 2).max(MIN_CTX);
     }
     fallback(
         notes,
@@ -488,6 +489,20 @@ pub fn plan_for_model<R: tauri::Runtime>(
         model_bytes,
         gguf.as_ref(),
     ))
+}
+
+/// The plan a start uses: the computed plan, or, when it could not be computed (the app data
+/// dir or the stored tier setting could not be read), the pre-plan default with a note. A plan
+/// failure never blocks the model start; it only means the context is not sized.
+pub fn plan_or_unsized(plan: Result<ServePlan, String>) -> ServePlan {
+    plan.unwrap_or_else(|_| {
+        let mut p = ServePlan::not_sized();
+        p.notes.push(
+            "The tier setting could not be read, so the context was not sized for this machine"
+                .to_string(),
+        );
+        p
+    })
 }
 
 #[cfg(test)]

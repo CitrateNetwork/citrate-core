@@ -449,6 +449,63 @@ fn every_plan_fits_its_budget_or_says_it_does_not() {
     }
 }
 
+#[test]
+fn a_trained_context_off_the_halving_ladder_still_tries_the_8192_floor() {
+    // Qwen3-style models are trained for 40960 tokens: halving from there goes 40960, 20480,
+    // 10240, 5120, so the floor must be tried explicitly. When 8192 fits, the plan fits.
+    let g = GgufFacts {
+        context_length: Some(40_960),
+        ..gemma().unwrap()
+    };
+    let kv = kv_bytes_per_token(Some(&g));
+    // A budget that holds 8192 tokens but not 10240.
+    let budget = required_bytes(GEMMA_BYTES, kv, 9_000);
+    let total = budget + NODE_RESERVE_BYTES;
+    let f = facts_from_parts("linux", "x86_64", Some(total), None, None, None);
+    let p = plan_serve(Tier::T2, &f, Some(GEMMA_BYTES), Some(&g));
+    assert_eq!(p.ctx_size, 8192, "{p:?}");
+    assert!(
+        p.fits,
+        "8192 fits the budget, so the plan must say it fits: {p:?}"
+    );
+    // Completeness over a grid: whenever the floor fits the budget, the plan fits.
+    for trained in [8192u64, 12_288, 24_576, 40_960, 65_536, 131_072] {
+        let g = GgufFacts {
+            context_length: Some(trained),
+            ..gemma().unwrap()
+        };
+        let kv = kv_bytes_per_token(Some(&g));
+        for ram in [10u64, 11, 12, 13, 14, 16, 20, 24, 32] {
+            for tier in [Tier::T0, Tier::T1, Tier::T2] {
+                let f = linux(ram, None);
+                let p = plan_serve(tier, &f, Some(GEMMA_BYTES), Some(&g));
+                let floor = required_bytes(GEMMA_BYTES, kv, MIN_CTX);
+                if floor <= (ram * GIB).saturating_sub(NODE_RESERVE_BYTES) {
+                    assert!(p.fits, "trained {trained}, {ram} GB, {tier:?}: {p:?}");
+                    assert!(p.ctx_size >= MIN_CTX, "{p:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_plan_that_cannot_be_computed_never_blocks_the_model_start() {
+    // Reading the tier setting or the app data dir can fail; the start then proceeds on the
+    // pre-plan default (8192, no -ngl) with a note, exactly the behaviour before this WP.
+    let p = plan_or_unsized(Err("store unavailable".to_string()));
+    assert_eq!(p.ctx_size, MIN_CTX);
+    assert_eq!(p.gpu_layers, None);
+    assert!(!p.fits);
+    assert!(
+        p.notes.iter().any(|n| n.contains("tier setting")),
+        "{:?}",
+        p.notes
+    );
+    let ok = plan(Tier::T0, &mac(16));
+    assert_eq!(plan_or_unsized(Ok(ok.clone())), ok);
+}
+
 /// Manual proof against a real model file (not run in CI): set `CITRATE_GGUF_PROOF=<path>` and
 /// run with `--ignored --nocapture`. Prints the header facts and the plan for each tier on this
 /// machine's probed hardware.

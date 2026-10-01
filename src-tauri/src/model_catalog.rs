@@ -601,7 +601,7 @@ pub fn model_catalog_select_sync(
     }
     // HUP-S1.6: size the context + GPU offload for the effective tier and the TARGET model.
     let path = models_dir.join(&file);
-    let plan = crate::serve_plan::plan_for_model(&app, &path)?;
+    let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(&app, &path));
     serve
         .0
         .select_model_planned(path, true, plan)
