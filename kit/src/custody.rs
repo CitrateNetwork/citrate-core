@@ -58,6 +58,24 @@ const NONCE_LEN: usize = 12;
 /// Argon2id salt length, bytes.
 const SALT_LEN: usize = 16;
 
+/// The D-A2-1 Argon2id parameters `(m_cost KiB, t_cost, p_cost)`, published so a
+/// passphrase-sealed file format (HUP-S10.4 journal export) can record them in
+/// its header and refuse anything else on read.
+pub const PASSPHRASE_KDF_PARAMS: (u32, u32, u32) = (ARGON_M_COST, ARGON_T_COST, ARGON_P_COST);
+/// Salt length (bytes) used with [`derive_passphrase_key`].
+pub const PASSPHRASE_SALT_LEN: usize = SALT_LEN;
+
+/// Derive a 32-byte key from a passphrase + salt with the vault's own D-A2-1
+/// Argon2id derivation (one implementation, not a copy). The caller owns the
+/// passphrase; the key is returned in a zeroizing buffer. A salt shorter than
+/// Argon2's minimum is a clean `Err`, never a panic.
+pub fn derive_passphrase_key(
+    passphrase: &[u8],
+    salt: &[u8],
+) -> std::result::Result<Zeroizing<[u8; 32]>, CustodyError> {
+    CustodyVault::derive_key(passphrase, salt)
+}
+
 /// Lockout policy: N failed unlocks → cooloff (citrate-native pattern).
 const MAX_ATTEMPTS: u32 = 5;
 const LOCKOUT_COOLOFF: Duration = Duration::from_secs(5 * 60);
