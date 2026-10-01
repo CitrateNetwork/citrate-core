@@ -50,6 +50,9 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 /// `./capsules` relative to its cwd — which is empty — so the agent boots with zero skills and can run
 /// nothing. citrate-core points it at the per-session capsule dir it seeds from the bundled starters.
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
+/// HUP-S4.4: env naming the MCP allowlist file the child reads (the runtime's `MCP_CONFIG_ENV`). Set
+/// only while the file exists, i.e. while the member has at least one reviewed, enabled server.
+pub const HERMES_MCP_ENV: &str = "CITRATE_HERMES_MCP";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
 
@@ -281,6 +284,9 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
+    /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
+    mcp_allowlist: Option<PathBuf>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -312,6 +318,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            mcp_allowlist: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -328,6 +335,12 @@ impl HermesManager {
     /// catalog. Absent → the env is not set (unchanged default behavior).
     pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
         self.capsules_dir = Some(dir);
+        self
+    }
+
+    /// HUP-S4.4: the MCP allowlist file (see [`HERMES_MCP_ENV`]).
+    pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
+        self.mcp_allowlist = Some(path);
         self
     }
 
@@ -398,6 +411,13 @@ impl HermesManager {
             spec.env.push((
                 HERMES_CAPSULES_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
+            ));
+        }
+        // HUP-S4.4: the member's reviewed MCP servers, only when there are any.
+        if let Some(path) = self.mcp_allowlist.as_ref().filter(|p| p.is_file()) {
+            spec.env.push((
+                HERMES_MCP_ENV.to_string(),
+                path.to_string_lossy().to_string(),
             ));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -563,6 +583,42 @@ impl HermesManager {
         let resp = self
             .control
             .get(&format!("{}/approvals", self.control_url()), &bearer)?;
+        Self::decode(resp)
+    }
+
+    // --- HUP-S4.4 user-added MCP servers ----------------------------------------------------------
+
+    /// `POST /mcp/probe` — the sidecar's dry-run check of one server entry (the runtime's
+    /// `[[servers]]` shape). 422 = the sidecar's field errors; 200 = the probe report (which may
+    /// itself say the server could not be reached). Registers nothing.
+    pub fn mcp_probe(&self, entry: &serde_json::Value) -> Result<crate::mcp_servers::ProbeOutcome> {
+        let bearer = self.bearer()?;
+        let resp = self.control.post(
+            &format!("{}/mcp/probe", self.control_url()),
+            &bearer,
+            &entry.to_string(),
+        )?;
+        if resp.status == 422 {
+            #[derive(Deserialize)]
+            struct Invalid {
+                #[serde(default)]
+                errors: Vec<crate::mcp_servers::FieldError>,
+            }
+            let inv: Invalid =
+                serde_json::from_str(&resp.body).map_err(|e| HermesError::Decode(e.to_string()))?;
+            return Ok(crate::mcp_servers::ProbeOutcome::Invalid(inv.errors));
+        }
+        Ok(crate::mcp_servers::ProbeOutcome::Report(Self::decode(
+            resp,
+        )?))
+    }
+
+    /// `GET /mcp/servers` — the servers the running sidecar loaded (never URLs or env).
+    pub fn mcp_servers_status(&self) -> Result<serde_json::Value> {
+        let bearer = self.bearer()?;
+        let resp = self
+            .control
+            .get(&format!("{}/mcp/servers", self.control_url()), &bearer)?;
         Self::decode(resp)
     }
 
@@ -1071,10 +1127,19 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_capsules_dir(capsules_dir)
+        .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE));
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
+}
+
+/// HUP-S4.4: the process-wide manager for other modules (Settings > MCP servers).
+pub(crate) fn manager_for(
+    app: &tauri::AppHandle,
+) -> std::result::Result<&'static HermesManager, String> {
+    manager(app)
 }
 
 /// Start the sidecar (idempotent). Returns the local lifecycle status.

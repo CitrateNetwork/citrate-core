@@ -66,6 +66,9 @@ const LONG: Record<string, number> = {
   hermes_tracks: 45_000,
   hermes_brief_create: 45_000,
   hermes_brief_check: 45_000,
+  // HUP-S4.4: the MCP dry-run check (probe bounded at 20 s in the sidecar, control call at 30 s).
+  mcp_server_review: 45_000,
+  mcp_servers_runtime: 45_000,
   // HUP-S0.1b: signing broadcast polls up to 60 s for the receipt (30 × 2 s, Rust-side).
   sign_and_broadcast: 75_000,
   // HUP-S0.1b: supervised daemons get a ~10 s graceful shutdown before SIGKILL.

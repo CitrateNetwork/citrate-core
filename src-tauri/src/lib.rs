@@ -41,6 +41,7 @@ mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
+mod mcp_servers;
 mod membership;
 mod memory;
 mod model;
@@ -635,6 +636,15 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
+            // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
+            mcp_servers::mcp_servers_list,
+            mcp_servers::mcp_server_save,
+            mcp_servers::mcp_server_remove,
+            mcp_servers::mcp_server_disable,
+            mcp_servers::mcp_server_review,
+            mcp_servers::mcp_server_enable,
+            mcp_servers::mcp_servers_runtime,
             // model — BC-3.1 local Gemma download + verify. model_status is the
             // honest file-derived state (Ready ONLY after a real SHA-256 verify —
             // never mere presence, Rule 1); model_download is STREAMED + resumable

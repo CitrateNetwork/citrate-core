@@ -1,7 +1,7 @@
 // =====================================================================
 // citrate-core — Settings surface (1:1 from design/CitrateCore.dc.html
-// SETTINGS section). Eight sections behind a left sub-nav (sSec):
-// Account & RBAC, Connections, AI providers, Node configuration,
+// SETTINGS section). Nine sections behind a left sub-nav (sSec):
+// Account & RBAC, Connections, AI providers, MCP servers (HUP-S4.4), Node configuration,
 // API endpoints & keys, Keys & security, Memberships & billing, App.
 //
 // Honesty rule (Rule 1 / I-3 · Q-A.1): EVERY control is ONE of —
@@ -31,6 +31,8 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { McpServersPanel } from "./McpServersPanel";
+import { desktopMcpIo } from "./mcpServers";
 
 // Q-A.1 — an honestly DISABLED + annotated control. It is visibly
 // non-interactive (the native `disabled` attribute + muted styling) and carries
@@ -132,6 +134,7 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["ai", "AI providers"],
+  ["mcp", "MCP servers"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
@@ -1050,6 +1053,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
             </div>
           </div>
         )}
+
+        {/* ---------- MCP servers (HUP-S4.4) ---------- */}
+        {s.sSec === "mcp" && <McpServersPanel io={desktopMcpIo} />}
 
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
