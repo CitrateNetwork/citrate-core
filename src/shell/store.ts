@@ -38,7 +38,7 @@ import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type Approva
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
-import { formatMemoryHits, memorySearchTarget } from "../agent/knowledgeSearch";
+import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
@@ -2488,7 +2488,7 @@ export class Store {
       // HUP-S3.1: knowledge tenants (the bundled corpus) answer with passages + citations.
       const { tenant, passages } = memorySearchTarget(args.tenant);
       try {
-        const res = await bridge.memory.search(tenant, args.query || "", passages ? 5 : 6, passages ? { passages } : undefined);
+        const res = await bridge.memory.search(tenant, args.query || "", memorySearchBudget(passages), passages ? { passages } : undefined);
         result = formatMemoryHits(res);
       } catch (e) {
         result = "memory search unavailable: " + (e instanceof Error ? e.message : String(e));

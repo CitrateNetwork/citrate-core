@@ -82,3 +82,42 @@ describe("daemon wire", () => {
     expect(() => parseSearchResponse("not json")).toThrow();
   });
 });
+
+describe("memoryResultFromSearchText (the app's MemoryResult, for the eval's tool loop)", () => {
+  it("reads the tenant total, ids, kinds, titles, citations and passages", async () => {
+    const { memoryResultFromSearchText } = await import("./retrieval");
+    expect(memoryResultFromSearchText("citrate-docs", RENDER)).toEqual({
+      tenant: "citrate-docs",
+      totalInTenant: 1688,
+      hits: [
+        {
+          id: "0a1b2c3d4e",
+          kind: "doc",
+          title: "Genesis › What it is",
+          cite: "citrate-docs:content/chain/genesis.md#what-it-is",
+          passage: "Genesis › What it is\n\nThe chain id is 40204; eth_chainId returns 0x9d0c.",
+        },
+        { id: "1f2e3d4c5b", kind: "doc", title: "Staking", cite: "citrate-docs:content/chain/staking.md", passage: "Staking" },
+      ],
+    });
+  });
+
+  it("keeps a title-only hit (personal notes) without a passage", async () => {
+    const { memoryResultFromSearchText } = await import("./retrieval");
+    expect(memoryResultFromSearchText("personal", "tenant 'personal' — 3 nodes, showing 1:\n  0a1b2c3d4e 0.5 [Note] my note\n")).toEqual({
+      tenant: "personal",
+      totalInTenant: 3,
+      hits: [{ id: "0a1b2c3d4e", kind: "Note", title: "my note" }],
+    });
+  });
+});
+
+describe("selectRetrievalPassages (what a passages run showed the model)", () => {
+  it("returns the passages buildRetrievalContext numbers, in the same order", async () => {
+    const { selectRetrievalPassages } = await import("./retrieval");
+    const big = "z".repeat(800);
+    const p = (cite: string, score: number, text: string) => ({ id: cite.slice(-6), cite, score, text });
+    const per = [[p("a:1.md", 0.9, big), p("a:1.md", 0.9, big), p("a:2.md", 0.8, big), p("a:3.md", 0.7, big)]];
+    expect(selectRetrievalPassages(per, 1700).map((x) => x.cite)).toEqual(["a:1.md", "a:2.md"]);
+  });
+});

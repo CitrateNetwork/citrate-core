@@ -443,13 +443,26 @@ export interface QaScorecard {
   failures: string[];
   failureReasons: Record<string, string[]>;
   /**
+   * g2-knowledge (US-3.1 AC2, "citations resolving to bundled nodes"): of the citations in the
+   * answers of a retrieval run, the share that name a node the run's searches returned from the
+   * imported graph (null when nothing was cited). Absent on a closed-book run.
+   */
+  citationNodeRate?: number | null;
+  /**
    * HUP-S3.1 / g2-knowledge: the run answered from passages retrieved from the bundled corpus
    * (`memory.search` with passages over these tenants, k per tenant). Absent = closed-book.
    */
   retrieval?: {
-    mode: "memory.search passages";
+    /**
+     * "memory_search tool": the model called the app's memory_search tool itself (what the app
+     * does; src/agent/eval/toolLoop.ts). "memory.search passages": the harness retrieved passages
+     * before the question (retrieve-then-answer).
+     */
+    mode: "memory_search tool" | "memory.search passages";
     tenants: string[];
     k: number;
+    /** Tool mode: model requests per question (the app's AGENT_MAX_TURNS). */
+    maxTurns?: number;
     corpusDigest?: string;
     /** Citations were also accepted when they resolve to a node of the bundled corpus. */
     citationsResolveToCorpus?: boolean;
@@ -500,9 +513,68 @@ export const QA_SYSTEM_PROMPT =
   "example citrate-docs:content/chain/genesis.md#reference. If the documentation does not cover the " +
   "question, say plainly that it is not documented and do not guess.";
 
+/** A node a retrieval run's search returned: the id prefix the daemon printed and its citation. */
+export interface RetrievedNodeRef {
+  id: string;
+  cite?: string;
+}
+
+/** One answer citation and the retrieved node ids it names (empty when it names none). */
+export interface CitationNodes {
+  citation: string;
+  nodeIds: string[];
+}
+
+function splitCite(cite: string): CitedRef | null {
+  const colon = cite.indexOf(":");
+  if (colon <= 0) return null;
+  const rest = cite.slice(colon + 1);
+  const hash = rest.indexOf("#");
+  const ref: CitedRef = { source: cite.slice(0, colon), path: hash < 0 ? rest : rest.slice(0, hash) };
+  if (hash >= 0) ref.anchor = rest.slice(hash + 1).toLowerCase();
+  return ref;
+}
+
+/**
+ * Resolve each citation in `answer` to the retrieved nodes it names: same repo and path, and the
+ * same section anchor when the citation gives one. Node ids are in retrieval order, de-duplicated.
+ */
+export function resolveCitationNodes(answer: string, retrieved: RetrievedNodeRef[]): CitationNodes[] {
+  const nodes = retrieved.flatMap((n) => {
+    const ref = n.cite ? splitCite(n.cite) : null;
+    return ref ? [{ id: n.id, ref }] : [];
+  });
+  return extractCitations(answer).map((c) => {
+    const ids: string[] = [];
+    for (const n of nodes) {
+      if (n.ref.source !== c.source || n.ref.path !== c.path) continue;
+      if (c.anchor !== undefined && n.ref.anchor !== c.anchor) continue;
+      if (!ids.includes(n.id)) ids.push(n.id);
+    }
+    return { citation: `${c.source}:${c.path}${c.anchor === undefined ? "" : `#${c.anchor}`}`, nodeIds: ids };
+  });
+}
+
+export interface QaAnswer {
+  text: string;
+  /** Structured citations a provider returned out-of-band. */
+  citations?: CitedRef[];
+  /** Retrieval runs: the nodes the run's searches returned for this question. */
+  retrieved?: RetrievedNodeRef[];
+  /** Tool runs: the memory_search calls the model made. */
+  toolCalls?: { tenant: string; query: string }[];
+}
+
+export type QaItemResult = QaItemScore & {
+  answer: string;
+  retrievedNodes?: string[];
+  toolCalls?: { tenant: string; query: string }[];
+  citedNodes?: CitationNodes[];
+};
+
 export interface QaRunDeps {
-  /** Ask the model one question; return the final answer text (and optional structured citations). */
-  ask: (question: string) => Promise<{ text: string; citations?: CitedRef[] }>;
+  /** Ask the model one question; return the final answer text (and what the run retrieved). */
+  ask: (question: string) => Promise<QaAnswer>;
   onProgress?: (id: string, pass: boolean) => void;
 }
 
@@ -516,16 +588,29 @@ export async function runQaEval(
   deps: QaRunDeps,
   meta: { model: string; tier?: string; startedAt?: string },
   opts: QaScoreOptions = {},
-): Promise<{ scorecard: QaScorecard; items: (QaItemScore & { answer: string })[] }> {
+): Promise<{ scorecard: QaScorecard; items: QaItemResult[] }> {
   const startedAt = meta.startedAt ?? new Date().toISOString();
-  const items: (QaItemScore & { answer: string })[] = [];
+  const items: QaItemResult[] = [];
+  let retrievalRun = false;
+  let cited = 0;
+  let citedToNodes = 0;
   for (const it of ds.items) {
     const res = await deps.ask(it.question);
     const s = scoreQaItem(it, res.text, index, res.citations ?? [], opts);
-    items.push({ ...s, answer: res.text });
+    const item: QaItemResult = { ...s, answer: res.text };
+    if (res.retrieved !== undefined) {
+      retrievalRun = true;
+      item.retrievedNodes = res.retrieved.map((n) => n.id);
+      if (res.toolCalls !== undefined) item.toolCalls = res.toolCalls;
+      item.citedNodes = resolveCitationNodes(res.text, res.retrieved);
+      cited += item.citedNodes.length;
+      citedToNodes += item.citedNodes.filter((c) => c.nodeIds.length > 0).length;
+    }
+    items.push(item);
     deps.onProgress?.(it.id, s.pass);
   }
   const card = aggregateQa(items, { datasetVersion: ds.version, model: meta.model, tier: meta.tier, startedAt });
+  if (retrievalRun) card.citationNodeRate = cited ? citedToNodes / cited : null;
   return { scorecard: card, items };
 }
 

@@ -10,6 +10,7 @@
 // tenant per question, chosen by the harness rather than by the model's own tool call.
 // Pure: no I/O. The CLI does the socket and network work.
 // =====================================================================
+import type { MemoryHit, MemoryResult } from "../../bridge/domains";
 
 export interface Passage {
   /** Node id prefix the daemon printed. */
@@ -58,9 +59,16 @@ export function parsePassages(text: string): Passage[] {
  * text), and number them `[n] cite as <cite>` until `maxChars` of passage text is used.
  */
 export function buildRetrievalContext(perTenant: Passage[][], maxChars: number): string {
+  return selectRetrievalPassages(perTenant, maxChars)
+    .map((p, i) => `[${i + 1}] cite as ${p.cite ?? `memory node ${p.id}`}\n${p.text}`)
+    .join("\n\n");
+}
+
+/** The passages buildRetrievalContext shows the model, in its order (what the run retrieved). */
+export function selectRetrievalPassages(perTenant: Passage[][], maxChars: number): Passage[] {
   const all = perTenant.flat().sort((a, b) => b.score - a.score);
   const seen = new Set<string>();
-  const blocks: string[] = [];
+  const out: Passage[] = [];
   let used = 0;
   for (const p of all) {
     const key = `${p.cite ?? p.id}\u0000${p.text}`;
@@ -68,9 +76,43 @@ export function buildRetrievalContext(perTenant: Passage[][], maxChars: number):
     seen.add(key);
     if (used + p.text.length > maxChars) break;
     used += p.text.length;
-    blocks.push(`[${blocks.length + 1}] cite as ${p.cite ?? `memory node ${p.id}`}\n${p.text}`);
+    out.push(p);
   }
-  return blocks.join("\n\n");
+  return out;
+}
+
+const HIT_LINE_RE = /^ {2}([0-9a-f]{6,}) (?:-?\d+(?:\.\d+)? )?\[([^\]]*)\] ?(.*)$/;
+const TOTAL_RE = /^tenant '[^']*' \S+ (\d+) nodes\b/;
+
+/**
+ * The app's MemoryResult for a `memory.search` rendering: what the Rust side
+ * (src-tauri/src/memory.rs parse_result) hands the frontend, so the eval's tool loop renders the
+ * tool result with the app's own formatter (formatMemoryHits). Title-only hits keep no passage.
+ */
+export function memoryResultFromSearchText(tenant: string, text: string): MemoryResult {
+  let totalInTenant = 0;
+  const hits: MemoryHit[] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trimEnd();
+    const total = TOTAL_RE.exec(line.trim());
+    if (total) {
+      totalInTenant = Number(total[1]);
+      continue;
+    }
+    const last = hits[hits.length - 1];
+    if (line.startsWith("    cite: ")) {
+      if (last) last.cite = line.slice("    cite: ".length).trim();
+      continue;
+    }
+    const quoted = line.startsWith("    > ") ? line.slice("    > ".length) : line === "    >" ? "" : null;
+    if (quoted !== null) {
+      if (last) last.passage = last.passage === undefined ? quoted : `${last.passage}\n${quoted}`;
+      continue;
+    }
+    const m = HIT_LINE_RE.exec(line);
+    if (m) hits.push({ id: m[1], kind: m[2], title: m[3] });
+  }
+  return { tenant, totalInTenant, hits };
 }
 
 /** The user turn of a retrieval run: the excerpts, then the question. */
@@ -79,16 +121,14 @@ export function retrievalUserMessage(question: string, context: string): string 
   return `${head}\n\nQuestion: ${question}`;
 }
 
-/** One newline-terminated JSON-RPC `tools/call` line for `memory.search` with passages. */
-export function searchRequestLine(id: number, tenant: string, query: string, k: number): string {
-  return (
-    JSON.stringify({
-      jsonrpc: "2.0",
-      id,
-      method: "tools/call",
-      params: { name: "memory.search", arguments: { repo: tenant, query, budget: k, passages: true } },
-    }) + "\n"
-  );
+/**
+ * One newline-terminated JSON-RPC `tools/call` line for `memory.search`, with passages unless
+ * `passages` is false (the app asks for titles only on the member's personal notes).
+ */
+export function searchRequestLine(id: number, tenant: string, query: string, k: number, passages = true): string {
+  const args: Record<string, unknown> = { repo: tenant, query, budget: k };
+  if (passages) args.passages = true;
+  return JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "memory.search", arguments: args } }) + "\n";
 }
 
 /** The tool text of a `tools/call` response line; throws on a JSON-RPC error or `isError`. */

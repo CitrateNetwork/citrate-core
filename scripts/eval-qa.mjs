@@ -7,16 +7,23 @@
 //        [--coverage-threshold 0..1] [--dataset qa-v1] [--allow-remote]
 //        [--adapter-sha256 <hex>]   (HUP-S9.4: the endpoint serves this LoRA; stamped into the
 //                                    scorecard so the app's eval gate can bind it to the file)
-//        [--memory-socket <path> [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5]
+//        [--memory-socket <path> [--retrieval-mode tool|passages]
+//         [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5]   (passages mode only)
 //         [--corpus-dir <dir>] [--corpus-digest <hex>]]  (HUP-S3.1, g2-knowledge: answer from the
-//                                    bundled knowledge corpus.
-//                                    Each question first runs `memory.search {passages: true}` per
-//                                    tenant on a mem-mcp daemon whose store holds the imported
-//                                    corpus; the passages and their citations go before the
-//                                    question. With --corpus-dir (the imported corpus), a citation
-//                                    also counts as valid when it resolves to a bundled node; the
-//                                    digest is read from its manifest. Result file
-//                                    <date>-qa-rag-<model>.json.)
+//                                    bundled knowledge corpus held by a mem-mcp daemon whose store
+//                                    imported it.
+//                                    tool (default, what the app does): the model is offered the
+//                                    app's memory_search tool, picks query and tenant, and the
+//                                    result is rendered with the app's formatter
+//                                    (src/agent/eval/toolLoop.ts). Result <date>-qa-tool-<model>.json.
+//                                    passages: each question first runs `memory.search {passages:
+//                                    true}` per tenant and the passages go before the question.
+//                                    Result <date>-qa-rag-<model>.json.
+//                                    Both record the node ids each search returned and resolve every
+//                                    answer citation to them (scorecard citationNodeRate). With
+//                                    --corpus-dir (the imported corpus), a citation also counts as
+//                                    valid when it resolves to a bundled node; the digest is read
+//                                    from its manifest.)
 //
 // Asks every question in src/agent/eval/qa-v1.json (or, HUP-S7.7, the set named by --dataset, e.g.
 // qa-literacy-v1) of a LIVE OpenAI-compatible /chat/completions endpoint (llama-server, or a user
@@ -36,7 +43,8 @@ import { fileURLToPath } from "node:url";
 import { parseQaCliArgs, qaDatasetFiles, qaResultFileName } from "../src/agent/eval/qaCliArgs.ts";
 import { QA_SYSTEM_PROMPT, findMissingCitations, parseQaDataset, runQaEval } from "../src/agent/eval/qa.ts";
 import { buildCorpusCitationIndex } from "../src/agent/eval/corpusCitations.ts";
-import { buildRetrievalContext, parsePassages, parseSearchResponse, retrievalUserMessage, searchRequestLine } from "../src/agent/eval/retrieval.ts";
+import { buildRetrievalContext, parsePassages, parseSearchResponse, retrievalUserMessage, searchRequestLine, selectRetrievalPassages } from "../src/agent/eval/retrieval.ts";
+import { QA_TOOL_MAX_TURNS, answerWithMemoryTool } from "../src/agent/eval/toolLoop.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REQUEST_TIMEOUT_MS = 180_000;
@@ -44,8 +52,8 @@ const SEARCH_TIMEOUT_MS = 60_000;
 /** Most characters of retrieved passage text put before a question (about 1,500 tokens). */
 const RETRIEVAL_MAX_CHARS = 6000;
 
-/** One `memory.search {passages: true}` over the daemon's local socket; resolves to the tool text. */
-function searchOnce(socket, id, tenant, query, k) {
+/** One `memory.search` over the daemon's local socket; resolves to the tool text. */
+function searchOnce(socket, id, tenant, query, k, passages = true) {
   return new Promise((resolvePromise, reject) => {
     const conn = createConnection(socket);
     let buf = "";
@@ -54,7 +62,7 @@ function searchOnce(socket, id, tenant, query, k) {
       reject(new Error(`memory daemon at ${socket} did not answer within ${SEARCH_TIMEOUT_MS / 1000} s`));
     }, SEARCH_TIMEOUT_MS);
     conn.setEncoding("utf8");
-    conn.on("connect", () => conn.write(searchRequestLine(id, tenant, query, k)));
+    conn.on("connect", () => conn.write(searchRequestLine(id, tenant, query, k, passages)));
     conn.on("data", (chunk) => {
       buf += chunk;
       const nl = buf.indexOf("\n");
@@ -74,51 +82,72 @@ function searchOnce(socket, id, tenant, query, k) {
   });
 }
 
-/** Retrieve passages for `question` from every configured tenant and build the user turn. */
+/** Retrieve passages for `question` from every configured tenant: the user turn and what it showed. */
 async function retrievedUserTurn(retrieval, question, nextId) {
   const perTenant = [];
   for (const tenant of retrieval.tenants) {
     perTenant.push(parsePassages(await searchOnce(retrieval.socket, nextId(), tenant, question, retrieval.k)));
   }
-  return retrievalUserMessage(question, buildRetrievalContext(perTenant, RETRIEVAL_MAX_CHARS));
+  const shown = selectRetrievalPassages(perTenant, RETRIEVAL_MAX_CHARS);
+  return { user: retrievalUserMessage(question, buildRetrievalContext(perTenant, RETRIEVAL_MAX_CHARS)), retrieved: shown.map((p) => (p.cite ? { id: p.id, cite: p.cite } : { id: p.id })) };
 }
 
 async function loadJson(rel) {
   return JSON.parse(await readFile(join(ROOT, rel), "utf8"));
 }
 
+/** One /chat/completions request; resolves to choices[0].message. `tools` turns on tool calling. */
+async function chat(args, apiKey, messages, tools) {
+  const headers = { "content-type": "application/json" };
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  const body = { model: args.model, messages, temperature: 0 };
+  if (tools) body.tools = tools;
+  let res;
+  try {
+    res = await fetch(`${args.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const cause = e?.cause?.code || e?.cause?.message || e?.message || String(e);
+    throw new Error(`cannot reach ${args.baseUrl}/chat/completions (${cause})`);
+  }
+  if (!res.ok) {
+    const text = (await res.text()).slice(0, 300);
+    throw new Error(`HTTP ${res.status} from ${args.baseUrl}/chat/completions: ${text}`);
+  }
+  const json = await res.json();
+  const message = json?.choices?.[0]?.message;
+  if (!message || typeof message !== "object") throw new Error("response has no choices[0].message");
+  return message;
+}
+
 function makeAsk(args, apiKey) {
   let rpcId = 0;
   const nextId = () => ++rpcId;
-  return async (question) => {
-    const headers = { "content-type": "application/json" };
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-    // HUP-S3.1: with --memory-socket the model answers from retrieved corpus passages.
-    const user = args.retrieval ? await retrievedUserTurn(args.retrieval, question, nextId) : question;
-    const messages = [
-      { role: "system", content: QA_SYSTEM_PROMPT },
-      { role: "user", content: user },
-    ];
-    let res;
-    try {
-      res = await fetch(`${args.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ model: args.model, messages, temperature: 0 }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  const r = args.retrieval;
+  if (r?.mode === "tool") {
+    // g2-knowledge (b): the app's own path. The model calls memory_search; the daemon answers.
+    return async (question) => {
+      const out = await answerWithMemoryTool(QA_SYSTEM_PROMPT, question, {
+        complete: (messages, tools) => chat(args, apiKey, messages, tools),
+        search: (tenant, query, k, passages) => searchOnce(r.socket, nextId(), tenant, query, k, passages),
       });
-    } catch (e) {
-      const cause = e?.cause?.code || e?.cause?.message || e?.message || String(e);
-      throw new Error(`cannot reach ${args.baseUrl}/chat/completions (${cause})`);
-    }
-    if (!res.ok) {
-      const body = (await res.text()).slice(0, 300);
-      throw new Error(`HTTP ${res.status} from ${args.baseUrl}/chat/completions: ${body}`);
-    }
-    const json = await res.json();
-    const content = json?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") throw new Error("response has no choices[0].message.content string");
-    return { text: content };
+      if (out.turnLimit) console.error(`  (no answer within ${QA_TOOL_MAX_TURNS} model requests)`);
+      return { text: out.text, retrieved: out.retrieved, toolCalls: out.calls };
+    };
+  }
+  return async (question) => {
+    // HUP-S3.1: in passages mode the model answers from passages retrieved before the question.
+    const turn = r ? await retrievedUserTurn(r, question, nextId) : { user: question };
+    const message = await chat(args, apiKey, [
+      { role: "system", content: QA_SYSTEM_PROMPT },
+      { role: "user", content: turn.user },
+    ]);
+    if (typeof message.content !== "string") throw new Error("response has no choices[0].message.content string");
+    return turn.retrieved ? { text: message.content, retrieved: turn.retrieved } : { text: message.content };
   };
 }
 
@@ -149,7 +178,11 @@ async function main() {
   }
   console.error(
     `eval-qa: ${ds.version} (${ds.items.length}) → ${args.model} @ ${args.baseUrl}${args.allowRemote ? " (remote allowed)" : ""}` +
-      (args.retrieval ? ` · retrieval ${args.retrieval.tenants.join("+")} k=${args.retrieval.k} via ${args.retrieval.socket}` : " · closed-book"),
+      (args.retrieval
+        ? args.retrieval.mode === "tool"
+          ? ` · memory_search tool (k=${args.retrieval.k}, ${QA_TOOL_MAX_TURNS} turns) via ${args.retrieval.socket}`
+          : ` · retrieval ${args.retrieval.tenants.join("+")} k=${args.retrieval.k} via ${args.retrieval.socket}`
+        : " · closed-book"),
   );
 
   // HUP-S3.1: the bundled corpus the answers may cite (retrieval runs with --corpus-dir).
@@ -186,13 +219,16 @@ async function main() {
   const { scorecard, items } = out;
   if (args.adapterSha256) scorecard.adapterSha256 = args.adapterSha256;
   if (args.retrieval) {
-    scorecard.retrieval = { mode: "memory.search passages", tenants: args.retrieval.tenants, k: args.retrieval.k };
+    scorecard.retrieval =
+      args.retrieval.mode === "tool"
+        ? { mode: "memory_search tool", tenants: args.retrieval.tenants, k: args.retrieval.k, maxTurns: QA_TOOL_MAX_TURNS }
+        : { mode: "memory.search passages", tenants: args.retrieval.tenants, k: args.retrieval.k };
     if (args.retrieval.corpusDigest) scorecard.retrieval.corpusDigest = args.retrieval.corpusDigest;
     if (corpus) scorecard.retrieval.citationsResolveToCorpus = true;
   }
   const outDir = resolve(ROOT, args.outDir);
   await mkdir(outDir, { recursive: true });
-  const file = join(outDir, qaResultFileName(scorecard.startedAt, args.model, ds.version, args.adapterSha256, Boolean(args.retrieval)));
+  const file = join(outDir, qaResultFileName(scorecard.startedAt, args.model, ds.version, args.adapterSha256, args.retrieval?.mode));
   await writeFile(file, JSON.stringify({ scorecard, items }, null, 2) + "\n");
   const pct = (r) => (r === null ? "n/a" : (r * 100).toFixed(1) + "%");
   console.log(
@@ -200,7 +236,8 @@ async function main() {
       `model ${scorecard.model}${scorecard.tier ? " (" + scorecard.tier + ")" : ""} · ${scorecard.datasetVersion} · n=${scorecard.n}`,
       `pass ${pct(scorecard.passRate)} · key points ${pct(scorecard.keyPointCoverage)} · citation hit ${pct(scorecard.citationHitRate)} · ` +
         `citation validity ${pct(scorecard.citationValidity)} · abstention ${pct(scorecard.abstentionRate)} · ` +
-        `false abstention ${pct(scorecard.falseAbstentionRate)}`,
+        `false abstention ${pct(scorecard.falseAbstentionRate)}` +
+        (scorecard.citationNodeRate === undefined ? "" : ` · citations to nodes ${pct(scorecard.citationNodeRate)}`),
       `failures (${scorecard.failures.length}): ${scorecard.failures.join(", ") || "none"}`,
       `wrote ${file}`,
     ].join("\n"),

@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeDigest, listFiles, memMcpSupportsImport, stageInto, tenantFile, verifyCorpus } from "./stage-knowledge-corpus.mjs";
+import { checkEmbedder, computeDigest, listFiles, memMcpSupportsImport, stageInto, tenantFile, verifyCorpus } from "./stage-knowledge-corpus.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(here, "stage-knowledge-corpus.mjs");
@@ -43,6 +43,30 @@ function reseal(dir, edit) {
   const text = JSON.stringify(m, null, 2) + "\n";
   m.bundle_digest = computeDigest(text);
   fs.writeFileSync(p, JSON.stringify(m, null, 2) + "\n");
+}
+
+/** A BGE model directory with the three files the daemon loads (tiny stand-ins, real hashes). */
+function fakeBge(dir = path.join(tmp, "bge"), { dim = 4, weights = "weights-v1" } = {}) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ hidden_size: dim }));
+  fs.writeFileSync(path.join(dir, "tokenizer.json"), "{}");
+  fs.writeFileSync(path.join(dir, "model.safetensors"), weights);
+  return { dir, sha: createHash("sha256").update(weights).digest("hex") };
+}
+
+/** Give every tenant vectors for `bge` (dim + weights hash) and re-seal the manifest. */
+function embedAll(dir, bge, dim = 4) {
+  const m = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+  const entries = {};
+  for (const t of m.tenants) {
+    const buf = Buffer.alloc(t.nodes * dim * 2, 0x3c);
+    const file = `tenants/${t.tenant}.vectors.f16`;
+    fs.writeFileSync(path.join(dir, file), buf);
+    entries[t.tenant] = { file, sha256: createHash("sha256").update(buf).digest("hex"), encoding: "f16le", model: "bge-base-en-v1.5", dim, weights_sha256: bge.sha };
+  }
+  reseal(dir, (mm) => {
+    for (const t of mm.tenants) t.vectors = entries[t.tenant];
+  });
 }
 
 function run(...args) {
@@ -173,6 +197,39 @@ describe("precomputed vectors (format 2, optional)", () => {
   });
 });
 
+describe("the bundled BGE embedder is a hard dependency of the corpus (US-3.1 offline)", () => {
+  it("accepts a corpus whose every tenant carries vectors made with the bundled weights", () => {
+    const bge = fakeBge();
+    embedAll(corpus, bge);
+    const { manifest } = verifyCorpus(corpus);
+    expect(checkEmbedder(manifest, bge.dir)).toEqual({ model: "bge-base-en-v1.5", dim: 4, weightsSha256: bge.sha, embeddedNodes: manifest.tenants.reduce((n, t) => n + t.nodes, 0) });
+  });
+
+  it("refuses when the BGE model is missing or partial: the first-run import would skip as not-semantic", () => {
+    const bge = fakeBge();
+    embedAll(corpus, bge);
+    const { manifest } = verifyCorpus(corpus);
+    expect(() => checkEmbedder(manifest, path.join(tmp, "nowhere"))).toThrow(/not-semantic/);
+    fs.rmSync(path.join(bge.dir, "tokenizer.json"));
+    expect(() => checkEmbedder(manifest, bge.dir)).toThrow(/tokenizer\.json/);
+  });
+
+  it("refuses vectors made with other weights or another dimension: the importer would ignore them", () => {
+    embedAll(corpus, fakeBge(path.join(tmp, "old"), { weights: "weights-v0" }));
+    const { manifest } = verifyCorpus(corpus);
+    expect(() => checkEmbedder(manifest, fakeBge().dir)).toThrow(/other model weights/);
+    const wide = fakeBge(path.join(tmp, "wide"), { dim: 8, weights: "weights-v0" });
+    expect(() => checkEmbedder(manifest, wide.dir)).toThrow(/dimension/);
+  });
+
+  it("refuses a tenant without vectors unless unembedded staging is asked for, and says what it costs", () => {
+    const bge = fakeBge();
+    const { manifest } = verifyCorpus(corpus);
+    expect(() => checkEmbedder(manifest, bge.dir)).toThrow(/no precomputed vectors.*embed \d+ nodes on the member's CPU/);
+    expect(checkEmbedder(manifest, bge.dir, { allowUnembedded: true }).embeddedNodes).toBe(0);
+  });
+});
+
 describe("memMcpSupportsImport", () => {
   it("detects the import-corpus usage string in a binary", () => {
     const yes = path.join(tmp, "new");
@@ -201,10 +258,25 @@ describe("stageInto", () => {
 describe("CLI", () => {
   it("stages a directory and exits 0", () => {
     const dest = path.join(tmp, "dest");
-    const r = run(corpus, "--dest", dest);
+    const bge = fakeBge();
+    embedAll(corpus, bge);
+    const r = run(corpus, "--dest", dest, "--bge-dir", bge.dir);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout).toContain(FIXTURE_DIGEST);
+    expect(r.stdout).toMatch(/staged knowledge corpus [0-9a-f]{64}/);
+    expect(r.stdout).toContain("vectors for every node match the bundled bge-base-en-v1.5");
     expect(fs.existsSync(path.join(dest, "manifest.json"))).toBe(true);
+  });
+
+  it("refuses to stage without --bge-dir: the corpus is useless without the bundled embedder", () => {
+    const r = run(corpus, "--dest", path.join(tmp, "dest"));
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/--bge-dir/);
+  });
+
+  it("stages an unembedded corpus only when asked, and warns about the CPU cost", () => {
+    const r = run(corpus, "--dest", path.join(tmp, "dest"), "--bge-dir", fakeBge().dir, "--allow-unembedded");
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/warning: .*embed/);
   });
 
   it("stages a .tar.gz release asset with a top-level directory", () => {
@@ -215,7 +287,7 @@ describe("CLI", () => {
     const t = spawnSync("tar", ["-czf", tgz, "-C", parent, "knowledge-corpus"]);
     expect(t.status).toBe(0);
     const dest = path.join(tmp, "dest");
-    const r = run(tgz, "--dest", dest);
+    const r = run(tgz, "--dest", dest, "--bge-dir", fakeBge().dir, "--allow-unembedded");
     expect(r.status, r.stderr).toBe(0);
     expect(verifyCorpus(dest).manifest.bundle_digest).toBe(FIXTURE_DIGEST);
   });
@@ -225,7 +297,7 @@ describe("CLI", () => {
     const dest = path.join(tmp, "dest");
     fs.mkdirSync(dest);
     fs.writeFileSync(path.join(dest, "README.md"), "kept");
-    const r = run(corpus, "--dest", dest);
+    const r = run(corpus, "--dest", dest, "--bge-dir", fakeBge().dir, "--allow-unembedded");
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/knowledge corpus refused/);
     expect(fs.readdirSync(dest)).toEqual(["README.md"]);
@@ -234,7 +306,7 @@ describe("CLI", () => {
   it("refuses a mem-mcp that predates import-corpus", () => {
     const old = path.join(tmp, "mem-mcp-old");
     fs.writeFileSync(old, "usage: mem-mcp <store-path> <sock-path>");
-    const r = run(corpus, "--dest", path.join(tmp, "dest"), "--mem-mcp", old);
+    const r = run(corpus, "--dest", path.join(tmp, "dest"), "--mem-mcp", old, "--bge-dir", fakeBge().dir, "--allow-unembedded");
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/predates/);
   });
@@ -243,5 +315,6 @@ describe("CLI", () => {
     expect(run().status).toBe(2);
     expect(run(corpus, "--dest").status).toBe(2);
     expect(run(corpus, "--surprise").status).toBe(2);
+    expect(run(corpus, "--bge-dir").status).toBe(2);
   });
 });

@@ -94,7 +94,10 @@ federation checkouts (format `citrate-corpus/2`; spec `corpus/hermes-knowledge.t
 ```bash
 cd ../citrate-memories
 scripts/fetch-corpus-refs.sh ..                 # Solady + Foundry book at pinned commits
-scripts/build-corpus.sh .. /tmp/knowledge-corpus   # deterministic; verifies before exit
+# EMBED_BGE_DIR = the exact BGE files the release bundles (extract bge-base-en-v1.5.tar.gz):
+# every node is embedded once here, so members do not embed it on their CPU.
+EMBED_BGE_DIR=/tmp/bge-base-en-v1.5 \
+  scripts/build-corpus.sh .. /tmp/knowledge-corpus   # deterministic; verifies before exit
 tar -czf /tmp/knowledge-corpus.tar.gz -C /tmp knowledge-corpus
 gh release upload runtime-deps /tmp/knowledge-corpus.tar.gz --clobber -R CitrateNetwork/citrate-core
 ```
@@ -107,8 +110,16 @@ the same way:
 
 ```bash
 node scripts/stage-knowledge-corpus.mjs /tmp/knowledge-corpus \
+  --bge-dir src-tauri/models/bge-base-en-v1.5 \
   --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
 ```
+
+The corpus depends on the bundled BGE model, so `--bge-dir` is required. The stager
+refuses a missing or partial model (the first-run import would be skipped as
+`not-semantic`) and any tenant whose vectors were not made with exactly the bundled
+`model.safetensors` (the importer would ignore them and embed every node on the
+member's CPU, about two hours for the full corpus on an Apple M2 Max). A dev build may
+pass `--allow-unembedded`; the stager then warns how many nodes members will embed.
 
 Without a staged corpus the app still builds (the committed
 `src-tauri/knowledge-corpus/README.md` keeps the resource glob valid) and reports

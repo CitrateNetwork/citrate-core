@@ -14,6 +14,37 @@ import type { MemoryResult } from "../bridge/domains";
 export const KNOWLEDGE_TENANTS = ["citrate-docs", "methodology", "refs", "skills"] as const;
 export type KnowledgeTenant = (typeof KNOWLEDGE_TENANTS)[number];
 
+/**
+ * The memory_search tool the model is offered. The agent's tool list (harness AGENT_TOOLS) holds
+ * this object, and the Citrate QA eval (src/agent/eval/toolLoop.ts) offers the same one, so the
+ * eval measures the call the app makes.
+ */
+export const MEMORY_SEARCH_TOOL = {
+  type: "function",
+  function: {
+    name: "memory_search",
+    description:
+      "Semantic search over the member's memory graph, including the bundled Citrate knowledge (docs, papers, Agentile, Solidity references, reviewed skills). Use for any Citrate protocol/how-to/docs question. Knowledge results come with passages and a citation (<repo>:<path>#<anchor>) to quote. Returns real hits or an empty result.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "what to search for" },
+        tenant: {
+          type: "string",
+          description:
+            "graph to search: 'citrate-docs' (Citrate docs and papers), 'methodology' (Agentile), 'refs' (OpenZeppelin, forge-std and other Solidity references), 'skills' (reviewed skills) or 'personal' (the member's own notes). Defaults to citrate-docs.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+} as const;
+
+/** Hits a memory_search call asks for: 5 passages on a knowledge tenant, 6 titles on personal notes. */
+export function memorySearchBudget(passages: boolean): number {
+  return passages ? 5 : 6;
+}
+
 /** Which tenant a memory_search call reads, and whether it asks for passages. */
 export function memorySearchTarget(tenant: unknown): { tenant: string; passages: boolean } {
   if (tenant === "personal") return { tenant: "personal", passages: false };

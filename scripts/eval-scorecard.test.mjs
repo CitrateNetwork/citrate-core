@@ -121,7 +121,7 @@ describe("renderScorecardMarkdown", () => {
 
   it("renders the QA row, with n/a for a null rate", () => {
     expect(md()).toContain(
-      "| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 | 75.0% | 81.3% | 70.0% | n/a | 100.0% | 5.0% | 1 |",
+      "| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 | 75.0% | 81.3% | 70.0% | n/a | 100.0% | 5.0% | n/a | 1 |",
     );
   });
 
@@ -134,6 +134,26 @@ describe("renderScorecardMarkdown", () => {
       expect(md()).toContain("| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 |");
     } finally {
       fs.rmSync(path.join(tmp, "results", "2026-10-01-qa-rag-m-small.json"));
+    }
+  });
+
+  it("marks a run that answered through the app's memory_search tool, with its node-citation rate (g2-knowledge)", () => {
+    const tool = {
+      ...QA,
+      scorecard: {
+        ...QA.scorecard,
+        citationNodeRate: 0.875,
+        retrieval: { mode: "memory_search tool", tenants: ["citrate-docs", "methodology", "refs", "skills"], k: 5, maxTurns: 6 },
+      },
+    };
+    fs.writeFileSync(path.join(tmp, "results", "2026-10-01-qa-tool-m-small.json"), JSON.stringify(tool));
+    try {
+      expect(md()).toContain("| 2026-10-01-qa-tool-m-small.json | m-small | T0 | qa-v1 + corpus (memory_search tool, k=5) | 40 |");
+      expect(md()).toMatch(/\| 2026-10-01-qa-tool-m-small\.json \|.*\| 87\.5% \| 1 \|$/m);
+      // A run without retrieval shows n/a in the node column.
+      expect(md()).toContain("| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 | 75.0% | 81.3% | 70.0% | n/a | 100.0% | 5.0% | n/a | 1 |");
+    } finally {
+      fs.rmSync(path.join(tmp, "results", "2026-10-01-qa-tool-m-small.json"));
     }
   });
 

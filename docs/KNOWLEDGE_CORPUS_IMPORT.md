@@ -1,9 +1,9 @@
 ---
 created: 2026-10-01
 updated: 2026-10-01
-branch: hup/n5-corpus-rest
+branch: hup/m2-knowledge
 author: Larry Klosowski + Claude Opus 5.5
-status: implemented; staging wired; release upload pending (see "Not done")
+status: implemented; staging wired and bound to the bundled BGE model; release upload pending (see "Not done")
 wp: HUP-S3.1
 planset: .agentile/planset/2026-09-30-hermes-upskill
 ---
@@ -59,6 +59,18 @@ into `src-tauri/knowledge-corpus/` next to the committed README. The
 `tauri.bundle-*.conf.json` and `tauri.local-run.conf.json` overlays carry the
 `knowledge-corpus/**/*` resource. Procedure: `docs/RELEASE.md` section 3.
 
+## Offline needs the bundled BGE model
+
+The import embeds with the store's embedder, and the corpus is useful only with the
+bundled BGE model (`models/bge-base-en-v1.5/`: `config.json`, `tokenizer.json`,
+`model.safetensors`, staged by `release.yml` from the pinned `bge-base-en-v1.5.tar.gz`).
+Without it the import is skipped as `not-semantic`, and Storage says so plainly ("not
+imported, this build has no bundled search model"). The release stager makes the
+dependency explicit: `--bge-dir` is required, it refuses a missing or partial model, and it
+refuses any tenant whose precomputed vectors were not made with exactly the bundled weights
+(model id, dimension and `model.safetensors` sha256), because the importer would ignore those
+vectors and every member would embed the whole corpus on their own CPU.
+
 ## Precomputed vectors and first-run time
 
 Embedding the corpus on a member's CPU is slow: 1.85 nodes per second measured on
@@ -75,8 +87,17 @@ Knowledge tenants are `citrate-docs`, `methodology`, `refs` and `skills`. The
 in-app `memory_search` tool (`src/agent/knowledgeSearch.ts`) asks the daemon for
 passages on those tenants (`memory.search` with `passages: true`), so the model
 gets each passage's text and the `<repo>:<path>#<anchor>` citation to quote;
-personal notes stay title-only. The Citrate QA eval runs the same search with
-`--memory-socket` (`src/agent/eval/retrieval.ts`, `scripts/eval-qa.mjs`).
+personal notes stay title-only. The `memory_search` tool object lives in
+`knowledgeSearch.ts` (`MEMORY_SEARCH_TOOL`) and the agent's tool list uses it.
+
+The Citrate QA eval measures this path (gate g2-knowledge). With `--memory-socket` and the
+default `--retrieval-mode tool`, `scripts/eval-qa.mjs` offers the model the same
+`MEMORY_SEARCH_TOOL`, runs each call on a `mem-mcp` daemon whose store imported the corpus,
+renders the result with `formatMemoryHits`, and stops after the app's `AGENT_MAX_TURNS`
+(`src/agent/eval/toolLoop.ts`). Every search's node ids are recorded per item, and every
+citation in the answer is resolved to them: `citedNodes` per item and `citationNodeRate` in
+the scorecard (the share of answer citations that name a node the run retrieved from the
+imported graph). `--retrieval-mode passages` keeps the older retrieve-then-answer run.
 
 ## Safety
 

@@ -3,6 +3,7 @@
 // citrate-core: stage the Hermes knowledge corpus into the app bundle (HUP-S3.1)
 //
 //   node scripts/stage-knowledge-corpus.mjs <corpus-dir | knowledge-corpus.tar.gz>
+//        --bge-dir src-tauri/models/bge-base-en-v1.5 [--allow-unembedded]
 //        [--dest src-tauri/knowledge-corpus] [--mem-mcp <bundled mem-mcp binary>]
 //
 // The corpus is built in citrate-memories (`scripts/build-corpus.sh`, format citrate-corpus/2)
@@ -17,7 +18,13 @@
 //     mem_corpus::manifest::Manifest::compute_digest), every tenant file and the skills.lock
 //     match their manifest sha256;
 //   - with --mem-mcp, the bundled memory binary implements `import-corpus` (an older mem-mcp
-//     would take the arguments as a store path and never answer the import).
+//     would take the arguments as a store path and never answer the import);
+//   - the corpus depends on the bundled BGE embedder (--bge-dir, required). Without
+//     config.json, tokenizer.json and model.safetensors the first-run import is skipped as
+//     `not-semantic`, so the corpus would ship as dead weight. Every tenant must carry vectors made
+//     with exactly those weights (same sha256, model id and dimension): otherwise the importer
+//     ignores them and each member embeds about 21k nodes on their own CPU (hours). A dev build may
+//     stage an unembedded corpus with --allow-unembedded; it is warned, never silent.
 //
 // On success the destination keeps its README.md and receives the verified files; anything else
 // in it is replaced. The importer re-verifies everything on the member's machine; this gate
@@ -34,7 +41,15 @@ import { fileURLToPath } from "node:url";
 export const CORPUS_FORMAT = "citrate-corpus/2";
 export const KNOWLEDGE_TENANTS = ["citrate-docs", "skills", "refs", "methodology"];
 const USAGE =
-  "usage: node scripts/stage-knowledge-corpus.mjs <corpus-dir | corpus.tar.gz> [--dest <dir>] [--mem-mcp <binary>]";
+  "usage: node scripts/stage-knowledge-corpus.mjs <corpus-dir | corpus.tar.gz> --bge-dir <bundled bge model dir> " +
+  "[--allow-unembedded] [--dest <dir>] [--mem-mcp <binary>]";
+
+/** `Embedder::model_id` of the app's BGE embedder (citrate-memories mem-index DEFAULT_MODEL_ID). */
+export const APP_EMBED_MODEL = "bge-base-en-v1.5";
+/** Files the memory daemon loads from CITRATE_BGE_MODEL_DIR (mem-index transformer.rs). */
+export const BGE_FILES = ["config.json", "tokenizer.json", "model.safetensors"];
+/** Measured CPU embedding rate of a corpus build on an Apple M2 Max (2026-10-01), nodes per second. */
+const CPU_NODES_PER_SECOND = 3;
 
 const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 
@@ -126,6 +141,60 @@ function verifyVectors(dir, t) {
   return v.file;
 }
 
+/**
+ * Check the corpus against the BGE model the release bundles. Returns what the importer will reuse;
+ * throws when the import would be skipped (no or partial model) or the vectors would be ignored.
+ */
+export function checkEmbedder(manifest, bgeDir, { allowUnembedded = false } = {}) {
+  for (const f of BGE_FILES) {
+    let st;
+    try {
+      st = fs.lstatSync(path.join(bgeDir, f));
+    } catch {
+      st = null;
+    }
+    if (!st || !st.isFile() || st.size === 0) {
+      throw new Error(
+        `the bundled BGE model at ${bgeDir} has no ${f}; without it the first-run import is skipped as not-semantic, so the corpus would ship unused`,
+      );
+    }
+  }
+  let dim;
+  try {
+    dim = JSON.parse(fs.readFileSync(path.join(bgeDir, "config.json"), "utf8")).hidden_size;
+  } catch (e) {
+    throw new Error(`the bundled BGE config.json is not JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!Number.isInteger(dim) || dim < 1) throw new Error("the bundled BGE config.json has no hidden_size");
+  const weightsSha256 = sha256(fs.readFileSync(path.join(bgeDir, "model.safetensors")));
+  let embeddedNodes = 0;
+  const unembedded = [];
+  for (const t of manifest.tenants) {
+    const v = t.vectors;
+    if (v == null) {
+      unembedded.push(t);
+      continue;
+    }
+    if (v.model !== APP_EMBED_MODEL) throw new Error(`tenant ${t.tenant} vectors come from ${JSON.stringify(v.model)}, not the app's ${APP_EMBED_MODEL}`);
+    if (v.dim !== dim) throw new Error(`tenant ${t.tenant} vectors have dimension ${v.dim}; the bundled model has ${dim}`);
+    if (v.weights_sha256 !== weightsSha256) {
+      throw new Error(
+        `tenant ${t.tenant} vectors were made with other model weights (${v.weights_sha256.slice(0, 12)}, bundled ${weightsSha256.slice(0, 12)}); ` +
+          `the importer would ignore them and embed ${t.nodes} nodes on the member's CPU`,
+      );
+    }
+    embeddedNodes += t.nodes;
+  }
+  if (unembedded.length && !allowUnembedded) {
+    const n = unembedded.reduce((a, t) => a + t.nodes, 0);
+    throw new Error(
+      `${unembedded.map((t) => t.tenant).join(", ")}: no precomputed vectors; every member would embed ${n} nodes on the member's CPU ` +
+        `(about ${Math.ceil(n / CPU_NODES_PER_SECOND / 60)} minutes on an Apple M2 Max). Build the corpus with EMBED_BGE_DIR, or pass --allow-unembedded for a dev build`,
+    );
+  }
+  return { model: APP_EMBED_MODEL, dim, weightsSha256, embeddedNodes };
+}
+
 /** True when a mem-mcp binary carries the `import-corpus` subcommand (its usage string). */
 export function memMcpSupportsImport(binPath) {
   return fs.readFileSync(binPath).includes(Buffer.from("mem-mcp import-corpus <store-path> <corpus-dir>"));
@@ -144,20 +213,22 @@ export function stageInto(src, dest, files) {
 }
 
 function parseArgs(argv, root) {
-  const out = { dest: path.join(root, "src-tauri", "knowledge-corpus"), memMcp: undefined, input: undefined };
+  const out = { dest: path.join(root, "src-tauri", "knowledge-corpus"), memMcp: undefined, bgeDir: undefined, allowUnembedded: false, input: undefined };
+  const valueFlags = { "--dest": "dest", "--mem-mcp": "memMcp", "--bge-dir": "bgeDir" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--dest" || a === "--mem-mcp") {
+    if (a in valueFlags) {
       const v = argv[i + 1];
       if (v === undefined || v.startsWith("--")) throw new Error(`${a} needs a value\n${USAGE}`);
-      if (a === "--dest") out.dest = v;
-      else out.memMcp = v;
+      out[valueFlags[a]] = v;
       i++;
-    } else if (a.startsWith("--")) throw new Error(`unknown argument ${JSON.stringify(a)}\n${USAGE}`);
+    } else if (a === "--allow-unembedded") out.allowUnembedded = true;
+    else if (a.startsWith("--")) throw new Error(`unknown argument ${JSON.stringify(a)}\n${USAGE}`);
     else if (out.input === undefined) out.input = a;
     else throw new Error(`one corpus input only\n${USAGE}`);
   }
   if (!out.input) throw new Error(USAGE);
+  if (!out.bgeDir) throw new Error(`--bge-dir is required: the corpus imports only beside the bundled BGE model\n${USAGE}`);
   return out;
 }
 
@@ -187,12 +258,21 @@ function main() {
       src = findCorpusRoot(tmp);
     }
     const { manifest, files, bytes } = verifyCorpus(src);
+    const emb = checkEmbedder(manifest, path.resolve(args.bgeDir), { allowUnembedded: args.allowUnembedded });
     if (args.memMcp && !memMcpSupportsImport(args.memMcp)) {
       throw new Error(`${args.memMcp} predates \`mem-mcp import-corpus\`; stage a mem-mcp built from citrate-memories with mem-corpus`);
     }
     stageInto(src, path.resolve(args.dest), files);
     const tenants = manifest.tenants.map((t) => `${t.tenant} ${t.nodes} nodes`).join(", ");
     console.log(`staged knowledge corpus ${manifest.bundle_digest} (${files.length} files, ${bytes} bytes; ${tenants}) -> ${args.dest}`);
+    const total = manifest.tenants.reduce((n, t) => n + t.nodes, 0);
+    if (emb.embeddedNodes === total) {
+      console.log(`vectors for every node match the bundled ${emb.model} (dim ${emb.dim}, weights ${emb.weightsSha256.slice(0, 12)})`);
+    } else {
+      console.error(
+        `warning: ${total - emb.embeddedNodes} of ${total} nodes have no precomputed vectors; the first-run import will embed them on the member's CPU`,
+      );
+    }
   } catch (e) {
     console.error(`knowledge corpus refused: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
