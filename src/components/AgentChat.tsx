@@ -181,6 +181,20 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
               .map((c) => (
                 <FileChangeCard key={c.session + ":" + c.seq} card={c} onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)} />
               ))}
+            {/* HUP-S3.3: a saved brief's workflow runs from its card (sidecar loop; its checks decide). */}
+            {m.brief && (
+              <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  data-testid="brief-run-workflow"
+                  disabled={chatBusy}
+                  onClick={() => void store.runBriefWorkflow(m.brief!)}
+                  title="Run this brief's workflow; only each step's checks decide the result"
+                >
+                  Run {m.brief.workflow}
+                </button>
+              </span>
+            )}
             {m.chips && m.chips.length > 0 && (
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
                 {m.chips.map((c, i) => {

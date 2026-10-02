@@ -5,8 +5,11 @@
 // (runtime agent-loop `personas` + `workflows`, served at /personas, /personas/check and
 // /workflows through core's bearer-authed control client). Their names are placeholders pending
 // owner sign-off, and the picker says so next to each name. "Hermes (default voice)" is the
-// default and changes nothing. A persona shapes tone and wording only: it never grants a tool or
-// changes an approval, a gate or the signing ceremony.
+// default and changes nothing. A persona shapes tone and wording; in the sidecar loop its skill
+// allowlist decides which skills are offered and its tool emphasis keeps its tools in view. It
+// never grants a tool or changes an approval, a gate or the signing ceremony. "Read replies aloud"
+// (HUP-S3.7, off by default) speaks answers with the persona's voice through the system's speech
+// engine. Track workflows run from the chat with `/run <workflow>`.
 //
 // Used in Settings (full) and at the end of onboarding (compact: the choice only).
 // =====================================================================
@@ -22,6 +25,7 @@ import {
   workflowsForTrack,
   type CustomPersonaForm,
 } from "../agent/personas";
+import { voiceLabel, type SpeechVoice } from "../agent/speech";
 
 /** The three sidecar calls the picker needs (bridge.agentHarness implements them). */
 export interface PersonaApi {
@@ -36,18 +40,28 @@ const EMPTY_FORM: CustomPersonaForm = { name: "", summary: "", voice: "", tone: 
 
 type Load = { state: "loading" } | { state: "ready" } | { state: "unavailable"; reason: string };
 
+/** How the persona's skill allowlist plays out on this install. */
+export function skillsLabel(p: HermesPersona): string {
+  const allow = Array.isArray(p.skills) ? p.skills : [];
+  if (allow.length === 0) return "Skills: all installed skills (no allowlist)";
+  if (!Array.isArray(p.skills_installed)) return `Skills: an allowlist of ${allow.length}`;
+  return `Skills: ${p.skills_installed.length} of ${allow.length} on its allowlist installed`;
+}
+
 function PersonaOption({
   p,
   checked,
   onPick,
   onRemove,
   compact,
+  voices,
 }: {
   p: HermesPersona | null;
   checked: boolean;
   onPick: () => void;
   onRemove?: () => void;
   compact?: boolean;
+  voices: SpeechVoice[];
 }) {
   const id = p ? p.id : "default";
   return (
@@ -65,7 +79,9 @@ function PersonaOption({
               <span style={note}>
                 Voice: {p.voice} Tone: {p.tone}
                 <br />
-                Default track: {p.default_track}, workflow {p.default_workflow}. Speech: {p.tts_voice ? `${p.tts_voice} (stored, not used by speech yet)` : "system voice"}.
+                Default track: {p.default_track}, workflow {p.default_workflow}. Read aloud voice: {voiceLabel(voices, p.tts_voice)}.
+                <br />
+                {skillsLabel(p)}
                 {p.tool_emphasis.length > 0 && (
                   <>
                     <br />
@@ -105,6 +121,9 @@ export function PersonaPicker({
   onAddCustom,
   onRemoveCustom,
   compact,
+  readAloud,
+  onReadAloud,
+  speechVoices,
 }: {
   api: PersonaApi;
   chosen: HermesPersona | null;
@@ -113,7 +132,13 @@ export function PersonaPicker({
   onAddCustom: (p: HermesPersona) => void;
   onRemoveCustom: (id: string) => void;
   compact?: boolean;
+  /** HUP-S3.7 — "Read replies aloud" (off by default); the switch shows only with `onReadAloud`. */
+  readAloud?: boolean;
+  onReadAloud?: (on: boolean) => void;
+  /** The voices this system's speech engine has (for the read-aloud voice label). */
+  speechVoices?: SpeechVoice[];
 }) {
+  const voices = Array.isArray(speechVoices) ? speechVoices : [];
   const [shipped, setShipped] = useState<HermesPersona[]>([]);
   const [workflows, setWorkflows] = useState<TrackWorkflow[]>([]);
   const [load, setLoad] = useState<Load>({ state: "loading" });
@@ -191,9 +216,9 @@ export function PersonaPicker({
         </span>
       )}
       <div>
-        <PersonaOption p={null} checked={!chosen} onPick={() => onChoose(null)} compact={compact} />
+        <PersonaOption p={null} checked={!chosen} onPick={() => onChoose(null)} compact={compact} voices={voices} />
         {shippedShown.map((p) => (
-          <PersonaOption key={p.id} p={p} checked={chosen?.id === p.id} onPick={() => onChoose(p)} compact={compact} />
+          <PersonaOption key={p.id} p={p} checked={chosen?.id === p.id} onPick={() => onChoose(p)} compact={compact} voices={voices} />
         ))}
         {customList.map((p) => (
           <PersonaOption
@@ -203,6 +228,7 @@ export function PersonaPicker({
             onPick={() => onChoose(p)}
             onRemove={compact ? undefined : () => onRemoveCustom(p.id)}
             compact={compact}
+            voices={voices}
           />
         ))}
       </div>
@@ -216,10 +242,21 @@ export function PersonaPicker({
             <span key={w.id} style={note}>
               <span className="mono">{w.id}</span>
               {w.is_default ? " (default)" : ""}: {w.summary} ({evidenceLabel(w.evidence)})
+              {w.unavailable ? `; not available here: ${w.unavailable}` : ""}
             </span>
           ))}
-          <span style={note}>Workflows are defined here; running them from chat is not available yet.</span>
+          <span style={note}>
+            Run one from the chat with <span className="mono">/run &lt;workflow&gt;</span>, or from a saved brief. Workflows run in the Hermes sidecar loop (its switch is in Settings); only each step&apos;s checks decide the result.
+          </span>
         </div>
+      )}
+
+      {!compact && onReadAloud && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: 6 }}>
+          <input type="checkbox" data-testid="persona-read-aloud" checked={!!readAloud} onChange={(e) => onReadAloud(e.target.checked)} />
+          Read replies aloud
+          <span style={note}>Uses this system&apos;s speech voices, on this device. Off by default.</span>
+        </label>
       )}
 
       {!compact && (
@@ -256,7 +293,7 @@ export function PersonaPicker({
                   ))}
                 </select>
               </Field>
-              <Field label="Speech voice id (optional; stored for later, not used by speech yet)">
+              <Field label="Speech voice id (optional; used by Read replies aloud when this system has that voice)">
                 <input className="input" data-testid="persona-custom-tts" value={form.tts_voice ?? ""} onChange={set("tts_voice")} />
               </Field>
               {formError && (

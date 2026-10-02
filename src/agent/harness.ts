@@ -15,6 +15,7 @@
 // a later wave. This module is the seam, not a mock of chain data.
 // =====================================================================
 
+import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
@@ -50,7 +51,17 @@ export interface ToolCallMeta {
 
 /** HUP-S7.6 — progress a provider reports beyond its status (the Activity monitor shows it). */
 /** HUP-S2.9 adds `file_change`: a sidecar file tool changed files under an undo checkpoint. */
-export type TurnActivityEvent = { kind: "step"; step: number } | { kind: "file_change"; change: FileChange };
+/** HUP-S3.3 adds `verifier`: one verifier's verdict on a workflow step attempt. */
+export type TurnActivityEvent =
+  | { kind: "step"; step: number }
+  | { kind: "file_change"; change: FileChange }
+  | { kind: "verifier"; step: string; name: string; passed: boolean; detail: string };
+
+/** HUP-S3.3 — what a track workflow run needs from its caller (the same callbacks as a turn). */
+export interface WorkflowRunOpts {
+  signal?: AbortSignal;
+  callbacks: SendOpts["callbacks"];
+}
 
 export interface SendOpts {
   messages: { role: string; content: string }[];
@@ -109,6 +120,8 @@ export interface ChatProvider {
   kind: string;
   label: string;
   send: (opts: SendOpts) => Promise<{ role: string; content: string }>;
+  /** HUP-S3.3 — run a track's catalog workflow (sidecar loop only; other providers omit it). */
+  runWorkflow?: (workflowId: string, opts: WorkflowRunOpts) => Promise<WorkflowRunView>;
 }
 
 export const AGENT_SYSTEM_PROMPT = [

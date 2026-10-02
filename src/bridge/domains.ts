@@ -1113,7 +1113,7 @@ export interface AgentHarnessDomain {
   /** HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar). Open a session on the LOCAL
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */
-  sessionOpen(systemPrompt: string, toolsJson: string): Promise<string>;
+  sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
   sessionSend(id: string, text: string): Promise<void>;
   /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
@@ -1179,8 +1179,25 @@ export interface AgentHarnessDomain {
   /** HUP-S3.3 — the sidecar validates a member-defined persona and renders its fragment. A refusal
    *  rejects with a message starting `PERSONA_REFUSED: `. */
   personaCheck(persona: CustomPersonaInput): Promise<HermesPersona>;
-  /** HUP-S3.3 — every track's workflow family (definitions; nothing runs). */
+  /** HUP-S3.3 — every track's workflow family, with `needs_tools` and, when this sidecar cannot
+   *  run one, `unavailable` (why). */
   workflows(): Promise<TrackWorkflow[]>;
+  /** HUP-S3.3 (US-3.3 AC2) — run a track's catalog workflow in a session by id. Rejects with a
+   *  message starting `WORKFLOW_REFUSED: ` (unknown workflow, or a tool the session lacks). Read
+   *  the run with `workflowStatus`. */
+  trackWorkflowRun(sessionId: string, workflowId: string): Promise<TrackWorkflowStart>;
+}
+
+/** HUP-S3.3 — the persona a sidecar session applies (skill allowlist + tool emphasis): a shipped
+ *  persona by id, or a member-defined one. */
+export type SessionPersonaChoice = { persona: string } | { customPersona: CustomPersonaInput };
+
+/** HUP-S3.3 — what `POST /sessions/:id/track_workflows` answers. */
+export interface TrackWorkflowStart {
+  run_id: string;
+  workflow_id: string;
+  track: string;
+  evidence: string;
 }
 
 // HUP-S3.3 + S3.7 — persona and track-workflow wire shapes. These mirror the sidecar's
@@ -1205,6 +1222,8 @@ export interface HermesPersona {
   /** True while the shipped name is a placeholder (the UI says so). */
   name_pending_sign_off: boolean;
   custom: boolean;
+  /** Allowlisted skills this sidecar has installed (absent for a custom persona's check). */
+  skills_installed?: string[];
 }
 export interface CustomPersonaInput {
   id: string;
@@ -1233,6 +1252,10 @@ export interface TrackWorkflow {
   /** "tool-report" (a tool's own report decides) or "answer-shape" (the answer's structure). */
   evidence: "tool-report" | "answer-shape" | string;
   tools: string[];
+  /** Tools a passing run must call. */
+  needs_tools?: string[];
+  /** Why this sidecar cannot run the workflow (e.g. the toolchain is off); null = it can. */
+  unavailable?: string | null;
   verifier_names: string[];
   steps: TrackWorkflowStep[];
 }

@@ -509,6 +509,9 @@ export interface AppState {
   hermesPersona: HermesPersona | null;
   /** HUP-S3.3 (US-3.3 AC3) — member-defined personas, each checked by the sidecar. Persisted. */
   customPersonas: HermesPersona[];
+  /** HUP-S3.7 — read Hermes's replies aloud with the persona's voice (the system speech engine).
+   *  Off by default. Persisted. */
+  hermesReadAloud: boolean;
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -783,6 +786,7 @@ export function freshState(pid: string): AppState {
     hermesBrief: null,
     hermesPersona: null,
     customPersonas: [],
+    hermesReadAloud: false,
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -928,7 +932,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "hermesPersona", "customPersonas", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {

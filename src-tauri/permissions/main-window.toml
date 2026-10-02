@@ -185,6 +185,7 @@ commands.allow = [
   "hermes_personas",
   "hermes_workflows",
   "hermes_persona_check",
+  "hermes_track_workflow_run",
   "hermes_bridge_pending",
   "hermes_resolve",
   "hermes_mcp_settings",

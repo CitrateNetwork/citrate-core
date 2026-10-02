@@ -145,6 +145,9 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async workflows() {
       throw new Error("track workflows need the Hermes sidecar in the desktop app");
     },
+    async trackWorkflowRun() {
+      throw new Error("WORKFLOW_REFUSED: track workflows run in the Hermes sidecar in the desktop app");
+    },
   };
 }
 
