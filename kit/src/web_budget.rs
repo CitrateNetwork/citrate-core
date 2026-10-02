@@ -580,7 +580,13 @@ impl BudgetGate {
             revoked_at_ms: None,
         };
         next.budgets.push(budget.clone());
-        persist(&self.path, key_ref(&g.mac_key), self.keyring.as_ref(), &next).map_err(|_| BudgetError::Persist)?;
+        persist(
+            &self.path,
+            key_ref(&g.mac_key),
+            self.keyring.as_ref(),
+            &next,
+        )
+        .map_err(|_| BudgetError::Persist)?;
         g.file = next;
         Ok(budget)
     }
@@ -619,7 +625,13 @@ impl BudgetGate {
         if g.health != StoreHealth::Ok {
             return Ok(());
         }
-        persist(&self.path, key_ref(&g.mac_key), self.keyring.as_ref(), &g.file).map_err(|_| BudgetError::Persist)
+        persist(
+            &self.path,
+            key_ref(&g.mac_key),
+            self.keyring.as_ref(),
+            &g.file,
+        )
+        .map_err(|_| BudgetError::Persist)
     }
 
     /// "Stop all autonomy" / `budget_revoke_all`: every unrevoked budget at once, under the lock.
@@ -647,7 +659,13 @@ impl BudgetGate {
         if g.health != StoreHealth::Ok {
             return Ok(n);
         }
-        persist(&self.path, key_ref(&g.mac_key), self.keyring.as_ref(), &g.file).map_err(|_| BudgetError::Persist)?;
+        persist(
+            &self.path,
+            key_ref(&g.mac_key),
+            self.keyring.as_ref(),
+            &g.file,
+        )
+        .map_err(|_| BudgetError::Persist)?;
         Ok(n)
     }
 
@@ -683,7 +701,13 @@ impl BudgetGate {
             },
             RecordStatus::Final,
         );
-        persist(&self.path, Some(key.as_slice()), self.keyring.as_ref(), &file).map_err(|_| BudgetError::Persist)?;
+        persist(
+            &self.path,
+            Some(key.as_slice()),
+            self.keyring.as_ref(),
+            &file,
+        )
+        .map_err(|_| BudgetError::Persist)?;
         g.file = file;
         g.mac_key = Some(key);
         g.health = StoreHealth::Ok;
@@ -894,7 +918,7 @@ impl GateGuard<'_> {
             self.gate.keyring.as_ref(),
             &next,
         )
-            .map_err(|_| FallThrough::WriteAheadFailed)?;
+        .map_err(|_| FallThrough::WriteAheadFailed)?;
         self.inner.file = next;
         Ok(rid)
     }
@@ -1229,7 +1253,9 @@ fn persist(
         Some(c) if !c.is_empty() => format!("{c},{mac_hex}"),
         _ => mac_hex.clone(),
     };
-    keyring.set(HEAD_ACCOUNT, both.as_bytes()).map_err(head_err)?;
+    keyring
+        .set(HEAD_ACCOUNT, both.as_bytes())
+        .map_err(head_err)?;
     let env = Envelope {
         v: FILE_VERSION,
         body,
