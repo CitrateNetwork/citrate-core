@@ -17,6 +17,8 @@
     ],
     "resources": [
       "llama/*",
+      "skills/**/*",
+      "skills-bundle/**/*",
       "models/bge-base-en-v1.5/*",
       "docs-corpus/**/*",
       "knowledge-corpus/**/*",

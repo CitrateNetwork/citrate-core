@@ -1341,6 +1341,15 @@ export interface AgentSkillsDomain {
   read(name: string): Promise<string>;
   /** Remove an authored skill (idempotent). */
   remove(name: string): Promise<void>;
+  /** HUP-S3.2: convert skills saved in the older flat-file format to SKILL.md, and say what happened. */
+  migrate(): Promise<SkillMigrationReport>;
+}
+/** HUP-S3.2: what converting older flat-file skills to SKILL.md did (skills_local.rs). */
+export interface SkillMigrationReport {
+  /** Slugs now saved as SKILL.md skills. */
+  converted: string[];
+  /** Old files left in place, each with the reason. */
+  failed: { file: string; reason: string }[];
 }
 
 // ── Social identity (Connections · social discovery). Privacy model: ADR-2026-08-30. ──

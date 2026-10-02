@@ -71,6 +71,23 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # ── HUP-S3.2: the reviewed third-party skills (src-tauri/skills-bundle/). Built from the
+      #    source checkouts with `node scripts/stage-skills-bundle.mjs build`, packed as
+      #    skills-bundle.tar.gz in the `runtime-deps` prerelease and pinned in
+      #    src-tauri/runtime-deps.sha256 like every other asset. The stager then refuses an asset
+      #    that does not match this repo's skills.lock file for file (no extra file, no script,
+      #    no symlink), so only reviewed, pinned skills ship.
+      - name: Stage reviewed third-party skills (skills.lock)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/skills-bundle-dl"
+          rm -rf "$DL" && mkdir -p "$DL"
+          gh release download runtime-deps -p skills-bundle.tar.gz -D "$DL" --clobber
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz
+          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+
       # ── Stage the runtime artifacts the bundle needs but git does not carry:
       #    the three sidecars (target-triple suffixed), the llama runtime dylibs,
       #    and the Gemma model. Pulled from the `runtime-deps` prerelease so a

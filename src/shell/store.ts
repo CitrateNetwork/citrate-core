@@ -42,7 +42,7 @@ import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../age
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
-import { validateNewSkill, runPrompt } from "../agent/userSkills";
+import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
@@ -505,7 +505,6 @@ export class Store {
   private snap: AppState;
   private cid = 0;
   private mid = 0;
-  private uskSeq = 0;
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
@@ -587,6 +586,9 @@ export class Store {
     // Tauri build this reads the real /userinfo-derived status (silent if signed
     // out); in web-dev it reads the sim persona. Honest no-op on failure.
     void this.refreshAuth();
+    // HUP-S3.2: the member's saved skills are SKILL.md files the sidecar also loads; move any
+    // older-format skills there once, then list them.
+    void this.syncLocalSkills();
     // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
     // the default id is configured (key sealed in the OS keyring), else the honest
     // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
@@ -2645,6 +2647,7 @@ export class Store {
           try {
             const skill = await bridge.agentSkills.write(name, description, instructions, before !== "");
             result = `Saved the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+            void this.refreshLocalSkills();
           } catch (e) {
             result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
           }
@@ -2653,6 +2656,7 @@ export class Store {
         try {
           const skill = await bridge.agentSkills.write(name, description, instructions, false);
           result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
+          void this.refreshLocalSkills();
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (!msg.startsWith("SKILL_EXISTS")) {
@@ -2680,6 +2684,7 @@ export class Store {
               try {
                 const skill = await bridge.agentSkills.write(name, description, instructions, true);
                 result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+                void this.refreshLocalSkills();
               } catch (e2) {
                 result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
               }
@@ -2836,42 +2841,88 @@ export class Store {
 
   // ---------- Hermes P5 — user skills (prompt-skills) ----------
   /**
-   * Add a member-authored prompt-skill (validated + normalized by the pure core).
-   * Persists in local state (PERSIST_KEYS) like the journal — no chain, no key. On a
-   * validation failure it toasts the honest reason and adds nothing (Rule 1).
-   * Returns whether it was added, so a form can clear itself only on success.
+   * HUP-S3.2 (US-3.2 AC2): one format, one loader. Convert skills saved in older formats (flat
+   * files, and the prompt-skills earlier builds kept in app state) to SKILL.md files, then read the
+   * member's skills from those files. Whatever cannot move stays where it was and the member is
+   * told why. Called on launch and after any change.
    */
-  addUserSkill(name: string, instruction: string, description = ""): boolean {
-    const r = validateNewSkill(name, instruction, description, this.state.userSkills);
+  async syncLocalSkills(): Promise<void> {
+    const notes: string[] = [];
+    const report = await bridge.agentSkills.migrate().catch(() => null);
+    if (report && report.failed.length) {
+      notes.push(...report.failed.map((f) => `${f.file}: ${f.reason}`));
+    }
+    const legacy = this.state.userSkills;
+    if (legacy.length) {
+      const r = await migrateLegacyUserSkills(legacy, bridge.agentSkills);
+      const kept = new Set(r.kept.map((k) => k.skill.id));
+      this.setState((s) => ({ userSkills: s.userSkills.filter((k) => kept.has(k.id)) }));
+      this.save();
+      notes.push(...r.kept.map((k) => `"${k.skill.name}": ${k.reason}`));
+    }
+    await this.refreshLocalSkills();
+    if (notes.length) {
+      this.toast(`${notes.length === 1 ? "One saved skill" : notes.length + " saved skills"} could not move to the shared skill format: ${notes.join("; ")}`);
+    }
+  }
+
+  /** Read the member's saved skills from their SKILL.md files. An unreadable folder lists none. */
+  async refreshLocalSkills(): Promise<void> {
+    const list = await bridge.agentSkills.list().catch(() => []);
+    this.setState(() => ({ localSkills: list }));
+  }
+
+  /**
+   * Save a member-authored skill as a SKILL.md file (validated + normalized by the pure core). The
+   * sidecar's loader reads the same file, so it is offered in Hermes sessions too. On a validation
+   * failure it toasts the honest reason and saves nothing (Rule 1). Resolves to whether it was
+   * saved, so a form can clear itself only on success.
+   */
+  async addUserSkill(name: string, instruction: string, description = ""): Promise<boolean> {
+    const r = validateNewSkill(name, instruction, description, this.state.localSkills);
     if (!r.ok) {
       this.toast(r.error);
       return false;
     }
-    const id = "usk-" + ++this.uskSeq + "-" + this.state.userSkills.length;
-    this.setState((s) => ({ userSkills: s.userSkills.concat([{ id, ...r.skill }]) }));
-    this.save();
+    try {
+      await bridge.agentSkills.write(r.skill.name, r.skill.description, r.skill.instruction, false);
+    } catch (e) {
+      this.toast("Couldn't save the skill: " + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    await this.refreshLocalSkills();
     this.toast(`Added your "${r.skill.name}" skill.`);
     return true;
   }
 
-  /** Remove a user skill by id. */
-  removeUserSkill(id: string): void {
-    this.setState((s) => ({ userSkills: s.userSkills.filter((k) => k.id !== id) }));
-    this.save();
+  /** Remove a saved skill by its slug. */
+  async removeUserSkill(slug: string): Promise<void> {
+    try {
+      await bridge.agentSkills.remove(slug);
+    } catch (e) {
+      this.toast("Couldn't remove the skill: " + (e instanceof Error ? e.message : String(e)));
+    }
+    await this.refreshLocalSkills();
   }
 
   /**
-   * Run a user skill: send its instruction to the chat against the ACTIVE model
-   * (the router's Gemma / gateway / local backend). It is a prompt, not code — any
-   * chain action the model then proposes still stops at the SignatureCeremony
-   * (Rule 3 holds by construction; nothing here signs). Navigates to the dashboard
-   * chat so the member sees the run.
+   * Run a saved skill: send its instructions (read from its SKILL.md) to the chat against the
+   * ACTIVE model. It is a prompt, not code: any chain action the model then proposes still stops
+   * at the SignatureCeremony (Rule 3 holds by construction; nothing here signs). Navigates to the
+   * dashboard chat so the member sees the run.
    */
-  runUserSkill(id: string): void {
-    const skill = this.state.userSkills.find((k) => k.id === id);
+  async runUserSkill(slug: string): Promise<void> {
+    const skill = this.state.localSkills.find((k) => k.slug === slug);
     if (!skill) return;
+    let instruction: string;
+    try {
+      instruction = (await bridge.agentSkills.read(slug)).trim();
+    } catch (e) {
+      this.toast(`Couldn't read the "${skill.name}" skill: ` + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
     if (this.state.route !== "dashboard") this.go("dashboard");
-    void this.sendChat(runPrompt(skill));
+    void this.sendChat(runPrompt({ name: skill.name, instruction }));
   }
 
   // ---------- journal capture ----------
