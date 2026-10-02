@@ -99,6 +99,14 @@ citation in the answer is resolved to them: `citedNodes` per item and `citationN
 the scorecard (the share of answer citations that name a node the run retrieved from the
 imported graph). `--retrieval-mode passages` keeps the older retrieve-then-answer run.
 
+## Licences
+
+The corpus ships its own `NOTICE.md` and `manifest.json` (source, upstream, licence,
+pinned commit and attribution per source). Every source in the spec is cleared. The Medusa
+and Slither docs are AGPL-3.0 and ship by owner decision (2026-10-01) with attribution and
+the upstream link; the only change is chunking for search. The licence review of the
+bundled AGPL/GPL tools themselves is gate g3-licence (`docs/COMPONENT_UPDATER.md`).
+
 ## Safety
 
 - The command is async and runs off the main thread (`crate::blocking::off_main`).

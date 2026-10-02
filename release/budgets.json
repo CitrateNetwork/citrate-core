@@ -92,9 +92,9 @@
       "source": "local v0.4.2 build 2026-09-30"
     },
     "macos-aarch64/resources/knowledge-corpus": {
-      "maxBytes": 37000000,
-      "baselineBytes": 33676325,
-      "source": "HUP-S3.1 knowledge corpus 2026-10-01 (format 2, 10,630 nodes): measured 17,348,645 bytes of corpus files plus BGE vectors at 10,630 x 1,536 bytes; +10%. Solady and the Foundry book would add about 31 MB (owner decision)"
+      "maxBytes": 110000000,
+      "baselineBytes": 99668325,
+      "source": "HUP-S3.1 full knowledge corpus 2026-10-01 (format 2, 32,702 nodes: citrate-docs 1,688, methodology 37, refs 12,730 incl. Solady, Foundry book, Medusa and Slither docs, skills 18,247 from the 240-skill skills.lock): measured 49,438,053 bytes of corpus files plus BGE vectors at 32,702 x 1,536 bytes (f16 x 768, size fixed by the format and checked by the stager); +10%, rounded up. Pushes macos-aarch64/app past its budget: owner decision"
     },
     "macos-aarch64/resources/icon.icns": {
       "maxBytes": 1000000,
