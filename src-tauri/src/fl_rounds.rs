@@ -1438,13 +1438,14 @@ pub async fn fl_adapter_gate(
     crate::blocking::off_main(move || {
         let fl = state(&app_h)?;
         let rec = evaluate_adapter(&request, now_ms())?;
+        let _serial = adapter_lock();
         fl.record_gate(rec.clone())?;
         if let Some(serve) = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h) {
             let store = adapter_store(&app_h)?;
             let lora = serve.0.lora();
             if must_unload_after_gate(&rec, lora.as_deref(), &store, &serve.0.current_model_file())
             {
-                restart_with_lora(&app_h, &serve, None)?;
+                restart_with_lora(&app_h, &serve, LoraChoice::None)?;
             }
         }
         Ok(rec)
@@ -1452,13 +1453,35 @@ pub async fn fl_adapter_gate(
     .await
 }
 
+/// Gate decisions, adapter loads and unloads run one at a time, so a reject recorded while a load
+/// is in progress is seen by that load (and a load never lands after the reject that unloaded it).
+fn adapter_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    L.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What to serve: no adapter, or one authorized for the named base model file.
+enum LoraChoice {
+    None,
+    For {
+        path: PathBuf,
+        base_model_file: String,
+    },
+}
+
 fn restart_with_lora(
     app: &tauri::AppHandle,
     serve: &tauri::State<'_, crate::serve::ServeState>,
-    lora: Option<PathBuf>,
+    lora: LoraChoice,
 ) -> Result<(), String> {
     let previous = serve.0.lora();
-    serve.0.set_lora(lora);
+    match lora {
+        LoraChoice::None => serve.0.set_lora(None),
+        LoraChoice::For {
+            path,
+            base_model_file,
+        } => serve.0.set_lora_for_model(path, &base_model_file)?,
+    }
     if !serve.0.is_running() {
         return Ok(());
     }
@@ -1486,8 +1509,17 @@ pub async fn fl_adapter_load(app_h: tauri::AppHandle, sha256: String) -> Result<
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let store = adapter_store(&app_h)?;
-        let path = authorize_load(&fl, &sha256, &serve.0.current_model_file(), &store)?;
-        restart_with_lora(&app_h, &serve, Some(path.clone()))?;
+        let _serial = adapter_lock();
+        let base = serve.0.current_model_file();
+        let path = authorize_load(&fl, &sha256, &base, &store)?;
+        restart_with_lora(
+            &app_h,
+            &serve,
+            LoraChoice::For {
+                path: path.clone(),
+                base_model_file: base,
+            },
+        )?;
         Ok(path.to_string_lossy().to_string())
     })
     .await
@@ -1499,7 +1531,8 @@ pub async fn fl_adapter_unload(app_h: tauri::AppHandle) -> Result<(), String> {
     crate::blocking::off_main(move || {
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        restart_with_lora(&app_h, &serve, None)
+        let _serial = adapter_lock();
+        restart_with_lora(&app_h, &serve, LoraChoice::None)
     })
     .await
 }
