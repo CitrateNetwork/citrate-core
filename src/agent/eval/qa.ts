@@ -19,6 +19,7 @@
 // =====================================================================
 
 import { admitsUncertainty } from "../eval.ts";
+import type { CorpusCitationIndex } from "./corpusCitations.ts";
 
 export const QA_CATEGORIES = [
   "chain-basics",
@@ -308,11 +309,17 @@ export function extractCitations(answer: string): CitedRef[] {
   return out;
 }
 
-/** A cited ref is valid when its file is in the index and its anchor (if any) is a real heading. */
-export function citationValid(ref: CitedRef, index: AnchorIndex): boolean {
+/**
+ * A cited ref is valid when its file is in the index and its anchor (if any) is a real heading.
+ * HUP-S3.1: in a retrieval run, a ref that resolves to a node of the bundled corpus (its file,
+ * and one of that file's section anchors when an anchor is given) is valid too.
+ */
+export function citationValid(ref: CitedRef, index: AnchorIndex, corpus?: CorpusCitationIndex): boolean {
   const f = index.sources[ref.source]?.files[ref.path];
-  if (!f) return false;
-  return ref.anchor === undefined || f.anchors.includes(ref.anchor);
+  if (f && (ref.anchor === undefined || f.anchors.includes(ref.anchor))) return true;
+  const c = corpus?.files.get(`${ref.source}:${ref.path}`);
+  if (!c) return false;
+  return ref.anchor === undefined || c.has(ref.anchor);
 }
 
 // ------------------------------------------------------------------ abstention
@@ -359,6 +366,8 @@ export interface QaItemScore {
 export interface QaScoreOptions {
   /** Minimum key-point coverage for an answerable item to pass (default 0.6). */
   coverageThreshold?: number;
+  /** HUP-S3.1: citations may also resolve to the bundled corpus (retrieval runs). */
+  corpus?: CorpusCitationIndex;
 }
 
 /** Score one answer. `extraCitations` are structured citations a provider returned out-of-band. */
@@ -371,7 +380,7 @@ export function scoreQaItem(
 ): QaItemScore {
   const threshold = opts.coverageThreshold ?? 0.6;
   const cited = [...extractCitations(answer), ...extraCitations];
-  const citedValid = cited.filter((r) => citationValid(r, index)).length;
+  const citedValid = cited.filter((r) => citationValid(r, index, opts.corpus)).length;
   const citedInvalid = cited.length - citedValid;
   const abstained = admitsNotDocumented(answer);
   const reasons: string[] = [];
@@ -395,7 +404,7 @@ export function scoreQaItem(
 
   const coverage = keyPointCoverage(answer, item.keyPoints);
   const citationHit = item.citations.some((req) =>
-    cited.some((r) => r.source === req.source && r.path === req.path && citationValid(r, index)),
+    cited.some((r) => r.source === req.source && r.path === req.path && citationValid(r, index, opts.corpus)),
   );
   if (coverage < threshold) reasons.push(`key-point coverage ${coverage.toFixed(2)} < ${threshold}`);
   if (!citationHit) reasons.push("no required citation cited");
@@ -437,7 +446,14 @@ export interface QaScorecard {
    * HUP-S3.1 / g2-knowledge: the run answered from passages retrieved from the bundled corpus
    * (`memory.search` with passages over these tenants, k per tenant). Absent = closed-book.
    */
-  retrieval?: { mode: "memory.search passages"; tenants: string[]; k: number; corpusDigest?: string };
+  retrieval?: {
+    mode: "memory.search passages";
+    tenants: string[];
+    k: number;
+    corpusDigest?: string;
+    /** Citations were also accepted when they resolve to a node of the bundled corpus. */
+    citationsResolveToCorpus?: boolean;
+  };
 }
 
 const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);

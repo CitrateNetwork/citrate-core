@@ -8,11 +8,15 @@
 //        [--adapter-sha256 <hex>]   (HUP-S9.4: the endpoint serves this LoRA; stamped into the
 //                                    scorecard so the app's eval gate can bind it to the file)
 //        [--memory-socket <path> [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5]
-//         [--corpus-digest <hex>]]  (HUP-S3.1, g2-knowledge: answer from the bundled knowledge corpus.
+//         [--corpus-dir <dir>] [--corpus-digest <hex>]]  (HUP-S3.1, g2-knowledge: answer from the
+//                                    bundled knowledge corpus.
 //                                    Each question first runs `memory.search {passages: true}` per
 //                                    tenant on a mem-mcp daemon whose store holds the imported
 //                                    corpus; the passages and their citations go before the
-//                                    question. Result file <date>-qa-rag-<model>.json.)
+//                                    question. With --corpus-dir (the imported corpus), a citation
+//                                    also counts as valid when it resolves to a bundled node; the
+//                                    digest is read from its manifest. Result file
+//                                    <date>-qa-rag-<model>.json.)
 //
 // Asks every question in src/agent/eval/qa-v1.json (or, HUP-S7.7, the set named by --dataset, e.g.
 // qa-literacy-v1) of a LIVE OpenAI-compatible /chat/completions endpoint (llama-server, or a user
@@ -31,6 +35,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseQaCliArgs, qaDatasetFiles, qaResultFileName } from "../src/agent/eval/qaCliArgs.ts";
 import { QA_SYSTEM_PROMPT, findMissingCitations, parseQaDataset, runQaEval } from "../src/agent/eval/qa.ts";
+import { buildCorpusCitationIndex } from "../src/agent/eval/corpusCitations.ts";
 import { buildRetrievalContext, parsePassages, parseSearchResponse, retrievalUserMessage, searchRequestLine } from "../src/agent/eval/retrieval.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -147,6 +152,20 @@ async function main() {
       (args.retrieval ? ` · retrieval ${args.retrieval.tenants.join("+")} k=${args.retrieval.k} via ${args.retrieval.socket}` : " · closed-book"),
   );
 
+  // HUP-S3.1: the bundled corpus the answers may cite (retrieval runs with --corpus-dir).
+  let corpus;
+  if (args.retrieval?.corpusDir) {
+    const dir = resolve(args.retrieval.corpusDir);
+    const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
+    if (args.retrieval.corpusDigest && args.retrieval.corpusDigest !== manifest.bundle_digest) {
+      console.error(`--corpus-digest ${args.retrieval.corpusDigest} is not the corpus in ${dir} (${manifest.bundle_digest})`);
+      process.exit(2);
+    }
+    args.retrieval.corpusDigest = manifest.bundle_digest;
+    corpus = buildCorpusCitationIndex(await Promise.all(manifest.tenants.map((t) => readFile(join(dir, t.file), "utf8"))));
+    console.error(`eval-qa: citations may resolve to ${corpus.files.size} bundled files (corpus ${manifest.bundle_digest.slice(0, 12)})`);
+  }
+
   let out;
   try {
     out = await runQaEval(
@@ -154,7 +173,10 @@ async function main() {
       index,
       { ask: makeAsk(args, apiKey), onProgress: (id, pass) => console.error(`  ${pass ? "pass" : "FAIL"}  ${id}`) },
       { model: args.model, tier: args.tier },
-      args.coverageThreshold === undefined ? {} : { coverageThreshold: args.coverageThreshold },
+      {
+        ...(args.coverageThreshold === undefined ? {} : { coverageThreshold: args.coverageThreshold }),
+        ...(corpus ? { corpus } : {}),
+      },
     );
   } catch (e) {
     console.error((e instanceof Error ? e.message : String(e)) + "\nno scorecard written.");
@@ -166,6 +188,7 @@ async function main() {
   if (args.retrieval) {
     scorecard.retrieval = { mode: "memory.search passages", tenants: args.retrieval.tenants, k: args.retrieval.k };
     if (args.retrieval.corpusDigest) scorecard.retrieval.corpusDigest = args.retrieval.corpusDigest;
+    if (corpus) scorecard.retrieval.citationsResolveToCorpus = true;
   }
   const outDir = resolve(ROOT, args.outDir);
   await mkdir(outDir, { recursive: true });
