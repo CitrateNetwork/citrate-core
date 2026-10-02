@@ -4,7 +4,7 @@
 // for tools that normally run without asking.
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { store } from "./store";
 import { bridge } from "../bridge";
 import type { ToolCall } from "../agent/harness";
@@ -191,7 +191,10 @@ describe("Feature: a hic:\"required\" call waits for a member click", () => {
       }
     };
     walk(root);
-    const callers = files.filter((f) => /\b(finishCer|approveCer)\(/.test(readFileSync(f, "utf8"))).map((f) => f.slice(root.length + 1)).sort();
+    const callers = files
+      .filter((f) => /\b(finishCer|approveCer)\(/.test(readFileSync(f, "utf8")))
+      .map((f) => relative(root, f).split(sep).join("/"))
+      .sort();
     expect(callers).toEqual(["shell/Chrome.tsx", "shell/store.ts"]);
     const chrome = readFileSync(join(root, "shell/Chrome.tsx"), "utf8").split("\n");
     const uses = chrome.map((l, i) => [l, i] as const).filter(([l]) => /\b(finishCer|approveCer)\(/.test(l));
@@ -219,7 +222,10 @@ describe("Feature: a hic:\"required\" call waits for a member click", () => {
     };
     walk(root);
     const resolver = /\b(approveWalletReview|rejectWalletReview)\(/;
-    const callers = files.filter((f) => resolver.test(readFileSync(f, "utf8"))).map((f) => f.slice(root.length + 1)).sort();
+    const callers = files
+      .filter((f) => resolver.test(readFileSync(f, "utf8")))
+      .map((f) => relative(root, f).split(sep).join("/"))
+      .sort();
     expect(callers).toEqual(["shell/Chrome.tsx", "shell/store.ts"]);
     const chrome = readFileSync(join(root, "shell/Chrome.tsx"), "utf8").split("\n");
     const uses = chrome.map((l, i) => [l, i] as const).filter(([l]) => resolver.test(l));

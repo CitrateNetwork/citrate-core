@@ -324,7 +324,7 @@ describe.skipIf(!live)("qa-v1 live provenance against the pinned source commits"
         expect(extractAnchors(show(source, path))).toEqual(f.anchors);
       }
     }
-  });
+  }, 60_000);
   it("every key point of every answerable item appears in the text of the section(s) it cites", () => {
     const problems: string[] = [];
     for (const it of ds.items.filter((i) => i.answerable)) {
