@@ -618,6 +618,7 @@ pub fn run() {
             device_link::device_link_approve,
             device_link::device_link_reject,
             device_link::device_links,
+            device_link::device_link_revoke_prepare,
             device_link::device_link_revoke,
             device_link::device_link_export,
             device_link::device_link_import,

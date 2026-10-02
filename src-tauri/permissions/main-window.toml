@@ -154,6 +154,7 @@ commands.allow = [
   "device_link_approve",
   "device_link_reject",
   "device_links",
+  "device_link_revoke_prepare",
   "device_link_revoke",
   "device_link_export",
   "device_link_import",

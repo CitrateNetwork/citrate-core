@@ -20,6 +20,8 @@ import {
   loadMyDevices,
   loadMemberDevices,
   revokeMyDevice,
+  prepareRevokeDevice,
+  cancelRevokeDevice,
   importDeviceCode,
   exportDeviceCode,
 } from "../shell/slices/cluster";
@@ -33,6 +35,9 @@ function shortAddr(a: string): string {
   return a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-4)}` : a;
 }
 
+/** Device addresses compare without `0x` and case. */
+const sameDevice = (a: string, b: string) => a.replace(/^0x/i, "").toLowerCase() === b.replace(/^0x/i, "").toLowerCase();
+
 /**
  * HUP-S8.1 — "Your devices": this machine's own device key and the DeviceLinks you made. Linking
  * opens the wallet ceremony (the review gate shows the exact text; nothing signs until you approve).
@@ -41,7 +46,6 @@ function shortAddr(a: string): string {
 function YourDevices({ store }: { store: Store }) {
   const st = clusterSlice.use();
   const [name, setName] = useState("");
-  const [confirming, setConfirming] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [copied, setCopied] = useState(false);
   const model = devicePanelModel(st.myDevices);
@@ -134,20 +138,21 @@ function YourDevices({ store }: { store: Store }) {
             {row.thisDevice ? " (this device)" : ""}
           </span>
           <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>{shortAddr(row.device)}</span>
-          {confirming === row.device ? (
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={st.revoking !== null}
-              onClick={() => {
-                setConfirming(null);
-                void revokeMyDevice(row.device);
-              }}
-            >
-              {st.revoking === row.device ? "Removing…" : "Confirm: remove for good"}
-            </button>
+          {st.revokePrepared && sameDevice(st.revokePrepared.device, row.device) ? (
+            <>
+              <span role="note" style={{ fontSize: 11, color: "var(--tx-2)", maxWidth: 320 }}>
+                {st.revokePrepared.statement}
+              </span>
+              <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => cancelRevokeDevice()}>
+                Keep
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => void revokeMyDevice()}>
+                Confirm: remove for good
+              </button>
+            </>
           ) : (
-            <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => setConfirming(row.device)}>
-              Remove
+            <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => void prepareRevokeDevice(row.device)}>
+              {st.revoking === row.device ? "Removing…" : "Remove"}
             </button>
           )}
         </div>
