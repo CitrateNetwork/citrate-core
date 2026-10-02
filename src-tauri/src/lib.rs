@@ -29,6 +29,7 @@ pub use citrate_core_kit::{
 mod activity;
 mod addresses;
 mod agent;
+mod agent_grants;
 mod agent_sbt;
 mod ai;
 mod blocking;
@@ -739,6 +740,13 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S2.1 — Hermes folder grants (store in app data; sent to agent sessions on change).
+            agent_grants::agent_grants_view,
+            agent_grants::agent_grants_add_folder,
+            agent_grants::agent_grants_revoke,
+            agent_grants::agent_grants_full_access_prepare,
+            agent_grants::agent_grants_full_access_confirm,
+            agent_grants::agent_grants_reset,
             // HUP-S5.5 — signed first-run components. Update refuses until the component key is set.
             components::components_status,
             components::components_update,
