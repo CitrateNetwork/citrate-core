@@ -55,6 +55,7 @@ mod fleet_pairing;
 mod fleet_tailscale;
 mod google_workspace;
 mod grant_status;
+mod hermes_mcp;
 mod hermes_schedule;
 mod hf_auth;
 mod ipc_name;
@@ -63,6 +64,7 @@ mod journal_export;
 mod local_data;
 mod mcp_servers;
 mod media;
+pub mod mem_mcp_bridge;
 mod membership;
 mod memory;
 // HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
@@ -99,6 +101,7 @@ mod telemetry;
 mod tier;
 mod transfer;
 mod validator;
+mod verified_source;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
 // command names once here + in generate_handler! below; each lane fills in its own module's
 // bodies (never this file). See .agentile/cx-ownership.map.
@@ -531,6 +534,8 @@ pub fn run() {
             model_registry::models_registry_list,
             model_register::models_registry_register,
             contract_deploy::contract_deploy,
+            // HUP-S4.3 — get_verified_source (read-only CitrateScan lookup).
+            verified_source::contract_verified_source,
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
@@ -630,6 +635,9 @@ pub fn run() {
             hermes::personas::hermes_persona_check,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
+            hermes_mcp::hermes_mcp_settings,
+            hermes_mcp::hermes_mcp_set,
             hermes::workers::hermes_workers,
             hermes_learn::hermes_workflow_run,
             hermes_learn::hermes_workflow_status,

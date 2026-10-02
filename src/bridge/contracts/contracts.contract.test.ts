@@ -82,6 +82,23 @@ describe("HUP-S6.4 — the D-4 deploy gate seam", () => {
   });
 });
 
+describe("HUP-S4.3 — verified source seam", () => {
+  beforeEach(() => invokeMock.mockReset());
+
+  it("verifiedSource → contract_verified_source with the address", async () => {
+    invokeMock.mockResolvedValueOnce({ status: "unverified", verified: false });
+    const r = await tauriContracts.verifiedSource("0x" + "a".repeat(40));
+    expect(invokeMock).toHaveBeenCalledWith("contract_verified_source", { address: "0x" + "a".repeat(40) });
+    expect(r.status).toBe("unverified");
+  });
+
+  it("sim is honest — the lookup runs in the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.verifiedSource("0x" + "a".repeat(40))).rejects.toThrow(/desktop node/i);
+    }
+  });
+});
+
 describe("HUP-S6.6 / S6.7 — the Contract reader and post-deploy seams", () => {
   beforeEach(() => invokeMock.mockReset());
   const ADDR = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";

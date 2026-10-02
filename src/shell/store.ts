@@ -38,6 +38,7 @@ import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type Approva
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
@@ -2546,6 +2547,17 @@ export class Store {
       } catch (e) {
         result = "model list unavailable: " + (e instanceof Error ? e.message : String(e));
       }
+    } else if (call.name === "get_verified_source") {
+      // HUP-S4.3 — READ: CitrateScan's verified source/ABI/compiler, fenced as untrusted data.
+      if (!isAddress(args.address)) {
+        result = "get_verified_source needs a contract address (0x + 40 hex). Nothing was looked up.";
+      } else {
+        try {
+          result = formatVerifiedSourceForAgent(await bridge.contracts.verifiedSource(args.address));
+        } catch (e) {
+          result = "verified-source lookup unavailable: " + (e instanceof Error ? e.message : String(e));
+        }
+        }
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {

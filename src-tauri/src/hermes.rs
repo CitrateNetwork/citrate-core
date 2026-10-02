@@ -60,9 +60,6 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 /// `./capsules` relative to its cwd — which is empty — so the agent boots with zero skills and can run
 /// nothing. citrate-core points it at the per-session capsule dir it seeds from the bundled starters.
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
-/// HUP-S4.4: env naming the MCP allowlist file the child reads (the runtime's `MCP_CONFIG_ENV`). Set
-/// only while the file exists, i.e. while the member has at least one reviewed, enabled server.
-pub const HERMES_MCP_ENV: &str = "CITRATE_HERMES_MCP";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
 
@@ -335,6 +332,9 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S4.3: the MCP allowlist file (`hermes_mcp.rs`). Passed as `CITRATE_HERMES_MCP` only while
+    /// the file exists, so with no MCP server enabled the child runs no MCP at all.
+    mcp_config_path: Option<PathBuf>,
     /// HUP-S2.9: the undo checkpoint store passed to the child as `CITRATE_HERMES_CHECKPOINTS`.
     checkpoints_dir: Option<PathBuf>,
     /// HUP-S3.4: the learn data folder and the member's skills folder, passed to the child as
@@ -394,6 +394,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            mcp_config_path: None,
             checkpoints_dir: None,
             learn_dirs: None,
             mcp_allowlist: None,
@@ -419,6 +420,12 @@ impl HermesManager {
         self
     }
 
+    /// HUP-S4.3: name the MCP allowlist file. The env is set at spawn only if the file exists then.
+    pub fn with_mcp_config_path(mut self, path: PathBuf) -> Self {
+        self.mcp_config_path = Some(path);
+        self
+    }
+
     /// HUP-S3.4: turn on verified self-learning in the child (see `learn_dirs`).
     pub fn with_learn_dirs(mut self, learn_dir: PathBuf, skills_dir: PathBuf) -> Self {
         self.learn_dirs = Some((learn_dir, skills_dir));
@@ -440,7 +447,8 @@ impl HermesManager {
             .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
-    /// HUP-S4.4: the MCP allowlist file (see [`HERMES_MCP_ENV`]).
+    /// HUP-S4.4: the member's MCP allowlist file (joined with the built-in one, see
+    /// [`crate::hermes_mcp::effective_allowlist`]).
     pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
         self.mcp_allowlist = Some(path);
         self
@@ -521,6 +529,17 @@ impl HermesManager {
                 dir.to_string_lossy().to_string(),
             ));
         }
+        // HUP-S4.3 + S4.4: hand the child one MCP allowlist (built-in servers and the member's
+        // reviewed servers, joined when both are on), and only when one is written (default: none).
+        if let Some(path) = crate::hermes_mcp::effective_allowlist(
+            self.mcp_config_path.as_deref(),
+            self.mcp_allowlist.as_deref(),
+        ) {
+            spec.env.push((
+                crate::hermes_mcp::MCP_CONFIG_ENV.to_string(),
+                path.to_string_lossy().to_string(),
+            ));
+        }
         if let Some(dir) = &self.checkpoints_dir {
             spec.env.push((
                 undo::HERMES_CHECKPOINTS_ENV.to_string(),
@@ -530,13 +549,6 @@ impl HermesManager {
         if let Some((learn, skills)) = &self.learn_dirs {
             spec.env
                 .extend(crate::hermes_learn::learn_env(learn, skills));
-        }
-        // HUP-S4.4: the member's reviewed MCP servers, only when there are any.
-        if let Some(path) = self.mcp_allowlist.as_ref().filter(|p| p.is_file()) {
-            spec.env.push((
-                HERMES_MCP_ENV.to_string(),
-                path.to_string_lossy().to_string(),
-            ));
         }
         if let Some(base) = &self.chain_data_dir {
             for (k, dir) in chain::data_dirs(base) {
@@ -1311,6 +1323,11 @@ use std::sync::OnceLock;
 /// binary + the 0600 bearer/crash paths); one instance for the process lifetime.
 static HERMES: OnceLock<HermesManager> = OnceLock::new();
 
+/// HUP-S4.3: whether this session's Hermes sidecar is running (false if never started).
+pub fn sidecar_running() -> bool {
+    HERMES.get().is_some_and(|m| m.is_running())
+}
+
 /// Stop the hermes sidecar if this session started it (called on graceful app teardown). Idempotent
 /// and a no-op if it was never started.
 pub fn shutdown() {
@@ -1364,6 +1381,7 @@ pub(crate) fn manager<R: tauri::Runtime>(
     // accepts a proposal backed by a verified workflow run.
     let mgr = HermesManager::new(bin, token_path, crash_path)
         .with_capsules_dir(capsules_dir)
+        .with_mcp_config_path(crate::hermes_mcp::config_path(&base))
         .with_checkpoints_dir(base.join("checkpoints"))
         .with_learn_dirs(base.join("learn"), base.join("skills"))
         .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
@@ -1399,6 +1417,11 @@ pub async fn hermes_start(app_h: tauri::AppHandle) -> std::result::Result<Hermes
 /// Blocking body of [`hermes_start`]; reached only through [`crate::blocking::off_main`].
 pub fn hermes_start_sync(app: tauri::AppHandle) -> std::result::Result<HermesStatus, String> {
     let m = manager(&app)?;
+    // HUP-S4.3: bring the MCP allowlist in line with the member's settings before the child reads
+    // it. A write failure means no MCP this session (logged), never a failed start.
+    if let Err(e) = crate::hermes_mcp::sync_for_app(&app) {
+        eprintln!("hermes: MCP allowlist not updated: {e}");
+    }
     m.start().map_err(|e| e.to_string())?;
     Ok(m.status())
 }

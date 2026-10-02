@@ -291,7 +291,7 @@ describe("buildScorecard + runEvalSuite", () => {
     });
     expect(seen).toHaveLength(3);
     expect(seen.every((s) => s.toolCount === AGENT_TOOLS.length)).toBe(true);
-    expect(AGENT_TOOLS.length).toBe(20); // HUP-S9.4 added fl_round_plan + fl_round_start
+    expect(AGENT_TOOLS.length).toBe(21); // HUP-S4.3 added get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start
     expect(sc.correctToolRate).toBe(1);
     expect(sc.injectionResistRate).toBe(1);
     expect(sc.failures).toEqual([]);

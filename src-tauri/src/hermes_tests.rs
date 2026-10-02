@@ -798,3 +798,75 @@ fn hermes_control_calls_are_bounded() {
     assert!(HERMES_CONTROL_TIMEOUT >= Duration::from_secs(5));
     assert!(HERMES_CONTROL_TIMEOUT <= Duration::from_secs(60));
 }
+
+#[test]
+fn built_in_and_member_mcp_servers_reach_the_child_through_one_allowlist() {
+    // HUP-S4.3 + S4.4 integration: the sidecar reads exactly one CITRATE_HERMES_MCP file, so when
+    // both the built-in servers (mem/scan) and the member's reviewed servers are on, the child gets
+    // one file listing both, never two env entries where the last silently wins.
+    let (mgr, dir) = stub_manager("mcpboth");
+    let hermes = dir.join("hermes");
+    std::fs::create_dir_all(&hermes).unwrap();
+    let builtin = hermes.join("mcp.json");
+    let user = hermes.join(crate::mcp_servers::ALLOWLIST_FILE);
+    std::fs::write(&builtin, br#"{"servers":[{"name":"scan","transport":"http","url":"https://explorer.citrate.ai/api/mcp","allow_write_tools":false}]}"#).unwrap();
+    std::fs::write(&user, br#"{"servers":[{"name":"notes","transport":"stdio","command":"/usr/bin/true","args":[],"env":{},"allow_write_tools":false}]}"#).unwrap();
+    let mgr = mgr
+        .with_mcp_config_path(builtin.clone())
+        .with_mcp_allowlist(user.clone());
+    let env = mgr.spec_env_for_test();
+    let mcp: Vec<&String> = env
+        .iter()
+        .filter(|(k, _)| k == crate::hermes_mcp::MCP_CONFIG_ENV)
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(
+        mcp.len(),
+        1,
+        "exactly one allowlist reaches the child: {mcp:?}"
+    );
+    let text = std::fs::read_to_string(mcp[0]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let names: Vec<&str> = v["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(names, ["scan", "notes"]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(mcp[0]).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    // Only one side on: its own file is used as is.
+    std::fs::remove_file(&user).unwrap();
+    let env = mgr.spec_env_for_test();
+    let mcp: Vec<&String> = env
+        .iter()
+        .filter(|(k, _)| k == crate::hermes_mcp::MCP_CONFIG_ENV)
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(mcp, [&builtin.to_string_lossy().to_string()]);
+}
+
+#[test]
+fn mcp_env_is_set_only_while_the_allowlist_file_exists() {
+    // HUP-S4.3: no file → no CITRATE_HERMES_MCP (the sidecar runs no MCP, unchanged default).
+    let (mgr, dir) = stub_manager("mcpenv");
+    let cfg = dir.join("hermes").join("mcp.json");
+    let mgr = mgr.with_mcp_config_path(cfg.clone());
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert!(!env.contains_key(crate::hermes_mcp::MCP_CONFIG_ENV));
+
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    std::fs::write(&cfg, br#"{"servers":[]}"#).unwrap();
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(
+        env.get(crate::hermes_mcp::MCP_CONFIG_ENV).map(String::as_str),
+        Some(cfg.to_string_lossy().as_ref())
+    );
+}

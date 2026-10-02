@@ -18,6 +18,7 @@ import type {
   VerifyOutcomeView,
 } from "../domains";
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../../agent/deployGate";
+import type { VerifiedSourceView } from "../../agent/verifiedSource";
 
 export const tauriContracts: ContractsDomain = {
   deploy(input: ContractDeployInput) {
@@ -35,6 +36,10 @@ export const tauriContracts: ContractsDomain = {
   },
   gateSubmit(inputs: DeployGateInputs) {
     return invoke<DeployGateRecord>("deploy_gate_submit", { inputs });
+  },
+  // HUP-S4.3 — read-only CitrateScan verified-source lookup (core makes the HTTP call).
+  verifiedSource(address: string) {
+    return invoke<VerifiedSourceView>("contract_verified_source", { address });
   },
   // HUP-S6.7 — the Contract reader (reads; a write only opens a ceremony).
   source(address: string) {

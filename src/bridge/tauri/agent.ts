@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesPersona, TrackWorkflow } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow } from "../domains";
 import type { CeremonyView } from "../types";
 import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 import type { LearnAcceptResult, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView } from "../../agent/learn";
@@ -81,6 +81,13 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   briefCheck(brief) {
     return invoke<{ ok: boolean; markdown: string }>("hermes_brief_check", { brief });
+  },
+  // HUP-S4.3 — MCP servers Hermes may use; core writes the sidecar's allowlist file.
+  mcpSettings() {
+    return invoke<HermesMcpView>("hermes_mcp_settings");
+  },
+  mcpSet(settings) {
+    return invoke<HermesMcpView>("hermes_mcp_set", { settings });
   },
   // HUP-S2.9 — undo for agent file changes (the sidecar's checkpoint routes, through Rust).
   checkpoints(id) {

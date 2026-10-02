@@ -72,6 +72,13 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async briefCheck() {
       throw new Error("the interview needs the Hermes sidecar in the desktop app");
     },
+    // HUP-S4.3 — there is no sidecar to configure in web/dev (Rule 1: refuse, never pretend).
+    async mcpSettings() {
+      throw new Error("connected tools for Hermes are set in the desktop app");
+    },
+    async mcpSet() {
+      throw new Error("connected tools for Hermes are set in the desktop app");
+    },
     // HUP-S2.9 — no sidecar, so no agent file changes to undo. Say so (Rule 1).
     async checkpoints(id) {
       return { session: id, enabled: false, steps: [], note: "undo for agent file changes needs the desktop app" };
