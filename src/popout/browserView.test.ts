@@ -115,3 +115,25 @@ describe("HUP-S5.1 the bridge view", () => {
     expect(parseBrowserView(null)).toBeNull();
   });
 });
+
+describe("HUP-S2.3 sign-in requests in the status", () => {
+  it("keeps well-formed requests and drops the rest", () => {
+    const s = parseBrowserStatus({
+      ...status,
+      mode: "managed",
+      signInRequests: [
+        { id: "signin-1-5", kind: "personal_sign", raiseOrigin: "https://app.example.org", topFrame: true, messageHex: "6869" },
+        { id: "signin-2-5", kind: "accounts", raiseOrigin: "https://app.example.org", topFrame: false },
+        { id: "nope", kind: "accounts", raiseOrigin: "x", topFrame: true },
+        { id: "signin-3-5", kind: "eth_sign", raiseOrigin: "x", topFrame: true },
+        7,
+      ],
+    });
+    expect(s.signInRequests).toEqual([
+      { id: "signin-1-5", kind: "personal_sign", raiseOrigin: "https://app.example.org", topFrame: true },
+      { id: "signin-2-5", kind: "accounts", raiseOrigin: "https://app.example.org", topFrame: false },
+    ]);
+    expect(parseBrowserStatus(status).signInRequests).toEqual([]);
+    expect(BROWSER_OFF.signInRequests).toEqual([]);
+  });
+});

@@ -45,6 +45,7 @@ mod deploy_gate;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod web_budgets;
+mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
 mod device_link;
 mod docs_ingest;
@@ -585,6 +586,8 @@ pub fn run() {
             web_budgets::web_budget_revoke_all,
             web_budgets::web_budget_reset,
             web_budgets::web_signing_request,
+            web_budgets::web_signing_approve,
+            web_budgets::web_signing_reject,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,

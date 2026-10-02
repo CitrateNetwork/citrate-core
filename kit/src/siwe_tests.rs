@@ -397,3 +397,20 @@ fn every_reject_reason_reads_as_plain_language() {
         assert!(!s.is_empty() && !s.contains('\u{2014}'), "{s}");
     }
 }
+
+/// HUP-S2.3: core shares the member's address with a budgeted site in EIP-55 form, because the
+/// sign-in message the site builds from it must carry a valid checksum (D2 #9).
+#[test]
+fn to_eip55_checksums_any_case_and_refuses_non_addresses() {
+    assert_eq!(
+        to_eip55("0x9858effd232b4033e47d90003d41ec34ecaeda94").as_deref(),
+        Some(ADDR)
+    );
+    assert_eq!(
+        to_eip55("0x9858EFFD232B4033E47D90003D41EC34ECAEDA94").as_deref(),
+        Some(ADDR)
+    );
+    assert!(is_eip55(&to_eip55(ADDR).unwrap()));
+    assert_eq!(to_eip55("0x9858effd"), None);
+    assert_eq!(to_eip55("9858effd232b4033e47d90003d41ec34ecaeda94aa"), None);
+}

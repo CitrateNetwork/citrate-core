@@ -16,6 +16,7 @@ import { NetworkCompatGate } from "./shell/NetworkCompatGate";
 import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal, ALF } from "./surfaces";
 // CX surfaces (planset citrate-core-social) — scaffold shells wired in CX-S0.4.
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
+import { SignedForYou } from "./budgets/SignedForYou";
 
 const queryClient = new QueryClient();
 
@@ -294,6 +295,8 @@ function Root() {
       <Coach store={store} s={s} />
       <DemoPanel store={store} s={s} />
       <Toast s={s} />
+      {/* HUP-S2.3: the non-modal notice after each sign-in Hermes made inside a budget. */}
+      <SignedForYou />
       {/* Blocks on-chain use only when this build targets a retired genesis (reroll). */}
       <NetworkCompatGate />
       {/* W2.4 — non-blocking in-app update affordance (Tauri only; invisible in sim). */}

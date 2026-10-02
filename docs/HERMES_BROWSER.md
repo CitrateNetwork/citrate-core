@@ -70,6 +70,7 @@ already installed, and says "not installed" when there is none.
 ## Not done here
 
 - Downloading and updating the managed Chromium (HUP-S5.5 component updater).
-- `console`, `network` and `siwe_sign` browser tools (SIWE is HUP-S2.3).
+- `console` and `network` browser tools. Sign-in with the member's wallet is the sign-in bridge
+  (HUP-S2.3, `docs/WEB_SIGNING_BUDGETS.md`): the managed browser's page provider asks, core decides.
 - The `decide()` element picker (HUP-S5.3) and private search (HUP-S5.2).
 - Turning the browser on from Settings: today it is an environment switch for the sidecar.
