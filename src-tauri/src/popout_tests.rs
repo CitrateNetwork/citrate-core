@@ -75,17 +75,27 @@ fn the_typescript_allowlist_matches_this_one() {
 }
 
 #[test]
-fn the_browser_and_the_activity_monitor_have_views_today() {
-    // HUP-S5.1 added the Browser view to the S7.6 Activity monitor.
+fn the_browser_the_activity_monitor_and_the_media_player_have_views_today() {
+    // HUP-S5.1 added the Browser view and HUP-S10.1 the Media player to the S7.6 Activity monitor.
     let ready: Vec<PopoutKind> = PopoutKind::ALL
         .into_iter()
         .filter(|k| k.available())
         .collect();
-    assert_eq!(ready, [PopoutKind::Browser, PopoutKind::Monitor]);
+    assert_eq!(
+        ready,
+        [PopoutKind::Browser, PopoutKind::Monitor, PopoutKind::Media]
+    );
     assert_eq!(
         check_open_request("main", "browser"),
         Ok(PopoutKind::Browser)
     );
+}
+
+#[test]
+fn hup_s10_1_the_media_player_opens_from_the_main_window_only() {
+    assert_eq!(check_open_request("main", "media"), Ok(PopoutKind::Media));
+    assert!(check_open_request("popout-media", "media").is_err());
+    assert!(check_open_request("popout-monitor", "media").is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +122,7 @@ fn unknown_kinds_are_refused_by_name() {
 
 #[test]
 fn kinds_without_a_view_are_refused_honestly() {
-    for k in ["contract", "diff", "media"] {
+    for k in ["contract", "diff"] {
         let err = check_open_request("main", k).expect_err(k);
         assert!(err.contains("not built yet"), "{err}");
     }

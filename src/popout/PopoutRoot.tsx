@@ -15,6 +15,8 @@ import { createPopoutEnd, type BridgeTransport, type PopoutEnd } from "./bridge"
 import { POPOUT_TITLES, type PopoutKind } from "./kinds";
 import type { MonitorSnapshot } from "./monitorSnapshot";
 import { ActivityMonitor } from "./ActivityMonitor";
+import { MediaPlayer } from "./MediaPlayer";
+import { mediaTauriTransport } from "./mediaBridge";
 import { BrowserPopout } from "./BrowserPopout";
 import type { BrowserView } from "./browserView";
 
@@ -46,7 +48,16 @@ function Frame({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: () => Promise<BridgeTransport> }) {
+export function PopoutRoot({
+  kind,
+  transport,
+  mediaTransport = mediaTauriTransport,
+}: {
+  kind: PopoutKind;
+  transport: () => Promise<BridgeTransport>;
+  /** HUP-S10.1: the Media player's own channel (injected for tests). */
+  mediaTransport?: () => Promise<BridgeTransport>;
+}) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [browserView, setBrowserView] = useState<BrowserView | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -95,6 +106,7 @@ export function PopoutRoot({ kind, transport }: { kind: PopoutKind; transport: (
     return () => clearInterval(t);
   }, [kind]);
 
+  if (kind === "media") return <MediaPlayer transport={mediaTransport} />;
   if (!hasView) {
     return (
       <Frame title={POPOUT_TITLES[kind]}>

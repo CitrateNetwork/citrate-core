@@ -50,13 +50,16 @@ mod fleet;
 mod fleet_mdns;
 mod fleet_pairing;
 mod fleet_tailscale;
+mod google_workspace;
 mod grant_status;
+mod hermes_schedule;
 mod hf_auth;
 mod ipc_name;
 mod ipfs;
 mod journal_export;
 mod local_data;
 mod mcp_servers;
+mod media;
 mod membership;
 mod memory;
 // HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
@@ -747,6 +750,26 @@ pub fn run() {
             agent_grants::agent_grants_full_access_prepare,
             agent_grants::agent_grants_full_access_confirm,
             agent_grants::agent_grants_reset,
+            // HUP-S10.2 — Hermes's own schedule (local), shown as a calendar.
+            hermes_schedule::hermes_schedule_list,
+            hermes_schedule::hermes_schedule_add,
+            hermes_schedule::hermes_schedule_remove,
+            hermes_schedule::hermes_schedule_set_enabled,
+            hermes_schedule::hermes_schedule_reset,
+            hermes_schedule::hermes_schedule_due,
+            // HUP-S10.2 — Google Sheets + Calendar through Connections (disabled until configured).
+            google_workspace::google_workspace_status,
+            google_workspace::gsheets_read,
+            google_workspace::gsheets_append,
+            google_workspace::gcal_list,
+            google_workspace::gcal_create,
+            // HUP-S10.1 — media generation tiers, gallery, and the Media pop-out's data.
+            media::media_options,
+            media::media_set_settings,
+            media::media_generate_image,
+            media::media_gallery,
+            media::media_read,
+            media::media_save_copy,
             // HUP-S5.5 — signed first-run components. Update refuses until the component key is set.
             components::components_status,
             components::components_update,

@@ -100,11 +100,14 @@ impl PopoutKind {
         }
     }
 
-    /// Whether this kind has a view yet: the Activity monitor (S7.6) and the Browser (S5.1). The
-    /// others ship in later work packages (S6.7 contract reader, S10.1 media, the diff view);
-    /// until then they are refused, never opened empty.
+    /// Whether this kind has a view yet: the Activity monitor (S7.6), the Browser (S5.1) and the
+    /// Media player (S10.1). The others ship in later work packages (S6.7 contract reader, the diff
+    /// view); until then they are refused, never opened empty.
     pub(crate) fn available(self) -> bool {
-        matches!(self, PopoutKind::Monitor | PopoutKind::Browser)
+        matches!(
+            self,
+            PopoutKind::Monitor | PopoutKind::Browser | PopoutKind::Media
+        )
     }
 
     /// The first-open size (logical px).

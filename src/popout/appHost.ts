@@ -74,6 +74,8 @@ export async function openPopout(kind: PopoutKind): Promise<void> {
     return;
   }
   try {
+    // HUP-S10.1: the Media player's data comes from its own host; start it before the window asks.
+    if (kind === "media") await import("./mediaHost").then(({ startMediaHost }) => startMediaHost());
     await (await host).open(kind);
     // The monitor shows the tier; probe it once if nothing has yet (a local check, no network).
     if (kind === "monitor" && !tierSlice.get().loaded) void refreshTier();

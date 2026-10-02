@@ -36,6 +36,8 @@ import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { GrantsPanel } from "../agent/grants/GrantsPanel";
 import { desktopGrantsIo } from "../agent/grants/grants";
+import type { GoogleServiceStatus } from "../agent/schedule/schedule";
+import { invoke } from "../bridge/tauri/invoke";
 import { EscalationSettings } from "./EscalationSettings";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
 import { McpServersPanel } from "./McpServersPanel";
@@ -114,7 +116,8 @@ let aiBaseUrlEl: HTMLInputElement | null = null;
 let aiModelEl: HTMLInputElement | null = null;
 
 const CONN: [string, string, string][] = [
-  ["gcal", "Google Calendar", "events · read + propose writes"],
+  ["gcal", "Google Calendar", "events · read + add events you confirm"],
+  ["gsheets", "Google Sheets", "spreadsheets · connect only for now; no in-app sheet view yet"],
   ["gdrive", "Google Drive", "files · read"],
   ["notion", "Notion", "pages · read + draft"],
   ["linear", "Linear", "issues · read + draft"],
@@ -225,7 +228,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
   // build" note), not buttons that fake a "connected" flag or toast an excuse.
   // W4 — the three MCP services with a REAL OAuth backend (loopback-PKCE +
   // vaulted token). The rest of CONN stay honest "later" placeholders.
-  const WIRED_CONN = new Set(["github", "gdrive", "notion"]);
+  // HUP-S10.2: Google Sheets + Calendar ride the same flow, disabled until a Google client id is set.
+  const WIRED_CONN = new Set(["github", "gdrive", "notion", "gcal", "gsheets"]);
   const connRows = CONN.map(([id, name, scope]) => ({
     id,
     name,
@@ -253,6 +257,29 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
       live = false;
     };
   }, [s.sSec]);
+  // HUP-S10.2: whether Google Sheets/Calendar have an OAuth client configured (Rust decides).
+  const [googleSt, setGoogleSt] = useState<GoogleServiceStatus[] | null>(null);
+  useEffect(() => {
+    if (s.sSec !== "connections" || BRIDGE_MODE !== "tauri") return;
+    let live = true;
+    invoke<GoogleServiceStatus[]>("google_workspace_status", {})
+      .then((g) => {
+        if (live) setGoogleSt(g);
+      })
+      .catch(() => {
+        if (live) setGoogleSt([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [s.sSec]);
+  const googleBlock = (id: string): string | null => {
+    if (id !== "gcal" && id !== "gsheets") return null;
+    if (BRIDGE_MODE !== "tauri") return null;
+    const g = googleSt?.find((x) => x.service === id);
+    if (!g) return "checking whether Google is set up…";
+    return g.configured ? null : g.note ?? "Google is not set up in this build";
+  };
   const connFor = (id: string): ConnectionInfo | null =>
     conns?.find((c) => c.service === id) ?? null;
   const refreshConns = async () => {
@@ -549,6 +576,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 const st = cn.wired ? connFor(cn.id) : null;
                 const busy = connBusy === cn.id;
                 const connected = !!st?.connected;
+                const blocked = googleBlock(cn.id);
                 return (
                   <div key={cn.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 18px", borderBottom: "1px solid var(--line-1)" }}>
                     <span style={{ flex: 1, minWidth: 0 }}>
@@ -563,6 +591,11 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                       <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 1 }}>
                         {cn.wired ? cn.scope : cn.scope + " · not yet available"}
                       </span>
+                      {blocked && !connected && (
+                        <span data-testid={`conn-blocked-${cn.id}`} style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 2 }}>
+                          {blocked}
+                        </span>
+                      )}
                     </span>
                     {!cn.wired ? (
                       <button className="btn btn-ghost btn-sm" disabled style={{ opacity: 0.5, cursor: "not-allowed" }} aria-disabled="true">
@@ -573,7 +606,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                         {busy ? "…" : "Disconnect"}
                       </button>
                     ) : (
-                      <button className="btn btn-secondary btn-sm" onClick={() => doConnect(cn.id)} disabled={busy || BRIDGE_MODE !== "tauri"}>
+                      <button className="btn btn-secondary btn-sm" onClick={() => doConnect(cn.id)} disabled={busy || BRIDGE_MODE !== "tauri" || !!blocked}>
                         {busy ? "Waiting for browser…" : "Connect"}
                       </button>
                     )}
