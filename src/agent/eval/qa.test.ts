@@ -157,6 +157,34 @@ describe("deterministic scorer", () => {
       scoreQaItem(unanswerable, "Not documented, see citrate-docs:content/chain/price.md#usd", fixtureIndex).pass,
     ).toBe(false);
   });
+  it("credits the 'the documentation does not cover X' abstention the QA prompt asks for", () => {
+    // Real answers from the 2026-10-01 Gemma 4 E4B run (eval/results): each is a plain statement
+    // that the docs do not cover the topic, which is what QA_SYSTEM_PROMPT instructs. The shared
+    // W3.4 refusal markers miss every one of them, so all 15 unanswerable probes scored as failures.
+    for (const a of [
+      "The Citrate documentation does not contain information regarding the current trading price of SALT on Coinbase.",
+      "The documentation does not specify the exact block height at which the Citrate testnet will switch over to mainnet.",
+      "The documentation does not cover the memory retention policy for Memrizz.",
+      "The bundled Citrate documentation does not specify a recommended AWS EC2 instance type for running a validator.",
+      "I do not have documentation detailing the specific type of credential a Citrate passkey is.",
+      "The docs don't mention a Hardhat plugin.",
+    ]) {
+      const s = scoreQaItem(unanswerable, a, fixtureIndex);
+      expect(s.abstained, a).toBe(true);
+      expect(s.pass, a).toBe(true);
+    }
+    // Statements about what the documentation DOES say are not abstentions.
+    for (const a of [
+      "The documentation specifies chain id 40204.",
+      "The docs cover this: SALT has 18 decimals.",
+      "The documentation does contain the genesis parameters.",
+      "Validators do not need documentation to stake.",
+      // The match stays inside one sentence: a docs noun in one sentence and a negated verb in the next is not an abstention.
+      "The documentation lists two RPC ports. Clients do not specify a port when they use the default.",
+    ]) {
+      expect(scoreQaItem(unanswerable, a, fixtureIndex).abstained, a).toBe(false);
+    }
+  });
   it("aggregates rates over the right denominators", () => {
     const a = scoreQaItem(answerable, "40204 0x9d0c citrate-docs:content/chain/genesis.md#reference", fixtureIndex);
     const b = scoreQaItem(unanswerable, "I don't know; it is not documented.", fixtureIndex);

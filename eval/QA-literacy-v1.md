@@ -53,7 +53,9 @@ Results go to `eval/results/<date>-qa-literacy-v1-<model>.json`.
 
 ## Scope and limits (v1)
 
-- Not yet run against a model.
+- First run 2026-10-01 on T0 (Gemma 4 E4B): 10 % pass (the 3 unanswerable probes); all 30
+  answers said the topic is not documented, as expected while the skills are not bundled. See
+  `eval/results/README.md`.
 - The skills are not bundled into the app yet, so today a model answers from its own knowledge.
   The first useful run is after the S3.1/S3.2 wiring.
 - Provenance: hand-authored and kept disjoint from any E9 training trajectories. To change an

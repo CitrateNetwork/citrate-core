@@ -44,7 +44,9 @@ A citation is `<source>:<path>#<anchor>`, for example
 - **Citations.** Every cited ref must exist in the anchor index (file and heading). An answerable
   item needs at least one of its required citations (source and path) cited.
 - **Abstention.** An unanswerable item passes only when the answer admits the topic is not
-  documented (the refusal markers of `src/agent/eval.ts`) and cites nothing invalid.
+  documented and cites nothing invalid. "Admits" means the refusal markers of `src/agent/eval.ts`
+  or a "the documentation does not cover / specify / contain ..." statement
+  (`admitsNotDocumented` in `qa.ts`, added 2026-10-01 after the first live run).
 - An answerable item passes with coverage at or above the threshold (default 0.6,
   `--coverage-threshold`), a required citation, and no invalid citation.
 
@@ -76,7 +78,9 @@ and says so; the committed index is still checked.
 
 ## Scope and limits (v1)
 
-- Not yet run against a model. The Eval phase records the first scorecards.
+- First run 2026-10-01 on T0 (Gemma 4 E4B): 10 % pass, all of it the unanswerable probes; the model
+  abstained on 134 of 135 answerable items because it is given no documentation yet. The T1 run
+  is pending (out of memory on the test machine). See `eval/results/README.md`.
 - Citations name repo paths. The bundled graph from S3.1 must carry these paths and headings so
   Hermes can cite them; until S3.1 lands, a model can only cite them from its own knowledge.
 - Key-point matching is substring based, so a paraphrase that drops the exact figure or term
