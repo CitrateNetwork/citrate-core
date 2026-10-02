@@ -160,11 +160,21 @@ describe("HUP-S10.6 pop-out framework (PopoutRoot)", () => {
 
   it("a kind without a view: a main landmark with a heading, no axe violations", async () => {
     const f = fake();
+    // "diff" is the kind no lane has built yet (browser, contract and media now have views).
+    const m = mount(<PopoutRoot kind="diff" transport={async () => f.t} />);
+    await settle();
+    expect(m.host.querySelector("main h1")?.textContent).toBe("Code and diff");
+    expect(m.host.textContent).toMatch(/not built yet/i);
+    expect(document.title).toBe("Code and diff");
+    expect(await axeFindings(m.host)).toEqual([]);
+  });
+
+  it("browser before its first view: a main landmark, a polite status, no axe violations", async () => {
+    const f = fake();
     const m = mount(<PopoutRoot kind="browser" transport={async () => f.t} />);
     await settle();
     expect(m.host.querySelector("main h1")?.textContent).toBe("Browser");
-    expect(m.host.textContent).toMatch(/not built yet/i);
-    expect(document.title).toBe("Browser");
+    expect(m.host.querySelector('[role="status"]')?.textContent).toMatch(/waiting for the main window/i);
     expect(await axeFindings(m.host)).toEqual([]);
   });
 

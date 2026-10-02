@@ -75,12 +75,17 @@ fn the_typescript_allowlist_matches_this_one() {
 }
 
 #[test]
-fn only_the_activity_monitor_has_a_view_today() {
+fn the_browser_and_the_activity_monitor_have_views_today() {
+    // HUP-S5.1 added the Browser view to the S7.6 Activity monitor.
     let ready: Vec<PopoutKind> = PopoutKind::ALL
         .into_iter()
         .filter(|k| k.available())
         .collect();
-    assert_eq!(ready, [PopoutKind::Monitor]);
+    assert_eq!(ready, [PopoutKind::Browser, PopoutKind::Monitor]);
+    assert_eq!(
+        check_open_request("main", "browser"),
+        Ok(PopoutKind::Browser)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +112,7 @@ fn unknown_kinds_are_refused_by_name() {
 
 #[test]
 fn kinds_without_a_view_are_refused_honestly() {
-    for k in ["browser", "contract", "diff", "media"] {
+    for k in ["contract", "diff", "media"] {
         let err = check_open_request("main", k).expect_err(k);
         assert!(err.contains("not built yet"), "{err}");
     }

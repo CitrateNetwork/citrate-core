@@ -6,6 +6,8 @@
 // from Rust (`popout_monitor_facts`, the local llama-server's --ctx-size); Stop is
 // `store.stopAgentTurn`; the worker processes come from Rust (`hermes_workers`, HUP-S1.9). In the
 // web preview there are no windows to open, and it says so.
+// HUP-S5.1: the Browser pop-out reads Hermes's browser through the `hermes_browser_*` commands;
+// its Stop runs `hermes_browser_stop`, and a failure is shown to the member.
 // =====================================================================
 import { invoke } from "../bridge/tauri/invoke";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -17,6 +19,7 @@ import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelR
 import { resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
+import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
 import type { WorkerRow } from "./monitorSnapshot";
 
@@ -48,6 +51,14 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
       },
       stop: () => store.stopAgentTurn(),
       contextWindow: async () => (await invoke<{ localCtxTokens: number }>("popout_monitor_facts")).localCtxTokens,
+      browser: {
+        status: () => tauriBrowserApi.status(),
+        frame: (after) => tauriBrowserApi.frame(after),
+        stop: () =>
+          tauriBrowserApi.stop().catch((e) => {
+            store.toast("Could not stop the browser: " + (e instanceof Error ? e.message : String(e)));
+          }),
+      },
       // HUP-S1.9: the sidecar's worker processes (Rust → the sidecar's GET /workers).
       workers: () => invoke<WorkerRow[]>("hermes_workers"),
       now: () => Date.now(),

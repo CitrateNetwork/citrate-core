@@ -74,6 +74,8 @@ mod node_mcp_token;
 mod node_mcp_tools;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
 mod popout;
+// HUP-S5.1 + S5.6 — the member's controls for Hermes's browser (the sidecar runs it).
+mod browser;
 mod provisioning;
 mod recovery_kit;
 mod sbt_art;
@@ -800,6 +802,14 @@ pub fn run() {
             seam::comms_connections,
             popout::popout_open,
             popout::popout_monitor_facts,
+            browser::hermes_browser_status,
+            browser::hermes_browser_frame,
+            browser::hermes_browser_stop,
+            browser::hermes_browser_resume,
+            browser::hermes_browser_attach,
+            browser::hermes_browser_detach,
+            browser::hermes_browser_origin,
+            browser::hermes_browser_decide,
             // HUP-S7.3 + S7.5 — nightly anchor (off until AnchorRegistry is deployed; the anchor
             // key signs only inside the anchor ceremony) + the daily metering report.
             chain_agent::hermes_chain_status,
