@@ -660,6 +660,7 @@ pub fn run() {
             hermes_learn::hermes_learn_reject,
             hermes_learn::hermes_learn_memories,
             hermes_learn::hermes_learn_store_pending,
+            hermes_learn::hermes_learn_resolve,
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,

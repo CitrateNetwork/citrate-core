@@ -128,6 +128,9 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async learnStorePending() {
       return [];
     },
+    async learnResolve() {
+      throw new Error("learning needs the Hermes sidecar in the desktop app");
+    },
     async learnPublish() {
       throw new Error("PUBLISH_DISABLED: publishing needs the desktop app");
     },
