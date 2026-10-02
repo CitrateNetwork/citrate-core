@@ -32,6 +32,7 @@ mod agent;
 mod agent_sbt;
 mod ai;
 mod blocking;
+mod capsule_pins;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
