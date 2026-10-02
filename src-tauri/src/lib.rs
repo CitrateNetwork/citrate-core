@@ -44,6 +44,7 @@ mod contract_reader;
 mod deploy_gate;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
+mod hic_records;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
@@ -579,6 +580,7 @@ pub fn run() {
             escalation::escalation_budget_set,
             escalation::escalation_quote,
             escalation::escalation_run,
+            hic_records::hic_record_decision,
             escalation::escalation_registry_status,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,

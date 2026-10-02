@@ -107,6 +107,10 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   undoSession(id) {
     return invoke<UndoOutcome>("hermes_undo_session", { id });
   },
+  // HUP-S2.6 — the member's answer on a card, into core's HIC outbox (src-tauri/src/hic_records.rs).
+  recordDecision(kind, decision, subject, reason) {
+    return invoke<number>("hic_record_decision", { kind, decision, subject, reason });
+  },
   // HUP-S3.4 — verified workflow runs + verified self-learning (src-tauri/src/hermes_learn.rs).
   workflowRun(sessionId, workflow) {
     return invoke<string>("hermes_workflow_run", { sessionId, workflowJson: JSON.stringify(workflow) });
