@@ -23,6 +23,9 @@ import {
   importDeviceCode,
   exportDeviceCode,
 } from "../shell/slices/cluster";
+import { FleetWizard } from "../fleet/FleetWizard";
+import { tauriFleet } from "../bridge/tauri/fleet";
+import { BRIDGE_MODE } from "../bridge/mode";
 import { deviceNameError, devicePanelModel } from "./clusterDevices";
 
 function shortAddr(a: string): string {
@@ -182,6 +185,9 @@ export function Cluster({ store }: SurfaceProps) {
         roster is the admission list, enforced by the cluster daemon. Peers show online as they
         actually connect; a lone node has no one to mesh with yet.
       </p>
+
+      {/* HUP-S8.2/S8.3 — "Connect my machines": probe, opt-in discovery, link/QR pairing, Tailscale help. */}
+      <FleetWizard api={tauriFleet} available={BRIDGE_MODE === "tauri"} />
 
       {st.error && (
         <div className="surface" role="alert" style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--bad, #c0392b)", lineHeight: 1.5 }}>
