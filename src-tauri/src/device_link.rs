@@ -836,7 +836,7 @@ impl RevokeConfirmations {
     }
 
     /// The device for `id`, consumed. A wrong id leaves the pending one in place.
-    pub fn take(&self, id: &str, now: u64) -> Result<String, String> {
+    pub fn consume(&self, id: &str, now: u64) -> Result<String, String> {
         let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref() {
             Some((pid, _, _)) if pid == id => {}
@@ -877,7 +877,7 @@ pub async fn device_link_revoke(
     confirm_id: String,
 ) -> Result<DeviceLinksDto, String> {
     crate::blocking::off_main(move || {
-        let device = revoke_confirmations().take(&confirm_id, now_secs())?;
+        let device = revoke_confirmations().consume(&confirm_id, now_secs())?;
         let member = crate::comms::device_identity(&app)?;
         let rev = sign_revocation(&member.seed_hex, &device, now_secs())?;
         let path = store_path(&app)?;

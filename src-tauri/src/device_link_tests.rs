@@ -573,20 +573,20 @@ fn a_revocation_needs_the_confirmation_core_minted_for_that_device() {
     let dev = addr_of(&seed(7));
     let other = addr_of(&seed(8));
     // Nothing prepared: nothing can be revoked, whatever id is sent.
-    assert!(c.take("anything", 1_000).is_err());
+    assert!(c.consume("anything", 1_000).is_err());
     let p = c.prepare(&format!("0x{dev}"), 1_000, "c-1".into()).expect("prepare");
     assert_eq!(p.device, dev);
     assert!(p.statement.contains("for good"));
     // A wrong id does not consume the right one.
-    assert!(c.take("c-2", 1_001).is_err());
-    assert_eq!(c.take("c-1", 1_001).expect("take"), dev);
+    assert!(c.consume("c-2", 1_001).is_err());
+    assert_eq!(c.consume("c-1", 1_001).expect("take"), dev);
     // Single use.
-    assert!(c.take("c-1", 1_002).is_err());
+    assert!(c.consume("c-1", 1_002).is_err());
     // A newer prepare replaces the older one, and it expires.
     c.prepare(&dev, 2_000, "c-3".into()).expect("prepare");
     c.prepare(&other, 2_001, "c-4".into()).expect("prepare");
-    assert!(c.take("c-3", 2_002).is_err());
-    assert!(c.take("c-4", 2_001 + REVOKE_CONFIRM_SECS).is_err(), "expired");
+    assert!(c.consume("c-3", 2_002).is_err());
+    assert!(c.consume("c-4", 2_001 + REVOKE_CONFIRM_SECS).is_err(), "expired");
     // A malformed device is refused up front.
     assert!(c.prepare("not-an-address", 3_000, "c-5".into()).is_err());
 }

@@ -34,7 +34,7 @@ impl ContractInbox {
     }
 
     /// Queue a request from `caller`. Only the Contract reader may send.
-    pub fn push(&self, caller: &str, payload: serde_json::Value) -> Result<(), String> {
+    pub fn queue_request(&self, caller: &str, payload: serde_json::Value) -> Result<(), String> {
         if caller != READER_LABEL {
             return Err("only the Contract reader may send contract requests".into());
         }
@@ -53,7 +53,7 @@ impl ContractInbox {
     }
 
     /// Everything queued, oldest first. Only the main window may drain.
-    pub fn take(&self, caller: &str) -> Result<Vec<serde_json::Value>, String> {
+    pub fn drain_for(&self, caller: &str) -> Result<Vec<serde_json::Value>, String> {
         if caller != MAIN_LABEL {
             return Err("only the main window reads contract requests".into());
         }
@@ -72,7 +72,7 @@ pub async fn popout_contract_send(
     let inbox = app
         .try_state::<ContractInbox>()
         .ok_or("internal: contract inbox unavailable")?;
-    inbox.push(webview_window.label(), payload)?;
+    inbox.queue_request(webview_window.label(), payload)?;
     app.emit_to(
         MAIN_LABEL,
         POPOUT_EVENT,
@@ -91,7 +91,7 @@ pub async fn popout_contract_take(
     let inbox = app
         .try_state::<ContractInbox>()
         .ok_or("internal: contract inbox unavailable")?;
-    inbox.take(webview_window.label())
+    inbox.drain_for(webview_window.label())
 }
 
 #[cfg(test)]

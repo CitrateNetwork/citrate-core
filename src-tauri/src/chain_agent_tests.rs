@@ -478,13 +478,15 @@ fn a_sent_anchor_is_never_forgotten_after_broadcast() {
     assert!(h.days().contains(&20000));
     // Reverted: not kept (the day may be raised again), not anchored.
     let h = held("d");
-    h.record(&receipt(None, None)).expect("record before send");
+    h.record_sent(&receipt(None, None))
+        .expect("record before send");
     let ok_port = Port::default();
     let (anchored, _) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(0)), &h);
     assert!(!anchored);
     assert!(h.days().is_empty());
     // Confirmed and recorded: anchored, nothing kept.
-    h.record(&receipt(None, None)).expect("record before send");
+    h.record_sent(&receipt(None, None))
+        .expect("record before send");
     let (anchored, line) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(1)), &h);
     assert!(anchored);
     assert_eq!(line, "Anchored in block 9.");
@@ -498,7 +500,8 @@ fn an_in_flight_anchor_survives_a_restart() {
     let path = in_flight_path("restart");
     {
         let h = InFlightAnchors::load(Some(path.clone()));
-        h.record(&receipt(None, None)).expect("record before send");
+        h.record_sent(&receipt(None, None))
+            .expect("record before send");
     }
     let h = InFlightAnchors::load(Some(path.clone()));
     assert_eq!(h.blocked(), None);
@@ -513,7 +516,7 @@ fn an_in_flight_anchor_survives_a_restart() {
     assert!(r.raised.is_empty(), "no second card for a day in flight");
     assert_eq!(r.skipped.len(), 1);
     // Settled: removed on disk too.
-    h.remove(20000);
+    h.settle_day(20000);
     assert!(InFlightAnchors::load(Some(path)).days().is_empty());
 }
 
@@ -523,7 +526,7 @@ fn the_in_flight_file_is_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let path = in_flight_path("perms");
     let h = InFlightAnchors::load(Some(path.clone()));
-    h.record(&receipt(None, None)).expect("record");
+    h.record_sent(&receipt(None, None)).expect("record");
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -537,7 +540,7 @@ fn an_unreadable_in_flight_file_blocks_new_anchors_instead_of_forgetting() {
     std::fs::write(&path, b"{ not json").unwrap();
     let h = InFlightAnchors::load(Some(path.clone()));
     assert!(h.blocked().is_some());
-    assert!(h.record(&receipt(None, None)).is_err());
+    assert!(h.record_sent(&receipt(None, None)).is_err());
     assert!(
         std::fs::read(&path).unwrap().starts_with(b"{ not json"),
         "kept as is"

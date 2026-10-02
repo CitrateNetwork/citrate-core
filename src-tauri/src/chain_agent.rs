@@ -418,7 +418,7 @@ impl InFlightAnchors {
 
     /// Record a signed anchor before it is sent (or update a sent one). Fails, and keeps memory
     /// unchanged, when it cannot be saved.
-    pub fn record(&self, r: &AnchorReceipt) -> Result<(), String> {
+    pub fn record_sent(&self, r: &AnchorReceipt) -> Result<(), String> {
         let mut m = self.lock();
         let mut next = m.clone();
         next.insert(r.day, r.clone());
@@ -429,7 +429,7 @@ impl InFlightAnchors {
 
     /// The day is settled (anchored or reverted). Kept in memory as removed even if the save
     /// fails; the next save or the next re-poll writes it.
-    pub fn remove(&self, day: u64) {
+    pub fn settle_day(&self, day: u64) {
         let mut m = self.lock();
         if m.remove(&day).is_some() {
             let _ = self.save(&m);
@@ -459,12 +459,12 @@ pub fn after_broadcast(
 ) -> (bool, String) {
     let hold = || {
         // Best effort: the record written before the send already holds the day.
-        let _ = held.record(r);
+        let _ = held.record_sent(r);
     };
     match (r.block_number, receipt_confirms(r)) {
         (Some(block), true) => match port.and_then(|p| settle(p, r)) {
             Ok(true) => {
-                held.remove(r.day);
+                held.settle_day(r.day);
                 (true, format!("Anchored in block {block}."))
             }
             _ => {
@@ -485,7 +485,7 @@ pub fn after_broadcast(
             )
         }
         (Some(_), false) => {
-            held.remove(r.day);
+            held.settle_day(r.day);
             (
                 false,
                 "The transaction did not succeed on chain; the day is not anchored.".to_string(),
@@ -685,7 +685,7 @@ pub async fn hermes_anchor_approve(
         let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&app)
             .ok_or("internal: custody state unavailable")?;
         let rpc = crate::rpc::RpcClient::citrate();
-        let record = |r: &AnchorReceipt| held.record(r);
+        let record = |r: &AnchorReceipt| held.record_sent(r);
         let receipt = ceremony()
             .approve_and_broadcast(
                 &keyring(),
@@ -730,7 +730,7 @@ fn repoll_submitted(port: &dyn AnchorPort, held: &InFlightAnchors) {
                 ..r.clone()
             };
             if settle(port, &done).unwrap_or(false) || rc.status == Some(0) {
-                held.remove(r.day);
+                held.settle_day(r.day);
             }
         }
     }

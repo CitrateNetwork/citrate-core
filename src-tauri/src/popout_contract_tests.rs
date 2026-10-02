@@ -18,31 +18,41 @@ fn only_the_reader_can_queue_and_only_main_can_drain() {
         "",
     ] {
         assert!(
-            inbox.push(other, req("write")).is_err(),
+            inbox.queue_request(other, req("write")).is_err(),
             "{other} must not queue"
         );
     }
     inbox
-        .push(READER_LABEL, req("initial"))
+        .queue_request(READER_LABEL, req("initial"))
         .expect("reader queues");
-    assert!(inbox.take("popout-browser").is_err());
-    assert!(inbox.take(READER_LABEL).is_err());
-    let got = inbox.take(MAIN_LABEL).expect("main drains");
+    assert!(inbox.drain_for("popout-browser").is_err());
+    assert!(inbox.drain_for(READER_LABEL).is_err());
+    let got = inbox.drain_for(MAIN_LABEL).expect("main drains");
     assert_eq!(got, vec![req("initial")]);
-    assert!(inbox.take(MAIN_LABEL).expect("empty").is_empty());
+    assert!(inbox.drain_for(MAIN_LABEL).expect("empty").is_empty());
 }
 
 #[test]
 fn the_queue_and_each_request_are_bounded() {
     let inbox = ContractInbox::default();
     let big = serde_json::json!({ "pad": "x".repeat(MAX_REQUEST_BYTES) });
-    assert!(inbox.push(READER_LABEL, big).is_err());
+    assert!(inbox.queue_request(READER_LABEL, big).is_err());
     for _ in 0..MAX_QUEUED {
-        inbox.push(READER_LABEL, req("view")).expect("room");
+        inbox
+            .queue_request(READER_LABEL, req("view"))
+            .expect("room");
     }
-    assert!(inbox.push(READER_LABEL, req("view")).is_err(), "full");
-    assert_eq!(inbox.take(MAIN_LABEL).expect("drain").len(), MAX_QUEUED);
-    inbox.push(READER_LABEL, req("view")).expect("room again");
+    assert!(
+        inbox.queue_request(READER_LABEL, req("view")).is_err(),
+        "full"
+    );
+    assert_eq!(
+        inbox.drain_for(MAIN_LABEL).expect("drain").len(),
+        MAX_QUEUED
+    );
+    inbox
+        .queue_request(READER_LABEL, req("view"))
+        .expect("room again");
 }
 
 #[test]
