@@ -43,6 +43,7 @@ mod daemons;
 mod contract_reader;
 mod deploy_gate;
 mod fl_rounds;
+mod fork_dry_run;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod web_budgets;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
@@ -548,6 +549,7 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            fork_dry_run::deploy_gate_fork_dry_run,
             // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
             fl_rounds::fl_overview,
             fl_rounds::fl_coordinator_set,

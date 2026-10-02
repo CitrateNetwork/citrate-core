@@ -75,6 +75,24 @@ describe("HUP-S6.4 — the D-4 deploy gate seam", () => {
     expect(invokeMock).toHaveBeenCalledWith("deploy_gate_submit", { inputs });
   });
 
+  it("gateForkDryRun → deploy_gate_fork_dry_run with the request (HUP-S6.10)", async () => {
+    invokeMock.mockResolvedValueOnce({ run: { state: "notInstalled" }, txInputHex: "0x6000", citratePrecompiles: "unknown" });
+    const request = {
+      bytecodeHex: "0x6000",
+      stateRpc: "http://127.0.0.1:8545",
+      testMint: { quantity: 1, priceWei: "0" },
+    };
+    const r = await tauriContracts.gateForkDryRun(request);
+    expect(invokeMock).toHaveBeenCalledWith("deploy_gate_fork_dry_run", { request });
+    expect(r.run.state).toBe("notInstalled");
+  });
+
+  it("sim is honest — the fork dry run needs the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.gateForkDryRun({ bytecodeHex: "0x6000" })).rejects.toThrow(/desktop node/i);
+    }
+  });
+
   it("sim is honest — no gate runs without the desktop node", async () => {
     if (bridge.mode === "sim") {
       await expect(bridge.contracts.gateLookup("0x6080")).rejects.toThrow(/desktop node/i);

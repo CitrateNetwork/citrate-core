@@ -75,7 +75,26 @@ export interface DeployGateInputs {
   slither: ToolRun;
   aderyn: ToolRun;
   medusa: { run: ToolRun; callBudget: number };
-  forkDryRun: { run: ToolRun; txInputHex: string; citratePrecompiles: "none" | "used" | "unknown" };
+  forkDryRun: ForkDryRunInput;
+}
+
+/** The fork item's input: the fork's output, the init code it executed, and precompile use. */
+export interface ForkDryRunInput {
+  run: ToolRun;
+  txInputHex: string;
+  citratePrecompiles: "none" | "used" | "unknown";
+}
+
+/** HUP-S6.10 — ask core to run the fork step on the Citrate-aware fork (`citrate-fork`).
+ *  `stateRpc` is chain 40204 (omitted / "citrate") or an http loopback anvil fork of it.
+ *  Read-only: nothing is signed or sent. */
+export interface ForkDryRunRequest {
+  bytecodeHex: string;
+  constructorArgsHex?: string | null;
+  stateRpc?: string | null;
+  from?: string | null;
+  /** The hello-mint / erc721 test mint run on the fork after the create. */
+  testMint?: { quantity: number; priceWei: string } | null;
 }
 
 export interface GateCardItem {

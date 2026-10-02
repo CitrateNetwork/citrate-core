@@ -10,7 +10,13 @@
 // Store and whose Tauri impl returns `Unavailable` (Rule 1) until a later
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
-import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
+import type {
+  DeployGateInputs,
+  DeployGateLookup,
+  DeployGateRecord,
+  ForkDryRunInput,
+  ForkDryRunRequest,
+} from "../agent/deployGate";
 import type { VerifiedSourceView } from "../agent/verifiedSource";
 import type { CheckpointList, UndoOutcome } from "../agent/fileChanges";
 import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
@@ -1504,6 +1510,9 @@ export interface ContractsDomain {
   gateLookup(bytecodeHex: string, constructorArgsHex?: string): Promise<DeployGateLookup>;
   /** HUP-S6.4 — hand verifier outputs to core; core parses them and stores the verdict. */
   gateSubmit(inputs: DeployGateInputs): Promise<DeployGateRecord>;
+  /** HUP-S6.10 — run the gate's fork step on the Citrate-aware fork; returns `forkDryRun` for
+   *  `gateSubmit`. Read-only (reads chain state, signs and sends nothing). */
+  gateForkDryRun(request: ForkDryRunRequest): Promise<ForkDryRunInput>;
   /** HUP-S4.3 — a contract's verified source/ABI/compiler from CitrateScan (read-only). Rejects
    *  only when the lookup itself fails; "not verified" is a normal answer. */
   verifiedSource(address: string): Promise<VerifiedSourceView>;
