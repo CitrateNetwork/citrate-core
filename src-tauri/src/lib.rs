@@ -33,6 +33,7 @@ mod agent_sbt;
 mod ai;
 mod blocking;
 mod capsule_pins;
+mod chain_agent;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
@@ -253,6 +254,9 @@ pub fn run() {
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());
+            // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
+            // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
+            chain_agent::start_nightly_if_ready(app.handle().clone());
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
@@ -712,6 +716,13 @@ pub fn run() {
             seam::comms_connections,
             popout::popout_open,
             popout::popout_monitor_facts,
+            // HUP-S7.3 + S7.5 — nightly anchor (off until AnchorRegistry is deployed; the anchor
+            // key signs only inside the anchor ceremony) + the daily metering report.
+            chain_agent::hermes_chain_status,
+            chain_agent::hermes_chain_settings_set,
+            chain_agent::hermes_metering_daily,
+            chain_agent::hermes_anchor_approve,
+            chain_agent::hermes_anchor_reject,
             // HUP-S4.2 — citrate-node MCP server (Settings, API endpoints & keys).
             node_mcp::node_mcp_status,
             node_mcp::node_mcp_set_enabled,

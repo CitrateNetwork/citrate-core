@@ -85,6 +85,10 @@ use serde::{Deserialize, Serialize};
 use crate::custody::CustodyVault;
 use crate::wallet::{self, WalletError};
 
+/// HUP-S7.3: the anchor ceremony, a single-purpose signer for the nightly anchor with its own
+/// no-funds key (Rule-3 ADR D5). It never touches the wallet key.
+pub mod anchor;
+
 /// The action string surfaced when calldata cannot be decoded to a human action.
 /// A ceremony carrying this action is `requires_raw_ack` and cannot be approved
 /// without an explicit raw-mode acknowledgement (B1.2-ADV-5).
