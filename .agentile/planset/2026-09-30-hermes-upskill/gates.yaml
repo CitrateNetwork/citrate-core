@@ -41,12 +41,23 @@ gates:
     reviewers: [Larry Klosowski (owner)]
   - id: gate1
     name: Stable + one agent (S0, S1)
-    status: pending
+    status: partial
     exit_criteria:
       - {id: g1-approval-audit, desc: "Every effectful chat tool routes through approval (enumeration test)", met: false}
       - {id: g1-injection, desc: "Injection eval v1 scored per tier", met: false}
       - {id: g1-no-block, desc: "Tripwire covers all command files; no sync I/O commands", met: false}
-      - {id: g1-downloads, desc: "Download resilience tests (lock, idle-resume, 206, restart-resume, verify-not-redownload)", met: false}
+      - id: g1-downloads
+        desc: Download resilience tests (lock, idle-resume, 206, restart-resume, verify-not-redownload)
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s0-stabilize/EVIDENCE.md
+        note: >-
+          Met 2026-10-01 on release/0.5.0-hermes-upskill. S0.3 (model_tests.rs, model_catalog_tests.rs,
+          models.test.ts) covers the single-flight lock, resume from the exact byte after a failed
+          segment or a dropped connection, 206 required on resume, interrupted downloads listed after
+          restart, and verify-not-redownload. A stalled body is bounded by the 180 s per-segment
+          deadline and then resumes; there is no separate stall test. S0.3b (HF token for gated
+          repos, hf_auth_tests.rs, 25 tests) merged via PR #141. Not yet run against a live gated
+          Hugging Face repo.
       - {id: g1-render, desc: "Markdown golden tests + real SSE streaming", met: false}
       - {id: g1-sidebar, desc: "Sidebar per D-34 with nav tests", met: false}
       - {id: g1-loop, desc: "Loop in sidecar; UI/CLI/MCP share a session", met: false}
