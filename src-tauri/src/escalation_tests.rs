@@ -794,7 +794,7 @@ fn a_confirmation_is_single_use_and_bound_to_its_quote_and_price() {
     assert!(b
         .authorize("q1", q1.cost_micros, Some(&c1), false, T0, "x3".into())
         .is_err());
-    assert!(b.confirmations.get("q1").is_none());
+    assert!(!b.confirmations.contains_key("q1"));
 }
 
 #[test]

@@ -81,12 +81,10 @@ fn siwe() -> String {
 }
 
 #[test]
-fn taint_sources_none_is_unknown_and_empty_is_clean() {
-    assert_eq!(taint_from(None), TaskTaint::Unknown);
-    assert_eq!(taint_from(Some(vec![])), TaskTaint::Clean);
+fn every_source_the_caller_names_is_kept_as_taint() {
     assert_eq!(
-        taint_from(Some(vec!["ext".into()])),
-        TaskTaint::Sources(vec!["ext".into()])
+        window_taint(Some(vec!["ext".into(), "https://a.example".into()])),
+        TaskTaint::Sources(vec!["ext".into(), "https://a.example".into()])
     );
 }
 

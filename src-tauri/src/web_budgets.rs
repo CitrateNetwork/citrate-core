@@ -95,15 +95,6 @@ pub fn attest_origin(_tab_id: Option<&str>) -> Option<OriginAttestation> {
     None
 }
 
-/// `None` (the caller could not say) is treated as tainted; an empty list is clean.
-pub fn taint_from(sources: Option<Vec<String>>) -> TaskTaint {
-    match sources {
-        None => TaskTaint::Unknown,
-        Some(v) if v.is_empty() => TaskTaint::Clean,
-        Some(v) => TaskTaint::Sources(v),
-    }
-}
-
 /// The taint a main-window `web_signing_request` carries.
 ///
 /// The caller's list can only ADD taint. A caller that says "nothing untrusted" is not believed:

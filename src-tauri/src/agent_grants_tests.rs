@@ -604,8 +604,10 @@ fn a_stored_grant_in_a_deny_location_shows_as_blocked() {
     let store = fx.store();
     let profile = fx.home().join("Library/Application Support/Google/Chrome");
     std::fs::create_dir_all(&profile).unwrap();
-    let mut st = GrantState::default();
-    st.next_id = 2;
+    let mut st = GrantState {
+        next_id: 2,
+        ..GrantState::default()
+    };
     st.grants.push(Grant {
         id: "g-1".into(),
         kind: GrantKind::Folder,

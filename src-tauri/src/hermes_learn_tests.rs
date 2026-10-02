@@ -296,7 +296,7 @@ fn register_calldata() -> String {
     let w = |hex: &str| format!("{hex:0>64}");
     let s = |text: &str| {
         let mut h = hex::encode(text.as_bytes());
-        while h.len() % 64 != 0 {
+        while !h.len().is_multiple_of(64) {
             h.push('0');
         }
         format!("{}{h}", w(&format!("{:x}", text.len())))

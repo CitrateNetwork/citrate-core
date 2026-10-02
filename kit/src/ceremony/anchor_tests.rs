@@ -639,7 +639,7 @@ fn a_locked_vault_keeps_the_anchor_key_unused() {
 
 #[test]
 fn the_gas_caps_are_placeholders_pending_owner_sign_off() {
-    assert!(GAS_CAPS_PENDING_OWNER_SIGNOFF);
+    const { assert!(GAS_CAPS_PENDING_OWNER_SIGNOFF) };
     assert_eq!(PLACEHOLDER_MAX_GAS_LIMIT, 200_000);
     assert_eq!(PLACEHOLDER_MAX_GAS_PRICE_WEI, 50_000_000_000);
 }
