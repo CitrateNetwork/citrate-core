@@ -48,7 +48,7 @@ const USAGE =
 export const APP_EMBED_MODEL = "bge-base-en-v1.5";
 /** Files the memory daemon loads from CITRATE_BGE_MODEL_DIR (mem-index transformer.rs). */
 export const BGE_FILES = ["config.json", "tokenizer.json", "model.safetensors"];
-/** Measured CPU embedding rate of a corpus build on an Apple M2 Max (2026-10-01), nodes per second. */
+/** CPU embedding rate measured on an Apple M2 Max (2026-10-01 corpus builds: 2.7 to 3.7 nodes/s), rounded. */
 const CPU_NODES_PER_SECOND = 3;
 
 const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
@@ -180,7 +180,7 @@ export function checkEmbedder(manifest, bgeDir, { allowUnembedded = false } = {}
     if (v.weights_sha256 !== weightsSha256) {
       throw new Error(
         `tenant ${t.tenant} vectors were made with other model weights (${v.weights_sha256.slice(0, 12)}, bundled ${weightsSha256.slice(0, 12)}); ` +
-          `the importer would ignore them and embed ${t.nodes} nodes on the member's CPU`,
+          `the importer would ignore them and embed ${t.nodes} nodes on each member's CPU`,
       );
     }
     embeddedNodes += t.nodes;
@@ -188,7 +188,7 @@ export function checkEmbedder(manifest, bgeDir, { allowUnembedded = false } = {}
   if (unembedded.length && !allowUnembedded) {
     const n = unembedded.reduce((a, t) => a + t.nodes, 0);
     throw new Error(
-      `${unembedded.map((t) => t.tenant).join(", ")}: no precomputed vectors; every member would embed ${n} nodes on the member's CPU ` +
+      `${unembedded.map((t) => t.tenant).join(", ")}: no precomputed vectors; each member's first launch would embed ${n} nodes on their own CPU ` +
         `(about ${Math.ceil(n / CPU_NODES_PER_SECOND / 60)} minutes on an Apple M2 Max). Build the corpus with EMBED_BGE_DIR, or pass --allow-unembedded for a dev build`,
     );
   }

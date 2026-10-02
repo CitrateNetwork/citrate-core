@@ -73,13 +73,22 @@ vectors and every member would embed the whole corpus on their own CPU.
 
 ## Precomputed vectors and first-run time
 
-Embedding the corpus on a member's CPU is slow: 1.85 nodes per second measured on
-an Apple M2 Max, so the 10,630-node corpus would hold the memory store (and keep
-the daemon down) for about 96 minutes. A corpus built with `EMBED_BGE_DIR` ships
-`tenants/<tenant>.vectors.f16`; the importer reuses them when the model id,
-dimension and the sha256 of the bundled `model.safetensors` match, and the report
-says how many nodes were embedded and how many took the bundled vectors
+Embedding the corpus on a member's CPU is slow: 2.7 to 3.7 nodes per second on an
+Apple M2 Max (2026-10-01 builds), so the full 32,702-node corpus would hold the memory
+store (and keep the daemon down) for two to three hours. A corpus built with
+`EMBED_BGE_DIR` ships `tenants/<tenant>.vectors.f16`; the importer reuses them when the
+model id, dimension and the sha256 of the bundled `model.safetensors` match, and the
+report says how many nodes were embedded and how many took the bundled vectors
 (`nodesEmbedded`, `vectorsReused`).
+
+Measured on 2026-10-02 (M2 Max, the app's bundled BGE files, weights `c7c1988a...67d7`):
+the release-time build embedded all 32,702 nodes in 10,010 s (niced, beside other work);
+the corpus is 99,669,598 bytes on disk (49.4 MB corpus files, 50.2 MB vectors) and
+58,498,298 bytes as `knowledge-corpus.tar.gz`. `stage-knowledge-corpus.mjs` with
+`--bge-dir` accepted it ("vectors for every node match the bundled bge-base-en-v1.5"). A
+real `mem-mcp import-corpus` into a fresh store then took 224 s with `vectorsReused`
+32,702 and `nodesEmbedded` 0 (31,302 edges; the store is 262 MB), and a second import was
+a no-op in 4.9 s.
 
 ## Answering with citations
 

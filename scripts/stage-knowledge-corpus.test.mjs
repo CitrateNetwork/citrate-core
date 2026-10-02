@@ -225,7 +225,7 @@ describe("the bundled BGE embedder is a hard dependency of the corpus (US-3.1 of
   it("refuses a tenant without vectors unless unembedded staging is asked for, and says what it costs", () => {
     const bge = fakeBge();
     const { manifest } = verifyCorpus(corpus);
-    expect(() => checkEmbedder(manifest, bge.dir)).toThrow(/no precomputed vectors.*embed \d+ nodes on the member's CPU/);
+    expect(() => checkEmbedder(manifest, bge.dir)).toThrow(/no precomputed vectors.*each member's first launch would embed \d+ nodes on their own CPU/);
     expect(checkEmbedder(manifest, bge.dir, { allowUnembedded: true }).embeddedNodes).toBe(0);
   });
 });

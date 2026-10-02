@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01
-branch: hup/n5-corpus-rest
+branch: hup/m2-knowledge
 author: Larry Klosowski + Claude Opus 5.5
 status: active
 ---
@@ -17,8 +17,13 @@ A release stages the Hermes knowledge corpus here, verified, with:
 
 ```bash
 node scripts/stage-knowledge-corpus.mjs <corpus-dir | knowledge-corpus.tar.gz> \
+  --bge-dir src-tauri/models/bge-base-en-v1.5 \
   --mem-mcp src-tauri/binaries/mem-mcp-<target-triple>
 ```
+
+The corpus is imported only beside the bundled BGE model, so the stager requires
+`--bge-dir` and checks that every tenant's precomputed vectors were made with exactly
+those weights.
 
 The corpus (format `citrate-corpus/2`) is built in citrate-memories by
 `scripts/build-corpus.sh`; the release workflow pulls it as the pinned

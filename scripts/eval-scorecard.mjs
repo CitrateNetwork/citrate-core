@@ -30,8 +30,10 @@ const isRate = (v) => v === null || (typeof v === "number" && Number.isFinite(v)
 function qaDataset(sc) {
   const r = sc.retrieval;
   if (!r || !Array.isArray(r.tenants)) return sc.datasetVersion;
-  if (r.mode === "memory_search tool") return `${sc.datasetVersion} + corpus (memory_search tool, k=${r.k})`;
-  return `${sc.datasetVersion} + corpus (${r.tenants.join("+")}, k=${r.k})`;
+  // The corpus digest prefix tells runs over different imported corpora apart.
+  const corpus = typeof r.corpusDigest === "string" ? `corpus ${r.corpusDigest.slice(0, 12)}` : "corpus";
+  if (r.mode === "memory_search tool") return `${sc.datasetVersion} + ${corpus} (memory_search tool, k=${r.k})`;
+  return `${sc.datasetVersion} + ${corpus} (${r.tenants.join("+")}, k=${r.k})`;
 }
 
 /** {kind:"tools"|"qa", sc} for a scorecard file's parsed JSON, else null. */
