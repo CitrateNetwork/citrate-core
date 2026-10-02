@@ -32,6 +32,8 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
+import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
 import { WebSearchSettings } from "./WebSearchSettings";
 import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
@@ -826,6 +828,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 {s.socketPath}
               </span>
             </div>
+            {/* HUP-S4.2 — this node as an MCP server (off by default; loopback; connect token). */}
+            <NodeMcpPanel io={desktopNodeMcpIo} />
           </div>
         )}
 

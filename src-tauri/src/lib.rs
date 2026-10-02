@@ -50,6 +50,14 @@ mod model;
 mod model_register;
 mod model_registry;
 mod node;
+// HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
+mod node_mcp;
+mod node_mcp_approvals;
+mod node_mcp_http;
+mod node_mcp_live;
+mod node_mcp_protocol;
+mod node_mcp_token;
+mod node_mcp_tools;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
 mod popout;
 mod provisioning;
@@ -183,6 +191,12 @@ fn sweep_orphan_sidecars() {
                 .status();
         }
     }
+}
+
+/// HUP-S4.2 — `citrate-core --mcp-stdio`: the stdio shim for the citrate-node MCP server. Runs
+/// without starting the app; forwards stdin JSON-RPC to the running app's loopback endpoint.
+pub fn node_mcp_stdio_main() -> i32 {
+    node_mcp_http::stdio_main()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -346,6 +360,9 @@ pub fn run() {
             // pin/add/ls (block production does NOT need it). Repo lives in the app
             // data dir; started on demand via ipfs_start (alongside the node).
             app.manage(ipfs::build_ipfs_state(&app.handle().clone())?);
+            // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
+            // Settings; loopback only; every request needs a connect token; writes need approval.
+            app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -695,6 +712,13 @@ pub fn run() {
             seam::comms_connections,
             popout::popout_open,
             popout::popout_monitor_facts,
+            // HUP-S4.2 — citrate-node MCP server (Settings, API endpoints & keys).
+            node_mcp::node_mcp_status,
+            node_mcp::node_mcp_set_enabled,
+            node_mcp::node_mcp_token_create,
+            node_mcp::node_mcp_token_revoke,
+            node_mcp::node_mcp_requests,
+            node_mcp::node_mcp_decide,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -201,4 +201,10 @@ commands.allow = [
   "comms_connections",
   "popout_open",
   "popout_monitor_facts",
+  "node_mcp_status",
+  "node_mcp_set_enabled",
+  "node_mcp_token_create",
+  "node_mcp_token_revoke",
+  "node_mcp_requests",
+  "node_mcp_decide",
 ]
