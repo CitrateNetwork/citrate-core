@@ -113,6 +113,15 @@ describe("retrieval flags (HUP-S3.1, g2-knowledge)", () => {
     expect(() => parseQaCliArgs([...base, "--retrieve-k", "5"])).toThrow(/--memory-socket/);
     expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--corpus-digest", "xyz"])).toThrow(/corpus-digest/);
   });
+  it("takes the corpus directory whose nodes citations may resolve to", () => {
+    expect(parseQaCliArgs([...base, "--memory-socket", "/s", "--corpus-dir", "/c"]).retrieval).toEqual({
+      socket: "/s",
+      tenants: ["citrate-docs", "methodology"],
+      k: 5,
+      corpusDir: "/c",
+    });
+    expect(() => parseQaCliArgs([...base, "--corpus-dir", "/c"])).toThrow(/--memory-socket/);
+  });
   it("names a retrieval run apart from the closed-book run", () => {
     expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma", "qa-v1", undefined, true)).toBe("2026-10-01-qa-rag-gemma.json");
     expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma", "qa-literacy-v1", undefined, true)).toBe("2026-10-01-qa-literacy-v1-rag-gemma.json");

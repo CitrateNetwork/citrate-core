@@ -26,7 +26,7 @@ export interface QaCliArgs {
    * HUP-S3.1 / g2-knowledge: answer from the bundled knowledge corpus, retrieved per question from a
    * memory daemon socket (src/agent/eval/retrieval.ts). Absent = closed-book.
    */
-  retrieval?: { socket: string; tenants: string[]; k: number; corpusDigest?: string };
+  retrieval?: { socket: string; tenants: string[]; k: number; corpusDigest?: string; corpusDir?: string };
 }
 
 /** Knowledge tenants a retrieval run may search (mem_corpus::KNOWLEDGE_TENANTS). */
@@ -44,7 +44,7 @@ export function qaDatasetFiles(name = "qa-v1"): { dataset: string; index: string
 export const QA_CLI_USAGE =
   "usage: node scripts/eval-qa.mjs --base-url <http://127.0.0.1:18080/v1> --model <name> " +
   "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--coverage-threshold 0..1] [--dataset qa-v1] [--adapter-sha256 <hex>] [--allow-remote] " +
-  "[--memory-socket <path> [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5] [--corpus-digest <hex>]]";
+  "[--memory-socket <path> [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5] [--corpus-dir <dir>] [--corpus-digest <hex>]]";
 
 function parseHttpUrl(raw: string): URL | null {
   let u: URL;
@@ -81,6 +81,7 @@ const VALUE_FLAGS = new Set([
   "--retrieve-tenants",
   "--retrieve-k",
   "--corpus-digest",
+  "--corpus-dir",
 ]);
 
 /** Parse argv (without the node + script entries). Throws with a readable message on error. */
@@ -150,9 +151,10 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
   const tenantsRaw = vals["--retrieve-tenants"];
   const kRaw = vals["--retrieve-k"];
   const digest = vals["--corpus-digest"];
+  const corpusDir = vals["--corpus-dir"];
   if (socket === undefined) {
-    if (tenantsRaw !== undefined || kRaw !== undefined || digest !== undefined) {
-      throw new Error("--retrieve-tenants, --retrieve-k and --corpus-digest need --memory-socket");
+    if (tenantsRaw !== undefined || kRaw !== undefined || digest !== undefined || corpusDir !== undefined) {
+      throw new Error("--retrieve-tenants, --retrieve-k, --corpus-digest and --corpus-dir need --memory-socket");
     }
     return out;
   }
@@ -168,6 +170,7 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
   }
   out.retrieval = { socket, tenants, k };
   if (digest !== undefined) out.retrieval.corpusDigest = digest;
+  if (corpusDir !== undefined) out.retrieval.corpusDir = corpusDir;
   return out;
 }
 
