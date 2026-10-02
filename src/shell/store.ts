@@ -898,7 +898,16 @@ export class Store {
       const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
-      if (kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri") {
+      // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
+      // (same local model, same approvals), so chat never depends on the sidecar being up.
+      const sidecarUp =
+        kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
+          ? await bridge.agentHarness
+              .status()
+              .then((st) => st.running)
+              .catch(() => false)
+          : false;
+      if (sidecarUp) {
         const h = bridge.agentHarness;
         // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint.
         const escalationReady = await bridge.escalation
