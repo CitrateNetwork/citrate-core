@@ -649,6 +649,9 @@ pub fn run() {
             hermes::personas::hermes_workflows,
             hermes::personas::hermes_persona_check,
             hermes::personas::hermes_track_workflow_run,
+            // HUP-S2.2: the member decides each shell_run command the sidecar holds.
+            hermes::shell::hermes_shell_pending,
+            hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
