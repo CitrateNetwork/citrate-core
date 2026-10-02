@@ -566,6 +566,17 @@ impl HermesManager {
                 path.to_string_lossy().to_string(),
             ));
         }
+        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
+        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
+        if let Some(allow) = &self.mcp_allowlist {
+            spec.env.push((
+                crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
+                allow
+                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
+                    .to_string_lossy()
+                    .to_string(),
+            ));
+        }
         if let Some(dir) = &self.checkpoints_dir {
             spec.env.push((
                 undo::HERMES_CHECKPOINTS_ENV.to_string(),
