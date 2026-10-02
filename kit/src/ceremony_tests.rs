@@ -340,15 +340,43 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     );
 }
 
-/// Return `src` with any top-level `#[cfg(test)] mod tests { ... }` block removed
-/// so a call-site scan sees only non-test code. Our test modules are the terminal
-/// `mod tests { include!(...) }` form, so truncating at that marker is exact.
+/// Return `src` with the terminal `#[cfg(test)] mod ... { ... }` block removed so a
+/// call-site scan sees only non-test code. It cuts at the LAST `#[cfg(test)]` that
+/// introduces a module (our test modules are the terminal `mod tests { include!(...) }`
+/// form); an earlier `#[cfg(test)]` on a helper fn does not end the scan. With no test
+/// module the whole source is scanned.
 fn strip_test_module(src: &str) -> String {
-    if let Some(idx) = src.find("#[cfg(test)]") {
-        src[..idx].to_string()
-    } else {
-        src.to_string()
+    let mut cut = None;
+    for (i, _) in src.match_indices("#[cfg(test)]") {
+        let rest = src[i + "#[cfg(test)]".len()..].trim_start();
+        if rest.starts_with("mod ") || rest.starts_with("pub mod ") {
+            cut = Some(i);
+        }
     }
+    match cut {
+        Some(i) => src[..i].to_string(),
+        None => src.to_string(),
+    }
+}
+
+/// The signer tripwires must scan everything before the terminal test module. ceremony.rs has an
+/// earlier `#[cfg(test)]` helper; code after it (reject, the budgeted SIWE path, the command
+/// surface) is production code and must stay in scope.
+#[test]
+fn strip_test_module_keeps_code_after_an_inner_cfg_test_helper() {
+    let src = include_str!("ceremony.rs");
+    let non_test = strip_test_module(src);
+    for needle in [
+        "pub fn reject(",
+        "pub fn request_siwe_budgeted(",
+        "pub fn sign_reject_sync(",
+    ] {
+        assert!(non_test.contains(needle), "{needle} must be scanned");
+    }
+    assert!(!non_test.contains("include!(\"ceremony_tests.rs\")"));
+    let synthetic = "fn a() {}\n#[cfg(test)]\nfn helper() {}\nfn b() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+    let cut = strip_test_module(synthetic);
+    assert!(cut.contains("fn b()") && !cut.contains("fn t()"));
 }
 
 // =========================================================================
