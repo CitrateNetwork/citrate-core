@@ -201,18 +201,10 @@ fn pending() -> &'static Mutex<HashMap<PathBuf, Pending>> {
     P.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Folders a grant may never be rooted in (or under), relative to home. The sidecar's default-deny
-/// list is the authority and is checked on every agent file operation; this early check only gives
-/// the member a clear refusal for the obvious cases.
-const DENIED_UNDER_HOME: &[&str] = &[
-    ".ssh",
-    ".aws",
-    ".gnupg",
-    ".kube",
-    ".docker",
-    ".config/gcloud",
-    "Library/Keychains",
-];
+/// Folders a grant may never be rooted in (or under): core's copy of the agent's default-deny list
+/// ([`crate::grant_deny`]). The sidecar's list is the authority and is checked on every agent file
+/// operation; this check gives the member a clear refusal and keeps the panel honest.
+pub use crate::grant_deny::denied_location;
 
 /// The member's grant store.
 #[derive(Debug, Clone)]
@@ -331,7 +323,12 @@ impl GrantStore {
                     Access::Write => "write",
                 }
                 .into(),
-                status: g.status(now).into(),
+                // A row the agent would ignore (rooted in a deny location) is shown as blocked.
+                status: if g.revoked_at.is_none() && denied_location(Path::new(&g.root)).is_some() {
+                    "blocked".into()
+                } else {
+                    g.status(now).into()
+                },
                 granted_at: g.granted_at,
                 expires_at: g.expires_at,
                 remaining_secs: g.expires_at.map(|t| t.saturating_sub(now)),
@@ -370,14 +367,11 @@ impl GrantStore {
                 canon.display()
             )));
         }
-        let home = std::fs::canonicalize(&self.home).unwrap_or_else(|_| self.home.clone());
-        for d in DENIED_UNDER_HOME {
-            if canon.starts_with(home.join(d)) {
-                return Err(GrantsError::Invalid(format!(
-                    "{} holds credentials and cannot be granted",
-                    canon.display()
-                )));
-            }
+        if let Some(why) = denied_location(&canon) {
+            return Err(GrantsError::Invalid(format!(
+                "{} is a protected location ({why}) and cannot be granted",
+                canon.display()
+            )));
         }
         let own = std::fs::canonicalize(&self.protected).unwrap_or_else(|_| self.protected.clone());
         if canon.starts_with(&own) {

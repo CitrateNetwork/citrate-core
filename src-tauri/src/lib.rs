@@ -85,6 +85,7 @@ mod node_mcp_protocol;
 mod node_mcp_token;
 mod node_mcp_tools;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
+mod grant_deny;
 mod popout;
 mod popout_contract;
 // HUP-S5.1 + S5.6 — the member's controls for Hermes's browser (the sidecar runs it).
