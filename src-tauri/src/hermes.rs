@@ -158,6 +158,14 @@ pub struct ControlResp {
 pub trait HermesControl: Send + Sync {
     fn get(&self, url: &str, bearer: &str) -> Result<ControlResp>;
     fn post(&self, url: &str, bearer: &str, body: &str) -> Result<ControlResp>;
+    /// HUP-S10.3: `DELETE` (closing a session). Transports that predate it refuse honestly.
+    fn delete(&self, url: &str, bearer: &str) -> Result<ControlResp> {
+        let _ = (url, bearer);
+        Err(HermesError::Transport(
+            "this control transport cannot close sessions".into(),
+        ))
+    }
+
     /// HUP-S1.5: a POST whose answer may take longer than [`HERMES_CONTROL_TIMEOUT`] (one escalation
     /// to a remote model). Transports without their own deadline handling use `post`.
     fn post_with_timeout(
@@ -252,6 +260,24 @@ impl HermesControl for UreqControl {
             .header("Authorization", &format!("Bearer {bearer}"))
             .header("Content-Type", "application/json")
             .send(body)
+        {
+            Ok(resp) => Self::read(resp),
+            Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
+                status: code,
+                body: String::new(),
+            }),
+            Err(e) => Err(HermesError::Transport(e.to_string())),
+        }
+    }
+
+    fn delete(&self, url: &str, bearer: &str) -> Result<ControlResp> {
+        match ureq::delete(url)
+            .config()
+            .timeout_global(Some(HERMES_CONTROL_TIMEOUT))
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &format!("Bearer {bearer}"))
+            .call()
         {
             Ok(resp) => Self::read(resp),
             Err(ureq::Error::StatusCode(code)) => Ok(ControlResp {
@@ -973,6 +999,20 @@ impl HermesManager {
             &bearer,
             "{}",
         )?)?;
+        Ok(())
+    }
+
+    /// HUP-S10.3: `DELETE /sessions/:id` — close a session (daemon runs close theirs when done).
+    pub fn session_close(&self, id: &str) -> Result<()> {
+        valid_session_id(id).map_err(|m| HermesError::Control {
+            status: 400,
+            msg: m,
+        })?;
+        let bearer = self.bearer()?;
+        Self::check(
+            self.control
+                .delete(&format!("{}/sessions/{id}", self.control_url()), &bearer)?,
+        )?;
         Ok(())
     }
 
@@ -1874,6 +1914,86 @@ pub fn build_session_body(
     .to_string())
 }
 
+/// HUP-S10.3 — the body for a DAEMON run's session: exactly the chat body plus `unattended: true`,
+/// so the sidecar starts the session in the HIC downgrade (every effectful call needs the member's
+/// explicit decision from the first step). A sidecar that predates the flag ignores it; core marks
+/// every effectful daemon call HIC-required on its own as well (`src/daemons/runner.ts`).
+pub fn build_daemon_session_body(
+    system_prompt: &str,
+    tools_json: &str,
+    base_url: &str,
+    bearer: &str,
+    model: &str,
+    context_tokens: u32,
+) -> std::result::Result<String, String> {
+    let body = build_session_body(
+        system_prompt,
+        tools_json,
+        base_url,
+        bearer,
+        model,
+        context_tokens,
+    )?;
+    let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("unattended".into(), serde_json::Value::Bool(true));
+    }
+    Ok(v.to_string())
+}
+
+/// Builds a session body: (system prompt, tools JSON, base URL, bearer, model, context tokens).
+type SessionBodyFn = fn(&str, &str, &str, &str, &str, u32) -> std::result::Result<String, String>;
+
+/// Open a session on the local model with the body `build` makes (chat or daemon).
+fn open_local_session(
+    app: &tauri::AppHandle,
+    system_prompt: &str,
+    tools_json: &str,
+    build: SessionBodyFn,
+) -> std::result::Result<String, String> {
+    let serve = tauri::Manager::try_state::<crate::serve::ServeState>(app)
+        .ok_or("internal: serve state unavailable")?;
+    if !serve.0.is_running() {
+        return Err(
+            "the local model isn't running yet. Start it from Models, then try again.".into(),
+        );
+    }
+    let key = serve.0.api_key();
+    let body = build(
+        system_prompt,
+        tools_json,
+        &serve.0.base_url(),
+        key.as_str(),
+        &serve.0.current_model_file(),
+        serve.0.ctx_size(),
+    )?;
+    manager(app)?.session_open(&body).map_err(|e| e.to_string())
+}
+
+/// **hermes_session_open_unattended** — open a sidecar session for a scheduled daemon run, on the
+/// LOCAL model only (a daemon's spend budget is 0).
+#[tauri::command]
+pub async fn hermes_session_open_unattended(
+    app: tauri::AppHandle,
+    system_prompt: String,
+    tools_json: String,
+) -> std::result::Result<String, String> {
+    crate::blocking::off_main(move || {
+        open_local_session(&app, &system_prompt, &tools_json, build_daemon_session_body)
+    })
+    .await
+}
+
+/// **hermes_session_close** — close a sidecar session (a finished daemon run).
+#[tauri::command]
+pub async fn hermes_session_close(
+    app: tauri::AppHandle,
+    id: String,
+) -> std::result::Result<(), String> {
+    crate::blocking::off_main(move || manager(&app)?.session_close(&id).map_err(|e| e.to_string()))
+        .await
+}
+
 /// **hermes_session_open** — open a sidecar agent session on the LOCAL model. The endpoint + key are
 /// the running llama-server's (serve state); nothing about them comes from the webview.
 #[tauri::command]
@@ -1986,4 +2106,9 @@ mod session_tests {
 #[cfg(test)]
 mod tests {
     include!("hermes_tests.rs");
+}
+
+#[cfg(test)]
+mod daemon_session_tests {
+    include!("hermes_daemon_tests.rs");
 }

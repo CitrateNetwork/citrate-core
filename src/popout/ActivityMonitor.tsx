@@ -12,9 +12,10 @@
 // ticks every second and must not be announced each time.
 // HUP-S2.9: with an undo panel it also lists the agent session's recent file changes, with Undo for
 // each and Undo all. The pop-out only asks; the main window runs the undo and sends the result.
+// HUP-S10.3: the scheduled daemons, with Pause / Resume and Stop for the run in flight.
 // =====================================================================
 import { useId, type CSSProperties, type ReactNode } from "react";
-import { formatElapsed, workerLine, type MonitorSnapshot } from "./monitorSnapshot";
+import { formatElapsed, workerLine, type DaemonsSection, type MonitorSnapshot } from "./monitorSnapshot";
 import type { UndoPanel } from "./undoPanel";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -106,18 +107,79 @@ function UndoSection({ panel, onUndo }: { panel: UndoPanel; onUndo: (session: st
   );
 }
 
+const clock = (ms: number) => new Date(ms).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+/** HUP-S10.3 — scheduled daemons: status, today's budget use, next run, and Pause / Resume / Stop. */
+function Daemons({ d, onPause, onStopRun }: { d: DaemonsSection; onPause?: (id: string, paused: boolean) => void; onStopRun?: () => void }) {
+  const running = d.rows.some((r) => r.running);
+  const headingId = useId();
+  return (
+    <div data-testid="mon-daemons" style={{ paddingTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span id={headingId} className="mono" style={{ ...label, flex: 1 }}>
+          Daemons{d.allPaused ? " · all paused" : ""}
+        </span>
+        {running && onStopRun ? (
+          <button className="btn btn-sm" data-testid="mon-daemon-stop" onClick={onStopRun} style={{ color: "var(--danger)", borderColor: "var(--danger)", background: "transparent" }}>
+            Stop the daemon run
+          </button>
+        ) : null}
+      </div>
+      {d.blocked ? <div style={{ ...note, paddingTop: 4 }}>Runs are held: {d.blocked}.</div> : null}
+      {d.error ? <div role="alert" style={{ ...note, color: "var(--danger)", paddingTop: 4 }}>{d.error}</div> : null}
+      {d.rows.length === 0 ? (
+        <div style={{ ...note, paddingTop: 4 }}>No daemons. Create one on the Hermes home.</div>
+      ) : (
+        <ul aria-labelledby={headingId} style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 6 }}>
+          {d.rows.map((r) => (
+            <li key={r.id} data-testid="mon-daemon-row" style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 12, borderBottom: "1px solid var(--line-1)", paddingBottom: 6 }}>
+              <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{r.name}</span>
+                <span className="mono" style={{ color: r.running ? "var(--accent-text)" : "var(--tx-2)" }}>{r.status}</span>
+                {onPause ? (
+                  <button
+                    className="btn btn-sm"
+                    data-testid="mon-daemon-pause"
+                    aria-label={(r.paused ? "Resume " : "Pause ") + r.name}
+                    onClick={() => onPause(r.id, !r.paused)}
+                    disabled={d.allPaused}
+                  >
+                    {r.paused ? "Resume" : "Pause"}
+                  </button>
+                ) : null}
+              </span>
+              <span className="mono" style={{ color: "var(--tx-3)" }}>
+                {r.runsToday} of {r.maxRuns} runs · {fmt(r.tokensToday)} of {fmt(r.maxTokens)} tokens (estimated) · spend 0 SALT
+              </span>
+              <span style={note}>
+                {r.nextRunAt !== null ? "Next: " + clock(r.nextRunAt) : "No run scheduled"}
+                {r.lastOutcome ? " · last: " + r.lastOutcome.replace("_", " ") : ""}
+                {r.lastNote ? " · " + r.lastNote : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function ActivityMonitor({
   snapshot,
   now,
   onStop,
   undo,
   onUndo,
+  onPauseDaemon,
+  onStopDaemon,
 }: {
   snapshot: MonitorSnapshot;
   now: number;
   onStop: () => void;
   undo?: UndoPanel | null;
   onUndo?: (session: string, seq: number | null) => void;
+  onPauseDaemon?: (id: string, paused: boolean) => void;
+  onStopDaemon?: () => void;
 }) {
   const { model, provider, tier, context, turn, spend, workers } = snapshot;
   const running = turn.state === "running";
@@ -223,6 +285,7 @@ export function ActivityMonitor({
       {turn.state === "idle" && turn.outcome ? (
         <div style={{ ...note, paddingTop: 8 }}>Last turn: {turn.outcome === "stopped" ? "stopped by you" : turn.outcome}.</div>
       ) : null}
+      <Daemons d={snapshot.daemons} onPause={onPauseDaemon} onStopRun={onStopDaemon} />
       {undo && onUndo ? <UndoSection panel={undo} onUndo={onUndo} /> : null}
     </main>
   );

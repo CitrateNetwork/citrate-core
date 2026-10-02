@@ -37,7 +37,7 @@ describe("Feature: every agent tool is annotated (A8)", () => {
     const call = (name: string): ToolCall => ({
       id: "c1",
       name,
-      arguments: JSON.stringify({ group: "g", name: "n", bytecodeHex: "0x00", fact: "f", entry: "e", instructions: "i", query: "q" }),
+      arguments: JSON.stringify({ group: "g", name: "n", bytecodeHex: "0x00", fact: "f", entry: "e", instructions: "i", query: "q", html: "<p>x</p>" }),
     });
     for (const n of names) {
       vi.restoreAllMocks();

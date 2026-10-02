@@ -51,6 +51,11 @@ import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
 import { parseJoinLink, resolveJoinCode, parseClaimLink } from "../surfaces/referral";
 import { groupsSlice } from "./slices/groups";
+import { daemonAvailability, runDaemonTurn as runDaemonTurnWith, chatSystemPrompt } from "../daemons/turn";
+import type { TokenMeter } from "../daemons/tokenMeter";
+import type { Claim } from "../daemons/api";
+import { widgetsApi, refreshWidgets } from "../widgets/api";
+import { isWidgetQuery, WIDGET_QUERIES } from "../widgets/catalog";
 import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 
@@ -60,7 +65,7 @@ import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
  * Every other tool is held behind an explicit card before it runs when the call is hic:"required".
  */
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, "widget_create"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -2068,6 +2073,34 @@ export class Store {
     ac.abort();
   }
 
+  /** HUP-S10.3 — whether a daemon run may start now (the local model only: daemons spend 0). */
+  daemonRunAvailability(): { ok: true } | { ok: false; why: string } {
+    return daemonAvailability(this.provider?.kind, BRIDGE_MODE);
+  }
+
+  /**
+   * HUP-S10.3 — run one claimed daemon turn on the local model (src/daemons/turn.ts). Tool calls go
+   * through `handleTool`'s gates; every effectful one is HIC-required (an explicit member decision).
+   */
+  runDaemonTurn(claim: Claim, signal: AbortSignal, meter: TokenMeter): Promise<string> {
+    const h = bridge.agentHarness;
+    return runDaemonTurnWith(claim, signal, meter, {
+      providerKind: this.provider?.kind,
+      systemPrompt: () => chatSystemPrompt(this.snapshot()),
+      context: () => this.snapshot(),
+      inferLocalTools: (m, t, c) => bridge.chat.inferLocalTools(m, t, c),
+      sidecar: {
+        openUnattended: (p, t) => h.sessionOpenUnattended(p, t),
+        send: (id, text) => h.sessionSend(id, text),
+        events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
+        toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
+        stop: (id) => h.sessionStop(id),
+        close: (id) => h.sessionClose(id),
+      },
+      handleTool: (call, meta) => this.handleTool(call, "daemon-run", () => undefined, meta),
+    });
+  }
+
   async sendChat(text: string): Promise<void> {
     text = (text || "").trim();
     if (!text || this.state.chatStatus !== "ready" || !this.provider) return;
@@ -2526,6 +2559,60 @@ export class Store {
                 result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
               }
             }
+          }
+        }
+      }
+    } else if (call.name === "widget_create") {
+      // HUP-S10.3 — WRITE (a local widget file). Always asks: the member sees the source and the
+      // data it declares before anything is saved. It runs only in the widget sandbox.
+      const name = String(args.name || "").trim();
+      const description = String(args.description || "");
+      const html = String(args.html || "");
+      let rawQueries: unknown = (args as Record<string, unknown>).queries;
+      if (typeof rawQueries === "string") {
+        try {
+          rawQueries = JSON.parse(rawQueries);
+        } catch {
+          rawQueries = [rawQueries];
+        }
+      }
+      const queries = Array.isArray(rawQueries) ? rawQueries.map(String) : [];
+      const unknown = queries.filter((q) => !isWidgetQuery(q));
+      if (!name || !html.trim()) {
+        result = "A widget needs a name and its HTML; nothing was saved.";
+      } else if (unknown.length) {
+        result = `Widgets can only read ${WIDGET_QUERIES.join(", ")}; ${unknown.join(", ")} is not available. Nothing was saved.`;
+      } else {
+        const r = await ask(
+          {
+            origin: "chat agent",
+            requester: "dashboard agent · tool widget_create",
+            title: "Add a widget to your home",
+            chainless: true,
+            rows: [
+              { k: "Widget", v: "“" + name + "”" },
+              { k: "Reads", v: queries.length ? queries.join(", ") : "no data" },
+              { k: "Runs", v: "in a sandbox: no network, no app commands, read-only data it declared" },
+            ],
+            cost: "none, a local file",
+            sponsor: "no chain transaction",
+            sponsorColor: "var(--tx-3)",
+          },
+          diffCard("widget_create", ann, "widgets/" + name, "", html),
+        );
+        status = r;
+        const api = widgetsApi();
+        if (r !== "approved") {
+          result = `The member declined; the widget "${name}" was not saved.`;
+        } else if (!api) {
+          result = "Widgets need the desktop app; nothing was saved.";
+        } else {
+          try {
+            const w = await api.save({ name, description, html, queries, author: "hermes" });
+            void refreshWidgets();
+            result = `Saved the widget "${w.name}" on the member's Hermes home with their approval.`;
+          } catch (e) {
+            result = "couldn't save the widget: " + (e instanceof Error ? e.message : String(e));
           }
         }
       }

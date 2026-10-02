@@ -38,6 +38,7 @@ mod chain_agent;
 mod components;
 mod connections;
 mod contract_deploy;
+mod daemons;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_reader;
 mod deploy_gate;
@@ -102,6 +103,7 @@ mod tier;
 mod transfer;
 mod validator;
 mod verified_source;
+mod widgets;
 // CX (planset citrate-core-social) — host modules, one per feature lane. S0.3 registers all
 // command names once here + in generate_handler! below; each lane fills in its own module's
 // bodies (never this file). See .agentile/cx-ownership.map.
@@ -271,6 +273,13 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // W2.4 — relaunch into the freshly-installed version.
         .plugin(tauri_plugin_process::init())
+        // HUP-S10.3 — widget documents (`citrate-widget://localhost/<id>`), served from the widget
+        // store with a strict CSP, to the main window only. See widgets.rs.
+        .register_asynchronous_uri_scheme_protocol(widgets::SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let label = ctx.webview_label().to_string();
+            std::thread::spawn(move || responder.respond(widgets::respond(&app, &label, &request)));
+        })
         .setup(|app| {
             // Sidecar-lifecycle hardening: reap orphaned sidecars from a PREVIOUS instance before
             // we spawn our own. The supervisor kills its children on graceful teardown, but a crash
@@ -624,6 +633,9 @@ pub fn run() {
             hermes::hermes_session_events,
             hermes::hermes_session_tool_result,
             hermes::hermes_session_stop,
+            // HUP-S10.3 — daemon runs: unattended sessions, closed when the run ends.
+            hermes::hermes_session_open_unattended,
+            hermes::hermes_session_close,
             hermes::undo::hermes_checkpoints,
             hermes::undo::hermes_undo_step,
             hermes::undo::hermes_undo_session,
@@ -782,6 +794,19 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S10.3 — daemons: scheduled Hermes tasks inside a budget.
+            daemons::daemons_list,
+            daemons::daemon_save,
+            daemons::daemon_set_paused,
+            daemons::daemons_set_all_paused,
+            daemons::daemon_delete,
+            daemons::daemons_claim_due,
+            daemons::daemons_finish_run,
+            // HUP-S10.3 — widgets: sandboxed tiles with a read-only bridge.
+            widgets::widgets_list,
+            widgets::widget_save,
+            widgets::widget_delete,
+            widgets::widget_source,
             // HUP-S2.1 — Hermes folder grants (store in app data; sent to agent sessions on change).
             agent_grants::agent_grants_view,
             agent_grants::agent_grants_add_folder,

@@ -42,6 +42,7 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   skills_list: { effect: "none", trust: "untrusted" }, // permissionless on-chain SkillRegistry
   skill_write: { effect: "write", trust: "trusted" },
   skill_run: { effect: "none", trust: "untrusted" }, // returns stored instructions into the loop
+  widget_create: { effect: "write", trust: "trusted" }, // HUP-S10.3: saves a sandboxed tile, after approval
   models_list: { effect: "none", trust: "untrusted" }, // permissionless on-chain ModelRegistry
   contract_deploy: { effect: "sign", trust: "trusted" }, // opens a SignatureCeremony for a creation tx
   get_verified_source: { effect: "none", trust: "untrusted" }, // HUP-S4.3: deployer-written source from CitrateScan

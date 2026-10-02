@@ -61,6 +61,13 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async sessionStop() {
       /* nothing running */
     },
+    // HUP-S10.3 — daemon runs need the sidecar in the desktop app.
+    async sessionOpenUnattended() {
+      throw new Error("the sidecar agent loop needs the desktop app");
+    },
+    async sessionClose() {
+      /* nothing open */
+    },
     // HUP-S1.4 — the tracks and briefs are served by the sidecar; web/dev has none. Refuse honestly
     // rather than inventing a question set or a brief (Rule 1).
     async tracks() {

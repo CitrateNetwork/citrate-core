@@ -483,6 +483,23 @@ export const AGENT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "widget_create",
+      description: "PROPOSE a small widget for the member's Hermes home: self-contained HTML with inline CSS and JS (no network, no external files; it runs in a sandbox). It can read live data only through `await citrate.query(name)` for the queries it declares: node.status {height, peers, state, finalityAgeSec}, wallet.summary {liquidSalt, stakedSalt, claimableSalt}, model.active {label, id}, daemons.summary {allPaused, total, running, paused, budgetUsedUp}. This is a WRITE: the member sees the source and approves before it is saved.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "short title shown on the tile" },
+          description: { type: "string", description: "one line: what it shows" },
+          html: { type: "string", description: "the widget's HTML body (inline <style> and <script> allowed, at most 64 KB)" },
+          queries: { type: "array", items: { type: "string" }, description: "the data queries it reads, from the list above" },
+        },
+        required: ["name", "html"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "models_list",
       description: "List the models available: those registered on-chain (ModelRegistry) and the member's local models. Read-only.",
       parameters: { type: "object", properties: {} },

@@ -162,6 +162,8 @@ export function PopoutRoot({
       onStop={() => void end.current?.stop()}
       undo={undoPanel}
       onUndo={(session, seq) => void end.current?.undo(session, seq)}
+      onPauseDaemon={(id, paused) => void end.current?.pauseDaemon(id, paused)}
+      onStopDaemon={() => void end.current?.stopDaemon()}
     />
   );
 }

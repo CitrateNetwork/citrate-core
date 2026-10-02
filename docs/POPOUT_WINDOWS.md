@@ -49,6 +49,8 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 | pop-out to main | `monitor.stop` | stop the running turn |
 | pop-out to main | `browser.stop` | stop Hermes's browser (HUP-S5.1); the Browser pop-out re-sends `popout.ready` every 3 s as a heartbeat |
 | main to monitor | `monitor.snapshot {snapshot}` | the monitor's whole view, rebuilt on every change (coalesced to one per 150 ms) |
+| pop-out to main | `daemon.pause {id, paused}` | HUP-S10.3: pause (stopping its run) or resume one daemon; `id` must be `d` + 16 hex |
+| pop-out to main | `daemon.stop` | HUP-S10.3: stop the daemon run in flight (the daemon stays scheduled) |
 | pop-out to main | `monitor.undo.request {session, seq}` | undo one agent file change (`seq`), or the whole session (`seq: null`) (HUP-S2.9) |
 | main to monitor | `monitor.undo {panel}` | the agent session's recent file changes, sent with each snapshot (HUP-S2.9) |
 | main to browser | `browser.view {view}` | the browser status and latest screencast frame, re-checked on receipt (`src/popout/browserView.ts`) |
@@ -67,6 +69,7 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 | Tool calls | `store.sendChat`'s tool callback, start and end | n/a |
 | Elapsed | the turn's real start time | n/a |
 | Spend | 0 for the local model and the demo agent | "unknown" for the gateway: not metered in the app yet |
+| Daemons (HUP-S10.3) | `daemons_list` (Rust `daemons.rs`: status, today's runs and estimated tokens against the budget, next run, last outcome) and the runner's state (why runs are held) | "No daemons" when there are none; see `docs/WIDGETS_AND_DAEMONS.md` |
 | File changes (HUP-S2.9) | the sidecar's checkpoint store, `hermes_checkpoints` (`GET /checkpoints/:session`), re-read when the monitor opens, after each agent file change and after each undo | "not enabled" (with the sidecar's reason) when the sidecar has no store or the file tools are off |
 
 ## Stop

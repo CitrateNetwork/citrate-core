@@ -24,6 +24,9 @@ import { tauriTransport } from "./bridge";
 import { focusContractReader, startContractHost } from "./contractHost";
 import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
+import { daemonsSection } from "./monitorSnapshot";
+import { daemonsSlice } from "../daemons/slice";
+import { setDaemonPaused, stopDaemonRun } from "../daemons/appRunner";
 import type { WorkerRow } from "./monitorSnapshot";
 
 let hostPromise: Promise<PopoutHost> | null = null;
@@ -48,13 +51,24 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
           modelLabel: active.label,
           modelId: active.id,
           tier: tierSlice.get().report?.effective ?? null,
+          // HUP-S10.3: scheduled daemons (Rust daemons_list + the runner's state).
+          daemons: (() => {
+            const d = daemonsSlice.get();
+            return daemonsSection(d.view, { blocked: d.runner.blockedReason, error: d.error ?? d.runner.error });
+          })(),
         };
       },
       subscribe: (fn) => {
-        const offs = [store.subscribe(fn), turnActivity.subscribe(fn), tierSlice.subscribe(fn), modelsSlice.subscribe(fn), agentUndo.subscribe(fn)];
+        const offs = [store.subscribe(fn), turnActivity.subscribe(fn), tierSlice.subscribe(fn), modelsSlice.subscribe(fn), agentUndo.subscribe(fn), daemonsSlice.subscribe(fn)];
         return () => offs.forEach((off) => off());
       },
       stop: () => store.stopAgentTurn(),
+      pauseDaemon: (id, paused) => {
+        void setDaemonPaused(id, paused).then((err) => {
+          if (err) store.toast("Could not change the daemon: " + err);
+        });
+      },
+      stopDaemon: () => stopDaemonRun(),
       contextWindow: async () => (await invoke<{ localCtxTokens: number }>("popout_monitor_facts")).localCtxTokens,
       browser: {
         status: () => tauriBrowserApi.status(),

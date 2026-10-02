@@ -30,8 +30,8 @@ if (popout) {
     }),
   );
 } else {
-  void Promise.all([import("./App"), import("./shell/store"), import("./popout/appHost")]).then(
-    ([{ default: App }, { store }, { startPopoutHost }]) => {
+  void Promise.all([import("./App"), import("./shell/store"), import("./popout/appHost"), import("./daemons/appRunner")]).then(
+    ([{ default: App }, { store }, { startPopoutHost }, { startDaemonRunner }]) => {
       // DEV-only test seam: expose the app store so the docs screenshot harness
       // (screenshots/) can drive onboarding stages and shell routes deterministically
       // while the app runs in sim mode (`vite dev`, no Tauri, no node). `import.meta.env.DEV`
@@ -41,6 +41,8 @@ if (popout) {
       }
       // HUP-S5.4: the main window hosts the pop-outs (desktop app only; a no-op in the preview).
       startPopoutHost()?.catch((e) => console.error("pop-out host", e));
+      // HUP-S10.3: the daemon runner (desktop app only; nothing runs until the member creates one).
+      startDaemonRunner();
       ReactDOM.createRoot(rootEl).render(
         <React.StrictMode>
           <ErrorBoundary>
