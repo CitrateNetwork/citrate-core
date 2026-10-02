@@ -150,6 +150,7 @@ commands.allow = [
   "hermes_brief_check",
   "hermes_bridge_pending",
   "hermes_resolve",
+  "hermes_workers",
   "hermes_workflow_run",
   "hermes_workflow_status",
   "hermes_learn_status",

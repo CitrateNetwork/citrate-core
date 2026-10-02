@@ -576,6 +576,7 @@ pub fn run() {
             hermes::hermes_brief_check,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes::workers::hermes_workers,
             hermes_learn::hermes_workflow_run,
             hermes_learn::hermes_workflow_status,
             hermes_learn::hermes_learn_status,
