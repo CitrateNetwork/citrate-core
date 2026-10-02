@@ -31,6 +31,7 @@ import { citrate } from "../chain";
 import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import { PersonaPicker } from "../components/PersonaPicker";
+import { browserSpeech } from "../agent/speech";
 import { ComponentUpdates } from "../components/ComponentUpdates";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -1158,6 +1159,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 onChoose={(p) => store.chooseHermesPersona(p)}
                 onAddCustom={(p) => store.addCustomPersona(p)}
                 onRemoveCustom={(id) => store.removeCustomPersona(id)}
+                readAloud={s.hermesReadAloud}
+                onReadAloud={(on) => store.setHermesReadAloud(on)}
+                speechVoices={browserSpeech().voices()}
               />
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>

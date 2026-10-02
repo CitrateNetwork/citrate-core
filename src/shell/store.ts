@@ -43,7 +43,9 @@ import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult } from "../bridge/domains";
+import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
+import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -903,15 +905,21 @@ export class Store {
           .catch(() => false);
         this.provider = createSidecarProvider(
           {
-            open: (p, t) => h.sessionOpen(p, t),
+            // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
+            // skill allowlist and tool emphasis. None = the session body is unchanged.
+            open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
+            // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
+            trackWorkflowRun: (id, workflowId) => h.trackWorkflowRun(id, workflowId),
+            workflowStatus: (id, runId) => h.workflowStatus(id, runId),
           },
           // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
           () => this.sidecarSystemPrompt(),
           () => withEscalationTool(annotatedAgentTools(), escalationReady),
+          () => this.sidecarPersonaChoice(),
         );
         this.reflectProvider();
         return;
@@ -1990,13 +1998,13 @@ export class Store {
 
   // ---------- chat ----------
   /** HUP-S1.4 — keep a brief the sidecar accepted: a card in the thread + persisted state. This
-   *  starts nothing (no turn, no workflow); building from a brief arrives with the workflows. */
+   *  starts nothing; the card's button runs its workflow (HUP-S3.3, `runBriefWorkflow`). */
   acceptBrief(brief: Brief, markdown: string): void {
     const msg: ChatMsg = {
       id: "m" + ++this.mid,
       who: "Brief",
       text: markdown,
-      chips: [{ label: brief.workflow_available ? "brief saved · nothing built yet" : "brief saved · nothing is built until the workflow ships", status: "approved" }],
+      chips: [{ label: brief.workflow_available ? "brief saved · run its workflow from this card" : "brief saved · nothing is built until the workflow ships", status: "approved" }],
       streaming: false,
       brief,
     };
@@ -2012,6 +2020,108 @@ export class Store {
       AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
       this.state.hermesPersona,
     );
+  }
+
+  /** HUP-S3.3 — what the sidecar session applies for the chosen persona (null = none). */
+  sidecarPersonaChoice(): SessionPersonaChoice | null {
+    return personaChoice(this.state.hermesPersona);
+  }
+
+  /** HUP-S3.7 — the system speech engine (replaced in tests). */
+  speech: SpeechEngine | null = null;
+
+  /** HUP-S3.7 — read replies aloud (off by default). Turning it off stops what is being read. */
+  setHermesReadAloud(on: boolean): void {
+    this.setState({ hermesReadAloud: on });
+    if (!on) this.speech?.cancel();
+    this.save();
+  }
+
+  /** HUP-S3.7 — speak a finished answer with the persona's voice when reading aloud is on. */
+  private readAloud(text: string): void {
+    if (!this.state.hermesReadAloud) return;
+    if (!this.speech) this.speech = browserSpeech();
+    speakReply(this.speech, text, this.state.hermesPersona?.tts_voice ?? null);
+  }
+
+  /** HUP-S3.3 — run a saved brief's workflow (the brief card's button). */
+  runBriefWorkflow(brief: Brief): Promise<void> {
+    return this.runTrackWorkflow(brief.workflow);
+  }
+
+  /**
+   * HUP-S3.3 (US-3.3 AC2) — run a track's catalog workflow from chat. The sidecar loop runs it in
+   * the chat's session; core-hosted calls go through `handleTool` (the same gates as a turn); each
+   * verifier verdict becomes a chip; the result says "Verified" only for a run the sidecar's
+   * verifiers passed. Without the sidecar loop the chat says how to turn it on and runs nothing.
+   */
+  async runTrackWorkflow(workflowId: string): Promise<void> {
+    if (this.state.chatStatus !== "ready") return;
+    const msgId = "m" + ++this.mid;
+    const add = (m: Partial<ChatMsg>) =>
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: msgId, who: "Workflow", text: "", chips: [], streaming: false, ...m }]) }));
+    const patch = (fn: (m: ChatMsg) => ChatMsg) => this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? fn(m) : m)) }));
+    const provider = this.provider;
+    if (!provider || !provider.runWorkflow) {
+      add({ text: sidecarLoopNeeded(workflowId) });
+      this.scrollChat();
+      return;
+    }
+    const ac = new AbortController();
+    this.turnAbort = ac;
+    beginTurn(provider.kind, `${provider.label} · workflow ${workflowId}`);
+    add({ text: `Running \`${workflowId}\`. Only its checks decide the result.`, streaming: true });
+    this.setState({ chatStatus: "thinking" });
+    this.scrollChat();
+    try {
+      const view = await provider.runWorkflow(workflowId, {
+        signal: ac.signal,
+        callbacks: {
+          onStatus: (st) => {
+            if (ac.signal.aborted) return;
+            notePhase(st);
+            this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : st === "streaming" ? "thinking" : (st as AppState["chatStatus"]) });
+          },
+          onToken: () => undefined,
+          onToolCall: async (call, meta) => {
+            if (ac.signal.aborted) return "stopped by the member before this ran; nothing was done.";
+            toolStarted(call.id, call.name);
+            try {
+              const result = await this.handleTool(call, msgId, () => undefined, meta);
+              toolFinished(call.id, true);
+              return result;
+            } catch (e) {
+              toolFinished(call.id, false);
+              throw e;
+            }
+          },
+          onActivity: (ev) => {
+            if (ev.kind === "file_change") {
+              recordFileChange(ev.change, msgId);
+              void refreshUndoPanel(bridge.agentHarness);
+            } else if (ev.kind === "verifier") {
+              patch((m) => ({ ...m, chips: m.chips.concat([verifierChip(ev)]) }));
+            } else if (!ac.signal.aborted) noteStep(ev.step);
+          },
+        },
+      });
+      patch((m) => ({ ...m, text: workflowSummary(workflowId, view) }));
+      endTurn(view.state === "verified" ? "answered" : "failed");
+      if (view.state === "verified") this.readAloud(workflowSummary(workflowId, view));
+    } catch (e) {
+      if (e instanceof TurnStopped || ac.signal.aborted) {
+        patch((m) => ({ ...m, error: "stopped by you" }));
+        endTurn("stopped");
+      } else {
+        patch((m) => ({ ...m, error: workflowRefusal(e) }));
+        endTurn("failed");
+      }
+    }
+    if (this.turnAbort === ac) this.turnAbort = null;
+    patch((m) => ({ ...m, streaming: false }));
+    this.setState({ chatStatus: "ready" });
+    this.scrollChat();
+    this.save();
   }
 
   /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for
@@ -2103,7 +2213,20 @@ export class Store {
 
   async sendChat(text: string): Promise<void> {
     text = (text || "").trim();
-    if (!text || this.state.chatStatus !== "ready" || !this.provider) return;
+    if (!text || this.state.chatStatus !== "ready") return;
+    // HUP-S3.3: `/run <workflow>` runs a track workflow instead of a chat turn.
+    const cmd = parseRunCommand(text);
+    if (cmd.kind !== "none") {
+      if (this.chatInputEl) this.chatInputEl.value = "";
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false }]) }));
+      if (cmd.kind === "usage") {
+        this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Workflow", text: RUN_USAGE, chips: [], streaming: false }]) }));
+        this.scrollChat();
+        return;
+      }
+      return this.runTrackWorkflow(cmd.id);
+    }
+    if (!this.provider) return;
     const provider = this.provider;
     const ac = new AbortController();
     this.turnAbort = ac;
@@ -2198,6 +2321,8 @@ export class Store {
       if (winner === "stopped") throw new TurnStopped();
       flush();
       endTurn("answered");
+      // HUP-S3.7: read the answer aloud with the persona's voice (off by default).
+      this.readAloud(this.state.chatMsgs.find((m) => m.id === asstId)?.text ?? "");
     } catch (e) {
       flush();
       ensure();

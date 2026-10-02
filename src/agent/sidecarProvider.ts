@@ -7,16 +7,26 @@
 // and posts the result back. It never talks to the model and never decides an approval.
 // =====================================================================
 import { parseFileChange, isFileTool } from "./fileChanges";
-import { TurnStopped, untilStopped, type ChatProvider, type SendOpts, type ToolCall, type ToolCallMeta } from "./harness";
+import { TurnStopped, untilStopped, type ChatProvider, type SendOpts, type ToolCall, type ToolCallMeta, type WorkflowRunOpts } from "./harness";
+import type { SessionPersonaChoice } from "../bridge/domains";
+import type { WorkflowRunView } from "./learn";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
 export interface SidecarSessionApi {
-  open(systemPrompt: string, toolsJson: string): Promise<string>;
+  /** `persona` is passed only when the member chose one (HUP-S3.3). */
+  open(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice): Promise<string>;
   send(id: string, text: string): Promise<void>;
   events(id: string, after: number, waitMs: number): Promise<{ events: { seq: number; event: Record<string, unknown> }[]; lastSeq: number; busy: boolean }>;
   toolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   stop(id: string): Promise<void>;
+  /** HUP-S3.3 — start a track's catalog workflow in the session (absent = workflows unavailable). */
+  trackWorkflowRun?(id: string, workflowId: string): Promise<{ run_id: string }>;
+  /** HUP-S3.3 — a workflow run's state (`running` until the sidecar's verifiers have decided). */
+  workflowStatus?(id: string, runId: string): Promise<WorkflowRunView>;
 }
+
+/** Said when the session api cannot run track workflows. */
+export const WORKFLOWS_NEED_SIDECAR = "track workflows run in the Hermes sidecar loop, which this chat is not using";
 
 const POLL_WAIT_MS = 15_000;
 /** Consecutive empty, not-busy polls after which the turn is considered lost (sidecar restarted). */
@@ -52,6 +62,8 @@ export function createSidecarProvider(
   api: SidecarSessionApi,
   systemPrompt: () => string,
   tools: () => readonly unknown[],
+  // HUP-S3.3: the persona the session applies (skill allowlist + tool emphasis); null = none.
+  persona: () => SessionPersonaChoice | null = () => null,
 ): ChatProvider {
   let sessionId: string | null = null;
   let lastSeq = 0;
@@ -68,24 +80,28 @@ export function createSidecarProvider(
   // and never sees the stopped turn's events.
   let previous: Promise<unknown> = Promise.resolve();
 
-  async function runTurn(opts: SendOpts): Promise<{ role: string; content: string }> {
-    const { callbacks, signal } = opts;
-    const last = [...opts.messages].reverse().find((m) => m.role === "user");
-    const text = last?.content ?? "";
-    if (signal?.aborted) throw new TurnStopped();
-    callbacks.onStatus("thinking");
-    // A finished (or failed) turn leaves no core call legitimately waiting, so an id left over
-    // from an earlier turn must not block a new call with the same id. Replays are still dropped
-    // by seq below.
-    inFlight.clear();
-    sidecarFileCalls.clear();
+  async function ensureSession(): Promise<string> {
     if (!sessionId) {
-      sessionId = await api.open(systemPrompt(), JSON.stringify(tools()));
+      const p = persona();
+      sessionId = p ? await api.open(systemPrompt(), JSON.stringify(tools()), p) : await api.open(systemPrompt(), JSON.stringify(tools()));
       lastSeq = 0;
     }
-    const id = sessionId;
-    await api.send(id, text);
+    return sessionId;
+  }
 
+  /**
+   * Long-poll the session's events and act on them until the work ends: a chat turn ends at its
+   * `done` event; a workflow run (`runId`) ends only when the session is idle and the sidecar says
+   * the run left `running` (each step attempt has its own `done`). Core-hosted calls run through
+   * `onToolCall` (the store's gated handler) and their results are posted back; verifier verdicts
+   * are reported as activity. Returns the last final answer and the failure, if any.
+   */
+  async function drive(
+    id: string,
+    opts: { callbacks: SendOpts["callbacks"]; signal?: AbortSignal },
+    runId: string | null,
+  ): Promise<{ final: string; failure: string | null; stopping: boolean; view: WorkflowRunView | null }> {
+    const { callbacks, signal } = opts;
     // HUP-S7.6: Stop goes through the session's own stop route (it ends the turn and releases a
     // waiting tool); from then on this turn only drains its events to `done` and runs nothing.
     let stopping = false;
@@ -107,30 +123,18 @@ export function createSidecarProvider(
         lastSeq = Math.max(lastSeq, page.lastSeq);
         // Events at or below what this provider already processed are re-deliveries: skip them.
         const fresh = page.events.filter((e) => e.seq > seen);
-        if (fresh.length === 0) {
-          idle = page.busy ? 0 : idle + 1;
-          if (idle >= MAX_IDLE_POLLS) {
-            if (stopping) {
-              // The stop route was called on this session, so it is not reused (see `done` below).
-              if (sessionId === id) sessionId = null;
-              break;
-            }
-            throw new Error("the agent session stopped responding");
-          }
-          continue;
-        }
-        idle = 0;
         let finished = false;
         for (const { event: ev } of fresh) {
           const type = String(ev.type);
           if (type === "done") {
-            finished = true;
             if (ev.outcome === "stopped") {
               // A session's stop switch stays on, so every later turn in it would end at once with
               // an empty answer. Leave it; the next turn opens a fresh session.
               if (sessionId === id) sessionId = null;
               if (!stopping) failure = failure ?? "the agent session was stopped; send again to start a fresh one";
-            } else if (!stopping && ev.outcome !== "answered") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
+            } else if (runId === null && !stopping && ev.outcome !== "answered") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
+            // A workflow step attempt ends with its own `done`; only the run state ends a workflow.
+            if (runId === null) finished = true;
             continue;
           }
           if (type === "tool_result") {
@@ -154,6 +158,15 @@ export function createSidecarProvider(
             callbacks.onStatus("thinking");
             const step = Number(ev.step);
             if (Number.isFinite(step)) callbacks.onActivity?.({ kind: "step", step });
+          } else if (type === "verifier") {
+            // HUP-S1.3 / S3.3: one verifier's verdict on a workflow step attempt.
+            callbacks.onActivity?.({
+              kind: "verifier",
+              step: String(ev.step ?? ""),
+              name: String(ev.name ?? ""),
+              passed: ev.passed === true,
+              detail: String(ev.detail ?? ""),
+            });
           } else if (type === "tool_call") {
             callbacks.onStatus("tool");
             const call = ev.call as ToolCall;
@@ -192,22 +205,79 @@ export function createSidecarProvider(
             }
           } else if (type === "final") {
             final = String(ev.content ?? "");
-            callbacks.onStatus("streaming");
-            callbacks.onToken(final);
+            if (runId === null) {
+              callbacks.onStatus("streaming");
+              callbacks.onToken(final);
+            }
           } else if (type === "error") failure = String(ev.message ?? "the agent failed");
         }
-        if (finished) break;
+        if (finished) return { final, failure, stopping, view: null };
+        if (runId !== null && !page.busy && api.workflowStatus) {
+          // The session is idle: the run has a verdict unless it has not started yet.
+          const view = await api.workflowStatus(id, runId);
+          if (view.state !== "running") {
+            if (stopping && sessionId === id) sessionId = null;
+            return { final, failure, stopping, view };
+          }
+        }
+        if (fresh.length === 0) {
+          idle = page.busy ? 0 : idle + 1;
+          if (idle >= MAX_IDLE_POLLS) {
+            if (stopping) {
+              // The stop route was called on this session, so it is not reused (see `done` above).
+              if (sessionId === id) sessionId = null;
+              return { final, failure, stopping, view: null };
+            }
+            throw new Error(runId === null ? "the agent session stopped responding" : "the workflow run stopped responding");
+          }
+        } else idle = 0;
       }
-      if (stopping) throw new TurnStopped();
-      if (failure) {
-        callbacks.onStatus("error");
-        throw new Error(failure);
-      }
-      callbacks.onStatus("done");
-      return { role: "assistant", content: final };
     } finally {
       signal?.removeEventListener("abort", stopOnce);
     }
+  }
+
+  async function runTurn(opts: SendOpts): Promise<{ role: string; content: string }> {
+    const { callbacks, signal } = opts;
+    const last = [...opts.messages].reverse().find((m) => m.role === "user");
+    const text = last?.content ?? "";
+    if (signal?.aborted) throw new TurnStopped();
+    callbacks.onStatus("thinking");
+    // A finished (or failed) turn leaves no core call legitimately waiting, so an id left over
+    // from an earlier turn must not block a new call with the same id. Replays are still dropped
+    // by seq below.
+    inFlight.clear();
+    sidecarFileCalls.clear();
+    const id = await ensureSession();
+    await api.send(id, text);
+    const { final, failure, stopping } = await drive(id, opts, null);
+    if (stopping) throw new TurnStopped();
+    if (failure) {
+      callbacks.onStatus("error");
+      throw new Error(failure);
+    }
+    callbacks.onStatus("done");
+    return { role: "assistant", content: final };
+  }
+
+  /** HUP-S3.3 (US-3.3 AC2): run a track's catalog workflow in this provider's session. */
+  async function runTrackWorkflow(workflowId: string, opts: WorkflowRunOpts): Promise<WorkflowRunView> {
+    const { callbacks, signal } = opts;
+    if (!api.trackWorkflowRun || !api.workflowStatus) throw new Error(WORKFLOWS_NEED_SIDECAR);
+    if (signal?.aborted) throw new TurnStopped();
+    callbacks.onStatus("thinking");
+    inFlight.clear();
+    sidecarFileCalls.clear();
+    const id = await ensureSession();
+    const { run_id } = await api.trackWorkflowRun(id, workflowId);
+    const { failure, stopping, view } = await drive(id, opts, run_id);
+    if (stopping) throw new TurnStopped();
+    if (!view) {
+      callbacks.onStatus("error");
+      throw new Error(failure ?? "the workflow run ended without a verdict");
+    }
+    callbacks.onStatus("done");
+    return view;
   }
 
   return {
@@ -217,6 +287,12 @@ export function createSidecarProvider(
       const work = previous.catch(() => undefined).then(() => runTurn(opts));
       previous = work;
       // The caller hears about a Stop at once; the drain above finishes in the background.
+      return untilStopped(work, opts.signal);
+    },
+    runWorkflow(workflowId: string, opts: WorkflowRunOpts) {
+      // Runs after (never alongside) the turn or run before it, in the same session.
+      const work = previous.catch(() => undefined).then(() => runTrackWorkflow(workflowId, opts));
+      previous = work;
       return untilStopped(work, opts.signal);
     },
   };

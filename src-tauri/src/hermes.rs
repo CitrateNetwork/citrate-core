@@ -2001,6 +2001,10 @@ pub async fn hermes_session_open(
     app: tauri::AppHandle,
     system_prompt: String,
     tools_json: String,
+    // HUP-S3.3: the member's persona (a shipped id, or a member-defined one). Absent = none, and
+    // the body is unchanged.
+    persona: Option<String>,
+    custom_persona: Option<personas::CustomPersonaInput>,
 ) -> std::result::Result<String, String> {
     crate::blocking::off_main(move || {
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app)
@@ -2019,6 +2023,8 @@ pub async fn hermes_session_open(
             &serve.0.current_model_file(),
             serve.0.ctx_size(),
         )?;
+        let body =
+            personas::with_session_persona(&body, persona.as_deref(), custom_persona.as_ref())?;
         // HUP-S2.1: the member's folder grants travel with the session (an unreadable grant file
         // sends an empty document: no folder access). Opened under the grant store's lock, so a
         // change saved meanwhile is still sent to this session.

@@ -221,12 +221,40 @@ describe("PersonaPicker", () => {
     expect(host.textContent).not.toContain("—");
   });
 
-  it("says a speech voice id is stored but not used by speech yet (no TTS wiring in this lane)", async () => {
-    const withVoice = { ...GRAFT, tts_voice: "en-calm" };
-    const { host } = await mount(props({ api: api({ personas: vi.fn(async () => [withVoice]) }) }));
-    expect(q(host, "persona-option-builder")?.textContent).toContain("en-calm (stored, not used by speech yet)");
+  it("says which voice reads replies aloud: the persona's when installed, else the system voice", async () => {
+    const withVoice = { ...GRAFT, tts_voice: "Daniel" };
+    const other = { ...PITH, tts_voice: "en-calm" };
+    const voices = [{ name: "Daniel", voiceURI: "u-daniel", lang: "en-GB", default: false }];
+    const { host } = await mount(props({ api: api({ personas: vi.fn(async () => [withVoice, other]) }), speechVoices: voices }));
+    expect(q(host, "persona-option-builder")?.textContent).toContain("Read aloud voice: Daniel");
+    expect(q(host, "persona-option-auditor")?.textContent).toContain("Read aloud voice: system voice (en-calm is not installed here)");
+    expect(host.textContent).not.toContain("not used by speech yet");
     await click(q(host, "persona-custom-open"));
-    expect(host.textContent).toContain("Speech voice id (optional; stored for later, not used by speech yet)");
+    expect(host.textContent).toContain("Speech voice id (optional; used by Read replies aloud when this system has that voice)");
+  });
+
+  it("the Read replies aloud switch is off unless the member turns it on", async () => {
+    const onReadAloud = vi.fn();
+    const { host } = await mount(props({ readAloud: false, onReadAloud }));
+    const box = q<HTMLInputElement>(host, "persona-read-aloud");
+    expect(box?.checked).toBe(false);
+    await click(box);
+    expect(onReadAloud).toHaveBeenCalledWith(true);
+  });
+
+  it("shows how many allowlisted skills are installed, and that a custom persona without skills keeps them all", async () => {
+    const withSkills = { ...GRAFT, skills: ["red-green", "planset", "tailwind"], skills_installed: ["red-green"] };
+    const { host } = await mount(props({ api: api({ personas: vi.fn(async () => [withSkills]) }), custom: [{ ...OWL, skills: [] }] }));
+    expect(q(host, "persona-option-builder")?.textContent).toContain("Skills: 1 of 3 on its allowlist installed");
+    expect(q(host, "persona-option-custom-night-owl")?.textContent).toContain("Skills: all installed skills (no allowlist)");
+  });
+
+  it("each workflow says how to run it from chat, and why it cannot run here when it cannot", async () => {
+    const ws = WORKFLOWS.map((w) => (w.id === "hello-mint" ? { ...w, unavailable: "needs the contract toolchain (forge_test), which is off in this app" } : w));
+    const { host } = await mount(props({ chosen: GRAFT, api: api({ workflows: vi.fn(async () => ws) }) }));
+    const wf = q(host, "persona-workflows")?.textContent ?? "";
+    expect(wf).toContain("/run <workflow>");
+    expect(wf).toContain("not available here: needs the contract toolchain");
+    expect(wf).not.toContain("not available yet");
   });
 });
-

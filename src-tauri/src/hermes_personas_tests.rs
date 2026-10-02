@@ -212,3 +212,100 @@ fn every_core_bound_refuses_before_the_sidecar_sees_it() {
         "the baseline is valid"
     );
 }
+
+// ---- HUP-S3.3 rest: a persona in the session body, track workflows from a session ----------
+
+const BODY: &str = r#"{"model":"m","systemPrompt":"p","tools":[]}"#;
+
+#[test]
+fn no_persona_leaves_the_session_body_byte_for_byte_unchanged() {
+    assert_eq!(with_session_persona(BODY, None, None).unwrap(), BODY);
+}
+
+#[test]
+fn a_shipped_persona_id_rides_in_the_session_body() {
+    let out = with_session_persona(BODY, Some("auditor"), None).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["persona"], "auditor");
+    assert!(v.get("customPersona").is_none());
+    assert_eq!(v["systemPrompt"], "p", "the rest of the body is kept");
+}
+
+#[test]
+fn a_custom_persona_rides_in_the_session_body_after_core_bounds_it() {
+    let out = with_session_persona(BODY, None, Some(&custom())).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["customPersona"]["id"], "custom-night-owl");
+    assert!(v.get("persona").is_none());
+    let mut bad = custom();
+    bad.style_rules.clear();
+    assert!(with_session_persona(BODY, None, Some(&bad)).is_err());
+}
+
+#[test]
+fn a_bad_persona_id_or_both_kinds_is_refused_before_the_sidecar() {
+    assert!(with_session_persona(BODY, Some("Not A Slug"), None).is_err());
+    assert!(with_session_persona(BODY, Some("custom-x"), None).is_err());
+    assert!(with_session_persona(BODY, Some(""), None).is_err());
+    assert!(with_session_persona(BODY, Some("auditor"), Some(&custom())).is_err());
+    assert!(with_session_persona("not json", Some("auditor"), None).is_err());
+}
+
+#[test]
+fn a_track_workflow_is_started_by_catalog_id_in_a_session() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    *rec.reply.lock().unwrap() = vec![(
+        202,
+        r#"{"run_id":"wr-3","workflow_id":"status-note","track":"project-management","evidence":"answer-shape"}"#
+            .into(),
+    )];
+    let m = mgr(rec.clone());
+    let v = track_workflow_run(&m, "s1-ab", "status-note").unwrap();
+    assert_eq!(v["run_id"], "wr-3");
+    let posts = rec.posts.lock().unwrap();
+    assert!(
+        posts[0].0.ends_with("/sessions/s1-ab/track_workflows"),
+        "{}",
+        posts[0].0
+    );
+    let sent: serde_json::Value = serde_json::from_str(&posts[0].1).unwrap();
+    assert_eq!(sent, serde_json::json!({"workflow": "status-note"}));
+}
+
+#[test]
+fn a_refused_track_workflow_reads_workflow_refused_with_the_reason() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    *rec.reply.lock().unwrap() = vec![(
+        422,
+        r#"{"error":"this workflow needs the contract toolchain (forge_test), which is off in this app","missing_tools":["forge_test"]}"#.into(),
+    )];
+    let m = mgr(rec);
+    let e = track_workflow_run(&m, "s1-ab", "contract-build").unwrap_err();
+    assert!(e.starts_with("WORKFLOW_REFUSED: "), "{e}");
+    assert!(e.contains("toolchain"), "{e}");
+}
+
+#[test]
+fn bad_ids_never_reach_a_url() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    let m = mgr(rec.clone());
+    assert!(track_workflow_run(&m, "s1/../stop", "status-note").is_err());
+    assert!(track_workflow_run(&m, "s1-ab", "../stop").is_err());
+    assert!(track_workflow_run(&m, "s1-ab", "").is_err());
+    assert!(track_workflow_run(&m, "s1-ab", "Status Note").is_err());
+    assert!(rec.posts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_run_id_the_sidecar_answers_must_be_well_formed() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    *rec.reply.lock().unwrap() = vec![(202, r#"{"run_id":"wr-1/../x"}"#.into())];
+    let m = mgr(rec);
+    assert!(track_workflow_run(&m, "s1-ab", "status-note").is_err());
+}
+
+#[test]
+fn the_new_commands_are_in_the_main_window_acl() {
+    let acl = include_str!("../permissions/main-window.toml");
+    assert!(acl.contains("\"hermes_track_workflow_run\""));
+}

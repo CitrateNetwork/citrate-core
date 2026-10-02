@@ -645,6 +645,7 @@ pub fn run() {
             hermes::personas::hermes_personas,
             hermes::personas::hermes_workflows,
             hermes::personas::hermes_persona_check,
+            hermes::personas::hermes_track_workflow_run,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
