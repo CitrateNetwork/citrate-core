@@ -10,12 +10,21 @@
 //! connection (`Connection: close`). Bounded: 16 KiB of headers, 1 MiB body, 32 concurrent
 //! connections, 15 s socket timeouts and a 15 s whole-request deadline.
 //!
+//! **Stateless era (MCP 2026-07-28).** A request whose `params._meta` names protocol version
+//! `2026-07-28` needs no session: the token is checked on every request, and the
+//! `MCP-Protocol-Version`, `Mcp-Method` and (for `tools/call` / `resources/read`) `Mcp-Name`
+//! headers must be present and match the body (400 + `HeaderMismatch` otherwise). An unsupported
+//! version is 400 + `UnsupportedProtocolVersion`; an unknown method is 404 + `-32601`.
+//!
 //! **stdio shim.** `citrate-core --mcp-stdio` (see `main.rs`) reads newline-delimited JSON-RPC on
 //! stdin, forwards each message to the loopback endpoint with the token from
 //! `CITRATE_NODE_MCP_TOKEN`, and writes each answer as one line on stdout. Clients that only speak
 //! stdio (or that cannot set headers) connect through it.
 
-use crate::node_mcp_protocol::{CallerCtx, McpCore, INVALID_REQUEST, PARSE_ERROR};
+use crate::node_mcp_protocol::{
+    meta_client_name, meta_protocol_version, CallerCtx, McpCore, HEADER_MISMATCH, INVALID_REQUEST,
+    METHOD_NOT_FOUND, PARSE_ERROR, STATELESS_PROTOCOL_VERSION, UNSUPPORTED_PROTOCOL_VERSION,
+};
 use crate::node_mcp_token::TokenStore;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -410,15 +419,19 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
         ));
         return r;
     };
-    if let Some(v) = req.headers.get("mcp-protocol-version") {
-        if !crate::node_mcp_protocol::SUPPORTED_PROTOCOL_VERSIONS.contains(&v.as_str()) {
-            return simple(400, "unsupported MCP-Protocol-Version");
-        }
-    }
+    // An unknown version header is refused below: as a JSON-RPC UnsupportedProtocolVersion error
+    // for a stateless-era body, as plain 400 for a session-era one.
+    let unknown_version_header = req.headers.get("mcp-protocol-version").is_some_and(|v| {
+        v != STATELESS_PROTOCOL_VERSION
+            && !crate::node_mcp_protocol::SUPPORTED_PROTOCOL_VERSIONS.contains(&v.as_str())
+    });
     let session_id = req.headers.get("mcp-session-id").cloned();
     match req.method.as_str() {
         "POST" => {}
         "DELETE" => {
+            if unknown_version_header {
+                return simple(400, "unsupported MCP-Protocol-Version");
+            }
             let Some(sid) = session_id else {
                 return simple(400, "Mcp-Session-Id required");
             };
@@ -471,6 +484,46 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let is_request = msg.get("id").is_some() && !method.is_empty();
 
+    // The stateless era: no session, headers mirror the body.
+    let empty = json!({});
+    let params = msg.get("params").unwrap_or(&empty);
+    if let Some(version) = meta_protocol_version(params) {
+        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        if let Err(e) = stateless_headers_ok(req, &msg, version) {
+            return json_response(
+                400,
+                &json!({"jsonrpc": "2.0", "id": id, "error": {"code": HEADER_MISMATCH, "message": e}}),
+            );
+        }
+        let ctx = CallerCtx {
+            token_id: auth.id.clone(),
+            token_label: auth.label.clone(),
+            client_name: meta_client_name(params),
+        };
+        return match shared.core.dispatch(&ctx, &msg) {
+            None => HttpResponse {
+                status: 202,
+                headers: vec![],
+                body: vec![],
+            },
+            Some(reply) => {
+                let code = reply
+                    .get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(Value::as_i64);
+                let status = match code {
+                    Some(METHOD_NOT_FOUND) => 404,
+                    Some(UNSUPPORTED_PROTOCOL_VERSION) | Some(HEADER_MISMATCH) => 400,
+                    _ => 200,
+                };
+                json_response(status, &reply)
+            }
+        };
+    }
+
+    if unknown_version_header {
+        return simple(400, "unsupported MCP-Protocol-Version");
+    }
     let mut new_session: Option<String> = None;
     let ctx = if method == "initialize" && is_request {
         let client_name = msg
@@ -518,6 +571,105 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
             r
         }
     }
+}
+
+/// The Base64 sentinel form of a header value (`=?base64?...?=`, MCP 2026-07-28).
+const B64_PREFIX: &str = "=?base64?";
+const B64_SUFFIX: &str = "?=";
+
+/// Decode a mirrored header value (plain, or the Base64 sentinel form).
+pub fn decode_header_value(v: &str) -> Option<String> {
+    use base64::Engine as _;
+    match v
+        .strip_prefix(B64_PREFIX)
+        .and_then(|r| r.strip_suffix(B64_SUFFIX))
+    {
+        Some(b) => base64::engine::general_purpose::STANDARD
+            .decode(b)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok()),
+        None => Some(v.to_string()),
+    }
+}
+
+/// Encode a value for a mirrored header: plain when it is visible ASCII with no surrounding
+/// spaces and does not look like the sentinel, else the Base64 sentinel form.
+pub fn encode_header_value(v: &str) -> String {
+    use base64::Engine as _;
+    let plain = !v.is_empty()
+        && v.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+        && !v.starts_with(' ')
+        && !v.ends_with(' ')
+        && !(v.starts_with(B64_PREFIX) && v.ends_with(B64_SUFFIX));
+    if plain {
+        v.to_string()
+    } else {
+        format!(
+            "{B64_PREFIX}{}{B64_SUFFIX}",
+            base64::engine::general_purpose::STANDARD.encode(v.as_bytes())
+        )
+    }
+}
+
+/// The body field `Mcp-Name` mirrors for a method, if any.
+fn mirrored_name<'a>(method: &str, msg: &'a Value) -> Option<&'a str> {
+    let key = match method {
+        "tools/call" | "prompts/get" => "name",
+        "resources/read" => "uri",
+        _ => return None,
+    };
+    msg.get("params")
+        .and_then(|p| p.get(key))
+        .and_then(Value::as_str)
+}
+
+/// The stateless-era header checks: `MCP-Protocol-Version` equals the body's version, and
+/// `Mcp-Method` / `Mcp-Name` equal the body's method / name. A mismatch is the caller's
+/// `HeaderMismatch`; an unsupported (but consistent) version is answered by the dispatcher.
+fn stateless_headers_ok(req: &HttpRequest, msg: &Value, version: &str) -> Result<(), String> {
+    match req.headers.get("mcp-protocol-version") {
+        Some(h) if h == version => {}
+        Some(h) => {
+            return Err(format!(
+                "Header mismatch: MCP-Protocol-Version header value '{h}' does not match body value '{version}'"
+            ))
+        }
+        None => return Err("Header mismatch: the MCP-Protocol-Version header is required".into()),
+    }
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    match req.headers.get("mcp-method") {
+        Some(h) if h == method => {}
+        Some(_) => {
+            return Err("Header mismatch: Mcp-Method header value does not match the body".into())
+        }
+        None => return Err("Header mismatch: the Mcp-Method header is required".into()),
+    }
+    if let Some(name) = mirrored_name(method, msg) {
+        match req.headers.get("mcp-name").map(|h| decode_header_value(h)) {
+            Some(Some(h)) if h == name => {}
+            Some(_) => {
+                return Err("Header mismatch: Mcp-Name header value does not match the body".into())
+            }
+            None => return Err("Header mismatch: the Mcp-Name header is required".into()),
+        }
+    }
+    Ok(())
+}
+
+/// The headers a stateless-era message needs on the wire (the shim adds them for its client).
+pub fn stateless_headers_for(msg: &Value) -> Vec<(String, String)> {
+    let Some(version) = msg.get("params").and_then(|p| meta_protocol_version(p)) else {
+        return Vec::new();
+    };
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    let mut h = vec![
+        ("MCP-Protocol-Version".to_string(), version.to_string()),
+        ("Mcp-Method".to_string(), encode_header_value(method)),
+    ];
+    if let Some(name) = mirrored_name(method, msg) {
+        h.push(("Mcp-Name".to_string(), encode_header_value(name)));
+    }
+    h
 }
 
 // ---------------------------------------------------------------------------
@@ -594,9 +746,16 @@ pub fn run_stdio_shim(
         let parsed: Option<Value> = serde_json::from_str(line).ok();
         let id = parsed.as_ref().and_then(|v| v.get("id").cloned());
         let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
-        if let Some(s) = &session {
-            headers.push(("Mcp-Session-Id".to_string(), s.clone()));
+        let stateless = parsed
+            .as_ref()
+            .map(stateless_headers_for)
+            .unwrap_or_default();
+        if stateless.is_empty() {
+            if let Some(s) = &session {
+                headers.push(("Mcp-Session-Id".to_string(), s.clone()));
+            }
         }
+        headers.extend(stateless);
         let answer: Option<Value> = match transport.post(line, &headers) {
             Ok((200, h, body)) => {
                 if let Some(s) = h.get("mcp-session-id") {
@@ -605,6 +764,15 @@ pub fn run_stdio_shim(
                 serde_json::from_str::<Value>(&body).ok()
             }
             Ok((202, _, _)) => None,
+            // A JSON-RPC error the server answered with an HTTP error status (stateless era:
+            // 400 HeaderMismatch / UnsupportedProtocolVersion, 404 method not found): pass it on.
+            Ok((_, _, body))
+                if serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .is_some_and(|v| v.get("jsonrpc").is_some() && v.get("error").is_some() && v.get("id") == id.as_ref()) =>
+            {
+                serde_json::from_str::<Value>(&body).ok()
+            }
             Ok((status, _, body)) => id.map(|id| {
                 let detail: String = body.chars().take(300).collect();
                 json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000,

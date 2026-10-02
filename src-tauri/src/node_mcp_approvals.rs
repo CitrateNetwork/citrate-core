@@ -21,15 +21,36 @@ pub const REQUEST_TTL_MS: u64 = 15 * 60 * 1000;
 pub const MAX_PENDING: usize = 16;
 /// How many requests (pending + decided) are kept for display and polling.
 pub const MAX_KEPT: usize = 64;
+/// The rejection reason recorded when the client itself cancels a pending request (MCP Tasks
+/// `tasks/cancel`). A task in this state reads `cancelled`.
+pub const CANCELLED_BY_CLIENT: &str = "cancelled by the client";
 
 /// A non-signing change an MCP client asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum McpAction {
-    ClusterJoin { group: String },
-    ClusterShare { group: String, cid: String },
-    InviteCreate { group: String, for_handle: String },
-    InviteRevoke { group: String, invite_id: String },
+    ClusterJoin {
+        group: String,
+    },
+    ClusterShare {
+        group: String,
+        cid: String,
+    },
+    InviteCreate {
+        group: String,
+        for_handle: String,
+    },
+    InviteRevoke {
+        group: String,
+        invite_id: String,
+    },
+    /// HUP-S4.2: keep a file on this node (a local pin only; no storage bond, no transaction).
+    PinAdd {
+        cid: String,
+    },
+    /// HUP-S4.2: run an anchor pass now. Each closed day's anchor still waits for its own
+    /// approval card; nothing is signed by this request.
+    AnchorPropose,
 }
 
 impl McpAction {
@@ -46,6 +67,10 @@ impl McpAction {
             McpAction::InviteRevoke { group, invite_id } => {
                 format!("Revoke invite {invite_id} for group {group}")
             }
+            McpAction::PinAdd { cid } => format!(
+                "Keep file {cid} on this node (a local pin: no storage bond and no transaction)"
+            ),
+            McpAction::AnchorPropose => "Prepare today's anchor approvals now: each closed day of decision records gets its own approval card before anything is signed".to_string(),
         }
     }
 }
@@ -286,6 +311,36 @@ impl ApprovalInbox {
         let out = r.clone();
         Self::trim_locked(&mut inner);
         Some(out)
+    }
+
+    /// The client cancels its own request (`tasks/cancel`). Only a PENDING request changes (to
+    /// rejected, reason [`CANCELLED_BY_CLIENT`]); a running or decided one is left as it is
+    /// (cancellation is cooperative). `None` when the id is unknown or belongs to another token.
+    pub fn cancel_by_client(
+        &self,
+        id: &str,
+        token_id: &str,
+        now_ms: u64,
+    ) -> (Option<McpRequest>, Vec<CeremonyToClose>) {
+        let mut inner = self.lock();
+        let mut close = Self::expire_locked(&mut inner, now_ms);
+        let Some(r) = inner
+            .requests
+            .iter_mut()
+            .find(|r| r.id == id && r.token_id == token_id)
+        else {
+            return (None, close);
+        };
+        if r.state == RequestState::Pending {
+            r.state = RequestState::Rejected {
+                reason: CANCELLED_BY_CLIENT.to_string(),
+            };
+            r.decided_ms = Some(now_ms);
+            if let RequestKind::Signature { ceremony_id, .. } = &r.kind {
+                close.push(CeremonyToClose(ceremony_id.clone()));
+            }
+        }
+        (Some(r.clone()), close)
     }
 
     /// Close every pending request made with token `token_id` (the token was revoked).

@@ -146,6 +146,25 @@ fn tx_schema() -> Value {
     )
 }
 
+fn pin_schema() -> Value {
+    obj(
+        json!({"cid": {"type": "string", "description": "IPFS CID to keep on this node"}}),
+        &["cid"],
+    )
+}
+
+fn deploy_schema() -> Value {
+    obj(
+        json!({
+            "bytecode": {"type": "string", "description": "0x-prefixed compiled deploy bytecode (the exact bytes the deploy gate checked)"},
+            "constructor_args": {"type": "string", "description": "0x-prefixed ABI-encoded constructor arguments (default none)"},
+            "value_wei": {"type": "string", "description": "value sent with the creation, in wei (decimal string, default 0)"},
+            "gas": {"type": "integer", "minimum": 21000, "maximum": MAX_DEPLOY_GAS, "description": "gas limit for the creation (default 2,000,000)"},
+        }),
+        &["bytecode"],
+    )
+}
+
 fn status_schema() -> Value {
     obj(
         json!({"id": {"type": "string", "description": "request id returned by a write tool"}}),
@@ -156,6 +175,9 @@ fn status_schema() -> Value {
 /// The memory tenants an MCP client may search. The member's `personal` tenant is deliberately
 /// absent (pending owner sign-off on a per-token scope for personal memory).
 pub const MEMORY_TENANTS: &[&str] = &["citrate-docs", "chain-state"];
+
+/// The highest gas limit a `deploy_propose` may ask for (the member still sees it in the ceremony).
+pub const MAX_DEPLOY_GAS: u64 = 30_000_000;
 
 /// The full tool catalog, in the order `tools/list` returns it.
 pub const TOOLS: &[ToolDef] = &[
@@ -189,10 +211,22 @@ pub const TOOLS: &[ToolDef] = &[
         description: "The group's authorized cluster peers and whether each is connected." },
     ToolDef { name: "invites_list", title: "Invites", kind: ToolKind::Read, input_schema: group_schema,
         description: "Outstanding invites this member created for a group (id, who it is for, when). Links and tokens are not returned." },
+    ToolDef { name: "dag_stats", title: "DAG statistics", kind: ToolKind::Read, input_schema: no_args,
+        description: "The BlockDAG's current tips, height, highest blue score and GhostDAG parameters, from this node (or the public RPC; the answer says which)." },
+    ToolDef { name: "devices_list", title: "My devices", kind: ToolKind::Read, input_schema: no_args,
+        description: "The member's linked devices (address, name, link index, when linked, whether it is this machine) and revoked device addresses. Public information only; no signatures or keys." },
+    ToolDef { name: "pins_list", title: "Pinned files", kind: ToolKind::Read, input_schema: no_args,
+        description: "The files this node keeps (IPFS CIDs), with size and whether the local IPFS daemon still holds each one." },
     ToolDef { name: "request_status", title: "Request status", kind: ToolKind::Read, input_schema: status_schema,
         description: "The state of a write request this client made: pending member approval, approved (with its result), rejected, failed, or expired." },
     ToolDef { name: "tx_propose", title: "Propose a transaction", kind: ToolKind::Signature, input_schema: tx_schema,
         description: "Propose a transaction from this member's wallet. It opens a signature request in Citrate Core; nothing is signed or sent unless the member approves it there. Returns a request id for request_status." },
+    ToolDef { name: "deploy_propose", title: "Propose a contract deploy", kind: ToolKind::Signature, input_schema: deploy_schema,
+        description: "Propose deploying compiled contract bytecode from this member's wallet. Refused at once unless the deploy gate (tests, static analysis, fuzzing, fork dry run) is READY for exactly these bytes. Otherwise it opens a signature request in Citrate Core; nothing is signed or sent unless the member approves it there. Returns a request id for request_status." },
+    ToolDef { name: "pin_add", title: "Keep a file on this node", kind: ToolKind::Action, input_schema: pin_schema,
+        description: "Ask to pin an IPFS CID on this node (a local pin: no storage bond and no transaction). Runs only after the member approves it in Citrate Core." },
+    ToolDef { name: "anchor_propose", title: "Prepare anchor approvals", kind: ToolKind::Action, input_schema: no_args,
+        description: "Ask to run the decision-record anchor pass now instead of waiting for the nightly schedule. After the member approves this request, each closed day still gets its own approval card before anything is signed. Refused at once while anchoring is off or AnchorRegistry is not in this build's address book." },
     ToolDef { name: "cluster_join", title: "Join a cluster", kind: ToolKind::Action, input_schema: group_schema,
         description: "Ask to join this node to a group's cluster mesh. Runs only after the member approves it in Citrate Core." },
     ToolDef { name: "cluster_share", title: "Share a file with a cluster", kind: ToolKind::Action, input_schema: share_schema,

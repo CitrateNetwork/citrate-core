@@ -610,6 +610,37 @@ fn repoll_submitted(port: &dyn AnchorPort) {
     }
 }
 
+/// HUP-S4.2 (`anchor_propose` over the citrate-node MCP server): `Ok` when an anchor pass could
+/// raise approval cards now, otherwise the member-facing reason (the same status line the app shows).
+pub fn anchor_ready(app: &tauri::AppHandle) -> Result<(), String> {
+    let registry = anchor_registry();
+    let gate = anchor_gate(registry.as_deref(), &load_settings(&settings_path(app)?));
+    match gate {
+        AnchorGate::Ready => Ok(()),
+        g => Err(anchor_status_line(g)),
+    }
+}
+
+/// HUP-S4.2: run one anchor pass now (the member approved an `anchor_propose` request). Exactly
+/// the nightly pass: only when the gate is `Ready`, days with an anchor already in flight are
+/// skipped, and each ready day becomes an approval card. Signs nothing.
+pub fn anchor_now(app: &tauri::AppHandle) -> Result<TickReport, String> {
+    anchor_ready(app)?;
+    let registry = anchor_registry();
+    let gate = anchor_gate(registry.as_deref(), &load_settings(&settings_path(app)?));
+    let m = crate::hermes::chain::manager_for(app)?;
+    if !m.is_running() {
+        return Err(
+            "Hermes is not running, so its decision-record days cannot be read.".to_string(),
+        );
+    }
+    let in_flight: BTreeSet<u64> = submitted()
+        .lock()
+        .map(|s| s.keys().copied().collect())
+        .unwrap_or_default();
+    nightly_tick_with(m, ceremony(), gate, registry.as_deref(), &in_flight)
+}
+
 /// Start the nightly scheduler thread if, and only if, the gate is `Ready` (deployed registry and
 /// the member turned anchoring on). In this build `AnchorRegistry` is not deployed, so this
 /// returns false and starts nothing. Idempotent.

@@ -5,6 +5,20 @@
 //! `node_mcp_live.rs`; tests use fixtures. The dispatcher owns the rules that must hold whatever
 //! the backend is: argument validation, the read-only RPC allowlist, the precompile allowlist, and
 //! the routing of every write into the [`ApprovalInbox`] (signatures through the ceremony).
+//!
+//! Two protocol eras are served side by side:
+//! - **session era** (2025-06-18, 2025-03-26, 2024-11-05): `initialize` opens a session;
+//! - **stateless era** (2026-07-28): every request carries its protocol version, client info and
+//!   client capabilities in `params._meta`; there is no `initialize` (and no `ping`);
+//!   `server/discover` describes the server; every result carries `resultType`, and list/read
+//!   results carry the `ttlMs` / `cacheScope` caching hints.
+//!
+//! **MCP Tasks** (the `io.modelcontextprotocol/tasks` extension, SEP-2663): a client that
+//! declares the extension in its per-request capabilities gets a task handle (`resultType:
+//! "task"`) from every write tool instead of a plain pending reply. The task IS the approval
+//! request: `tasks/get` reports `working` while the member decides and `completed` with the tool
+//! result once they have; `tasks/cancel` withdraws a request that is still pending. A task never
+//! needs input from the client (`input_required` is never used): the member decides in the app.
 
 use crate::node_mcp_approvals::{
     ApprovalInbox, CeremonyToClose, McpAction, McpRequest, RequestKind,
@@ -16,13 +30,43 @@ use std::sync::{Arc, Mutex};
 /// The protocol versions this server speaks, newest first.
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// The stateless protocol revision this server also speaks (per-request `_meta`, no session).
+pub const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
+
+/// Every version, newest first, as `server/discover` lists them.
+pub fn all_protocol_versions() -> Vec<&'static str> {
+    let mut v = vec![STATELESS_PROTOCOL_VERSION];
+    v.extend_from_slice(SUPPORTED_PROTOCOL_VERSIONS);
+    v
+}
+
+/// `_meta` keys of the stateless era.
+pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+pub const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+/// The MCP Tasks extension id.
+pub const TASKS_EXTENSION: &str = "io.modelcontextprotocol/tasks";
+
+/// How long a task handle stays meaningful, from creation (a pending request expires after 15
+/// minutes; a decided one is kept for polling for at least as long again). Pending owner sign-off.
+pub const TASK_TTL_MS: u64 = 2 * crate::node_mcp_approvals::REQUEST_TTL_MS;
+/// Suggested polling interval for a task (a person is deciding; there is no point polling faster).
+pub const TASK_POLL_MS: u64 = 5_000;
+/// Caching hint for results that never change while the app runs (tool catalog, templates).
+const STATIC_TTL_MS: u64 = 60 * 60 * 1000;
+
 /// JSON-RPC error codes.
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
-/// MCP: resource not found.
+/// MCP: resource not found (session era; the stateless era uses INVALID_PARAMS).
 pub const RESOURCE_NOT_FOUND: i64 = -32002;
+/// MCP 2026-07-28: a mirrored HTTP header does not match the body.
+pub const HEADER_MISMATCH: i64 = -32020;
+/// MCP 2026-07-28: the requested protocol version is not supported.
+pub const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 
 /// The read-only JSON-RPC methods the backend may be asked to run. Nothing that sends, signs or
 /// mutates node state is on this list.
@@ -34,6 +78,7 @@ pub const READ_RPC_METHODS: &[&str] = &[
     "eth_call",
     "eth_estimateGas",
     "eth_getLogs",
+    "citrate_getDagStats",
 ];
 
 /// A chain read and where it came from (`local-node` or `public-rpc`).
@@ -78,6 +123,23 @@ pub trait NodeBackend: Send + Sync {
     ) -> Result<ProposedSignature, String>;
     /// Close a ceremony that will never be approved (expired / token revoked).
     fn close_ceremony(&self, ceremony_id: &str);
+    /// The member's linked devices and revoked device addresses (public data only).
+    fn devices(&self) -> Result<Value, String>;
+    /// The files this node keeps (the pinning file store).
+    fn pins(&self) -> Result<Value, String>;
+    /// Open a contract-creation SignatureCeremony for `bytecode ++ constructor_args`, refused
+    /// unless the deploy gate is READY for exactly those bytes. Signs nothing.
+    fn propose_deploy(
+        &self,
+        origin: &str,
+        bytecode: &str,
+        constructor_args: &str,
+        value_wei: u128,
+        gas: Option<u64>,
+    ) -> Result<ProposedSignature, String>;
+    /// `Ok` when an anchor pass could raise approval cards now (AnchorRegistry in the address
+    /// book and nightly anchoring on); otherwise the honest reason.
+    fn anchor_ready(&self) -> Result<(), String>;
 }
 
 /// Who is calling (resolved by the transport from the connect token + the session).
@@ -266,16 +328,9 @@ impl McpCore {
     pub fn initialize_result(requested: Option<&str>) -> Value {
         json!({
             "protocolVersion": Self::negotiate(requested),
-            "capabilities": {
-                "tools": {"listChanged": false},
-                "resources": {"subscribe": false, "listChanged": false},
-            },
-            "serverInfo": {
-                "name": "citrate-node",
-                "title": "Citrate node",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "instructions": "Tools and resources for this member's Citrate node (chain 40204). Read tools answer at once. Write tools (tx_propose, cluster_join, cluster_share, invite_create, invite_revoke) only create a request: the member must approve it in Citrate Core, and nothing is signed or changed until they do. Poll request_status with the returned id.",
+            "capabilities": Self::capabilities(),
+            "serverInfo": Self::server_info(),
+            "instructions": INSTRUCTIONS,
         })
     }
 
@@ -299,24 +354,48 @@ impl McpCore {
             return Some(rpc_error(&id, INVALID_REQUEST, "jsonrpc must be \"2.0\""));
         }
         let params = obj.get("params").cloned().unwrap_or_else(|| json!({}));
+        let stateless = match meta_protocol_version(&params) {
+            None => false,
+            Some(v) if v == STATELESS_PROTOCOL_VERSION => true,
+            Some(v) => {
+                self.log_call(ctx, method, None, false);
+                return Some(unsupported_version(&id, v));
+            }
+        };
+        let tasks = client_declares_tasks(&params);
         let reply = match method {
-            "initialize" => {
+            "initialize" if !stateless => {
                 let v = params.get("protocolVersion").and_then(Value::as_str);
                 rpc_result(&id, Self::initialize_result(v))
             }
-            "ping" => rpc_result(&id, json!({})),
+            "ping" if !stateless => rpc_result(&id, json!({})),
+            "server/discover" => rpc_result(&id, Self::discover_result()),
             "tools/list" => rpc_result(
                 &id,
                 json!({"tools": tools::TOOLS.iter().map(tools::tool_json).collect::<Vec<_>>()}),
             ),
-            "tools/call" => return Some(self.tools_call(ctx, &id, &params)),
+            "tools/call" => {
+                // tools_call logs the call itself (with the tool name).
+                let r = self.tools_call(ctx, &id, &params, tasks);
+                return Some(if stateless { decorate(r, method) } else { r });
+            }
+            "tasks/get" | "tasks/update" | "tasks/cancel" => {
+                self.tasks_method(ctx, &id, method, &params)
+            }
             "resources/list" => rpc_result(&id, json!({"resources": resources_list()})),
             "resources/templates/list" => {
                 rpc_result(&id, json!({"resourceTemplates": resource_templates()}))
             }
             "resources/read" => match self.resources_read(&params) {
                 Ok(v) => rpc_result(&id, v),
-                Err((code, m)) => rpc_error(&id, code, &m),
+                Err((code, m)) => {
+                    let code = if stateless && code == RESOURCE_NOT_FOUND {
+                        INVALID_PARAMS
+                    } else {
+                        code
+                    };
+                    rpc_error(&id, code, &m)
+                }
             },
             _ => rpc_error(
                 &id,
@@ -326,10 +405,88 @@ impl McpCore {
         };
         let ok = reply.get("error").is_none();
         self.log_call(ctx, method, None, ok);
-        Some(reply)
+        Some(if stateless {
+            decorate(reply, method)
+        } else {
+            reply
+        })
     }
 
-    fn tools_call(&self, ctx: &CallerCtx, id: &Value, params: &Value) -> Value {
+    /// The server's capabilities (both eras). The Tasks extension is advertised; it is used only
+    /// for a request whose client declares it.
+    fn capabilities() -> Value {
+        json!({
+            "tools": {"listChanged": false},
+            "resources": {"subscribe": false, "listChanged": false},
+            "extensions": {TASKS_EXTENSION: {}},
+        })
+    }
+
+    fn server_info() -> Value {
+        json!({
+            "name": "citrate-node",
+            "title": "Citrate node",
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+    }
+
+    /// The `server/discover` result (MCP 2026-07-28).
+    pub fn discover_result() -> Value {
+        json!({
+            "resultType": "complete",
+            "supportedVersions": all_protocol_versions(),
+            "capabilities": Self::capabilities(),
+            "instructions": INSTRUCTIONS,
+            "ttlMs": STATIC_TTL_MS,
+            "cacheScope": "public",
+            "_meta": {META_SERVER_INFO: Self::server_info()},
+        })
+    }
+
+    /// `tasks/get`, `tasks/update`, `tasks/cancel`. A task is one of this client's own write
+    /// requests; another token's request is indistinguishable from an unknown id.
+    fn tasks_method(&self, ctx: &CallerCtx, id: &Value, method: &str, params: &Value) -> Value {
+        let Some(task_id) = params.get("taskId").and_then(Value::as_str) else {
+            return rpc_error(id, INVALID_PARAMS, &format!("{method} needs a taskId"));
+        };
+        let unknown = || rpc_error(id, INVALID_PARAMS, &format!("unknown task {task_id}"));
+        match method {
+            "tasks/get" => {
+                let (found, close) = self.inbox.status_for(task_id, &ctx.token_id, self.now());
+                self.close(close);
+                match found {
+                    Some(r) => {
+                        let mut v = task_view(&r);
+                        v["resultType"] = json!("complete");
+                        rpc_result(id, v)
+                    }
+                    None => unknown(),
+                }
+            }
+            "tasks/cancel" => {
+                let (found, close) =
+                    self.inbox
+                        .cancel_by_client(task_id, &ctx.token_id, self.now());
+                self.close(close);
+                match found {
+                    Some(_) => rpc_result(id, json!({"resultType": "complete"})),
+                    None => unknown(),
+                }
+            }
+            _ => {
+                // tasks/update: this server never asks a client for input (the member decides in
+                // the app), so there is never an outstanding inputRequest; responses are ignored.
+                let (found, close) = self.inbox.status_for(task_id, &ctx.token_id, self.now());
+                self.close(close);
+                match found {
+                    Some(_) => rpc_result(id, json!({"resultType": "complete"})),
+                    None => unknown(),
+                }
+            }
+        }
+    }
+
+    fn tools_call(&self, ctx: &CallerCtx, id: &Value, params: &Value, tasks: bool) -> Value {
         let Some(name) = params.get("name").and_then(Value::as_str) else {
             self.log_call(ctx, "tools/call", None, false);
             return rpc_error(id, INVALID_PARAMS, "tools/call needs a tool name");
@@ -344,13 +501,20 @@ impl McpCore {
             .unwrap_or_else(|| json!({}));
         let outcome =
             tools::reject_unknown(&args, &(def.input_schema)()).and_then(|_| match def.kind {
-                ToolKind::Read => self.read_tool(ctx, name, &args),
-                ToolKind::Signature => self.signature_tool(ctx, name, &args),
-                ToolKind::Action => self.action_tool(ctx, name, &args),
+                ToolKind::Read => self.read_tool(ctx, name, &args).map(Reply::Value),
+                ToolKind::Signature => self.signature_tool(ctx, name, &args).map(Reply::Request),
+                ToolKind::Action => self.action_tool(ctx, name, &args).map(Reply::Request),
             });
         self.log_call(ctx, "tools/call", Some(name), outcome.is_ok());
         let result = match outcome {
-            Ok(v) => tool_ok(v),
+            Ok(Reply::Value(v)) => tool_ok(v),
+            // The client declared MCP Tasks: hand back the request as a task handle.
+            Ok(Reply::Request(req)) if tasks => {
+                let mut t = task_view(&req);
+                t["resultType"] = json!("task");
+                t
+            }
+            Ok(Reply::Request(req)) => tool_ok(Self::pending_reply(&req)),
             Err(m) => tool_err(&m),
         };
         rpc_result(id, result)
@@ -455,6 +619,12 @@ impl McpCore {
                 Ok(json!({"logs": r.value, "source": r.source}))
             }
             "precompile_table" => Ok(tools::precompile_table()),
+            "dag_stats" => {
+                let r = self.rpc("citrate_getDagStats", json!([]))?;
+                dag_stats_view(&r)
+            }
+            "devices_list" => self.backend.devices(),
+            "pins_list" => self.backend.pins(),
             "precompile_call" => {
                 let address = tools::parse_address(tools::arg_str(args, "address")?)?;
                 let p = tools::precompile_at(&address)
@@ -524,18 +694,70 @@ impl McpCore {
         })
     }
 
-    fn signature_tool(&self, ctx: &CallerCtx, name: &str, args: &Value) -> Result<Value, String> {
-        if name != "tx_propose" {
-            return Err(format!("unknown signature tool {name}"));
-        }
-        let to = tools::parse_address(tools::arg_str(args, "to")?)?;
+    fn signature_tool(
+        &self,
+        ctx: &CallerCtx,
+        name: &str,
+        args: &Value,
+    ) -> Result<McpRequest, String> {
         let value = match tools::arg_opt_str(args, "value_wei")? {
             Some(v) => tools::parse_wei(v)?,
             None => 0,
         };
-        let data = match tools::arg_opt_str(args, "data")? {
-            Some(d) => tools::parse_data(d)?,
-            None => "0x".to_string(),
+        // Parse everything before anything is opened.
+        enum Proposal {
+            Tx {
+                to: String,
+                data: String,
+            },
+            Deploy {
+                bytecode: String,
+                args: String,
+                gas: Option<u64>,
+            },
+        }
+        let proposal = match name {
+            "tx_propose" => Proposal::Tx {
+                to: tools::parse_address(tools::arg_str(args, "to")?)?,
+                data: match tools::arg_opt_str(args, "data")? {
+                    Some(d) => tools::parse_data(d)?,
+                    None => "0x".to_string(),
+                },
+            },
+            "deploy_propose" => {
+                let bytecode = tools::parse_data(tools::arg_str(args, "bytecode")?)?;
+                if bytecode.len() <= 2 {
+                    return Err("bytecode is empty".to_string());
+                }
+                let cargs = match tools::arg_opt_str(args, "constructor_args")? {
+                    Some(a) => tools::parse_data(a)?,
+                    None => "0x".to_string(),
+                };
+                if bytecode.len() - 2 + cargs.len() - 2 > tools::MAX_DATA_HEX {
+                    return Err(
+                        "bytecode and constructor arguments are larger than 64 KiB".to_string()
+                    );
+                }
+                let gas = match args.get("gas") {
+                    None | Some(Value::Null) => None,
+                    Some(g) => {
+                        let g = g.as_u64().ok_or("gas must be a whole number")?;
+                        if !(21_000..=tools::MAX_DEPLOY_GAS).contains(&g) {
+                            return Err(format!(
+                                "gas must be between 21,000 and {}",
+                                tools::MAX_DEPLOY_GAS
+                            ));
+                        }
+                        Some(g)
+                    }
+                };
+                Proposal::Deploy {
+                    bytecode,
+                    args: cargs,
+                    gas,
+                }
+            }
+            other => return Err(format!("unknown signature tool {other}")),
         };
         // Check for room BEFORE opening a ceremony, so a full inbox never orphans one.
         let (room, close) = self.inbox.has_room(self.now());
@@ -544,16 +766,41 @@ impl McpCore {
             return Err("Too many requests are waiting for the member. Ask them to review the requests in Citrate Core first.".to_string());
         }
         let origin = ctx.origin();
-        let proposed = self
-            .backend
-            .propose_transaction(&origin, &to, value, &data)?;
-        let summary = proposed
-            .ceremony
-            .get("decoded")
-            .and_then(|d| d.get("action"))
-            .and_then(Value::as_str)
-            .map(|a| format!("Sign and send a transaction: {a}"))
-            .unwrap_or_else(|| "Sign and send a transaction".to_string());
+        let (proposed, summary) = match proposal {
+            Proposal::Tx { to, data } => {
+                let p = self
+                    .backend
+                    .propose_transaction(&origin, &to, value, &data)?;
+                let s = p
+                    .ceremony
+                    .get("decoded")
+                    .and_then(|d| d.get("action"))
+                    .and_then(Value::as_str)
+                    .map(|a| format!("Sign and send a transaction: {a}"))
+                    .unwrap_or_else(|| "Sign and send a transaction".to_string());
+                (p, s)
+            }
+            Proposal::Deploy {
+                bytecode,
+                args,
+                gas,
+            } => {
+                let p = self
+                    .backend
+                    .propose_deploy(&origin, &bytecode, &args, value, gas)?;
+                let hash = p
+                    .ceremony
+                    .get("gate")
+                    .and_then(|g| g.get("initcodeHash"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let s = format!(
+                    "Sign and send a contract deploy (deploy gate READY for init code {hash})"
+                );
+                (p, s)
+            }
+        };
         let kind = RequestKind::Signature {
             ceremony_id: proposed.ceremony_id.clone(),
             ceremony: proposed.ceremony,
@@ -564,7 +811,7 @@ impl McpCore {
         {
             Ok((req, close)) => {
                 self.close(close);
-                Ok(Self::pending_reply(&req))
+                Ok(req)
             }
             Err(e) => {
                 // Lost a race for the last slot: close the ceremony we just opened.
@@ -574,7 +821,7 @@ impl McpCore {
         }
     }
 
-    fn action_tool(&self, ctx: &CallerCtx, name: &str, args: &Value) -> Result<Value, String> {
+    fn action_tool(&self, ctx: &CallerCtx, name: &str, args: &Value) -> Result<McpRequest, String> {
         let action = match name {
             "cluster_join" => McpAction::ClusterJoin {
                 group: tools::parse_group(tools::arg_str(args, "group")?)?,
@@ -597,6 +844,14 @@ impl McpCore {
                     i.to_ascii_lowercase()
                 },
             },
+            "pin_add" => McpAction::PinAdd {
+                cid: tools::parse_cid(tools::arg_str(args, "cid")?)?,
+            },
+            "anchor_propose" => {
+                // Refuse at once rather than queue a request that can only fail.
+                self.backend.anchor_ready()?;
+                McpAction::AnchorPropose
+            }
             other => return Err(format!("unknown action tool {other}")),
         };
         let summary = action.summary();
@@ -608,7 +863,7 @@ impl McpCore {
             self.now(),
         )?;
         self.close(close);
-        Ok(Self::pending_reply(&req))
+        Ok(req)
     }
 
     fn resources_read(&self, params: &Value) -> Result<Value, (i64, String)> {
@@ -634,6 +889,190 @@ impl McpCore {
         let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
         Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}))
     }
+}
+
+/// What a tool call produced: an immediate value (read tools) or a queued request (write tools).
+enum Reply {
+    Value(Value),
+    Request(McpRequest),
+}
+
+/// The server's instructions text (both eras).
+pub const INSTRUCTIONS: &str = "Tools and resources for this member's Citrate node (chain 40204). Read tools answer at once. Write tools (tx_propose, deploy_propose, pin_add, anchor_propose, cluster_join, cluster_share, invite_create, invite_revoke) only create a request: the member must approve it in Citrate Core, and nothing is signed or changed until they do. Poll request_status with the returned id, or, if you declared the io.modelcontextprotocol/tasks extension, poll tasks/get with the returned taskId.";
+
+/// The protocol version a stateless-era request names in `params._meta`, if any.
+pub fn meta_protocol_version(params: &Value) -> Option<&str> {
+    params
+        .get("_meta")
+        .and_then(|m| m.get(META_PROTOCOL_VERSION))
+        .and_then(Value::as_str)
+}
+
+/// The client name a stateless-era request names in `params._meta` (display only, never trusted).
+pub fn meta_client_name(params: &Value) -> Option<String> {
+    params
+        .get("_meta")
+        .and_then(|m| m.get(META_CLIENT_INFO))
+        .and_then(|c| c.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Whether this request's client declared the MCP Tasks extension in its capabilities. The
+/// server never returns a task to a client that did not (SEP-2663).
+pub fn client_declares_tasks(params: &Value) -> bool {
+    params
+        .get("_meta")
+        .and_then(|m| m.get(META_CLIENT_CAPABILITIES))
+        .and_then(|c| c.get("extensions"))
+        .and_then(|e| e.get(TASKS_EXTENSION))
+        .is_some_and(Value::is_object)
+}
+
+/// The `UnsupportedProtocolVersion` error (MCP 2026-07-28).
+pub fn unsupported_version(id: &Value, requested: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {
+        "code": UNSUPPORTED_PROTOCOL_VERSION,
+        "message": "Unsupported protocol version",
+        "data": {"supported": all_protocol_versions(), "requested": requested},
+    }})
+}
+
+/// Stateless-era result decoration: `resultType` (kept when already set, e.g. `"task"`), the
+/// server's identity in `_meta`, and caching hints on list/read results.
+fn decorate(mut reply: Value, method: &str) -> Value {
+    let Some(result) = reply.get_mut("result").and_then(Value::as_object_mut) else {
+        return reply;
+    };
+    result
+        .entry("resultType")
+        .or_insert_with(|| json!("complete"));
+    let meta = result.entry("_meta").or_insert_with(|| json!({}));
+    if let Some(m) = meta.as_object_mut() {
+        m.insert(META_SERVER_INFO.to_string(), McpCore::server_info());
+    }
+    let cache = match method {
+        "tools/list" | "resources/list" | "resources/templates/list" => {
+            Some((STATIC_TTL_MS, "private"))
+        }
+        // Live node data: always re-read.
+        "resources/read" => Some((0, "private")),
+        _ => None,
+    };
+    if let Some((ttl, scope)) = cache {
+        result.insert("ttlMs".into(), json!(ttl));
+        result.insert("cacheScope".into(), json!(scope));
+    }
+    reply
+}
+
+/// An ISO 8601 UTC timestamp for a Unix-ms time.
+fn iso(ms: u64) -> String {
+    crate::google_workspace::rfc3339(ms / 1000)
+}
+
+/// One approval request as an MCP task (SEP-2663 `DetailedTask`). The member's decision maps to:
+/// pending/running -> `working`; approved -> `completed` with the tool result; failed, rejected or
+/// expired -> `completed` with an `isError` tool result (these are tool-level outcomes, not
+/// JSON-RPC errors); withdrawn by the client -> `cancelled`.
+pub fn task_view(r: &McpRequest) -> Value {
+    use crate::node_mcp_approvals::{RequestState, CANCELLED_BY_CLIENT};
+    let (status, message, extra): (&str, String, Option<(&str, Value)>) = match &r.state {
+        RequestState::Pending => (
+            "working",
+            "Waiting for the member to approve or reject this in Citrate Core.".to_string(),
+            None,
+        ),
+        RequestState::Running => (
+            "working",
+            "The member approved this; it is running now.".to_string(),
+            None,
+        ),
+        RequestState::Approved { result } => (
+            "completed",
+            "Approved by the member and done.".to_string(),
+            Some(("result", with_complete(tool_ok(result.clone())))),
+        ),
+        RequestState::Failed { error } => (
+            "completed",
+            "Approved by the member, but it failed.".to_string(),
+            Some((
+                "result",
+                with_complete(tool_err(&format!("It failed after approval: {error}"))),
+            )),
+        ),
+        RequestState::Rejected { reason } if reason == CANCELLED_BY_CLIENT => {
+            ("cancelled", "Withdrawn by the client.".to_string(), None)
+        }
+        RequestState::Rejected { reason } => (
+            "completed",
+            format!("Not done: {reason}."),
+            Some((
+                "result",
+                with_complete(tool_err(&format!(
+                    "The member did not approve this ({reason})."
+                ))),
+            )),
+        ),
+        RequestState::Expired => (
+            "completed",
+            "Expired before the member decided.".to_string(),
+            Some((
+                "result",
+                with_complete(tool_err("The request expired before the member decided.")),
+            )),
+        ),
+    };
+    let mut v = json!({
+        "taskId": r.id,
+        "status": status,
+        "statusMessage": message,
+        "createdAt": iso(r.created_ms),
+        "lastUpdatedAt": iso(r.decided_ms.unwrap_or(r.created_ms)),
+        "ttlMs": TASK_TTL_MS,
+        "pollIntervalMs": TASK_POLL_MS,
+    });
+    if let Some((k, val)) = extra {
+        v[k] = val;
+    }
+    v
+}
+
+fn with_complete(mut v: Value) -> Value {
+    v["resultType"] = json!("complete");
+    v
+}
+
+/// The `dag_stats` answer: what the node reports exactly (tips, height, highest blue score,
+/// GhostDAG parameters). The node's blue/red block counts are a fixed-ratio estimate, not a
+/// count, so they are left out rather than passed on as fact.
+pub fn dag_stats_view(r: &RpcRead) -> Result<Value, String> {
+    let v = &r.value;
+    let height = v
+        .get("height")
+        .and_then(Value::as_u64)
+        .ok_or("the node returned malformed DAG statistics")?;
+    let tips: Vec<Value> = v
+        .get("currentTips")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .filter(|t| tools::parse_topic(t).is_ok())
+                .take(32)
+                .map(|t| json!(t.to_ascii_lowercase()))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(json!({
+        "height": height,
+        "tipsCount": v.get("tipsCount").and_then(Value::as_u64),
+        "tips": tips,
+        "maxBlueScore": v.get("maxBlueScore").and_then(Value::as_u64),
+        "ghostdagParams": v.get("ghostdagParams").filter(|p| p.is_object()).cloned(),
+        "source": r.source,
+        "note": "Blue and red block counts are not reported: the node estimates them from the height instead of counting them.",
+    }))
 }
 
 /// The static resources.

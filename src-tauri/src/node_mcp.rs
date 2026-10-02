@@ -211,6 +211,22 @@ impl NodeMcpState {
         Ok(removed)
     }
 
+    /// Revoke every token labelled `label` (its sessions and pending requests end with it), then,
+    /// when `issue` is set, issue a fresh one. Used for the token core holds for Hermes's own use
+    /// of this server (`hermes_mcp`), so at most one such token is ever live.
+    pub fn reissue_token(&self, label: &str, issue: bool) -> Result<Option<TokenIssued>, String> {
+        for t in self.shared.tokens.list() {
+            if t.label == label {
+                self.revoke_token(&t.id)?;
+            }
+        }
+        if issue {
+            self.create_token(label).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn requests(&self) -> Vec<McpRequest> {
         let (v, close) = self.shared.core.inbox().list(now_ms());
         for c in close {
@@ -275,6 +291,23 @@ async fn run_action(app: &tauri::AppHandle, action: McpAction) -> Result<Value, 
             .await?;
             crate::invites::group_invite_revoke(app.clone(), group.clone(), token).await?;
             Ok(json!({"revoked": invite_id, "group": group}))
+        }
+        McpAction::PinAdd { cid } => {
+            let app2 = app.clone();
+            let cid2 = cid.clone();
+            crate::blocking::off_main(move || crate::storage::storage_pin_local_sync(app2, &cid2))
+                .await?;
+            Ok(json!({"pinned": cid, "bond": "none (local pin only)"}))
+        }
+        McpAction::AnchorPropose => {
+            let app2 = app.clone();
+            let report =
+                crate::blocking::off_main(move || crate::chain_agent::anchor_now(&app2)).await?;
+            Ok(json!({
+                "approvalCardsRaised": report.raised.len(),
+                "skipped": report.skipped.iter().map(|(day, why)| json!({"day": day, "why": why})).collect::<Vec<_>>(),
+                "next": "Each raised card waits for the member's approval in Citrate Core before anything is signed.",
+            }))
         }
     }
 }

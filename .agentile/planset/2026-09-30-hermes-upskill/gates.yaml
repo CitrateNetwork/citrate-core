@@ -70,7 +70,7 @@ gates:
       - {id: g2-hic, desc: "Folder grants, shell allowlist, SIWE budgets, capsule sandbox proven by tests + TLC", met: false}
       - {id: g2-knowledge, desc: "Bundled graph imported offline; Citrate QA eval >= target with citations", met: false}
       - {id: g2-personas, desc: ">=5 personas (owner-named) + 5 tracks with workflows", met: false}
-      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: false}
+      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: true, evidence: "docs/NODE_MCP_SERVER.md (Demo transcript, Demo transcript part 2: Claude Code and Hermes agent-mcp-host as clients, 2026-10-01)"}
   - id: gate3
     name: hello mint (S5, S6)
     status: pending
