@@ -34,6 +34,7 @@ mod ai;
 mod blocking;
 mod capsule_pins;
 mod chain_agent;
+mod components;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
@@ -720,6 +721,10 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S5.5 — signed first-run components. Update refuses until the component key is set.
+            components::components_status,
+            components::components_update,
+            components::components_rollback,
             // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
             // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
             mcp_servers::mcp_servers_list,

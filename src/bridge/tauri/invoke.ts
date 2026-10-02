@@ -38,6 +38,7 @@ const UNBOUNDED = new Set<string>([
   "model_catalog_download", // HUP-S0.2: catalog GGUF download (drives its own progress events)
   "storage_add", // HUP-S0.2: adding a large file to IPFS
   "storage_retrieve", // HUP-S0.2: retrieving a large file from IPFS
+  "components_update", // HUP-S5.5: a signed component download (a browser build is hundreds of MB)
   "node_mcp_decide", // HUP-S4.2: an approved MCP transaction signs, broadcasts and polls its receipt (up to ~60s)
 ]);
 

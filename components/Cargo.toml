@@ -1,0 +1,44 @@
+# citrate-components: HUP-S5.5 signed component updater + HUP-S6.1 toolchain bundle definitions.
+#
+# Verifies a signed component manifest (minisign, Ed25519 over a BLAKE2b-512 prehash) against a
+# pinned public key, downloads an artifact into a staging directory, checks its size, SHA-256 and
+# its own signature, unpacks it with path checks, and only then swaps it in by committing one
+# state file. A failure before the commit leaves the installed version untouched; the previous
+# version is kept for an explicit rollback.
+#
+# The production key slot is EMPTY until the @rule8 key ceremony, so every manifest is refused.
+# No Tauri dependency: the app and the release tooling both use it. Every crate below is
+# already in Cargo.lock except lzma-rs (pure Rust, for upstream .tar.xz archives).
+[package]
+license = "BUSL-1.1"
+name = "citrate-components"
+version = "0.1.0"
+description = "citrate-components: signed component updater (HUP-S5.5) and toolchain bundle definitions (HUP-S6.1)."
+authors = ["Citrate Network"]
+edition = "2021"
+publish = false
+
+[lib]
+name = "citrate_components"
+path = "src/lib.rs"
+
+[[bin]]
+name = "citrate-components"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+minisign-verify = "0.2"
+ureq = "3"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+lzma-rs = "0.3"
+
+[dev-dependencies]
+ed25519-dalek = "2"
+blake2 = "0.10"
+rand = "0.8"

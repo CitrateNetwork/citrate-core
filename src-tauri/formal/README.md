@@ -362,6 +362,38 @@ Mutation check (`python3 src-tauri/formal/DeployGate_mutants.py`), all 7 killed:
   them (every "not installed" or tool error is a failing item).
 - The store's size bound is not modelled. Eviction revokes open ceremonies like NOT_READY.
 
+# ComponentSwap formal model (HUP-S5.5)
+
+TLA+ model of the signed component updater's install path (`components/src/install.rs`,
+`components/src/manifest.rs`): Begin (verify and record a manifest, refusing a lower sequence),
+Verify (size, SHA-256, artifact signature and health check folded into one outcome), Rename,
+Commit (the state-file rename, the only commit point), Crash at any step, Recover, Rollback.
+Policy and runbook: `docs/COMPONENT_UPDATER.md`.
+
+## Files
+
+- `ComponentSwap.tla`: the model.
+- `ComponentSwap.cfg`: three versions, one of them tampered, sequences 1..3.
+- `ComponentSwap_Wide.cfg`: four versions (three good), sequences 1..4, so pruning is reachable.
+- `ComponentSwap_mutants.py`: breaks one guard per mutant and expects TLC to find a violation.
+
+## Invariants and the code they mirror
+
+| Invariant | Meaning | Code / tests |
+|---|---|---|
+| `CurrentVerified` | Only a version that verified is ever current or previous | `Store::stage_and_swap`; `tests/install.rs` hash, size, signature, health cases |
+| `InstalledOnDisk` | What the state file names is always on disk, through crashes | rename before commit; `Store::recover`; `recover_removes_leftover_staging_and_unreferenced_versions` |
+| `OnlyVerifiedOnDisk` | Nothing unverified is placed among the version directories | staging under `.staging/` |
+| `JobIsNewest` | An install comes from the newest recorded manifest | `install` re-checks the sequence; `install_refuses_a_manifest_older_than_the_one_recorded` |
+| `BoundedDisk` | Between installs only current and previous are on disk | pruning after commit; `only_two_versions_are_kept_on_disk` |
+| `SeenMonotone` (action property) | The recorded sequence never goes down | `check_sequence`; `an_older_sequence_is_a_rollback_and_is_refused` |
+
+## Run result (2026-10-01)
+
+`scripts/run-tlc.sh ComponentSwap all`: `ComponentSwap.cfg` 265 states generated, 130 distinct,
+depth 12, no error; `ComponentSwap_Wide.cfg` 1119 generated, 517 distinct, depth 14, no error.
+`python3 src-tauri/formal/ComponentSwap_mutants.py`: 9 of 9 mutants killed (M01..M09).
+
 # AnchorSettle (HUP-S7.3, core half)
 
 The runtime's `citrate-agent-runtime/agent-anchor/formal/AnchorBatch.tla` proves the batch side
