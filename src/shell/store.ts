@@ -1970,7 +1970,27 @@ export class Store {
     const res = this.resolvers[head.id!];
     delete this.resolvers[head.id!];
     this.setState({ queue: s.queue.slice(1), cerPhase: "review", cerStep: 0 });
+    // HUP-S2.6 — the member's answer on this card is a HIC-1 decision: record it.
+    this.recordDecision(
+      head.card ? "agent.tool_approval" : "ceremony.approval",
+      result === "approved",
+      head.title + " · " + head.requester,
+      head.hic?.reason ?? "the member's answer on the approval card",
+    );
     if (res) res(result);
+  }
+
+  /** HUP-S2.6 — record an approval-card or wallet-review answer in the decision records. The
+   *  decision stands either way; a record that could not be written is said out loud, after any
+   *  notice already on screen (the outcome of the action itself is never covered up). */
+  recordDecision(kind: "ceremony.approval" | "agent.tool_approval", approved: boolean, subject: string, reason: string): void {
+    bridge.agentHarness
+      .recordDecision(kind, approved ? "approved" : "denied", subject.slice(0, 300), reason.slice(0, 400))
+      .catch((err) => {
+        const text = "This decision was not recorded: " + String((err as Error)?.message ?? err);
+        if (this.state.toast) setTimeout(() => this.toast(text), 3100);
+        else this.toast(text);
+      });
   }
   approveCer(): void {
     const head = this.state.queue[0];
@@ -3960,6 +3980,8 @@ export class Store {
     // as signing so Reject / Escape cannot report "nothing was signed" for a signature that may
     // still complete; every branch below clears the review with the REAL outcome.
     this.setState({ walletReview: { ...r, approving: true } });
+    // HUP-S2.6 — the member approved this review (HIC-1): record it.
+    this.recordDecision("ceremony.approval", true, r.kind + ": " + r.label, r.spendSummary ?? r.hic?.reason ?? "the member approved the wallet review");
     // A wallet LINK is not a transaction: it is a personal_sign whose proof is
     // POSTed to the authority. It must never reach signing.broadcast, which would
     // try to send a tx. Route it to the dedicated command, which signs, submits,
@@ -4152,6 +4174,8 @@ export class Store {
     const r = this.state.walletReview;
     if (!r || r.approving) return;
     this.setState({ walletReview: null });
+    // HUP-S2.6 — the member declined this review (HIC-1): record it.
+    this.recordDecision("ceremony.approval", false, r.kind + ": " + r.label, r.spendSummary ?? r.hic?.reason ?? "the member declined the wallet review");
     try {
       // The link path has its own reject: it also drops the one-time challenge
       // nonce, so a declined link cannot be resumed with a stale nonce.

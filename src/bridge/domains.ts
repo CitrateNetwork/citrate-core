@@ -1147,6 +1147,11 @@ export interface AgentHarnessDomain {
   undoStep(id: string, seq: number): Promise<UndoOutcome>;
   /** HUP-S2.9 — undo every change of the session not undone yet (all or nothing). */
   undoSession(id: string): Promise<UndoOutcome>;
+  /** HUP-S2.6 — record the member's answer on an approval card or a wallet review in core's HIC
+   *  outbox (then in the decision records the nightly anchor covers). Resolves with the record id,
+   *  or null in a build that keeps no decision records (web/dev); rejects when it could not be
+   *  written. */
+  recordDecision(kind: "ceremony.approval" | "agent.tool_approval", decision: "approved" | "denied", subject: string, reason: string): Promise<number | null>;
   /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
   workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
   /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */

@@ -179,6 +179,7 @@ commands.allow = [
   "hermes_checkpoints",
   "hermes_undo_step",
   "hermes_undo_session",
+  "hic_record_decision",
   "hermes_tracks",
   "hermes_brief_create",
   "hermes_brief_check",
