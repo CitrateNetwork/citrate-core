@@ -48,7 +48,12 @@ claude mcp add citrate-node -e CITRATE_NODE_MCP_TOKEN=cnmcp_... \
 The shim only ever sends the token to a loopback address. `CITRATE_NODE_MCP_PORT` (or
 `CITRATE_NODE_MCP_URL`, loopback only) points it at a non-default port. Hermes's MCP host
 (`citrate-agent-runtime/agent-mcp-host`) can use the shim the same way, as a `stdio` server with
-`env = { CITRATE_NODE_MCP_TOKEN = "..." }`.
+`env = { CITRATE_NODE_MCP_TOKEN = "..." }`. Before it sends the token at all, it asks the server to prove it is Citrate Core: it sends a
+fresh 32-byte challenge with no token, and the server answers with an HMAC of that challenge keyed
+by the SHA-256 of each token it holds (`X-Citrate-Identity`). Only if one of those matches the
+shim's own token does the token go out; otherwise each request is answered with an error that says
+the token was not sent. Another program holding the port while Core is off therefore never sees a
+token.
 
 Check it from Claude Code with `/mcp`, or ask it to "use citrate-node to show the chain head".
 

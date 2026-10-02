@@ -30,6 +30,10 @@ use std::time::Duration;
 pub const DEFAULT_PORT: u16 = 47204;
 /// The MCP endpoint path.
 pub const MCP_PATH: &str = "/mcp";
+/// Request header carrying the stdio shim's 32-byte challenge (hex), sent with no token.
+pub const IDENTITY_CHALLENGE_HEADER: &str = "x-citrate-identity-challenge";
+/// Response header with the server's proofs for that challenge (comma-separated hex).
+pub const IDENTITY_HEADER: &str = "x-citrate-identity";
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
@@ -391,6 +395,25 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
             return simple(403, "cross-origin requests are not allowed");
         }
     }
+    // Server identity, before any token is sent: prove this is Core by showing, for the shim's
+    // challenge, a proof keyed by each token Core holds. Nothing else happens on this request.
+    if let (Some(ch), None) = (
+        req.headers.get(IDENTITY_CHALLENGE_HEADER),
+        req.headers.get("authorization"),
+    ) {
+        let mut nonce = [0u8; 32];
+        if hex::decode_to_slice(ch.trim(), &mut nonce).is_err() {
+            return simple(400, "the identity challenge must be 32 bytes of hex");
+        }
+        return HttpResponse {
+            status: 204,
+            headers: vec![(
+                IDENTITY_HEADER.to_string(),
+                shared.tokens.identity_proofs(&nonce).join(","),
+            )],
+            body: vec![],
+        };
+    }
     let token = req
         .headers
         .get("authorization")
@@ -583,6 +606,8 @@ pub fn run_stdio_shim(
     token: &str,
 ) -> i32 {
     let mut session: Option<String> = None;
+    // The token goes only to a server that first proves it is Core (holds this token).
+    let mut identified = false;
     for line in input.lines() {
         let Ok(line) = line else {
             return 1;
@@ -593,6 +618,18 @@ pub fn run_stdio_shim(
         }
         let parsed: Option<Value> = serde_json::from_str(line).ok();
         let id = parsed.as_ref().and_then(|v| v.get("id").cloned());
+        if !identified {
+            if let Err(msg) = server_proves_identity(transport, token) {
+                if let Some(id) = id {
+                    let a = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": msg}});
+                    if writeln!(output, "{a}").is_err() || output.flush().is_err() {
+                        return 1;
+                    }
+                }
+                continue;
+            }
+            identified = true;
+        }
         let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
         if let Some(s) = &session {
             headers.push(("Mcp-Session-Id".to_string(), s.clone()));
@@ -622,6 +659,29 @@ pub fn run_stdio_shim(
         }
     }
     0
+}
+
+/// Ask the server to prove it holds `token` (a fresh challenge, no token sent). `Err` is the
+/// message the client sees.
+fn server_proves_identity(transport: &dyn ShimTransport, token: &str) -> Result<(), String> {
+    use rand::RngCore;
+    let mut nonce = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let headers = vec![(IDENTITY_CHALLENGE_HEADER.to_string(), hex::encode(nonce))];
+    let mine = crate::node_mcp_token::identity_proof_for(token, &nonce);
+    match transport.post("", &headers) {
+        Err(e) => Err(format!(
+            "Citrate Core is not running or its MCP server is off ({e})"
+        )),
+        Ok((status, h, _))
+            if (status == 204 || status == 200)
+                && h.get(IDENTITY_HEADER)
+                    .is_some_and(|p| crate::node_mcp_token::proofs_contain(p, &mine)) =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err("the MCP server on this port did not prove it is Citrate Core for this connect token (the token may be revoked or wrong, or another program holds the port); the token was not sent".to_string()),
+    }
 }
 
 /// The shim only ever sends the connect token to this machine's loopback endpoint.

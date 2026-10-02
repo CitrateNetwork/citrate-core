@@ -1284,10 +1284,15 @@ fn stdio_shim_reports_a_stopped_server_and_a_bad_token_as_jsonrpc_errors() {
     let v: Value =
         serde_json::from_str(String::from_utf8(out).unwrap_or_default().trim()).expect("json");
     assert_eq!(v["id"], json!(1));
-    assert!(v["error"]["message"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("HTTP 401"));
+    // A token the server does not hold: the server cannot prove itself for it, so the token is
+    // never sent.
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("was not sent"),
+        "{v}"
+    );
     sv.state.stop();
     let mut out: Vec<u8> = Vec::new();
     run_stdio_shim(
@@ -1569,4 +1574,63 @@ fn bidi_controls_never_reach_approval_text() {
         client_name: Some("x\u{202E}\u{2067}\u{200F}y".into()),
     };
     assert_eq!(c.origin(), "mcp:Claude Code via xy");
+}
+
+// ---------------------------------------------------------------------------
+// the shim sends the connect token only to a server that proves it is Citrate Core
+// ---------------------------------------------------------------------------
+
+/// Something else listening on the port: answers every request, records every header it saw.
+struct Squatter(std::sync::Mutex<Vec<Vec<(String, String)>>>);
+
+impl crate::node_mcp_http::ShimTransport for Squatter {
+    fn post(
+        &self,
+        _body: &str,
+        headers: &[(String, String)],
+    ) -> Result<(u16, HashMap<String, String>, String), String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(headers.to_vec());
+        let mut h = HashMap::new();
+        // Even an answer that looks like an identity proof is not one.
+        h.insert(
+            crate::node_mcp_http::IDENTITY_HEADER.to_string(),
+            "00".repeat(32),
+        );
+        Ok((200, h, json!({"jsonrpc": "2.0", "id": 1, "result": {}}).to_string()))
+    }
+}
+
+#[test]
+fn the_shim_never_sends_the_token_to_a_server_that_cannot_prove_it_is_core() {
+    let squatter = Squatter(std::sync::Mutex::new(Vec::new()));
+    let token = format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "ab".repeat(32));
+    let mut out: Vec<u8> = Vec::new();
+    let input = format!("{}\n{}\n", init_body(), json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+    run_stdio_shim(std::io::Cursor::new(input), &mut out, &squatter, &token);
+    let seen = squatter.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(!seen.is_empty(), "the shim asked the server to prove itself");
+    for hs in &seen {
+        for (k, v) in hs {
+            assert!(!k.eq_ignore_ascii_case("authorization"), "token sent: {v}");
+            assert!(!v.contains(&token));
+        }
+    }
+    let text = String::from_utf8(out).unwrap_or_default();
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(text.contains("was not sent"), "{text}");
+}
+
+#[test]
+fn the_identity_proof_is_bound_to_the_token_and_the_challenge() {
+    let store = crate::node_mcp_token::TokenStore::in_memory();
+    let issued = store.issue("client", 0).expect("issue");
+    let n1 = [7u8; 32];
+    let n2 = [8u8; 32];
+    let mine = crate::node_mcp_token::identity_proof_for(&issued.connect_token, &n1);
+    assert!(store.identity_proofs(&n1).contains(&mine));
+    assert!(!store.identity_proofs(&n2).contains(&mine), "a proof is for one challenge");
+    let other = format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "cd".repeat(32));
+    assert!(!store
+        .identity_proofs(&n1)
+        .contains(&crate::node_mcp_token::identity_proof_for(&other, &n1)));
 }
