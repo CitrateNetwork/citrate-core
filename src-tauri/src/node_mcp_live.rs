@@ -106,9 +106,14 @@ impl NodeBackend for LiveBackend {
     fn wallet_address(&self) -> Result<String, String> {
         let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&self.app)
             .ok_or("the wallet is not available")?;
-        crate::wallet::address_auto_unlocked(&custody.0)
+        // A read never unlocks the vault: an MCP client sees the address only while the member
+        // has the wallet open in Core.
+        crate::wallet::address(&custody.0)
             .map(|w| w.address)
-            .map_err(|e| format!("wallet unavailable: {e}"))
+            .map_err(|_| {
+                "the wallet is locked; open Citrate Core and unlock it to share the address"
+                    .to_string()
+            })
     }
 
     fn memory_search(&self, tenant: &str, query: &str, limit: usize) -> Result<Value, String> {
@@ -128,6 +133,12 @@ impl NodeBackend for LiveBackend {
     }
 
     fn cluster_status(&self, group: &str) -> Result<Value, String> {
+        // A read never starts the group daemon (or anything else) as a side effect.
+        if !crate::cluster::is_daemon_running() {
+            return Err(
+                "the group daemon is not running; open Groups in Citrate Core to start it".into(),
+            );
+        }
         let s = tauri::async_runtime::block_on(crate::cluster::cluster_status(
             self.app.clone(),
             group.to_string(),
@@ -136,6 +147,12 @@ impl NodeBackend for LiveBackend {
     }
 
     fn cluster_peers(&self, group: &str) -> Result<Value, String> {
+        // A read never starts the group daemon (or anything else) as a side effect.
+        if !crate::cluster::is_daemon_running() {
+            return Err(
+                "the group daemon is not running; open Groups in Citrate Core to start it".into(),
+            );
+        }
         let p = tauri::async_runtime::block_on(crate::cluster::cluster_peers(
             self.app.clone(),
             group.to_string(),

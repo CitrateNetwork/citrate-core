@@ -38,6 +38,8 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 const MAX_SESSIONS: usize = 64;
+/// Sessions one connect token may hold; its oldest goes first when it opens another.
+pub const MAX_SESSIONS_PER_TOKEN: usize = 8;
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(15);
 /// The whole request (headers and body) must arrive within this time, so a client that trickles
 /// bytes cannot hold a connection slot for longer than this plus one socket timeout.
@@ -90,14 +92,12 @@ impl ServerShared {
         let mut g = self.lock_sessions();
         g.0 += 1;
         let seq = g.0;
-        if g.1.len() >= MAX_SESSIONS {
-            if let Some(oldest) =
-                g.1.iter()
-                    .min_by_key(|(_, s)| s.opened_seq)
-                    .map(|(k, _)| k.clone())
-            {
-                g.1.remove(&oldest);
-            }
+        let all: Vec<(String, String, u64)> =
+            g.1.iter()
+                .map(|(k, s)| (k.clone(), s.token_id.clone(), s.opened_seq))
+                .collect();
+        if let Some(victim) = pick_eviction(&all, token_id) {
+            g.1.remove(&victim);
         }
         g.1.insert(
             id.clone(),
@@ -109,6 +109,32 @@ impl ServerShared {
         );
         id
     }
+}
+
+/// Which session (if any) gives way when `opener` opens one: its own oldest once it holds
+/// [`MAX_SESSIONS_PER_TOKEN`]; when the table is full, the oldest session of whichever token holds
+/// the most. One client can therefore never push out another client's sessions while it holds as
+/// many or more itself. `sessions` is (session id, token id, opened sequence).
+pub(crate) fn pick_eviction(sessions: &[(String, String, u64)], opener: &str) -> Option<String> {
+    let oldest_of = |tok: &str| {
+        sessions
+            .iter()
+            .filter(|(_, t, _)| t == tok)
+            .min_by_key(|(_, _, seq)| *seq)
+            .map(|(id, _, _)| id.clone())
+    };
+    let count = |tok: &str| sessions.iter().filter(|(_, t, _)| t == tok).count();
+    if count(opener) >= MAX_SESSIONS_PER_TOKEN {
+        return oldest_of(opener);
+    }
+    if sessions.len() < MAX_SESSIONS {
+        return None;
+    }
+    let busiest = sessions
+        .iter()
+        .map(|(_, t, _)| t.as_str())
+        .max_by_key(|t| (count(t), *t == opener))?;
+    oldest_of(busiest)
 }
 
 /// A running loopback server.

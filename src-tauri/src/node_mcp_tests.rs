@@ -1634,3 +1634,48 @@ fn the_identity_proof_is_bound_to_the_token_and_the_challenge() {
         .identity_proofs(&n1)
         .contains(&crate::node_mcp_token::identity_proof_for(&other, &n1)));
 }
+
+// ---------------------------------------------------------------------------
+// sessions are bounded per client; reads never unlock the wallet
+// ---------------------------------------------------------------------------
+
+#[test]
+fn one_client_cannot_push_out_another_clients_sessions() {
+    use crate::node_mcp_http::{pick_eviction, MAX_SESSIONS_PER_TOKEN};
+    let mk = |tok: &str, n: usize, from: u64| -> Vec<(String, String, u64)> {
+        (0..n)
+            .map(|i| (format!("{tok}-{i}"), tok.to_string(), from + i as u64))
+            .collect()
+    };
+    // Under both caps: nobody goes.
+    let few = mk("a", 3, 0);
+    assert_eq!(pick_eviction(&few, "a"), None);
+    // A client at its own cap loses its own oldest, never another's.
+    let mut s = mk("b", 2, 0);
+    s.extend(mk("a", MAX_SESSIONS_PER_TOKEN, 10));
+    assert_eq!(pick_eviction(&s, "a"), Some("a-0".into()));
+    // A full table: the busiest client gives way, not the newcomer's victim of choice.
+    let mut full = Vec::new();
+    for (i, t) in ["c", "d", "e", "f", "g", "h", "i", "j"].iter().enumerate() {
+        full.extend(mk(t, MAX_SESSIONS_PER_TOKEN, (i * 100) as u64));
+    }
+    let victim = pick_eviction(&full, "k").expect("full");
+    assert!(victim.ends_with("-0"));
+}
+
+#[test]
+fn a_node_mcp_read_never_unlocks_the_wallet() {
+    let src = include_str!("node_mcp_live.rs");
+    assert!(!src.contains("address_auto_unlocked"), "reads must not auto-unlock the vault");
+    assert!(!src.contains("ensure_auto_unlocked"));
+}
+
+#[test]
+fn a_node_mcp_cluster_read_never_starts_the_group_daemon() {
+    let src = include_str!("node_mcp_live.rs");
+    for f in ["fn cluster_status(", "fn cluster_peers("] {
+        let i = src.find(f).expect(f);
+        let body = &src[i..i + 400];
+        assert!(body.contains("is_daemon_running()"), "{f} must not start the daemon");
+    }
+}
