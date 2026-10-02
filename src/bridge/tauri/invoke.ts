@@ -34,6 +34,7 @@ const UNBOUNDED = new Set<string>([
   "model_serve_start", // spawns the llama-server sidecar
   "memory_ingest_docs", // first-run bulk docs preload
   "memory_seed_context", // first-run bulk memory writes
+  "memory_import_knowledge", // HUP-S3.1: first-run knowledge-corpus import (drives its own progress events)
   "model_catalog_download", // HUP-S0.2: catalog GGUF download (drives its own progress events)
   "storage_add", // HUP-S0.2: adding a large file to IPFS
   "storage_retrieve", // HUP-S0.2: retrieving a large file from IPFS

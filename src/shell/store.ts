@@ -721,6 +721,9 @@ export class Store {
    */
   async startMemoryDaemon(): Promise<void> {
     this.setState({ memDaemon: "idle", memDaemonError: null });
+    // HUP-S3.1: import the bundled knowledge corpus BEFORE the daemon takes the store lock. Idempotent
+    // and gated in Rust; a failure is shown and never blocks the daemon from starting.
+    await this.importKnowledge();
     try {
       await bridge.memory.start();
     } catch (err) {
@@ -732,6 +735,49 @@ export class Store {
     if (state === "running") {
       await this.refreshConstellation();
       void this.seedMemoryGraph();
+    }
+  }
+
+  /**
+   * HUP-S3.1 — first-run import of the bundled knowledge corpus (public docs, papers, Agentile,
+   * reviewed skills, Solidity references) into the local memory store. Progress comes from the
+   * importer's own lines; the result (imported / skipped with a reason / failed with the error) is
+   * folded into `knowledgeImport` exactly as reported. Never throws.
+   */
+  importKnowledge(): Promise<void> {
+    // One import at a time: an overlapping caller (launch auto-start + a Start/Retry click) awaits the
+    // same run instead of seeing "in-progress" and starting the daemon while the store is held.
+    if (!this.knowledgeImportRun) {
+      this.knowledgeImportRun = this.runKnowledgeImport().finally(() => {
+        this.knowledgeImportRun = null;
+      });
+    }
+    return this.knowledgeImportRun;
+  }
+
+  private async runKnowledgeImport(): Promise<void> {
+    const base = { tenant: null, done: 0, total: 0, nodesAdded: 0, message: null };
+    this.setState({ knowledgeImport: { ...base, state: "running" } });
+    try {
+      const r = await bridge.memory.importKnowledge((line) => {
+        if (line.event === "progress" || line.event === "tenant_start") {
+          const done = line.event === "progress" ? line.done : 0;
+          const total = line.event === "progress" ? line.total : line.nodes;
+          this.setState({ knowledgeImport: { ...this.state.knowledgeImport, state: "running", tenant: line.tenant, done, total } });
+        }
+      });
+      this.setState({
+        knowledgeImport: {
+          ...base,
+          state: r.state,
+          nodesAdded: r.nodesAdded,
+          message: r.state === "failed" ? (r.error ?? "knowledge import failed") : (r.skipped ?? null),
+        },
+      });
+    } catch (err) {
+      this.setState({
+        knowledgeImport: { ...base, state: "failed", message: String((err as Error)?.message ?? err) },
+      });
     }
   }
 
@@ -1953,6 +1999,8 @@ export class Store {
 
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
   private turnAbort: AbortController | null = null;
+  /** HUP-S3.1: the in-flight knowledge import, shared by overlapping callers. */
+  private knowledgeImportRun: Promise<void> | null = null;
 
   /** HUP-S7.6 — the active provider's kind (`ChatProvider.kind`), for the Activity monitor. */
   activeProviderKind(): string {
