@@ -1819,6 +1819,10 @@ pub async fn hermes_session_stop(
         .await
 }
 
+// HUP-S3.3 + S3.7: personas + track workflows (child module: reuses the bearer-authed control).
+#[path = "hermes_personas.rs"]
+pub mod personas;
+
 #[cfg(test)]
 mod brief_tests {
     include!("hermes_brief_tests.rs");

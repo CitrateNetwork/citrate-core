@@ -1011,6 +1011,68 @@ export interface AgentHarnessDomain {
   /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
    *  `PUBLISH_DISABLED: ` while publishing is off. */
   learnPublish(id: string, version: string): Promise<void>;
+  /** HUP-S3.3 + S3.7 — the shipped personas with their prompt fragments (names are placeholders
+   *  pending owner sign-off). Rejects when the sidecar isn't running. */
+  personas(): Promise<HermesPersona[]>;
+  /** HUP-S3.3 — the sidecar validates a member-defined persona and renders its fragment. A refusal
+   *  rejects with a message starting `PERSONA_REFUSED: `. */
+  personaCheck(persona: CustomPersonaInput): Promise<HermesPersona>;
+  /** HUP-S3.3 — every track's workflow family (definitions; nothing runs). */
+  workflows(): Promise<TrackWorkflow[]>;
+}
+
+// HUP-S3.3 + S3.7 — persona and track-workflow wire shapes. These mirror the sidecar's
+// `agent-loop::personas` / `agent-loop::workflows` views verbatim (snake_case).
+export interface HermesPersona {
+  id: string;
+  role: string;
+  name: string;
+  name_status: string;
+  summary: string;
+  voice: string;
+  tone: string;
+  style_rules: string[];
+  default_track: string;
+  default_workflow: string;
+  tool_emphasis: string[];
+  skills: string[];
+  /** Optional voice id for the existing speech engine; null = the system voice. */
+  tts_voice?: string | null;
+  /** What the chat appends to its system prompt while this persona is active. */
+  prompt_fragment: string;
+  /** True while the shipped name is a placeholder (the UI says so). */
+  name_pending_sign_off: boolean;
+  custom: boolean;
+}
+export interface CustomPersonaInput {
+  id: string;
+  name: string;
+  summary: string;
+  voice: string;
+  tone: string;
+  style_rules: string[];
+  default_track: string;
+  tool_emphasis: string[];
+  skills: string[];
+  tts_voice: string | null;
+}
+export interface TrackWorkflowStep {
+  id: string;
+  instruction: string;
+  max_attempts: number;
+  verifier_names: string[];
+}
+export interface TrackWorkflow {
+  id: string;
+  track: string;
+  title: string;
+  summary: string;
+  is_default: boolean;
+  /** "tool-report" (a tool's own report decides) or "answer-shape" (the answer's structure). */
+  evidence: "tool-report" | "answer-shape" | string;
+  tools: string[];
+  verifier_names: string[];
+  steps: TrackWorkflowStep[];
 }
 
 // HUP-S1.4 — interviewer wire shapes. These mirror the sidecar's `agent-loop::interview` types

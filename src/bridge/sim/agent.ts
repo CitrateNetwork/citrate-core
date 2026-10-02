@@ -97,6 +97,17 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async learnPublish() {
       throw new Error("PUBLISH_DISABLED: publishing needs the desktop app");
     },
+    // HUP-S3.3 — personas and track workflows are served by the sidecar; web/dev has none. Refuse
+    // honestly rather than inventing a persona list (Rule 1).
+    async personas() {
+      throw new Error("personas need the Hermes sidecar in the desktop app");
+    },
+    async personaCheck() {
+      throw new Error("personas need the Hermes sidecar in the desktop app");
+    },
+    async workflows() {
+      throw new Error("track workflows need the Hermes sidecar in the desktop app");
+    },
   };
 }
 

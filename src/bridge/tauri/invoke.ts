@@ -71,6 +71,9 @@ const LONG: Record<string, number> = {
   hermes_tracks: 45_000,
   hermes_brief_create: 45_000,
   hermes_brief_check: 45_000,
+  hermes_personas: 45_000,
+  hermes_persona_check: 45_000,
+  hermes_workflows: 45_000,
   // HUP-S1.9: the sidecar's worker report (same loopback control bound).
   hermes_workers: 45_000,
   // HUP-S4.4: the MCP dry-run check (probe bounded at 20 s in the sidecar, control call at 30 s).
