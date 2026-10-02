@@ -41,6 +41,7 @@ mod contract_deploy;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_reader;
 mod deploy_gate;
+mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod web_budgets;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
@@ -324,6 +325,8 @@ pub fn run() {
             app.manage(ceremony::build_ceremony_state());
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
+            // HUP-S9.4 — federated rounds: coordinator setting, start authorizations, eval-gate records.
+            app.manage(fl_rounds::build_state(app.handle()));
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
             app.manage(escalation::EscalationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
@@ -531,6 +534,15 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
+            fl_rounds::fl_overview,
+            fl_rounds::fl_coordinator_set,
+            fl_rounds::fl_round_plan,
+            fl_rounds::fl_round_plan_lookup,
+            fl_rounds::fl_round_start,
+            fl_rounds::fl_adapter_gate,
+            fl_rounds::fl_adapter_load,
+            fl_rounds::fl_adapter_unload,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,

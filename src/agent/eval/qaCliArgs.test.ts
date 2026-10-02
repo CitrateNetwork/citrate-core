@@ -77,3 +77,17 @@ describe("qaDatasetFiles", () => {
     expect(() => qaDatasetFiles("../x")).toThrow(/dataset/);
   });
 });
+
+describe("HUP-S9.4 --adapter-sha256 (eval a LoRA candidate for the gate)", () => {
+  const base = ["--base-url", "http://127.0.0.1:18080/v1", "--model", "m"];
+  it("accepts a sha256 hex and lowercases it", () => {
+    expect(parseQaCliArgs([...base, "--adapter-sha256", "CD".repeat(32)]).adapterSha256).toBe("cd".repeat(32));
+  });
+  it("refuses anything that is not a sha256 hex", () => {
+    expect(() => parseQaCliArgs([...base, "--adapter-sha256", "nope"])).toThrow(/sha256/);
+  });
+  it("names the candidate's result file so it never overwrites the base run", () => {
+    expect(qaResultFileName("2026-10-01T00:00:00Z", "m", "qa-v1", "cd".repeat(32))).toBe("2026-10-01-qa-m-lora-cdcdcdcdcdcd.json");
+    expect(qaResultFileName("2026-10-01T00:00:00Z", "m")).toBe("2026-10-01-qa-m.json");
+  });
+});
