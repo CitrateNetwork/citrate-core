@@ -7,7 +7,7 @@
 // view over it. Nothing here signs or fabricates a reply (Rule 1/3) — the send path routes
 // through the store's honest provider selection.
 // =====================================================================
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderMark } from "./LoaderMark";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
@@ -35,6 +35,8 @@ const DOT_FOR_KIND: Record<string, string> = { local: "#37d67a", real: "#37d67a"
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const models = modelsSlice.use();
   const undo = agentUndo.use();
+  // HUP-S2.3: sign-in requests from the managed browser go to core by id (stable handler).
+  const signInHandler = useCallback((id: string) => void store.handleWebSignIn(id), [store]);
   const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
@@ -143,7 +145,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
         </button>
       </div>
       {/* HUP-S5.1 + S5.6: Hermes's browser controls. Render nothing while the browser is off (the default). */}
-      {BRIDGE_MODE === "tauri" && <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} />}
+      {BRIDGE_MODE === "tauri" && <BrowserControls api={tauriBrowserApi} onOpen={() => void openPopout("browser")} onSignInRequest={signInHandler} />}
       {pickerOpen && (
         <div style={{ padding: 12, borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
           <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />
