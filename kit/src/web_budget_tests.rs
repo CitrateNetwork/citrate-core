@@ -713,3 +713,68 @@ fn every_fall_through_reason_is_plain_language() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rollback: an older, validly signed copy of the file must not be accepted.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn an_older_valid_budget_file_cannot_be_restored() {
+    let p = tmp_path("rollback");
+    let k = MemKeyring::default();
+    let before = {
+        let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
+        grant(&g, 1);
+        let snapshot = std::fs::read(&p).unwrap();
+        let m = msg_at("abcdef0123456789AA", NOW);
+        auto(&g, &m, Some(&top()), &TaskTaint::Clean, NOW).expect("reserve");
+        snapshot
+    };
+    // Put back the copy taken before the sign-in: its MAC is valid under the same key, and it
+    // would hand back the used sign-in and forget the nonce.
+    std::fs::write(&p, &before).unwrap();
+    let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW + MIN);
+    assert!(
+        matches!(g.health(), StoreHealth::Failed(ref why) if why.contains("older")),
+        "{:?}",
+        g.health()
+    );
+    let m = msg_at("abcdef0123456789BB", NOW + MIN);
+    assert_eq!(
+        auto(&g, &m, Some(&top()), &TaskTaint::Clean, NOW + MIN),
+        Err(FallThrough::StoreUnavailable)
+    );
+}
+
+#[test]
+fn a_crash_between_the_file_and_the_head_still_opens() {
+    let p = tmp_path("head-crash");
+    let k = MemKeyring::default();
+    {
+        let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
+        grant(&g, 3);
+    }
+    let head = k.get(HEAD_ACCOUNT).unwrap().expect("head written");
+    // The state a crash leaves after step 1 (both accepted) of a later save.
+    let mut pending = b"00ff,".to_vec();
+    pending.extend_from_slice(&head);
+    k.set(HEAD_ACCOUNT, &pending).unwrap();
+    let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
+    assert_eq!(g.health(), StoreHealth::Ok);
+    assert_eq!(k.get(HEAD_ACCOUNT).unwrap(), Some(head), "head settles");
+}
+
+#[test]
+fn an_install_from_before_the_head_adopts_its_current_file() {
+    let p = tmp_path("head-migrate");
+    let k = MemKeyring::default();
+    {
+        let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
+        grant(&g, 3);
+    }
+    k.delete(HEAD_ACCOUNT).unwrap();
+    let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
+    assert_eq!(g.health(), StoreHealth::Ok);
+    assert!(k.get(HEAD_ACCOUNT).unwrap().is_some());
+    assert_eq!(g.snapshot(NOW, Some(WALLET)).budgets.len(), 1);
+}

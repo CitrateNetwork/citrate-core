@@ -82,6 +82,14 @@ implementation keeps each one, and a test fails if it does not.
 Store integrity (D4 "Storage"): `tampered_store_fails_closed_until_reset`,
 `keychain_unavailable_fails_closed`, `records_are_hash_chained`.
 
+Rollback: the keychain also holds the MAC of the last file the app saved (`HEAD_ACCOUNT`). An
+older copy of the file has a valid MAC under the same key, so it is refused by the head instead
+(the store fails closed until the member resets it). A save moves the head in three steps so a
+crash never strands a good file. Tests: `an_older_valid_budget_file_cannot_be_restored`,
+`a_crash_between_the_file_and_the_head_still_opens`,
+`an_install_from_before_the_head_adopts_its_current_file`. Not covered: moving the system clock
+backwards (wall-clock time still bounds expiry).
+
 ## Model-to-code notes
 
 - The model keeps the nonce ledger and reservations forever. The code prunes a ledger entry once

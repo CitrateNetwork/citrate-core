@@ -63,6 +63,8 @@ pub const DEFAULTS_PENDING_OWNER_SIGNOFF: bool = true;
 pub const DEFAULT_PRINCIPAL: &str = "hermes";
 /// Keychain account for the store's integrity key.
 pub const MAC_KEY_ACCOUNT: &str = "web-signing-budgets-mac-v1";
+/// Keychain account holding the MAC of the last file this app saved (rollback protection).
+pub const HEAD_ACCOUNT: &str = "web-signing-budgets-head-v1";
 /// The `prev_hash` of the first decision record.
 pub const GENESIS_HASH: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 /// How many records the UI snapshot returns (newest first). The file keeps all of them.
@@ -578,7 +580,7 @@ impl BudgetGate {
             revoked_at_ms: None,
         };
         next.budgets.push(budget.clone());
-        persist(&self.path, key_ref(&g.mac_key), &next).map_err(|_| BudgetError::Persist)?;
+        persist(&self.path, key_ref(&g.mac_key), self.keyring.as_ref(), &next).map_err(|_| BudgetError::Persist)?;
         g.file = next;
         Ok(budget)
     }
@@ -617,7 +619,7 @@ impl BudgetGate {
         if g.health != StoreHealth::Ok {
             return Ok(());
         }
-        persist(&self.path, key_ref(&g.mac_key), &g.file).map_err(|_| BudgetError::Persist)
+        persist(&self.path, key_ref(&g.mac_key), self.keyring.as_ref(), &g.file).map_err(|_| BudgetError::Persist)
     }
 
     /// "Stop all autonomy" / `budget_revoke_all`: every unrevoked budget at once, under the lock.
@@ -645,7 +647,7 @@ impl BudgetGate {
         if g.health != StoreHealth::Ok {
             return Ok(n);
         }
-        persist(&self.path, key_ref(&g.mac_key), &g.file).map_err(|_| BudgetError::Persist)?;
+        persist(&self.path, key_ref(&g.mac_key), self.keyring.as_ref(), &g.file).map_err(|_| BudgetError::Persist)?;
         Ok(n)
     }
 
@@ -681,7 +683,7 @@ impl BudgetGate {
             },
             RecordStatus::Final,
         );
-        persist(&self.path, Some(key.as_slice()), &file).map_err(|_| BudgetError::Persist)?;
+        persist(&self.path, Some(key.as_slice()), self.keyring.as_ref(), &file).map_err(|_| BudgetError::Persist)?;
         g.file = file;
         g.mac_key = Some(key);
         g.health = StoreHealth::Ok;
@@ -886,7 +888,12 @@ impl GateGuard<'_> {
             },
             RecordStatus::Reserved,
         );
-        persist(&self.gate.path, key_ref(&self.inner.mac_key), &next)
+        persist(
+            &self.gate.path,
+            key_ref(&self.inner.mac_key),
+            self.gate.keyring.as_ref(),
+            &next,
+        )
             .map_err(|_| FallThrough::WriteAheadFailed)?;
         self.inner.file = next;
         Ok(rid)
@@ -937,6 +944,7 @@ impl GateGuard<'_> {
         let _ = persist(
             &self.gate.path,
             key_ref(&self.inner.mac_key),
+            self.gate.keyring.as_ref(),
             &self.inner.file,
         );
     }
@@ -1150,6 +1158,32 @@ fn load(
     if !verified || env.v != FILE_VERSION {
         return failed("the budget file failed its integrity check");
     }
+    // Rollback: the file must be the one this app saved last (or, after a crash mid-save, the
+    // one before it). An older copy has a valid MAC under the same key, so the MAC alone cannot
+    // tell; the head kept in the keychain can.
+    let mac_hex = env.mac.to_ascii_lowercase();
+    match keyring.get(HEAD_ACCOUNT) {
+        Err(_) => return failed("the OS keychain is unavailable, so budgets are off"),
+        Ok(None) => {
+            // Saved before the head existed: adopt this file as the head.
+            if keyring.set(HEAD_ACCOUNT, mac_hex.as_bytes()).is_err() {
+                return failed("the OS keychain is unavailable, so budgets are off");
+            }
+        }
+        Ok(Some(head)) => {
+            let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+            let accepted: Vec<&str> = head.split(',').map(str::trim).collect();
+            if !accepted.contains(&mac_hex.as_str()) {
+                return failed(
+                    "the budget file is older than the last one this app saved (it may have been restored from a backup)",
+                );
+            }
+            if accepted.len() > 1 {
+                // A save was interrupted; settle the head on the file that is actually there.
+                let _ = keyring.set(HEAD_ACCOUNT, mac_hex.as_bytes());
+            }
+        }
+    }
     let Ok(mut file) = serde_json::from_str::<BudgetFile>(&env.body) else {
         return failed("the budget file is damaged");
     };
@@ -1167,20 +1201,39 @@ fn load(
     if changed {
         // Best effort: if this save fails the in-memory view still says outcome_unknown, and the
         // next successful save writes it.
-        let _ = persist(path, Some(key.as_slice()), &file);
+        let _ = persist(path, Some(key.as_slice()), keyring, &file);
     }
     (file, StoreHealth::Ok, Some(key))
 }
 
-fn persist(path: &Path, key: Option<&[u8]>, file: &BudgetFile) -> std::io::Result<()> {
+/// Save the file and move the keychain head to it. Order: (1) the head accepts both the current
+/// and the new MAC, (2) the file is replaced, (3) the head accepts only the new MAC. A crash at
+/// any point leaves a file the head accepts; after (3) no earlier copy is accepted again.
+fn persist(
+    path: &Path,
+    key: Option<&[u8]>,
+    keyring: &dyn Keyring,
+    file: &BudgetFile,
+) -> std::io::Result<()> {
     use std::io::Write;
     let key = key.ok_or_else(|| std::io::Error::other("no integrity key"))?;
     let body = serde_json::to_string(file).map_err(std::io::Error::other)?;
     let mac = mac_of(key, &body).ok_or_else(|| std::io::Error::other("mac"))?;
+    let mac_hex = hex::encode(mac);
+    let head_err = |_| std::io::Error::other("keychain head");
+    let current = keyring
+        .get(HEAD_ACCOUNT)
+        .map_err(head_err)?
+        .map(|h| String::from_utf8_lossy(&h).to_string());
+    let both = match current {
+        Some(c) if !c.is_empty() => format!("{c},{mac_hex}"),
+        _ => mac_hex.clone(),
+    };
+    keyring.set(HEAD_ACCOUNT, both.as_bytes()).map_err(head_err)?;
     let env = Envelope {
         v: FILE_VERSION,
         body,
-        mac: hex::encode(mac),
+        mac: mac_hex.clone(),
     };
     let text = serde_json::to_string(&env).map_err(std::io::Error::other)?;
     if let Some(dir) = path.parent() {
@@ -1194,7 +1247,10 @@ fn persist(path: &Path, key: Option<&[u8]>, file: &BudgetFile) -> std::io::Resul
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path)?;
+    keyring
+        .set(HEAD_ACCOUNT, mac_hex.as_bytes())
+        .map_err(head_err)
 }
 
 #[cfg(test)]
