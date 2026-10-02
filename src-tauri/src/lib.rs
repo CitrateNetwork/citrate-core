@@ -577,6 +577,7 @@ pub fn run() {
             escalation::escalation_budget,
             escalation::escalation_budget_set,
             escalation::escalation_quote,
+            escalation::escalation_confirm_prepare,
             escalation::escalation_run,
             escalation::escalation_registry_status,
             web_budgets::web_budget_status,

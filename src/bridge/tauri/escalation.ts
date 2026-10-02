@@ -4,6 +4,7 @@
 import { invoke } from "./invoke";
 import type {
   EscalationBudget,
+  EscalationConfirmation,
   EscalationDomain,
   EscalationEndpoint,
   EscalationEndpointInput,
@@ -31,8 +32,11 @@ export const tauriEscalation: EscalationDomain = {
   quote(endpointId: string, prompt: string, system?: string | null, maxTokens?: number | null) {
     return invoke<EscalationQuote>("escalation_quote", { endpointId, prompt, system: system ?? null, maxTokens: maxTokens ?? null });
   },
-  run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean) {
-    return invoke<EscalationRun>("escalation_run", { quoteId, shownCostMicros, confirmed, tainted });
+  confirmPrepare(quoteId: string, shownCostMicros: number) {
+    return invoke<EscalationConfirmation>("escalation_confirm_prepare", { quoteId, shownCostMicros });
+  },
+  run(quoteId: string, shownCostMicros: number, confirmId: string | null, tainted: boolean) {
+    return invoke<EscalationRun>("escalation_run", { quoteId, shownCostMicros, confirmId, tainted });
   },
   registryStatus() {
     return invoke<EscalationRegistryStatus>("escalation_registry_status");

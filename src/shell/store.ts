@@ -2273,7 +2273,8 @@ export class Store {
         {
           endpoints: () => e.endpoints(),
           quote: (id, prompt, system, maxTokens) => e.quote(id, prompt, system, maxTokens),
-          run: (q, shown, confirmed, tainted) => e.run(q, shown, confirmed, tainted),
+          prepareConfirm: async (q, shown) => (await e.confirmPrepare(q, shown)).confirmId,
+          run: (q, shown, confirmId, tainted) => e.run(q, shown, confirmId, tainted),
           confirm: (q, reason, question) => {
             const a = escalationApproval(q, reason, question);
             return ask(

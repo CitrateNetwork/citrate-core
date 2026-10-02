@@ -67,6 +67,13 @@ fn quote(b: &mut Book, ep: &str, id: &str, max_tokens: u32, now: u64) -> QuoteVi
         .expect("quote")
 }
 
+/// The member's HIC-1 step: core mints the one-shot confirmation id for a shown quote.
+fn confirm(b: &mut Book, quote_id: &str, shown: u64) -> String {
+    b.prepare_confirmation(quote_id, shown, T0, format!("c-{quote_id}"))
+        .expect("prepare")
+        .confirm_id
+}
+
 // ---------------------------------------------------------------------------
 // Endpoint input
 // ---------------------------------------------------------------------------
@@ -172,7 +179,7 @@ fn removing_an_endpoint_deletes_its_key_and_voids_its_quotes() {
     remove_endpoint_with_key(&mut b, &kr, "ep1").expect("remove");
     assert!(kr.map.lock().expect("lock").is_empty());
     let e = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect_err("voided");
     assert!(matches!(e, EscError::UnknownQuote));
 }
@@ -234,12 +241,12 @@ fn no_escalation_without_the_shown_price() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let e = b
-        .authorize("q1", q.cost_micros + 1, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros + 1, None, false, T0, "x1".into())
         .expect_err("mismatch");
     assert!(matches!(e, EscError::PriceNotShown { .. }));
     // An unknown quote id never runs either.
     assert!(matches!(
-        b.authorize("q-never", 1, true, false, T0, "x2".into()),
+        b.authorize("q-never", 1, Some("c-made-up"), false, T0, "x2".into()),
         Err(EscError::UnknownQuote)
     ));
 }
@@ -252,7 +259,7 @@ fn an_expired_quote_does_not_run() {
         .authorize(
             "q1",
             q.cost_micros,
-            true,
+            None,
             false,
             T0 + QUOTE_TTL_MS + 1,
             "x".into(),
@@ -265,10 +272,10 @@ fn an_expired_quote_does_not_run() {
 fn a_quote_runs_at_most_once() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
-    b.authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+    b.authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("first");
     assert!(matches!(
-        b.authorize("q1", q.cost_micros, false, false, T0, "x2".into()),
+        b.authorize("q1", q.cost_micros, None, false, T0, "x2".into()),
         Err(EscError::UnknownQuote)
     ));
 }
@@ -282,7 +289,7 @@ fn within_budget_runs_without_asking_and_reserves_write_ahead() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let a = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("within budget");
     assert_eq!(a.mode, Mode::Budget);
     assert_eq!(b.ledger.reserved_micros, q.cost_micros);
@@ -294,15 +301,16 @@ fn over_budget_asks_and_keeps_the_quote_for_the_confirmation() {
     let (mut b, ep) = book(10);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     assert!(!q.within_budget);
-    match b.authorize("q1", q.cost_micros, false, false, T0, "x1".into()) {
+    match b.authorize("q1", q.cost_micros, None, false, T0, "x1".into()) {
         Err(EscError::NeedsConfirmation { cost_micros, .. }) => {
             assert_eq!(cost_micros, q.cost_micros)
         }
         other => panic!("expected NeedsConfirmation, got {other:?}"),
     }
     assert_eq!(b.ledger.used(), 0, "nothing reserved without the member");
+    let c = confirm(&mut b, "q1", q.cost_micros);
     let a = b
-        .authorize("q1", q.cost_micros, true, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, Some(&c), false, T0, "x1".into())
         .expect("confirmed");
     assert_eq!(a.mode, Mode::Confirmed);
     // A confirmed escalation is the member's one-off decision: it never counts against the cap.
@@ -317,7 +325,7 @@ fn the_default_cap_is_zero_so_every_escalation_asks() {
     let q = quote(&mut b, &ep, "q1", 8, T0);
     assert!(!q.within_budget);
     assert!(matches!(
-        b.authorize("q1", q.cost_micros, false, false, T0, "x".into()),
+        b.authorize("q1", q.cost_micros, None, false, T0, "x".into()),
         Err(EscError::NeedsConfirmation { .. })
     ));
 }
@@ -327,12 +335,13 @@ fn untrusted_context_always_asks_even_within_budget() {
     let (mut b, ep) = book(1_000_000_000);
     let q = quote(&mut b, &ep, "q1", 8, T0);
     assert!(q.within_budget);
-    match b.authorize("q1", q.cost_micros, false, true, T0, "x".into()) {
+    match b.authorize("q1", q.cost_micros, None, true, T0, "x".into()) {
         Err(EscError::NeedsConfirmation { reason, .. }) => assert!(reason.contains("untrusted")),
         other => panic!("expected NeedsConfirmation, got {other:?}"),
     }
+    let c = confirm(&mut b, "q1", q.cost_micros);
     let a = b
-        .authorize("q1", q.cost_micros, true, true, T0, "x".into())
+        .authorize("q1", q.cost_micros, Some(&c), true, T0, "x".into())
         .expect("confirmed");
     assert_eq!(a.mode, Mode::Confirmed);
 }
@@ -344,7 +353,7 @@ fn spend_never_exceeds_the_cap_across_many_escalations() {
     loop {
         let id = format!("q{n}");
         let q = quote(&mut b, &ep, &id, 64, T0);
-        match b.authorize(&id, q.cost_micros, false, false, T0, format!("x{n}")) {
+        match b.authorize(&id, q.cost_micros, None, false, T0, format!("x{n}")) {
             Ok(a) => {
                 b.settle(&a.escalation_id, Settlement::MaybeSent, T0);
             }
@@ -363,7 +372,7 @@ fn settlement_charges_at_most_the_reservation_and_releases_the_rest() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let a = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     let rec = b.settle(
         &a.escalation_id,
@@ -387,7 +396,7 @@ fn settlement_of_a_request_that_never_left_charges_nothing() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let a = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     let rec = b.settle(&a.escalation_id, Settlement::NotSent, T0);
     assert_eq!(rec.charged_micros, 0);
@@ -399,7 +408,7 @@ fn settlement_of_a_request_that_may_have_been_sent_keeps_the_full_charge() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let a = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     let rec = b.settle(&a.escalation_id, Settlement::MaybeSent, T0);
     assert_eq!(rec.charged_micros, q.cost_micros);
@@ -420,7 +429,7 @@ fn the_budget_resets_only_at_the_utc_day_boundary() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let a = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     b.settle(&a.escalation_id, Settlement::MaybeSent, T0);
     let spent = b.ledger.used();
@@ -440,7 +449,7 @@ fn a_reservation_from_yesterday_settles_without_touching_todays_budget() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let a = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     let tomorrow = (T0 / DAY + 1) * DAY + 10;
     b.ledger.roll(tomorrow);
@@ -452,7 +461,7 @@ fn a_reservation_from_yesterday_settles_without_touching_todays_budget() {
 fn the_cap_cannot_be_lowered_below_what_today_already_used() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
-    b.authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+    b.authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     assert!(b.ledger.set_cap(q.cost_micros - 1, T0).is_err());
     assert!(b.ledger.set_cap(q.cost_micros, T0).is_ok());
@@ -468,7 +477,7 @@ fn an_unreadable_ledger_fails_closed_to_asking() {
     let q = quote(&mut b, "ep1", "q1", 8, T0);
     assert!(!q.within_budget);
     assert!(matches!(
-        b.authorize("q1", q.cost_micros, false, false, T0, "x".into()),
+        b.authorize("q1", q.cost_micros, None, false, T0, "x".into()),
         Err(EscError::NeedsConfirmation { .. })
     ));
 }
@@ -480,7 +489,7 @@ fn history_is_bounded_and_records_mode_and_destination() {
         let id = format!("q{n}");
         let q = quote(&mut b, &ep, &id, 1, T0);
         let a = b
-            .authorize(&id, q.cost_micros, false, false, T0, format!("x{n}"))
+            .authorize(&id, q.cost_micros, None, false, T0, format!("x{n}"))
             .expect("ok");
         b.settle(&a.escalation_id, Settlement::NotSent, T0);
     }
@@ -499,7 +508,7 @@ fn the_sidecar_body_carries_the_key_and_exact_quoted_text_and_debug_redacts() {
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
     let a = b
-        .authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+        .authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     let body = sidecar_body(&a, KEY);
     let v: serde_json::Value = serde_json::from_str(body.as_str()).expect("json");
@@ -568,7 +577,7 @@ fn the_ledger_and_endpoints_round_trip_and_a_restart_never_resets_the_cap() {
     let dir = tmp_dir("rt");
     let (mut b, ep) = book(1_000_000);
     let q = quote(&mut b, &ep, "q1", 64, T0);
-    b.authorize("q1", q.cost_micros, false, false, T0, "x1".into())
+    b.authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     save_book(&dir, &b).expect("save");
     let b2 = load_book(&dir, T0);
@@ -649,4 +658,99 @@ fn the_quote_matches_the_sidecars_worst_case_golden() {
         .quote("g", "Plan it.", Some(""), 64, T0, "qg2".into())
         .expect("quote");
     assert_eq!(q.cost_micros, 152);
+}
+
+// ---------------------------------------------------------------------------
+// HIC-1 confirmation is minted by core, not asserted by the caller
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_confirmation_core_did_not_mint_cannot_approve_spend() {
+    let (mut b, ep) = book(10);
+    let q = quote(&mut b, &ep, "q1", 64, T0);
+    assert!(!q.within_budget);
+    match b.authorize("q1", q.cost_micros, Some("c-q1"), false, T0, "x1".into()) {
+        Err(EscError::NeedsConfirmation { .. }) => {}
+        other => panic!("an unminted confirmation must not approve: {other:?}"),
+    }
+    assert!(b.ledger.outstanding.is_empty(), "nothing reserved");
+    // The quote is kept, so the member can still confirm the same price properly.
+    let c = confirm(&mut b, "q1", q.cost_micros);
+    let a = b
+        .authorize("q1", q.cost_micros, Some(&c), false, T0, "x1".into())
+        .expect("confirmed");
+    assert_eq!(a.mode, Mode::Confirmed);
+}
+
+#[test]
+fn a_tainted_task_needs_a_minted_confirmation_too() {
+    let (mut b, ep) = book(1_000_000_000);
+    let q = quote(&mut b, &ep, "q1", 8, T0);
+    assert!(matches!(
+        b.authorize("q1", q.cost_micros, Some("anything"), true, T0, "x".into()),
+        Err(EscError::NeedsConfirmation { .. })
+    ));
+}
+
+#[test]
+fn a_confirmation_is_single_use_and_bound_to_its_quote_and_price() {
+    let (mut b, ep) = book(10);
+    let q1 = quote(&mut b, &ep, "q1", 64, T0);
+    let q2 = quote(&mut b, &ep, "q2", 64, T0);
+    let c1 = confirm(&mut b, "q1", q1.cost_micros);
+    // Not valid for another quote.
+    assert!(matches!(
+        b.authorize("q2", q2.cost_micros, Some(&c1), false, T0, "x2".into()),
+        Err(EscError::NeedsConfirmation { .. })
+    ));
+    // The price must be the one the member confirmed.
+    assert!(b
+        .prepare_confirmation("q2", q2.cost_micros + 1, T0, "c-bad".into())
+        .is_err());
+    assert!(b
+        .prepare_confirmation("q-unknown", 1, T0, "c-u".into())
+        .is_err());
+    b.authorize("q1", q1.cost_micros, Some(&c1), false, T0, "x1".into())
+        .expect("confirmed once");
+    // The quote ran; neither it nor its confirmation can be used again.
+    assert!(b
+        .authorize("q1", q1.cost_micros, Some(&c1), false, T0, "x3".into())
+        .is_err());
+    assert!(b.confirmations.get("q1").is_none());
+}
+
+#[test]
+fn a_newer_confirmation_replaces_the_older_one_and_expires_with_the_quote() {
+    let (mut b, ep) = book(10);
+    let q = quote(&mut b, &ep, "q1", 64, T0);
+    let old = b
+        .prepare_confirmation("q1", q.cost_micros, T0, "c-old".into())
+        .expect("prepare")
+        .confirm_id;
+    let new = b
+        .prepare_confirmation("q1", q.cost_micros, T0, "c-new".into())
+        .expect("prepare")
+        .confirm_id;
+    assert!(matches!(
+        b.authorize("q1", q.cost_micros, Some(&old), false, T0, "x".into()),
+        Err(EscError::NeedsConfirmation { .. })
+    ));
+    let late = T0 + QUOTE_TTL_MS + 1;
+    assert!(matches!(
+        b.authorize("q1", q.cost_micros, Some(&new), false, late, "x".into()),
+        Err(EscError::QuoteExpired)
+    ));
+}
+
+#[test]
+fn the_run_command_takes_a_confirmation_id_not_a_flag() {
+    let src = include_str!("escalation.rs");
+    let start = src.find("pub async fn escalation_run(").expect("command");
+    let sig = &src[start..start + src[start..].find(')').expect("sig end")];
+    assert!(!sig.contains("confirmed: bool"), "{sig}");
+    assert!(sig.contains("confirm_id: Option<String>"), "{sig}");
+    let lib = include_str!("lib.rs");
+    let acl = include_str!("../permissions/main-window.toml");
+    assert!(lib.contains("escalation::escalation_confirm_prepare"));
+    assert!(acl.contains("\"escalation_confirm_prepare\""));
 }

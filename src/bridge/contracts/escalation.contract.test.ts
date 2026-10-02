@@ -8,7 +8,7 @@ import { tauriEscalation } from "../tauri/escalation";
 
 describe("bridge contract — escalation (HUP-S1.5)", () => {
   it("exposes the escalation domain", () => {
-    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "run", "registryStatus"] as const) {
+    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "confirmPrepare", "run", "registryStatus"] as const) {
       expect(typeof bridge.escalation[k]).toBe("function");
     }
   });
@@ -17,7 +17,8 @@ describe("bridge contract — escalation (HUP-S1.5)", () => {
     if (bridge.mode !== "sim") return;
     expect(await bridge.escalation.endpoints()).toEqual([]);
     await expect(bridge.escalation.addEndpoint({ label: "x", baseUrl: "https://x.example/v1", model: "m", inputMicrosPerMtok: 1, outputMicrosPerMtok: 1 }, "k")).rejects.toThrow(/desktop app/);
-    await expect(bridge.escalation.run("q", 1, false, false)).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.run("q", 1, null, false)).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.confirmPrepare("q", 1)).rejects.toThrow(/desktop app/);
     expect((await bridge.escalation.registryStatus()).enabled).toBe(false);
   });
 });
@@ -56,9 +57,15 @@ describe("tauri escalation invokes the registered commands", () => {
     expect(invokeMock).toHaveBeenCalledWith("escalation_quote", { endpointId: "ep-1", prompt: "plan it", system: null, maxTokens: null });
   });
 
-  it("run → escalation_run with the shown price and the HIC flags", async () => {
+  it("confirmPrepare → escalation_confirm_prepare with the quote and the shown price", async () => {
+    invokeMock.mockResolvedValueOnce({ confirmId: "c-1", quoteId: "q-1", costMicros: 1234, expiresMs: 0 });
+    await tauriEscalation.confirmPrepare("q-1", 1234);
+    expect(invokeMock).toHaveBeenCalledWith("escalation_confirm_prepare", { quoteId: "q-1", shownCostMicros: 1234 });
+  });
+
+  it("run → escalation_run with the shown price, core's confirmation id and the taint flag", async () => {
     invokeMock.mockResolvedValueOnce({});
-    await tauriEscalation.run("q-1", 1234, true, false);
-    expect(invokeMock).toHaveBeenCalledWith("escalation_run", { quoteId: "q-1", shownCostMicros: 1234, confirmed: true, tainted: false });
+    await tauriEscalation.run("q-1", 1234, "c-1", false);
+    expect(invokeMock).toHaveBeenCalledWith("escalation_run", { quoteId: "q-1", shownCostMicros: 1234, confirmId: "c-1", tainted: false });
   });
 });

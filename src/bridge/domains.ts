@@ -1716,6 +1716,14 @@ export interface EscalationQuote {
   expiresMs: number;
 }
 
+/** Core's one-shot confirmation id for one shown quote and price. */
+export interface EscalationConfirmation {
+  confirmId: string;
+  quoteId: string;
+  costMicros: number;
+  expiresMs: number;
+}
+
 export interface EscalationRun {
   escalationId: string;
   content: string;
@@ -1742,8 +1750,16 @@ export interface EscalationDomain {
   budget(): Promise<EscalationBudget>;
   setBudget(capMicros: number): Promise<EscalationBudget>;
   quote(endpointId: string, prompt: string, system?: string | null, maxTokens?: number | null): Promise<EscalationQuote>;
-  /** Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. */
-  run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean): Promise<EscalationRun>;
+  /**
+   * The member's approval card is opening for a shown quote: core mints the one-shot confirmation
+   * id a confirmed run needs. A run cannot be approved by a flag.
+   */
+  confirmPrepare(quoteId: string, shownCostMicros: number): Promise<EscalationConfirmation>;
+  /**
+   * Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. `confirmId`
+   * is the id from `confirmPrepare` once the member approved, else null (within budget only).
+   */
+  run(quoteId: string, shownCostMicros: number, confirmId: string | null, tainted: boolean): Promise<EscalationRun>;
   registryStatus(): Promise<EscalationRegistryStatus>;
 }
 

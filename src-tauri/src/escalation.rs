@@ -24,7 +24,11 @@
 //! - **OverBudgetNeedsHic1 / TaintNeedsHic1.** When the price does not fit what is left today, or
 //!   the agent's context holds untrusted content, the run needs the member's explicit confirmation
 //!   (HIC-1). A confirmed escalation is the member's own decision for that one request and is
-//!   recorded separately; it never counts against (or past) the cap.
+//!   recorded separately; it never counts against (or past) the cap. The confirmation is a one-shot
+//!   id core mints for that quote and price as the member's card opens
+//!   (`escalation_confirm_prepare`); `escalation_run` accepts no "confirmed" flag. The `tainted`
+//!   input still comes from the chat harness, the only holder of that context today. Reported clean,
+//!   a run can at most use the budget the member set (HIC-2), never go past it.
 //! - **EgressOptInOnly.** Requests only go to endpoints the member added. Removing an endpoint
 //!   deletes its key and voids its quotes.
 //!
@@ -511,6 +515,25 @@ pub struct Book {
     pub endpoints: Vec<Endpoint>,
     pub ledger: Ledger,
     pub quotes: BTreeMap<String, Quote>,
+    /// HIC-1 confirmations core minted, by quote id. One per quote; a newer one replaces it.
+    pub confirmations: BTreeMap<String, PendingConfirmation>,
+}
+
+/// A one-shot confirmation id core minted for one shown quote at one price.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingConfirmation {
+    pub confirm_id: String,
+    pub cost_micros: u64,
+}
+
+/// What the webview gets back when it opens the member's HIC-1 card for a quote.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmationView {
+    pub confirm_id: String,
+    pub quote_id: String,
+    pub cost_micros: u64,
+    pub expires_ms: u64,
 }
 
 impl Book {
@@ -519,6 +542,7 @@ impl Book {
             endpoints: Vec::new(),
             ledger,
             quotes: BTreeMap::new(),
+            confirmations: BTreeMap::new(),
         }
     }
 
@@ -560,6 +584,8 @@ impl Book {
             return Err(EscError::UnknownEndpoint);
         }
         self.quotes.retain(|_, q| q.endpoint.id != id);
+        let quotes = &self.quotes;
+        self.confirmations.retain(|qid, _| quotes.contains_key(qid));
         Ok(())
     }
 
@@ -642,18 +668,69 @@ impl Book {
         Ok(view)
     }
 
-    /// Authorize a shown quote: reserve it against the budget (HIC-2), or, with the member's
-    /// confirmation, run it as a one-off (HIC-1). The caller persists the ledger before any egress.
+    /// Open the member's HIC-1 decision on a shown quote: core mints a one-shot confirmation id
+    /// bound to this quote and price. Only an id minted here can approve a confirmed run, so a
+    /// caller cannot approve spend by asserting a flag. A newer id replaces an older one.
+    pub fn prepare_confirmation(
+        &mut self,
+        quote_id: &str,
+        shown_cost_micros: u64,
+        now_ms: u64,
+        confirm_id: String,
+    ) -> Result<ConfirmationView, EscError> {
+        let q = self.quotes.get(quote_id).ok_or(EscError::UnknownQuote)?;
+        if now_ms > q.expires_ms {
+            return Err(EscError::QuoteExpired);
+        }
+        if shown_cost_micros != q.cost_micros {
+            return Err(EscError::PriceNotShown {
+                quoted: q.cost_micros,
+                shown: shown_cost_micros,
+            });
+        }
+        let view = ConfirmationView {
+            confirm_id: confirm_id.clone(),
+            quote_id: quote_id.to_string(),
+            cost_micros: q.cost_micros,
+            expires_ms: q.expires_ms,
+        };
+        self.confirmations.insert(
+            quote_id.to_string(),
+            PendingConfirmation {
+                confirm_id,
+                cost_micros: q.cost_micros,
+            },
+        );
+        Ok(view)
+    }
+
+    /// Authorize a shown quote: reserve it against the budget (HIC-2), or, with a confirmation id
+    /// core minted for it ([`Book::prepare_confirmation`]), run it as the member's one-off (HIC-1).
+    /// The caller persists the ledger before any egress.
     pub fn authorize(
         &mut self,
         quote_id: &str,
         shown_cost_micros: u64,
-        confirmed: bool,
+        confirm_id: Option<&str>,
         tainted: bool,
         now_ms: u64,
         escalation_id: String,
     ) -> Result<Authorized, EscError> {
         let q = self.quotes.remove(quote_id).ok_or(EscError::UnknownQuote)?;
+        let confirmed = match (confirm_id, self.confirmations.get(quote_id)) {
+            (Some(given), Some(p)) => {
+                p.cost_micros == q.cost_micros
+                    && given.len() == p.confirm_id.len()
+                    && given
+                        .bytes()
+                        .zip(p.confirm_id.bytes())
+                        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                        == 0
+            }
+            _ => false,
+        };
+        // A quote's confirmation is spent with the quote, whatever happens next.
+        let pending = self.confirmations.remove(quote_id);
         if now_ms > q.expires_ms {
             return Err(EscError::QuoteExpired);
         }
@@ -685,8 +762,12 @@ impl Book {
                 remaining_micros: self.ledger.remaining(),
                 reason: reason.to_string(),
             };
-            // Keep the quote so the member can confirm the same price.
+            // Keep the quote (and any confirmation core minted for it) so the member can confirm
+            // the same price.
             self.quotes.insert(quote_id.to_string(), q);
+            if let Some(p) = pending {
+                self.confirmations.insert(quote_id.to_string(), p);
+            }
             return Err(err);
         };
         if mode == Mode::Budget {
@@ -1206,18 +1287,41 @@ pub struct RunView {
     pub remaining_micros: u64,
 }
 
+/// **escalation_confirm_prepare** — the member's HIC-1 card is opening for a shown quote. Core mints
+/// the one-shot confirmation id that `escalation_run` needs to run it as a confirmed one-off.
+#[tauri::command]
+pub async fn escalation_confirm_prepare(
+    app: tauri::AppHandle,
+    quote_id: String,
+    shown_cost_micros: u64,
+) -> Result<ConfirmationView, String> {
+    crate::blocking::off_main(move || {
+        with_book(&app, |_, b| {
+            b.prepare_confirmation(&quote_id, shown_cost_micros, now_ms(), new_id("c"))
+        })
+    })
+    .await
+}
+
 /// **escalation_run** — run a shown quote. `shown_cost_micros` must equal the quote. Over budget, or
-/// with untrusted context, it needs `confirmed` (the member's explicit HIC-1 decision).
+/// with untrusted context, it needs `confirm_id`: the id core minted for this quote when the
+/// member's HIC-1 card opened (`escalation_confirm_prepare`). A bare flag cannot approve spend.
 #[tauri::command]
 pub async fn escalation_run(
     app: tauri::AppHandle,
     quote_id: String,
     shown_cost_micros: u64,
-    confirmed: bool,
+    confirm_id: Option<String>,
     tainted: bool,
 ) -> Result<RunView, String> {
     crate::blocking::off_main(move || {
-        escalation_run_sync(&app, &quote_id, shown_cost_micros, confirmed, tainted)
+        escalation_run_sync(
+            &app,
+            &quote_id,
+            shown_cost_micros,
+            confirm_id.as_deref(),
+            tainted,
+        )
     })
     .await
 }
@@ -1226,7 +1330,7 @@ fn escalation_run_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     quote_id: &str,
     shown_cost_micros: u64,
-    confirmed: bool,
+    confirm_id: Option<&str>,
     tainted: bool,
 ) -> Result<RunView, String> {
     // 1. Authorize and reserve, write-ahead. Nothing leaves until the reservation is on disk.
@@ -1234,7 +1338,7 @@ fn escalation_run_sync<R: tauri::Runtime>(
         let a = b.authorize(
             quote_id,
             shown_cost_micros,
-            confirmed,
+            confirm_id,
             tainted,
             now_ms(),
             new_id("esc"),

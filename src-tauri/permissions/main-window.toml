@@ -116,6 +116,7 @@ commands.allow = [
   "escalation_budget",
   "escalation_budget_set",
   "escalation_quote",
+  "escalation_confirm_prepare",
   "escalation_run",
   "escalation_registry_status",
   "web_budget_status",
