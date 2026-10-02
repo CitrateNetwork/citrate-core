@@ -1,8 +1,9 @@
 // =====================================================================
 // citrate-core — agent file changes and their undo (HUP-S2.9)
 //
-// The Hermes sidecar's file tools (fs_write, fs_edit, fs_delete, fs_rename) run in the sidecar,
-// inside folders the member granted for writing, and take an undo checkpoint around every change.
+// The Hermes sidecar's file tools (fs_write, fs_edit, fs_delete, fs_rename, and the grant-session
+// file_write and sheet_write) run in the sidecar, inside folders the member granted for writing,
+// and take an undo checkpoint around every change: every agent write a member can trigger.
 // Their tool result names that checkpoint ({session, seq}). This module reads it, and turns the
 // sidecar's undo outcomes into one honest sentence: a refusal (a file changed since, a pruned step,
 // undo not enabled) is never shown as success.
@@ -12,7 +13,7 @@
 // `hermes_undo_session`) for the list and the undo.
 // =====================================================================
 
-export const FILE_TOOLS = ["fs_write", "fs_edit", "fs_delete", "fs_rename"] as const;
+export const FILE_TOOLS = ["fs_write", "fs_edit", "fs_delete", "fs_rename", "file_write", "sheet_write"] as const;
 export type FileTool = (typeof FILE_TOOLS)[number];
 
 export function isFileTool(name: string): name is FileTool {
