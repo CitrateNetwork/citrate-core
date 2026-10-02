@@ -319,13 +319,15 @@ fn tools_list_carries_annotations_and_strict_schemas() {
             "cluster_share",
             "invite_create",
             "invite_revoke",
+            "faucet_request",
         ]
         .contains(&name);
         assert_eq!(
             read_only, !is_write,
             "{name}: readOnlyHint must match the tool kind"
         );
-        if is_write {
+        // HUP-S6.5: the budgeted faucet tool changes state but destroys nothing.
+        if is_write && name != "faucet_request" {
             assert_eq!(t["annotations"]["destructiveHint"], json!(true), "{name}");
         }
     }

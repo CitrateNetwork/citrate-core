@@ -205,6 +205,11 @@ impl NodeBackend for LiveBackend {
         })
     }
 
+    fn faucet_request(&self, origin: &str, initcode_hash: &str) -> Result<Value, String> {
+        let r = crate::faucet::request_for_app(&self.app, initcode_hash, origin)?;
+        serde_json::to_value(r).map_err(|e| e.to_string())
+    }
+
     fn close_ceremony(&self, ceremony_id: &str) {
         if let Some(c) = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&self.app) {
             let _ = c.0.reject(ceremony_id);

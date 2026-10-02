@@ -9,6 +9,9 @@
 //! - **action**: a change that needs no signature (join a cluster, share a file, create or revoke
 //!   an invite). Queued for the member's approval in the app, then run by core. Annotated
 //!   `destructiveHint: true`.
+//! - **budgeted** (HUP-S6.5): runs at once, but only inside a budget the member granted in the app
+//!   (HIC-2), and core decides everything that matters. Today: `faucet_request`. Annotated
+//!   `readOnlyHint: false`, `destructiveHint: false`.
 //!
 //! Write tools never return a result directly: they return a request id the client polls with
 //! `request_status`.
@@ -21,6 +24,8 @@ pub enum ToolKind {
     Read,
     Signature,
     Action,
+    /// HUP-S6.5: runs inside a member-granted budget (HIC-2); see `crate::faucet`.
+    Budgeted,
 }
 
 /// One tool in the catalog.
@@ -146,6 +151,15 @@ fn tx_schema() -> Value {
     )
 }
 
+/// HUP-S6.5: the faucet tool names the deploy it is for, and nothing that chooses a recipient,
+/// an amount or a time (faucet ADR D3).
+fn faucet_schema() -> Value {
+    obj(
+        json!({"initcode_hash": {"type": "string", "description": "0x keccak256 of the init code of a deploy the deploy gate marked READY"}}),
+        &["initcode_hash"],
+    )
+}
+
 fn status_schema() -> Value {
     obj(
         json!({"id": {"type": "string", "description": "request id returned by a write tool"}}),
@@ -201,6 +215,8 @@ pub const TOOLS: &[ToolDef] = &[
         description: "Ask to create a one-time invite link for a group. Runs only after the member approves it in Citrate Core; the approved result carries the link." },
     ToolDef { name: "invite_revoke", title: "Revoke an invite", kind: ToolKind::Action, input_schema: invite_revoke_schema,
         description: "Ask to revoke an outstanding invite. Runs only after the member approves it in Citrate Core." },
+    ToolDef { name: "faucet_request", title: "Faucet top-up for deploy gas", kind: ToolKind::Budgeted, input_schema: faucet_schema,
+        description: "Ask the Citrate faucet for SALT to pay the gas of a deploy the member started (the deploy gate must be READY for this init code). Always for the member's own wallet; only when the balance is short; at most once per 24 hours; only if the member turned the in-app faucet on in Settings. The answer says plainly what happened, including when nothing was sent." },
 ];
 
 /// Look a tool up by name.
@@ -220,6 +236,13 @@ pub fn tool_json(t: &ToolDef) -> Value {
             "title": t.title,
             "readOnlyHint": false,
             "destructiveHint": true,
+            "idempotentHint": false,
+            "openWorldHint": true,
+        }),
+        ToolKind::Budgeted => json!({
+            "title": t.title,
+            "readOnlyHint": false,
+            "destructiveHint": false,
             "idempotentHint": false,
             "openWorldHint": true,
         }),

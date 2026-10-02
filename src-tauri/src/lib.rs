@@ -42,6 +42,8 @@ mod daemons;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_reader;
 mod deploy_gate;
+// HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
+mod faucet;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod web_budgets;
@@ -343,6 +345,7 @@ pub fn run() {
             app.manage(escalation::EscalationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
+            app.manage(faucet::build_faucet_state(app.handle()));
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
@@ -585,6 +588,11 @@ pub fn run() {
             web_budgets::web_budget_revoke_all,
             web_budgets::web_budget_reset,
             web_budgets::web_signing_request,
+            faucet::faucet_status,
+            faucet::faucet_grant,
+            faucet::faucet_revoke,
+            faucet::faucet_request,
+            faucet::faucet_open_challenge,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,

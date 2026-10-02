@@ -6,6 +6,7 @@ import { COACH_STEPS } from "../data/seed";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { ApprovalCardView, HicBanner } from "./ApprovalCardView";
 import { DeployGateCard } from "./DeployGateCard";
+import { FaucetTopUp } from "../faucet/FaucetPanel";
 import { ModalDialog } from "./ModalDialog";
 
 // HUP-S10.6 (a11y): both approval dialogs render inside ModalDialog (named modal dialog, focus
@@ -229,6 +230,8 @@ export function WalletReviewModal({ store, s }: { store: Store; s: AppState }) {
           {r.card && <ApprovalCardView card={r.card} showRows={false} />}
           {/* HUP-S6.4: a contract deploy shows the D-4 gate verdict and the exact bytecode hash. */}
           {r.deployGate && <DeployGateCard record={r.deployGate} initcodeHash={r.deployGate.initcodeHash} />}
+          {/* HUP-S6.5: a READY deploy can ask the faucet for gas (core decides; off by default). */}
+          {r.deployGate?.verdict === "READY" && <FaucetTopUp initcodeHash={r.deployGate.initcodeHash} />}
 
           {raw ? (
             // Undecodable calldata — Rule 1: DO NOT dress it as legible. Show the raw

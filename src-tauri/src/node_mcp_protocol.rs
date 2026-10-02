@@ -78,6 +78,11 @@ pub trait NodeBackend: Send + Sync {
     ) -> Result<ProposedSignature, String>;
     /// Close a ceremony that will never be approved (expired / token revoked).
     fn close_ceremony(&self, ceremony_id: &str);
+    /// HUP-S6.5: a deploy-gas top-up for this member's wallet, under the member's faucet budget
+    /// (`crate::faucet`). Signs nothing. Backends without a faucet say so.
+    fn faucet_request(&self, _origin: &str, _initcode_hash: &str) -> Result<Value, String> {
+        Err("The in-app faucet is not available from this server.".to_string())
+    }
 }
 
 /// Who is calling (resolved by the transport from the connect token + the session).
@@ -347,6 +352,7 @@ impl McpCore {
                 ToolKind::Read => self.read_tool(ctx, name, &args),
                 ToolKind::Signature => self.signature_tool(ctx, name, &args),
                 ToolKind::Action => self.action_tool(ctx, name, &args),
+                ToolKind::Budgeted => self.budgeted_tool(ctx, name, &args),
             });
         self.log_call(ctx, "tools/call", Some(name), outcome.is_ok());
         let result = match outcome {
@@ -512,6 +518,25 @@ impl McpCore {
                     .ok_or_else(|| format!("no request {id} for this client"))
             }
             other => Err(format!("unknown read tool {other}")),
+        }
+    }
+
+    /// HUP-S6.5: tools that run inside a member-granted budget. Core decides the recipient, the
+    /// need and the timing; the caller only names the deploy.
+    fn budgeted_tool(&self, ctx: &CallerCtx, name: &str, args: &Value) -> Result<Value, String> {
+        match name {
+            "faucet_request" => {
+                let h = tools::arg_str(args, "initcode_hash")?;
+                let hex_ok = h
+                    .strip_prefix("0x")
+                    .is_some_and(|x| x.len() == 64 && x.chars().all(|c| c.is_ascii_hexdigit()));
+                if !hex_ok {
+                    return Err("initcode_hash must be a 0x-prefixed 32-byte hash".to_string());
+                }
+                self.backend
+                    .faucet_request(&ctx.origin(), &h.to_ascii_lowercase())
+            }
+            other => Err(format!("unknown budgeted tool {other}")),
         }
     }
 

@@ -78,6 +78,14 @@ Chain reads come from this node when it is running and caught up, otherwise from
 | `invite_create` | Creates a one-time invite; the approved result carries the link. |
 | `invite_revoke` | Revokes an outstanding invite (on the relay and locally). |
 
+**Budgeted tool** (HUP-S6.5; `readOnlyHint: false`, `destructiveHint: false`): `faucet_request`
+`{initcode_hash}` asks the Citrate faucet for deploy gas for a deploy the deploy gate marked
+READY. It runs at once, without an approval card, because it acts only inside the faucet budget
+the member granted in Settings, Budgets (HIC-2), which is off by default. Core picks the
+recipient (the member's own wallet), checks that the balance is short of the deploy's gas, and
+allows one request per 24 hours. The tool cannot name an address, an amount or a time. See
+[FAUCET_IN_APP.md](FAUCET_IN_APP.md).
+
 A write returns `{requestId, state: "pending"}`. The client polls `request_status` and sees
 `pending`, `running`, `approved` (with the result: a tx hash, an invite link), `rejected`,
 `failed`, or `expired`. A client can see only its own requests.
@@ -101,8 +109,8 @@ A write returns `{requestId, state: "pending"}`. The client polls `request_statu
 
 ## Not in this build
 
-- `deploy_propose`, `pin_add`, `faucet_request`, `anchor_propose` from the planset's tool list.
-  Deploys go through the in-app deploy gate (HUP-S6.4); the faucet is an ADR in review; the
+- `deploy_propose`, `pin_add`, `anchor_propose` from the planset's tool list.
+  Deploys go through the in-app deploy gate (HUP-S6.4); the
   anchor registry is not deployed on 40204 yet.
 - MCP Tasks for long operations, `dag_stats`, and a device list for cluster tools (no device
   registry exists in core yet).
