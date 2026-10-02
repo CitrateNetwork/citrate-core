@@ -38,6 +38,8 @@ mod chain_agent;
 mod components;
 mod connections;
 mod contract_deploy;
+// HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
+mod contract_reader;
 mod deploy_gate;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod web_budgets;
@@ -68,6 +70,8 @@ mod model;
 mod model_register;
 mod model_registry;
 mod node;
+// HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
+mod postdeploy;
 // HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
 mod node_mcp;
 mod node_mcp_approvals;
@@ -527,6 +531,18 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            // HUP-S6.6 — post-deploy steps for a hello-mint project.
+            postdeploy::postdeploy_status,
+            postdeploy::postdeploy_receipt,
+            postdeploy::postdeploy_verify,
+            postdeploy::postdeploy_switch_site,
+            postdeploy::postdeploy_pin_site,
+            postdeploy::postdeploy_vercel_export,
+            // HUP-S6.7 — the Contract reader (reads; writes only open a ceremony).
+            contract_reader::contract_source,
+            contract_reader::contract_code_size,
+            contract_reader::contract_view_call,
+            contract_reader::contract_write_propose,
             // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
             // spend budget, quote-then-run, and the registry route's (disabled) status.
             escalation::escalation_endpoints,

@@ -21,6 +21,7 @@ import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelR
 import { resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
+import { focusContractReader, startContractHost } from "./contractHost";
 import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
 import type { WorkerRow } from "./monitorSnapshot";
@@ -30,6 +31,8 @@ let hostPromise: Promise<PopoutHost> | null = null;
 /** Start the main-window host once (desktop app only); null in the web preview. */
 export function startPopoutHost(): Promise<PopoutHost> | null {
   if (BRIDGE_MODE !== "tauri") return null;
+  // HUP-S6.7: the Contract reader's requests are answered here too.
+  startContractHost(tauriTransport);
   hostPromise ??= (async () =>
     createPopoutHost({
       transport: await tauriTransport(),
@@ -92,4 +95,10 @@ export async function openPopout(kind: PopoutKind): Promise<void> {
   } catch (e) {
     store.toast("Could not open the pop-out: " + (e instanceof Error ? e.message : String(e)));
   }
+}
+
+/** HUP-S6.7 — open the Contract reader, optionally on an address (40204 unless a fork URL). */
+export async function openContractReader(address?: string, target = "citrate"): Promise<void> {
+  if (address) await focusContractReader(address, target);
+  await openPopout("contract");
 }

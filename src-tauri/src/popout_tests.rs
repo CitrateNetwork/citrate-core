@@ -75,20 +75,36 @@ fn the_typescript_allowlist_matches_this_one() {
 }
 
 #[test]
-fn the_browser_the_activity_monitor_and_the_media_player_have_views_today() {
-    // HUP-S5.1 added the Browser view and HUP-S10.1 the Media player to the S7.6 Activity monitor.
+fn the_browser_contract_reader_activity_monitor_and_media_player_have_views_today() {
+    // HUP-S5.1 added the Browser, HUP-S6.7 the Contract reader and HUP-S10.1 the Media player to
+    // the S7.6 Activity monitor.
     let ready: Vec<PopoutKind> = PopoutKind::ALL
         .into_iter()
         .filter(|k| k.available())
         .collect();
     assert_eq!(
         ready,
-        [PopoutKind::Browser, PopoutKind::Monitor, PopoutKind::Media]
+        [
+            PopoutKind::Browser,
+            PopoutKind::Contract,
+            PopoutKind::Monitor,
+            PopoutKind::Media
+        ]
     );
     assert_eq!(
         check_open_request("main", "browser"),
         Ok(PopoutKind::Browser)
     );
+}
+
+#[test]
+fn the_main_window_may_open_the_contract_reader() {
+    assert_eq!(
+        check_open_request("main", "contract"),
+        Ok(PopoutKind::Contract)
+    );
+    let err = check_open_request("popout-contract", "contract").expect_err("pop-out caller");
+    assert!(err.contains("main window"), "{err}");
 }
 
 #[test]
@@ -122,10 +138,9 @@ fn unknown_kinds_are_refused_by_name() {
 
 #[test]
 fn kinds_without_a_view_are_refused_honestly() {
-    for k in ["contract", "diff"] {
-        let err = check_open_request("main", k).expect_err(k);
-        assert!(err.contains("not built yet"), "{err}");
-    }
+    // The diff view is the one kind without a view after S5.1, S6.7 and S10.1.
+    let err = check_open_request("main", "diff").expect_err("diff");
+    assert!(err.contains("not built yet"), "{err}");
 }
 
 // ---------------------------------------------------------------------------

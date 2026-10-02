@@ -9,6 +9,7 @@
 // would fight the timer/resolver flow; this is the honest 1:1.
 // =====================================================================
 import { useSyncExternalStore } from "react";
+import { toFunctionSelector } from "viem";
 import {
   Activity,
   AppState,
@@ -71,6 +72,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   deploy: "Deploy contract",
   "directory-publish": "Publish to directory",
   "directory-revoke": "Remove from directory",
+  "contract-call": "Contract call",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -3222,6 +3224,57 @@ export class Store {
     // D-4 gate verdict and bytecode hash beside it (HUP-S6.4).
     this.openWalletReview("deploy", "Deploy contract", view, undefined, undefined, view.gate ? { deployGate: view.gate } : undefined);
     return { ok: true, gate: view.gate ? { initcodeHash: view.gate.initcodeHash, record: view.gate } : null };
+  }
+
+  /**
+   * HUP-S6.7 — a write call the member set up in the Contract reader pop-out. Core estimates the
+   * gas and opens a PENDING ceremony (bridge.contracts.proposeWrite → contract_write_propose);
+   * this STOPS at the WalletReviewModal in the main window, where the member sees the decoded call
+   * and approves or rejects it. Nothing signs here (Rule 3). A refusal (the estimate failed, no
+   * wallet) is thrown back to the reader as the honest reason; no review opens.
+   */
+  async proposeContractCall(input: { address: string; calldata: string; valueWei: string; label: string }): Promise<{ proposed: true }> {
+    if (this.state.walletReview) throw new Error("another approval is already waiting in the main window; finish it first");
+    // The label becomes the review's title, so the main window checks it against the calldata
+    // instead of trusting the pop-out: its selector must equal the call's first 4 bytes.
+    let selector = "";
+    try {
+      selector = toFunctionSelector(input.label);
+    } catch {
+      selector = "";
+    }
+    if (!selector || selector.toLowerCase() !== input.calldata.slice(0, 10).toLowerCase()) {
+      throw new Error("the call's name does not match its calldata; nothing was proposed");
+    }
+    const view = await bridge.contracts.proposeWrite(input.address, input.calldata, input.valueWei);
+    this.openWalletReview("contract-call", "Contract call · " + input.label, view);
+    return { proposed: true };
+  }
+
+  /**
+   * HUP-S6.7 — Hermes explains a contract function for the Contract reader. One turn on the
+   * active provider with the reader's prompt (the contract text is fenced as untrusted data by
+   * contractReader/explain.ts). Every tool call is refused, so an explanation can never act. It
+   * refuses when only the demo provider is connected and when a chat turn is running.
+   */
+  async explainContract(prompt: string): Promise<{ text: string; by: string }> {
+    const provider = this.provider;
+    if (!provider || provider.kind === "demo") throw new Error("Hermes has no model connected, so it cannot explain this contract yet");
+    if (this.state.chatStatus !== "ready") throw new Error("Hermes is busy with a chat turn; try again when it finishes");
+    let streamed = "";
+    const out = await provider.send({
+      messages: [{ role: "user", content: prompt }],
+      callbacks: {
+        onStatus: () => {},
+        onToken: (tk) => {
+          streamed += tk;
+        },
+        onToolCall: async () => "Tools are not available while explaining a contract. Answer from the data given.",
+      },
+    });
+    const text = (out.content || streamed).trim();
+    if (!text) throw new Error("Hermes returned no explanation");
+    return { text, by: provider.label };
   }
 
   /**

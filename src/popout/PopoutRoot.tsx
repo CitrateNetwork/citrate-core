@@ -16,6 +16,8 @@ import { POPOUT_TITLES, type PopoutKind } from "./kinds";
 import type { MonitorSnapshot } from "./monitorSnapshot";
 import type { UndoPanel } from "./undoPanel";
 import { ActivityMonitor } from "./ActivityMonitor";
+import { ContractReader } from "./ContractReader";
+import { createContractClient, type ContractClient } from "./contractChannel";
 import { MediaPlayer } from "./MediaPlayer";
 import { mediaTauriTransport } from "./mediaBridge";
 import { BrowserPopout } from "./BrowserPopout";
@@ -114,6 +116,7 @@ export function PopoutRoot({
     return () => clearInterval(t);
   }, [kind]);
 
+  if (kind === "contract") return <ContractReaderWindow transport={transport} />;
   if (kind === "media") return <MediaPlayer transport={mediaTransport} />;
   if (!hasView) {
     return (
@@ -161,4 +164,52 @@ export function PopoutRoot({
       onUndo={(session, seq) => void end.current?.undo(session, seq)}
     />
   );
+}
+
+/** HUP-S6.7 — the Contract reader window: its requests go to the main window over the channel. */
+function ContractReaderWindow({ transport }: { transport: () => Promise<BridgeTransport> }) {
+  const [client, setClient] = useState<ContractClient | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let made: ContractClient | null = null;
+    void (async () => {
+      try {
+        const c = await createContractClient(await transport());
+        if (cancelled) {
+          c.close();
+          return;
+        }
+        made = c;
+        setClient(c);
+      } catch (err) {
+        if (!cancelled) setFailed(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      made?.close();
+    };
+  }, [transport]);
+
+  if (failed) {
+    return (
+      <Frame title={POPOUT_TITLES.contract}>
+        <p role="alert" style={para}>
+          The Contract reader could not connect to the main window: {failed}
+        </p>
+      </Frame>
+    );
+  }
+  if (!client) {
+    return (
+      <Frame title={POPOUT_TITLES.contract}>
+        <p role="status" aria-live="polite" style={para}>
+          Connecting to the main window…
+        </p>
+      </Frame>
+    );
+  }
+  return <ContractReader client={client} />;
 }
