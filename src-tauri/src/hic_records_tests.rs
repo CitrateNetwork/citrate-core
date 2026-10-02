@@ -290,3 +290,22 @@ fn the_record_command_is_async_off_main_and_only_in_the_main_window_acl() {
         "pop-outs stay least-privilege"
     );
 }
+
+#[test]
+fn long_and_multibyte_subjects_still_make_valid_records() {
+    let root = format!("/home/m/{}", "é".repeat(400));
+    let ev = grant_added(&root, &["g-1".into()]);
+    assert!(ev.subject.len() <= 300);
+    validate(&ev).unwrap();
+    let ev = card_event(
+        "ceremony.approval",
+        "approved",
+        &"ü".repeat(300),
+        &"\u{7}x".repeat(300),
+    )
+    .unwrap();
+    assert!(ev.subject.len() <= 300 && ev.reason.len() <= 400);
+    assert!(!ev.reason.contains('\u{7}'));
+    let (_d, o) = outbox();
+    o.append(grant_revoked(&"g".repeat(500)), 1).unwrap();
+}

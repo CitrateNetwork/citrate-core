@@ -136,6 +136,19 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().filter(|c| !c.is_control()).take(n).collect()
 }
 
+/// Control characters removed, then cut at a character boundary to at most `max` bytes (the
+/// sidecar bounds fields in bytes), so a long folder path never makes a record invalid.
+pub fn fit(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars().filter(|c| !c.is_control()) {
+        if out.len() + c.len_utf8() > max {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The same rules the sidecar's `/records/core` applies, checked before anything is stored.
 pub fn validate(ev: &HicEvent) -> Result<(), String> {
     let allowed: &[&str] = match ev.kind.as_str() {
@@ -444,7 +457,7 @@ fn member_event(kind: &str, subject: String, reason: &str) -> HicEvent {
     HicEvent {
         kind: kind.to_string(),
         decision: "approved".to_string(),
-        subject,
+        subject: fit(&subject, 300),
         reason: reason.to_string(),
         outcome: Some("completed".to_string()),
         outcome_detail: Some("saved to the grant document".to_string()),
@@ -504,12 +517,15 @@ pub fn escalation_spent(rec: &crate::escalation::SpendRecord) -> HicEvent {
     HicEvent {
         kind: "escalation.spend".to_string(),
         decision: decision.to_string(),
-        subject: format!("{} ({})", rec.destination, rec.escalation_id),
+        subject: fit(&format!("{} ({})", rec.destination, rec.escalation_id), 300),
         reason: reason.to_string(),
         outcome: Some(outcome.to_string()),
-        outcome_detail: Some(format!(
-            "{}: charged {} micro-USD of a {} micro-USD quote",
-            rec.outcome, rec.charged_micros, rec.quoted_micros
+        outcome_detail: Some(fit(
+            &format!(
+                "{}: charged {} micro-USD of a {} micro-USD quote",
+                rec.outcome, rec.charged_micros, rec.quoted_micros
+            ),
+            300,
         )),
         evidence: Vec::new(),
     }
@@ -529,11 +545,11 @@ pub fn card_event(
     let ev = HicEvent {
         kind: kind.to_string(),
         decision: decision.to_string(),
-        subject: subject.to_string(),
+        subject: fit(subject, 300),
         reason: if reason.trim().is_empty() {
             "the member's answer on the approval card".to_string()
         } else {
-            reason.to_string()
+            fit(reason, 400)
         },
         outcome: None,
         outcome_detail: None,
