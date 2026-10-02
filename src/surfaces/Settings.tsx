@@ -1,7 +1,7 @@
 // =====================================================================
 // citrate-core — Settings surface (1:1 from design/CitrateCore.dc.html
 // SETTINGS section). Nine sections behind a left sub-nav (sSec):
-// Account & RBAC, Connections, AI providers, Node configuration,
+// Account & RBAC, Connections, AI providers, MCP servers (HUP-S4.4), Node configuration,
 // API endpoints & keys, Keys & security, Memberships & billing,
 // Privacy & recovery (HUP-S10.5), App.
 //
@@ -32,6 +32,8 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { McpServersPanel } from "./McpServersPanel";
+import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
 import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
 import { WebSearchSettings } from "./WebSearchSettings";
@@ -139,6 +141,7 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["ai", "AI providers"],
+  ["mcp", "MCP servers"],
   ["web", "Web search & decisions"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
@@ -1065,6 +1068,8 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
+        {/* ---------- MCP servers (HUP-S4.4) ---------- */}
+        {s.sSec === "mcp" && <McpServersPanel io={desktopMcpIo} />}
         {/* ---------- Privacy & recovery (HUP-S10.5) ---------- */}
         {s.sSec === "privacy" && <PrivacySection io={desktopPrivacyIo} now={() => new Date()} toast={(m) => store.toast(m)} />}
 

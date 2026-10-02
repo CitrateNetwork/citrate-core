@@ -51,6 +51,7 @@ mod ipc_name;
 mod ipfs;
 mod journal_export;
 mod local_data;
+mod mcp_servers;
 mod membership;
 mod memory;
 mod model;
@@ -692,6 +693,15 @@ pub fn run() {
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
+            // HUP-S4.4 — user-added MCP servers (Settings > MCP servers): stored disabled, enabled
+            // only after a dry-run review; writes the allowlist the Hermes sidecar reads.
+            mcp_servers::mcp_servers_list,
+            mcp_servers::mcp_server_save,
+            mcp_servers::mcp_server_remove,
+            mcp_servers::mcp_server_disable,
+            mcp_servers::mcp_server_review,
+            mcp_servers::mcp_server_enable,
+            mcp_servers::mcp_servers_runtime,
             // HUP-S10.5 — device-key recovery kit + "delete my local data".
             recovery_kit::recovery_kit_status,
             recovery_kit::recovery_kit_save_phrase,
