@@ -106,9 +106,12 @@ const RPC_TIMEOUT_SECS: u64 = 6;
 
 impl RpcTransport for HttpTransport {
     fn call(&self, body: Value) -> Result<Value, RpcError> {
+        // Never follow a redirect: a loopback fork target checked by URL must not be able to send
+        // the request (or the next one) to another host. A 3xx is an error, not an answer.
         let resp = ureq::post(&self.url)
             .config()
             .timeout_global(Some(std::time::Duration::from_secs(RPC_TIMEOUT_SECS)))
+            .max_redirects(0)
             .build()
             .send_json(&body)
             .map_err(|e| RpcError::Transport(e.to_string()))?;
