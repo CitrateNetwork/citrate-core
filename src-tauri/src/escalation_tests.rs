@@ -575,12 +575,15 @@ fn tmp_dir(tag: &str) -> std::path::PathBuf {
 #[test]
 fn the_ledger_and_endpoints_round_trip_and_a_restart_never_resets_the_cap() {
     let dir = tmp_dir("rt");
-    let (mut b, ep) = book(1_000_000);
+    let kr = MemKeyring::default();
+    let mut b = load_book(&dir, T0, &kr);
+    b.ledger = Ledger::new(1_000_000, T0);
+    let ep = b.add_endpoint(&input(), "ep1".into(), T0).expect("add").id;
     let q = quote(&mut b, &ep, "q1", 64, T0);
     b.authorize("q1", q.cost_micros, None, false, T0, "x1".into())
         .expect("ok");
     save_book(&dir, &b).expect("save");
-    let b2 = load_book(&dir, T0);
+    let b2 = load_book(&dir, T0, &kr);
     assert_eq!(b2.ledger.used(), q.cost_micros);
     assert_eq!(b2.ledger.cap_micros, 1_000_000);
     assert_eq!(b2.endpoints.len(), 1);
@@ -591,7 +594,8 @@ fn the_ledger_and_endpoints_round_trip_and_a_restart_never_resets_the_cap() {
 #[test]
 fn a_fresh_install_starts_with_the_default_cap() {
     let dir = tmp_dir("fresh");
-    let b = load_book(&dir, T0);
+    let kr = MemKeyring::default();
+    let b = load_book(&dir, T0, &kr);
     assert_eq!(b.ledger.cap_micros, DEFAULT_DAILY_CAP_MICROS);
     assert!(!b.ledger.unreadable);
     assert!(b.endpoints.is_empty());
@@ -602,9 +606,83 @@ fn a_fresh_install_starts_with_the_default_cap() {
 fn a_corrupt_ledger_file_fails_closed_and_is_kept_aside() {
     let dir = tmp_dir("corrupt");
     std::fs::write(dir.join(LEDGER_FILE), b"{ not json").expect("write");
-    let b = load_book(&dir, T0);
+    let kr = MemKeyring::default();
+    let b = load_book(&dir, T0, &kr);
     assert!(b.ledger.unreadable);
     assert_eq!(b.ledger.cap_micros, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_escalation_files_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp_dir("perms");
+    let kr = MemKeyring::default();
+    let mut b = load_book(&dir, T0, &kr);
+    b.add_endpoint(&input(), "ep1".into(), T0).expect("add");
+    save_book(&dir, &b).expect("save");
+    for f in [LEDGER_FILE, ENDPOINTS_FILE] {
+        let mode = std::fs::metadata(dir.join(f)).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{f}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_ledger_edited_outside_the_app_fails_closed() {
+    let dir = tmp_dir("tamper");
+    let kr = MemKeyring::default();
+    let mut b = load_book(&dir, T0, &kr);
+    b.ledger = Ledger::new(10_000, T0);
+    b.ledger.committed_micros = 9_000;
+    save_book(&dir, &b).expect("save");
+    let raw = std::fs::read_to_string(dir.join(LEDGER_FILE)).expect("read");
+    assert!(raw.contains("9000"), "{raw}");
+    std::fs::write(dir.join(LEDGER_FILE), raw.replace("9000", "0")).expect("write");
+    let b2 = load_book(&dir, T0, &kr);
+    assert!(b2.ledger.unreadable, "an edited ledger must not be trusted");
+    assert_eq!(b2.ledger.cap_micros, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_plain_ledger_is_trusted_only_before_the_app_has_sealed_one() {
+    // Upgrade: a ledger from before sealing, and no key yet, is adopted once.
+    let dir = tmp_dir("upgrade");
+    let kr = MemKeyring::default();
+    let mut l = Ledger::new(10_000, T0);
+    l.committed_micros = 4_000;
+    std::fs::write(
+        dir.join(LEDGER_FILE),
+        serde_json::to_vec(&l).expect("json"),
+    )
+    .expect("write");
+    let b = load_book(&dir, T0, &kr);
+    assert!(!b.ledger.unreadable);
+    assert_eq!(b.ledger.used(), 4_000);
+    save_book(&dir, &b).expect("save sealed");
+    // Once sealed, a plain file (the seal stripped) is refused.
+    std::fs::write(
+        dir.join(LEDGER_FILE),
+        serde_json::to_vec(&Ledger::new(10_000, T0)).expect("json"),
+    )
+    .expect("write");
+    assert!(load_book(&dir, T0, &kr).ledger.unreadable);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unavailable_keyring_fails_the_ledger_closed() {
+    let dir = tmp_dir("nokr");
+    let ok = MemKeyring::default();
+    let b = load_book(&dir, T0, &ok);
+    save_book(&dir, &b).expect("save");
+    let broken = MemKeyring {
+        fail: true,
+        ..MemKeyring::default()
+    };
+    assert!(load_book(&dir, T0, &broken).ledger.unreadable);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

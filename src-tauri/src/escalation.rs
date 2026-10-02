@@ -42,7 +42,8 @@
 //! Prices are what the member typed from their provider's pricing page; the app cannot verify them,
 //! and the provider's own bill is authoritative. The input token count is an upper bound (UTF-8
 //! bytes plus a per-message allowance), so quotes are ceilings. The ledger file is plain JSON in the
-//! app data directory (no MAC); an unreadable file fails closed to asking.
+//! app data directory, owner-only and sealed with an HMAC whose key is in the OS keyring; an
+//! unreadable or edited file fails closed to asking.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -517,6 +518,8 @@ pub struct Book {
     pub quotes: BTreeMap<String, Quote>,
     /// HIC-1 confirmations core minted, by quote id. One per quote; a newer one replaces it.
     pub confirmations: BTreeMap<String, PendingConfirmation>,
+    /// The spend ledger's integrity key, read from the OS keyring at load. `None`: saving fails.
+    pub ledger_key: Option<Zeroizing<Vec<u8>>>,
 }
 
 /// A one-shot confirmation id core minted for one shown quote at one price.
@@ -543,6 +546,7 @@ impl Book {
             ledger,
             quotes: BTreeMap::new(),
             confirmations: BTreeMap::new(),
+            ledger_key: None,
         }
     }
 
@@ -1029,56 +1033,154 @@ pub fn registry_status(inference_router: Option<&str>, x402_assets: &[&str]) -> 
 // Persistence
 // ---------------------------------------------------------------------------
 
+/// Keyring account for the spend ledger's integrity key (hex of 32 random bytes).
+pub const LEDGER_MAC_ACCOUNT: &str = "escalation-ledger-mac-v1";
+const SEALED_LEDGER_VERSION: u32 = 1;
+
+/// The ledger on disk: the ledger JSON and an HMAC-SHA256 over it under a key kept in the OS
+/// keyring, so an edit made outside the app is detected and the ledger fails closed.
+#[derive(Serialize, Deserialize)]
+struct SealedLedger {
+    v: u32,
+    ledger: String,
+    mac: String,
+}
+
+type LedgerMac = hmac::Hmac<sha2::Sha256>;
+
+fn ledger_mac(key: &[u8], body: &str) -> Option<LedgerMac> {
+    use hmac::Mac as _;
+    let mut m = <LedgerMac as hmac::Mac>::new_from_slice(key).ok()?;
+    m.update(body.as_bytes());
+    Some(m)
+}
+
+/// Owner-only (0600 from creation), written to a temporary file and renamed into place.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), EscError> {
+    use std::io::Write as _;
+    let io = |e: std::io::Error| EscError::Storage(e.kind().to_string());
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| EscError::Storage(e.kind().to_string()))?;
-    std::fs::rename(&tmp, path).map_err(|e| EscError::Storage(e.kind().to_string()))
+    if let Some(dir) = path.parent() {
+        citrate_core_kit::fsutil::ensure_private_dir(dir).map_err(io)?;
+    }
+    let res = (|| -> std::io::Result<()> {
+        // A leftover temporary file could carry a looser mode; start from a new one.
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res.map_err(io)
 }
 
 /// Persist the endpoints (no keys) and the ledger (quotes are never persisted).
 pub fn save_book(dir: &Path, b: &Book) -> Result<(), EscError> {
-    std::fs::create_dir_all(dir).map_err(|e| EscError::Storage(e.kind().to_string()))?;
     let eps = serde_json::to_vec_pretty(&b.endpoints)
         .map_err(|_| EscError::Storage("encode endpoints".into()))?;
     write_atomic(&dir.join(ENDPOINTS_FILE), &eps)?;
-    save_ledger(dir, &b.ledger)
+    save_ledger(dir, b)
 }
 
-/// Persist only the ledger (the write-ahead step before any egress).
-pub fn save_ledger(dir: &Path, l: &Ledger) -> Result<(), EscError> {
-    std::fs::create_dir_all(dir).map_err(|e| EscError::Storage(e.kind().to_string()))?;
-    let led =
-        serde_json::to_vec_pretty(l).map_err(|_| EscError::Storage("encode ledger".into()))?;
-    write_atomic(&dir.join(LEDGER_FILE), &led)
+/// Persist only the ledger (the write-ahead step before any egress), sealed with the book's key.
+pub fn save_ledger(dir: &Path, b: &Book) -> Result<(), EscError> {
+    use hmac::Mac as _;
+    let key = b
+        .ledger_key
+        .as_ref()
+        .ok_or_else(|| EscError::Storage("the spend ledger key is unavailable".into()))?;
+    let body =
+        serde_json::to_string(&b.ledger).map_err(|_| EscError::Storage("encode ledger".into()))?;
+    let mac = ledger_mac(key, &body)
+        .ok_or_else(|| EscError::Storage("seal ledger".into()))?
+        .finalize()
+        .into_bytes();
+    let sealed = serde_json::to_vec(&SealedLedger {
+        v: SEALED_LEDGER_VERSION,
+        ledger: body,
+        mac: hex::encode(mac),
+    })
+    .map_err(|_| EscError::Storage("encode ledger".into()))?;
+    write_atomic(&dir.join(LEDGER_FILE), &sealed)
 }
 
-/// Load the book. A missing ledger is a fresh install (the default cap). An unreadable one fails
-/// closed: cap 0, `unreadable`, and the bad file is kept aside for inspection.
-pub fn load_book(dir: &Path, now_ms: u64) -> Book {
-    let ledger = match std::fs::read(dir.join(LEDGER_FILE)) {
-        Ok(bytes) => match serde_json::from_slice::<Ledger>(&bytes) {
-            Ok(mut l) => {
-                l.roll(now_ms);
-                l
-            }
-            Err(_) => {
-                let _ = std::fs::rename(
-                    dir.join(LEDGER_FILE),
-                    dir.join(format!("ledger.unreadable-{now_ms}.json")),
-                );
-                let mut l = Ledger::new(0, now_ms);
-                l.unreadable = true;
-                l
-            }
+fn new_ledger_key(keyring: &dyn AiKeyring) -> Option<Zeroizing<Vec<u8>>> {
+    let k = Zeroizing::new(rand::random::<[u8; 32]>().to_vec());
+    keyring
+        .set(LEDGER_MAC_ACCOUNT, &hex::encode(k.as_slice()))
+        .ok()?;
+    Some(k)
+}
+
+fn failed_ledger(now_ms: u64) -> Ledger {
+    let mut l = Ledger::new(0, now_ms);
+    l.unreadable = true;
+    l
+}
+
+/// Load the book. A missing ledger is a fresh install (the default cap). An unreadable, unsealed
+/// (once sealing has started) or edited one fails closed: cap 0, `unreadable`, and the bad file is
+/// kept aside for inspection. A keyring that cannot be read also fails closed.
+pub fn load_book(dir: &Path, now_ms: u64, keyring: &dyn AiKeyring) -> Book {
+    use hmac::Mac as _;
+    let key: Result<Option<Zeroizing<Vec<u8>>>, ()> = match keyring.get(LEDGER_MAC_ACCOUNT) {
+        Err(_) => Err(()),
+        Ok(None) => Ok(None),
+        Ok(Some(h)) => match hex::decode(h.trim()) {
+            Ok(k) if k.len() == 32 => Ok(Some(Zeroizing::new(k))),
+            _ => Err(()),
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Ledger::new(DEFAULT_DAILY_CAP_MICROS, now_ms)
+    };
+    let keep_aside = || {
+        let _ = std::fs::rename(
+            dir.join(LEDGER_FILE),
+            dir.join(format!("ledger.unreadable-{now_ms}.json")),
+        );
+    };
+    let (ledger, ledger_key) = match (key, std::fs::read(dir.join(LEDGER_FILE))) {
+        (Err(()), _) => (failed_ledger(now_ms), None),
+        (Ok(key), Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            let key = key.or_else(|| new_ledger_key(keyring));
+            (Ledger::new(DEFAULT_DAILY_CAP_MICROS, now_ms), key)
         }
-        Err(_) => {
-            let mut l = Ledger::new(0, now_ms);
-            l.unreadable = true;
-            l
-        }
+        (Ok(key), Err(_)) => (failed_ledger(now_ms), key),
+        (Ok(key), Ok(bytes)) => match serde_json::from_slice::<SealedLedger>(&bytes) {
+            Ok(sealed) => {
+                let verified = key.as_ref().is_some_and(|k| {
+                    sealed.v == SEALED_LEDGER_VERSION
+                        && hex::decode(&sealed.mac).ok().is_some_and(|tag| {
+                            ledger_mac(k, &sealed.ledger)
+                                .is_some_and(|m| m.verify_slice(&tag).is_ok())
+                        })
+                });
+                match serde_json::from_str::<Ledger>(&sealed.ledger) {
+                    Ok(mut l) if verified => {
+                        l.roll(now_ms);
+                        (l, key)
+                    }
+                    _ => {
+                        keep_aside();
+                        let key = key.or_else(|| new_ledger_key(keyring));
+                        (failed_ledger(now_ms), key)
+                    }
+                }
+            }
+            // A plain ledger is from before sealing: trusted only while no key exists yet.
+            Err(_) => match (key, serde_json::from_slice::<Ledger>(&bytes)) {
+                (None, Ok(mut l)) => {
+                    l.roll(now_ms);
+                    (l, new_ledger_key(keyring))
+                }
+                (key, _) => {
+                    keep_aside();
+                    let key = key.or_else(|| new_ledger_key(keyring));
+                    (failed_ledger(now_ms), key)
+                }
+            },
+        },
     };
     let endpoints = std::fs::read(dir.join(ENDPOINTS_FILE))
         .ok()
@@ -1090,6 +1192,7 @@ pub fn load_book(dir: &Path, now_ms: u64) -> Book {
         .collect();
     let mut b = Book::new(ledger);
     b.endpoints = endpoints;
+    b.ledger_key = ledger_key;
     b
 }
 
@@ -1127,7 +1230,7 @@ fn with_book<R: tauri::Runtime, T>(
             .app_data_dir()
             .map_err(|e| e.to_string())?
             .join(DIR_NAME);
-        let book = load_book(&dir, now_ms());
+        let book = load_book(&dir, now_ms(), &crate::ai::OsAiKeyring);
         *guard = Some((dir, book));
     }
     let Some((dir, book)) = guard.as_mut() else {
@@ -1241,7 +1344,7 @@ pub async fn escalation_budget_set(
                 b.ledger = Ledger::new(0, now_ms());
             }
             b.ledger.set_cap(cap_micros, now_ms())?;
-            save_ledger(dir, &b.ledger)?;
+            save_ledger(dir, b)?;
             Ok(budget_view(&b.ledger))
         })
     })
@@ -1343,7 +1446,7 @@ fn escalation_run_sync<R: tauri::Runtime>(
             now_ms(),
             new_id("esc"),
         )?;
-        if let Err(e) = save_ledger(dir, &b.ledger) {
+        if let Err(e) = save_ledger(dir, b) {
             b.settle(&a.escalation_id, Settlement::NotSent, now_ms());
             return Err(e);
         }
@@ -1384,7 +1487,7 @@ fn escalation_run_sync<R: tauri::Runtime>(
     };
     let (rec, remaining) = with_book(app, |dir, b| {
         let rec = b.settle(&auth.escalation_id, settlement, now_ms());
-        save_ledger(dir, &b.ledger)?;
+        save_ledger(dir, b)?;
         Ok((rec, b.ledger.remaining()))
     })?;
     let content = result?;

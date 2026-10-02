@@ -58,6 +58,9 @@ url = "2"
 # sha2 + base64: PKCE S256 (challenge = base64url(sha256(verifier))) and JWK
 #   coordinate decoding.
 sha2 = "0.10"
+# HMAC-SHA256 seal on the escalation spend ledger (key in the OS keyring). Already in the lock
+# through the kit.
+hmac = "0.12"
 base64 = "0.22"
 # BC-5.3 — sha3 (Keccak-256) for the SBT sub→tokenId lookup: the member subHash is
 #   keccak256(sub) (dynamic per-member, so it CANNOT be a pinned selector like the

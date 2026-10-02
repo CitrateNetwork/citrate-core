@@ -250,6 +250,19 @@ fn the_ledger_round_trips_through_its_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn the_ledger_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("hlearn-perms-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("learned-memories.json");
+    let ledger = Ledger::load(&path).unwrap();
+    ledger.save(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_assert_reply_names_the_new_node() {
     assert_eq!(node_id_from_assert("asserted 0a1b2c3d4e5f [Claim] in personal by x").as_deref(), Some("0a1b2c3d4e5f"));

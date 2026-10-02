@@ -333,7 +333,7 @@ impl Ledger {
         Ok(Ledger { entries: f.entries })
     }
 
-    /// Write the ledger atomically (temporary file, flush, rename).
+    /// Write the ledger atomically (owner-only temporary file, flush, rename).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let body = serde_json::to_vec_pretty(&LedgerFile {
             schema: LEDGER_SCHEMA.into(),
@@ -347,7 +347,10 @@ impl Ledger {
         let tmp = dir.join(".learned-memories.json.tmp");
         let res = (|| -> std::io::Result<()> {
             use std::io::Write as _;
-            let mut f = std::fs::File::create(&tmp)?;
+            // Owner-only from creation: the ledger holds the member's learned memories.
+            // A leftover temporary file could carry a looser mode; start from a new one.
+            let _ = std::fs::remove_file(&tmp);
+            let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
             f.write_all(&body)?;
             f.sync_all()?;
             std::fs::rename(&tmp, path)
