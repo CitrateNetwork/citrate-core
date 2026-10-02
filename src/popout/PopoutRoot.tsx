@@ -14,6 +14,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPopoutEnd, type BridgeTransport, type PopoutEnd } from "./bridge";
 import { POPOUT_TITLES, type PopoutKind } from "./kinds";
 import type { MonitorSnapshot } from "./monitorSnapshot";
+import type { UndoPanel } from "./undoPanel";
 import { ActivityMonitor } from "./ActivityMonitor";
 import { MediaPlayer } from "./MediaPlayer";
 import { mediaTauriTransport } from "./mediaBridge";
@@ -59,6 +60,7 @@ export function PopoutRoot({
   mediaTransport?: () => Promise<BridgeTransport>;
 }) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
+  const [undoPanel, setUndoPanel] = useState<UndoPanel | null>(null);
   const [browserView, setBrowserView] = useState<BrowserView | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -77,7 +79,13 @@ export function PopoutRoot({
     void (async () => {
       try {
         const t = await transport();
-        const e = await createPopoutEnd(t, kind, (s) => setSnapshot(s), (v) => setBrowserView(v));
+        const e = await createPopoutEnd(
+          t,
+          kind,
+          (s) => setSnapshot(s),
+          (p) => setUndoPanel(p),
+          (v) => setBrowserView(v),
+        );
         if (cancelled) {
           e.close();
           return;
@@ -144,5 +152,13 @@ export function PopoutRoot({
       </Frame>
     );
   }
-  return <ActivityMonitor snapshot={snapshot} now={now} onStop={() => void end.current?.stop()} />;
+  return (
+    <ActivityMonitor
+      snapshot={snapshot}
+      now={now}
+      onStop={() => void end.current?.stop()}
+      undo={undoPanel}
+      onUndo={(session, seq) => void end.current?.undo(session, seq)}
+    />
+  );
 }

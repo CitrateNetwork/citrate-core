@@ -12,6 +12,8 @@ import { LoaderMark } from "./LoaderMark";
 import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { InterviewCard, looksLikeBuildAsk } from "./InterviewCard";
+import { FileChangeCard } from "./FileChangeCard";
+import { agentUndo, undoChange } from "../shell/slices/agentUndo";
 import { bridge } from "../bridge";
 import { openPopout } from "../popout/appHost";
 import { BrowserControls } from "./BrowserControls";
@@ -32,6 +34,7 @@ const DOT_FOR_KIND: Record<string, string> = { local: "#37d67a", real: "#37d67a"
 
 export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const models = modelsSlice.use();
+  const undo = agentUndo.use();
   const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
@@ -170,6 +173,12 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                 </button>
               </span>
             )}
+            {/* HUP-S2.9: the files the agent changed in this reply, each with Undo. */}
+            {undo.cards
+              .filter((c) => c.msgId === m.id)
+              .map((c) => (
+                <FileChangeCard key={c.session + ":" + c.seq} card={c} onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)} />
+              ))}
             {m.chips && m.chips.length > 0 && (
               <span style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
                 {m.chips.map((c, i) => {

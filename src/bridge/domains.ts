@@ -11,6 +11,7 @@
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
+import type { CheckpointList, UndoOutcome } from "../agent/fileChanges";
 import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
 import type {
   AppConfig,
@@ -989,6 +990,14 @@ export interface AgentHarnessDomain {
   /** HUP-S1.4 — validate a member-edited brief against its track (required gates and the workflow
    *  can't be edited away). A refusal rejects with `BRIEF_REFUSED: <reason>`. */
   briefCheck(brief: Brief): Promise<{ ok: boolean; markdown: string }>;
+  /** HUP-S2.9 — the agent session's checkpointed file changes (newest first). `enabled: false`
+   *  with a note when the sidecar cannot undo. Rejects when the sidecar isn't running. */
+  checkpoints(id: string): Promise<CheckpointList>;
+  /** HUP-S2.9 — undo one agent file change. A refusal (a file changed since, a pruned step) resolves
+   *  with `ok: false` and the reason; nothing was restored. */
+  undoStep(id: string, seq: number): Promise<UndoOutcome>;
+  /** HUP-S2.9 — undo every change of the session not undone yet (all or nothing). */
+  undoSession(id: string): Promise<UndoOutcome>;
   /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
   workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
   /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */

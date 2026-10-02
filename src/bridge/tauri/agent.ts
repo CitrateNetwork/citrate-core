@@ -10,6 +10,7 @@
 import { invoke } from "./invoke";
 import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesPersona, TrackWorkflow } from "../domains";
 import type { CeremonyView } from "../types";
+import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 import type { LearnAcceptResult, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView } from "../../agent/learn";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
@@ -80,6 +81,16 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   briefCheck(brief) {
     return invoke<{ ok: boolean; markdown: string }>("hermes_brief_check", { brief });
+  },
+  // HUP-S2.9 — undo for agent file changes (the sidecar's checkpoint routes, through Rust).
+  checkpoints(id) {
+    return invoke<CheckpointList>("hermes_checkpoints", { id });
+  },
+  undoStep(id, seq) {
+    return invoke<UndoOutcome>("hermes_undo_step", { id, seq });
+  },
+  undoSession(id) {
+    return invoke<UndoOutcome>("hermes_undo_session", { id });
   },
   // HUP-S3.4 — verified workflow runs + verified self-learning (src-tauri/src/hermes_learn.rs).
   workflowRun(sessionId, workflow) {

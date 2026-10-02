@@ -15,6 +15,7 @@
 import { createMainEnd, type BridgeTransport, type MainEnd } from "./bridge";
 import { isPopoutKind, type PopoutKind } from "./kinds";
 import { buildMonitorSnapshot, type MonitorInputs, type WorkerRow } from "./monitorSnapshot";
+import type { UndoPanel } from "./undoPanel";
 import { BROWSER_OFF, parseBrowserFrame, parseBrowserStatus, type BrowserFrame, type BrowserState } from "./browserView";
 
 /** HUP-S5.1: Hermes's browser, through the Rust commands. */
@@ -52,6 +53,13 @@ export interface PopoutHostDeps {
   workersPollMs?: number;
   /** Coalesce bursts of changes into one snapshot per this many ms. */
   throttleMs?: number;
+  /** HUP-S2.9: the undo panel (its changes must reach `subscribe`), its refresh from the sidecar,
+   *  and the main window's undo path. Absent: the monitor shows no undo panel. */
+  undo?: {
+    panel(): UndoPanel;
+    refresh(): void;
+    request(session: string, seq: number | null): void;
+  };
   /** HUP-S5.1: Hermes's browser. Absent (web preview, tests), the Browser pop-out shows "off". */
   browser?: BrowserDeps;
   /** How often the screencast is polled while a Browser pop-out is open. */
@@ -106,6 +114,7 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
     const localCtxTokens = await readCtx();
     if (disposed) return;
     await end.sendSnapshot(buildMonitorSnapshot({ ...deps.inputs(), localCtxTokens, workers, now: deps.now() })).catch(() => undefined);
+    if (deps.undo && !disposed) await end.sendUndoPanel(deps.undo.panel()).catch(() => undefined);
   };
   const schedule = () => {
     if (disposed || !monitorOpen || timer !== null) return;
@@ -185,6 +194,7 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
       }
       if (kind !== "monitor") return;
       monitorOpen = true;
+      deps.undo?.refresh();
       void (async () => {
         await readWorkers();
         await publish();
@@ -199,6 +209,7 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
       }
     },
     onStop: () => deps.stop(),
+    onUndo: (session, seq) => deps.undo?.request(session, seq),
     onBrowserStop: () => {
       void deps.browser?.stop().catch(() => undefined);
     },

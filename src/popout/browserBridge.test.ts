@@ -45,7 +45,8 @@ describe("HUP-S5.1 browser bridge messages", () => {
   it("the pop-out end hands views to the browser view and sends Stop", async () => {
     const ft = fakeTransport();
     const views: unknown[] = [];
-    const end = await createPopoutEnd(ft.t, "browser", () => undefined, (v) => views.push(v));
+    // The fourth argument is the S2.9 undo-panel callback; the browser view is the fifth.
+    const end = await createPopoutEnd(ft.t, "browser", () => undefined, undefined, (v) => views.push(v));
     ft.deliver({ v: 1, type: "browser.view", view: { state: STATUS, frame: null } });
     ft.deliver({ v: 1, type: "monitor.snapshot", snapshot: {} });
     expect(views.length).toBe(1);
