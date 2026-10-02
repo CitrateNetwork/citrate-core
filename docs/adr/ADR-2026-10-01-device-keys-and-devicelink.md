@@ -41,7 +41,14 @@ wallet-signed DeviceLink.
    signatures and adds each allowed member's devices to the mesh with the member's role.
 4. **Revocation.** The member's comms key signs a revocation; the daemon honours it permanently for
    that device key and evicts in the same roster update. Revoking this machine also deletes its
-   device key, so linking it again mints a fresh one.
+   device key, so linking it again mints a fresh one. Revocation is two steps in core:
+   `device_link_revoke_prepare` returns the statement the member confirms and a one-shot id for
+   that device, and `device_link_revoke` takes only that id (added 2026-10-01).
+   **Limit (added 2026-10-01).** Revocation removes a device key, not the member: the comms key is
+   derived from the wallet and stays admitted beside linked devices, so a revoked machine that still
+   holds the wallet can rejoin as the member's comms identity. The Cluster surface says so. Closing
+   that needs the mesh to stop admitting the comms identity for members with linked devices (or a
+   comms key rotation on revocation), which is cluster-side work.
 5. **Defaults change nothing.** The mesh uses the device key only when the operator has turned on
    the cross-machine transport (`CITRATE_CLUSTER_LISTEN`, soak-gated) AND this machine has an active
    link. Otherwise the cluster meshes as the comms identity exactly as before. The identity is chosen
@@ -54,7 +61,7 @@ wallet-signed DeviceLink.
 ## Commands (main window only; pop-outs unchanged)
 
 `device_link_request`, `device_link_approve`, `device_link_reject`, `device_links`,
-`device_link_revoke`, `device_link_export`, `device_link_import`, `cluster_devices`. All async on the
+`device_link_revoke_prepare`, `device_link_revoke`, `device_link_export`, `device_link_import`, `cluster_devices`. All async on the
 blocking pool (keyring + file I/O). No signature crosses the bridge except inside an exported link
 code, which is a public attestation by design.
 

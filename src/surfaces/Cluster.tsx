@@ -61,7 +61,9 @@ function YourDevices({ store }: { store: Store }) {
       </div>
       <p style={{ padding: "0 16px", margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
         Linking gives this machine its own key, tied to you by a link your wallet signs. The mesh can
-        then tell your machines apart, and you can remove one without the others. No funds move.
+        then tell your machines apart, and you can remove one without the others. Removing a machine
+        revokes its device key; a machine that still holds your wallet can still join your groups as
+        you, so for a lost or stolen machine also move your funds to a new wallet. No funds move here.
         Linked devices use their own key once the cross-machine mesh is turned on (an operator
         setting while the transport is in review).
       </p>
