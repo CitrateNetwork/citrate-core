@@ -131,3 +131,26 @@ describe("HUP-S5.1 browser controls", () => {
     expect(onOpen).toHaveBeenCalled();
   });
 });
+
+describe("HUP-S2.3 sign-in requests from the managed browser", () => {
+  const REQ = { id: "signin-1-5", kind: "personal_sign", raiseOrigin: "https://app.example.org", topFrame: true, messageHex: "6869", createdMs: 1 };
+
+  it("hands each waiting request to core once, and says a site is asking", async () => {
+    const seen: string[] = [];
+    const a = api({ ...ON, signInRequests: [REQ] });
+    const el = await render(<BrowserControls api={a} onOpen={() => undefined} onSignInRequest={(id) => seen.push(id)} />);
+    expect(seen).toEqual(["signin-1-5"]);
+    expect(q(el, "browser-sign-in")?.textContent).toContain("https://app.example.org is asking to sign in with your wallet");
+    await act(async () => { root?.render(<BrowserControls api={a} onOpen={() => undefined} onSignInRequest={(id) => seen.push(id)} />); });
+    await tick();
+    expect(seen).toEqual(["signin-1-5"]);
+  });
+
+  it("drops malformed requests and passes nothing it cannot name", async () => {
+    const seen: string[] = [];
+    const a = api({ ...ON, signInRequests: [{ ...REQ, id: "nope" }, { ...REQ, id: "signin-2-2", kind: "eth_sendTransaction" }] });
+    const el = await render(<BrowserControls api={a} onOpen={() => undefined} onSignInRequest={(id) => seen.push(id)} />);
+    expect(seen).toEqual([]);
+    expect(q(el, "browser-sign-in")).toBeNull();
+  });
+});

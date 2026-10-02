@@ -58,6 +58,7 @@ import { widgetsApi, refreshWidgets } from "../widgets/api";
 import { isWidgetQuery, WIDGET_QUERIES } from "../widgets/catalog";
 import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
+import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 /**
@@ -81,6 +82,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   "directory-publish": "Publish to directory",
   "directory-revoke": "Remove from directory",
   "contract-call": "Contract call",
+  "web-sign-in": "Sign in",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -3666,6 +3668,42 @@ export class Store {
     }
   }
 
+  // ---------- HUP-S2.3: sign-in requests from Hermes's managed browser ----------
+  /**
+   * Hand one waiting sign-in request to core by id. Core reads everything else itself, decides
+   * through the Signature Ceremony and answers the page. Inside a live budget it is signed for the
+   * member (the "Signed for you" notice announces it); otherwise the ordinary review opens here,
+   * with core's reason. Nothing is signed in the webview.
+   */
+  async handleWebSignIn(requestId: string): Promise<void> {
+    const api = signInApi.current;
+    if (!api) return;
+    let out: SignInOutcome;
+    try {
+      out = await api.request(requestId);
+    } catch (err) {
+      this.toast("A sign-in request could not be handled: " + String((err as Error).message ?? err));
+      return;
+    }
+    if (out.outcome === "pending") {
+      if (this.state.walletReview) {
+        // One review at a time: decline rather than queue behind an open approval.
+        try {
+          await api.reject(out.ceremony.id);
+        } catch {
+          /* best-effort */
+        }
+        this.toast("A site asked Hermes to sign in while another approval was open, so it was declined. Try again when you are ready.");
+        return;
+      }
+      this.openWalletReview("web-sign-in", "Sign in to " + out.ceremony.origin, out.ceremony, "no funds move", undefined, { hic: { reason: out.reason } });
+    } else if (out.outcome === "address_shared") {
+      this.toast(`Shared your wallet address with ${out.origin}, which has a sign-in budget.`);
+    } else if (out.outcome === "refused") {
+      this.toast(out.reason);
+    }
+  }
+
   // ---------- Q-E.1 (@rule8, P0) — wallet review gate ----------
   /**
    * Set the pending wallet-review state from a freshly-built ceremony view and
@@ -3835,6 +3873,27 @@ export class Store {
       }
       return;
     }
+    // HUP-S2.3: a SIGN-IN card from Hermes's managed browser: core signs it through the ceremony
+    // and delivers the signature to the page that asked. Never a broadcast.
+    if (r.kind === "web-sign-in") {
+      try {
+        const api = signInApi.current;
+        if (!api) throw new Error("sign-in works only in the desktop app");
+        const delivered = await api.approve(r.view.id, ack);
+        this.setState({ walletReview: null });
+        this.toast(
+          delivered
+            ? "Signed in. The site received your signature."
+            : "Signed, but the page had already closed or moved, so it did not receive the signature.",
+        );
+        await r.onResolved?.(true);
+      } catch (err) {
+        this.setState({ walletReview: null });
+        this.toast("Sign-in not completed: " + String((err as Error).message ?? err));
+        await r.onResolved?.(false);
+      }
+      return;
+    }
     // HUP-S8.1 — a DEVICE LINK is a personal_sign, not a tx: route it to the dedicated command,
     // which takes the ceremony signature, adds the member + device signatures and stores the link.
     if (r.kind === "device-link") {
@@ -3973,6 +4032,8 @@ export class Store {
       // nonce, so a declined link cannot be resumed with a stale nonce.
       if (r.kind === "wallet-link") await bridge.wallet.linkReject(r.view.id);
       else if (r.kind === "device-link") await bridge.cluster.linkDeviceReject(r.view.id);
+      // HUP-S2.3: a declined sign-in also tells the page that asked.
+      else if (r.kind === "web-sign-in") await signInApi.current?.reject(r.view.id);
       else await bridge.signing.reject(r.view.id);
       // A declined social verification also drops its pending-bind entry (nonce is one-time).
       if (r.kind === "social") await bridge.social.verifyForget(r.view.id);
