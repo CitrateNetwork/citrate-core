@@ -433,6 +433,11 @@ export interface QaScorecard {
   byCategory: Record<string, { n: number; passRate: number }>;
   failures: string[];
   failureReasons: Record<string, string[]>;
+  /**
+   * HUP-S3.1 / g2-knowledge: the run answered from passages retrieved from the bundled corpus
+   * (`memory.search` with passages over these tenants, k per tenant). Absent = closed-book.
+   */
+  retrieval?: { mode: "memory.search passages"; tenants: string[]; k: number; corpusDigest?: string };
 }
 
 const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);

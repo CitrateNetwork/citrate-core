@@ -91,3 +91,30 @@ describe("HUP-S9.4 --adapter-sha256 (eval a LoRA candidate for the gate)", () =>
     expect(qaResultFileName("2026-10-01T00:00:00Z", "m")).toBe("2026-10-01-qa-m.json");
   });
 });
+
+describe("retrieval flags (HUP-S3.1, g2-knowledge)", () => {
+  const base = ["--base-url", "http://127.0.0.1/v1", "--model", "m"];
+  it("adds retrieval through the memory daemon socket with default tenants and k", () => {
+    expect(parseQaCliArgs([...base, "--memory-socket", "/tmp/memdag.sock"]).retrieval).toEqual({
+      socket: "/tmp/memdag.sock",
+      tenants: ["citrate-docs", "methodology"],
+      k: 5,
+    });
+    expect(
+      parseQaCliArgs([...base, "--memory-socket", "/s", "--retrieve-tenants", "citrate-docs,refs", "--retrieve-k", "8", "--corpus-digest", "a".repeat(64)])
+        .retrieval,
+    ).toEqual({ socket: "/s", tenants: ["citrate-docs", "refs"], k: 8, corpusDigest: "a".repeat(64) });
+    expect(parseQaCliArgs(base).retrieval).toBeUndefined();
+  });
+  it("refuses runtime tenants, a bad k, retrieval flags without a socket, and a malformed digest", () => {
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--retrieve-tenants", "personal"])).toThrow(/knowledge tenant/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--retrieve-k", "0"])).toThrow(/retrieve-k/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--retrieve-k", "99"])).toThrow(/retrieve-k/);
+    expect(() => parseQaCliArgs([...base, "--retrieve-k", "5"])).toThrow(/--memory-socket/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--corpus-digest", "xyz"])).toThrow(/corpus-digest/);
+  });
+  it("names a retrieval run apart from the closed-book run", () => {
+    expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma", "qa-v1", undefined, true)).toBe("2026-10-01-qa-rag-gemma.json");
+    expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma", "qa-literacy-v1", undefined, true)).toBe("2026-10-01-qa-literacy-v1-rag-gemma.json");
+  });
+});
