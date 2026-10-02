@@ -2099,6 +2099,11 @@ pub async fn hermes_session_stop(
 #[path = "hermes_personas.rs"]
 pub mod personas;
 
+// HUP-S2.2: the member's decision on a `shell_run` command the sidecar holds (child module: reuses
+// the bearer-authed control).
+#[path = "hermes_shell.rs"]
+pub mod shell;
+
 #[cfg(test)]
 mod brief_tests {
     include!("hermes_brief_tests.rs");

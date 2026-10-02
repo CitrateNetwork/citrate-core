@@ -34,7 +34,7 @@ import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import type { FlRoundPlan } from "../bridge/domains";
-import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
@@ -45,7 +45,7 @@ import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -58,7 +58,7 @@ import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
 import { widgetsApi, refreshWidgets } from "../widgets/api";
 import { isWidgetQuery, WIDGET_QUERIES } from "../widgets/catalog";
-import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
+import { beginTurn, commandRan, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
@@ -917,6 +917,9 @@ export class Store {
             // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
             trackWorkflowRun: (id, workflowId) => h.trackWorkflowRun(id, workflowId),
             workflowStatus: (id, runId) => h.workflowStatus(id, runId),
+            // HUP-S2.2: shell_run commands the sidecar holds, and the member's bound decision.
+            shellPending: (id) => h.shellPending(id),
+            shellDecide: (id, approvalId, allow, argv, cwd) => h.shellDecide(id, approvalId, allow, argv, cwd),
           },
           // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
           () => this.sidecarSystemPrompt(),
@@ -2097,10 +2100,16 @@ export class Store {
               throw e;
             }
           },
+          // HUP-S2.2: every held shell_run is decided by the member on its card.
+          onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               recordFileChange(ev.change, msgId);
               void refreshUndoPanel(bridge.agentHarness);
+            } else if (ev.kind === "command_run") {
+              commandRan(ev);
+            } else if (ev.kind === "notice") {
+              this.toast(ev.text);
             } else if (ev.kind === "verifier") {
               patch((m) => ({ ...m, chips: m.chips.concat([verifierChip(ev)]) }));
             } else if (!ac.signal.aborted) noteStep(ev.step);
@@ -2305,12 +2314,23 @@ export class Store {
               throw e;
             }
           },
+          // HUP-S2.2: every held shell_run is decided by the member on its card.
+          onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
               ensure();
               recordFileChange(ev.change, asstId);
               void refreshUndoPanel(bridge.agentHarness);
+              return;
+            }
+            // HUP-S2.2 (US-2.2 AC3): a command run that happened is logged even if the turn stopped.
+            if (ev.kind === "command_run") {
+              commandRan(ev);
+              return;
+            }
+            if (ev.kind === "notice") {
+              this.toast(ev.text);
               return;
             }
             if (!stopped() && ev.kind === "step") noteStep(ev.step);
@@ -2350,6 +2370,27 @@ export class Store {
       if (this.chatScrollEl) this.chatScrollEl.scrollTop = this.chatScrollEl.scrollHeight;
       if (this.jChatScrollEl) this.jChatScrollEl.scrollTop = this.jChatScrollEl.scrollHeight;
     });
+  }
+
+  /**
+   * HUP-S2.2 (US-2.2 AC2) — put a held shell_run command in front of the member on the approval
+   * card (exact argv, folder, program, timeout, OS sandbox) with the HIC banner. True only when the
+   * member pressed Approve; the caller sends that decision bound to this command's id.
+   */
+  async approveShellRun(p: ShellPendingView): Promise<boolean> {
+    const r = await this.requestSig({
+      origin: "chat agent",
+      requester: "Hermes · tool " + p.tool,
+      title: "Approve a command",
+      chainless: true,
+      rows: [],
+      cost: "none, no chain transaction",
+      sponsor: "explicit decision required",
+      sponsorColor: "var(--tx-3)",
+      card: shellRunCard(p),
+      hic: { reason: SHELL_RUN_HIC_REASON },
+    });
+    return r === "approved";
   }
 
   async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta): Promise<string> {

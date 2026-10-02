@@ -148,6 +148,13 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async trackWorkflowRun() {
       throw new Error("WORKFLOW_REFUSED: track workflows run in the Hermes sidecar in the desktop app");
     },
+    // HUP-S2.2 — shell_run lives in the Hermes sidecar; nothing is held here.
+    async shellPending() {
+      return [];
+    },
+    async shellDecide() {
+      throw new Error("SHELL_DECISION_REFUSED: commands run in the Hermes sidecar in the desktop app");
+    },
   };
 }
 

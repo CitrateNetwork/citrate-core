@@ -67,6 +67,9 @@ const LONG: Record<string, number> = {
   hermes_session_events: 45_000,
   hermes_session_tool_result: 45_000,
   hermes_session_stop: 45_000,
+  // HUP-S2.2: the held shell_run commands and the member's decision (loopback control bound).
+  hermes_shell_pending: 45_000,
+  hermes_shell_decide: 45_000,
   // HUP-S1.4: interviewer tracks + briefs (same loopback control bound).
   hermes_tracks: 45_000,
   hermes_brief_create: 45_000,
