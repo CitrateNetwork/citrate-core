@@ -38,6 +38,7 @@ import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type Approva
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { formatMemoryHits, memorySearchTarget } from "../agent/knowledgeSearch";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
@@ -45,7 +46,7 @@ import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -279,12 +280,8 @@ export function entitlementSafeguardFromChain(
  * rather than being left to invent Citrate facts). The hit `title` carries the
  * authored content (the `Title › Section` breadcrumb + body from docs_ingest).
  */
-export function formatMemoryHits(res: MemoryResult): string {
-  if (!res.hits.length) {
-    return `No results in the ${res.tenant} memory (${res.totalInTenant} nodes total). Do not fabricate; tell the member nothing was found.`;
-  }
-  return res.hits.map((h, i) => `[${i + 1}] ${h.title}`).join("\n\n");
-}
+// HUP-S3.1: passages + citations for knowledge tenants (src/agent/knowledgeSearch.ts).
+export { formatMemoryHits };
 
 /**
  * Derive a display name + initials from an email local-part. The authority
@@ -2488,9 +2485,10 @@ export class Store {
     } else if (call.name === "memory_search") {
       // W3.3 — REAL semantic search over the mem graph (docs or personal). Returns
       // real hits or honest emptiness (Rule 1 — never a fabricated Citrate fact).
-      const tenant = args.tenant === "personal" ? "personal" : "citrate-docs";
+      // HUP-S3.1: knowledge tenants (the bundled corpus) answer with passages + citations.
+      const { tenant, passages } = memorySearchTarget(args.tenant);
       try {
-        const res = await bridge.memory.search(tenant, args.query || "", 6);
+        const res = await bridge.memory.search(tenant, args.query || "", passages ? 5 : 6, passages ? { passages } : undefined);
         result = formatMemoryHits(res);
       } catch (e) {
         result = "memory search unavailable: " + (e instanceof Error ? e.message : String(e));

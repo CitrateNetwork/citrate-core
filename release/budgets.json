@@ -91,6 +91,11 @@
       "baselineBytes": 29370,
       "source": "local v0.4.2 build 2026-09-30"
     },
+    "macos-aarch64/resources/knowledge-corpus": {
+      "maxBytes": 37000000,
+      "baselineBytes": 33676325,
+      "source": "HUP-S3.1 knowledge corpus 2026-10-01 (format 2, 10,630 nodes): measured 17,348,645 bytes of corpus files plus BGE vectors at 10,630 x 1,536 bytes; +10%. Solady and the Foundry book would add about 31 MB (owner decision)"
+    },
     "macos-aarch64/resources/icon.icns": {
       "maxBytes": 1000000,
       "baselineBytes": 178076,

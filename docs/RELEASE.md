@@ -86,6 +86,34 @@ gh release upload runtime-deps /tmp/llama-runtime-arm64.tar.gz
 ```
 Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
 
+#### The Hermes knowledge corpus (`knowledge-corpus.tar.gz`, HUP-S3.1)
+
+The corpus Hermes imports on first run is built in citrate-memories from the
+federation checkouts (format `citrate-corpus/2`; spec `corpus/hermes-knowledge.toml`):
+
+```bash
+cd ../citrate-memories
+scripts/fetch-corpus-refs.sh ..                 # Solady + Foundry book at pinned commits
+scripts/build-corpus.sh .. /tmp/knowledge-corpus   # deterministic; verifies before exit
+tar -czf /tmp/knowledge-corpus.tar.gz -C /tmp knowledge-corpus
+gh release upload runtime-deps /tmp/knowledge-corpus.tar.gz --clobber -R CitrateNetwork/citrate-core
+```
+
+Pin it like every other asset. Ship it together with a `mem-mcp` built from
+citrate-memories with `import-corpus` (`--features rocksdb,transformer`): the
+release step runs `scripts/stage-knowledge-corpus.mjs`, which refuses an older
+`mem-mcp` and any corpus that does not match its own manifest. A local build stages
+the same way:
+
+```bash
+node scripts/stage-knowledge-corpus.mjs /tmp/knowledge-corpus \
+  --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
+```
+
+Without a staged corpus the app still builds (the committed
+`src-tauri/knowledge-corpus/README.md` keeps the resource glob valid) and reports
+`skipped: no-bundle` on first run.
+
 ## Cutting a release
 1. Bump `version` in `src-tauri/tauri.conf.json` **and** `src-tauri/Cargo.toml`
    (must match; the updater compares this to the feed's version).

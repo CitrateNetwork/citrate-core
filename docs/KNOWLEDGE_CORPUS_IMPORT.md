@@ -1,8 +1,9 @@
 ---
 created: 2026-10-01
-branch: hup/n4-corpus
+updated: 2026-10-01
+branch: hup/n5-corpus-rest
 author: Larry Klosowski + Claude Opus 5.5
-status: implemented; release staging pending (see "Not done")
+status: implemented; staging wired; release upload pending (see "Not done")
 wp: HUP-S3.1
 planset: .agentile/planset/2026-09-30-hermes-upskill
 ---
@@ -21,7 +22,9 @@ member's local memory store.
    starts the daemon.
 2. Rust (`src-tauri/src/knowledge_import.rs`, command `memory_import_knowledge`)
    resolves the corpus directory: `CITRATE_KNOWLEDGE_CORPUS_DIR` (dev), else the
-   app resource `knowledge-corpus/`.
+   app resource `knowledge-corpus/`. A directory counts only when it holds a
+   `manifest.json`: every build ships `knowledge-corpus/README.md` so the bundle
+   resource glob always matches, and a README-only directory is `no-bundle`.
 3. It reads the corpus `bundle_digest` from `manifest.json` and decides:
    - no corpus directory: `skipped: no-bundle`;
    - `memory/knowledge-corpus.imported` already holds this digest (and the store
@@ -42,6 +45,38 @@ member's local memory store.
 
 The store also records each tenant's bundle hash, so a lost marker re-imports
 nothing. A newer corpus (new digest) imports only the tenants that changed.
+
+## Release staging
+
+The corpus (format `citrate-corpus/2`) is built in citrate-memories
+(`scripts/build-corpus.sh`, `EMBED_BGE_DIR=` to precompute BGE vectors) and shipped
+as the pinned `knowledge-corpus.tar.gz` runtime-deps asset. `release.yml` runs
+`scripts/stage-knowledge-corpus.mjs` after the pin check: it re-hashes the manifest
+(same canonical JSON as `mem_corpus::manifest::Manifest::compute_digest`), checks
+every tenant file, vectors file and the skills.lock against it, refuses any extra
+file or symlink, refuses a `mem-mcp` without `import-corpus`, and copies the corpus
+into `src-tauri/knowledge-corpus/` next to the committed README. The
+`tauri.bundle-*.conf.json` and `tauri.local-run.conf.json` overlays carry the
+`knowledge-corpus/**/*` resource. Procedure: `docs/RELEASE.md` section 3.
+
+## Precomputed vectors and first-run time
+
+Embedding the corpus on a member's CPU is slow: 1.85 nodes per second measured on
+an Apple M2 Max, so the 10,630-node corpus would hold the memory store (and keep
+the daemon down) for about 96 minutes. A corpus built with `EMBED_BGE_DIR` ships
+`tenants/<tenant>.vectors.f16`; the importer reuses them when the model id,
+dimension and the sha256 of the bundled `model.safetensors` match, and the report
+says how many nodes were embedded and how many took the bundled vectors
+(`nodesEmbedded`, `vectorsReused`).
+
+## Answering with citations
+
+Knowledge tenants are `citrate-docs`, `methodology`, `refs` and `skills`. The
+in-app `memory_search` tool (`src/agent/knowledgeSearch.ts`) asks the daemon for
+passages on those tenants (`memory.search` with `passages: true`), so the model
+gets each passage's text and the `<repo>:<path>#<anchor>` citation to quote;
+personal notes stay title-only. The Citrate QA eval runs the same search with
+`--memory-socket` (`src/agent/eval/retrieval.ts`, `scripts/eval-qa.mjs`).
 
 ## Safety
 
@@ -65,10 +100,9 @@ nothing. A newer corpus (new digest) imports only the tenants that changed.
 
 ## Not done
 
-- The release workflow does not stage `knowledge-corpus/` yet, and the
-  `mem-mcp` binary in the `runtime-deps` prerelease predates `import-corpus`.
-  Until both land, a packaged app reports `skipped: no-bundle`. If a corpus were
-  staged with the old binary, that binary would not answer; the import is killed
-  after 120 s without a first line and reported as failed. Stage both together.
-- `tauri.conf.json` has no `knowledge-corpus` resource entry yet (adding one
-  before the directory is staged would break packaging).
+- The release upload: `knowledge-corpus.tar.gz` and a `mem-mcp` built with
+  `import-corpus` (`--features rocksdb,transformer`) must be uploaded to the
+  `runtime-deps` prerelease and pinned in `src-tauri/runtime-deps.sha256` together.
+  Until then the release workflow fails closed on the unpinned asset, and a local
+  build without a staged corpus reports `skipped: no-bundle`.
+- Linux and Windows release docs stage the same way; not yet exercised on those hosts.

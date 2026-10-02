@@ -19,6 +19,7 @@
       "llama/*",
       "models/bge-base-en-v1.5/*",
       "docs-corpus/**/*",
+      "knowledge-corpus/**/*",
       "capsules/hello/*",
       "capsules/echo-chain/*"
     ],

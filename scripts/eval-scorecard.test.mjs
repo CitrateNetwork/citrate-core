@@ -125,6 +125,18 @@ describe("renderScorecardMarkdown", () => {
     );
   });
 
+  it("marks a QA run that answered from the retrieved corpus (HUP-S3.1)", () => {
+    const rag = { ...QA, scorecard: { ...QA.scorecard, retrieval: { mode: "memory.search passages", tenants: ["citrate-docs", "methodology"], k: 5 } } };
+    fs.writeFileSync(path.join(tmp, "results", "2026-10-01-qa-rag-m-small.json"), JSON.stringify(rag));
+    try {
+      expect(md()).toContain("| 2026-10-01-qa-rag-m-small.json | m-small | T0 | qa-v1 + corpus (citrate-docs+methodology, k=5) | 40 |");
+      // The closed-book row is unchanged.
+      expect(md()).toContain("| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 |");
+    } finally {
+      fs.rmSync(path.join(tmp, "results", "2026-10-01-qa-rag-m-small.json"));
+    }
+  });
+
   it("marks the g1 valid-tool-call bar per tier: met / not met on T1+, T0 has its own bar", () => {
     const low = { tools: [{ file: "x.json", sc: { ...TOOLS, validToolCallRate: 0.89 } }], qa: [], skipped: [] };
     expect(renderScorecardMarkdown(low, { created: "2026-10-01", branch: "b", source: "s" })).toContain("| not met |");

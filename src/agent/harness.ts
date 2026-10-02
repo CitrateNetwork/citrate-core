@@ -291,14 +291,15 @@ export const AGENT_TOOLS = [
     function: {
       name: "memory_search",
       description:
-        "Semantic search over the member's memory graph, including preloaded Citrate documentation (the 'citrate-docs' tenant). Use for any Citrate protocol/how-to/docs question. Returns real hits or an empty result.",
+        "Semantic search over the member's memory graph, including the bundled Citrate knowledge (docs, papers, Agentile, Solidity references, reviewed skills). Use for any Citrate protocol/how-to/docs question. Knowledge results come with passages and a citation (<repo>:<path>#<anchor>) to quote. Returns real hits or an empty result.",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string", description: "what to search for" },
           tenant: {
             type: "string",
-            description: "graph to search: 'citrate-docs' (documentation) or 'personal' (the member's own notes). Defaults to citrate-docs.",
+            description:
+              "graph to search: 'citrate-docs' (Citrate docs and papers), 'methodology' (Agentile), 'refs' (OpenZeppelin, forge-std and other Solidity references), 'skills' (reviewed skills) or 'personal' (the member's own notes). Defaults to citrate-docs.",
           },
         },
         required: ["query"],
