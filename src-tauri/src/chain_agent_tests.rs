@@ -432,43 +432,135 @@ impl AnchorPort for DownPort {
     }
 }
 
+fn in_flight_path(tag: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let d = std::env::temp_dir().join(format!(
+        "citrate-anchor-inflight-{tag}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    d.join(IN_FLIGHT_FILE)
+}
+
+fn held(tag: &str) -> InFlightAnchors {
+    InFlightAnchors::load(Some(in_flight_path(tag)))
+}
+
 #[test]
 fn a_sent_anchor_is_never_forgotten_after_broadcast() {
     // Mined and confirmed, but the sidecar could not record it: kept for the re-poll, so the day
     // is not raised again.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("a");
     let port: &dyn AnchorPort = &DownPort;
-    let (anchored, line) = after_broadcast(Ok(port), &receipt(Some(9), Some(1)), &held);
+    let (anchored, line) = after_broadcast(Ok(port), &receipt(Some(9), Some(1)), &h);
     assert!(!anchored);
     assert!(line.contains("block 9"), "{line}");
-    assert!(held.lock().unwrap().contains_key(&20000));
+    assert!(h.days().contains(&20000));
     // Hermes not reachable at all: same.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("b");
     let (anchored, _) = after_broadcast(
         Err("Hermes is not running".into()),
         &receipt(Some(9), Some(1)),
-        &held,
+        &h,
     );
     assert!(!anchored);
-    assert!(held.lock().unwrap().contains_key(&20000));
+    assert!(h.days().contains(&20000));
     // Receipt unknown: kept.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("c");
     let (anchored, _) = after_broadcast(
         Err("Hermes is not running".into()),
         &receipt(None, None),
-        &held,
+        &h,
     );
     assert!(!anchored);
-    assert!(held.lock().unwrap().contains_key(&20000));
+    assert!(h.days().contains(&20000));
     // Reverted: not kept (the day may be raised again), not anchored.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("d");
+    h.record(&receipt(None, None)).expect("record before send");
     let ok_port = Port::default();
-    let (anchored, _) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(0)), &held);
+    let (anchored, _) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(0)), &h);
     assert!(!anchored);
-    assert!(held.lock().unwrap().is_empty());
+    assert!(h.days().is_empty());
     // Confirmed and recorded: anchored, nothing kept.
-    let (anchored, line) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(1)), &held);
+    h.record(&receipt(None, None)).expect("record before send");
+    let (anchored, line) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(1)), &h);
     assert!(anchored);
     assert_eq!(line, "Anchored in block 9.");
-    assert!(held.lock().unwrap().is_empty());
+    assert!(h.days().is_empty());
+}
+
+#[test]
+fn an_in_flight_anchor_survives_a_restart() {
+    // A day sent but not yet mined must still be known after the app restarts, or the nightly
+    // pass would raise a second card and a second signed anchor for it.
+    let path = in_flight_path("restart");
+    {
+        let h = InFlightAnchors::load(Some(path.clone()));
+        h.record(&receipt(None, None)).expect("record before send");
+    }
+    let h = InFlightAnchors::load(Some(path.clone()));
+    assert_eq!(h.blocked(), None);
+    assert!(h.days().contains(&20000));
+    let mut port = Port {
+        status: serde_json::json!({ "awaitingConfirmation": [{"day": 20000}] }),
+        ..Port::default()
+    };
+    port.plans.insert(20000, ready_plan(20000, 0xa0, REG));
+    let c = AnchorCeremony::new();
+    let r = nightly_tick_with(&port, &c, AnchorGate::Ready, Some(REG), &h.days()).unwrap();
+    assert!(r.raised.is_empty(), "no second card for a day in flight");
+    assert_eq!(r.skipped.len(), 1);
+    // Settled: removed on disk too.
+    h.remove(20000);
+    assert!(InFlightAnchors::load(Some(path)).days().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_in_flight_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let path = in_flight_path("perms");
+    let h = InFlightAnchors::load(Some(path.clone()));
+    h.record(&receipt(None, None)).expect("record");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn an_unreadable_in_flight_file_blocks_new_anchors_instead_of_forgetting() {
+    let path = in_flight_path("bad");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{ not json").unwrap();
+    let h = InFlightAnchors::load(Some(path.clone()));
+    assert!(h.blocked().is_some());
+    assert!(h.record(&receipt(None, None)).is_err());
+    assert!(
+        std::fs::read(&path).unwrap().starts_with(b"{ not json"),
+        "kept as is"
+    );
+    // No app data folder at all: also blocked, never silently in memory.
+    assert!(InFlightAnchors::load(None).blocked().is_some());
+}
+
+#[test]
+fn approve_passes_the_vault_gate_and_records_before_sending() {
+    let src = include_str!("chain_agent.rs");
+    let i = src
+        .find("pub async fn hermes_anchor_approve(")
+        .expect("command");
+    let body = &src[i..i + 2500];
+    assert!(
+        body.contains("AnchorGuards"),
+        "approve must pass the guards"
+    );
+    assert!(body.contains("before_send"));
+    assert!(
+        body.contains("CustodyState"),
+        "the member's vault is the unlock gate"
+    );
+    assert!(body.contains("with_placeholder_caps"), "gas caps apply");
 }
