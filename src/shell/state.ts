@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { Brief, HermesPersona, PendingWithdrawal } from "../bridge/domains";
+import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -483,8 +483,12 @@ export interface AppState {
   deviceId: string;
   s1c: number;
   pins: Pin[];
-  /** Hermes P5 — the member's own prompt-skills (persisted locally, run against the active model). */
+  /** Hermes P5: prompt-skills kept in app state by earlier builds. HUP-S3.2 moves them to SKILL.md
+   *  files on this device (`localSkills`) on launch; one that cannot move stays here with a notice. */
   userSkills: UserSkill[];
+  /** HUP-S3.2: the member's saved skills, read from the SKILL.md files the sidecar's one loader also
+   *  reads (skills_local.rs). Not persisted here; the files are the record. */
+  localSkills: LocalSkill[];
   jPages: JournalPage[];
   jSel: string | null;
   jEditing: boolean;
@@ -772,6 +776,7 @@ export function freshState(pid: string): AppState {
     s1c: 0,
     pins: [],
     userSkills: [],
+    localSkills: [],
     jPages: [],
     jSel: null,
     jEditing: false,
