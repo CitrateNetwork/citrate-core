@@ -44,6 +44,7 @@ mod web_budgets;
 mod device_link;
 mod docs_ingest;
 mod earnings;
+mod escalation;
 mod fleet;
 mod fleet_mdns;
 mod fleet_pairing;
@@ -313,6 +314,8 @@ pub fn run() {
             app.manage(ceremony::build_ceremony_state());
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
+            // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
+            app.manage(escalation::EscalationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
@@ -518,6 +521,16 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
+            // spend budget, quote-then-run, and the registry route's (disabled) status.
+            escalation::escalation_endpoints,
+            escalation::escalation_endpoint_add,
+            escalation::escalation_endpoint_remove,
+            escalation::escalation_budget,
+            escalation::escalation_budget_set,
+            escalation::escalation_quote,
+            escalation::escalation_run,
+            escalation::escalation_registry_status,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
             web_budgets::web_budget_revoke,

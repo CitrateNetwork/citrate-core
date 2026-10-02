@@ -362,6 +362,55 @@ Mutation check (`python3 src-tauri/formal/DeployGate_mutants.py`), all 7 killed:
   them (every "not installed" or tool error is a failing item).
 - The store's size bound is not modelled. Eviction revokes open ceremonies like NOT_READY.
 
+# SpendBudget formal model (HUP-S1.5)
+
+TLA+ model of the escalation spend budget (`src-tauri/src/escalation.rs`: `Book`, `Ledger`;
+the sidecar half is citrate-agent-runtime `agent-escalation`). Written with the WP; the Rust unit
+tests in `escalation_tests.rs` mirror each invariant.
+
+## Files
+
+- `SpendBudget.tla`: the model.
+- `SpendBudget.cfg`: one endpoint, three escalations, prices {1, 2}, caps {0, 2, 3}, a clock over
+  days 0..2 that also moves backwards.
+- `SpendBudget_TwoEndpoints.cfg`: two endpoints (removal voids only that endpoint's quotes), two
+  escalations, one day boundary. The mutation check runs on this config.
+- `SpendBudget_mutants.py`: the mutation check (single worker, so the first violation is
+  deterministic; property mutants run without TypeOK so an earlier state-invariant failure cannot
+  hide the transition that breaks the property).
+
+## Invariants
+
+| Invariant | Meaning | Mutants that break it |
+|---|---|---|
+| `SpendWithinCap` | budgeted spend this period (`committed + reserved`) never exceeds the cap | M01 no cap check on a budget run; M02 the cap can be lowered below today's use; M03 settlement can charge more than the reservation |
+| `NoEscalationWithoutShownPrice` | every run used exactly the price the webview showed for that quote | M04 the run does not echo the shown price |
+| `EgressOptInOnly` | every run went to an endpoint the member had added at that moment | M05 removal keeps the endpoint's quotes and the run does not re-check the endpoint (each layer alone is redundant in the model; both are kept) |
+| `OverBudgetOrTaintedNeedsHic1` | a run that did not fit, or ran with untrusted context, was the member's decision | M06 taint ignored; M07 cap ignored |
+| `ReservedIsConsistent` | the in-flight counter equals this period's budget reservations | M08 an earlier period's reservation is settled against today |
+| `ResetOnlyAtPeriodBoundary` (action) | committed spend drops only when the period advances | M09 the clock moving backwards rolls the period; M10 changing the cap resets spend |
+| `PeriodMonotone` (action) | the period never moves backwards | M11 (as M09) |
+
+## Run results (2026-10-01 local, TLC 2.19 rev 5a47802, OpenJDK)
+
+`scripts/run-tlc.sh SpendBudget all`:
+
+| Config | Generated | Distinct | Time | Result |
+|---|---|---|---|---|
+| `SpendBudget.cfg` | 51,284,760 | 6,926,616 | 6 min 10 s | no error |
+| `SpendBudget_TwoEndpoints.cfg` | 1,898,882 | 243,840 | 3 s | no error |
+
+Mutation check, `python3 src-tauri/formal/SpendBudget_mutants.py` (about 25 s): **11 of 11
+mutants caught**, each by the invariant or property it targets.
+
+## Abstractions
+
+- Prices are abstract integers; the worst-case arithmetic, rounding and overflow are unit-tested.
+- Persistence is assumed write-ahead and durable; the restart and corrupt-file paths are
+  unit-tested (`a_corrupt_ledger_file_fails_closed_and_is_kept_aside`, round trip).
+- Quote expiry only removes quotes and is unit-tested.
+- The sidecar's own refusal of an under-reserved request is a second guard on `SpendWithinCap`,
+  tested in the runtime, not modelled.
 # ComponentSwap formal model (HUP-S5.5)
 
 TLA+ model of the signed component updater's install path (`components/src/install.rs`,

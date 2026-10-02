@@ -36,6 +36,7 @@ import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { fenceUntrusted } from "../agent/untrusted";
+import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import type { Brief, GrantStatus, GroupRole, MemoryResult } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
@@ -53,7 +54,7 @@ import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, to
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
  * Every other tool is held behind an explicit card before it runs when the call is hic:"required".
  */
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy"]);
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", ESCALATE_TOOL_NAME]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -883,6 +884,11 @@ export class Store {
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       if (kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri") {
         const h = bridge.agentHarness;
+        // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint.
+        const escalationReady = await bridge.escalation
+          .endpoints()
+          .then((e) => e.length > 0)
+          .catch(() => false);
         this.provider = createSidecarProvider(
           {
             open: (p, t) => h.sessionOpen(p, t),
@@ -892,7 +898,7 @@ export class Store {
             stop: (id) => h.sessionStop(id),
           },
           () => AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
-          () => annotatedAgentTools(),
+          () => withEscalationTool(annotatedAgentTools(), escalationReady),
         );
         this.reflectProvider();
         return;
@@ -2173,6 +2179,37 @@ export class Store {
     }
     if (held) {
       // declined at the HIC card — the tool did not run
+    } else if (call.name === ESCALATE_TOOL_NAME) {
+      // HUP-S1.5 — price first: a notice within today's budget (HIC-2), or the member's approval when
+      // over budget or when the task holds untrusted content (HIC-1). Core enforces the same order.
+      const e = bridge.escalation;
+      result = await runEscalationTool(
+        {
+          endpoints: () => e.endpoints(),
+          quote: (id, prompt, system, maxTokens) => e.quote(id, prompt, system, maxTokens),
+          run: (q, shown, confirmed, tainted) => e.run(q, shown, confirmed, tainted),
+          confirm: (q, reason, question) => {
+            const a = escalationApproval(q, reason, question);
+            return ask(
+              {
+                origin: "chat agent",
+                requester: "dashboard agent · tool " + ESCALATE_TOOL_NAME,
+                title: a.title,
+                chainless: true,
+                rows: a.rows,
+                cost: a.cost,
+                sponsor: "paid by you to your provider, not a chain transaction",
+                sponsorColor: "var(--warn)",
+              },
+              a.card,
+            );
+          },
+          notice: (text) => this.toast(text),
+        },
+        args as Record<string, unknown>,
+        hic,
+      );
+      status = isEscalationDeclined(result) ? "declined" : "ok";
     } else if (call.name === "memory_assert") {
       // Rule 1 / Q-A.4a item 8: the demo agent has NO reachable memory daemon (mem-mcp
       // isn't bundled yet), so an approval here does NOT durably write anything. Show

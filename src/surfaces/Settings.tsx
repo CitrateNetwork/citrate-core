@@ -33,6 +33,7 @@ import { DiagnosticReport } from "../components/DiagnosticReport";
 import { ComponentUpdates } from "../components/ComponentUpdates";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { EscalationSettings } from "./EscalationSettings";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
 import { McpServersPanel } from "./McpServersPanel";
 import { desktopMcpIo } from "./mcpServers";
@@ -143,6 +144,7 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["ai", "AI providers"],
+  ["escalation", "Escalation & spend"],
   ["mcp", "MCP servers"],
   ["web", "Web search & decisions"],
   ["node", "Node configuration"],
@@ -705,10 +707,13 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           </div>
         )}
 
-        {/* ---------- Node configuration ---------- */}
+        {/* ---------- Escalation endpoints + daily spend budget (HUP-S1.5) ---------- */}
+        {s.sSec === "escalation" && <EscalationSettings />}
+
         {/* ---------- Web search & decisions (HUP-S5.2 / S5.3) ---------- */}
         {s.sSec === "web" && <WebSearchSettings />}
 
+        {/* ---------- Node configuration ---------- */}
         {s.sSec === "node" && (
           <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
             <span className="eyebrow">Node configuration · every field here is wired</span>
