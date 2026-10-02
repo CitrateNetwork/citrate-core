@@ -1166,6 +1166,10 @@ export interface AgentHarnessDomain {
   learnMemories(): Promise<LearnedMemory[]>;
   /** HUP-S3.4 — store learned memories that are still waiting for the memory store. */
   learnStorePending(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — resolve a contradiction: keep one learned memory, set aside another (HIC-1; the
+   *  sidecar records the decision before anything changes). Returns the updated ledger. A refusal
+   *  rejects with a message starting `LEARN_REFUSED: `. */
+  learnResolve(keep: string, retract: string): Promise<LearnedMemory[]>;
   /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
    *  `PUBLISH_DISABLED: ` while publishing is off. */
   learnPublish(id: string, version: string): Promise<void>;

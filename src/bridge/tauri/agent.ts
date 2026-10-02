@@ -134,6 +134,9 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   learnStorePending() {
     return invoke<LearnedMemory[]>("hermes_learn_store_pending");
   },
+  learnResolve(keep, retract) {
+    return invoke<LearnedMemory[]>("hermes_learn_resolve", { keep, retract });
+  },
   async learnPublish(id, version) {
     await invoke("hermes_learn_publish", { id, version });
   },
