@@ -287,6 +287,10 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S3.4: the learn data folder and the member's skills folder, passed to the child as
+    /// `CITRATE_HERMES_LEARN_DIR` / `CITRATE_HERMES_LEARN_SKILLS_DIR` (and the skills folder as
+    /// `CITRATE_HERMES_SKILLS`, so accepted skills load in later sessions). `None` = learning off.
+    learn_dirs: Option<(PathBuf, PathBuf)>,
     /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
     /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
     mcp_allowlist: Option<PathBuf>,
@@ -327,6 +331,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            learn_dirs: None,
             mcp_allowlist: None,
             chain_data_dir: None,
             env_source: None,
@@ -347,6 +352,27 @@ impl HermesManager {
     pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
         self.capsules_dir = Some(dir);
         self
+    }
+
+    /// HUP-S3.4: turn on verified self-learning in the child (see `learn_dirs`).
+    pub fn with_learn_dirs(mut self, learn_dir: PathBuf, skills_dir: PathBuf) -> Self {
+        self.learn_dirs = Some((learn_dir, skills_dir));
+        self
+    }
+
+    /// HUP-S3.4: a bearer-authed `GET` on the control plane, for `hermes_learn`. `path` starts with
+    /// `/` and is built from validated ids only.
+    pub(crate) fn control_get(&self, path: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .get(&format!("{}{path}", self.control_url()), &bearer)
+    }
+
+    /// HUP-S3.4: a bearer-authed `POST` on the control plane, for `hermes_learn`.
+    pub(crate) fn control_post(&self, path: &str, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control
+            .post(&format!("{}{path}", self.control_url()), &bearer, body)
     }
 
     /// HUP-S4.4: the MCP allowlist file (see [`HERMES_MCP_ENV`]).
@@ -429,6 +455,10 @@ impl HermesManager {
                 HERMES_CAPSULES_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
             ));
+        }
+        if let Some((learn, skills)) = &self.learn_dirs {
+            spec.env
+                .extend(crate::hermes_learn::learn_env(learn, skills));
         }
         // HUP-S4.4: the member's reviewed MCP servers, only when there are any.
         if let Some(path) = self.mcp_allowlist.as_ref().filter(|p| p.is_file()) {
@@ -1121,7 +1151,7 @@ pub fn shutdown() {
 /// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
 /// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
 /// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
-fn manager<R: tauri::Runtime>(
+pub(crate) fn manager<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<&'static HermesManager, String> {
     if let Some(h) = HERMES.get() {
@@ -1143,8 +1173,12 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
+    // HUP-S3.4: verified self-learning. Proposals and the HIC decision log live under
+    // `hermes/learn`, accepted skills under `hermes/skills`. Nothing is learned unless the member
+    // accepts a proposal backed by a verified workflow run.
     let mgr = HermesManager::new(bin, token_path, crash_path)
         .with_capsules_dir(capsules_dir)
+        .with_learn_dirs(base.join("learn"), base.join("skills"))
         .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
         .with_chain_data_dir(base.clone())
         .with_env_source(crate::hermes_web::file_env_source(base.clone()));

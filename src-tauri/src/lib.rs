@@ -92,6 +92,7 @@ mod validator;
 mod cluster;
 mod comms;
 mod hermes;
+mod hermes_learn;
 mod hermes_web;
 mod invite_seal;
 mod invites;
@@ -575,6 +576,16 @@ pub fn run() {
             hermes::hermes_brief_check,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes_learn::hermes_workflow_run,
+            hermes_learn::hermes_workflow_status,
+            hermes_learn::hermes_learn_status,
+            hermes_learn::hermes_learn_proposals,
+            hermes_learn::hermes_learn_propose,
+            hermes_learn::hermes_learn_accept,
+            hermes_learn::hermes_learn_reject,
+            hermes_learn::hermes_learn_memories,
+            hermes_learn::hermes_learn_store_pending,
+            hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
