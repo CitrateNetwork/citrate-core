@@ -240,3 +240,62 @@ fn budget_commands_are_registered_and_in_the_main_window_acl_only() {
         );
     }
 }
+
+fn attested(origin: &str) -> OriginAttestation {
+    OriginAttestation {
+        origin: origin.into(),
+        frame: citrate_core_kit::web_budget::FrameKind::Top,
+        mode: citrate_core_kit::web_budget::BrowserMode::Managed,
+    }
+}
+
+#[test]
+fn the_window_command_never_trusts_a_caller_claim_of_a_clean_task() {
+    // Even once core can attest the origin, the main-window command must not let its caller
+    // declare the task clean or HIC not required: any page script could otherwise collect
+    // budgeted sign-ins. Taint for an auto-sign has to come from core, not the request body.
+    let d = tmp_dir("caller-taint");
+    let v = vault(&d);
+    let g = gate(&d);
+    g.grant(
+        "https://app.example.org",
+        DEFAULT_PRINCIPAL,
+        5,
+        86_400_000,
+        &ADDR.to_lowercase(),
+        NOW,
+    )
+    .expect("grant");
+    let c = citrate_core_kit::ceremony::SignatureCeremony::new();
+    let out = request_attested(
+        &c,
+        &v,
+        &g,
+        SigningRequestArgs {
+            message: siwe(),
+            tab_id: Some("tab-1".into()),
+            claimed_origin: "https://app.example.org".into(),
+            taint_sources: Some(vec![]),
+            hic_required: false,
+        },
+        Some(attested("https://app.example.org")),
+        &|| NOW,
+    );
+    match out {
+        citrate_core_kit::ceremony::BudgetedOutcome::Pending { ceremony, .. } => {
+            assert!(c.status(&ceremony.id).is_some());
+        }
+        other => panic!("a caller-asserted clean task must not auto-sign: {other:?}"),
+    }
+    assert_eq!(g.snapshot(NOW, None).budgets[0].used_count, 0);
+}
+
+#[test]
+fn caller_taint_sources_can_only_add_taint() {
+    assert_eq!(window_taint(None), TaskTaint::Unknown);
+    assert_eq!(window_taint(Some(vec![])), TaskTaint::Unknown);
+    assert_eq!(
+        window_taint(Some(vec!["https://x.example".into()])),
+        TaskTaint::Sources(vec!["https://x.example".into()])
+    );
+}

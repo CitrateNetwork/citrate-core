@@ -38,6 +38,12 @@ site they chose, a bounded number of times, without a click per login. Everythin
 - **x402 (B-2) is inert.** The asset allowlist is empty until a wrapped-SALT token exists
   (owner decision O-1). Payment requests are always approval cards.
 - **No budgets by default.** With no budget, behaviour is exactly as before: every sign-in asks.
+- **Task taint comes from core.** The main-window `web_signing_request` command takes the
+  caller's taint list as extra taint only. An omitted or empty list is treated as unknown, so a
+  request from the window never counts as a clean task and never takes the budget path, even once
+  origin attestation exists. Auto-signing needs core's own record of the task (HUP-S2.7); wiring
+  that is a prerequisite for turning attestation on (HUP-S5.1). Pinned by
+  `the_window_command_never_trusts_a_caller_claim_of_a_clean_task`.
 
 ## Values pending owner sign-off
 

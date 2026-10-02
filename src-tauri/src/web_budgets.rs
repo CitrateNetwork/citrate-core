@@ -104,6 +104,20 @@ pub fn taint_from(sources: Option<Vec<String>>) -> TaskTaint {
     }
 }
 
+/// The taint a main-window `web_signing_request` carries.
+///
+/// The caller's list can only ADD taint. A caller that says "nothing untrusted" is not believed:
+/// any script in the main webview can call this command, so a clean task has to be established by
+/// core itself (the loop principal's own taint record, HUP-S2.7), which is not wired to this
+/// command. Until it is, a request from the window is never clean and so never auto-signs, even
+/// after origin attestation (HUP-S5.1) lands. This must stay true before attestation is enabled.
+pub fn window_taint(sources: Option<Vec<String>>) -> TaskTaint {
+    match sources {
+        Some(v) if !v.is_empty() => TaskTaint::Sources(v),
+        _ => TaskTaint::Unknown,
+    }
+}
+
 /// Whole days to ms, inside the O-2 ceiling (1 to 30 days).
 pub fn ttl_days_to_ms(days: u32) -> Result<u64, String> {
     let ms = u64::from(days) * DAY_MS;
@@ -209,9 +223,10 @@ pub struct SigningRequestArgs {
     pub message: String,
     pub tab_id: Option<String>,
     pub claimed_origin: String,
-    /// Untrusted sources the current task has read. Omitted means unknown (treated as tainted).
+    /// Untrusted sources the current task has read. These can only add taint: omitted or empty is
+    /// treated as unknown (tainted), see [`window_taint`].
     pub taint_sources: Option<Vec<String>>,
-    /// The sidecar marked the call `hic: "required"`.
+    /// The sidecar marked the call `hic: "required"`. Can only raise the bar, never lower it.
     #[serde(default)]
     pub hic_required: bool,
 }
@@ -223,6 +238,20 @@ pub fn request_inner(
     args: SigningRequestArgs,
     clock: &dyn Fn() -> u64,
 ) -> BudgetedOutcome {
+    let attestation = attest_origin(args.tab_id.as_deref());
+    request_attested(ceremony, vault, gate, args, attestation, clock)
+}
+
+/// The window command's path once core has (or has not) attested the origin. Split out so the
+/// trust rules on the caller's arguments are testable with an attestation in hand.
+pub fn request_attested(
+    ceremony: &SignatureCeremony,
+    vault: &CustodyVault,
+    gate: &BudgetGate,
+    args: SigningRequestArgs,
+    attestation: Option<OriginAttestation>,
+    clock: &dyn Fn() -> u64,
+) -> BudgetedOutcome {
     let claimed: String = args
         .claimed_origin
         .chars()
@@ -231,8 +260,8 @@ pub fn request_inner(
         .collect();
     let req = SiweSignRequest {
         message: args.message,
-        attestation: attest_origin(args.tab_id.as_deref()),
-        taint: taint_from(args.taint_sources),
+        attestation,
+        taint: window_taint(args.taint_sources),
         hic_required: args.hic_required,
         principal: DEFAULT_PRINCIPAL.to_string(),
         claimed_origin: claimed,
