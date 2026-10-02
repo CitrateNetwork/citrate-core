@@ -37,6 +37,8 @@ mod chain_agent;
 mod connections;
 mod contract_deploy;
 mod deploy_gate;
+// HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
+mod device_link;
 mod docs_ingest;
 mod earnings;
 mod grant_status;
@@ -306,6 +308,8 @@ pub fn run() {
             // address, which no key can spend from — so the membership money path
             // would bond-fund an address the member cannot reach.
             app.manage(wallet_link::build_link_state());
+            // HUP-S8.1 — pending DeviceLink approvals, keyed by ceremony id.
+            app.manage(device_link::build_device_link_state());
             // Social verify (ADR-2026-08-30): the pending-verification table, keyed by ceremony id.
             app.manage(social::build_social_bind_state());
             // #61 — in-flight directory publish/revoke ceremonies (bounded by open ceremonies).
@@ -515,6 +519,14 @@ pub fn run() {
             cluster::cluster_peers,
             cluster::cluster_share_file,
             cluster::cluster_leave,
+            cluster::cluster_devices,
+            device_link::device_link_request,
+            device_link::device_link_approve,
+            device_link::device_link_reject,
+            device_link::device_links,
+            device_link::device_link_revoke,
+            device_link::device_link_export,
+            device_link::device_link_import,
             training::training_start,
             training::training_status,
             training::training_contribute,
