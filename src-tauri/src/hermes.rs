@@ -281,6 +281,9 @@ pub struct HermesManager {
     /// `None` (tests / no resource dir) → the env is not set and the child keeps its default; prod
     /// seeds this from the bundled starter capsules so the agent boots with runnable skills.
     capsules_dir: Option<PathBuf>,
+    /// HUP-S5.2/S5.3: extra child environment from the member's web opt-ins, computed at each
+    /// start. Only keys on `hermes_web::SIDECAR_ENV_KEYS` pass. `None` = nothing extra.
+    env_source: Option<crate::hermes_web::EnvSource>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -312,6 +315,7 @@ impl HermesManager {
             token_path,
             crash_record_path,
             capsules_dir: None,
+            env_source: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -328,6 +332,12 @@ impl HermesManager {
     /// catalog. Absent → the env is not set (unchanged default behavior).
     pub fn with_capsules_dir(mut self, dir: PathBuf) -> Self {
         self.capsules_dir = Some(dir);
+        self
+    }
+
+    /// HUP-S5.2/S5.3: add the member's web opt-ins to the child environment at each start.
+    pub fn with_env_source(mut self, src: crate::hermes_web::EnvSource) -> Self {
+        self.env_source = Some(src);
         self
     }
 
@@ -399,6 +409,13 @@ impl HermesManager {
                 HERMES_CAPSULES_ENV.to_string(),
                 dir.to_string_lossy().to_string(),
             ));
+        }
+        if let Some(src) = &self.env_source {
+            spec.env.extend(
+                src()
+                    .into_iter()
+                    .filter(|(k, _)| crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())),
+            );
         }
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
@@ -1057,7 +1074,9 @@ fn manager<R: tauri::Runtime>(
     if let Ok(res) = app.path().resource_dir() {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
-    let mgr = HermesManager::new(bin, token_path, crash_path).with_capsules_dir(capsules_dir);
+    let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_capsules_dir(capsules_dir)
+        .with_env_source(crate::hermes_web::file_env_source(base.clone()));
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))

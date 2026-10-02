@@ -32,6 +32,7 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { WebSearchSettings } from "./WebSearchSettings";
 import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
@@ -136,6 +137,7 @@ const SECS: [string, string][] = [
   ["account", "Account & RBAC"],
   ["connections", "Connections"],
   ["ai", "AI providers"],
+  ["web", "Web search & decisions"],
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
@@ -696,6 +698,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         )}
 
         {/* ---------- Node configuration ---------- */}
+        {/* ---------- Web search & decisions (HUP-S5.2 / S5.3) ---------- */}
+        {s.sSec === "web" && <WebSearchSettings />}
+
         {s.sSec === "node" && (
           <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
             <span className="eyebrow">Node configuration · every field here is wired</span>

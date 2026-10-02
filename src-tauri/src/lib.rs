@@ -72,6 +72,7 @@ mod validator;
 mod cluster;
 mod comms;
 mod hermes;
+mod hermes_web;
 mod invite_seal;
 mod invites;
 mod model_catalog;
@@ -514,6 +515,8 @@ pub fn run() {
             hermes::hermes_brief_check,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
+            hermes_web::hermes_web_settings_get,
+            hermes_web::hermes_web_settings_set,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an
