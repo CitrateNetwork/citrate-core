@@ -21,7 +21,8 @@ refuses to open them and says "not built yet".
 | Closed allowlist: `browser`, `contract`, `monitor`, `diff`, `media`, labels `popout-<kind>` | `src-tauri/src/popout.rs` (`PopoutKind`), `src/popout/kinds.ts`, `capabilities/popout.json`; a Rust test keeps all three in step |
 | Only the main window opens a pop-out | `check_open_request` in `popout.rs` |
 | One window per kind; opening again focuses it | `open_sync` in `popout.rs` |
-| Least privilege: no app commands, no shell, no fs, no opener | `capabilities/popout.json` grants only `core:event:allow-listen`, `allow-unlisten`, `allow-emit-to`; the app commands are allowed for the main window only (below) |
+| Least privilege: no app commands, no shell, no fs, no opener | `capabilities/popout.json` grants only `core:event:allow-listen`, `allow-unlisten`, `allow-emit-to`; the app commands are allowed for the main window only (below). One exception, below: the Contract reader's relay |
+| A request is run only if its sender is the window that may send it | Tauri events carry no sender and every pop-out may emit to the main window, so the Contract reader's requests go through Rust instead: `popout_contract_send` (granted to `popout-contract` only by `capabilities/popout-contract.json`, and checked against the caller's label in `popout_contract.rs`) queues them, and the main window drains the queue with `popout_contract_take`. A request sent over the event bus is ignored, and the explanation prompt is built in the main window from the function's ABI entry |
 | Only the app's own pages load in a pop-out | `navigation_allowed` (`tauri://localhost`, `http(s)://tauri.localhost`, the Vite dev server in debug builds) |
 | Size and position persist per kind | `popouts.json` in the app config dir; a saved spot that is no longer on any screen is dropped and the window centres |
 | Closing never kills work | a pop-out's close only saves its geometry; when the main window closes, the pop-outs close with it, so quitting behaves as before |
@@ -36,7 +37,8 @@ window keeps exactly the commands it had.
 
 **When you add a command, add it to `generate_handler!` in `lib.rs` and to
 `permissions/main-window.toml`.** `popout_tests.rs` fails if the two lists differ, and it also
-resolves the ACL with Tauri's own resolver to prove no pop-out label can call any app command.
+resolves the ACL with Tauri's own resolver to prove no pop-out label can call any app command,
+except `popout_contract_send` from `popout-contract` (`permissions/contract-reader.toml`).
 
 ## The message bridge
 

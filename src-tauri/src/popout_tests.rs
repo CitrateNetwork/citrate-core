@@ -396,6 +396,13 @@ fn no_other_capability_grants_the_app_commands_or_names_a_popout() {
         if name == "default.json" || name == "popout.json" {
             continue;
         }
+        if name == "popout-contract.json" {
+            // The one exception, exactly: the Contract reader's relay command, on its window only.
+            let cap = capability(&name);
+            assert_eq!(strings(&cap["windows"]), [PopoutKind::Contract.label()]);
+            assert_eq!(strings(&cap["permissions"]), ["contract-reader-relay"]);
+            continue;
+        }
         let text = std::fs::read_to_string(&path).expect("read");
         assert!(
             !text.contains(MAIN_WINDOW_COMMANDS),
@@ -484,13 +491,15 @@ fn resolved_app_acl() -> tauri_utils::acl::resolved::Resolved {
     use tauri_utils::acl::manifest::{Manifest, PermissionFile};
     let file: PermissionFile =
         toml::from_str(include_str!("../permissions/main-window.toml")).expect("main-window.toml");
+    let relay: PermissionFile = toml::from_str(include_str!("../permissions/contract-reader.toml"))
+        .expect("contract-reader.toml");
     let mut acl = BTreeMap::new();
     acl.insert(
         tauri_utils::acl::APP_ACL_KEY.to_string(),
-        Manifest::new(vec![file], None),
+        Manifest::new(vec![file, relay], None),
     );
     let mut caps = BTreeMap::new();
-    for name in ["default.json", "popout.json"] {
+    for name in ["default.json", "popout.json", "popout-contract.json"] {
         let mut cap: Capability = serde_json::from_value(capability(name)).expect("capability");
         cap.permissions
             .retain(|p| p.identifier().get_prefix().is_none());
@@ -517,11 +526,16 @@ fn tauri_resolves_every_app_command_to_the_main_window_only() {
         );
         for kind in PopoutKind::ALL {
             let label = kind.label();
-            assert!(
-                !grants
-                    .iter()
-                    .any(|g| g.windows.iter().any(|w| w.matches(&label))),
-                "{cmd} must not be callable from {label}"
+            let callable = grants
+                .iter()
+                .any(|g| g.windows.iter().any(|w| w.matches(&label)));
+            // The one exception: the Contract reader's relay, on the reader's window only (Rust
+            // also checks the caller's label, see popout_contract.rs).
+            let relay = cmd == "popout_contract_send" && kind == PopoutKind::Contract;
+            assert_eq!(
+                callable,
+                relay,
+                "{cmd} from {label}: callable={callable}, expected {relay}"
             );
         }
     }

@@ -317,6 +317,8 @@ commands.allow = [
   "commissary_catalog",
   "comms_connections",
   "popout_open",
+  "popout_contract_send",
+  "popout_contract_take",
   "popout_monitor_facts",
   "hermes_browser_status",
   "hermes_browser_frame",

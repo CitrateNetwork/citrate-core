@@ -22,6 +22,7 @@ import { resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
 import { focusContractReader, startContractHost } from "./contractHost";
+import { tauriContractInbox } from "./contractChannel";
 import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
 import { daemonsSection } from "./monitorSnapshot";
@@ -35,7 +36,7 @@ let hostPromise: Promise<PopoutHost> | null = null;
 export function startPopoutHost(): Promise<PopoutHost> | null {
   if (BRIDGE_MODE !== "tauri") return null;
   // HUP-S6.7: the Contract reader's requests are answered here too.
-  startContractHost(tauriTransport);
+  startContractHost(tauriTransport, tauriContractInbox);
   hostPromise ??= (async () =>
     createPopoutHost({
       transport: await tauriTransport(),

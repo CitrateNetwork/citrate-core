@@ -2,7 +2,7 @@
 // every request again and answers; malformed traffic is dropped or refused, never half-run.
 import { describe, expect, it, vi } from "vitest";
 import type { BridgeTransport } from "./bridge";
-import { checkArgs, createContractClient, createContractHost, parseRequest, parseResponse, type ContractOps } from "./contractChannel";
+import { checkArgs, createContractClient, createContractHost, INBOX_PING, parseRequest, parseResponse, type ContractOps } from "./contractChannel";
 
 const ADDR = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
 
@@ -21,7 +21,17 @@ function bus() {
       return () => listeners.set(self, (listeners.get(self) ?? []).filter((f) => f !== handler));
     },
   });
-  return { transport, sent };
+  // What Rust does: accept a request only from the reader's window, queue it, ping the main window.
+  const queue: unknown[] = [];
+  const relay = (from: string) => ({
+    async send(m: unknown) {
+      if (from !== "popout-contract") throw new Error("only the Contract reader may send requests");
+      queue.push(JSON.parse(JSON.stringify(m)));
+      await transport("rust").send("main", INBOX_PING);
+    },
+  });
+  const inbox = { take: async () => queue.splice(0) };
+  return { transport, sent, relay, inbox };
 }
 
 function ops(over: Partial<ContractOps> = {}): ContractOps {
@@ -46,8 +56,11 @@ describe("HUP-S6.7 contract channel validation", () => {
     expect(checkArgs("write", { address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint" })).not.toBeNull();
     expect(checkArgs("write", { address: ADDR, calldata: "0xa0712d68", valueWei: "-1", label: "mint" })).toBeNull();
     expect(checkArgs("write", { address: ADDR, calldata: "0xa0712d68", valueWei: "1e18", label: "mint" })).toBeNull();
-    expect(checkArgs("explain", { prompt: "" })).toBeNull();
-    expect(checkArgs("explain", { prompt: "x".repeat(40_001) })).toBeNull();
+    const fn = { type: "function", name: "mint", inputs: [{ name: "n", type: "uint256" }], outputs: [], stateMutability: "nonpayable" };
+    expect(checkArgs("explain", { address: ADDR, target: "citrate", fn })).not.toBeNull();
+    expect(checkArgs("explain", { prompt: "explain this" }), "a ready-made prompt is not accepted").toBeNull();
+    expect(checkArgs("explain", { address: ADDR, target: "citrate", fn: { pad: "x".repeat(20_001) } })).toBeNull();
+    expect(checkArgs("explain", { address: "0x12", target: "citrate", fn })).toBeNull();
     expect(checkArgs("explain", "prompt")).toBeNull();
     expect(checkArgs("initial", {})).toEqual({});
   });
@@ -65,8 +78,8 @@ describe("HUP-S6.7 contract channel round trips", () => {
   it("a request reaches the main window's op and the answer comes back", async () => {
     const b = bus();
     const o = ops();
-    const host = await createContractHost(b.transport("main"), o);
-    const client = await createContractClient(b.transport("popout-contract"));
+    const host = await createContractHost(b.transport("main"), o, b.inbox);
+    const client = await createContractClient(b.transport("popout-contract"), b.relay("popout-contract"));
     await expect(client.call("codeSize", { target: "citrate", address: ADDR })).resolves.toBe(42);
     expect(o.codeSize).toHaveBeenCalledWith({ target: "citrate", address: ADDR });
     await expect(client.call("view", { target: "citrate", address: ADDR, calldata: "0x06fdde03" })).resolves.toBe("0x01");
@@ -76,8 +89,8 @@ describe("HUP-S6.7 contract channel round trips", () => {
 
   it("an op's failure comes back as the error message", async () => {
     const b = bus();
-    const host = await createContractHost(b.transport("main"), ops({ view: vi.fn(async () => { throw new Error("the node refused: execution reverted"); }) }));
-    const client = await createContractClient(b.transport("popout-contract"));
+    const host = await createContractHost(b.transport("main"), ops({ view: vi.fn(async () => { throw new Error("the node refused: execution reverted"); }) }), b.inbox);
+    const client = await createContractClient(b.transport("popout-contract"), b.relay("popout-contract"));
     await expect(client.call("view", { target: "citrate", address: ADDR, calldata: "0x06fdde03" })).rejects.toThrow(/execution reverted/);
     host.close();
     client.close();
@@ -86,8 +99,8 @@ describe("HUP-S6.7 contract channel round trips", () => {
   it("the main window refuses malformed arguments without running the op", async () => {
     const b = bus();
     const o = ops();
-    const host = await createContractHost(b.transport("main"), o);
-    const client = await createContractClient(b.transport("popout-contract"));
+    const host = await createContractHost(b.transport("main"), o, b.inbox);
+    const client = await createContractClient(b.transport("popout-contract"), b.relay("popout-contract"));
     await expect(client.call("write", { address: ADDR, calldata: "0xzz", valueWei: "0", label: "x" })).rejects.toThrow(/malformed/);
     expect(o.write).not.toHaveBeenCalled();
     host.close();
@@ -96,9 +109,9 @@ describe("HUP-S6.7 contract channel round trips", () => {
 
   it("the main window can point the reader at an address", async () => {
     const b = bus();
-    const host = await createContractHost(b.transport("main"), ops());
+    const host = await createContractHost(b.transport("main"), ops(), b.inbox);
     const seen: string[] = [];
-    const client = await createContractClient(b.transport("popout-contract"), (a, t) => seen.push(`${a}@${t}`));
+    const client = await createContractClient(b.transport("popout-contract"), b.relay("popout-contract"), (a, t) => seen.push(`${a}@${t}`));
     await host.focus(ADDR);
     expect(seen).toEqual([`${ADDR}@citrate`]);
     host.close();
@@ -107,10 +120,33 @@ describe("HUP-S6.7 contract channel round trips", () => {
 
   it("closing the reader rejects what is still waiting; an unanswered call times out", async () => {
     const b = bus();
-    const quiet = await createContractClient(b.transport("popout-contract"), undefined, 20);
+    const quiet = await createContractClient(b.transport("popout-contract"), b.relay("popout-contract"), undefined, 20);
     await expect(quiet.call("source", { address: ADDR })).rejects.toThrow(/did not answer/);
     const p = quiet.call("source", { address: ADDR });
     quiet.close();
     await expect(p).rejects.toThrow(/closed/);
+  });
+});
+
+describe("HUP-S6.7 contract channel: only the reader's own requests run", () => {
+  it("a request sent straight over the event bus (any pop-out can) is never run", async () => {
+    const b = bus();
+    const o = ops();
+    const host = await createContractHost(b.transport("main"), o, b.inbox);
+    const otherPopout = b.transport("popout-browser");
+    await otherPopout.send("main", { v: 1, type: "contract.request", id: "x1", op: "write", args: { address: ADDR, calldata: "0xa0712d68", valueWei: "0", label: "mint" } });
+    await otherPopout.send("main", { v: 1, type: "contract.request", id: "x2", op: "codeSize", args: { target: "citrate", address: ADDR } });
+    // A forged ping only drains an empty queue.
+    await otherPopout.send("main", INBOX_PING);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(o.write).not.toHaveBeenCalled();
+    expect(o.codeSize).not.toHaveBeenCalled();
+    expect(b.sent.some((s) => s.to === "popout-contract")).toBe(false);
+    host.close();
+  });
+
+  it("another window cannot use the relay", async () => {
+    const b = bus();
+    await expect(b.relay("popout-browser").send({ v: 1, type: "contract.request", id: "x", op: "initial", args: {} })).rejects.toThrow(/only the Contract reader/);
   });
 });
