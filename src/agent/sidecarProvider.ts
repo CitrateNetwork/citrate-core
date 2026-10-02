@@ -16,6 +16,8 @@ export interface SidecarSessionApi {
   events(id: string, after: number, waitMs: number): Promise<{ events: { seq: number; event: Record<string, unknown> }[]; lastSeq: number; busy: boolean }>;
   toolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   stop(id: string): Promise<void>;
+  /** Close a session the provider no longer uses (absent in older fakes: then nothing is closed). */
+  close?(id: string): Promise<void>;
 }
 
 const POLL_WAIT_MS = 15_000;
@@ -68,6 +70,13 @@ export function createSidecarProvider(
   // and never sees the stopped turn's events.
   let previous: Promise<unknown> = Promise.resolve();
 
+  // A session whose stop switch is on is never reused; close it in the sidecar so repeated Stops
+  // cannot fill the sidecar's session table.
+  const leave = (id: string) => {
+    if (sessionId === id) sessionId = null;
+    api.close?.(id).catch(() => undefined);
+  };
+
   async function runTurn(opts: SendOpts): Promise<{ role: string; content: string }> {
     const { callbacks, signal } = opts;
     const last = [...opts.messages].reverse().find((m) => m.role === "user");
@@ -112,7 +121,7 @@ export function createSidecarProvider(
           if (idle >= MAX_IDLE_POLLS) {
             if (stopping) {
               // The stop route was called on this session, so it is not reused (see `done` below).
-              if (sessionId === id) sessionId = null;
+              leave(id);
               break;
             }
             throw new Error("the agent session stopped responding");
@@ -128,7 +137,7 @@ export function createSidecarProvider(
             if (ev.outcome === "stopped") {
               // A session's stop switch stays on, so every later turn in it would end at once with
               // an empty answer. Leave it; the next turn opens a fresh session.
-              if (sessionId === id) sessionId = null;
+              leave(id);
               if (!stopping) failure = failure ?? "the agent session was stopped; send again to start a fresh one";
             } else if (!stopping && ev.outcome !== "answered") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
             continue;

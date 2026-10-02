@@ -908,6 +908,7 @@ export class Store {
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
+            close: (id) => h.sessionClose(id),
           },
           // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
           () => this.sidecarSystemPrompt(),
