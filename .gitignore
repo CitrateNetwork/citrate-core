@@ -39,6 +39,11 @@ src-tauri/oauth.dev.json
 src-tauri/binaries/*
 !src-tauri/binaries/README.md
 
+# HUP-S3.2: the reviewed third-party skills are staged at build time from skills.lock
+# (scripts/stage-skills-bundle.mjs); only the folder's README is committed.
+src-tauri/skills-bundle/*
+!src-tauri/skills-bundle/README.md
+
 # Local AI model + llama.cpp build artifacts. gemma gguf (~4.7G) + bge embed
 # model live under src-tauri/models/; the compiled llama.cpp runtime under
 # src-tauri/llama/ (~22M). Both are fetched/built locally, never committed.
