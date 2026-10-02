@@ -2,7 +2,7 @@
 // citrate-core — Settings surface (1:1 from design/CitrateCore.dc.html
 // SETTINGS section). Nine sections behind a left sub-nav (sSec):
 // Account & RBAC, Connections, AI providers, MCP servers (HUP-S4.4), Node configuration,
-// API endpoints & keys, Keys & security, Memberships & billing,
+// API endpoints & keys, Keys & security, Budgets (HUP-S2.3), Memberships & billing,
 // Privacy & recovery (HUP-S10.5), App.
 //
 // Honesty rule (Rule 1 / I-3 · Q-A.1): EVERY control is ONE of —
@@ -32,6 +32,7 @@ import { bridge, type AppConfig } from "../bridge";
 import { DiagnosticReport } from "../components/DiagnosticReport";
 import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { BudgetsPanel } from "../budgets/BudgetsPanel";
 import { McpServersPanel } from "./McpServersPanel";
 import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
@@ -146,6 +147,7 @@ const SECS: [string, string][] = [
   ["node", "Node configuration"],
   ["api", "API endpoints & keys"],
   ["keys", "Keys & security"],
+  ["budgets", "Budgets"],
   ["billing", "Memberships & billing"],
   ["privacy", "Privacy & recovery"],
   ["app", "App"],
@@ -983,6 +985,9 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         )}
 
         {/* ---------- Memberships & billing ---------- */}
+        {/* ---------- Budgets (HUP-S2.3) ---------- */}
+        {s.sSec === "budgets" && <BudgetsPanel />}
+
         {s.sSec === "billing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>

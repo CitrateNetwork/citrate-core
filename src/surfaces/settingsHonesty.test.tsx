@@ -37,6 +37,7 @@ const SECTIONS: AppState["sSec"][] = [
   "node",
   "api",
   "keys",
+  "budgets",
   "billing",
   "privacy",
   "app",
