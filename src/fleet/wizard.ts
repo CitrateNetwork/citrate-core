@@ -139,7 +139,8 @@ export function deviceRows(s: WizardState): DeviceRow[] {
     rows.push({ key: `self:${d.deviceId}`, label: d.label, tier: d.tier, role: d.role, where: "this machine", addr: null });
   }
   for (const d of s.roster) {
-    rows.push({ key: `paired:${d.id}`, label: d.label, tier: d.tier, role: d.role, where: "paired", addr: d.addr });
+    // The code is the same on both machines: the member can compare the two screens.
+    rows.push({ key: `paired:${d.id}`, label: d.label, tier: d.tier, role: d.role, where: d.code ? `paired · code ${d.code}` : "paired", addr: d.addr });
   }
   for (const d of s.discovery.devices) {
     rows.push({
