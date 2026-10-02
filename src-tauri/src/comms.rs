@@ -707,14 +707,14 @@ fn ipc_round_trip(
     bearer: &str,
     req: &Request,
 ) -> Result<Response> {
-    // Bound both directions before any read/write (SO_RCVTIMEO/SO_SNDTIMEO). Applied to the clone too
-    // so neither the read nor the write side can hang indefinitely.
-    stream
-        .set_recv_timeout(Some(timeout))
-        .map_err(|e| CommsError::Ipc(e.to_string()))?;
-    stream
-        .set_send_timeout(Some(timeout))
-        .map_err(|e| CommsError::Ipc(e.to_string()))?;
+    // Bound both directions before any read/write (SO_RCVTIMEO/SO_SNDTIMEO on unix). Best-effort:
+    // the Windows interprocess named-pipe transport does not support socket I/O timeouts ("named
+    // pipes do not support I/O timeouts") and returns an error here — treat it as non-fatal rather
+    // than failing the whole IPC (the writer clone below already does), so Groups/agent IPC works on
+    // Windows. On unix these still apply as before. TODO(windows): bound the round-trip with a
+    // thread + join-timeout so a silent daemon still can't hang the caller without socket timeouts.
+    let _ = stream.set_recv_timeout(Some(timeout));
+    let _ = stream.set_send_timeout(Some(timeout));
     let mut writer = stream
         .try_clone()
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
