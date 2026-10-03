@@ -181,13 +181,30 @@ fn not_running_fails_closed() {
 /// default turns any non-2xx into a bare status and the card could only say "refused".
 #[test]
 fn the_ureq_transport_keeps_the_body_of_a_refusal() {
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         let (mut sock, _) = listener.accept().unwrap();
-        let mut buf = [0u8; 4096];
-        let _ = sock.read(&mut buf).unwrap();
+        {
+            let mut request = BufReader::new(&mut sock);
+            let mut content_length = None;
+            loop {
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                }
+            }
+            let mut request_body = vec![0u8; content_length.expect("POST request carries a length")];
+            request.read_exact(&mut request_body).unwrap();
+            assert_eq!(request_body, b"{}");
+        }
         let body = r#"{"error":"no track fits that goal; pick one from /tracks"}"#;
         let resp = format!(
             "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
