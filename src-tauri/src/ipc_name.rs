@@ -159,18 +159,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unix_name_is_the_path_verbatim() {
-        // On unix the endpoint name is the filesystem path unchanged, so it stays
-        // on-wire identical to `UnixStream::connect(path)`.
-        let n = endpoint_name("/tmp/citrate/memory/memdag.sock").expect("fs name builds on unix");
-        // A Name has no public getter for its bytes, but building it must succeed
-        // and Debug must reflect the path we handed in (round-trip smoke).
-        let dbg = format!("{n:?}");
+    fn platform_endpoint_name_builds_from_an_absolute_path() {
         #[cfg(unix)]
-        assert!(
-            dbg.contains("memdag.sock"),
-            "unix name must carry the path: {dbg}"
-        );
+        {
+            // On Unix the endpoint name is the filesystem path unchanged, so it stays
+            // on-wire identical to `UnixStream::connect(path)`.
+            let n = endpoint_name("/tmp/citrate/memory/memdag.sock")
+                .expect("filesystem name builds on Unix");
+            // A Name has no public getter for its bytes, but Debug reflects the path.
+            let dbg = format!("{n:?}");
+            assert!(
+                dbg.contains("memdag.sock"),
+                "Unix name must carry the path: {dbg}"
+            );
+        }
+        #[cfg(windows)]
+        {
+            let dir = std::env::temp_dir().join(format!(
+                "citrate-ipc-name-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
+            std::fs::create_dir_all(&dir).expect("create disposable endpoint directory");
+            let path = dir.join("member.sock").to_string_lossy().to_string();
+            endpoint_name(&path).expect("namespaced pipe name builds on Windows");
+            assert!(
+                pipe_nonce_path(&path).is_file(),
+                "Windows endpoint naming must create its per-install nonce"
+            );
+            std::fs::remove_file(pipe_nonce_path(&path)).expect("remove disposable nonce");
+            std::fs::remove_dir(&dir).expect("remove disposable endpoint directory");
+        }
     }
 
     /// PBA-L7b-004 tripwire: the Windows pipe name carries a per-user, per-install component, so
@@ -237,9 +256,27 @@ mod tests {
 
     #[test]
     fn empty_and_odd_paths_still_build_a_name() {
-        // A degenerate path must not panic — it returns a Name or an honest error.
-        let _ = endpoint_name("");
-        let _ = endpoint_name("relative-name.sock");
-        let _ = endpoint_name("/a/b/c/d.sock");
+        #[cfg(unix)]
+        {
+            // A degenerate path must not panic — it returns a Name or an honest error.
+            let _ = endpoint_name("");
+            let _ = endpoint_name("relative-name.sock");
+            let _ = endpoint_name("/a/b/c/d.sock");
+        }
+        #[cfg(windows)]
+        {
+            // Name derivation is pure. Do not call `endpoint_name` with relative paths here:
+            // that stateful helper correctly persists a nonce beside its production path.
+            let nonce = [7u8; PIPE_NONCE_LEN];
+            for path in ["", "relative-name.sock", r"C:\odd path\d$.sock"] {
+                let name = windows_pipe_name(path, &nonce);
+                assert!(name.starts_with("citrate-"), "{name}");
+                assert!(
+                    name.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'),
+                    "{name}"
+                );
+            }
+        }
     }
 }
