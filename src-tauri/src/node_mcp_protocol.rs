@@ -686,6 +686,6 @@ pub fn address_book() -> Result<Value, String> {
         "chainId": book.get("chainId"),
         "genesisHash": book.get("genesisHash"),
         "addresses": book.get("addresses"),
-        "note": "Registries not listed here (for example AgentSBT, BenchmarkRegistry, CapsuleRegistry, AnchorRegistry) are not deployed on 40204 yet.",
+        "note": "Only the contracts this app reads are listed. A contract missing here is not in this app's address book; it may still be deployed (citrate-chain contracts/addresses/40204.json is the full book).",
     }))
 }

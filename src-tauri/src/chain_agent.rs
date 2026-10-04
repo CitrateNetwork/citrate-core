@@ -6,8 +6,9 @@
 //!   event stream; tokens only when the model provider reported them).
 //! - Anchor batches: the sidecar's `/anchor/*` routes over the local decision records.
 //! - Registry addresses: the generated 40204 address book (`src-tauri/addresses/40204.json`).
-//!   `AnchorRegistry` and `BenchmarkRegistry` are not in it (not deployed on 40204 yet), so both
-//!   features report that and stay off.
+//!   `AnchorRegistry` and `BenchmarkRegistry` are optional pins in it (both deployed on 40204 and
+//!   verified to have code when the book was generated). A build whose book lacks one reports it
+//!   and keeps that feature off. Both features stay off until the member turns them on.
 //! - Receipts: the live 40204 RPC, through the anchor ceremony.
 //!
 //! Signing (Rule 3): only through `citrate_core_kit::ceremony::anchor::AnchorCeremony`, with the
@@ -27,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ceremony::anchor::{
     anchor_address, date_of_day, ensure_anchor_key, receipt_confirms, AnchorCeremony,
-    AnchorCeremonyView, AnchorReceipt, AnchorRequest, AnchorTxConfig,
+    AnchorCeremonyView, AnchorGuards, AnchorReceipt, AnchorRequest, AnchorTxConfig,
 };
 use crate::hermes::chain::PlannedAnchor;
 
@@ -40,6 +41,7 @@ pub const TICK_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 
 /// Decisions this build makes with conservative placeholders, pending owner sign-off.
 pub const PENDING_OWNER_SIGN_OFF: &[&str] = &[
     "How the anchor key pays gas: the EIP-2771 relayer or a capped gas float (ADR O-5). Pending owner sign-off.",
+    "The anchor gas caps (50 gwei, 400,000 gas) are conservative placeholders until O-5 is decided. Pending owner sign-off.",
     "How the anchor key is bound on chain as the member's anchor delegate. Pending owner sign-off.",
     "Whether the nightly anchor may be approved unattended (HIC-2). Until then each day needs an explicit approval. Pending owner sign-off.",
     "How shared benchmark aggregates reach BenchmarkRegistry (per-metric calls from the member's account, or folded into the nightly batch). Pending owner sign-off.",
@@ -111,13 +113,13 @@ pub fn apply_settings(
 ) -> Result<ChainSettings, String> {
     if requested.anchor_nightly && !anchor_deployed {
         return Err(
-            "Nightly anchoring cannot be turned on: AnchorRegistry is not deployed on 40204 yet."
+            "Nightly anchoring cannot be turned on: AnchorRegistry is not in this app's 40204 address book."
                 .into(),
         );
     }
     if requested.share_benchmarks && !benchmark_deployed {
         return Err(
-            "Benchmark sharing cannot be turned on: BenchmarkRegistry is not deployed on 40204 yet."
+            "Benchmark sharing cannot be turned on: BenchmarkRegistry is not in this app's 40204 address book."
                 .into(),
         );
     }
@@ -148,7 +150,7 @@ pub fn anchor_gate(registry: Option<&str>, s: &ChainSettings) -> AnchorGate {
 
 pub fn anchor_status_line(gate: AnchorGate) -> String {
     match gate {
-        AnchorGate::NotDeployed => "Nightly anchoring is off: AnchorRegistry is not deployed on 40204 yet. Decision records stay on this device.".into(),
+        AnchorGate::NotDeployed => "Nightly anchoring is off: AnchorRegistry is not in this app's 40204 address book. Decision records stay on this device.".into(),
         AnchorGate::Off => "Nightly anchoring is off. Turn it on to anchor each day's decision records on 40204.".into(),
         AnchorGate::Ready => "Nightly anchoring is on. Each closed day waits for your approval before it is sent.".into(),
     }
@@ -156,7 +158,7 @@ pub fn anchor_status_line(gate: AnchorGate) -> String {
 
 pub fn benchmark_status_line(registry: Option<&str>, s: &ChainSettings) -> String {
     match (registry, s.share_benchmarks) {
-        (None, _) => "Benchmark sharing is off: BenchmarkRegistry is not deployed on 40204 yet. Nothing leaves this device.".into(),
+        (None, _) => "Benchmark sharing is off: BenchmarkRegistry is not in this app's 40204 address book. Nothing leaves this device.".into(),
         (Some(_), false) => "Benchmark sharing is off. Nothing leaves this device.".into(),
         (Some(_), true) => "Benchmark sharing is on: daily aggregates (counts only, no content) are prepared for BenchmarkRegistry.".into(),
     }
@@ -333,6 +335,120 @@ pub fn settle(port: &dyn AnchorPort, r: &AnchorReceipt) -> Result<bool, String> 
     Ok(true)
 }
 
+/// The file that keeps sent, not yet settled anchors across restarts (in the Hermes folder).
+pub const IN_FLIGHT_FILE: &str = "anchor-in-flight.json";
+
+/// Sent anchors whose day is not settled yet (receipt unknown, or mined but the sidecar has not
+/// recorded it), by day. Kept on disk, owner-only, so a restart still knows which days are on the
+/// way and the scheduler never raises a second anchor for one (`AnchorSettle.tla`,
+/// `AtMostOneInFlight`). A file that cannot be read blocks new anchors rather than being treated
+/// as empty, and is left in place.
+pub struct InFlightAnchors {
+    path: Option<PathBuf>,
+    map: Mutex<BTreeMap<u64, AnchorReceipt>>,
+    blocked: Option<String>,
+}
+
+impl InFlightAnchors {
+    /// Load from `path` (`None`: no app data folder, so anchoring is blocked).
+    pub fn load(path: Option<PathBuf>) -> InFlightAnchors {
+        let (map, blocked) = match &path {
+            None => (
+                BTreeMap::new(),
+                Some("the app data folder is unavailable, so sent anchors cannot be tracked".into()),
+            ),
+            Some(p) => match std::fs::read(p) {
+                Ok(bytes) => match serde_json::from_slice::<Vec<AnchorReceipt>>(&bytes) {
+                    Ok(v) => (v.into_iter().map(|r| (r.day, r)).collect(), None),
+                    Err(_) => (
+                        BTreeMap::new(),
+                        Some(format!(
+                            "the record of sent anchors ({}) could not be read; no new anchor is raised until it is checked",
+                            p.display()
+                        )),
+                    ),
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (BTreeMap::new(), None),
+                Err(e) => (
+                    BTreeMap::new(),
+                    Some(format!("the record of sent anchors could not be read ({})", e.kind())),
+                ),
+            },
+        };
+        InFlightAnchors {
+            path,
+            map: Mutex::new(map),
+            blocked,
+        }
+    }
+
+    /// Why new anchors are blocked, if they are.
+    pub fn blocked(&self) -> Option<&str> {
+        self.blocked.as_deref()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, AnchorReceipt>> {
+        self.map.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn save(&self, m: &BTreeMap<u64, AnchorReceipt>) -> Result<(), String> {
+        use std::io::Write as _;
+        if let Some(why) = &self.blocked {
+            return Err(why.clone());
+        }
+        let path = self.path.as_ref().ok_or("no app data folder")?;
+        let body = serde_json::to_vec(&m.values().collect::<Vec<_>>())
+            .map_err(|e| format!("encode: {e}"))?;
+        let tmp = path.with_extension("json.tmp");
+        let res = (|| -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let _ = std::fs::remove_file(&tmp);
+            let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
+            f.write_all(&body)?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, path)
+        })();
+        if let Err(e) = res {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("save: {}", e.kind()));
+        }
+        Ok(())
+    }
+
+    /// Record a signed anchor before it is sent (or update a sent one). Fails, and keeps memory
+    /// unchanged, when it cannot be saved.
+    pub fn record(&self, r: &AnchorReceipt) -> Result<(), String> {
+        let mut m = self.lock();
+        let mut next = m.clone();
+        next.insert(r.day, r.clone());
+        self.save(&next)?;
+        *m = next;
+        Ok(())
+    }
+
+    /// The day is settled (anchored or reverted). Kept in memory as removed even if the save
+    /// fails; the next save or the next re-poll writes it. (Not named `remove`: the main-thread
+    /// tripwire resolves calls by name, and this one writes a file.)
+    pub fn settle_day(&self, day: u64) {
+        let mut m = self.lock();
+        if m.remove(&day).is_some() {
+            let _ = self.save(&m);
+        }
+    }
+
+    /// Days on the way.
+    pub fn days(&self) -> BTreeSet<u64> {
+        self.lock().keys().copied().collect()
+    }
+
+    /// Every sent, unsettled anchor.
+    pub fn all(&self) -> Vec<AnchorReceipt> {
+        self.lock().values().cloned().collect()
+    }
+}
+
 /// After a broadcast: settle when the receipt confirms, and keep every sent anchor that is not
 /// settled yet (receipt unknown, or mined but the sidecar could not record it) in `held`, so the
 /// re-poll finishes it and the scheduler never raises a second anchor for that day
@@ -341,16 +457,18 @@ pub fn settle(port: &dyn AnchorPort, r: &AnchorReceipt) -> Result<bool, String> 
 pub fn after_broadcast(
     port: Result<&dyn AnchorPort, String>,
     r: &AnchorReceipt,
-    held: &Mutex<BTreeMap<u64, AnchorReceipt>>,
+    held: &InFlightAnchors,
 ) -> (bool, String) {
     let hold = || {
-        if let Ok(mut m) = held.lock() {
-            m.insert(r.day, r.clone());
-        }
+        // Best effort: the record written before the send already holds the day.
+        let _ = held.record(r);
     };
     match (r.block_number, receipt_confirms(r)) {
         (Some(block), true) => match port.and_then(|p| settle(p, r)) {
-            Ok(true) => (true, format!("Anchored in block {block}.")),
+            Ok(true) => {
+                held.settle_day(r.day);
+                (true, format!("Anchored in block {block}."))
+            }
             _ => {
                 hold();
                 (
@@ -368,10 +486,13 @@ pub fn after_broadcast(
                 "Sent. Waiting for the block; the day is not marked anchored yet.".to_string(),
             )
         }
-        (Some(_), false) => (
-            false,
-            "The transaction did not succeed on chain; the day is not anchored.".to_string(),
-        ),
+        (Some(_), false) => {
+            held.settle_day(r.day);
+            (
+                false,
+                "The transaction did not succeed on chain; the day is not anchored.".to_string(),
+            )
+        }
     }
 }
 
@@ -383,17 +504,25 @@ fn ceremony() -> &'static AnchorCeremony {
     C.get_or_init(AnchorCeremony::new)
 }
 
-/// Broadcast anchors whose receipt was not mined within the poll budget: day -> receipt.
-fn submitted() -> &'static Mutex<BTreeMap<u64, AnchorReceipt>> {
-    static S: OnceLock<Mutex<BTreeMap<u64, AnchorReceipt>>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(BTreeMap::new()))
+/// Sent anchors not settled yet, loaded once from the Hermes folder.
+fn submitted<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &'static InFlightAnchors {
+    static S: OnceLock<InFlightAnchors> = OnceLock::new();
+    S.get_or_init(|| {
+        InFlightAnchors::load(
+            settings_path(app)
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join(IN_FLIGHT_FILE))),
+        )
+    })
 }
 
 fn keyring() -> citrate_core_kit::custody::OsKeyring {
     citrate_core_kit::custody::OsKeyring::with_service(crate::CUSTODY_KEYRING_SERVICE)
 }
 
-fn settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+pub(crate) fn settings_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
     use tauri::Manager;
     Ok(app
         .path()
@@ -455,10 +584,7 @@ fn status_view(app: &tauri::AppHandle) -> Result<ChainStatusView, String> {
         Ok(_) => (None, Some("Hermes is not running".to_string())),
         Err(e) => (None, Some(e)),
     };
-    let submitted = submitted()
-        .lock()
-        .map(|m| m.values().cloned().collect())
-        .unwrap_or_default();
+    let submitted = submitted(app).all();
     Ok(ChainStatusView {
         anchor: AnchorView {
             gate,
@@ -555,23 +681,32 @@ pub async fn hermes_anchor_approve(
 ) -> Result<AnchorApproveView, String> {
     crate::blocking::off_main(move || {
         let registry = anchor_registry()
-            .ok_or("AnchorRegistry is not deployed on 40204 yet; nothing was signed.")?;
+            .ok_or("AnchorRegistry is not in this app's 40204 address book; nothing was signed.")?;
+        let held = submitted(&app);
+        if let Some(why) = held.blocked() {
+            return Err(format!("{why}; nothing was signed."));
+        }
+        let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&app)
+            .ok_or("internal: custody state unavailable")?;
         let rpc = crate::rpc::RpcClient::citrate();
+        let record = |r: &AnchorReceipt| held.record(r);
         let receipt = ceremony()
             .approve_and_broadcast(
                 &keyring(),
                 &rpc,
                 &id,
                 &registry,
-                AnchorTxConfig {
-                    poll_attempts: 30,
-                    poll_interval: std::time::Duration::from_secs(2),
+                // Gas caps are placeholders pending owner sign-off (O-5).
+                AnchorTxConfig::with_placeholder_caps(30, std::time::Duration::from_secs(2)),
+                AnchorGuards {
+                    vault: &custody.0,
+                    before_send: &record,
                 },
             )
             .map_err(|e| e.to_string())?;
         // Signed and sent from here on: never return early and lose the transaction.
         let port = crate::hermes::chain::manager_for(&app).map(|m| m as &dyn AnchorPort);
-        let (anchored, status_line) = after_broadcast(port, &receipt, submitted());
+        let (anchored, status_line) = after_broadcast(port, &receipt, held);
         Ok(AnchorApproveView {
             receipt,
             anchored,
@@ -588,11 +723,8 @@ pub async fn hermes_anchor_reject(id: String) -> Result<(), String> {
 }
 
 /// Recheck broadcast anchors whose receipt was not mined in time; settle those that are now.
-fn repoll_submitted(port: &dyn AnchorPort) {
-    let pending: Vec<AnchorReceipt> = submitted()
-        .lock()
-        .map(|m| m.values().cloned().collect())
-        .unwrap_or_default();
+fn repoll_submitted(port: &dyn AnchorPort, held: &InFlightAnchors) {
+    let pending: Vec<AnchorReceipt> = held.all();
     let rpc = crate::rpc::RpcClient::citrate();
     for r in pending {
         if let Ok(Some(rc)) = rpc.transaction_receipt(&r.tx_hash) {
@@ -602,17 +734,15 @@ fn repoll_submitted(port: &dyn AnchorPort) {
                 ..r.clone()
             };
             if settle(port, &done).unwrap_or(false) || rc.status == Some(0) {
-                if let Ok(mut m) = submitted().lock() {
-                    m.remove(&r.day);
-                }
+                held.settle_day(r.day);
             }
         }
     }
 }
 
 /// Start the nightly scheduler thread if, and only if, the gate is `Ready` (deployed registry and
-/// the member turned anchoring on). In this build `AnchorRegistry` is not deployed, so this
-/// returns false and starts nothing. Idempotent.
+/// the member turned anchoring on). Without an `AnchorRegistry` pin in the book this returns
+/// false and starts nothing. Idempotent.
 pub fn start_nightly_if_ready(app: tauri::AppHandle) -> bool {
     static STARTED: OnceLock<()> = OnceLock::new();
     let registry = anchor_registry();
@@ -639,16 +769,15 @@ pub fn start_nightly_if_ready(app: tauri::AppHandle) -> bool {
                 crate::web_budgets::export_for_app(&app);
                 // HUP-S2.6: core's other HIC records (grants, escalation spend, approval cards).
                 crate::hic_records::export_for_app(&app);
-                let in_flight: BTreeSet<u64> = submitted()
-                    .lock()
-                    .map(|s| s.keys().copied().collect())
-                    .unwrap_or_default();
-                if let Err(e) =
-                    nightly_tick_with(m, ceremony(), gate, registry.as_deref(), &in_flight)
+                let held = submitted(&app);
+                if let Some(why) = held.blocked() {
+                    eprintln!("citrate-core: nightly anchor pass skipped: {why}");
+                } else if let Err(e) =
+                    nightly_tick_with(m, ceremony(), gate, registry.as_deref(), &held.days())
                 {
                     eprintln!("citrate-core: nightly anchor pass failed: {e}");
                 }
-                repoll_submitted(m);
+                repoll_submitted(m, held);
             }
         }
         std::thread::sleep(TICK_EVERY);

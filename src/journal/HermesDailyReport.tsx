@@ -8,6 +8,8 @@
 // =====================================================================
 import { useCallback, useEffect, useState } from "react";
 import { meteringRows, utcDay, type AnchorApprove, type ChainStatus, type DailyResponse } from "./meteringView";
+import { DecisionProofs } from "./DecisionProofs";
+import { BenchmarkShare } from "./BenchmarkShare";
 
 export type ReportInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -186,6 +188,7 @@ export function HermesDailyReport({ mode, invoke, now }: HermesDailyReportProps)
             <span data-testid="hm-bench-line" style={{ color: "var(--tx-3)" }}>
               {bench.statusLine}
             </span>
+            {bench.sharing && <BenchmarkShare invoke={invoke} sharing={bench.sharing} day={utcDay(now(), 1)} />}
           </>
         )}
         {chain && chain.pendingOwnerSignOff.length > 0 && (
@@ -198,6 +201,10 @@ export function HermesDailyReport({ mode, invoke, now }: HermesDailyReportProps)
             </ul>
           </details>
         )}
+      </div>
+
+      <div style={{ borderTop: "1px solid var(--line-1)", paddingTop: 10 }}>
+        <DecisionProofs invoke={invoke} />
       </div>
     </div>
   );
