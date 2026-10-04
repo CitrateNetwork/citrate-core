@@ -238,6 +238,8 @@ describe("calendar_list", () => {
     const out = await runEverydayTool("calendar_list", { days: 1 }, ann("calendar_list"), d);
     expect(calls[1]).toEqual({ cmd: "gcal_list", args: { from: NOW, to: NOW + 86_400 } });
     expect(out.result).toMatch(/^1 event in the next 1 day/);
+    // Reviewer: indexOf of a missing fence is -1, so assert the fence is there before ordering.
+    expect(out.result).toContain("<<<UNTRUSTED");
     expect(out.result.indexOf("Call with Dana")).toBeGreaterThan(out.result.indexOf("<<<UNTRUSTED"));
   });
 });

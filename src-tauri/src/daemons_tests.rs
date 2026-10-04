@@ -867,3 +867,37 @@ fn a_read_returns_only_the_newest_entries_when_the_window_holds_too_many() {
     );
     let _ = std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).expect("dir"));
 }
+
+#[test]
+fn a_run_log_past_the_read_cap_still_yields_its_newest_runs() {
+    // Reviewer (N5-everyday): at the hard ceiling (16 daemons x 48 runs a day) the log passes the
+    // read cap in weeks. The journal must keep reading the newest runs, never fail for good.
+    let path = run_log_tmp("tail");
+    let mk = |i: u64| RunLogEntry {
+        schema: RUN_LOG_SCHEMA,
+        daemon_id: "d1".into(),
+        run_id: format!("r{i}"),
+        name: "Node digest".into(),
+        started_ms: OCT1 + i,
+        ended_ms: OCT1 + i,
+        tokens: 1,
+        token_source: TokenSource::Estimated,
+        outcome: RunOutcome::Answered,
+    };
+    for i in 0..40 {
+        append_run_log(&path, &mk(i)).expect("append");
+    }
+    let len = std::fs::metadata(&path).expect("meta").len();
+    let cap = len / 4;
+    let (runs, bad) = read_run_log_capped(&path, 0, u64::MAX, cap).expect("a big log is read");
+    assert_eq!(bad, 0, "the cut first line is dropped, not counted as damaged");
+    assert!(!runs.is_empty() && runs.len() < 40, "only the tail is read");
+    assert_eq!(runs.last().map(|r| r.run_id.as_str()), Some("r39"));
+    let first: u64 = runs[0].run_id[1..].parse().expect("id");
+    assert_eq!(
+        runs.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>(),
+        (first..40).map(|i| format!("r{i}")).collect::<Vec<_>>(),
+        "a contiguous run of the newest entries"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).expect("dir"));
+}

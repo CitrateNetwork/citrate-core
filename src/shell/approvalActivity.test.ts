@@ -32,3 +32,35 @@ describe("approvals in the turn activity", () => {
     expect(turnActivity.get().approvals).toEqual([]);
   });
 });
+
+describe("a HIC-required everyday write asks once, on its own card", () => {
+  // Reviewer (N5-everyday): gsheets_append and schedule_add build their own approval card, so a
+  // hic:"required" call must carry the HIC reason on THAT card and never stack a generic one first.
+  const HIC = { hic: "required" as const, hicReason: "this session read untrusted content (from gsheets_read)" };
+  const args = {
+    spreadsheetId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+    range: "Sheet1!A:B",
+    rows: [["a", 1]],
+    title: "Weekly review",
+    start: "2099-01-05T09:00",
+  };
+  for (const name of ["gsheets_append", "schedule_add"]) {
+    it(`${name}: one card with the HIC reason; Approve runs the write once, Decline runs nothing`, async () => {
+      const sig = vi.spyOn(store, "requestSig").mockResolvedValueOnce("approved").mockResolvedValue("declined");
+      const invoked: string[] = [];
+      vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) => {
+        invoked.push(cmd);
+        return cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {};
+      }) as never);
+      await store.handleTool({ id: "h1", name, arguments: JSON.stringify(args) }, "m1", () => {}, HIC);
+      expect(sig).toHaveBeenCalledTimes(1);
+      expect(sig.mock.calls[0][0].hic).toEqual({ reason: HIC.hicReason });
+      expect(sig.mock.calls[0][0].card?.tool).toBe(name);
+      const writes = () => invoked.filter((c) => c === "gsheets_append" || c === "hermes_schedule_add");
+      expect(writes()).toEqual([name === "gsheets_append" ? "gsheets_append" : "hermes_schedule_add"]);
+      await store.handleTool({ id: "h2", name, arguments: JSON.stringify(args) }, "m1", () => {}, HIC);
+      expect(sig).toHaveBeenCalledTimes(2);
+      expect(writes()).toHaveLength(1);
+    });
+  }
+});

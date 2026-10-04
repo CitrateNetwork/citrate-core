@@ -900,7 +900,7 @@ pub(crate) const RUN_LOG_FILE: &str = "daemon-runs.jsonl";
 pub(crate) const RUN_LOG_SCHEMA: u32 = 1;
 /// The most entries one read returns (the newest ones in the window).
 pub(crate) const RUN_LOG_READ_MAX: usize = 500;
-/// A run log larger than this is not read (a damaged or runaway file is reported, never parsed).
+/// The most bytes of the run log one read looks at (the newest ones; older runs are not read).
 pub(crate) const RUN_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One finished daemon run. No conversation content: the daemon's name (the member's own
@@ -942,23 +942,54 @@ pub(crate) fn append_run_log(path: &Path, entry: &RunLogEntry) -> Result<(), Str
 
 /// The entries that ended in `[from_ms, to_ms)`, oldest first, at most [`RUN_LOG_READ_MAX`]
 /// (the newest). A missing log is an empty list; a line that does not parse is skipped and
-/// counted in the second value, never guessed at.
+/// counted in the second value, never guessed at. A log larger than [`RUN_LOG_MAX_BYTES`] is
+/// read from its last [`RUN_LOG_MAX_BYTES`] only (the newest runs), so a long-lived log never
+/// stops the journal from reading today's runs.
 pub(crate) fn read_run_log(
     path: &Path,
     from_ms: u64,
     to_ms: u64,
 ) -> Result<(Vec<RunLogEntry>, u32), String> {
+    read_run_log_capped(path, from_ms, to_ms, RUN_LOG_MAX_BYTES)
+}
+
+/// [`read_run_log`] with the byte cap as a parameter (tests use a small one).
+pub(crate) fn read_run_log_capped(
+    path: &Path,
+    from_ms: u64,
+    to_ms: u64,
+    cap: u64,
+) -> Result<(Vec<RunLogEntry>, u32), String> {
+    use std::io::{Read, Seek, SeekFrom};
     let _guard = RUN_LOG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    match std::fs::metadata(path) {
-        Ok(m) if m.len() > RUN_LOG_MAX_BYTES => {
-            return Err("the daemon run log is larger than this app reads".into())
-        }
-        Ok(_) => {}
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
         Err(e) => return Err(format!("the daemon run log could not be read: {e}")),
+    };
+    let len = f
+        .metadata()
+        .map_err(|e| format!("the daemon run log could not be read: {e}"))?
+        .len();
+    let cut = len > cap;
+    if cut {
+        f.seek(SeekFrom::Start(len - cap))
+            .map_err(|e| format!("the daemon run log could not be read: {e}"))?;
     }
-    let text = std::fs::read_to_string(path)
+    let mut bytes = Vec::new();
+    f.take(cap)
+        .read_to_end(&mut bytes)
         .map_err(|e| format!("the daemon run log could not be read: {e}"))?;
+    // Reading from the middle of the file starts inside a line: drop that partial line.
+    let start = if cut {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1)
+    } else {
+        0
+    };
+    let text = String::from_utf8_lossy(&bytes[start..]);
     let mut out = Vec::new();
     let mut unreadable = 0u32;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
