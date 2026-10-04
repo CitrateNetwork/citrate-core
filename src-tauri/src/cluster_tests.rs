@@ -335,3 +335,47 @@ fn peer_dto_omits_member_for_a_member_identity() {
         r#"{"address":"aa","online":true}"#
     );
 }
+
+// HUP-S8.1 follow-on: the manager slot builds once, and can be emptied so the next call rebuilds
+// under a new mesh identity (no app restart).
+#[test]
+fn slot_builds_once_and_rebuilds_only_after_take_if() {
+    let slot: Slot<String> = Slot::new();
+    let mut builds = 0;
+    let a = slot
+        .get_or_try_insert(|| {
+            builds += 1;
+            Ok("comms-identity".to_string())
+        })
+        .expect("init");
+    let b = slot
+        .get_or_try_insert(|| {
+            builds += 1;
+            Ok("never built".to_string())
+        })
+        .expect("existing");
+    assert_eq!(builds, 1);
+    assert!(Arc::ptr_eq(&a, &b));
+
+    // Same identity: kept.
+    assert!(slot.take_if(|m| m != "comms-identity").is_none());
+    assert!(slot.get().is_some());
+    // Identity changed: taken out, and the next call builds the new one.
+    let old = slot.take_if(|m| m != "device-identity").expect("taken");
+    assert_eq!(*old, "comms-identity");
+    assert!(slot.get().is_none());
+    let c = slot
+        .get_or_try_insert(|| Ok("device-identity".to_string()))
+        .expect("rebuilt");
+    assert_eq!(*c, "device-identity");
+}
+
+#[test]
+fn a_failed_build_leaves_the_slot_empty() {
+    let slot: Slot<String> = Slot::new();
+    assert!(slot
+        .get_or_try_insert(|| Err("binary not bundled".to_string()))
+        .is_err());
+    assert!(slot.get().is_none());
+    assert!(slot.get_or_try_insert(|| Ok("ok".to_string())).is_ok());
+}

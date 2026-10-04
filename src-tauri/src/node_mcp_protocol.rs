@@ -66,6 +66,12 @@ pub trait NodeBackend: Send + Sync {
     fn groups(&self) -> Result<Value, String>;
     fn cluster_status(&self, group: &str) -> Result<Value, String>;
     fn cluster_peers(&self, group: &str) -> Result<Value, String>;
+    /// HUP-S8.3 (US-8.3): the group's members with their linked devices and live state. A backend
+    /// without a cluster daemon answers that the list is not available (never an invented list).
+    fn cluster_devices(&self, group: &str) -> Result<Value, String> {
+        let _ = group;
+        Err("the device list is not available on this node".to_string())
+    }
     /// Outstanding invites for a group, WITHOUT tokens or links.
     fn invites(&self, group: &str) -> Result<Value, String>;
     /// Open a SignatureCeremony for a transaction from this member's wallet. Signs nothing.
@@ -498,6 +504,10 @@ impl McpCore {
             "cluster_peers" => {
                 let g = tools::parse_group(tools::arg_str(args, "group")?)?;
                 self.backend.cluster_peers(&g)
+            }
+            "cluster_devices" => {
+                let g = tools::parse_group(tools::arg_str(args, "group")?)?;
+                self.backend.cluster_devices(&g)
             }
             "invites_list" => {
                 let g = tools::parse_group(tools::arg_str(args, "group")?)?;

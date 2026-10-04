@@ -6,8 +6,10 @@
 // roster of paired machines, or a live mDNS answer. Discovery is OFF until the member turns it on,
 // and is turned off again when the wizard closes. Tailscale is only ever read.
 //
-// Not in this WP (and the UI says so): the wallet-signed DeviceLink that puts a device under the
-// member on the cluster roster (S8.1, through the SignatureCeremony).
+// HUP-S8.1 follow-on: the wallet-signed DeviceLink (made on each machine through the
+// SignatureCeremony) travels with the pairing; each side stores the other's link only after core
+// checks its three signatures and that it names the same member. A `citrate://pair` deep link fills
+// the link in; nothing pairs until the member presses "Pair".
 // =====================================================================
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { FleetApi, QrMatrix, TsState } from "../bridge/tauri/fleet";
@@ -17,6 +19,7 @@ import {
   deviceRows,
   expiresIn,
   initialWizard,
+  linkNote,
   needsConnectivityHelp,
   reduce,
   roleLabel,
@@ -37,7 +40,7 @@ const STEP_TITLE: Record<Step, string> = {
 };
 
 /** A QR matrix as SVG rectangles (with the 4-module quiet zone). No image data, no innerHTML. */
-export function QrCode({ qr, px = 4 }: { qr: QrMatrix; px?: number }) {
+export function QrCode({ qr, px = 4, testId = "fleet-qr", label = "Pairing QR code" }: { qr: QrMatrix; px?: number; testId?: string; label?: string }) {
   const q = 4;
   const n = qr.size + q * 2;
   const cells: ReactNode[] = [];
@@ -47,7 +50,7 @@ export function QrCode({ qr, px = 4 }: { qr: QrMatrix; px?: number }) {
     }
   });
   return (
-    <svg data-testid="fleet-qr" role="img" aria-label="Pairing QR code" viewBox={`0 0 ${n} ${n}`} width={n * px} height={n * px} shapeRendering="crispEdges">
+    <svg data-testid={testId} role="img" aria-label={label} viewBox={`0 0 ${n} ${n}`} width={n * px} height={n * px} shapeRendering="crispEdges">
       <rect x={0} y={0} width={n} height={n} fill="#fff" />
       {cells}
     </svg>
@@ -74,6 +77,8 @@ export interface FleetWizardHandlers {
   onInspect(): void;
   onJoin(): void;
   onRename(label: string): void;
+  /** HUP-S8.1: open the wallet ceremony that links this machine. */
+  onLinkDevice?(): void;
 }
 
 function DeviceList({ state }: { state: WizardState }) {
@@ -89,9 +94,42 @@ function DeviceList({ state }: { state: WizardState }) {
           <span style={{ fontSize: 10.5, color: "var(--tx-3)", minWidth: 110, textAlign: "right" }}>
             {r.where}
             {r.addr ? ` · ${r.addr}` : ""}
+            {r.where === "paired" ? ` · ${linkNote(r.link)}` : ""}
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** HUP-S8.1: this machine's device link, on the pair step. */
+function LinkCard({ state, canLink, onLinkDevice }: { state: WizardState; canLink: boolean; onLinkDevice?: () => void }) {
+  const l = state.link;
+  if (!l) return null;
+  return (
+    <div className="surface" style={box} data-testid="fleet-link-card">
+      <strong style={{ fontSize: 13 }}>Your device link</strong>
+      {l.linked ? (
+        <p style={note}>
+          This machine is linked as <b>{l.label}</b>. Its link goes with the pairing, so your other machine lists it
+          under you after checking the signatures.
+        </p>
+      ) : (
+        <>
+          <p style={note}>
+            This machine is not linked yet. Link it first (your wallet signs a short text; no funds move) so the pairing
+            also adds it under you on your other machine. Pairing works without it, but the machines will not mesh under
+            their own keys.
+          </p>
+          {canLink && onLinkDevice && (
+            <div>
+              <button data-testid="fleet-link-device" className="btn btn-ghost btn-sm" disabled={state.busy} onClick={onLinkDevice}>
+                Link this machine
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -100,8 +138,9 @@ export function FleetWizardView({
   state,
   nowSecs,
   available,
+  canLink = false,
   ...h
-}: { state: WizardState; nowSecs: number; available: boolean } & FleetWizardHandlers) {
+}: { state: WizardState; nowSecs: number; available: boolean; canLink?: boolean } & FleetWizardHandlers) {
   const s = state;
   const [label, setLabel] = useState(s.probe?.device.label ?? "");
   const probedLabel = s.probe?.device.label;
@@ -228,6 +267,23 @@ export function FleetWizardView({
     case "pair":
       body = (
         <>
+          <LinkCard state={s} canLink={canLink} onLinkDevice={h.onLinkDevice} />
+          {s.offer?.installUrl && s.offer.installQr && (
+            <div className="surface" style={box}>
+              <strong style={{ fontSize: 13 }}>Citrate Core is not on the other machine yet?</strong>
+              <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <QrCode qr={s.offer.installQr} px={3} testId="fleet-install-qr" label="Install Citrate Core QR code" />
+                <p style={note}>
+                  Open{" "}
+                  <a href={s.offer.installUrl} target="_blank" rel="noreferrer">
+                    {s.offer.installUrl}
+                  </a>{" "}
+                  on that machine (or scan this code with a phone and send it the link). It picks the right installer for
+                  the machine. Then open the pairing link below there.
+                </p>
+              </div>
+            </div>
+          )}
           <div className="surface" style={box}>
             <strong style={{ fontSize: 13 }}>Add another machine</strong>
             <p style={note}>
@@ -275,6 +331,7 @@ export function FleetWizardView({
               </button>
             </div>
           </div>
+          {s.roster.length > 0 && <DeviceList state={s} />}
         </>
       );
       break;
@@ -329,8 +386,9 @@ export function FleetWizardView({
         <>
           <DeviceList state={s} />
           <p style={note}>
-            Paired machines are recorded on each machine. The wallet-signed device link that lists them under you in the
-            cluster roster is not issued yet; it arrives with per-device keys.
+            Paired machines are recorded on each machine. When both machines are linked, each one stores the other's
+            wallet-signed device link after checking it, so the cluster lists both under you with their own keys. A
+            machine that was not linked can be linked now and paired again.
           </p>
           <p style={note}>To share with other people, create a group and send invites in Groups.</p>
           <div>
@@ -368,12 +426,72 @@ export function FleetWizardView({
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The wired wizard. `api` is the Tauri bridge in the app; `available` is false outside it. */
-export function FleetWizard({ api, available }: { api: FleetApi; available: boolean }) {
+/** How often the issuing machine re-reads its roster while a pairing link is open. */
+const ROSTER_POLL_MS = 3_000;
+
+/**
+ * The wired wizard. `api` is the Tauri bridge in the app; `available` is false outside it.
+ * `initialLink` is a pairing link handed in by a `citrate://pair` deep link: the wizard probes this
+ * machine, fills the link in on the pair step, and reports it taken. It never joins by itself.
+ */
+export function FleetWizard({
+  api,
+  available,
+  initialLink,
+  onInitialLinkTaken,
+}: {
+  api: FleetApi;
+  available: boolean;
+  initialLink?: string | null;
+  onInitialLinkTaken?: () => void;
+}) {
   const [state, dispatch] = useReducer(reduce, undefined, initialWizard);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const discoveryOn = useRef(false);
   discoveryOn.current = state.discovery.enabled;
+
+  const readLinkStatus = async () => {
+    if (!api.linkStatus) return;
+    try {
+      dispatch({ type: "linkStatus", status: await api.linkStatus() });
+    } catch {
+      /* no device key / keyring locked: the card stays hidden rather than guessing */
+    }
+  };
+
+  // A deep-linked pairing link: probe, then fill it in on the pair step (the member presses Pair).
+  const takenLink = useRef<string | null>(null);
+  useEffect(() => {
+    if (!available || !initialLink || takenLink.current === initialLink) return;
+    takenLink.current = initialLink;
+    void (async () => {
+      dispatch({ type: "start" });
+      try {
+        const [probe, roster] = await Promise.all([api.probe(), api.roster()]);
+        dispatch({ type: "roster", devices: roster });
+        dispatch({ type: "probed", probe });
+        await readLinkStatus();
+      } catch (e) {
+        dispatch({ type: "failed", error: msg(e) });
+      }
+      dispatch({ type: "prefill", link: initialLink });
+      onInitialLinkTaken?.();
+    })();
+  }, [initialLink, available]);
+
+  // While a pairing link is open, refresh the list so the machine that joins shows up here too.
+  const offerOpenUntil = state.offer?.expiresAt ?? 0;
+  useEffect(() => {
+    if (!offerOpenUntil) return;
+    const t = setInterval(() => {
+      if (Math.floor(Date.now() / 1000) >= offerOpenUntil) return;
+      void api
+        .roster()
+        .then((devices) => dispatch({ type: "roster", devices }))
+        .catch(() => undefined);
+    }, ROSTER_POLL_MS);
+    return () => clearInterval(t);
+  }, [api, offerOpenUntil]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 15_000);
@@ -405,7 +523,16 @@ export function FleetWizard({ api, available }: { api: FleetApi; available: bool
         const [probe, roster] = await Promise.all([api.probe(), api.roster()]);
         dispatch({ type: "roster", devices: roster });
         dispatch({ type: "probed", probe });
+        await readLinkStatus();
       }),
+    onLinkDevice: api.linkThisDevice
+      ? () =>
+          void act(async () => {
+            const label = (state.probe?.device.label ?? "").trim().slice(0, 48);
+            await api.linkThisDevice?.(label);
+            await readLinkStatus();
+          })
+      : undefined,
     onGoto: (step) => {
       dispatch({ type: "goto", step });
       if (step === "connect") void loadTailscale(state.unreachable || needsConnectivityHelp(state));
@@ -444,5 +571,5 @@ export function FleetWizard({ api, available }: { api: FleetApi; available: bool
       }),
   };
 
-  return <FleetWizardView state={state} nowSecs={now} available={available} {...handlers} />;
+  return <FleetWizardView state={state} nowSecs={now} available={available} canLink={!!api.linkThisDevice} {...handlers} />;
 }

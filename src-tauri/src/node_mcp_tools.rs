@@ -187,6 +187,8 @@ pub const TOOLS: &[ToolDef] = &[
         description: "A group's cluster: peers online, total peers, and files shared over the mesh." },
     ToolDef { name: "cluster_peers", title: "Cluster peers", kind: ToolKind::Read, input_schema: group_schema,
         description: "The group's authorized cluster peers and whether each is connected." },
+    ToolDef { name: "cluster_devices", title: "Cluster devices", kind: ToolKind::Read, input_schema: group_schema,
+        description: "The group's members with each member's linked machines (label, index, when linked) and whether each machine is connected. Addresses only; no keys or signatures." },
     ToolDef { name: "invites_list", title: "Invites", kind: ToolKind::Read, input_schema: group_schema,
         description: "Outstanding invites this member created for a group (id, who it is for, when). Links and tokens are not returned." },
     ToolDef { name: "request_status", title: "Request status", kind: ToolKind::Read, input_schema: status_schema,

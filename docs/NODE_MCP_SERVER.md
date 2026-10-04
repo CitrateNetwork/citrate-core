@@ -62,8 +62,9 @@ address and balance), `citrate://addresses` (the address book this build ships w
 (eth_call), `estimate_gas`, `get_logs` (one contract, at most 5,000 blocks), `precompile_table`,
 `precompile_call` (read-only eth_call to a precompile in the table: 0x0107-0x0109, 0x0110,
 0x0111, 0x0120, 0x0130, 0x0200-0x0202), `wallet_info`, `address_book`, `memory_search`,
-`groups_list`, `cluster_status`, `cluster_peers`, `invites_list` (ids only, never links or
-tokens), `request_status`.
+`groups_list`, `cluster_status`, `cluster_peers`, `cluster_devices` (each member's linked
+machines and whether they are connected; added by HUP-S8.3 on `hup/n5-fleet-rest`),
+`invites_list` (ids only, never links or tokens), `request_status`.
 
 Chain reads come from this node when it is running and caught up, otherwise from the public
 40204 RPC; every answer says which (`source`). Only read-only JSON-RPC methods are ever called.

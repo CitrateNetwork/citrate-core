@@ -11,6 +11,10 @@ companions:
 
 # DeviceLink: the two-machine test
 
+> For builds that include `hup/n5-fleet-rest`, use [FLEET_MULTI_MACHINE_TEST.md](FLEET_MULTI_MACHINE_TEST.md)
+> instead: link codes travel with the pairing, no relaunch is needed, and it covers a second
+> member and a third machine. This page stays as the record of the fan-out 4 procedure.
+
 What it proves: two machines of ONE member mesh over the real transport under two distinct
 PeerIds, both are listed under the member, and revoking one evicts it while the other stays.
 

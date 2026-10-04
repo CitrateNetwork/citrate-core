@@ -143,6 +143,14 @@ impl NodeBackend for LiveBackend {
         Ok(json!({ "peers": p }))
     }
 
+    fn cluster_devices(&self, group: &str) -> Result<Value, String> {
+        let m = tauri::async_runtime::block_on(crate::cluster::cluster_devices(
+            self.app.clone(),
+            group.to_string(),
+        ))?;
+        Ok(json!({ "members": m }))
+    }
+
     fn invites(&self, group: &str) -> Result<Value, String> {
         let all = crate::invites::load(&self.app);
         Ok(json!({

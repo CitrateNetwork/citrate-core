@@ -2,7 +2,7 @@
 created: 2026-10-01T00:00:00Z
 branch: hup/n4-fleet-wizard
 author: Larry Klosowski + Claude Opus 5.5
-status: active
+status: active (updated on hup/n5-fleet-rest: link codes, install link, deep link)
 wp: HUP-S8.2, HUP-S8.3
 ---
 
@@ -48,9 +48,25 @@ Tailscale is connected, its tailnet IPv4 address).
 
 **Wire protocol.** While any link is open the issuing machine listens on an ephemeral TCP
 port on all interfaces. The new machine connects to each hint in turn (2.5 s each) and
-sends one JSON line `{v, link, deviceId, label, tier}`; the issuer answers one JSON line
-`{ok, error, deviceId, label, tier}`. Lines are capped at 4 KiB with 5 s read/write
-deadlines. The listener closes by itself once no link is open (all used or expired).
+sends one JSON line `{v, link, deviceId, label, tier, deviceLink?}`; the issuer answers one
+JSON line `{ok, error, deviceId, label, tier, deviceLink?}`. Lines are capped at 8 KiB (4 KiB
+before link codes travelled) with 5 s read/write deadlines. The listener closes by itself once
+no link is open (all used or expired).
+
+**DeviceLinks travel with the pairing (HUP-S8.1 follow-on, `hup/n5-fleet-rest`).** When a
+machine is linked, its link code (the same public text "Copy link code" gives) rides in
+`deviceLink`, both directions. The receiving machine verifies all three signatures and stores
+the link only when it names the same member (`device_link::import_paired_code`); another
+person's machine is reported, never added. Each paired machine's roster entry records the
+outcome (`deviceLink`: added, otherMember, refused) and the wizard shows it ("linked under
+you"). The pair step offers "Link this machine" (the wallet review, nothing moves) when this
+machine is not linked yet. The issuing machine's list refreshes every 3 s while a link is open.
+
+**Install link.** The pair step also shows `https://citrate.ai/download` and its QR code for a
+machine without Citrate Core (the page picks the installer for the platform).
+
+**Deep link.** `citrate://pair?...` opened from the OS lands on the Cluster screen with the
+wizard on the pair step and the link filled in; nothing pairs until the member presses "Pair".
 
 **Local roster.** `fleet.json` in the app data directory: this machine's random fleet id
 (not a key), its name, and the paired machines (`id, label, tier, role, addr, pairedAt,
@@ -93,11 +109,8 @@ Linux). It never runs `up`, `down`, `login` or `set`. States and the guidance sh
 
 ## Not in these WPs
 
-- The wallet-signed **DeviceLink** that lists a device under the member on the cluster
-  roster, and PeerId from a device key: HUP-S8.1 (through the SignatureCeremony). The
-  wizard says this is not issued yet.
-- Opening a `citrate://pair` link from the OS (deep link) routes nowhere yet; the member
-  pastes the link. QR scanning is by another device's camera app, which yields the link.
+- QR scanning is by another device's camera app, which yields the link (the app has no camera
+  scanner).
 - Group creation and invites stay in Groups (the wizard points there).
 - Cross-machine checks on Linux and Windows hardware (DGX ask on the S8 issue).
 

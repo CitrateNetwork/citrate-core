@@ -548,6 +548,12 @@ export interface AppState {
    * goal) and the raw link; Groups renders a banner and, for a full invite-token link, redeems it.
    * Cleared once consumed. Null when no deep-link is pending.
    */
+  /**
+   * HUP-S8.2 — a `citrate://pair?…` fleet pairing link opened from a QR code or another app
+   * (transient, not persisted). The Cluster surface's wizard fills it in; nothing pairs until the
+   * member presses "Pair". Null when none is pending.
+   */
+  pendingPairLink: string | null;
   pendingInvite: {
     url: string;
     clusterId?: string;
@@ -793,6 +799,7 @@ export function freshState(pid: string): AppState {
     peopleState: "loading",
     myGroups: [],
     pendingInvite: null,
+    pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",
     memDaemonError: null,
