@@ -404,7 +404,7 @@ export function createSidecarProvider(
 
   return {
     kind: "sidecar",
-    label: "Hermes (sidecar loop · preview)",
+    label: "local model · Hermes sidecar · agentic",
     send(opts: SendOpts) {
       const work = previous.catch(() => undefined).then(() => runTurn(opts));
       previous = work;
