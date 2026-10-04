@@ -150,3 +150,35 @@ describe("HUP-S6.7 contract channel: only the reader's own requests run", () => 
     await expect(b.relay("popout-browser").send({ v: 1, type: "contract.request", id: "x", op: "initial", args: {} })).rejects.toThrow(/only the Contract reader/);
   });
 });
+
+describe("HUP-S6.7 contract channel: answers cannot be guessed by another pop-out", () => {
+  it("a request id is random, so a forged answer for a guessed id resolves nothing", async () => {
+    const b = bus();
+    const relayed: { id: string }[] = [];
+    const relay = {
+      async send(m: unknown) {
+        relayed.push(m as { id: string });
+      },
+    };
+    const client = await createContractClient(b.transport("popout-contract"), relay, undefined, 60_000);
+    const first = client.call("codeSize", { target: "citrate", address: ADDR });
+    const second = client.call("codeSize", { target: "citrate", address: ADDR });
+    await Promise.resolve();
+    expect(relayed).toHaveLength(2);
+    for (const r of relayed) expect(r.id).toMatch(/^c[0-9a-f]{32}$/);
+    expect(relayed[0].id).not.toBe(relayed[1].id);
+    // Another pop-out (it may emit to the reader) answers with ids built the old, guessable way.
+    let settled = false;
+    void first.then(() => (settled = true), () => (settled = true));
+    for (const guess of [`c${Date.now().toString(36)}-1`, "c1", "1"]) {
+      await b.transport("popout-browser").send("popout-contract", { v: 1, type: "contract.response", id: guess, ok: true, result: 999 });
+    }
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    // The real answer, under the id the reader chose, still lands.
+    await b.transport("main").send("popout-contract", { v: 1, type: "contract.response", id: relayed[0].id, ok: true, result: 42 });
+    await expect(first).resolves.toBe(42);
+    client.close();
+    await expect(second).rejects.toThrow(/closed/);
+  });
+});

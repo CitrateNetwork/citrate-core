@@ -212,6 +212,12 @@ export interface ContractClient {
   close(): void;
 }
 
+function randomHex(bytes: number): string {
+  const b = new Uint8Array(bytes);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
 /** The pop-out's side: hand a request to the relay, resolve with the main window's answer. */
 export async function createContractClient(
   t: BridgeTransport,
@@ -220,7 +226,6 @@ export async function createContractClient(
   timeoutMs = 300_000,
 ): Promise<ContractClient> {
   let open = true;
-  let seq = 0;
   const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const unlisten = await t.listen((raw) => {
     if (!open) return;
@@ -241,7 +246,9 @@ export async function createContractClient(
   return {
     call(op, args) {
       if (!open) return Promise.reject(new Error("the Contract reader is closed"));
-      const id = `c${Date.now().toString(36)}-${++seq}`;
+      // Random, so another pop-out (every pop-out may emit to this window) cannot answer a
+      // request by guessing its id.
+      const id = "c" + randomHex(16);
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           pending.delete(id);
