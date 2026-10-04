@@ -28,6 +28,11 @@
 //! - The drip: `POST {faucet}/faucet`. Its JSON reply (`success`, `tx_hash`, `message`, and on a
 //!   refusal `code`, `limit`, `next_eligible_at`) is interpreted by [`interpret_reply`].
 //! - The member's choices and history: `<app data>/faucet-budget.json` (0600).
+//! - Decision records (ADR D4.3): every grant, revoke and faucet call becomes one record in
+//!   core's HIC outbox (`crate::hic_records`), which the nightly anchor batches. Kinds:
+//!   `faucet.budget_granted`, `faucet.budget_revoked` (the member's HIC-1 decisions) and
+//!   `faucet.topup` (`approved` when the member asked from the app, `auto_within_budget` (HIC-2)
+//!   when Hermes or an MCP client asked inside the member's budget).
 //!
 //! ## Honest states
 //! Disabled, wallet changed since the grant, no deploy started, balance already enough, waiting
@@ -65,6 +70,11 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// The in-app challenge window's label. No capability names it, so the faucet page it shows has
 /// no route to any app command (enforced by a test).
 pub const CHALLENGE_WINDOW_LABEL: &str = "faucet-challenge";
+/// The CAPTCHA provider's frame origin. The faucet page (citrate-chain `faucet/src/desktop.rs`,
+/// `TURNSTILE_ORIGIN`) embeds the challenge as an iframe from here, and the webview asks the
+/// navigation handler about every frame, so the challenge window must let exactly this origin
+/// load or the CAPTCHA never renders.
+pub const CHALLENGE_FRAME_ORIGIN: &str = "https://challenges.cloudflare.com";
 
 /// Decisions this build makes with placeholders, pending owner sign-off (ADR O-1..O-4).
 pub const PENDING_OWNER_SIGN_OFF: &[&str] = &[
@@ -498,6 +508,132 @@ pub fn interpret_reply(status: u16, body: &str, now_ms: u64) -> Interpreted {
 }
 
 // ---------------------------------------------------------------------------------------------
+// decision records (ADR D4.3)
+
+/// Where faucet decisions are recorded: core's HIC outbox in the app, the same outbox type on a
+/// scratch folder in tests.
+pub trait DecisionSink {
+    /// Whether a record could be written now. Checked before anything happens (fail closed).
+    fn check_writable(&self) -> Result<(), String>;
+    /// Write one record; returns its id.
+    fn record(&self, ev: crate::hic_records::HicEvent) -> Result<u64, String>;
+}
+
+impl DecisionSink for crate::hic_records::HicOutbox {
+    fn check_writable(&self) -> Result<(), String> {
+        crate::hic_records::HicOutbox::check_writable(self)
+    }
+    fn record(&self, ev: crate::hic_records::HicEvent) -> Result<u64, String> {
+        self.append(ev, crate::hic_records::now_ms())
+            .map(|r| r.record_id)
+    }
+}
+
+/// The member turned the in-app faucet on (HIC-1).
+pub fn budget_granted_event(b: &FaucetBudget) -> crate::hic_records::HicEvent {
+    crate::hic_records::HicEvent {
+        kind: "faucet.budget_granted".to_string(),
+        decision: "approved".to_string(),
+        subject: crate::hic_records::fit(
+            &format!(
+                "faucet budget for {}: {} top-up per {} h, deploy gas only",
+                b.wallet,
+                b.max_per_window,
+                b.window_ms / 3_600_000
+            ),
+            300,
+        ),
+        reason: "the member turned the in-app faucet on in Settings, Budgets (HIC-1)".to_string(),
+        outcome: Some("completed".to_string()),
+        outcome_detail: Some("saved to the faucet settings file".to_string()),
+        evidence: Vec::new(),
+    }
+}
+
+/// The member turned the in-app faucet off (HIC-1).
+pub fn budget_revoked_event(wallet: &str) -> crate::hic_records::HicEvent {
+    crate::hic_records::HicEvent {
+        kind: "faucet.budget_revoked".to_string(),
+        decision: "approved".to_string(),
+        subject: crate::hic_records::fit(&format!("faucet budget for {wallet}"), 300),
+        reason: "the member turned the in-app faucet off in Settings, Budgets".to_string(),
+        outcome: Some("completed".to_string()),
+        outcome_detail: Some("removed from the faucet settings file".to_string()),
+        evidence: Vec::new(),
+    }
+}
+
+/// One faucet call. The member's own click is `approved` (HIC-1); a call from Hermes or an MCP
+/// client runs inside the member's budget, `auto_within_budget` (HIC-2).
+pub fn topup_event(e: &LedgerEntry) -> crate::hic_records::HicEvent {
+    let by_member = e.origin == "local-user";
+    let outcome = match e.outcome {
+        Outcome::Sent => "completed",
+        Outcome::Unknown => "outcome_unknown",
+        Outcome::RateLimited
+        | Outcome::ChallengeRequired
+        | Outcome::Refused
+        | Outcome::Unreachable => "failed",
+    };
+    let label = match e.outcome {
+        Outcome::Sent => "sent",
+        Outcome::RateLimited => "rate_limited",
+        Outcome::ChallengeRequired => "challenge_required",
+        Outcome::Refused => "refused",
+        Outcome::Unreachable => "unreachable",
+        Outcome::Unknown => "unknown",
+    };
+    let mut detail = format!("{label}: {}", e.message);
+    if let Some(t) = e.next_eligible_at_ms {
+        detail = format!("{detail} (next eligible at {t} ms)");
+    }
+    let evidence = e
+        .tx_hash
+        .as_ref()
+        .map(|h| {
+            vec![crate::hic_records::HicEvidence {
+                kind: "tx".to_string(),
+                uri: format!("eip155:40204/tx/{h}"),
+                digest: Some(h.clone()),
+            }]
+        })
+        .unwrap_or_default();
+    crate::hic_records::HicEvent {
+        kind: "faucet.topup".to_string(),
+        decision: if by_member {
+            "approved"
+        } else {
+            "auto_within_budget"
+        }
+        .to_string(),
+        subject: crate::hic_records::fit(
+            &format!(
+                "deploy-gas top-up for {} (init code {}, need {} wei, balance {} wei)",
+                e.wallet,
+                e.initcode_hash.as_deref().unwrap_or("unknown"),
+                e.need_wei.as_deref().unwrap_or("unknown"),
+                e.balance_wei.as_deref().unwrap_or("unknown"),
+            ),
+            300,
+        ),
+        reason: crate::hic_records::fit(
+            &if by_member {
+                "the member asked the faucet from the app (HIC-1)".to_string()
+            } else {
+                format!(
+                    "asked by {} inside the member's faucet budget (HIC-2)",
+                    e.origin
+                )
+            },
+            400,
+        ),
+        outcome: Some(outcome.to_string()),
+        outcome_detail: Some(crate::hic_records::fit(&detail, 300)),
+        evidence,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // I/O seams
 
 /// The HTTP calls this module makes; tests script them, production uses `ureq`.
@@ -754,6 +890,7 @@ pub struct RequestCtx<'a> {
 /// held throughout, so a second caller sees the first one's entry.
 pub fn request(
     store: &FaucetStore,
+    decisions: &dyn DecisionSink,
     http: &dyn FaucetHttp,
     chain: &dyn ChainReads,
     ctx: &RequestCtx<'_>,
@@ -804,6 +941,10 @@ pub fn request(
             faucet_page: page,
         });
     }
+    // Fail closed: no faucet call whose decision record could not be written (ADR D4.3).
+    decisions.check_writable().map_err(|e| {
+        format!("the faucet was not asked: the decision record cannot be written ({e})")
+    })?;
     let reply = http.post_json(
         &format!("{}/faucet", ctx.base),
         &json!({ "address": wallet }),
@@ -817,7 +958,7 @@ pub fn request(
             next_eligible_at_ms: None,
         },
     };
-    book.append_entry(LedgerEntry {
+    let entry = LedgerEntry {
         at_ms: ctx.now_ms,
         wallet: wallet.clone(),
         origin: clean_message(ctx.origin),
@@ -828,11 +969,18 @@ pub fn request(
         tx_hash: interpreted.tx_hash.clone(),
         message: interpreted.message.clone(),
         next_eligible_at_ms: interpreted.next_eligible_at_ms,
-    });
+    };
+    let ev = topup_event(&entry);
+    book.append_entry(entry);
     store.save(&book)?;
+    // The call already happened, so a failed record write cannot undo it: say so plainly.
+    let mut message = outcome_message(&interpreted, &page);
+    if let Err(e) = decisions.record(ev) {
+        message = format!("{message} The decision record could not be written ({e}).");
+    }
     Ok(FaucetResult {
         state: gate_state(&Gate::Go).to_string(),
-        message: outcome_message(&interpreted, &page),
+        message,
         gate: Gate::Go,
         outcome: Some(interpreted.outcome),
         tx_hash: interpreted.tx_hash,
@@ -844,10 +992,20 @@ pub fn request(
 }
 
 /// Grant the budget for `wallet` (the member's HIC-1 step; the panel confirms first).
-pub fn grant(store: &FaucetStore, wallet: &str, now_ms: u64) -> Result<FaucetBudget, String> {
+/// Fail closed (ADR D4.3): a grant whose decision record cannot be written is undone and refused.
+pub fn grant(
+    store: &FaucetStore,
+    decisions: &dyn DecisionSink,
+    wallet: &str,
+    now_ms: u64,
+) -> Result<FaucetBudget, String> {
     let wallet = normalize_address(wallet)?;
     let _g = store.guard();
     let mut book = store.load()?;
+    decisions.check_writable().map_err(|e| {
+        format!("the faucet was not turned on: the decision record cannot be written ({e})")
+    })?;
+    let before = book.budget.clone();
     let b = FaucetBudget {
         wallet,
         granted_at_ms: now_ms,
@@ -856,15 +1014,29 @@ pub fn grant(store: &FaucetStore, wallet: &str, now_ms: u64) -> Result<FaucetBud
     };
     book.budget = Some(b.clone());
     store.save(&book)?;
+    if let Err(e) = decisions.record(budget_granted_event(&b)) {
+        book.budget = before;
+        store.save(&book)?;
+        return Err(format!(
+            "the faucet was not turned on: the decision record could not be written ({e})"
+        ));
+    }
     Ok(b)
 }
 
-/// Revoke the budget at once. The history stays.
-pub fn revoke(store: &FaucetStore) -> Result<(), String> {
+/// Revoke the budget at once. The history stays. Turning the faucet off is never blocked by the
+/// decision record (conservative placeholder, pending owner sign-off): the revoke happens, and a
+/// record that cannot be written is reported back.
+pub fn revoke(store: &FaucetStore, decisions: &dyn DecisionSink) -> Result<(), String> {
     let _g = store.guard();
     let mut book = store.load()?;
-    if book.budget.take().is_some() {
+    if let Some(b) = book.budget.take() {
         store.save(&book)?;
+        decisions
+            .record(budget_revoked_event(&b.wallet))
+            .map_err(|e| {
+                format!("the faucet is off, but the decision record could not be written ({e})")
+            })?;
     }
     Ok(())
 }
@@ -966,6 +1138,18 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Core's HIC outbox, as the faucet's decision sink (records exported to Hermes after each one).
+struct AppDecisions<'a>(&'a tauri::AppHandle);
+
+impl DecisionSink for AppDecisions<'_> {
+    fn check_writable(&self) -> Result<(), String> {
+        crate::hic_records::outbox_for_app(self.0)?.check_writable()
+    }
+    fn record(&self, ev: crate::hic_records::HicEvent) -> Result<u64, String> {
+        crate::hic_records::record_for_app(self.0, ev)
+    }
+}
+
 fn base_url() -> String {
     faucet_base_url(std::env::var(FAUCET_URL_ENV).ok().as_deref())
 }
@@ -1004,7 +1188,7 @@ pub fn request_for_app(
         base: &base_url(),
         now_ms: now_ms(),
     };
-    request(&st.0, &UreqFaucet, &RpcChainReads, &ctx)
+    request(&st.0, &AppDecisions(app), &UreqFaucet, &RpcChainReads, &ctx)
 }
 
 /// Blocking body of [`faucet_status`].
@@ -1031,7 +1215,7 @@ pub fn faucet_grant_sync(app: tauri::AppHandle) -> Result<FaucetBudget, String> 
     let st = tauri::Manager::try_state::<FaucetState>(&app)
         .ok_or("internal: faucet state unavailable")?;
     let wallet = wallet_of(&app)?;
-    grant(&st.0, &wallet, now_ms())
+    grant(&st.0, &AppDecisions(&app), &wallet, now_ms())
 }
 
 /// **Command.** The member turns the in-app faucet on for their current wallet (the HIC-1 grant;
@@ -1045,7 +1229,7 @@ pub async fn faucet_grant(app: tauri::AppHandle) -> Result<FaucetBudget, String>
 pub fn faucet_revoke_sync(app: tauri::AppHandle) -> Result<(), String> {
     let st = tauri::Manager::try_state::<FaucetState>(&app)
         .ok_or("internal: faucet state unavailable")?;
-    revoke(&st.0)
+    revoke(&st.0, &AppDecisions(&app))
 }
 
 /// **Command.** Turn the in-app faucet off at once.
@@ -1068,6 +1252,23 @@ pub async fn faucet_request(
 pub fn same_origin(url: &url::Url, base: &str) -> bool {
     match url::Url::parse(base) {
         Ok(b) => url.origin() == b.origin(),
+        Err(_) => false,
+    }
+}
+
+/// What the challenge window may load. The webview asks about every frame, not only the top one,
+/// so this is: the faucet's own origin, the CAPTCHA provider's frame origin
+/// ([`CHALLENGE_FRAME_ORIGIN`], exact), and the empty documents a page uses to start an iframe
+/// (`about:blank`, `about:srcdoc`). Nothing else. The window has no capability either way.
+pub fn challenge_window_may_load(url: &url::Url, base: &str) -> bool {
+    if same_origin(url, base) {
+        return true;
+    }
+    if url.scheme() == "about" {
+        return matches!(url.path(), "blank" | "srcdoc");
+    }
+    match url::Url::parse(CHALLENGE_FRAME_ORIGIN) {
+        Ok(c) => url.origin() == c.origin(),
         Err(_) => false,
     }
 }
@@ -1100,7 +1301,7 @@ pub async fn faucet_open_challenge(app: tauri::AppHandle) -> Result<String, Stri
     .inner_size(480.0, 640.0)
     .center()
     .focused(true)
-    .on_navigation(move |u| same_origin(u, &nav_base))
+    .on_navigation(move |u| challenge_window_may_load(u, &nav_base))
     .build()
     .map_err(|e| format!("the faucet window could not open ({e})"))?;
     Ok(page)

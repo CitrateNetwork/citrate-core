@@ -1,6 +1,7 @@
 ---
 created: 2026-10-01
 branch: hup/n5-chain-faucet
+updated: 2026-10-04
 author: Larry Klosowski + Claude Opus 5.5
 status: implemented (HUP-S6.5); off by default; faucet ADR proposed, O-1 to O-4 pending owner sign-off
 ---
@@ -43,6 +44,20 @@ which takes only the deploy's init code hash.
 5. One unsigned `POST {faucet}/faucet {"address": <wallet>}`. The faucet signs and pays the drip
    with its own key. Core signs nothing; no sidecar holds a key.
 6. The outcome is recorded in `<app data>/faucet-budget.json` (0600) and shown.
+7. Decision records (ADR D4.3): turning the faucet on or off, and every call to the faucet,
+   becomes one record in core's HIC outbox, which goes to Hermes's decision records and the
+   nightly anchor (`hic_records.rs`). Kinds: `faucet.budget_granted` and
+   `faucet.budget_revoked` (the member's HIC-1 decisions), `faucet.topup` (`approved` when the
+   member clicked in the app, `auto_within_budget`, HIC-2, when Hermes or an MCP client asked).
+   Fail closed: when the outbox cannot take a record, the faucet is not asked and the switch is
+   not turned on. Turning the switch off is never blocked; a record that cannot be written then
+   is reported. The sidecar accepts these kinds from citrate-agent-runtime
+   `hup/n5-chain-faucet` on; merge that first, or an older sidecar refuses the export batch.
+
+The in-app challenge window lets exactly three things load: the faucet's own origin, the CAPTCHA
+provider's frame origin (`https://challenges.cloudflare.com`), and the empty documents a page uses
+to start an iframe. The webview asks about every frame, so without the provider's origin the
+CAPTCHA would never render. The window has no capability.
 
 Honest outcomes: `sent`, `rate_limited` (with the next time), `challenge_required` (CAPTCHA),
 `refused` (with the faucet's reason), `unreachable`, `unknown` (counted against the window).
@@ -67,6 +82,15 @@ CORS. Each is off unless the operator sets it. See `faucet/README.md` there.
 | O-3 CAPTCHA | Solved by the member in an in-app window on the faucet's own page. |
 | O-4 placement | Settings, Budgets; off by default. |
 | Window and cap | 24 hours, one request (placeholders). |
+
+## Local end-to-end run
+
+`scripts/e2e-faucet.sh --chain <citrate-chain checkout>` builds `citrate-faucet`, starts a
+throwaway anvil (chain id 40204), makes a throwaway faucet key at run time, and runs core's
+`e2e_faucet_binary_drips_once_then_both_sides_report_the_next_time` test against the real
+faucet binary: a drip lands on the member's wallet, a second ask is `not_needed`, the faucet's
+`/eligibility` reports about 24 hours, a second wallet from the same IP is refused with a next
+time and not retried, and both calls are in the decision records. Nothing touches chain 40204.
 
 ## Operator step (not done by this build)
 
