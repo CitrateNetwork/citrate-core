@@ -335,6 +335,10 @@ export interface MemoryHit {
   kind: string;
   title: string;
   status?: string;
+  /** HUP-S3.1: `<repo>:<path>[#<anchor>]` of a document passage (search with `passages`). */
+  cite?: string;
+  /** HUP-S3.1: the hit's text (search with `passages`). */
+  passage?: string;
 }
 export interface MemoryResult {
   tenant: string;
@@ -409,6 +413,9 @@ export interface KnowledgeImportReport {
   edgesAdded: number;
   tenantsImported: string[];
   tenantsSkipped: string[];
+  /** HUP-S3.1: nodes embedded on this machine, and nodes that took the release's precomputed vectors. */
+  nodesEmbedded?: number;
+  vectorsReused?: number;
 }
 
 export interface MemoryDomain {
@@ -417,7 +424,8 @@ export interface MemoryDomain {
   stop(): Promise<void>;
   assert(fact: string): Promise<"approved" | "declined">;
   recall(tenant: string, budget?: number): Promise<MemoryResult>;
-  search(tenant: string, query: string, budget?: number): Promise<MemoryResult>;
+  /** `opts.passages` (HUP-S3.1): each hit also carries its text and citation. */
+  search(tenant: string, query: string, budget?: number, opts?: { passages?: boolean }): Promise<MemoryResult>;
   neighbors(tenant: string, idPrefix: string, budget?: number): Promise<MemoryNeighbor[]>;
   /** Recall the personal + chain-state tenants for the Storage constellation. */
   constellation(budget?: number): Promise<MemoryResult[]>;
@@ -854,6 +862,15 @@ export interface DeviceLinkView {
   thisDevice: boolean;
 }
 /** HUP-S8.1: this machine's device address (null before its key exists) + known links. */
+/** HUP-S8.1: a prepared device removal (mirrors Rust `device_link::RevokePrepared`). */
+export interface DeviceRevokePrepared {
+  confirmId: string;
+  /** Canonical device address (lowercase hex, no 0x). */
+  device: string;
+  statement: string;
+  confirmBy: number;
+}
+
 export interface DeviceLinks {
   thisDevice: string | null;
   links: DeviceLinkView[];
@@ -882,8 +899,13 @@ export interface ClusterDomain {
   linkDeviceApprove(id: string, rawAck: boolean): Promise<DeviceLinks>;
   /** HUP-S8.1: the person declined; nothing was signed. */
   linkDeviceReject(id: string): Promise<void>;
-  /** HUP-S8.1: revoke a device of yours (permanent for that device key). */
-  revokeDevice(device: string): Promise<DeviceLinks>;
+  /**
+   * HUP-S8.1: step 1 of removing a device of yours: what you confirm, and a one-shot id core
+   * minted for that device (valid for two minutes). Signs nothing.
+   */
+  revokeDevicePrepare(device: string): Promise<DeviceRevokePrepared>;
+  /** HUP-S8.1: you confirmed: revoke the device that `confirmId` names (permanent for that key). */
+  revokeDevice(confirmId: string): Promise<DeviceLinks>;
   /** HUP-S8.1: this machine's signed link as a code to paste on another of YOUR devices. */
   exportDeviceLink(): Promise<string>;
   /** HUP-S8.1: add another of your own devices from its code (verified before it is stored). */
@@ -1353,6 +1375,8 @@ export interface SessionEventsPage {
   events: { seq: number; event: Record<string, unknown> }[];
   lastSeq: number;
   busy: boolean;
+  /** HUP-S1.1: core-hosted calls the session is still waiting on (newer sidecars only). */
+  pendingCoreCalls?: string[];
 }
 
 // ── Local instruction-skills (Hermes "write & run skills"). A skill is a markdown playbook the agent
@@ -1377,6 +1401,15 @@ export interface AgentSkillsDomain {
   read(name: string): Promise<string>;
   /** Remove an authored skill (idempotent). */
   remove(name: string): Promise<void>;
+  /** HUP-S3.2: convert skills saved in the older flat-file format to SKILL.md, and say what happened. */
+  migrate(): Promise<SkillMigrationReport>;
+}
+/** HUP-S3.2: what converting older flat-file skills to SKILL.md did (skills_local.rs). */
+export interface SkillMigrationReport {
+  /** Slugs now saved as SKILL.md skills. */
+  converted: string[];
+  /** Old files left in place, each with the reason. */
+  failed: { file: string; reason: string }[];
 }
 
 // ── Social identity (Connections · social discovery). Privacy model: ADR-2026-08-30. ──
@@ -1787,6 +1820,14 @@ export interface EscalationQuote {
   expiresMs: number;
 }
 
+/** Core's one-shot confirmation id for one shown quote and price. */
+export interface EscalationConfirmation {
+  confirmId: string;
+  quoteId: string;
+  costMicros: number;
+  expiresMs: number;
+}
+
 export interface EscalationRun {
   escalationId: string;
   content: string;
@@ -1800,9 +1841,50 @@ export interface EscalationRun {
 }
 
 export interface EscalationRegistryStatus {
+  /** The HIC-1 registry route can run (an InferenceRouter is pinned for 40204). */
   enabled: boolean;
   reason: string;
   missing: string[];
+  /** The pinned InferenceRouter, when there is one. */
+  router: string | null;
+  /** How a registry request is paid: native SALT, one approval per request. */
+  payment: "native-salt-hic1";
+  /** Budgeted x402 payment (ADR B-2). Off in this build. */
+  x402Enabled: boolean;
+}
+
+/** HUP-S1.5 registry quote. Mirrors Rust `inference_router::RegistryQuote`. Amounts are wei strings. */
+export interface EscalationRegistryQuote {
+  router: string;
+  modelHash: string;
+  maxPriceWei: string;
+  maxPriceSalt: string;
+  inputBytes: number;
+  eligibleProviders: number;
+  cheapestMinPriceWei: string | null;
+  /** Always true: the router stores the input on chain. */
+  inputIsPublic: boolean;
+}
+
+export type EscalationRouterStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
+
+/** HUP-S1.5 one router request. Mirrors Rust `inference_router::RegistryResultView`. */
+export interface EscalationRegistryResult {
+  requestId: number;
+  status: EscalationRouterStatus;
+  modelHash: string;
+  pricePaidWei: string;
+  /** The provider's answer: untrusted data. */
+  output: string | null;
+  outputTruncated: boolean;
+  outputIsHex: boolean;
+}
+
+/** HUP-S1.5 the member's router requests. Mirrors Rust `inference_router::RegistryMineView`. */
+export interface EscalationRegistryMine {
+  router: string;
+  requestIds: number[];
+  refundOwedWei: string;
 }
 
 export interface EscalationDomain {
@@ -1813,9 +1895,27 @@ export interface EscalationDomain {
   budget(): Promise<EscalationBudget>;
   setBudget(capMicros: number): Promise<EscalationBudget>;
   quote(endpointId: string, prompt: string, system?: string | null, maxTokens?: number | null): Promise<EscalationQuote>;
-  /** Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. */
-  run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean): Promise<EscalationRun>;
+  /**
+   * The member's approval card is opening for a shown quote: core mints the one-shot confirmation
+   * id a confirmed run needs. A run cannot be approved by a flag.
+   */
+  confirmPrepare(quoteId: string, shownCostMicros: number): Promise<EscalationConfirmation>;
+  /**
+   * Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. `confirmId`
+   * is the id from `confirmPrepare` once the member approved, else null (within budget only).
+   */
+  run(quoteId: string, shownCostMicros: number, confirmId: string | null, tainted: boolean): Promise<EscalationRun>;
   registryStatus(): Promise<EscalationRegistryStatus>;
+  /** Quote a registry request from the model's live route (off until a router is pinned). */
+  registryQuote(modelHash: string, input: string, maxPriceWei: string): Promise<EscalationRegistryQuote>;
+  /** Raise the HIC-1 approval (a pending signature ceremony) for one registry request. */
+  registryRequest(modelHash: string, input: string, maxPriceWei: string, shownMaxPriceWei: string): Promise<void>;
+  registryResult(requestId: number): Promise<EscalationRegistryResult>;
+  registryMine(): Promise<EscalationRegistryMine>;
+  /** Raise the HIC-1 approval to withdraw the refund the router credited back. */
+  registryClaimRefund(): Promise<void>;
+  /** Raise the HIC-1 approval to expire one of your requests its provider never answered (after 1 hour). */
+  registryExpire(requestId: number): Promise<void>;
 }
 
 // ---- HUP-S5.5 / S6.1 — signed first-run components. Mirrors Rust `components.rs`. ----

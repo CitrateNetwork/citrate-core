@@ -373,3 +373,69 @@ fn a_gallery_file_is_shown_only_if_it_is_still_a_real_image() {
     assert!(data_url_for(&p).is_err());
     assert!(data_url_for(&dir.join("missing.png")).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_link_in_place_of_a_gallery_file_is_never_read() {
+    let dir = tmp();
+    let secret = dir.join("secret.png");
+    std::fs::write(&secret, png()).unwrap();
+    // A symlink where the gallery file was.
+    let sym = dir.join("sym.png");
+    std::os::unix::fs::symlink(&secret, &sym).unwrap();
+    assert!(data_url_for(&sym).is_err());
+    assert!(read_gallery_file(&sym).is_err());
+    // A hard link: a second name for a file somewhere else.
+    let hard = dir.join("hard.png");
+    std::fs::hard_link(&secret, &hard).unwrap();
+    assert!(data_url_for(&hard).is_err());
+    std::fs::remove_file(&hard).unwrap();
+    // Back to one name: readable.
+    assert!(data_url_for(&secret).is_ok());
+}
+
+fn item_at(path: &std::path::Path, grant_id: &str) -> GalleryItem {
+    GalleryItem {
+        id: "m1".into(),
+        kind: MediaKind::Image,
+        path: path.display().to_string(),
+        grant_id: grant_id.into(),
+        prompt: "p".into(),
+        route: "local".into(),
+        destination: "this device".into(),
+        model: "m".into(),
+        created_at: NOW,
+        bytes: 10,
+        mime: "image/png".into(),
+        cost: "No charge".into(),
+        usage: None,
+    }
+}
+
+#[test]
+fn a_gallery_image_is_read_only_while_its_folder_is_still_granted() {
+    let dir = tmp();
+    let p = dir.join("a.png");
+    std::fs::write(&p, png()).unwrap();
+    let live = state(vec![grant("1", &dir, Access::Write, GrantKind::Folder)]);
+    assert!(gallery_read_allowed(&live, &item_at(&p, "1"), NOW).is_ok());
+    let mut revoked_g = grant("1", &dir, Access::Write, GrantKind::Folder);
+    revoked_g.revoked_at = Some(NOW - 1);
+    let revoked = state(vec![revoked_g]);
+    assert!(gallery_read_allowed(&revoked, &item_at(&p, "1"), NOW).is_err());
+    // The item's path must be inside the grant it names.
+    let other = tmp();
+    let q = other.join("b.png");
+    std::fs::write(&q, png()).unwrap();
+    assert!(gallery_read_allowed(&live, &item_at(&q, "1"), NOW).is_err());
+}
+
+#[test]
+fn a_write_folder_in_a_protected_location_is_never_a_target() {
+    let base = tmp();
+    let protected = base.join(".ssh");
+    std::fs::create_dir_all(&protected).unwrap();
+    let st = state(vec![grant("1", &protected, Access::Write, GrantKind::Folder)]);
+    assert!(target_root(&st, "1", NOW).is_err());
+    assert!(write_targets(&st, NOW).is_empty());
+}

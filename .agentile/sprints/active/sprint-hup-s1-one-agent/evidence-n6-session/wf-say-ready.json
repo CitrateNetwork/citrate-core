@@ -1,0 +1,1 @@
+{"id": "say-ready", "steps": [{"id": "ready", "instruction": "Without calling any tool, reply with the single word READY.", "max_attempts": 2, "verifiers": [{"kind": "answer_contains", "text": "READY"}, {"kind": "tool_not_called", "tool": "chain_head"}]}]}

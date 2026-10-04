@@ -79,6 +79,57 @@ const RESOLUTION_SCHEMA: &str = "citrate.learn.resolve.v1";
 /// Longest CID accepted from the IPFS node for a skill pin.
 const MAX_CID_LEN: usize = 128;
 
+/// HUP-S3.2: the `skills.lock` shipped beside the reviewed third-party skills (sidecar env).
+pub const SKILLS_LOCK_ENV: &str = "CITRATE_HERMES_SKILLS_LOCK";
+/// HUP-S3.2: the staged reviewed third-party skills, `<root>/<source>/<path>/` (sidecar env).
+pub const SKILLS_THIRD_PARTY_ENV: &str = "CITRATE_HERMES_SKILLS_THIRD_PARTY";
+
+/// HUP-S3.2 (US-3.2 AC2): every place the sidecar's one SKILL.md loader reads skills from, besides
+/// the learned-skills folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSources {
+    /// The member's saved skills (`skill_write`, the Agent surface): `skills_local.rs`.
+    pub authored: PathBuf,
+    /// Citrate's own bundled `SKILL.md` skills (resource `skills/`).
+    pub first_party: Option<PathBuf>,
+    /// The reviewed third-party skills: (`skills.lock`, staged tree) (resource `skills-bundle/`).
+    pub third_party: Option<(PathBuf, PathBuf)>,
+}
+
+/// The sidecar env for every skill source, in precedence order (first wins): the learned skills,
+/// the member's saved skills, Citrate's bundled skills, then the reviewed third-party skills (a
+/// separate locked source the sidecar checks file by file against `skills.lock`). A bundled
+/// source that is not staged in this build is left out rather than pointing at nothing.
+pub fn skills_env(learned: Option<&Path>, s: &SkillSources) -> Vec<(String, String)> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(l) = learned {
+        dirs.push(l.to_path_buf());
+    }
+    dirs.push(s.authored.clone());
+    if let Some(fp) = s.first_party.as_ref().filter(|p| p.is_dir()) {
+        dirs.push(fp.clone());
+    }
+    // A path the platform list cannot carry (it holds the separator) is left out.
+    dirs.retain(|d| std::env::join_paths([d]).is_ok());
+    let mut env = Vec::new();
+    if let Ok(joined) = std::env::join_paths(&dirs) {
+        env.push((SKILLS_ENV.to_string(), joined.to_string_lossy().to_string()));
+    }
+    if let Some((lock, root)) = &s.third_party {
+        if lock.is_file() && root.is_dir() {
+            env.push((
+                SKILLS_LOCK_ENV.to_string(),
+                lock.to_string_lossy().to_string(),
+            ));
+            env.push((
+                SKILLS_THIRD_PARTY_ENV.to_string(),
+                root.to_string_lossy().to_string(),
+            ));
+        }
+    }
+    env
+}
+
 /// The sidecar env for a learn folder and a skills folder.
 pub fn learn_env(learn_dir: &Path, skills_dir: &Path) -> Vec<(String, String)> {
     let skills = skills_dir.to_string_lossy().to_string();
@@ -389,7 +440,7 @@ impl Ledger {
         Ok(Ledger { entries: f.entries })
     }
 
-    /// Write the ledger atomically (temporary file, flush, rename).
+    /// Write the ledger atomically (owner-only temporary file, flush, rename).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let body = serde_json::to_vec_pretty(&LedgerFile {
             schema: LEDGER_SCHEMA.into(),
@@ -403,7 +454,10 @@ impl Ledger {
         let tmp = dir.join(".learned-memories.json.tmp");
         let res = (|| -> std::io::Result<()> {
             use std::io::Write as _;
-            let mut f = std::fs::File::create(&tmp)?;
+            // Owner-only from creation: the ledger holds the member's learned memories.
+            // A leftover temporary file could carry a looser mode; start from a new one.
+            let _ = std::fs::remove_file(&tmp);
+            let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
             f.write_all(&body)?;
             f.sync_all()?;
             std::fs::rename(&tmp, path)
@@ -906,6 +960,62 @@ fn lower_addr(v: &Value, k: &str) -> Result<String, String> {
     }
 }
 
+/// Longest skill name, version, manifest CID or description accepted for publishing (bytes).
+const MAX_PUBLISH_FIELD: usize = 2_000;
+/// Most tags accepted for publishing.
+const MAX_PUBLISH_TAGS: usize = 16;
+
+fn abi_word(n: usize) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[24..].copy_from_slice(&(n as u64).to_be_bytes());
+    w
+}
+
+fn abi_string(s: &str) -> Vec<u8> {
+    let mut out = abi_word(s.len()).to_vec();
+    out.extend_from_slice(s.as_bytes());
+    out.resize(32 + s.len().div_ceil(32) * 32, 0);
+    out
+}
+
+/// The canonical ABI encoding of `registerSkill(name, version, manifestCID, description, tags)`,
+/// selector included.
+pub fn encode_register_skill(
+    name: &str,
+    version: &str,
+    manifest_cid: &str,
+    description: &str,
+    tags: &[String],
+) -> Vec<u8> {
+    let mut arr = abi_word(tags.len()).to_vec();
+    let encoded: Vec<Vec<u8>> = tags.iter().map(|t| abi_string(t)).collect();
+    let mut off = tags.len() * 32;
+    for e in &encoded {
+        arr.extend_from_slice(&abi_word(off));
+        off += e.len();
+    }
+    for e in &encoded {
+        arr.extend_from_slice(e);
+    }
+    let parts = [
+        abi_string(name),
+        abi_string(version),
+        abi_string(manifest_cid),
+        abi_string(description),
+        arr,
+    ];
+    let mut out = hex::decode(REGISTER_SKILL_SELECTOR).unwrap_or_default();
+    let mut off = parts.len() * 32;
+    for p in &parts {
+        out.extend_from_slice(&abi_word(off));
+        off += p.len();
+    }
+    for p in &parts {
+        out.extend_from_slice(p);
+    }
+    out
+}
+
 /// Check the sidecar's publish payload and turn it into a PENDING ceremony intent. Refuses a
 /// payload for another target, owner or chain, one that moves value, asks to broadcast, or is not
 /// a `registerSkill` call.
@@ -936,6 +1046,49 @@ pub fn publish_intent(
         || !data[2..].bytes().all(|b| b.is_ascii_hexdigit())
     {
         return Err("the publish payload is not a registerSkill call".into());
+    }
+    // The calldata must be exactly the canonical encoding of the fields the member is shown: no
+    // other strings, no extra bytes, no unusual offsets.
+    let field = |k: &str| -> Result<&str, String> {
+        let v = payload
+            .get(k)
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| format!("the publish payload has no {k}"))?;
+        if v.len() > MAX_PUBLISH_FIELD {
+            return Err(format!("the publish payload's {k} is too long"));
+        }
+        Ok(v)
+    };
+    let name = field("name")?;
+    if name.is_empty() {
+        return Err("the publish payload has no skill name".into());
+    }
+    let tags: Vec<String> = payload
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .ok_or("the publish payload has no tags")?
+        .iter()
+        .map(|t| {
+            t.as_str()
+                .filter(|s| s.len() <= MAX_PUBLISH_FIELD)
+                .map(str::to_string)
+                .ok_or_else(|| "the publish payload has a tag that is not text".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if tags.len() > MAX_PUBLISH_TAGS {
+        return Err("the publish payload has too many tags".into());
+    }
+    let expected = encode_register_skill(
+        name,
+        field("version")?,
+        field("manifest_cid")?,
+        field("description")?,
+        &tags,
+    );
+    if data[2..] != hex::encode(expected) {
+        return Err(
+            "the publish calldata does not encode the skill shown; nothing was prepared".into(),
+        );
     }
     let raw = json!({
         "from": owner,

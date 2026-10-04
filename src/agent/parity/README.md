@@ -43,5 +43,24 @@ the sidecar session layer (its own config, such as the default `max_steps`, and 
 into calls on the store's gated handlers. A green run is loop parity, not end-to-end parity of the
 live core + sidecar path; that needs its own test before `harness.ts` is retired.
 
+## Live run (`live.test.ts`)
+
+`live.test.ts` closes that gap. It runs every scenario through `../sidecarProvider.ts` (the chat
+view the app uses), over the sidecar's HTTP control API (the routes and bodies of
+`src-tauri/src/hermes.rs`), into the sidecar binary from a built app, with a scripted
+OpenAI-compatible model server on loopback. Sessions open with the body `build_session_body`
+makes: `session-body-v1.json` pins it, and the Rust test
+`build_session_body_matches_the_live_parity_fixture` checks the same bytes.
+
+```bash
+scripts/hermes-live-parity.sh "<target>/release/bundle/macos/Citrate Core.app" results.json
+```
+
+Without `CITRATE_HERMES_LIVE_BIN` the live scenarios are skipped; the body, scripted-model and
+override checks always run. Live overrides (`LIVE_OVERRIDES`) each name their cause:
+`config:default_turn_cap` (the app opens sessions without `maxSteps`, so the sidecar default of 8
+applies while the owner's decision is open) or `transport` (over real HTTP a provider failure
+reaches the loop as the HTTP status, not the provider's text). Recorded runs are in `results/`.
+
 This suite does not retire `harness.ts` or change the default provider. Retirement is an owner
-call after a live run of the sidecar loop.
+call (the turn cap, 6 or 8, decides the last expectation that differs).

@@ -52,7 +52,14 @@ describe("parseEvalCliArgs", () => {
       allowRemote: false,
       tier: "T1",
       outDir: "eval/results",
+      datasets: "v1",
     });
+  });
+  it("--datasets picks v1 (default) or v2 and refuses anything else (A50)", () => {
+    const base = ["--base-url", "http://127.0.0.1:1/v1", "--model", "m"];
+    expect(parseEvalCliArgs(base).datasets).toBe("v1");
+    expect(parseEvalCliArgs([...base, "--datasets", "v2"]).datasets).toBe("v2");
+    expect(() => parseEvalCliArgs([...base, "--datasets", "v3"])).toThrow(/--datasets/);
   });
   it("strips a trailing slash from the base url", () => {
     expect(parseEvalCliArgs(["--base-url", "http://localhost:1/v1/", "--model", "m"]).baseUrl).toBe("http://localhost:1/v1");

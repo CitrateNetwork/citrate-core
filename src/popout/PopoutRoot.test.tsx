@@ -98,21 +98,23 @@ describe("HUP-S5.4 pop-out root", () => {
 });
 
 describe("HUP-S6.7 pop-out root: the Contract reader", () => {
-  it("renders the reader, asks the main window what to open, and stops listening on unmount", async () => {
+  it("renders the reader, asks the main window what to open (through the relay), and stops listening on unmount", async () => {
     const f = fake();
-    const el = await render(<PopoutRoot kind="contract" transport={async () => f.t} />);
+    const relayed: { type?: string; op?: string }[] = [];
+    const relay = async () => ({ send: async (m: unknown) => void relayed.push(m as { type?: string; op?: string }) });
+    const el = await render(<PopoutRoot kind="contract" transport={async () => f.t} contractRelay={relay} />);
     expect(el.querySelector('[data-testid="contract-reader"]')).not.toBeNull();
     expect(el.textContent).not.toMatch(/not built yet/i);
-    const req = f.sent.find((s) => s.payload?.type === "contract.request");
-    expect(req?.to).toBe("main");
-    expect(req?.payload.op).toBe("initial");
+    expect(relayed[0]?.type).toBe("contract.request");
+    expect(relayed[0]?.op).toBe("initial");
+    expect(f.sent.find((s) => s.payload?.type === "contract.request"), "never over the event bus").toBeUndefined();
     act(() => root?.unmount());
     root = null;
     expect(f.listening()).toBe(false);
   });
 
   it("a transport that cannot start is reported, not hidden", async () => {
-    const el = await render(<PopoutRoot kind="contract" transport={async () => { throw new Error("no ipc"); }} />);
+    const el = await render(<PopoutRoot kind="contract" transport={async () => { throw new Error("no ipc"); }} contractRelay={async () => ({ send: async () => undefined })} />);
     expect(el.textContent).toMatch(/could not connect/i);
   });
 });

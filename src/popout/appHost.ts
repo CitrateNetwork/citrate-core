@@ -23,6 +23,7 @@ import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
 import { focusContractReader, startContractHost } from "./contractHost";
 import { focusDiff, startDiffHost } from "./diffHost";
+import { tauriContractInbox } from "./contractChannel";
 import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
 import { daemonsSection } from "./monitorSnapshot";
@@ -36,7 +37,7 @@ let hostPromise: Promise<PopoutHost> | null = null;
 export function startPopoutHost(): Promise<PopoutHost> | null {
   if (BRIDGE_MODE !== "tauri") return null;
   // HUP-S6.7: the Contract reader's requests are answered here too.
-  startContractHost(tauriTransport);
+  startContractHost(tauriTransport, tauriContractInbox);
   // HUP-S5.4: and the Code and diff pop-out's.
   startDiffHost(tauriTransport);
   hostPromise ??= (async () =>

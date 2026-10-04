@@ -367,6 +367,9 @@ pub struct HermesManager {
     /// `CITRATE_HERMES_LEARN_DIR` / `CITRATE_HERMES_LEARN_SKILLS_DIR` (and the skills folder as
     /// `CITRATE_HERMES_SKILLS`, so accepted skills load in later sessions). `None` = learning off.
     learn_dirs: Option<(PathBuf, PathBuf)>,
+    /// HUP-S3.2: the other skill sources for the sidecar's one SKILL.md loader (the member's saved
+    /// skills, Citrate's bundled skills, the reviewed third-party skills). `None` = learned only.
+    skill_sources: Option<crate::hermes_learn::SkillSources>,
     /// HUP-S4.4: the MCP allowlist core writes from Settings > MCP servers. Passed to the child as
     /// `CITRATE_HERMES_MCP` only when the file exists at start (no file = no MCP, unchanged).
     mcp_allowlist: Option<PathBuf>,
@@ -423,6 +426,7 @@ impl HermesManager {
             mcp_config_path: None,
             checkpoints_dir: None,
             learn_dirs: None,
+            skill_sources: None,
             mcp_allowlist: None,
             chain_data_dir: None,
             env_source: None,
@@ -455,6 +459,12 @@ impl HermesManager {
     /// HUP-S3.4: turn on verified self-learning in the child (see `learn_dirs`).
     pub fn with_learn_dirs(mut self, learn_dir: PathBuf, skills_dir: PathBuf) -> Self {
         self.learn_dirs = Some((learn_dir, skills_dir));
+        self
+    }
+
+    /// HUP-S3.2: offer these skill sources to the child (see `skill_sources`).
+    pub fn with_skill_sources(mut self, sources: crate::hermes_learn::SkillSources) -> Self {
+        self.skill_sources = Some(sources);
         self
     }
 
@@ -566,6 +576,17 @@ impl HermesManager {
                 path.to_string_lossy().to_string(),
             ));
         }
+        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
+        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
+        if let Some(allow) = &self.mcp_allowlist {
+            spec.env.push((
+                crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
+                allow
+                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
+                    .to_string_lossy()
+                    .to_string(),
+            ));
+        }
         if let Some(dir) = &self.checkpoints_dir {
             spec.env.push((
                 undo::HERMES_CHECKPOINTS_ENV.to_string(),
@@ -575,6 +596,13 @@ impl HermesManager {
         if let Some((learn, skills)) = &self.learn_dirs {
             spec.env
                 .extend(crate::hermes_learn::learn_env(learn, skills));
+        }
+        if let Some(sources) = &self.skill_sources {
+            // HUP-S3.2: one CITRATE_HERMES_SKILLS listing every source, replacing the learned-only one.
+            let learned = self.learn_dirs.as_ref().map(|(_, s)| s.as_path());
+            let extra = crate::hermes_learn::skills_env(learned, sources);
+            spec.env.retain(|(k, _)| !extra.iter().any(|(e, _)| e == k));
+            spec.env.extend(extra);
         }
         if let Some(base) = &self.chain_data_dir {
             for (k, dir) in chain::data_dirs(base) {
@@ -1413,9 +1441,24 @@ pub(crate) fn manager<R: tauri::Runtime>(
     // instead of an empty catalog (the "running but does nothing" bug). Best-effort; a resolve/copy
     // failure just means fewer skills, honestly reported — never a start failure.
     let capsules_dir = base.join("capsules");
-    if let Ok(res) = app.path().resource_dir() {
+    let resources = app.path().resource_dir().ok();
+    if let Some(res) = &resources {
         let _ = seed_starter_capsules(&res.join("capsules"), &capsules_dir);
     }
+    // HUP-S3.2: the sidecar's one SKILL.md loader reads the member's saved skills, Citrate's own
+    // bundled skills and the reviewed third-party skills (checked against skills.lock).
+    let skill_sources = crate::hermes_learn::SkillSources {
+        authored: crate::skills_local::authored_skills_dir(
+            &app.path().app_local_data_dir().map_err(|e| e.to_string())?,
+        ),
+        first_party: resources.as_ref().map(|r| r.join("skills")),
+        third_party: resources.as_ref().map(|r| {
+            (
+                r.join("skills-bundle").join("skills.lock"),
+                r.join("skills-bundle"),
+            )
+        }),
+    };
     // HUP-S3.4: verified self-learning. Proposals and the HIC decision log live under
     // `hermes/learn`, accepted skills under `hermes/skills`. Nothing is learned unless the member
     // accepts a proposal backed by a verified workflow run.
@@ -1424,6 +1467,7 @@ pub(crate) fn manager<R: tauri::Runtime>(
         .with_mcp_config_path(crate::hermes_mcp::config_path(&base))
         .with_checkpoints_dir(base.join("checkpoints"))
         .with_learn_dirs(base.join("learn"), base.join("skills"))
+        .with_skill_sources(skill_sources)
         .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
         .with_chain_data_dir(base.clone())
         .with_env_source(crate::hermes_web::file_env_source(

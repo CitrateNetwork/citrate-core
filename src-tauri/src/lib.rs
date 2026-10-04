@@ -45,6 +45,7 @@ mod deploy_gate;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod hic_records;
+mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
@@ -81,13 +82,16 @@ mod postdeploy;
 // HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
 mod node_mcp;
 mod node_mcp_approvals;
+mod node_mcp_hermes;
 mod node_mcp_http;
 mod node_mcp_live;
 mod node_mcp_protocol;
 mod node_mcp_token;
 mod node_mcp_tools;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
+mod grant_deny;
 mod popout;
+mod popout_contract;
 // HUP-S5.1 + S5.6 — the member's controls for Hermes's browser (the sidecar runs it).
 mod browser;
 mod provisioning;
@@ -339,6 +343,7 @@ pub fn run() {
             app.manage(ceremony::build_ceremony_state());
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
+            app.manage(popout_contract::ContractInbox::default());
             // HUP-S9.4 — federated rounds: coordinator setting, start authorizations, eval-gate records.
             app.manage(fl_rounds::build_state(app.handle()));
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
@@ -579,9 +584,16 @@ pub fn run() {
             escalation::escalation_budget,
             escalation::escalation_budget_set,
             escalation::escalation_quote,
+            escalation::escalation_confirm_prepare,
             escalation::escalation_run,
             hic_records::hic_record_decision,
             escalation::escalation_registry_status,
+            inference_router::escalation_registry_quote,
+            inference_router::escalation_registry_request,
+            inference_router::escalation_registry_result,
+            inference_router::escalation_registry_mine,
+            inference_router::escalation_registry_claim_refund,
+            inference_router::escalation_registry_expire,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
             web_budgets::web_budget_revoke,
@@ -619,6 +631,7 @@ pub fn run() {
             device_link::device_link_approve,
             device_link::device_link_reject,
             device_link::device_links,
+            device_link::device_link_revoke_prepare,
             device_link::device_link_revoke,
             device_link::device_link_export,
             device_link::device_link_import,
@@ -803,6 +816,7 @@ pub fn run() {
             skills_local::skills_local_write,
             skills_local::skills_local_read,
             skills_local::skills_local_delete,
+            skills_local::skills_local_migrate,
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,
@@ -908,6 +922,8 @@ pub fn run() {
             seam::commissary_catalog,
             seam::comms_connections,
             popout::popout_open,
+            popout_contract::popout_contract_send,
+            popout_contract::popout_contract_take,
             popout::popout_monitor_facts,
             browser::hermes_browser_status,
             browser::hermes_browser_frame,

@@ -764,6 +764,9 @@ describe("tauri adapter — memory domain is wired to the real mcp_serve daemon 
     expect(r.hits[0].title).toBe("LiquidStakingPool");
     await bridge.memory.search("personal", "telemetry");
     expect(invokeMock).toHaveBeenCalledWith("memory_search", { tenant: "personal", query: "telemetry", budget: undefined });
+    // HUP-S3.1: knowledge passages ride the same command, only when asked for.
+    await bridge.memory.search("citrate-docs", "chain id", 5, { passages: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("memory_search", { tenant: "citrate-docs", query: "chain id", budget: 5, passages: true });
   });
 
   it("neighbors + constellation invoke real commands and never fabricate a graph", async () => {

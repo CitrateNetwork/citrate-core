@@ -226,7 +226,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
     )
     .unwrap();
     let names: Vec<&str> = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .map(|c| c.name.as_str())
@@ -241,7 +241,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
         "slither is not built yet, so it is not in the manifest"
     );
     let foundry = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .find(|c| c.name == "foundry")
@@ -251,7 +251,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
         vec!["macos-arm64"]
     );
     let solc = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .find(|c| c.name == "solc")
@@ -262,7 +262,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
         "macos-arm64 and macos-x64 (the same universal file)"
     );
     let oz = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .find(|c| c.name == "openzeppelin-contracts")

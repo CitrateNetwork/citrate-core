@@ -146,6 +146,52 @@ fn credential_folders_app_data_missing_folders_and_root_writes_are_refused() {
     assert!(ok(store.load()).grants.is_empty(), "nothing was stored");
 }
 
+/// The early refusal mirrors the sidecar's default-deny folders (agent-guard `RULES`), so the
+/// Grants panel never lists a grant the sidecar would ignore: browser profiles, keychains,
+/// wallet keystores, Citrate key folders and system secrets, at any depth and in any case.
+#[test]
+fn folders_on_the_sidecar_deny_list_are_refused_at_any_depth_and_case() {
+    let fx = Fx::new();
+    let store = fx.store();
+    let denied = [
+        ".config/gh",
+        ".password-store",
+        ".azure",
+        ".mozilla",
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Firefox",
+        "Library/Safari",
+        ".foundry/keystores",
+        ".ethereum/keystore",
+        ".citrate/keystore",
+        ".citrate-wallet",
+        ".local/share/keyrings",
+        "work/client/.SSH",
+        "work/client/.Gnupg/private-keys-v1.d",
+        "Library/Application Support/ai.citrate.core.custody",
+    ];
+    for rel in denied {
+        let dir = fx.home().join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = store
+            .add_folder(&dir, true, false, T0)
+            .expect_err(&format!("{rel} must be refused"));
+        assert!(
+            err.to_string().contains("cannot be granted"),
+            "{rel}: refusal says why: {err}"
+        );
+    }
+    // Parents of denied folders stay grantable: the sidecar keeps refusing the denied children.
+    for rel in [".config", "Library/Application Support", ".citrate", "work/client"] {
+        let dir = fx.home().join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            store.add_folder(&dir, true, false, T0).is_ok(),
+            "{rel} is not itself denied"
+        );
+    }
+}
+
 #[test]
 fn revoking_is_immediate_final_and_kept_for_the_list() {
     let fx = Fx::new();
@@ -577,6 +623,75 @@ fn an_invalid_document_is_never_saved() {
     st.grants[0].expires_at = Some(T0 + 60);
     assert!(matches!(store.save(&st), Err(GrantsError::Invalid(_))));
     assert_eq!(ok(store.load()).grants[0].kind, GrantKind::Folder);
+}
+
+/// Every folder the agent's default-deny list covers is refused here too, so the Grants panel never
+/// shows a grant the agent would ignore: browser profiles, wallet stores, keychains, histories,
+/// tool credentials and the app's own data, case-insensitively, wherever they sit.
+#[test]
+fn every_default_deny_location_is_refused_up_front() {
+    let fx = Fx::new();
+    let store = fx.store();
+    let denied = [
+        "Library/Application Support/Google/Chrome/Default",
+        "Library/Application Support/Firefox/Profiles",
+        "Library/Application Support/Exodus",
+        "Library/Keychains",
+        ".config/gh",
+        ".config/gcloud",
+        ".gnupg",
+        ".kube",
+        ".password-store",
+        ".foundry/keystores",
+        ".ethereum/keystore",
+        ".citrate/proposer",
+        ".SSH/nested",
+        "Library/Application Support/ai.citrate.core.custody",
+        "work/vendor/.ssh",
+        ".mozilla/firefox",
+        ".zsh_sessions",
+    ];
+    for d in denied {
+        let p = fx.home().join(d);
+        std::fs::create_dir_all(&p).unwrap();
+        let r = store.add_folder(&p, true, false, T0);
+        assert!(r.is_err(), "{d} must be refused");
+    }
+    assert!(denied_location(Path::new("/etc/ssh")).is_some());
+    assert!(denied_location(Path::new("/private/var/db/x")).is_some());
+    assert!(denied_location(Path::new("/Users/m/Documents/project")).is_none());
+    assert!(denied_location(Path::new("/Users/m/sshkeys-notes")).is_none());
+    // An ordinary project folder is still fine.
+    assert!(store.add_folder(&fx.app(), true, true, T0).is_ok());
+}
+
+/// A stored row the agent would ignore (rooted in a deny location, for example written by an
+/// older build) is shown as blocked, never as active.
+#[test]
+fn a_stored_grant_in_a_deny_location_shows_as_blocked() {
+    let fx = Fx::new();
+    let store = fx.store();
+    let profile = fx.home().join("Library/Application Support/Google/Chrome");
+    std::fs::create_dir_all(&profile).unwrap();
+    let mut st = GrantState {
+        next_id: 2,
+        ..GrantState::default()
+    };
+    st.grants.push(Grant {
+        id: "g-1".into(),
+        kind: GrantKind::Folder,
+        root: profile.display().to_string(),
+        access: Access::Read,
+        scope: "subtree".into(),
+        granted_at: T0,
+        expires_at: None,
+        granted_by: GRANTED_BY.into(),
+        reason: FOLDER_REASON.into(),
+        revoked_at: None,
+    });
+    store.save(&st).expect("save");
+    let v = store.view(T0 + 1);
+    assert_eq!(v.grants[0].status, "blocked");
 }
 
 // --- HUP-S2.6: every grant change is recorded, or it does not happen ------------------------------

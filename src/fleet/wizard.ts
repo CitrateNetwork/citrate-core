@@ -129,6 +129,8 @@ export interface DeviceRow {
   role: FleetRole;
   where: "this machine" | "paired" | "on this network";
   addr: string | null;
+  /** HUP-S8.2: the six-digit code both machines show for a pairing. */
+  code: string | null;
 }
 
 /** This machine, then paired machines, then machines answering on the local network. */
@@ -136,10 +138,11 @@ export function deviceRows(s: WizardState): DeviceRow[] {
   const rows: DeviceRow[] = [];
   if (s.probe) {
     const d = s.probe.device;
-    rows.push({ key: `self:${d.deviceId}`, label: d.label, tier: d.tier, role: d.role, where: "this machine", addr: null });
+    rows.push({ key: `self:${d.deviceId}`, label: d.label, tier: d.tier, role: d.role, where: "this machine", addr: null, code: null });
   }
   for (const d of s.roster) {
-    rows.push({ key: `paired:${d.id}`, label: d.label, tier: d.tier, role: d.role, where: "paired", addr: d.addr });
+    // The code is the same on both machines: the member can compare the two screens.
+    rows.push({ key: `paired:${d.id}`, label: d.label, tier: d.tier, role: d.role, where: "paired", addr: d.addr, code: d.code ?? null });
   }
   for (const d of s.discovery.devices) {
     rows.push({
@@ -149,6 +152,7 @@ export function deviceRows(s: WizardState): DeviceRow[] {
       role: d.advert.role,
       where: "on this network",
       addr: d.ip,
+      code: null,
     });
   }
   return rows;

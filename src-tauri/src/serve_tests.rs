@@ -492,3 +492,17 @@ fn select_model_planned_applies_the_new_models_plan() {
     assert_eq!(arg_after(&mgr.spawn_args_for_test(), "--ctx-size").as_deref(), Some("32768"));
     mgr.stop();
 }
+
+/// HUP-S9.4 hardening: an adapter is set only for the base model it was authorized on, checked
+/// atomically against the model in place (a model switch in between leaves no adapter set).
+#[test]
+fn an_adapter_is_set_only_while_its_base_model_is_selected() {
+    let dir = std::env::temp_dir().join(format!("citrate-serve-lora-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let mgr = LlamaServerManager::new(sleep_bin(), dir.join("base-a.gguf"), dir.join("crash.jsonl"), 18099);
+    let adapter = dir.join("adapter.gguf");
+    assert!(mgr.set_lora_for_model(adapter.clone(), "base-b.gguf").is_err());
+    assert_eq!(mgr.lora(), None);
+    mgr.set_lora_for_model(adapter.clone(), "base-a.gguf").expect("same base");
+    assert_eq!(mgr.lora(), Some(adapter));
+}

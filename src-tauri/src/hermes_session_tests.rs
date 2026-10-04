@@ -227,3 +227,27 @@ fn escalate_without_a_running_sidecar_fails_closed_before_any_request() {
     assert!(matches!(m.escalate("{}"), Err(HermesError::NotRunning)));
     assert!(rec.posts.lock().unwrap().is_empty());
 }
+
+// HUP-S1.9 live parity: the live runner (src/agent/parity/live.test.ts) opens sessions on the
+// packaged sidecar with the body pinned in session-body-v1.json. This keeps that pinned body equal
+// to what build_session_body really sends, so the live run uses the app's session config.
+#[test]
+fn build_session_body_matches_the_live_parity_fixture() {
+    let fx: serde_json::Value =
+        serde_json::from_str(include_str!("../../src/agent/parity/session-body-v1.json")).unwrap();
+    let input = &fx["input"];
+    let body = build_session_body(
+        input["systemPrompt"].as_str().unwrap(),
+        &input["tools"].to_string(),
+        input["baseUrl"].as_str().unwrap(),
+        input["bearer"].as_str().unwrap(),
+        input["model"].as_str().unwrap(),
+        input["contextTokens"].as_u64().unwrap() as u32,
+    )
+    .unwrap();
+    let got: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(got, fx["body"], "build_session_body drifted from session-body-v1.json");
+    // No max_steps override: the session runs with the sidecar's own default (the owner's turn-cap
+    // decision, 6 vs 8, is still open).
+    assert!(got.get("maxSteps").is_none());
+}

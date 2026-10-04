@@ -28,17 +28,25 @@ pub fn copy_capped(
     Ok(n)
 }
 
-/// HTTPS only (redirects included), bounded connect and header waits, size-capped body.
+/// HTTPS only (redirects included), bounded connect and header waits, a bounded total time for
+/// the whole download, and a size-capped body.
 pub struct HttpsFetcher {
     pub connect_timeout: Duration,
     pub response_timeout: Duration,
+    /// The most the body may take to arrive, and the most the whole call may take. A stalled or
+    /// trickling server ends the download instead of holding it open forever.
+    pub body_timeout: Duration,
 }
+
+/// The default bound on one download (the largest component is a few hundred MB).
+pub const DEFAULT_BODY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 impl Default for HttpsFetcher {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(30),
             response_timeout: Duration::from_secs(90),
+            body_timeout: DEFAULT_BODY_TIMEOUT,
         }
     }
 }
@@ -60,6 +68,12 @@ impl Fetcher for HttpsFetcher {
             .max_redirects(5)
             .timeout_connect(Some(self.connect_timeout))
             .timeout_recv_response(Some(self.response_timeout))
+            .timeout_recv_body(Some(self.body_timeout))
+            .timeout_global(Some(
+                self.connect_timeout
+                    .saturating_add(self.response_timeout)
+                    .saturating_add(self.body_timeout),
+            ))
             .build()
             .into();
         let resp = agent
@@ -94,6 +108,16 @@ mod tests {
             copy_capped(&b"123456"[..], &mut out, 5),
             Err(ComponentError::ArtifactTooLarge { limit: 5 })
         );
+    }
+
+    #[test]
+    fn every_download_has_a_bounded_total_time() {
+        let f = HttpsFetcher::default();
+        assert_eq!(f.body_timeout, DEFAULT_BODY_TIMEOUT);
+        assert!(f.body_timeout > Duration::ZERO && f.body_timeout <= Duration::from_secs(3600));
+        let src = include_str!("fetch.rs");
+        let call = src.find("fn fetch(").map(|i| &src[i..]).unwrap_or_default();
+        assert!(call.contains(".timeout_recv_body(") && call.contains(".timeout_global("));
     }
 
     #[test]

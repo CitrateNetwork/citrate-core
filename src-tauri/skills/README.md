@@ -32,6 +32,8 @@ reviewed separately and pinned in `skills.lock` (HUP-S3.6); nothing here is thir
 
 ## Status
 
-Written and checked against the runtime loader. **Not bundled yet:** the app does not set
-`CITRATE_HERMES_SKILLS` for the sidecar, and these files are not in the Tauri resources. Wiring
-them in is part of the bundled-knowledge work (HUP-S3.1/S3.2), not this pack.
+Written and checked against the runtime loader. HUP-S3.2 (2026-10-01, branch
+`hup/m2-knowledge`): bundled. Every bundle config ships `skills/**/*` as a resource, and
+`src-tauri/src/hermes.rs` lists this folder in `CITRATE_HERMES_SKILLS` after the member's learned
+and saved skills (and before the reviewed third-party skills in `skills-bundle/`), so the
+sidecar's one loader offers them and ranks them per turn with the rest.

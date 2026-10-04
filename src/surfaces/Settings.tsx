@@ -1124,7 +1124,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {/* HUP-S1.1c — opt-in preview of the sidecar-owned agent loop (ADR loop-in-sidecar). */}
+            {/* HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar), on by default since the owner decision of 2026-10-01. */}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
               <span className="eyebrow">Hermes · agent loop</span>
               <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>

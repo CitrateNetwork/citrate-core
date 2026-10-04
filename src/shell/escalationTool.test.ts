@@ -44,7 +44,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("escalate_plan in store.handleTool (HUP-S1.5)", () => {
-  it("within budget: a price notice, no approval card, run with confirmed=false", async () => {
+  it("within budget: a price notice, no approval card, run with no confirmation id", async () => {
     vi.spyOn(bridge.escalation, "quote").mockResolvedValue(quote(true));
     const r = vi.spyOn(bridge.escalation, "run").mockResolvedValue(run("budget"));
     const sig = vi.spyOn(store, "requestSig");
@@ -52,13 +52,14 @@ describe("escalate_plan in store.handleTool (HUP-S1.5)", () => {
     const out = await store.handleTool(call, "m1", noop);
     expect(sig).not.toHaveBeenCalled();
     expect(toast.mock.calls[0][0]).toMatch(/Planner · api\.example\.com: up to \$0\.005/);
-    expect(r).toHaveBeenCalledWith("q-1", 5000, false, false);
+    expect(r).toHaveBeenCalledWith("q-1", 5000, null, false);
     expect(out).toContain("<<<UNTRUSTED");
   });
 
   it("over budget and declined: the approval card shows the price, nothing runs", async () => {
     vi.spyOn(bridge.escalation, "quote").mockResolvedValue(quote(false));
     const r = vi.spyOn(bridge.escalation, "run");
+    vi.spyOn(bridge.escalation, "confirmPrepare").mockResolvedValue({ confirmId: "c-1", quoteId: "q-1", costMicros: 5000, expiresMs: 0 });
     const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
     const out = await store.handleTool(call, "m1", noop);
     expect(sig).toHaveBeenCalledTimes(1);
@@ -73,11 +74,13 @@ describe("escalate_plan in store.handleTool (HUP-S1.5)", () => {
   it("hic required: one card carrying the HIC reason (no extra pre-card), then run tainted + confirmed", async () => {
     vi.spyOn(bridge.escalation, "quote").mockResolvedValue(quote(true));
     const r = vi.spyOn(bridge.escalation, "run").mockResolvedValue(run("confirmed"));
+    const prep = vi.spyOn(bridge.escalation, "confirmPrepare").mockResolvedValue({ confirmId: "c-1", quoteId: "q-1", costMicros: 5000, expiresMs: 0 });
     const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
     await store.handleTool(call, "m1", noop, { hic: "required", hicReason: "the session read untrusted content" });
     expect(sig).toHaveBeenCalledTimes(1);
     expect(sig.mock.calls[0][0].hic?.reason).toBe("the session read untrusted content");
-    expect(r).toHaveBeenCalledWith("q-1", 5000, true, true);
+    expect(prep).toHaveBeenCalledWith("q-1", 5000);
+    expect(r).toHaveBeenCalledWith("q-1", 5000, "c-1", true);
   });
 
   it("the chip says declined only when the member declined, not when the answer mentions it", async () => {
@@ -92,6 +95,7 @@ describe("escalate_plan in store.handleTool (HUP-S1.5)", () => {
 
   it("a member decline still marks the chip declined", async () => {
     vi.spyOn(bridge.escalation, "quote").mockResolvedValue(quote(false));
+    vi.spyOn(bridge.escalation, "confirmPrepare").mockResolvedValue({ confirmId: "c-1", quoteId: "q-1", costMicros: 5000, expiresMs: 0 });
     vi.spyOn(store, "requestSig").mockResolvedValue("declined");
     store.setState({ chatMsgs: [{ id: "m1", role: "assistant", text: "", chips: [] } as never] });
     await store.handleTool(call, "m1", noop);

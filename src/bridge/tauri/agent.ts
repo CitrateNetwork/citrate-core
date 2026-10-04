@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView } from "../domains";
 import type { CeremonyView } from "../types";
 import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 import type { StepDiff } from "../../popout/diffModel";
@@ -183,5 +183,8 @@ export const tauriAgentSkills: AgentSkillsDomain = {
   },
   async remove(name) {
     await invoke("skills_local_delete", { name });
+  },
+  migrate(): Promise<SkillMigrationReport> {
+    return invoke<SkillMigrationReport>("skills_local_migrate");
   },
 };

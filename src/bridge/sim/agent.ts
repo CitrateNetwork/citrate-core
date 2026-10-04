@@ -190,5 +190,9 @@ export function simAgentSkills(_host: SimHost): AgentSkillsDomain {
     async remove(name) {
       store.delete(slugify(name));
     },
+    async migrate() {
+      // Web-dev keeps skills in memory only; there are no older files to convert.
+      return { converted: [], failed: [] };
+    },
   };
 }

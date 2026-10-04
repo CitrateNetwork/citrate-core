@@ -29,6 +29,8 @@ export interface FleetDevice {
   addr: string | null;
   pairedAt: number;
   via: "issued" | "joined";
+  /** Six digits both machines show for this pairing (absent for older entries). */
+  code?: string | null;
 }
 
 export interface FleetAdvert {
