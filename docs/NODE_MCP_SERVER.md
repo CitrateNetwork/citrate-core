@@ -179,3 +179,38 @@ The stdio shim (`citrate-core --mcp-stdio`, the debug app binary):
 ```
 
 A shim pointed at a non-loopback URL refuses to start (exit 2) without sending the token.
+
+## Hermes demo transcript (HUP-S4.1)
+
+Recorded 2026-10-04. citrate-core's `hermes_node_entry_demo` (ignored test) ran the real node
+MCP server on port 47298 with live 40204 chain reads, minted Hermes's in-memory token and wrote
+the allowlist core gives Hermes; citrate-agent-runtime's `node_demo` (ignored test) then loaded
+that allowlist into Hermes's MCP host, which started the release `citrate-core --mcp-stdio` shim
+as the `node` stdio server. The harness backend records a proposed transaction instead of opening
+the SignatureCeremony (nothing is signed; in the app the ceremony opens and the member decides).
+
+Core side:
+
+```text
+allowlist core wrote for Hermes: {"servers":[{"allow_write_tools":true,"args":["--mcp-stdio"],"command":".../citrate-core/target/release/citrate-core","env":{"CITRATE_NODE_MCP_PORT":"47298","CITRATE_NODE_MCP_TOKEN":"cnmcp_<minted for Hermes, elided>"},"name":"node","timeout_ms":30000,"transport":"stdio"}]}
+serving http://127.0.0.1:47298/mcp ; tokens: ["Hermes in this app"]
+approval inbox: {"id":"mcpr-1","tokenId":"4836092d","origin":"mcp:Hermes in this app via citrate-hermes","summary":"Sign and send a transaction: Transfer","kind":"signature","ceremony_id":"harness-ceremony-1",...,"state":"pending","decidedMs":null}
+recent calls: initialize, tools/list, tools/call chain_head, tools/call tx_propose (all by token 4836092d)
+```
+
+Hermes's MCP host side:
+
+```text
+server node (stdio): Ready, protocol Some("2025-06-18"), era Some(Legacy), 21 tools offered, skipped []
+tools Hermes is offered: [mcp__node__node_status, mcp__node__chain_head, ... mcp__node__tx_propose, mcp__node__cluster_join, mcp__node__cluster_share, mcp__node__invite_create, mcp__node__invite_revoke]
+>>> mcp__node__chain_head {}
+<<< untrusted: {"chainId": 40204, "height": 132335, "source": "public-rpc"}
+>>> mcp__node__tx_propose {"to":"0x52908400098527886E0F7030069857D2E4169EE7","value_wei":"1"}
+<<< untrusted: {"requestId": "mcpr-1", "state": "pending", "summary": "Sign and send a transaction: Transfer",
+    "next": "The member must approve this in Citrate Core (Settings, API endpoints & keys, Node MCP server). Nothing happens until they do. ..."}
+```
+
+The node server speaks the handshake protocol, so the host's `server/discover` probe was refused
+and it fell back to `initialize` (era legacy). In a real session the chain_head result taints
+the session, so the tx_propose call would first wait on the sidecar's MCP approval card, and
+then on the member's approval of request `mcpr-1` in the app.
