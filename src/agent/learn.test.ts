@@ -3,7 +3,7 @@
 // AC3: publishing to the SkillRegistry is HIC-1 (and off until signed off). AC4: contradictions
 // are surfaced and must be acknowledged, never silently merged.
 import { describe, it, expect } from "vitest";
-import { acknowledgedFor, memoryRowModel, proposalCardModel, type LearnedMemory, type LearnProposal } from "./learn";
+import { acknowledgedFor, memoryRowModel, proposalCardModel, resolveChoice, type LearnedMemory, type LearnProposal } from "./learn";
 
 const SKILL = "---\nname: deploy-checklist\ndescription: Checks a contract before deploy\n---\n\n1. Run the tests.\n";
 
@@ -145,5 +145,66 @@ describe("Feature: publishing is HIC-1 and off until signed off (AC3)", () => {
   it("Given a memory or an undecided skill, then there is no publish control", () => {
     expect(proposalCardModel(proposal({ state: { state: "persisted" } }), new Set(), OFF).publish).toBeNull();
     expect(proposalCardModel({ ...saved, state: { state: "proposed" } }, new Set(), OFF).publish).toBeNull();
+  });
+});
+
+// ---- resolving a contradiction (AC4: the member's way out of `both`) ----------------------------
+
+function lm(id: string, value: string, over: Partial<LearnedMemory> = {}): LearnedMemory {
+  return {
+    proposalId: id,
+    key: "deploy chain",
+    value,
+    belnap: "both",
+    contradicts: [],
+    contentSha256: "ab".repeat(32),
+    workflowId: "check",
+    acceptedBy: "0xm",
+    acceptedAtMs: 1,
+    decisionSeq: 1,
+    graph: { state: "stored", nodeId: "0a1b2c3d4e5f" },
+    ...over,
+  };
+}
+
+describe("Feature: resolving a contradiction (AC4)", () => {
+  const A = "lp-000000000000000000000001";
+  const B = "lp-000000000000000000000002";
+  const C = "lp-000000000000000000000003";
+
+  it("Given two memories that contradict, then each offers to keep it and names what is set aside", () => {
+    const mems = [lm(A, "1", { contradicts: [B] }), lm(B, "40204", { contradicts: [A] })];
+    const choice = resolveChoice(mems, mems[1]);
+    expect(choice).not.toBeNull();
+    expect(choice?.keep).toBe(B);
+    expect(choice?.retract).toEqual([A]);
+    expect(choice?.confirm).toContain('Keep "40204"');
+    expect(choice?.confirm).toContain('set aside "1"');
+    expect(choice?.confirm).toMatch(/kept for the record/);
+  });
+
+  it("Given three memories, then keeping one sets aside every other one it still contradicts", () => {
+    const mems = [lm(A, "1", { contradicts: [B, C] }), lm(B, "2", { contradicts: [A, C] }), lm(C, "3", { contradicts: [A, B] })];
+    expect(resolveChoice(mems, mems[2])?.retract).toEqual([A, B]);
+  });
+
+  it("Given a settled, retracted or unknown-partner memory, then there is nothing to resolve", () => {
+    expect(resolveChoice([lm(A, "1", { belnap: "true" })], lm(A, "1", { belnap: "true" }))).toBeNull();
+    const gone = lm(A, "1", { belnap: "false", retractedFor: B });
+    expect(resolveChoice([gone], gone)).toBeNull();
+    // A contradiction with a memory this ledger does not hold (a non-learned memory) cannot be
+    // settled here.
+    const orphan = lm(A, "1", { contradicts: ["mem-7"] });
+    expect(resolveChoice([orphan], orphan)).toBeNull();
+  });
+
+  it("Given a retracted memory, then its row says it was set aside and what was kept", () => {
+    const mems = [lm(A, "1", { belnap: "false", retractedFor: B, contradicts: [] }), lm(B, "40204", { belnap: "true" })];
+    const r = memoryRowModel(mems[0], mems);
+    expect(r.belnapLabel).toMatch(/Set aside/);
+    expect(r.belnapLabel).toContain('"40204"');
+    expect(r.tone).toBe("muted");
+    const never = memoryRowModel(lm(A, "1", { belnap: "false", retractedFor: B, graph: { state: "retracted" } }), mems);
+    expect(never.graphLabel).toMatch(/not stored/i);
   });
 });

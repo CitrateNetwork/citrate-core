@@ -1,7 +1,7 @@
 //! HUP-S2.9 — undo for agent file changes, core's half.
 //!
-//! The sidecar's file tools (`fs_write`, `fs_edit`, `fs_delete`, `fs_rename`) take an undo
-//! checkpoint around every change, keyed by the agent session id. This module calls the sidecar's
+//! The sidecar's file tools (`file_write`, `sheet_write`, `fs_write`, `fs_edit`, `fs_delete`,
+//! `fs_rename`) take an undo checkpoint around every change, keyed by the agent session id. This module calls the sidecar's
 //! bearer-gated `/checkpoints` routes so the member can list a session's recent changes and undo
 //! one of them or all of them, from the change card in the chat or from the Activity monitor.
 //!
@@ -14,8 +14,12 @@
 //! sidecar's reason, so the UI shows it as is. Nothing here writes a file itself, holds a key or
 //! signs (Rule 3).
 //!
-//! The file tools stay off by default: core sets neither `CITRATE_HERMES_FILES` nor a grants file,
-//! because there is no Grants screen yet and turning agent writes on is pending owner sign-off.
+//! Which writes are checkpointed: every agent write a member can trigger. A session core opens
+//! carries the member's grant document (`agent_grants`), and with the checkpoint store set the
+//! sidecar checkpoints that session's `file_write` and `sheet_write` and offers the checkpointed
+//! `fs_write`, `fs_edit`, `fs_delete` and `fs_rename` on the same document (core's grant store). No
+//! store, no agent write. Core still sets neither `CITRATE_HERMES_FILES` nor a grants file: those
+//! only turn the `fs_*` tools on for sessions opened without a grant document.
 
 use serde::{Deserialize, Serialize};
 

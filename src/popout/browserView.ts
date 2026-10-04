@@ -13,6 +13,8 @@ export type BrowserMode = "off" | "managed" | "attached";
 export type PendingBrowserAction = { id: string; tool: string; summary: string; reason: string };
 export type ConsentNeeded = { origin: string; category: string | null };
 export type ExcludedCategory = { id: string; label: string };
+/** HUP-S2.3: a page in the managed browser asking for the member's address or a sign-in. */
+export type SignInRequestView = { id: string; kind: "accounts" | "personal_sign"; raiseOrigin: string; topFrame: boolean };
 
 export type BrowserState = {
   enabled: boolean;
@@ -27,6 +29,8 @@ export type BrowserState = {
   excludedCategories: ExcludedCategory[];
   consentNeeded: ConsentNeeded | null;
   pendingAction: PendingBrowserAction | null;
+  /** HUP-S2.3: sign-in requests waiting for core (managed browser only). */
+  signInRequests: SignInRequestView[];
 };
 
 export type Highlight = { ref: string; label: string; x: number; y: number; width: number; height: number; state: "pending" | "acted" };
@@ -56,6 +60,7 @@ export const BROWSER_OFF: BrowserState = Object.freeze({
   excludedCategories: [],
   consentNeeded: null,
   pendingAction: null,
+  signInRequests: [],
 }) as BrowserState;
 
 /** The largest frame accepted (base64 characters). */
@@ -86,6 +91,20 @@ function parsePending(raw: unknown): PendingBrowserAction | null {
   const reason = str(raw.reason) ?? "";
   if (!id || !tool || summary === null) return null;
   return { id, tool, summary, reason };
+}
+
+const SIGN_IN_ID = /^signin-[0-9-]{1,56}$/;
+
+function parseSignInRequests(raw: unknown): SignInRequestView[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 8).flatMap((r) => {
+    if (!isObj(r)) return [];
+    const id = str(r.id, 64);
+    const origin = str(r.raiseOrigin, 300) ?? "";
+    if (!id || !SIGN_IN_ID.test(id)) return [];
+    if (r.kind !== "accounts" && r.kind !== "personal_sign") return [];
+    return [{ id, kind: r.kind, raiseOrigin: origin, topFrame: r.topFrame === true }];
+  });
 }
 
 function parseConsentNeeded(raw: unknown): ConsentNeeded | null {
@@ -123,6 +142,7 @@ export function parseBrowserStatus(raw: unknown): BrowserState {
     excludedCategories: cats,
     consentNeeded: parseConsentNeeded(raw.consentNeeded),
     pendingAction: parsePending(raw.pendingAction),
+    signInRequests: parseSignInRequests(raw.signInRequests),
   };
 }
 

@@ -13,8 +13,8 @@
 //!   unlocked); the webview never supplies it.
 //! - **Skills.** An accepted skill is written by the sidecar to the member's skills folder
 //!   (`<app data>/hermes/skills/<name>/SKILL.md`). Core passes that folder to the sidecar as
-//!   `CITRATE_HERMES_SKILLS` as well, so an accepted skill is offered in sessions after the next
-//!   sidecar start.
+//!   `CITRATE_HERMES_SKILLS` as well, and the sidecar reloads its skills library on accept, so the
+//!   skill is offered to the next session without a restart (`skillsReloaded` in the answer).
 //! - **Memories.** An accepted memory comes back as a typed record. Core keeps it in the
 //!   learned-memory ledger (`<app data>/hermes/learned-memories.json`, keyed by proposal id, so a
 //!   second accept of the same proposal is not a duplicate) and stores it in the member's memory
@@ -23,11 +23,21 @@
 //!   graph nodes are linked by a quarantined `contradicts` edge. Nothing is merged or overwritten.
 //!   When the memory daemon is not running, the memory waits in the ledger as `pending` and is
 //!   stored by `hermes_learn_store_pending`.
+//! - **Resolving a contradiction** is the member's call (HIC-1, recorded by the sidecar first):
+//!   keep one memory, retract the other. The ledger marks the retracted one Belnap `false` (kept
+//!   for the record) and drops it from every other memory's contradictions. Only the KEPT memory
+//!   becomes `true` again, and only when nothing else contradicts it; it is stored again as
+//!   settled and its new graph node supersedes the old nodes (a confirmed `supersedes` edge).
+//!   If the route's answer is lost, the next sync with the sidecar's proposal list applies it
+//!   (a retracted proposal names the one kept), and the sync settles a memory left `both` with
+//!   nothing to contradict only when the sidecar shows it standing. Model:
+//!   citrate-agent-runtime `agent-learn/formal/ContradictionResolve.tla`.
 //! - **Publishing** an accepted skill to the on-chain SkillRegistry is an HIC-1 action: the sidecar
 //!   records the decision and builds calldata only, core checks the payload (target, owner, chain,
 //!   selector, no value, no broadcast) and opens a PENDING SignatureCeremony; the member signs and
-//!   sends there (Rule 3). It is OFF ([`SKILL_PUBLISH_ENABLED`]) pending owner sign-off, and the UI
-//!   says so.
+//!   sends there (Rule 3). Before that, core pins the accepted `SKILL.md` to the local IPFS node,
+//!   reads it back, and passes its CID as the registry's `manifestCID` (the payload must carry
+//!   it). It is OFF ([`SKILL_PUBLISH_ENABLED`]) pending owner sign-off, and the UI says so.
 //!
 //! Rule 1: a memory that could not be stored says so (`pending` / `failed` with the reason); the
 //! publish button says why it is disabled. Rule 8: no unwrap/expect.
@@ -64,6 +74,10 @@ const LEARN_TENANT: &str = crate::memory::PERSONAL_TENANT;
 pub const MAX_LEDGER: usize = 10_000;
 /// The ledger's schema tag.
 const LEDGER_SCHEMA: &str = "citrate.core.learned-memories.v1";
+/// The sidecar's resolution record schema.
+const RESOLUTION_SCHEMA: &str = "citrate.learn.resolve.v1";
+/// Longest CID accepted from the IPFS node for a skill pin.
+const MAX_CID_LEN: usize = 128;
 
 /// The sidecar env for a learn folder and a skills folder.
 pub fn learn_env(learn_dir: &Path, skills_dir: &Path) -> Vec<(String, String)> {
@@ -208,6 +222,29 @@ pub fn learn_accept_raw(
     )
 }
 
+/// The member resolves a contradiction: keep `keep`, retract `retract` (HIC-1, recorded by the
+/// sidecar before anything changes). Returns the sidecar's resolution record.
+pub fn learn_resolve(
+    m: &HermesManager,
+    keep: &str,
+    retract: &str,
+    member: &str,
+) -> Result<Value, String> {
+    valid_proposal_id(keep)?;
+    valid_proposal_id(retract)?;
+    if keep == retract {
+        return Err("a memory cannot be kept and retracted at once".into());
+    }
+    let v = post(
+        m,
+        "/learn/memories/resolve",
+        &json!({ "member": member, "keep": keep, "retract": retract }),
+    )?;
+    v.get("resolution")
+        .cloned()
+        .ok_or_else(|| "hermes learn: the resolve answer has no resolution".to_string())
+}
+
 /// The member rejects.
 pub fn learn_reject(m: &HermesManager, id: &str, member: &str, reason: &str) -> Result<(), String> {
     valid_proposal_id(id)?;
@@ -230,6 +267,8 @@ pub trait MemoryGraph {
     fn assert_claim(&self, tenant: &str, content: &str) -> Result<String, String>;
     /// Propose a quarantined `contradicts` edge `from -> to`.
     fn propose_contradicts(&self, from: &str, to: &str, evidence: &str) -> Result<String, String>;
+    /// Record that `from` supersedes `to` and confirm it (the daemon retires `to`).
+    fn supersede(&self, from: &str, to: &str, evidence: &str) -> Result<String, String>;
 }
 
 impl MemoryGraph for crate::memory::MemoryManager {
@@ -244,13 +283,20 @@ impl MemoryGraph for crate::memory::MemoryManager {
         self.propose_edge(from, to, "contradicts", evidence)
             .map_err(|e| e.to_string())
     }
+    fn supersede(&self, from: &str, to: &str, evidence: &str) -> Result<String, String> {
+        self.propose_edge(from, to, "supersedes", evidence)
+            .map_err(|e| e.to_string())?;
+        self.confirm_edge(from, to, "supersedes")
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Where a learned memory is in the member's memory graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphState {
-    /// "stored" | "pending" (the memory daemon was not running) | "failed".
+    /// "stored" | "pending" (the memory daemon was not running) | "failed" | "retracted" (set
+    /// aside by the member before it reached the graph; never stored).
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
@@ -265,7 +311,8 @@ pub struct LearnedMemory {
     pub proposal_id: String,
     pub key: String,
     pub value: String,
-    /// "true" | "both" (contradicted and unresolved; both memories are kept).
+    /// "true" | "both" (contradicted and unresolved; both memories are kept) | "false" (the
+    /// member retracted it when resolving a contradiction; kept for the record).
     pub belnap: String,
     /// Proposal ids of the learned memories this one contradicts (both directions).
     pub contradicts: Vec<String>,
@@ -276,6 +323,15 @@ pub struct LearnedMemory {
     /// `seq` of the HIC-1 decision in the sidecar's decision log.
     pub decision_seq: u64,
     pub graph: GraphState,
+    /// For a retracted memory: the proposal id the member kept instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retracted_for: Option<String>,
+    /// For a retracted memory: `seq` of the resolve decision (absent when applied from a sync).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_seq: Option<u64>,
+    /// Graph nodes this memory's node still has to supersede (after a resolution).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersede_nodes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -363,72 +419,119 @@ impl Ledger {
         self.entries.iter_mut().find(|e| e.proposal_id == pid)
     }
 
-    /// Store one entry in the graph (if it is not stored yet) and link its contradictions.
+    /// Store one entry in the graph (if it is not stored yet), link its contradictions, and
+    /// supersede the nodes it replaces. A retracted memory is never stored.
     fn store_one(&mut self, idx: usize, g: &dyn MemoryGraph) {
         let Some(e) = self.entries.get(idx).cloned() else {
             return;
         };
-        if e.graph.state == "stored" {
-            return;
-        }
-        if !g.running() {
-            if let Some(x) = self.entries.get_mut(idx) {
-                x.graph = GraphState {
-                    state: "pending".into(),
-                    node_id: None,
-                    detail: Some(
-                        "the memory store is not running; it is stored when the store is started"
-                            .into(),
-                    ),
-                };
+        if e.belnap == "false" {
+            if e.graph.state != "stored" {
+                if let Some(x) = self.entries.get_mut(idx) {
+                    x.graph = retracted_graph();
+                }
             }
             return;
         }
-        let state = match g.assert_claim(LEARN_TENANT, &memory_text(&e)) {
-            Ok(reply) => match node_id_from_assert(&reply) {
-                Some(id) => GraphState {
-                    state: "stored".into(),
-                    node_id: Some(id),
-                    detail: None,
+        if e.graph.state != "stored" {
+            if !g.running() {
+                if let Some(x) = self.entries.get_mut(idx) {
+                    x.graph = GraphState {
+                        state: "pending".into(),
+                        node_id: None,
+                        detail: Some(
+                            "the memory store is not running; it is stored when the store is started"
+                                .into(),
+                        ),
+                    };
+                }
+                return;
+            }
+            let state = match g.assert_claim(LEARN_TENANT, &memory_text(&e)) {
+                Ok(reply) => match node_id_from_assert(&reply) {
+                    Some(id) => GraphState {
+                        state: "stored".into(),
+                        node_id: Some(id),
+                        detail: None,
+                    },
+                    None => GraphState {
+                        state: "failed".into(),
+                        node_id: None,
+                        detail: Some(reply.chars().take(300).collect()),
+                    },
                 },
-                None => GraphState {
+                Err(m) => GraphState {
                     state: "failed".into(),
                     node_id: None,
-                    detail: Some(reply.chars().take(300).collect()),
+                    detail: Some(m.chars().take(300).collect()),
                 },
-            },
-            Err(m) => GraphState {
-                state: "failed".into(),
-                node_id: None,
-                detail: Some(m.chars().take(300).collect()),
-            },
-        };
-        let new_node = state.node_id.clone();
-        if let Some(x) = self.entries.get_mut(idx) {
-            x.graph = state;
-        }
-        // Link the contradiction both ways in meaning (one quarantined edge, new -> old).
-        if let Some(from) = new_node {
-            for other in &e.contradicts {
-                let to = self
-                    .entries
-                    .iter()
-                    .find(|x| &x.proposal_id == other)
-                    .and_then(|x| x.graph.node_id.clone());
-                if let Some(to) = to {
-                    let evidence = format!(
-                        "the member acknowledged this contradiction when accepting learn proposal {}",
-                        e.proposal_id
-                    );
-                    if let Err(m) = g.propose_contradicts(&from, &to, &evidence) {
-                        if let Some(x) = self.entries.get_mut(idx) {
-                            x.graph.detail = Some(format!(
-                                "stored; the contradiction link to {other} failed: {}",
-                                m.chars().take(200).collect::<String>()
-                            ));
+            };
+            let new_node = state.node_id.clone();
+            if let Some(x) = self.entries.get_mut(idx) {
+                x.graph = state;
+            }
+            // Link the contradiction both ways in meaning (one quarantined edge, new -> old).
+            if let Some(from) = new_node {
+                for other in &e.contradicts {
+                    let to = self
+                        .entries
+                        .iter()
+                        .find(|x| &x.proposal_id == other)
+                        .and_then(|x| x.graph.node_id.clone());
+                    if let Some(to) = to {
+                        let evidence = format!(
+                            "the member acknowledged this contradiction when accepting learn proposal {}",
+                            e.proposal_id
+                        );
+                        if let Err(m) = g.propose_contradicts(&from, &to, &evidence) {
+                            if let Some(x) = self.entries.get_mut(idx) {
+                                x.graph.detail = Some(format!(
+                                    "stored; the contradiction link to {other} failed: {}",
+                                    m.chars().take(200).collect::<String>()
+                                ));
+                            }
                         }
                     }
                 }
+            }
+        }
+        self.link_supersedes(idx, g);
+    }
+
+    /// Supersede the nodes a stored memory replaces (after a resolution). A node that could not be
+    /// linked stays listed for the next try, and the entry says why.
+    fn link_supersedes(&mut self, idx: usize, g: &dyn MemoryGraph) {
+        let Some(e) = self.entries.get(idx).cloned() else {
+            return;
+        };
+        if e.supersede_nodes.is_empty() || e.graph.state != "stored" || !g.running() {
+            return;
+        }
+        let Some(from) = e.graph.node_id.clone() else {
+            return;
+        };
+        let evidence = format!(
+            "the member resolved a contradiction and kept learn proposal {}",
+            e.proposal_id
+        );
+        let mut left = Vec::new();
+        let mut failure = None;
+        for to in &e.supersede_nodes {
+            if to == &from {
+                continue;
+            }
+            if let Err(m) = g.supersede(&from, to, &evidence) {
+                left.push(to.clone());
+                failure = Some(m);
+            }
+        }
+        if let Some(x) = self.entries.get_mut(idx) {
+            x.supersede_nodes = left;
+            if let Some(m) = failure {
+                x.graph.detail = Some(format!(
+                    "stored; marking the memory it replaces as superseded failed: {}",
+                    m.chars().take(200).collect::<String>()
+                ));
             }
         }
     }
@@ -498,6 +601,9 @@ impl Ledger {
                 node_id: None,
                 detail: None,
             },
+            retracted_for: None,
+            resolved_seq: None,
+            supersede_nodes: Vec::new(),
         };
         // Belnap `both` on both sides: the memory it contradicts is marked unresolved too.
         if belnap == "both" {
@@ -519,21 +625,234 @@ impl Ledger {
             .ok_or_else(|| "internal: ledger entry vanished".to_string())
     }
 
-    /// Store every memory still waiting for the graph. Returns how many are stored now.
+    /// Store every memory still waiting for the graph, and finish any supersede links a
+    /// resolution left. Returns how many memories are newly stored.
     pub fn store_pending(&mut self, g: &dyn MemoryGraph) -> usize {
         let mut n = 0;
         for i in 0..self.entries.len() {
-            let before = self.entries.get(i).map(|e| e.graph.state.clone());
-            if before.as_deref() == Some("stored") {
+            let Some(e) = self.entries.get(i) else {
+                continue;
+            };
+            let was_stored = e.graph.state == "stored";
+            if e.belnap == "false" || (was_stored && e.supersede_nodes.is_empty()) {
                 continue;
             }
             self.store_one(i, g);
-            if self.entries.get(i).map(|e| e.graph.state.as_str()) == Some("stored") {
+            if !was_stored && self.entries.get(i).map(|e| e.graph.state.as_str()) == Some("stored")
+            {
                 n += 1;
             }
         }
         n
     }
+
+    fn position(&self, pid: &str) -> Option<usize> {
+        self.entries.iter().position(|e| e.proposal_id == pid)
+    }
+
+    /// Mark an entry settled (`true`). If it was stored with its unresolved text, it is stored
+    /// again and the new node supersedes the old one.
+    fn settle(&mut self, idx: usize) {
+        if let Some(k) = self.entries.get_mut(idx) {
+            k.belnap = "true".into();
+            if k.graph.state == "stored" {
+                if let Some(old) = k.graph.node_id.take() {
+                    if !k.supersede_nodes.contains(&old) {
+                        k.supersede_nodes.push(old);
+                    }
+                }
+                k.graph = GraphState {
+                    state: "pending".into(),
+                    node_id: None,
+                    detail: Some("resolved; stored again as settled".into()),
+                };
+            }
+        }
+    }
+
+    /// Retract `retracted` in favour of `kept` (the sidecar has recorded it). Returns whether
+    /// the ledger changed. Only the kept memory may be settled here (formal model,
+    /// `ContradictionResolve.tla`: another memory may itself be retracted by a resolution whose
+    /// answer has not arrived yet).
+    fn apply_retraction(
+        &mut self,
+        kept: &str,
+        retracted: &str,
+        seq: Option<u64>,
+        g: &dyn MemoryGraph,
+    ) -> bool {
+        let Some(di) = self.position(retracted) else {
+            return false;
+        };
+        let Some(d) = self.entries.get_mut(di) else {
+            return false;
+        };
+        if d.belnap == "false" {
+            return false;
+        }
+        let d_node = if d.graph.state == "stored" {
+            d.graph.node_id.clone()
+        } else {
+            None
+        };
+        d.belnap = "false".into();
+        d.retracted_for = Some(kept.to_string());
+        d.resolved_seq = seq;
+        d.contradicts.clear();
+        d.supersede_nodes.clear();
+        if d.graph.state != "stored" {
+            d.graph = retracted_graph();
+        }
+        for e in self.entries.iter_mut() {
+            e.contradicts.retain(|c| c != retracted);
+        }
+        if let Some(ki) = self.position(kept) {
+            let settle = match self.entries.get_mut(ki) {
+                Some(k) if k.belnap != "false" => {
+                    if let Some(n) = d_node {
+                        if !k.supersede_nodes.contains(&n) {
+                            k.supersede_nodes.push(n);
+                        }
+                    }
+                    Some(k.belnap == "both" && k.contradicts.is_empty())
+                }
+                _ => None,
+            };
+            if let Some(settle) = settle {
+                if settle {
+                    self.settle(ki);
+                }
+                self.store_one(ki, g);
+            }
+        }
+        true
+    }
+
+    /// Apply the sidecar's resolution record. Refuses a record that is not one; a record for
+    /// memories this ledger never received changes nothing. Returns whether the ledger changed.
+    pub fn apply_resolution(&mut self, res: &Value, g: &dyn MemoryGraph) -> Result<bool, String> {
+        if str_field(res, "schema")? != RESOLUTION_SCHEMA {
+            return Err("not a learn resolution record".into());
+        }
+        let kept = str_field(res, "kept")?;
+        let retracted = str_field(res, "retracted")?;
+        valid_proposal_id(kept)?;
+        valid_proposal_id(retracted)?;
+        if kept == retracted {
+            return Err("a memory cannot be kept and retracted at once".into());
+        }
+        let seq = res.get("decision_seq").and_then(|x| x.as_u64());
+        Ok(self.apply_retraction(kept, retracted, seq, g))
+    }
+
+    /// Bring the ledger in line with the sidecar's proposal list (`/learn/proposals?all=true`):
+    /// apply every retraction the ledger has not applied yet (a resolve whose answer was lost),
+    /// then settle a memory still `both` with nothing left to contradict, but only one the
+    /// sidecar shows standing (`persisted`, or `persist_failed` after a lost save). Returns how
+    /// many entries were changed by a retraction or a settle.
+    pub fn sync_with_sidecar(&mut self, list: &Value, g: &dyn MemoryGraph) -> usize {
+        let Some(arr) = list.get("proposals").and_then(|p| p.as_array()) else {
+            return 0;
+        };
+        let memory = |p: &&Value| p.get("kind").and_then(|k| k.as_str()) == Some("memory");
+        let state_of = |p: &Value| {
+            p.pointer("/state/state")
+                .and_then(|s| s.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut n = 0;
+        for p in arr.iter().filter(memory) {
+            if state_of(p) != "retracted" {
+                continue;
+            }
+            let id = p.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+            let kept = p
+                .pointer("/state/kept")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default();
+            if valid_proposal_id(id).is_err() || valid_proposal_id(kept).is_err() || id == kept {
+                continue;
+            }
+            if self.apply_retraction(kept, id, None, g) {
+                n += 1;
+            }
+        }
+        let standing: Vec<String> = arr
+            .iter()
+            .filter(memory)
+            .filter(|p| matches!(state_of(p).as_str(), "persisted" | "persist_failed"))
+            .filter_map(|p| p.get("id").and_then(|x| x.as_str()).map(str::to_string))
+            .collect();
+        for i in 0..self.entries.len() {
+            let settle = self.entries.get(i).is_some_and(|e| {
+                e.belnap == "both" && e.contradicts.is_empty() && standing.contains(&e.proposal_id)
+            });
+            if settle {
+                self.settle(i);
+                self.store_one(i, g);
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
+fn retracted_graph() -> GraphState {
+    GraphState {
+        state: "retracted".into(),
+        node_id: None,
+        detail: Some("set aside when you resolved a contradiction; not stored".into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pinning a skill (before a publish)
+// ---------------------------------------------------------------------------
+
+fn sha256_hex(b: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(b))
+}
+
+/// Pin an accepted `SKILL.md` to the local IPFS node and read it back; returns its CID for the
+/// registry's `manifestCID`. Refuses bytes that are not the accepted content, a CID that is not a
+/// bare CID, and a pin that does not read back the same bytes.
+pub fn pin_skill(
+    t: &dyn crate::storage::KuboTransport,
+    skill_md: &str,
+    expected_sha256: &str,
+) -> Result<String, String> {
+    if sha256_hex(skill_md.as_bytes()) != expected_sha256 {
+        return Err("the skill does not match its accepted content".into());
+    }
+    let out = t
+        .add("SKILL.md", skill_md.as_bytes())
+        .map_err(|e| format!("IPFS: could not add the skill: {e}"))?;
+    let cid = out.cid;
+    if cid.is_empty() || cid.len() > MAX_CID_LEN || !cid.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
+        return Err("IPFS: the node answered with something that is not a CID".into());
+    }
+    t.pin_add(&cid)
+        .map_err(|e| format!("IPFS: could not pin {cid}: {e}"))?;
+    let back = t
+        .cat(&cid)
+        .map_err(|e| format!("IPFS: could not read {cid} back: {e}"))?;
+    if back != skill_md.as_bytes() {
+        return Err(format!(
+            "IPFS: {cid} did not read back as the accepted skill"
+        ));
+    }
+    Ok(cid)
+}
+
+/// The publish payload must register the CID core pinned.
+pub fn check_manifest_cid(payload: &Value, cid: &str) -> Result<(), String> {
+    if cid.is_empty() || str_field(payload, "manifest_cid")? != cid {
+        return Err("the publish payload does not carry the pinned skill's CID".into());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -765,7 +1084,12 @@ pub async fn hermes_learn_accept(
             let entry = with_ledger(&app, |l, g| l.accept_record(&persisted, g))?;
             return Ok(json!({ "persisted": persisted, "memory": entry }));
         }
-        Ok(json!({ "persisted": persisted }))
+        // A skill: whether the sidecar already offers it to the next session (no restart).
+        let reloaded = out
+            .get("skills_reloaded")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(json!({ "persisted": persisted, "skillsReloaded": reloaded }))
     })
     .await
 }
@@ -785,12 +1109,54 @@ pub async fn hermes_learn_reject(
     .await
 }
 
-/// **hermes_learn_memories** — the learned-memory ledger (with each memory's graph state).
+/// The sidecar's full proposal list, when Hermes is running (for [`Ledger::sync_with_sidecar`]).
+fn sidecar_proposals(app: &tauri::AppHandle) -> Option<Value> {
+    let m = manager(app).ok()?;
+    if !m.is_running() {
+        return None;
+    }
+    learn_list(m, true).ok()
+}
+
+/// **hermes_learn_memories** — the learned-memory ledger (with each memory's graph state). While
+/// Hermes is running, the ledger is first brought in line with the sidecar (a resolution whose
+/// answer was lost is applied).
 #[tauri::command]
 pub async fn hermes_learn_memories(app: tauri::AppHandle) -> Result<Vec<LearnedMemory>, String> {
+    crate::blocking::off_main(move || match sidecar_proposals(&app) {
+        Some(list) => with_ledger(&app, |l, g| {
+            l.sync_with_sidecar(&list, g);
+            Ok(l.entries.clone())
+        }),
+        None => {
+            let _guard = LEDGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            Ledger::load(&ledger_path(&app)?).map(|l| l.entries)
+        }
+    })
+    .await
+}
+
+/// **hermes_learn_resolve** — the member resolves a contradiction: keep one learned memory,
+/// retract the other (HIC-1; the sidecar records the decision before anything changes). Core
+/// applies it to the ledger and the memory graph and returns the ledger.
+#[tauri::command]
+pub async fn hermes_learn_resolve(
+    app: tauri::AppHandle,
+    keep: String,
+    retract: String,
+) -> Result<Vec<LearnedMemory>, String> {
     crate::blocking::off_main(move || {
-        let _guard = LEDGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        Ledger::load(&ledger_path(&app)?).map(|l| l.entries)
+        let member = member_id(&app);
+        let m = manager(&app)?;
+        let res = learn_resolve(m, &keep, &retract, &member)?;
+        let list = learn_list(m, true).ok();
+        with_ledger(&app, |l, g| {
+            l.apply_resolution(&res, g)?;
+            if let Some(list) = &list {
+                l.sync_with_sidecar(list, g);
+            }
+            Ok(l.entries.clone())
+        })
     })
     .await
 }
@@ -836,15 +1202,28 @@ pub async fn hermes_learn_publish(
             .to_ascii_lowercase();
         let proposal = get(m, &format!("/learn/proposals/{id}"))?;
         let sha = str_field(&proposal, "content_sha256")?.to_string();
+        // Pin the accepted SKILL.md to the local IPFS node first, so the registry entry names
+        // content anyone can fetch and check against the `sha256:` tag.
+        let skill_md = proposal
+            .pointer("/content/skill_md")
+            .and_then(|v| v.as_str())
+            .ok_or("only a saved skill can be published")?;
+        let cid = pin_skill(
+            &crate::storage::UreqKuboTransport::from_env(),
+            skill_md,
+            &sha,
+        )
+        .map_err(|e| format!("PIN_FAILED: {e}. Start Storage (IPFS) and try again."))?;
         let registry = crate::addresses::skill_registry().to_string();
         let payload = post(
             m,
             &format!("/learn/proposals/{id}/publish"),
             &json!({
                 "approval": { "member": wallet, "proposal_id": id, "content_sha256": sha },
-                "params": { "chain_id": 40204, "registry": registry, "owner": wallet, "version": version, "manifest_cid": null, "tags": [] },
+                "params": { "chain_id": 40204, "registry": registry, "owner": wallet, "version": version, "manifest_cid": cid, "tags": [] },
             }),
         )?;
+        check_manifest_cid(&payload, &cid)?;
         let intent = publish_intent(&payload, &registry, &wallet)?;
         ceremony.0.request(intent);
         Ok(())

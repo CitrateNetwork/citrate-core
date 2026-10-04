@@ -666,6 +666,10 @@ pub fn start_nightly_if_ready(app: tauri::AppHandle) -> bool {
             .unwrap_or(AnchorGate::Off);
         if let Ok(m) = crate::hermes::chain::manager_for(&app) {
             if m.is_running() {
+                // HUP-S2.3 (US-2.3 AC3): web-signing records go into the batch before planning.
+                crate::web_budgets::export_for_app(&app);
+                // HUP-S2.6: core's other HIC records (grants, escalation spend, approval cards).
+                crate::hic_records::export_for_app(&app);
                 let in_flight: BTreeSet<u64> = submitted()
                     .lock()
                     .map(|s| s.keys().copied().collect())

@@ -148,7 +148,7 @@ export function BudgetsPanel({
         </p>
         <p style={{ ...muted, margin: 0 }} data-testid="attestation">
           {st.attestation.available
-            ? "Automatic sign-in is available for sites with an active budget."
+            ? "Automatic sign-in applies to sites with an active budget, in Hermes's managed browser only. Everywhere else every sign-in asks you."
             : st.attestation.reason}
         </p>
         <p style={{ ...muted, margin: 0 }}>
