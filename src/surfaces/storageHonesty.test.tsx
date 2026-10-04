@@ -126,6 +126,15 @@ describe("Storage — built-in knowledge import status (HUP-S3.1)", () => {
     expect(html).not.toContain("Built-in knowledge ready");
   });
 
+  it("says the corpus needs the bundled search model, without promising it will arrive (US-3.1 offline)", () => {
+    const html = renderToStaticMarkup(
+      <Storage store={stubStore} s={storageState({ knowledgeImport: ki({ state: "skipped", message: "not-semantic" }) })} />,
+    );
+    expect(html).toContain("not imported");
+    expect(html).toContain("no bundled search model");
+    expect(html).not.toContain("waits for");
+  });
+
   it("shows a failure with its reason and a retry", () => {
     const html = renderToStaticMarkup(
       <Storage

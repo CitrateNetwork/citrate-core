@@ -25,6 +25,7 @@ import {
   keyPointMatched,
   normalizeText,
   parseQaDataset,
+  resolveCitationNodes,
   runQaEval,
   scoreQaItem,
   slugify,
@@ -223,6 +224,67 @@ describe("deterministic scorer", () => {
     await expect(
       runQaEval(ds, fixtureIndex, { ask: async () => Promise.reject(new Error("ECONNREFUSED")) }, { model: "x" }),
     ).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+describe("citations resolve to node ids of the imported graph (g2-knowledge b)", () => {
+  const retrieved = [
+    { id: "0a1b2c3d4e", cite: "citrate-docs:content/chain/genesis.md#reference" },
+    { id: "1f2e3d4c5b", cite: "citrate-docs:content/chain/genesis.md#what-it-is" },
+    { id: "2a2a2a2a2a", cite: "citrate-docs:content/chain/staking.md" },
+  ];
+  it("maps each answer citation to the retrieved nodes it names (file, and section when given)", () => {
+    const answer =
+      "40204 (citrate-docs:content/chain/genesis.md#reference), see citrate-docs:content/chain/genesis.md and " +
+      "citrate-docs:content/chain/unknown.md#x";
+    expect(resolveCitationNodes(answer, retrieved)).toEqual([
+      { citation: "citrate-docs:content/chain/genesis.md#reference", nodeIds: ["0a1b2c3d4e"] },
+      { citation: "citrate-docs:content/chain/genesis.md", nodeIds: ["0a1b2c3d4e", "1f2e3d4c5b"] },
+      { citation: "citrate-docs:content/chain/unknown.md#x", nodeIds: [] },
+    ]);
+  });
+
+  it("stamps per-item node ids and the run's node-citation rate when the provider reports retrieval", async () => {
+    const ds = {
+      version: "qa-v1",
+      provenance: { author: "a", created: "2026-09-30", purpose: "p", disjointFromTraining: true },
+      sources: { "citrate-docs": { repo: "CitrateNetwork/citrate-docs", commit: SHA, visibility: "public" } },
+      items: [answerable, unanswerable],
+    } as QaDataset;
+    const out = await runQaEval(
+      ds,
+      fixtureIndex,
+      {
+        ask: async (q) =>
+          q.includes("chain id")
+            ? {
+                text: "40204 0x9d0c citrate-docs:content/chain/genesis.md#reference citrate-docs:content/chain/genesis.md#tokenomics",
+                retrieved: retrieved.slice(0, 1),
+                toolCalls: [{ tenant: "citrate-docs", query: "chain id" }],
+              }
+            : { text: "Not documented.", retrieved: [], toolCalls: [] },
+      },
+      { model: "fixture" },
+    );
+    expect(out.items[0].retrievedNodes).toEqual(["0a1b2c3d4e"]);
+    expect(out.items[0].toolCalls).toEqual([{ tenant: "citrate-docs", query: "chain id" }]);
+    expect(out.items[0].citedNodes).toEqual([
+      { citation: "citrate-docs:content/chain/genesis.md#reference", nodeIds: ["0a1b2c3d4e"] },
+      { citation: "citrate-docs:content/chain/genesis.md#tokenomics", nodeIds: [] },
+    ]);
+    expect(out.scorecard.citationNodeRate).toBe(0.5);
+  });
+
+  it("leaves the node-citation rate off a closed-book run", async () => {
+    const ds = {
+      version: "qa-v1",
+      provenance: { author: "a", created: "2026-09-30", purpose: "p", disjointFromTraining: true },
+      sources: { "citrate-docs": { repo: "CitrateNetwork/citrate-docs", commit: SHA, visibility: "public" } },
+      items: [answerable],
+    } as QaDataset;
+    const out = await runQaEval(ds, fixtureIndex, { ask: async () => ({ text: "40204" }) }, { model: "fixture" });
+    expect("citationNodeRate" in out.scorecard).toBe(false);
+    expect("citedNodes" in out.items[0]).toBe(false);
   });
 });
 

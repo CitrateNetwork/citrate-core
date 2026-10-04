@@ -81,6 +81,10 @@ and says so; the committed index is still checked.
 - First run 2026-10-01 on T0 (Gemma 4 E4B): 10 % pass, all of it the unanswerable probes; the model
   abstained on 134 of 135 answerable items because it is given no documentation yet. The T1 run
   is pending (out of memory on the test machine). See `eval/results/README.md`.
+- 2026-10-02, through the app's `memory_search` tool over the bundled corpus (digest
+  `970966831d9c`): T1 (Qwen3.8 27B) 77.3 % pass with 99.7 % citation validity, T0 (Gemma 4 E4B)
+  65.3 % pass with 98.8 %. The AC2 target is still unset; a proposal pending owner sign-off is in
+  `eval/results/README.md`.
 - Citations name repo paths. The bundled graph from S3.1 must carry these paths and headings so
   Hermes can cite them; until S3.1 lands, a model can only cite them from its own knowledge.
 - Key-point matching is substring based, so a paraphrase that drops the exact figure or term
