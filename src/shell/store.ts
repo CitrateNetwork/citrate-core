@@ -30,7 +30,7 @@ import {
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
-import { createSidecarProvider } from "../agent/sidecarProvider";
+import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import type { FlRoundPlan } from "../bridge/domains";
@@ -914,6 +914,13 @@ export class Store {
           .endpoints()
           .then((e) => e.length > 0)
           .catch(() => false);
+        // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
+        // first sidecar provider of this app load does that; a later rebuild (persona or provider
+        // change) means a fresh session, so the saved one is let go.
+        const sessionStore = localSessionStore();
+        const firstSidecarBuild = !this.sidecarReattachTried;
+        this.sidecarReattachTried = true;
+        if (!firstSidecarBuild) sessionStore.save(null);
         this.provider = createSidecarProvider(
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
@@ -921,6 +928,8 @@ export class Store {
             open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
+            // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
+            position: (id) => h.sessionEvents(id, Number.MAX_SAFE_INTEGER, 0).then((p) => p.lastSeq),
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
             // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
@@ -934,8 +943,10 @@ export class Store {
           () => this.sidecarSystemPrompt(),
           () => withEscalationTool(annotatedAgentTools(), escalationReady),
           () => this.sidecarPersonaChoice(),
+          { store: sessionStore },
         );
         this.reflectProvider();
+        if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
         return;
       }
       if (kind === "local") {
@@ -2198,6 +2209,97 @@ export class Store {
     const userIdx = idx - 1 >= 0 && msgs[idx - 1].who === "You" && msgs[idx - 1].text === text ? idx - 1 : -1;
     this.setState({ chatMsgs: msgs.filter((_, i) => i !== idx && i !== userIdx) });
     await this.sendChat(text);
+  }
+
+  /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
+  private sidecarReattachTried = false;
+
+  /**
+   * HUP-S1.1 (US-1.1 AC3) — after a reload, pick the saved Hermes session back up: a turn that was
+   * running (or finished while the view was gone) is shown to its end, core calls the loop asks for
+   * run through the same gates, calls that were in progress at the reload are reported as
+   * interrupted, and a session Hermes no longer has is let go with a plain notice.
+   */
+  private async resumeSidecarSession(provider: ChatProvider): Promise<void> {
+    if (!provider.reattach || this.state.chatStatus !== "ready") return;
+    const ac = new AbortController();
+    const msgId = "m" + ++this.mid;
+    let shown = false;
+    const ensure = () => {
+      if (shown) return;
+      shown = true;
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: msgId, who: "Agent", text: "", chips: [], streaming: true }]) }));
+    };
+    const patch = (fn: (m: ChatMsg) => ChatMsg) =>
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? fn(m) : m)) }));
+    let began = false;
+    const begin = () => {
+      if (began) return;
+      began = true;
+      this.turnAbort = ac;
+      beginTurn(provider.kind, `${provider.label} · resumed after reload`);
+    };
+    try {
+      const r = await provider.reattach({
+        signal: ac.signal,
+        callbacks: {
+          onStatus: (st) => {
+            if (ac.signal.aborted) return;
+            begin();
+            notePhase(st);
+            if (st === "streaming") ensure();
+            this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : (st as AppState["chatStatus"]) });
+          },
+          onToken: (tk) => {
+            if (ac.signal.aborted) return;
+            ensure();
+            patch((m) => ({ ...m, text: m.text + tk }));
+            this.scrollChat();
+          },
+          onToolCall: async (call, meta) => {
+            if (ac.signal.aborted) return "stopped by the member before this ran; nothing was done.";
+            toolStarted(call.id, call.name);
+            try {
+              const result = await this.handleTool(call, msgId, ensure, meta);
+              toolFinished(call.id, true);
+              return result;
+            } catch (e) {
+              toolFinished(call.id, false);
+              throw e;
+            }
+          },
+          onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
+          onActivity: (ev) => {
+            if (ev.kind === "file_change") {
+              ensure();
+              recordFileChange(ev.change, msgId);
+              void refreshUndoPanel(bridge.agentHarness);
+            } else if (ev.kind === "command_run") {
+              commandRan(ev);
+            } else if (ev.kind === "notice") {
+              this.toast(ev.text);
+            } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
+          },
+        },
+      });
+      if (r.kind === "gone") this.toast(r.notice);
+      if (r.kind === "resumed") {
+        ensure();
+        if (r.failure) patch((m) => ({ ...m, error: r.failure ?? undefined }));
+        endTurn(r.failure ? "failed" : "answered");
+      }
+    } catch (e) {
+      if (began) {
+        ensure();
+        const stopped = e instanceof TurnStopped || ac.signal.aborted;
+        patch((m) => ({ ...m, error: stopped ? "stopped by you" : e instanceof Error ? e.message : String(e) }));
+        endTurn(stopped ? "stopped" : "failed");
+      }
+    }
+    if (this.turnAbort === ac) this.turnAbort = null;
+    if (shown) patch((m) => ({ ...m, streaming: false }));
+    if (began) this.setState({ chatStatus: "ready" });
+    this.scrollChat();
   }
 
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
