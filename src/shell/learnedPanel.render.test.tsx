@@ -216,3 +216,60 @@ describe("Feature: resolving a contradiction in the panel", () => {
     expect(off).not.toContain("learned-keep");
   });
 });
+
+describe("Feature: a contradiction with a memory you already had (fan-out 7)", () => {
+  const A = "lp-000000000000000000000001";
+  const known = mem(A, "40204", { contradicts: ["memory:mem-7"] });
+  const renderOne = (memories: LearnedMemory[], confirming: string | null = null) =>
+    renderToStaticMarkup(
+      <LearnedPanelView
+        view={view({ memories })}
+        acked={{}}
+        busy={false}
+        onAck={noop}
+        onAccept={noop}
+        onReject={noop}
+        onPublish={noop}
+        onStorePending={noop}
+        teach={<TeachHermesView unavailable={null} task="" checks="" running={false} progress={null} invalid="Write a task." onTask={noop} onChecks={noop} onRun={noop} />}
+        confirming={confirming}
+        onKeep={noop}
+        onSetAside={noop}
+        onConfirmKeep={noop}
+        onCancelKeep={noop}
+      />,
+    );
+
+  it("Given a learned memory that contradicts one you already had, then it says Hermes does not recall it and offers both ways out", () => {
+    const html = renderOne([known]);
+    expect(html).toContain('data-testid="teach-hermes"');
+    expect(html).toContain('data-belnap="both"');
+    expect(html).toContain("Hermes does not recall it until you resolve it.");
+    expect(html).toContain('data-testid="learned-keep"');
+    expect(html).toContain('data-testid="learned-set-aside"');
+  });
+
+  it("Given the member pressed Keep this one, then it names the memory they already had as what is set aside", () => {
+    const html = renderOne([known], A);
+    expect(html).toContain('data-testid="learned-keep-confirm"');
+    expect(html).toContain("Keep &quot;40204&quot;");
+    expect(html).toContain("set aside the memory you already had");
+    expect(html).toMatch(/data-testid="learned-keep-yes"[^>]*>Keep it</);
+  });
+
+  it("Given the member pressed Set this one aside, then it asks to confirm keeping the memory they already had", () => {
+    const html = renderOne([known], `aside:${A}`);
+    expect(html).toContain('data-testid="learned-keep-confirm"');
+    expect(html).toContain("Set aside &quot;40204&quot;");
+    expect(html).toContain("keep the memory you already had");
+    expect(html).toMatch(/data-testid="learned-keep-yes"[^>]*>Set it aside</);
+  });
+
+  it("Given it was set aside for the memory you already had, then it says so and offers nothing more", () => {
+    const html = renderOne([mem(A, "40204", { belnap: "false", retractedFor: "memory:mem-7" })]);
+    expect(html).toContain("Set aside: you kept the memory you already had instead.");
+    expect(html).not.toContain("learned-keep");
+    expect(html).not.toContain("learned-set-aside");
+    expect(html).not.toContain("Hermes does not recall it");
+  });
+});

@@ -805,3 +805,49 @@ fn search_asks_for_passages_only_when_requested() {
     assert_eq!(calls[0].1["budget"], 4);
     assert!(calls[1].1.get("passages").is_none(), "plain search unchanged");
 }
+
+// ---------------------------------------------------------------------------
+// HUP-S3.4 (fan-out 7, L02): recall and search leave out learned memories with an unresolved
+// contradiction, read from the learned-memory ledger on every call.
+// ---------------------------------------------------------------------------
+
+fn ledger_with(node: &str, belnap: &str) -> crate::hermes_learn::Ledger {
+    crate::hermes_learn::Ledger {
+        entries: vec![crate::hermes_learn::LearnedMemory {
+            proposal_id: "lp-000000000000000000000001".into(),
+            key: "deploy chain".into(),
+            value: "1".into(),
+            belnap: belnap.into(),
+            contradicts: if belnap == "both" { vec!["memory:mem-7".into()] } else { vec![] },
+            content_sha256: "ab".into(),
+            workflow_id: "check".into(),
+            accepted_by: "0xm".into(),
+            accepted_at_ms: 1,
+            decision_seq: 1,
+            graph: crate::hermes_learn::GraphState { state: "stored".into(), node_id: Some(node.into()), detail: None },
+            retracted_for: None,
+            resolved_seq: None,
+            supersede_nodes: vec![],
+        }],
+    }
+}
+
+#[test]
+fn recall_and_search_leave_out_an_unresolved_learned_memory_until_it_is_resolved() {
+    let (mgr, _fake, dir) = stub_manager("recall-hide");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ledger = dir.join("learned-memories.json");
+    let mgr = mgr.with_learned_ledger(Some(ledger.clone()));
+    // The fixture's first hit (0a1b2c3d4e) is a learned memory that is `both`.
+    ledger_with("0a1b2c3d4e00", "both").save(&ledger).unwrap();
+    let r = mgr.recall("personal", 15).unwrap();
+    assert_eq!(r.hits.len(), 2, "{:?}", r.hits);
+    assert!(r.hits.iter().all(|h| h.id != "0a1b2c3d4e"));
+    let s = mgr.search("personal", "telemetry", 15).unwrap();
+    assert!(s.hits.iter().all(|h| h.id != "0a1b2c3d4e"));
+    // Resolved (settled `true`): the next call shows it again.
+    ledger_with("0a1b2c3d4e00", "true").save(&ledger).unwrap();
+    let r = mgr.recall("personal", 15).unwrap();
+    assert_eq!(r.hits.len(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
