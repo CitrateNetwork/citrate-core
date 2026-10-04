@@ -1861,6 +1861,8 @@ export interface EscalationDomain {
   registryMine(): Promise<EscalationRegistryMine>;
   /** Raise the HIC-1 approval to withdraw the refund the router credited back. */
   registryClaimRefund(): Promise<void>;
+  /** Raise the HIC-1 approval to expire one of your requests its provider never answered (after 1 hour). */
+  registryExpire(requestId: number): Promise<void>;
 }
 
 // ---- HUP-S5.5 / S6.1 — signed first-run components. Mirrors Rust `components.rs`. ----

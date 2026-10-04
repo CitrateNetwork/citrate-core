@@ -56,4 +56,7 @@ export const tauriEscalation: EscalationDomain = {
   registryClaimRefund() {
     return invoke<void>("escalation_registry_claim_refund");
   },
+  registryExpire(requestId: number) {
+    return invoke<void>("escalation_registry_expire", { requestId });
+  },
 };

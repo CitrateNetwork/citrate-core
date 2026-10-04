@@ -226,3 +226,11 @@ fn claim_refund_is_a_known_call() {
     let (_, d) = decode_transaction(&router_tx(&data, 0)).unwrap_or_else(|| panic!("decodes"));
     assert!(d.action.starts_with("Call claimRefund()"), "{}", d.action);
 }
+
+#[test]
+fn expire_request_is_a_known_call() {
+    let mut data = selector_of("expireRequest(uint256)").to_vec();
+    data.extend_from_slice(&[0u8; 32]);
+    let (_, d) = decode_transaction(&router_tx(&data, 0)).unwrap_or_else(|| panic!("decodes"));
+    assert!(d.action.starts_with("Call expireRequest()"), "{}", d.action);
+}

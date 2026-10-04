@@ -588,6 +588,7 @@ pub fn run() {
             inference_router::escalation_registry_result,
             inference_router::escalation_registry_mine,
             inference_router::escalation_registry_claim_refund,
+            inference_router::escalation_registry_expire,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
             web_budgets::web_budget_revoke,

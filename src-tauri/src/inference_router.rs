@@ -11,7 +11,8 @@
 //!   every registry escalation is a pending SignatureCeremony the member approves (HIC-1).
 //! - The provider answers later with `completeInference`; `getRequest(uint256)` then returns the
 //!   status, the output bytes and the price paid. A request a provider never completes can be
-//!   expired by anyone after `REQUEST_TIMEOUT` (1 h), which credits the full price back.
+//!   expired by anyone after `REQUEST_TIMEOUT` (1 h), which credits the full price back; core
+//!   offers that for the member's own unanswered requests ([`escalation_registry_expire`]).
 //! - Model CIDs come from the ModelRegistry ([`crate::model_registry`]); providers per model come
 //!   from `getProviders(bytes32)` plus the public `providers(address)` getter.
 //!
@@ -39,6 +40,9 @@ pub const PROVIDERS_SIG: &str = "providers(address)";
 pub const GET_USER_REQUESTS_SIG: &str = "getUserRequests(address)";
 pub const REFUND_OWED_SIG: &str = "refundOwed(address)";
 pub const CLAIM_REFUND_SIG: &str = "claimRefund()";
+/// Anyone may call it once a `Processing` request is older than the router's `REQUEST_TIMEOUT`
+/// (1 h); it credits the requester the full ceiling back (then withdrawn with `claimRefund()`).
+pub const EXPIRE_REQUEST_SIG: &str = "expireRequest(uint256)";
 
 /// The largest prompt sent to the router. The input is stored on chain (gas grows with it, and it
 /// is public), so this is far below the member-endpoint limit.
@@ -586,6 +590,79 @@ pub async fn escalation_registry_claim_refund(app_h: tauri::AppHandle) -> Result
             kind: crate::ceremony::IntentKind::Transaction,
             chain_id: 40204,
             raw: claim_refund_tx_json(&wallet.address, router, CLAIM_REFUND_GAS),
+        });
+        Ok(())
+    })
+    .await
+}
+
+/// `expireRequest(requestId)` calldata.
+pub fn expire_request_calldata(request_id: u64) -> Vec<u8> {
+    call_word(
+        EXPIRE_REQUEST_SIG,
+        &citrate_core_kit::eip712::u64_word(request_id),
+    )
+}
+
+/// The pending-ceremony tx JSON for `expireRequest(requestId)`: zero value, gas from the live
+/// estimate.
+pub fn expire_request_tx_json(from: &str, router: &str, request_id: u64, gas: u64) -> String {
+    json!({
+        "from": from,
+        "to": router,
+        "value": "0x0",
+        "data": format!("0x{}", hex::encode(expire_request_calldata(request_id))),
+        "gas": format!("0x{gas:x}"),
+        "chainId": format!("0x{:x}", 40204u64),
+    })
+    .to_string()
+}
+
+/// Core only offers to expire the member's own request, and only while it still waits for its
+/// provider. The router checks the 1 h timeout itself (the gas estimate fails before then).
+pub fn check_expirable(r: &RouterRequest, member: &str) -> Result<(), String> {
+    if !r.requester.eq_ignore_ascii_case(member) {
+        return Err("this is not one of your registry requests".into());
+    }
+    if r.status != RouterStatus::Processing {
+        return Err("only a request still waiting for its provider can be expired".into());
+    }
+    Ok(())
+}
+
+/// **escalation_registry_expire** — raise the HIC-1 approval to expire one of the member's
+/// requests that its provider never answered (after the router's 1 h timeout), which credits the
+/// whole ceiling back to claim. Off while no router is pinned for 40204.
+#[tauri::command]
+pub async fn escalation_registry_expire(
+    app_h: tauri::AppHandle,
+    request_id: u64,
+) -> Result<(), String> {
+    let router = pinned_router()?;
+    crate::blocking::off_main(move || {
+        let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+        let rpc = RpcClient::citrate();
+        let r = RouterReader::new(&rpc, router)?.request(request_id)?;
+        check_expirable(&r, &wallet.address)?;
+        let gas = estimate_request_gas(
+            &rpc,
+            &wallet.address,
+            router,
+            &expire_request_calldata(request_id),
+            0,
+        )
+        .map_err(|e| {
+            format!("this request cannot be expired yet (a provider has 1 hour to answer). {e}")
+        })?;
+        ceremony.0.request(crate::ceremony::SignatureIntent {
+            origin: "agent:hermes".to_string(),
+            kind: crate::ceremony::IntentKind::Transaction,
+            chain_id: 40204,
+            raw: expire_request_tx_json(&wallet.address, router, request_id, gas),
         });
         Ok(())
     })

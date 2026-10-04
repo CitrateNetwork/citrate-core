@@ -143,6 +143,7 @@ const KNOWN_CALL_SIGNATURES: &[(&str, &str)] = &[
         "requestInference",
     ),
     ("claimRefund()", "claimRefund"),
+    ("expireRequest(uint256)", "expireRequest"),
 ];
 
 /// The 4-byte selector for a canonical function signature: `keccak256(sig)[..4]`.

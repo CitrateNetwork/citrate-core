@@ -373,6 +373,8 @@ fn the_registry_commands_refuse_on_40204_while_no_router_is_pinned() {
             .as_deref(),
         Some(ROUTE_OFF)
     );
+    // The commands that take an AppHandle reach `pinned_router()` before any state or network.
+    assert_eq!(pinned_router().err().as_deref(), Some(ROUTE_OFF));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -591,6 +593,46 @@ fn anvil_dry_run_inference_router_and_wsalt_authorization() {
     assert_eq!(st, 1);
     assert_eq!(reader.refund_owed(member), Ok("0".into()));
 
+    // A request its provider never answers: expiring it is refused before the router's 1 h
+    // timeout and, after it, credits the whole ceiling back.
+    let calldata = encode_request_inference(&model, b"never answered", max);
+    let gas = estimate_request_gas(&rpc, member, &router, &calldata, max)
+        .unwrap_or_else(|e| panic!("estimate: {e}"));
+    let mut tx: serde_json::Value =
+        serde_json::from_str(&request_tx_json(member, &router, &calldata, max, gas))
+            .unwrap_or_default();
+    if let Some(o) = tx.as_object_mut() {
+        o.remove("chainId");
+    }
+    let (st, _) = a.send(tx).unwrap_or_else(|e| panic!("requestInference: {e}"));
+    assert_eq!(st, 1);
+    let r1 = reader.request(1).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(check_expirable(&r1, member), Ok(()));
+    assert!(
+        estimate_request_gas(&rpc, member, &router, &expire_request_calldata(1), 0).is_err(),
+        "the router refuses to expire a request before its timeout"
+    );
+    a.rpc("evm_increaseTime", serde_json::json!([3601]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    a.rpc("evm_mine", serde_json::json!([]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let gas = estimate_request_gas(&rpc, member, &router, &expire_request_calldata(1), 0)
+        .unwrap_or_else(|e| panic!("expire estimate: {e}"));
+    let mut tx: serde_json::Value =
+        serde_json::from_str(&expire_request_tx_json(member, &router, 1, gas)).unwrap_or_default();
+    if let Some(o) = tx.as_object_mut() {
+        o.remove("chainId");
+    }
+    let (st, _) = a.send(tx).unwrap_or_else(|e| panic!("expireRequest: {e}"));
+    assert_eq!(st, 1);
+    assert_eq!(
+        reader.request(1).map(|r| r.status),
+        Ok(RouterStatus::Failed)
+    );
+    assert_eq!(reader.refund_owed(member), Ok(max.to_string()));
+    let r1 = reader.request(1).unwrap_or_else(|e| panic!("{e}"));
+    assert!(check_expirable(&r1, member).is_err(), "already expired");
+
     // WrappedSALT: the kit's EIP-712 domain separator and type hash equal the contract's.
     let asset_addr: &'static str = Box::leak(wsalt.to_ascii_lowercase().into_boxed_str());
     let asset = X402Asset {
@@ -707,4 +749,35 @@ fn the_claim_refund_tx_is_a_known_zero_value_call() {
             .as_deref(),
         Some(ROUTE_OFF)
     );
+}
+
+#[test]
+fn the_expire_tx_is_a_known_zero_value_call_for_one_request() {
+    let raw = expire_request_tx_json(
+        "0x2222222222222222222222222222222222222222",
+        "0x1111111111111111111111111111111111111111",
+        7,
+        60_000,
+    );
+    let (tx, d) = crate::txdecode::decode_transaction(&raw).unwrap_or_else(|| panic!("decodes"));
+    assert_eq!(tx.value, 0);
+    assert_eq!(tx.gas_limit, Some(60_000));
+    let mut want = selector(EXPIRE_REQUEST_SIG).to_vec();
+    want.extend_from_slice(&w_u(7));
+    assert_eq!(tx.data, want);
+    assert!(d.action.starts_with("Call expireRequest()"), "{}", d.action);
+}
+
+#[test]
+fn only_the_members_own_waiting_request_can_be_expired() {
+    let member = format!("0x{}", "aa".repeat(20));
+    let r = decode_get_request(&get_request_return(1, b"", 0)).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(check_expirable(&r, &member), Ok(()));
+    assert_eq!(check_expirable(&r, &member.to_ascii_uppercase().replace("0X", "0x")), Ok(()));
+    assert!(check_expirable(&r, &format!("0x{}", "bb".repeat(20))).is_err());
+    for status in [0u8, 2, 3, 4] {
+        let r = decode_get_request(&get_request_return(status, b"", 0))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(check_expirable(&r, &member).is_err(), "status {status}");
+    }
 }
