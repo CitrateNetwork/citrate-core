@@ -1357,6 +1357,8 @@ export interface SessionEventsPage {
   events: { seq: number; event: Record<string, unknown> }[];
   lastSeq: number;
   busy: boolean;
+  /** HUP-S1.1: core-hosted calls the session is still waiting on (newer sidecars only). */
+  pendingCoreCalls?: string[];
 }
 
 // ── Local instruction-skills (Hermes "write & run skills"). A skill is a markdown playbook the agent

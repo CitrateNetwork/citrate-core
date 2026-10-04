@@ -141,7 +141,23 @@ export interface ChatProvider {
   send: (opts: SendOpts) => Promise<{ role: string; content: string }>;
   /** HUP-S3.3 — run a track's catalog workflow (sidecar loop only; other providers omit it). */
   runWorkflow?: (workflowId: string, opts: WorkflowRunOpts) => Promise<WorkflowRunView>;
+  /** HUP-S1.1 — pick the saved agent session back up after the view reloaded (sidecar loop only;
+   *  other providers omit it). */
+  reattach?: (opts: WorkflowRunOpts) => Promise<ReattachResult>;
 }
+
+/** HUP-S1.1 — what picking a saved agent session back up found. */
+export type ReattachResult =
+  /** Nothing was saved. */
+  | { kind: "none" }
+  /** The session is still there and idle; the next message continues it. */
+  | { kind: "idle"; sessionId: string }
+  /** A turn was running (or finished while the view was gone); it was followed to its end. */
+  | { kind: "resumed"; sessionId: string; content: string; interrupted: number; failure: string | null }
+  /** The session no longer exists (Hermes restarted); the saved state was cleared. */
+  | { kind: "gone"; notice: string }
+  /** Hermes could not be asked right now; the saved state is kept for the next try. */
+  | { kind: "unavailable"; reason: string };
 
 export const AGENT_SYSTEM_PROMPT = [
   "You are Hermes, the member's own agent running on their node inside Citrate Core, preconfigured for the Citrate network (chain 40204).",

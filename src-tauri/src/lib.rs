@@ -82,6 +82,7 @@ mod postdeploy;
 // HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
 mod node_mcp;
 mod node_mcp_approvals;
+mod node_mcp_hermes;
 mod node_mcp_http;
 mod node_mcp_live;
 mod node_mcp_protocol;
