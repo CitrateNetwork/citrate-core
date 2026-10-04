@@ -922,6 +922,18 @@ impl HermesManager {
         )
     }
 
+    /// HUP-S1.5: `POST /escalations/registry` — one paid registry escalation. The body carries a
+    /// payment the member approved in the ceremony (a signature, never a key).
+    pub fn escalate_registry(&self, body: &str) -> Result<ControlResp> {
+        let bearer = self.bearer()?;
+        self.control.post_with_timeout(
+            &format!("{}/escalations/registry", self.control_url()),
+            &bearer,
+            body,
+            HERMES_ESCALATION_TIMEOUT,
+        )
+    }
+
     /// `POST /sessions/:id/messages` — start one turn (the sidecar answers 409 while busy).
     pub fn session_send(&self, id: &str, text: &str) -> Result<()> {
         valid_session_id(id).map_err(|m| HermesError::Control {
@@ -1441,6 +1453,19 @@ pub(crate) fn sidecar_escalate<R: tauri::Runtime>(
 ) -> std::result::Result<(u16, String), bool> {
     let mgr = manager(app).map_err(|_| false)?;
     match mgr.escalate(body) {
+        Ok(r) => Ok((r.status, r.body)),
+        Err(HermesError::NotRunning) => Err(false),
+        Err(_) => Err(true),
+    }
+}
+
+/// HUP-S1.5: forward one registry escalation to the sidecar. `Err(false)` means nothing was sent.
+pub(crate) fn sidecar_escalate_registry<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    body: &str,
+) -> std::result::Result<(u16, String), bool> {
+    let mgr = manager(app).map_err(|_| false)?;
+    match mgr.escalate_registry(body) {
         Ok(r) => Ok((r.status, r.body)),
         Err(HermesError::NotRunning) => Err(false),
         Err(_) => Err(true),

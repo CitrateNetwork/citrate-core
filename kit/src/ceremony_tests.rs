@@ -265,6 +265,8 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
         ("rpc.rs", include_str!("rpc.rs")),
         ("txdecode.rs", include_str!("txdecode.rs")),
         ("supervisor.rs", include_str!("supervisor.rs")),
+        // HUP-S1.5: the x402 hasher/builder must never sign; the signature is made in approve.
+        ("ceremony/x402.rs", include_str!("ceremony/x402.rs")),
     ];
     // Assemble each needle from parts so this test's own prose cannot self-match.
     // BOTH signer invocation forms are forbidden outside ceremony.rs.
@@ -275,6 +277,8 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
         // landed: a third signer that nobody scanned for would be the obvious way
         // to reintroduce exactly the bypass this test exists to forbid.
         "sign_".to_string() + "personal(",
+        // HUP-S1.5: the EIP-712 digest signer for x402 authorizations, gated identically.
+        "sign_".to_string() + "typed_digest(",
     ];
     for (name, src) in sources {
         // Strip the test module (wallet.rs's B1.1/B1.4 tests legitimately call the
@@ -337,6 +341,11 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
         wallet_src.contains("pub(crate) fn sign_personal")
             && !wallet_src.contains("pub fn sign_personal"),
         "the personal_sign signer must be pub(crate) (crate-private), never pub"
+    );
+    assert!(
+        wallet_src.contains("pub(crate) fn sign_typed_digest")
+            && !wallet_src.contains("pub fn sign_typed_digest"),
+        "the EIP-712 digest signer must be pub(crate) (crate-private), never pub"
     );
 }
 

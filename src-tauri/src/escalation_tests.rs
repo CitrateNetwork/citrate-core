@@ -600,34 +600,14 @@ fn a_corrupt_ledger_file_fails_closed_and_is_kept_aside() {
 }
 
 // ---------------------------------------------------------------------------
-// Registry route: disabled, honestly
+// Registry route (its own module and tests: escalation_registry_tests.rs)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_registry_route_is_disabled_and_names_what_is_missing() {
-    let s = registry_status(None, &[]);
-    assert!(!s.enabled);
-    assert!(s.missing.iter().any(|m| m.contains("InferenceRouter")));
-    assert!(s.missing.iter().any(|m| m.contains("x402")));
-    // Even with an address and an asset, the EIP-712 precondition keeps it off in this build.
-    let s = registry_status(
-        Some("0x1111111111111111111111111111111111111111"),
-        &["0x2222222222222222222222222222222222222222"],
-    );
-    assert!(!s.enabled);
-    assert!(!s.missing.iter().any(|m| m.contains("InferenceRouter")));
-    assert!(s.missing.iter().any(|m| m.contains("EIP-712")));
-}
-
-#[test]
-fn the_x402_asset_allowlist_is_empty_in_this_build() {
-    assert!(X402_ASSET_ALLOWLIST.is_empty());
-}
-
-#[test]
 fn the_address_book_has_no_inference_router_pinned_yet() {
-    // Federation F-4: the post-reroll redeploy has not pinned it. When it does, this test is the
-    // reminder to revisit the registry route.
+    // The router is deployed on 40204 after the reroll, but the generated core address book has no
+    // InferenceRouter entry yet. When the sync script adds it, this test is the reminder that the
+    // registry route then needs only the asset allowlist (owner decision O-1) to switch on.
     assert_eq!(crate::addresses::inference_router(), None);
 }
 

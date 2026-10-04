@@ -97,6 +97,10 @@ use crate::wallet::{self, WalletError};
 /// no-funds key (Rule-3 ADR D5). It never touches the wallet key.
 pub mod anchor;
 
+/// HUP-S1.5: the pinned x402 `TransferWithAuthorization` form for registry escalation (Rule-3 ADR
+/// D3). Hashing and building only; the signature is produced by [`SignatureCeremony::approve`].
+pub mod x402;
+
 /// The action string surfaced when calldata cannot be decoded to a human action.
 /// A ceremony carrying this action is `requires_raw_ack` and cannot be approved
 /// without an explicit raw-mode acknowledgement (B1.2-ADV-5).
@@ -396,6 +400,34 @@ struct Pending {
     intent: SignatureIntent,
     decoded: DecodedAction,
     requires_raw_ack: bool,
+    /// HUP-S1.5: set ONLY by [`SignatureCeremony::request_x402`], which built the authorization
+    /// itself. A generic `request` (any origin, any `raw`) leaves it `None`, so typed data that
+    /// core did not build stays refused on `approve`.
+    x402: Option<X402Pending>,
+}
+
+/// The x402 authorization a pending ceremony will sign on approval, and the domain it is bound to.
+#[derive(Debug, Clone)]
+struct X402Pending {
+    domain: x402::X402Domain,
+    authorization: x402::X402Authorization,
+}
+
+/// HUP-S1.5: an x402 payment authorization core built for one registry escalation. Approval is
+/// always explicit (HIC-1): the B-2 budget stays inert while the asset allowlist is empty (ADR O-1).
+#[derive(Debug, Clone)]
+pub struct X402SignRequest {
+    /// Who asked (shown verbatim on the card).
+    pub origin: String,
+    /// The asset's EIP-712 domain.
+    pub domain: x402::X402Domain,
+    /// Built by [`x402::build_authorization`], never parsed from a caller's typed data.
+    pub authorization: x402::X402Authorization,
+    /// What is paid for (shown on the card), e.g. the model and the provider endpoint host.
+    pub resource: String,
+    /// The asset's symbol and decimals, for the human-readable amount.
+    pub asset_symbol: String,
+    pub asset_decimals: u32,
 }
 
 /// The process-wide SignatureCeremony: the single approval surface. Holds the
@@ -456,9 +488,64 @@ impl SignatureCeremony {
                 intent,
                 decoded,
                 requires_raw_ack,
+                x402: None,
             },
         );
         view
+    }
+
+    /// **Step 1 (x402) — request a registry-escalation payment authorization (HUP-S1.5).**
+    /// Stores a PENDING ceremony for the EIP-3009 `TransferWithAuthorization` core built, decoded
+    /// for the card (amount, payee, validity, resource). **Does NOT sign.** The member approves it
+    /// by id through [`approve`](Self::approve) like any other ceremony; there is no budgeted path.
+    pub fn request_x402(&self, req: X402SignRequest) -> Result<CeremonyView> {
+        // Refuse anything the hasher cannot take now, so approval can never fail on shape.
+        x402::signing_digest(&req.domain, &req.authorization)
+            .map_err(|_| CeremonyError::SignFailed)?;
+        let amount = x402::parse_amount(&req.authorization.value)
+            .map_err(|_| CeremonyError::SignFailed)?;
+        let decoded = DecodedAction {
+            action: format!(
+                "Pay for one registry escalation (x402 TransferWithAuthorization): {}",
+                req.resource
+            ),
+            cost: format!(
+                "{} {} (valid until Unix time {})",
+                x402::format_units(amount, req.asset_decimals),
+                req.asset_symbol,
+                req.authorization.valid_before
+            ),
+            destination: req.authorization.to.clone(),
+        };
+        let raw = serde_json::to_vec(&req.authorization).map_err(|_| CeremonyError::SignFailed)?;
+        let intent = SignatureIntent {
+            origin: req.origin,
+            kind: IntentKind::TypedData,
+            chain_id: req.domain.chain_id,
+            raw: hex::encode(raw),
+        };
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let view = CeremonyView {
+            id: id.to_string(),
+            origin: intent.origin.clone(),
+            kind: intent.kind,
+            chain_id: intent.chain_id,
+            decoded: decoded.clone(),
+            requires_raw_ack: false,
+        };
+        self.lock().insert(
+            id,
+            Pending {
+                intent,
+                decoded,
+                requires_raw_ack: false,
+                x402: Some(X402Pending {
+                    domain: req.domain,
+                    authorization: req.authorization,
+                }),
+            },
+        );
+        Ok(view)
     }
 
     /// Re-inspect a pending ceremony without consuming it (for the approval UI to
@@ -513,6 +600,25 @@ impl SignatureCeremony {
         if pending.requires_raw_ack && !raw_ack {
             self.lock().insert(key, pending);
             return Err(CeremonyError::RawAckRequired);
+        }
+
+        // HUP-S1.5: an x402 authorization core built itself (request_x402). The payer must be this
+        // wallet; the digest is rebuilt here from the stored fields and the pinned type only.
+        if let Some(x) = pending.x402.as_ref() {
+            let wallet_addr = wallet::address(vault)?.address;
+            if !x.authorization.from.eq_ignore_ascii_case(&wallet_addr) {
+                return Err(CeremonyError::FromMismatch {
+                    claimed: x.authorization.from.clone(),
+                    wallet: wallet_addr,
+                });
+            }
+            let digest = x402::signing_digest(&x.domain, &x.authorization)
+                .map_err(|_| CeremonyError::SignFailed)?;
+            let sig = wallet::sign_typed_digest(vault, &digest)?;
+            return Ok(Signature {
+                sig_hex: hex::encode(sig),
+                kind: IntentKind::TypedData,
+            });
         }
 
         // Sign through the gated signer. `payload_bytes` decodes the hex raw; the
@@ -593,6 +699,11 @@ impl SignatureCeremony {
         if pending.requires_raw_ack && !raw_ack {
             self.lock().insert(key, pending);
             return Err(CeremonyError::RawAckRequired);
+        }
+
+        // An x402 authorization is a signature, never a transaction.
+        if pending.x402.is_some() {
+            return Err(CeremonyError::UnsupportedSigningKind);
         }
 
         // Decode the tx intent to signable fields (may still be undecodable at
@@ -1120,4 +1231,5 @@ pub fn sign_reject_sync(
 mod tests {
     include!("ceremony_tests.rs");
     include!("ceremony_budget_tests.rs");
+    include!("ceremony_x402_tests.rs");
 }

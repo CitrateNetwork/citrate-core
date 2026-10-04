@@ -1734,6 +1734,53 @@ export interface EscalationRegistryStatus {
   missing: string[];
 }
 
+/** HUP-S1.5: a registry quote (InferenceRouter provider, priced in the pinned x402 asset). */
+export interface EscalationRegistryQuote {
+  quoteId: string;
+  modelHash: string;
+  provider: string;
+  providerHost: string;
+  /** Base units of the asset, decimal string (exceeds JS number precision). */
+  priceBaseUnits: string;
+  priceLabel: string;
+  asset: string;
+  expiresAtMs: number;
+}
+
+/** The provider's x402 settlement receipt, as the provider claimed it. */
+export interface EscalationRegistryReceipt {
+  success: boolean;
+  transaction?: string | null;
+  network?: string | null;
+  payer?: string | null;
+}
+
+export interface EscalationRegistryRun {
+  escalationId: string;
+  content: string;
+  provider: string;
+  priceLabel: string;
+  receipt: EscalationRegistryReceipt | null;
+  /** Core's own `authorizationState` check; null when the chain could not be read. */
+  settledOnChain: boolean | null;
+}
+
+export interface EscalationRegistryRunRecord {
+  escalationId: string;
+  quoteId: string;
+  atMs: number;
+  modelHash: string;
+  provider: string;
+  asset: string;
+  valueBaseUnits: string;
+  payer: string;
+  nonce: string;
+  answered: boolean;
+  sent: boolean;
+  claimedTransaction: string | null;
+  settledOnChain: boolean | null;
+}
+
 export interface EscalationDomain {
   endpoints(): Promise<EscalationEndpoint[]>;
   /** The key goes to core once and is sealed in the OS keyring; it is never returned. */
@@ -1745,6 +1792,13 @@ export interface EscalationDomain {
   /** Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. */
   run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean): Promise<EscalationRun>;
   registryStatus(): Promise<EscalationRegistryStatus>;
+  /** Read the InferenceRouter and quote a provider for `modelHash`. Signs nothing. */
+  registryQuote(modelHash: string, prompt: string, system?: string | null, maxTokens?: number | null): Promise<EscalationRegistryQuote>;
+  /** Open an HIC-1 ceremony for the x402 payment of a shown quote; approve it with `sign.approve`. */
+  registryRequest(quoteId: string, shownPriceBaseUnits: string): Promise<CeremonyView>;
+  /** Run an approved quote with the signature the ceremony returned. */
+  registryRun(quoteId: string, signature: string): Promise<EscalationRegistryRun>;
+  registryHistory(): Promise<EscalationRegistryRunRecord[]>;
 }
 
 // ---- HUP-S5.5 / S6.1 — signed first-run components. Mirrors Rust `components.rs`. ----

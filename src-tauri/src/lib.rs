@@ -50,6 +50,7 @@ mod device_link;
 mod docs_ingest;
 mod earnings;
 mod escalation;
+mod escalation_registry;
 mod fleet;
 mod fleet_mdns;
 mod fleet_pairing;
@@ -341,6 +342,7 @@ pub fn run() {
             app.manage(fl_rounds::build_state(app.handle()));
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
             app.manage(escalation::EscalationState::default());
+            app.manage(escalation_registry::RegistryState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
@@ -570,7 +572,7 @@ pub fn run() {
             contract_reader::contract_view_call,
             contract_reader::contract_write_propose,
             // HUP-S1.5 — escalation router: member endpoints (key in the OS keyring), the daily
-            // spend budget, quote-then-run, and the registry route's (disabled) status.
+            // spend budget, and quote-then-run.
             escalation::escalation_endpoints,
             escalation::escalation_endpoint_add,
             escalation::escalation_endpoint_remove,
@@ -578,7 +580,12 @@ pub fn run() {
             escalation::escalation_budget_set,
             escalation::escalation_quote,
             escalation::escalation_run,
-            escalation::escalation_registry_status,
+            // HUP-S1.5 — registry escalation (InferenceRouter + x402; every payment is HIC-1).
+            escalation_registry::escalation_registry_status,
+            escalation_registry::escalation_registry_quote,
+            escalation_registry::escalation_registry_request,
+            escalation_registry::escalation_registry_run,
+            escalation_registry::escalation_registry_history,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
             web_budgets::web_budget_revoke,

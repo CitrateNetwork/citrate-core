@@ -5,6 +5,7 @@ import type { EscalationDomain } from "../domains";
 import type { SimHost } from "./index";
 
 const NEEDS_APP = "escalation endpoints need the desktop app (keys are sealed in the OS keyring)";
+const REGISTRY_NEEDS_APP = "registry escalation needs the desktop app (payments are approved in its signature ceremony)";
 
 export function simEscalation(_host: SimHost): EscalationDomain {
   return {
@@ -45,6 +46,18 @@ export function simEscalation(_host: SimHost): EscalationDomain {
         reason: "Registry escalation is not deployed yet. Escalations use your own endpoints.",
         missing: ["the desktop app"],
       };
+    },
+    async registryQuote() {
+      throw new Error(REGISTRY_NEEDS_APP);
+    },
+    async registryRequest() {
+      throw new Error(REGISTRY_NEEDS_APP);
+    },
+    async registryRun() {
+      throw new Error(REGISTRY_NEEDS_APP);
+    },
+    async registryHistory() {
+      return [];
     },
   };
 }

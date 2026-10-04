@@ -535,6 +535,32 @@ pub(crate) fn sign_personal(vault: &CustodyVault, message: &[u8]) -> Result<[u8;
     // `entropy` + `key` zeroize on drop here.
 }
 
+/// **In-process only.** Sign a 32-byte EIP-712 digest (`keccak256(0x1901 ‖ domainSeparator ‖
+/// structHash)`) with the stored wallet's default account: recoverable secp256k1, `r ‖ s ‖ v` with
+/// `v` in {27, 28} (what EIP-3009 verifiers such as WrappedSALT's `ECDSA.tryRecover` accept).
+/// Requires the vault UNLOCKED (fails closed if locked).
+///
+/// HUP-S1.5: the digest is never taken from a caller. The ONLY sanctioned caller is
+/// [`crate::ceremony::SignatureCeremony::approve`], which rebuilds it from an x402 authorization
+/// core itself built (`ceremony::x402`, the one pinned type of Rule-3 ADR D3) after the member
+/// approved that ceremony id. **@rule8 gating:** `pub(crate)`, scanned by
+/// `ceremony_tests::adv1_adv7_signer_only_reachable_via_approve` like the other three signers.
+pub(crate) fn sign_typed_digest(vault: &CustodyVault, digest: &[u8; 32]) -> Result<[u8; 65]> {
+    let entropy = read_entropy(vault)?;
+    let key = derive_key_from_entropy(&entropy)?;
+    let sk = match &key {
+        UnifiedKey::Secp256k1(sk) => sk,
+        _ => return Err(WalletError::Derivation),
+    };
+    let (r, s, rec) = sign_recoverable(sk, digest).map_err(|_| WalletError::Derivation)?;
+    let mut out = [0u8; 65];
+    out[..32].copy_from_slice(&r);
+    out[32..64].copy_from_slice(&s);
+    out[64] = rec + 27;
+    Ok(out)
+    // `entropy` + `key` zeroize on drop here.
+}
+
 /// **Verify, don't sign.** Recover the Ethereum address that produced an EIP-191 `personal_sign`
 /// over `message` — the inverse of [`sign_personal`]. This is how a peer's *foreign* identity
 /// binding is checked: recover the signer and confirm it equals the address the binding claims,

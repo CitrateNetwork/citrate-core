@@ -8,7 +8,7 @@ import { tauriEscalation } from "../tauri/escalation";
 
 describe("bridge contract — escalation (HUP-S1.5)", () => {
   it("exposes the escalation domain", () => {
-    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "run", "registryStatus"] as const) {
+    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "run", "registryStatus", "registryQuote", "registryRequest", "registryRun", "registryHistory"] as const) {
       expect(typeof bridge.escalation[k]).toBe("function");
     }
   });
@@ -19,6 +19,10 @@ describe("bridge contract — escalation (HUP-S1.5)", () => {
     await expect(bridge.escalation.addEndpoint({ label: "x", baseUrl: "https://x.example/v1", model: "m", inputMicrosPerMtok: 1, outputMicrosPerMtok: 1 }, "k")).rejects.toThrow(/desktop app/);
     await expect(bridge.escalation.run("q", 1, false, false)).rejects.toThrow(/desktop app/);
     expect((await bridge.escalation.registryStatus()).enabled).toBe(false);
+    await expect(bridge.escalation.registryQuote("0x" + "cd".repeat(32), "plan")).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.registryRequest("rq-1", "1")).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.registryRun("rq-1", "0x00")).rejects.toThrow(/desktop app/);
+    expect(await bridge.escalation.registryHistory()).toEqual([]);
   });
 });
 
@@ -60,5 +64,27 @@ describe("tauri escalation invokes the registered commands", () => {
     invokeMock.mockResolvedValueOnce({});
     await tauriEscalation.run("q-1", 1234, true, false);
     expect(invokeMock).toHaveBeenCalledWith("escalation_run", { quoteId: "q-1", shownCostMicros: 1234, confirmed: true, tainted: false });
+  });
+
+  it("registryQuote → escalation_registry_quote; omitted optionals become null", async () => {
+    invokeMock.mockResolvedValueOnce({});
+    const mh = "0x" + "cd".repeat(32);
+    await tauriEscalation.registryQuote(mh, "plan it");
+    expect(invokeMock).toHaveBeenCalledWith("escalation_registry_quote", { modelHash: mh, prompt: "plan it", system: null, maxTokens: null });
+  });
+
+  it("registryRequest passes the shown price as a decimal string (no float rounding)", async () => {
+    invokeMock.mockResolvedValueOnce({});
+    await tauriEscalation.registryRequest("rq-1", "10000000000000000");
+    expect(invokeMock).toHaveBeenCalledWith("escalation_registry_request", { quoteId: "rq-1", shownPriceBaseUnits: "10000000000000000" });
+  });
+
+  it("registryRun / registryHistory invoke their commands", async () => {
+    invokeMock.mockResolvedValue({});
+    await tauriEscalation.registryRun("rq-1", "0xabc");
+    expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_run", { quoteId: "rq-1", signature: "0xabc" });
+    invokeMock.mockResolvedValue([]);
+    await tauriEscalation.registryHistory();
+    expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_history");
   });
 });

@@ -7,9 +7,9 @@
 //!    and an API key. The key is sealed in the **OS keyring** here and never written to a file,
 //!    never returned to the webview, and never stored by the sidecar: core reads it for one request
 //!    and passes it to the sidecar inside that request (`POST /escalations`), which drops it.
-//! 2. **Registry models** (InferenceRouter + x402, ADR-2026-09-30 Rule-3 B-2). **Disabled**: the
-//!    router is not pinned for chain 40204, the x402 asset allowlist is empty, and the EIP-712
-//!    precondition is open. [`registry_status`] says so; nothing calls a registry.
+//! 2. **Registry models** (InferenceRouter + x402, ADR-2026-09-30 Rule-3 D3): see
+//!    `escalation_registry.rs`. Every registry payment is an HIC-1 ceremony; the route is off until
+//!    the address book pins an InferenceRouter and an x402 asset is allowlisted (owner decision O-1).
 //!
 //! ## The spend budget (TLA+ `formal/SpendBudget.tla`)
 //!
@@ -71,9 +71,6 @@ pub const MAX_ESCALATION_TOKENS: u32 = 8192;
 pub const DEFAULT_ESCALATION_TOKENS: u32 = 2048;
 /// Tokens added per message for the chat template (same as the sidecar).
 pub const PER_MESSAGE_OVERHEAD_TOKENS: u64 = 16;
-/// The x402 asset allowlist (ADR D3). Empty until a token with `TransferWithAuthorization` (such
-/// as a wrapped SALT) is deployed and pinned (ADR owner decision O-1).
-pub const X402_ASSET_ALLOWLIST: &[&str] = &[];
 
 pub const LEDGER_FILE: &str = "ledger.json";
 pub const ENDPOINTS_FILE: &str = "endpoints.json";
@@ -915,35 +912,6 @@ pub struct RegistryStatusView {
     pub missing: Vec<String>,
 }
 
-/// The registry route's status. In this build it is always disabled: even with a pinned router and
-/// an allowlisted asset, core's lean crypto build has no EIP-712 hasher yet (ADR D3 precondition).
-pub fn registry_status(inference_router: Option<&str>, x402_assets: &[&str]) -> RegistryStatusView {
-    let mut missing = Vec::new();
-    if inference_router.is_none() {
-        missing.push(
-            "InferenceRouter is not deployed on chain 40204 yet (post-reroll redeploy, federation F-4)"
-                .to_string(),
-        );
-    }
-    if x402_assets.is_empty() {
-        missing.push(
-            "x402 asset: no token with TransferWithAuthorization (such as a wrapped SALT) is allowlisted (ADR O-1)"
-                .to_string(),
-        );
-    }
-    missing.push("EIP-712 hasher in core's lean crypto build (ADR D3 precondition)".to_string());
-    missing.push(
-        "registry model routing after the model precompile integration (federation F-1)"
-            .to_string(),
-    );
-    RegistryStatusView {
-        enabled: false,
-        reason: "Registry escalation is not deployed yet. Escalations use your own endpoints."
-            .to_string(),
-        missing,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
@@ -1295,15 +1263,6 @@ fn escalation_run_sync<R: tauri::Runtime>(
         exceeded_quote: rec.exceeded_quote,
         remaining_micros: remaining,
     })
-}
-
-/// **escalation_registry_status** — the registry route (disabled in this build).
-#[tauri::command]
-pub async fn escalation_registry_status() -> Result<RegistryStatusView, String> {
-    Ok(registry_status(
-        crate::addresses::inference_router(),
-        X402_ASSET_ALLOWLIST,
-    ))
 }
 
 #[cfg(test)]
