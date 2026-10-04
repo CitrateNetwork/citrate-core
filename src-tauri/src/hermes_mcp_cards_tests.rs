@@ -159,6 +159,15 @@ fn only_http_addresses_are_openable() {
 }
 
 #[test]
+fn addresses_with_credentials_or_without_a_host_are_never_openable() {
+    assert!(!openable("https://someone@example.com/"));
+    assert!(!openable("https://someone:secret@example.com/"));
+    assert!(!openable("javascript:alert(1)"));
+    assert!(!openable("file:///etc/hosts"));
+    assert!(!openable("data:text/html,hi"));
+}
+
+#[test]
 fn the_new_commands_are_in_the_main_window_acl() {
     let acl = include_str!("../permissions/main-window.toml");
     assert!(acl.contains("\"hermes_mcp_pending\""));

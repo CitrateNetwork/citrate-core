@@ -65,7 +65,9 @@ MCP server is on. When it is on, at every Hermes start core:
 2. writes the `node` entry into Hermes's MCP allowlist (`hermes/mcp.json`, 0600): this
    executable run as the stdio shim (`--mcp-stdio`), with `CITRATE_NODE_MCP_TOKEN` and
    `CITRATE_NODE_MCP_PORT` in the entry's explicit environment, and `allow_write_tools = true`
-   (pending owner sign-off, A24).
+   (pending owner sign-off, A24). The plaintext token is in this file (owner-only) because the
+   sidecar hands it to the shim it starts; the server itself keeps only the hash, and the token
+   stops working when it is replaced, revoked, or the app exits.
 
 Write tools still never act on their own: each becomes a request in this server's approval
 inbox (shown in the app, labelled with the token), and a transaction is signed only through the
