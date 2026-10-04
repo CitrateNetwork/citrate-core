@@ -290,6 +290,8 @@ fn receipt(block: Option<u64>, status: Option<u64>) -> AnchorReceipt {
         status,
         nonce: None,
         from: None,
+        gas_used: None,
+        effective_gas_price_wei: None,
     }
 }
 
@@ -607,6 +609,8 @@ fn a_mined_receipt_decides_the_day_whatever_the_nonce_says() {
         tx_hash: sent(Some(5)).tx_hash,
         block_number: 42,
         status: Some(1),
+        gas_used: Some(48_000),
+        effective_gas_price: Some(1_000_000_000),
     };
     match repoll_decision(&sent(Some(5)), Some(9), Some(rc)) {
         Repoll::Mined(done) => {

@@ -294,6 +294,46 @@ pub struct BroadcastResult {
     /// (`None` if broadcast succeeded but the receipt has not yet been polled).
     #[serde(rename = "blockNumber")]
     pub block_number: Option<u64>,
+    /// HUP-S7.5 (D-27): the mined receipt's status (1 succeeded, 0 reverted), once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u64>,
+    /// HUP-S7.5 (D-27): the gas the mined transaction used, once known.
+    #[serde(rename = "gasUsed", default, skip_serializing_if = "Option::is_none")]
+    pub gas_used: Option<u64>,
+    /// HUP-S7.5 (D-27): wei per gas actually paid (decimal), once known.
+    #[serde(
+        rename = "effectiveGasPriceWei",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_gas_price_wei: Option<String>,
+    /// HUP-S7.5 (D-27): the SALT value the transaction carried (wei, decimal).
+    #[serde(rename = "valueWei", default, skip_serializing_if = "Option::is_none")]
+    pub value_wei: Option<String>,
+    /// The recipient (`0x` + 40 hex), `None` for a contract creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// The origin the ceremony displayed (who asked for the transaction).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
+}
+
+/// HUP-S7.5 (D-27): something told about every transaction [`sign_and_broadcast`] sent. The app
+/// installs one that hands Hermes's own transactions (by origin) to its metering, so the daily
+/// report carries their gas and SALT. It sees public facts only and cannot change the result.
+pub type BroadcastObserver = Box<dyn Fn(&BroadcastResult) + Send + Sync>;
+
+static BROADCAST_OBSERVER: std::sync::OnceLock<BroadcastObserver> = std::sync::OnceLock::new();
+
+/// Install the broadcast observer (once per process; a second call is refused and returns false).
+pub fn set_broadcast_observer(f: BroadcastObserver) -> bool {
+    BROADCAST_OBSERVER.set(f).is_ok()
+}
+
+fn notify_broadcast(r: &BroadcastResult) {
+    if let Some(f) = BROADCAST_OBSERVER.get() {
+        f(r);
+    }
 }
 
 /// Errors from the ceremony surface. Deliberately coarse + secret-free: no
@@ -654,8 +694,8 @@ impl SignatureCeremony {
             .send_raw_transaction(&signed.raw)
             .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
         let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
-        let block_number = match receipt {
-            Ok(r) => Some(r.block_number),
+        let mined = match receipt {
+            Ok(r) => Some(r),
             // The tx WAS accepted (we have a hash); the receipt just did not land
             // within the poll budget. Return the hash honestly with no block yet
             // rather than failing (the caller can re-poll). A hard RPC error on
@@ -666,7 +706,16 @@ impl SignatureCeremony {
 
         Ok(BroadcastResult {
             tx_hash,
-            block_number,
+            block_number: mined.as_ref().map(|r| r.block_number),
+            status: mined.as_ref().and_then(|r| r.status),
+            gas_used: mined.as_ref().and_then(|r| r.gas_used),
+            effective_gas_price_wei: mined
+                .as_ref()
+                .and_then(|r| r.effective_gas_price)
+                .map(|p| p.to_string()),
+            value_wei: Some(parsed.value.to_string()),
+            to: parsed.to.map(|a| format!("0x{}", hex::encode(a))),
+            origin: pending.intent.origin.clone(),
         })
     }
 
@@ -1079,7 +1128,7 @@ pub fn sign_and_broadcast_sync(
     // receipt-poll budget (30 attempts × 2s = up to 60s for inclusion). Blocking
     // HTTP is correct here — the command runs off the async runtime.
     let rpc = crate::rpc::RpcClient::citrate();
-    ceremony
+    let result = ceremony
         .0
         .approve_and_broadcast(
             &custody.0,
@@ -1092,7 +1141,10 @@ pub fn sign_and_broadcast_sync(
                 poll_interval: std::time::Duration::from_secs(2),
             },
         )
-        .map_err(err_str)
+        .map_err(err_str)?;
+    // HUP-S7.5 (D-27): sent; tell the observer (the app's metering), then return the same result.
+    notify_broadcast(&result);
+    Ok(result)
 }
 
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.

@@ -211,6 +211,7 @@ export function ActivityMonitor({
   const approvals = turn.approvals ?? [];
   const verifiers = turn.verifiers ?? [];
   const speed = snapshot.speed ?? { tokensPerSecond: null, note: "this window's sender does not report speed" };
+  const firstToken = snapshot.firstToken ?? { ms: null, note: "this window's sender does not report the first-token time" };
   const planId = useId();
   const approvalsId = useId();
   const verifiersId = useId();
@@ -255,6 +256,9 @@ export function ActivityMonitor({
       </Row>
       <Row name="Speed" testId="mon-speed" hint={speed.note}>
         {speed.tokensPerSecond !== null ? `${speed.tokensPerSecond} tokens/s` : "unknown"}
+      </Row>
+      <Row name="First token" testId="mon-ttft" hint={firstToken.note}>
+        {firstToken.ms !== null ? `${fmt(firstToken.ms)} ms` : "unknown"}
       </Row>
       <Row name="Elapsed" testId="mon-elapsed-row">
         <span data-testid="mon-elapsed">{formatElapsed(turn.startedAt, endAt)}</span>

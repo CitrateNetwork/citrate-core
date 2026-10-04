@@ -402,6 +402,8 @@ fn a_reverted_or_unmined_receipt_never_confirms() {
         status,
         nonce: None,
         from: None,
+        gas_used: None,
+        effective_gas_price_wei: None,
     };
     assert!(receipt_confirms(&mk(Some(1), Some(1))));
     assert!(!receipt_confirms(&mk(Some(1), Some(0))));
