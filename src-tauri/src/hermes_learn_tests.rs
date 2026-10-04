@@ -702,3 +702,38 @@ fn the_publish_payload_must_carry_the_pinned_cid() {
     p["manifest_cid"] = serde_json::json!("");
     assert!(check_manifest_cid(&p, "bafkreiexampleskillcid").is_err());
 }
+
+/// HUP-S7.7 / US-9.2: Citrate's first-party literacy skills (`src-tauri/skills/`, including
+/// citrate-paraconsensus and citrate-belnap-aggregate) are a resource in every bundle config, so
+/// the `first_party` skills source the sidecar is pointed at exists in every build, not only in
+/// the release overlays.
+#[test]
+fn every_bundle_config_ships_the_first_party_skills() {
+    let src_tauri = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for entry in std::fs::read_dir(src_tauri).expect("src-tauri").flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        if !(file.starts_with("tauri.") && file.ends_with(".conf.json")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path()).expect("read config");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("config is JSON");
+        let listed: Vec<&str> = json
+            .pointer("/bundle/resources")
+            .and_then(|r| r.as_array())
+            .unwrap_or_else(|| panic!("{file} has no bundle.resources list"))
+            .iter()
+            .filter_map(|r| r.as_str())
+            .collect();
+        assert!(listed.contains(&"skills/**/*"), "{file} must bundle skills/**/*");
+        checked += 1;
+    }
+    assert!(checked >= 6, "expected the base config and the overlays, saw {checked}");
+    // The resource the sidecar is pointed at holds the literacy skills US-9.2 relies on.
+    for name in ["citrate-paraconsensus", "citrate-belnap-aggregate", "citrate-precompiles"] {
+        assert!(
+            src_tauri.join("skills").join(name).join("SKILL.md").is_file(),
+            "src-tauri/skills/{name}/SKILL.md"
+        );
+    }
+}
