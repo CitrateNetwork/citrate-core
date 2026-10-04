@@ -51,6 +51,15 @@ pub enum McpAction {
     /// HUP-S4.2: run an anchor pass now. Each closed day's anchor still waits for its own
     /// approval card; nothing is signed by this request.
     AnchorPropose,
+    /// HUP-S1.1: send a message to a Hermes session (starts a turn).
+    HermesSessionSend {
+        session: String,
+        text: String,
+    },
+    /// HUP-S1.1: stop the turn a Hermes session is running.
+    HermesSessionStop {
+        session: String,
+    },
 }
 
 impl McpAction {
@@ -71,6 +80,13 @@ impl McpAction {
                 "Keep file {cid} on this node (a local pin: no storage bond and no transaction)"
             ),
             McpAction::AnchorPropose => "Prepare today's anchor approvals now: each closed day of decision records gets its own approval card before anything is signed".to_string(),
+            McpAction::HermesSessionSend { session, text } => format!(
+                "Send this message to Hermes session {session}, which starts a turn there: \"{}\"",
+                crate::node_mcp_hermes::summary_text(text)
+            ),
+            McpAction::HermesSessionStop { session } => {
+                format!("Stop the turn Hermes session {session} is running")
+            }
         }
     }
 }

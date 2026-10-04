@@ -171,8 +171,8 @@ impl Store {
         let mut st = self.state()?;
         check_sequence(
             st.last_manifest.as_ref(),
-            vm.manifest.sequence,
-            &vm.digest_hex,
+            vm.manifest().sequence,
+            vm.digest_hex(),
         )?;
         st.last_manifest = Some(vm.seen());
         self.write_state(&st)
@@ -202,11 +202,11 @@ impl Store {
         let mut st = self.state()?;
         check_sequence(
             st.last_manifest.as_ref(),
-            vm.manifest.sequence,
-            &vm.digest_hex,
+            vm.manifest().sequence,
+            vm.digest_hex(),
         )?;
         let comp = vm
-            .manifest
+            .manifest()
             .component(name)
             .ok_or_else(|| ComponentError::UnknownComponent(name.to_string()))?;
         let (used_platform, art) =
@@ -310,7 +310,15 @@ impl Store {
 
         let comp_dir = self.root.join(&comp.name);
         fs::create_dir_all(&comp_dir).map_err(io)?;
-        let dir_name = format!("{}-{}", comp.version, &art.sha256[..12]);
+        // The manifest's sha256 is checked as 64 hex digits; never slice past what is there.
+        let short = art
+            .sha256
+            .get(..12)
+            .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                ComponentError::ManifestMalformed("an artifact hash is not hex".into())
+            })?;
+        let dir_name = format!("{}-{short}", comp.version);
         let target = comp_dir.join(&dir_name);
         let old = st.components.get(&comp.name).cloned();
         let referenced = |d: &str| {
@@ -337,7 +345,7 @@ impl Store {
             dir: dir_name.clone(),
             platform: used_platform,
             installed_at: now,
-            manifest_sequence: vm.manifest.sequence,
+            manifest_sequence: vm.manifest().sequence,
         };
         let previous = old.as_ref().map(|o| o.current.clone());
         st.components.insert(

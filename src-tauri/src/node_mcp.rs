@@ -343,6 +343,15 @@ async fn run_action(app: &tauri::AppHandle, action: McpAction) -> Result<Value, 
                 "next": "Each raised card waits for the member's approval in Citrate Core before anything is signed.",
             }))
         }
+        // HUP-S1.1: the member approved it; the app's Hermes client carries it to the session.
+        a @ (McpAction::HermesSessionSend { .. } | McpAction::HermesSessionStop { .. }) => {
+            let app2 = app.clone();
+            crate::blocking::off_main(move || {
+                let mgr = crate::hermes::manager_for(&app2)?;
+                crate::node_mcp_hermes::run_action(mgr, &a)
+            })
+            .await
+        }
     }
 }
 

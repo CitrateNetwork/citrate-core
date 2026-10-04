@@ -418,6 +418,8 @@ fn tools_list_carries_annotations_and_strict_schemas() {
             "cluster_share",
             "invite_create",
             "invite_revoke",
+            "hermes_session_send",
+            "hermes_session_stop",
         ]
         .contains(&name);
         assert_eq!(
@@ -1384,10 +1386,15 @@ fn stdio_shim_reports_a_stopped_server_and_a_bad_token_as_jsonrpc_errors() {
     let v: Value =
         serde_json::from_str(String::from_utf8(out).unwrap_or_default().trim()).expect("json");
     assert_eq!(v["id"], json!(1));
-    assert!(v["error"]["message"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("HTTP 401"));
+    // A token the server does not hold: the server cannot prove itself for it, so the token is
+    // never sent.
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("was not sent"),
+        "{v}"
+    );
     sv.state.stop();
     let mut out: Vec<u8> = Vec::new();
     run_stdio_shim(
@@ -2417,7 +2424,7 @@ fn a_read_only_token_is_offered_only_read_tools() {
     let full = rpc(&core, &ctx("m"), "tools/list", json!({}));
     assert_eq!(
         full["result"]["tools"].as_array().map(Vec::len),
-        Some(crate::node_mcp_tools::TOOLS.len())
+        Some(crate::node_mcp_tools::all_tools().count())
     );
 }
 
@@ -2737,4 +2744,180 @@ fn ed25519_verify_calls_0x0120_and_reads_its_answer_word() {
     *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some("0x01".into());
     let bad = call(&core, &c, "ed25519_verify", args);
     assert!(is_tool_error(&bad), "{bad}");
+}
+
+// ---------------------------------------------------------------------------
+// the shim sends the connect token only to a server that proves it is Citrate Core
+// ---------------------------------------------------------------------------
+
+/// Something else listening on the port: answers every request, records every header it saw.
+struct Squatter(std::sync::Mutex<Vec<Vec<(String, String)>>>);
+
+impl crate::node_mcp_http::ShimTransport for Squatter {
+    fn post(
+        &self,
+        _body: &str,
+        headers: &[(String, String)],
+    ) -> Result<(u16, HashMap<String, String>, String), String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(headers.to_vec());
+        let mut h = HashMap::new();
+        // Even an answer that looks like an identity proof is not one.
+        h.insert(
+            crate::node_mcp_http::IDENTITY_HEADER.to_string(),
+            "00".repeat(32),
+        );
+        Ok((200, h, json!({"jsonrpc": "2.0", "id": 1, "result": {}}).to_string()))
+    }
+}
+
+#[test]
+fn the_shim_never_sends_the_token_to_a_server_that_cannot_prove_it_is_core() {
+    let squatter = Squatter(std::sync::Mutex::new(Vec::new()));
+    let token = format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "ab".repeat(32));
+    let mut out: Vec<u8> = Vec::new();
+    let input = format!("{}\n{}\n", init_body(), json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+    run_stdio_shim(std::io::Cursor::new(input), &mut out, &squatter, &token);
+    let seen = squatter.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(!seen.is_empty(), "the shim asked the server to prove itself");
+    for hs in &seen {
+        for (k, v) in hs {
+            assert!(!k.eq_ignore_ascii_case("authorization"), "token sent: {v}");
+            assert!(!v.contains(&token));
+        }
+    }
+    let text = String::from_utf8(out).unwrap_or_default();
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(text.contains("was not sent"), "{text}");
+}
+
+/// Core answers the first request, then quits and another program takes the port.
+struct CoreThenSquatter {
+    token: String,
+    authorized_answered: std::sync::Mutex<usize>,
+    after_switch: std::sync::Mutex<Vec<Vec<(String, String)>>>,
+}
+
+impl crate::node_mcp_http::ShimTransport for CoreThenSquatter {
+    fn post(
+        &self,
+        _body: &str,
+        headers: &[(String, String)],
+    ) -> Result<(u16, HashMap<String, String>, String), String> {
+        let mut answered = self.authorized_answered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = HashMap::new();
+        if *answered >= 1 {
+            // Core is gone: whatever holds the port now records what it is sent.
+            self.after_switch
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(headers.to_vec());
+            h.insert(
+                crate::node_mcp_http::IDENTITY_HEADER.to_string(),
+                "00".repeat(32),
+            );
+            return Ok((200, h, json!({"jsonrpc": "2.0", "id": 2, "result": {}}).to_string()));
+        }
+        let challenge = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(crate::node_mcp_http::IDENTITY_CHALLENGE_HEADER));
+        if let Some((_, ch)) = challenge {
+            let mut nonce = [0u8; 32];
+            hex::decode_to_slice(ch, &mut nonce).map_err(|e| e.to_string())?;
+            h.insert(
+                crate::node_mcp_http::IDENTITY_HEADER.to_string(),
+                crate::node_mcp_token::identity_proof_for(&self.token, &nonce),
+            );
+            return Ok((204, h, String::new()));
+        }
+        *answered += 1;
+        Ok((200, h, json!({"jsonrpc": "2.0", "id": 1, "result": {}}).to_string()))
+    }
+}
+
+#[test]
+fn the_shim_checks_the_server_before_every_request_not_only_the_first() {
+    let token = format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "ab".repeat(32));
+    let t = CoreThenSquatter {
+        token: token.clone(),
+        authorized_answered: std::sync::Mutex::new(0),
+        after_switch: std::sync::Mutex::new(Vec::new()),
+    };
+    let mut out: Vec<u8> = Vec::new();
+    let input = format!(
+        "{}\n{}\n",
+        init_body(),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    );
+    run_stdio_shim(std::io::Cursor::new(input), &mut out, &t, &token);
+    assert_eq!(*t.authorized_answered.lock().unwrap_or_else(|e| e.into_inner()), 1);
+    let seen = t.after_switch.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(!seen.is_empty(), "the second request reached the new listener");
+    for hs in &seen {
+        for (k, v) in hs {
+            assert!(!k.eq_ignore_ascii_case("authorization"), "token sent: {v}");
+            assert!(!v.contains(&token));
+        }
+    }
+    let text = String::from_utf8(out).unwrap_or_default();
+    assert!(text.contains("was not sent"), "{text}");
+}
+
+#[test]
+fn the_identity_proof_is_bound_to_the_token_and_the_challenge() {
+    let store = crate::node_mcp_token::TokenStore::in_memory();
+    let issued = store.issue("client", 0).expect("issue");
+    let n1 = [7u8; 32];
+    let n2 = [8u8; 32];
+    let mine = crate::node_mcp_token::identity_proof_for(&issued.connect_token, &n1);
+    assert!(store.identity_proofs(&n1).contains(&mine));
+    assert!(!store.identity_proofs(&n2).contains(&mine), "a proof is for one challenge");
+    let other = format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "cd".repeat(32));
+    assert!(!store
+        .identity_proofs(&n1)
+        .contains(&crate::node_mcp_token::identity_proof_for(&other, &n1)));
+}
+
+// ---------------------------------------------------------------------------
+// sessions are bounded per client; reads never unlock the wallet
+// ---------------------------------------------------------------------------
+
+#[test]
+fn one_client_cannot_push_out_another_clients_sessions() {
+    use crate::node_mcp_http::{pick_eviction, MAX_SESSIONS_PER_TOKEN};
+    let mk = |tok: &str, n: usize, from: u64| -> Vec<(String, String, u64)> {
+        (0..n)
+            .map(|i| (format!("{tok}-{i}"), tok.to_string(), from + i as u64))
+            .collect()
+    };
+    // Under both caps: nobody goes.
+    let few = mk("a", 3, 0);
+    assert_eq!(pick_eviction(&few, "a"), None);
+    // A client at its own cap loses its own oldest, never another's.
+    let mut s = mk("b", 2, 0);
+    s.extend(mk("a", MAX_SESSIONS_PER_TOKEN, 10));
+    assert_eq!(pick_eviction(&s, "a"), Some("a-0".into()));
+    // A full table: the busiest client gives way, not the newcomer's victim of choice.
+    let mut full = Vec::new();
+    for (i, t) in ["c", "d", "e", "f", "g", "h", "i", "j"].iter().enumerate() {
+        full.extend(mk(t, MAX_SESSIONS_PER_TOKEN, (i * 100) as u64));
+    }
+    let victim = pick_eviction(&full, "k").expect("full");
+    assert!(victim.ends_with("-0"));
+}
+
+#[test]
+fn a_node_mcp_read_never_unlocks_the_wallet() {
+    let src = include_str!("node_mcp_live.rs");
+    assert!(!src.contains("address_auto_unlocked"), "reads must not auto-unlock the vault");
+    assert!(!src.contains("ensure_auto_unlocked"));
+}
+
+#[test]
+fn a_node_mcp_cluster_read_never_starts_the_group_daemon() {
+    let src = include_str!("node_mcp_live.rs");
+    for f in ["fn cluster_status(", "fn cluster_peers("] {
+        let i = src.find(f).expect(f);
+        let body = &src[i..i + 400];
+        assert!(body.contains("is_daemon_running()"), "{f} must not start the daemon");
+    }
 }

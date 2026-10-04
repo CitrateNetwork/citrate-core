@@ -58,6 +58,9 @@ url = "2"
 # sha2 + base64: PKCE S256 (challenge = base64url(sha256(verifier))) and JWK
 #   coordinate decoding.
 sha2 = "0.10"
+# HMAC-SHA256 seal on the escalation spend ledger (key in the OS keyring). Already in the lock
+# through the kit.
+hmac = "0.12"
 base64 = "0.22"
 # BC-5.3 — sha3 (Keccak-256) for the SBT sub→tokenId lookup: the member subHash is
 #   keccak256(sub) (dynamic per-member, so it CANNOT be a pinned selector like the
@@ -141,6 +144,10 @@ socket2 = { version = "0.6", features = ["all"] }
 # crate and NO new audit surface (RUSTSEC clean at 0.2.x). Unix-only: on Windows
 # (out of beta scope, O-4) the supervisor falls back to std `Child::kill`, so no
 # libc there.
+# Read a member project's foundry.toml before Verify runs forge (postdeploy.rs). Already in the
+# lock (it was a dev-dependency for the ACL tests, which still use it).
+toml = "0.9"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -149,7 +156,6 @@ libc = "0.2"
 # with Tauri's own resolver, to prove pop-out windows get no app command. Same versions tauri
 # already pulls in (no new crates).
 tauri-utils = "2"
-toml = "0.9"
 # Test-only mock OIDC authority: p256 signs the id_token with a TEST key and
 #   serves its public coords as JWKS, so the full flow is exercised headlessly.
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
