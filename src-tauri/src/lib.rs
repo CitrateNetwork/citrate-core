@@ -30,6 +30,7 @@ mod activity;
 mod addresses;
 mod agent;
 mod agent_grants;
+mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;

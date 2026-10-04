@@ -697,6 +697,15 @@ impl McpCore {
                     json!({"precompile": "ED25519_VERIFY", "address": address, "valid": valid, "source": r.source}),
                 )
             }
+            "agent_precompile_encode" => {
+                let op = tools::arg_str(args, "operation")?;
+                let a = args.get("args").ok_or("missing object argument `args`")?;
+                crate::agent_precompiles::encode_json(op, a)
+            }
+            "agent_precompile_decode" => crate::agent_precompiles::decode_json(
+                tools::arg_str(args, "operation")?,
+                tools::arg_str(args, "output")?,
+            ),
             "wallet_info" => {
                 let a = self.backend.wallet_address()?;
                 let mut v = self.balance_of(&a)?;

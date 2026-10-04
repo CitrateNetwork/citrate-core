@@ -1,14 +1,15 @@
 ---
 name: citrate-precompiles
-description: The Citrate precompile map for chain 40204 with addresses, what each one does, gas formulas, input and output shapes, and which ones contract code can actually reach today. Use when someone asks what a Citrate precompile does, which address to call, what it costs, how to call one from Solidity or from Hermes, or why a call returned empty data. Cites the citrate-chain source for every row.
+description: The Citrate precompile map for chain 40204 with addresses, what each one does, gas formulas, input and output shapes, which ones contract code can actually reach today, and the agent precompile fork (LoRA, memory anchor, agent ops) that waits on an activation height. Use when someone asks what a Citrate precompile does, which address to call, what it costs, how to call one from Solidity or from Hermes, or why a call returned empty data. Cites the citrate-chain source for every row.
 license: Apache-2.0
 metadata:
   created: 2026-10-01
   branch: hup/n3-faucet-adr-literacy
   author: Larry Klosowski + Claude Opus 5.5
   status: active
+  updated: 2026-10-04 on hup/n7-chain-precompile-followups (agent precompile fork, HUP-S7.2)
   wp: HUP-S7.7
-  citrate-chain: 0aab474b437389ccd54c41c26378f1b3197ec4e5
+  citrate-chain: 3a6e45398904bbb3aff0fed46e26c22171aa30b1
   citrate-docs: 73ea7c56bc2087058ecc58eae5dbf734c86da072
 ---
 
@@ -56,6 +57,10 @@ result.
 | `0x0110` | BELNAP_AGGREGATE | Belnap-FOUR aggregation: Q16 values plus one state per dimension | `2000 + 50 * dim`, times `n` from an activation height | yes |
 | `0x0111` | ROUTING_INFERENCE | fixed 768-128-3 Q16 MLP forward pass, returns mentor id, adapter id, confidence | `5000 + 4` per parameter (465,324 at the canonical shape) | yes |
 | `0x0120` | ED25519_VERIFY | strict RFC 8032 Ed25519 verify, 32-byte 0/1 word | flat 2000, message at most 8 KiB | yes |
+| `0x0112` | LORA_APPLY | `W + (alpha / r) (B . A)` on one Q16.16 tile, returns the tile | `3000 + 4 d r k + 3 d k` | from the fork height only (not scheduled) |
+| `0x0113` | LORA_MERGE | `sum_i w_i (alpha_i / r_i) (B_i . A_i)` on one tile, up to 16 adapters | `3000 + sum_i (4 d r_i k + 4 d k)` | from the fork height only |
+| `0x0121` | MEMORY_ANCHOR_VERIFY | nightly decision-anchor inclusion proof, returns the day commitment or 32 zero bytes | `1500 + 150` per path hash | from the fork height only |
+| `0x0122` | AGENT_OPS | op `0x01` DeviceLink check (3 signatures), op `0x02` DeviceRevocation check, returns a 0/1 word | `1000 + 3000` per signature `+ 6` per message word | from the fork height only |
 | `0x0130` | FOLD_COMMD_VERIFY | recursive-fold CommD proof verifier | `2000000 + 50` per byte | yes (address); feature-gated, not consensus-active |
 | `0x0200` | EIP712_VERIFY | recovers the signer of EIP-712 typed data | 3450 | yes |
 | `0x0201` | TRANSFER_AUTH_VERIFY | checks an EIP-3009 TransferWithAuthorization signature, signer must equal `from` | 4200 | yes |
@@ -68,7 +73,9 @@ Sources for the gas figures: `citrate-chain:core/execution/src/precompiles/verif
 `citrate-chain:core/execution/src/precompiles/ed25519.rs#pub const ED25519_VERIFY_GAS`,
 `citrate-chain:core/execution/src/precompiles/commd_fold_verify.rs#FOLD_VERIFY_BASE` and
 `citrate-chain:core/execution/src/precompiles/x402.rs#pub mod gas_costs`. Hardened-mode changes
-for `0x0109` and `0x0110` are listed in `execute_pure_at`.
+for `0x0109` and `0x0110` are listed in `execute_pure_at`. The fork rows come from
+`citrate-chain:docs/precompiles/AGENT_PRECOMPILES.md` (sections 2 to 5), which is the one
+specification for them.
 
 Docs drift to know about: the docs page calls `0x0111` future work, while the code marks its
 forward pass live and the EVM bridge includes it; its Halo2 circuit is deferred, so `0x0111`
@@ -80,8 +87,10 @@ as per-dimension value-then-state; the code emits all values first, then all sta
 **Verification (`0x0107` to `0x0109`).** Commit to a tensor, verify an inference proof, verify a
 Merkle path into a committed tensor. Deterministic, and their byte output is frozen: drift would
 fork the chain and invalidate earlier commitments. Inputs use the frozen canonical tensor format
-version 1: rank byte (0 to 4), rank x u32 shape, dtype byte, big-endian data
-(`citrate-chain:core/execution/src/precompiles/tensor_format.rs`).
+version 1: rank byte (0 to 4), rank x u32 big-endian shape, dtype byte, then the data. Element byte
+order depends on the dtype: Q16.16 (`0x01`) elements are 8-byte **little-endian** i64, Field32 (`0x02`)
+elements are 32-byte big-endian
+(`citrate-chain:core/execution/src/precompiles/tensor_format.rs#Q16_16`).
 
 **Deterministic compute (`0x010A` to `0x010F`).** Six Q16.16 fixed-point tensor primitives in
 integer arithmetic, so every node computes the same bits. Overflow saturates instead of failing,
@@ -102,10 +111,24 @@ times cheaper than the same check in Solidity per the source. On a bad signature
 zero address instead of reverting, so a caller that skips the check treats a failed verification
 as an unknown signer.
 
+**Agent precompile fork (`0x0112`, `0x0113`, `0x0121`, `0x0122`).** Four pure byte functions for
+agents: LoRA arithmetic on one tile (so a challenger can recompute one disputed tile of a federated
+aggregate), the on-chain twin of the nightly decision-anchor proof check, and DeviceLink /
+DeviceRevocation signature checks. They exist only from an activation height H set per network
+(`citrate-chain:core/execution/src/agent_fork.rs#AGENT_PRECOMPILES_PINS`); 40204 ships with no height,
+so today they are **not active** there. Below H the addresses behave exactly as before. Contracts reach
+them through `citrate-chain:contracts/src/lib/CitratePrecompiles.sol#library CitratePrecompiles`, which
+reverts with `PrecompileUnavailable(address)` when a precompile does not answer, so "not active" can never
+read as "invalid". An anchor proof only counts together with the registry and the expected committer
+(`AnchorProofs.isRecordAnchored`). Choosing H and the gas values is pending owner sign-off.
+
 **Hosted inference (`0x0100` to `0x0106`).** The model runtime family. It is not deterministic
 across nodes, sits behind an attestation gate that defaults to always-reject, and is not reachable
-from contract code today (see above). The planset's model/LoRA precompile integration (HUP-S7.2) is
-the federation sprint's work; until it lands, do not promise contract-level inference.
+from contract code today (see above). Since HUP-S7.2 the model contracts (ModelRegistry, LoRAFactory,
+ModelAccessControl) call `0x0101` and `0x0106` through `CitratePrecompiles` in their native layout
+(`model_id || caller || input`), so on 40204 those calls revert with `PrecompileUnavailable(0x0101)`
+instead of silently paying for nothing. Training and merges run off chain and are recorded by an
+operator. Do not promise contract-level inference.
 
 ## Calling precompiles
 
@@ -119,15 +142,25 @@ the federation sprint's work; until it lands, do not promise contract-level infe
   result.
 - **On anvil:** Citrate precompiles do not exist on a stock anvil fork; contracts that use them
   need the Citrate-aware fork (planset HUP-S6.10).
-- **Hermes helpers:** the planned `precompile_call` read tool in the node MCP (planset
-  02_ARCHITECTURE section 5, "MCP fabric") covers `0x0107` to `0x0111`, `0x0120` and `0x0200` to `0x0202`. A read
-  needs no signature. Anything that writes on-chain from the result is a transaction and goes to
-  the member's SignatureCeremony.
+- **Hermes helpers:** the node MCP `precompile_call` read tool covers `0x0107` to `0x0111`, `0x0120`,
+  `0x0130` and `0x0200` to `0x0202` (subject to the top-level `eth_call` caveat above), and
+  `ed25519_verify` is a typed helper for `0x0120`. For the fork precompiles, `agent_precompile_encode`
+  builds the exact input bytes, the scheduled gas and the Solidity helper to pass them to (from Q16.16
+  tensors, the sidecar's anchor proof, or a stored device link or revocation), and
+  `agent_precompile_decode` reads an answer back; empty output is reported as "not active", never as a
+  verdict. Both are pure: no RPC, no key. The encodings are pinned to the chain's own encoders by
+  `citrate-chain:core/execution/tests/fixtures/agent_precompile_vectors.json`. A read needs no
+  signature. Anything that writes on-chain from the result is a transaction and goes to the member's
+  SignatureCeremony.
+- **On a devnet:** `citrate-chain:scripts/devnet-precompile-check.sh` checks both sides of the fork
+  height with those vectors. It refuses 40204.
 
 ## Answering well
 
 - Give the full address and the source file for any claim about inputs, outputs or gas.
 - Say "not bridged" plainly for `0x0100` to `0x0106`, and say what an empty return means.
+- For `0x0112`, `0x0113`, `0x0121` and `0x0122`, say they are built and tested but not active on 40204
+  until an activation height is chosen and rolled out; never present them as live.
 - Distinguish "deterministic and verifiable" (verification, compute, learning, crypto, x402) from
   "signed receipt under attestation" (hosted inference).
 - If asked for a live figure the sources do not hold (current hardening height, adoption, prices),
