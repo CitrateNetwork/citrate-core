@@ -42,7 +42,11 @@ mod daemons;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_reader;
 mod deploy_gate;
+// HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
+mod deploy_gate_toolchain;
+// HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
 mod fl_rounds;
+mod forge_toolchain;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod hic_records;
 mod web_budgets;
@@ -101,6 +105,8 @@ mod skill_registry;
 mod skills_local;
 mod staking;
 mod telemetry;
+// HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
+mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
@@ -550,6 +556,11 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            // HUP-S6.3 → S6.4 — a Hermes session's toolchain reports into the gate (A27).
+            deploy_gate_toolchain::deploy_gate_submit_toolchain,
+            // HUP-S6.2 / US-6.4 — contract templates (render into a granted folder).
+            template_forge::template_list,
+            template_forge::template_render,
             // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
             fl_rounds::fl_overview,
             fl_rounds::fl_coordinator_set,
@@ -673,6 +684,9 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
+            forge_toolchain::toolchain_settings_get,
+            forge_toolchain::toolchain_settings_set,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an

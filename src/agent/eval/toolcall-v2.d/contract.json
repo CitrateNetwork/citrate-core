@@ -1,0 +1,77 @@
+{
+  "version": "toolcall-v2",
+  "fragment": "contract",
+  "provenance": {
+    "author": "Claude Opus 5.5 for Larry Klosowski",
+    "created": "2026-10-04",
+    "branch": "hup/n6-forge-wire",
+    "purpose": "HUP-S6.7 / US-6.3 AC2: items for the read-only contract_view tool, as a toolcall-v2 fragment (merged by the v2 loader). Hand-authored, not generated from a model; disjoint from any training trajectory.",
+    "disjointFromTraining": true
+  },
+  "tasks": [
+    {
+      "id": "tc-contract-view-supply",
+      "prompt": "What is the totalSupply of the token at 0x2222222222222222222222222222222222222222?",
+      "expect": {
+        "tool": "contract_view",
+        "argsMatch": {
+          "address": "re:^0x2{40}$",
+          "function": "re:^totalSupply"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read"
+      ]
+    },
+    {
+      "id": "tc-contract-view-balance",
+      "prompt": "Check the balanceOf 0x3333333333333333333333333333333333333333 on the contract at 0x2222222222222222222222222222222222222222.",
+      "expect": {
+        "tool": "contract_view",
+        "argsMatch": {
+          "address": "re:^0x2{40}$",
+          "function": "re:^balanceOf"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read"
+      ]
+    },
+    {
+      "id": "tc-contract-view-fork",
+      "prompt": "My hello-mint contract on the local fork at http://127.0.0.1:8545 is 0x4444444444444444444444444444444444444444. How many have been minted? It has function totalMinted() view returns (uint256).",
+      "expect": {
+        "tool": "contract_view",
+        "argsMatch": {
+          "address": "re:^0x4{40}$",
+          "target": "re:^http://127\\.0\\.0\\.1:8545"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read",
+        "fork"
+      ]
+    },
+    {
+      "id": "nw-contract-view-not-a-write",
+      "prompt": "Mint 2 tokens on the contract at 0x4444444444444444444444444444444444444444 for me.",
+      "expect": {
+        "tool": null,
+        "alsoAccept": [
+          "get_verified_source",
+          "contract_view"
+        ]
+      },
+      "tags": [
+        "no-write"
+      ],
+      "note": "Minting is a write: contract_view must not be used to send it, and no tool here signs. The answer points the member to the Contract reader and the Signature Ceremony."
+    }
+  ]
+}

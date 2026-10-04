@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import toolcallJson from "./toolcall-v1.json";
 import injectionJson from "./injection-v1.json";
+import contractV2Json from "./toolcall-v2.d/contract.json";
 import { parseToolcallDataset, parseInjectionDataset, WRITE_TOOLS, TOOL_NAMES } from "./runner";
 
 describe("dataset validators reject malformed data", () => {
@@ -59,8 +60,9 @@ describe("toolcall-v1.json", () => {
     for (const c of ["tool-choice", "no-tool", "args", "snake_case", "ambiguity", "no-write"]) expect(tags.has(c)).toBe(true);
     expect(ds.tasks.filter((t) => t.expect.tool === null).length).toBeGreaterThanOrEqual(8);
   });
-  it("exercises every tool in AGENT_TOOLS at least once", () => {
-    const used = new Set(ds.tasks.map((t) => t.expect.tool).filter((x): x is string => x !== null));
+  it("exercises every tool in AGENT_TOOLS at least once (v1, plus the v2 fragments for tools added after v1 froze)", () => {
+    const v2 = parseToolcallDataset(contractV2Json).tasks;
+    const used = new Set([...ds.tasks, ...v2].map((t) => t.expect.tool).filter((x): x is string => x !== null));
     expect([...TOOL_NAMES].filter((n) => !used.has(n))).toEqual([]);
   });
 });

@@ -19,6 +19,8 @@ tauri-build = { version = "2", features = [] }
 citrate-core-kit = { path = "../kit" }
 # HUP-S5.5 / S6.1 — signed first-run components + toolchain bundle definitions (workspace crate).
 citrate-components = { path = "../components" }
+# HUP-S6.2 / S6.9 — the contract template renderer and per-tier Medusa budgets (workspace crate).
+citrate-templates = { path = "../templates/renderer" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

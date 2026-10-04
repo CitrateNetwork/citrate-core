@@ -30,7 +30,7 @@ pub const COMPONENT_MANIFEST_URL: &str =
 pub const COMPONENT_MANIFEST_SIG_URL: &str =
     "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/components/stable/manifest.json.minisig";
 const MAX_SIG_BYTES: u64 = 4096;
-const BUNDLE_JSON: &str = include_str!("../../components/toolchain-bundle.json");
+pub(crate) const BUNDLE_JSON: &str = include_str!("../../components/toolchain-bundle.json");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

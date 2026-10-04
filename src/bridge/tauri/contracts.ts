@@ -19,6 +19,14 @@ import type {
 } from "../domains";
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../../agent/deployGate";
 import type { VerifiedSourceView } from "../../agent/verifiedSource";
+import type {
+  TemplateCatalog,
+  TemplateRenderInput,
+  TemplateRenderView,
+  ToolchainGateRequest,
+  ToolchainGateResult,
+  ToolchainStatus,
+} from "../../agent/contractForge";
 
 export const tauriContracts: ContractsDomain = {
   deploy(input: ContractDeployInput) {
@@ -72,5 +80,23 @@ export const tauriContracts: ContractsDomain = {
   },
   postdeployVercelExport(projectDir: string) {
     return invoke<VercelExportView>("postdeploy_vercel_export", { projectDir });
+  },
+  // HUP-S6.2 / US-6.4 — contract templates (core renders; parameters are validated in Rust).
+  templateList() {
+    return invoke<TemplateCatalog>("template_list");
+  },
+  templateRender(input: TemplateRenderInput) {
+    return invoke<TemplateRenderView>("template_render", { input });
+  },
+  // HUP-S6.3 — the toolchain switch.
+  toolchainSettings() {
+    return invoke<ToolchainStatus>("toolchain_settings_get");
+  },
+  toolchainSetEnabled(enabled: boolean) {
+    return invoke<ToolchainStatus>("toolchain_settings_set", { settings: { enabled } });
+  },
+  // HUP-S6.3 → S6.4 — Hermes's toolchain reports into the deploy gate (core parses them).
+  gateFromToolchain(request: ToolchainGateRequest) {
+    return invoke<ToolchainGateResult>("deploy_gate_submit_toolchain", { request });
   },
 };
