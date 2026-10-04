@@ -60,7 +60,19 @@ gates:
           Hugging Face repo.
       - {id: g1-render, desc: "Markdown golden tests + real SSE streaming", met: false}
       - {id: g1-sidebar, desc: "Sidebar per D-34 with nav tests", met: false}
-      - {id: g1-loop, desc: "Loop in sidecar; UI/CLI/MCP share a session", met: false}
+      - id: g1-loop
+        desc: "Loop in sidecar; UI/CLI/MCP share a session"
+        met: false
+        evidence: .agentile/sprints/active/sprint-hup-s1-one-agent/WP-S1.9-live-parity.md
+        note: >-
+          2026-10-04 evidence: the sidecar loop is on by default (owner decision 2026-10-01) and
+          parity-v1 passes 21/21 end to end against a packaged build (sidecarProvider.ts, the
+          control API as hermes.rs calls it, the bundled sidecar binary, a scripted model), with the
+          process split checked on the same binary (src/agent/parity/results/2026-10-04-live-packaged.json).
+          The CLI shares sessions (citrate-agent hermes events --session <id> --follow). Still open:
+          no MCP client can reach a Hermes session (the node MCP server has no session tools), a
+          webview reload does not reattach to a running session, and the turn cap (6 vs 8) is an
+          owner call before harness.ts can retire.
       - {id: g1-wallet-unlink, desc: "Wallet unlink (S1.11, #117) merged after identity#31 + primary_wallet fix deployed; unlink tests green", met: false}
       - {id: g1-eval, desc: "Per-tier eval on synthetic tool-call tasks: T1+ >=90% valid tool calls, >=80% step success; T0 guided-tier bar set from its baseline", met: false, evidence: eval/}
   - id: gate2
