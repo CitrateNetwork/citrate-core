@@ -45,3 +45,31 @@ live core + sidecar path; that needs its own test before `harness.ts` is retired
 
 This suite does not retire `harness.ts` or change the default provider. Retirement is an owner
 call after a live run of the sidecar loop.
+
+## Live run (end to end, HUP-S1.9)
+
+`live/` runs the same scenarios end to end: this repo's `../sidecarProvider.ts` drives a real
+sidecar process (the `hermes` binary inside a packaged `.app`) over its HTTP control API, and the
+session's model is a scripted OpenAI-compatible endpoint (`scripts/parity-live/`) on a real socket.
+It covers what the loop runners above cannot: the session layer's own config, the `tool_results`
+round trip, the event log the provider long-polls, and the model client's HTTP behaviour.
+
+```sh
+npx tauri build --config src-tauri/tauri.bundle-lite.conf.json --no-sign --bundles app
+scripts/parity-live.sh                # newest .app under the cargo target dir; or --app / --bin
+```
+
+The session body is built from `live/session-config.json`, which `hermes_live_parity_tests.rs`
+pins to `build_session_body`, so the run cannot drift from what the app sends. Two adaptations,
+both in the report: cap-bound expectations use the live step cap (core sends no `maxSteps`, so the
+sidecar default of 8 applies, versus 6 in `harness.ts`: the `default_turn_cap` owner call), and a
+scripted model error is checked as its HTTP status, because the sidecar (like core's own `ai.rs`
+client) reports only the status of a failed model call, never its body.
+
+`live/liveModel.live.test.ts` is a behaviour record on a real local model (set
+`CITRATE_PARITY_LIVE_LLM` to a running llama-server): steps used, tools chosen, honest endings.
+
+One more wiring difference the live run made visible, outside the loop: the local `harness.ts`
+path sends Rust's `AGENT_SYSTEM_PROMPT_TOOLS` (src-tauri/src/ai.rs), while the sidecar path sends
+this repo's `AGENT_SYSTEM_PROMPT` (the prompt the tool-call eval in `../eval/` scores). Retiring
+`harness.ts` therefore also retires the Rust prompt for local chat.

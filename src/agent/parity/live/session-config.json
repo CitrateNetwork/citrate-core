@@ -1,0 +1,14 @@
+{
+  "about": "HUP-S1.9 live parity: the POST /sessions config core's build_session_body (src-tauri/src/hermes.rs) sends. Pinned on the Rust side by hermes_live_parity_tests.rs and read by the live parity run, so a change to the shipped session config fails one side until both agree.",
+  "bodyKeys": ["contextTokens", "hicAware", "llm", "maxTokens", "maxToolsPerRequest", "model", "systemPrompt", "tools"],
+  "toolKeys": ["annotations", "description", "host", "name", "parameters"],
+  "maxToolsPerRequest": 8,
+  "hicAware": true,
+  "aiMaxTokens": 2048,
+  "maxTokensContextDivisor": 4,
+  "sidecarDefaults": {
+    "source": "citrate-agent-runtime agent-sidecar/src/sessions.rs (applies when core leaves the field out)",
+    "maxSteps": 8,
+    "maxToolCallsPerStep": 4
+  }
+}

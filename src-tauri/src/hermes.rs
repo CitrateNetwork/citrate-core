@@ -1904,7 +1904,7 @@ pub fn build_session_body(
         "tools": tools,
         // HUP-S1.2: the sidecar offers only the relevant tools per request and keeps every prompt
         // inside the local model's real context window (llama-server --ctx-size).
-        "maxToolsPerRequest": 8,
+        "maxToolsPerRequest": 6,
         "contextTokens": context_tokens,
         // HUP-S1.6: the same per-turn reply cap as direct chat, never more than a quarter of the
         // window so a small window still leaves room for the prompt.
@@ -2101,6 +2101,12 @@ mod brief_tests {
 #[cfg(test)]
 mod session_tests {
     include!("hermes_session_tests.rs");
+}
+
+// HUP-S1.9: pins src/agent/parity/live/session-config.json to build_session_body.
+#[cfg(test)]
+mod live_parity_tests {
+    include!("hermes_live_parity_tests.rs");
 }
 
 #[cfg(test)]
