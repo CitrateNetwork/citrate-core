@@ -6,7 +6,8 @@ the reroll ceremony regenerates). A reroll moves these addresses, so the app's
 copy is GENERATED from that book, never hand-edited.
 
 Fail-closed checks, all before anything is written:
-  * every address the app needs is present and is 0x + 40 hex;
+  * every address the app needs is present and is 0x + 40 hex, and a book entry for an
+    optional name that is not 0x + 40 hex is an error (never read as "not deployed");
   * no two app pins share an address;
   * with --rpc, every pinned address has CODE on the live chain, the chain id
     matches, and block 0 hashes to --genesis (so the book and the chain the app
@@ -53,6 +54,11 @@ REQUIRED = [
 # BenchmarkRegistry (opt-in daily aggregates). Both features stay off until the member turns them
 # on; an absent pin keeps them unavailable. Pinning AnchorRegistry (not CitAgentAnchorRegistry)
 # as Hermes's registry is a placeholder pending owner sign-off.
+# HUP-S7.1 (federation F-4): CapsuleRegistry (workspace capsule records, part of the registry
+# redeploy set) and InferenceRouter (the HIC-1 registry escalation route, HUP-S1.5). A pinned
+# InferenceRouter turns that route on in the app, so the embedded book picks it up only when the
+# operator regenerates it after the redeploy (runbook step 5); listing it here changes nothing until
+# then.
 OPTIONAL = [
     "PatronageLedger",
     "ModelCooperative",
@@ -60,6 +66,8 @@ OPTIONAL = [
     "OrganizationSBT",
     "AnchorRegistry",
     "BenchmarkRegistry",
+    "CapsuleRegistry",
+    "InferenceRouter",
 ]
 
 ADDR = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -71,14 +79,31 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
+SECTIONS = ("contracts", "aaStack", "planned")
+
+
 def flatten(book: dict) -> dict:
     """Collect name -> address from every section of the canonical book."""
     out = {}
-    for section in ("contracts", "aaStack", "planned"):
+    for section in SECTIONS:
         for name, addr in (book.get(section) or {}).items():
             if isinstance(addr, str) and ADDR.match(addr):
                 out.setdefault(name, addr)
     return out
+
+
+def malformed(book: dict, names) -> list:
+    """Entries for `names` that the book carries but that are not 0x + 40 hex.
+
+    flatten() skips them, so without this check a typo in an optional pin would silently read as
+    "not deployed" instead of failing the sync.
+    """
+    bad = []
+    for section in SECTIONS:
+        for name, addr in (book.get(section) or {}).items():
+            if name in names and not (isinstance(addr, str) and ADDR.match(addr)):
+                bad.append(f"{section}.{name} = {addr!r}")
+    return bad
 
 
 def rpc(url: str, method: str, params: list):
@@ -100,6 +125,7 @@ def main() -> None:
     ap.add_argument("--genesis", required=True, help="block-0 hash of the chain this build targets")
     ap.add_argument("--rpc", help="live RPC to verify chain id, genesis and code at every pin")
     ap.add_argument("--check", action="store_true", help="verify only; do not write")
+    ap.add_argument("--out", default=str(OUT), help=argparse.SUPPRESS)  # tests write to a temp file
     a = ap.parse_args()
 
     if not HASH.match(a.genesis):
@@ -110,6 +136,9 @@ def main() -> None:
     if int(book.get("chainId", 0)) != CHAIN_ID:
         die(f"book chainId {book.get('chainId')} != {CHAIN_ID}")
     flat = flatten(book)
+    bad = malformed(book, set(REQUIRED) | set(OPTIONAL))
+    if bad:
+        die("not an address in " + a.book + ": " + ", ".join(bad))
 
     pins = {}
     for name in REQUIRED:
@@ -139,11 +168,14 @@ def main() -> None:
             die("no code on the live chain at: " + ", ".join(f"{n} {pins[n]}" for n in missing))
 
     out = {"_comment": MARKER, "chainId": CHAIN_ID, "genesisHash": genesis, "addresses": pins}
+    print("sync-addresses: optional pins: " + (", ".join(n for n in OPTIONAL if n in pins) or "(none)"))
     if a.check:
         print(f"sync-addresses: OK ({len(pins)} pins{', verified live' if a.rpc else ''})")
         return
-    OUT.write_text(json.dumps(out, indent=2) + "\n")
-    print(f"sync-addresses: wrote {OUT.relative_to(REPO)} ({len(pins)} pins{', verified live' if a.rpc else ''})")
+    dest = Path(a.out)
+    dest.write_text(json.dumps(out, indent=2) + "\n")
+    shown = dest.resolve().relative_to(REPO) if dest.resolve().is_relative_to(REPO) else dest
+    print(f"sync-addresses: wrote {shown} ({len(pins)} pins{', verified live' if a.rpc else ''})")
 
 
 if __name__ == "__main__":
