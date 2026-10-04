@@ -756,6 +756,7 @@ fn gate_request(dir: &std::path::Path, adapter: &std::path::Path, sha: &str, bet
         candidate_tools_path: cand.to_string_lossy().to_string(),
         base_qa_path: None,
         candidate_qa_path: None,
+        round_result_path: None,
     }
 }
 
@@ -903,6 +904,7 @@ fn a_new_gate_record_unloads_the_served_adapter_unless_it_still_fits() {
         adapter_path: "/src/a.gguf".into(),
         base_model: "m".into(),
         decided_at_ms: NOW,
+        round: None,
         decision: GateDecision {
             verdict: GateVerdict::Accept,
             reasons: vec![],
@@ -924,4 +926,361 @@ fn a_new_gate_record_unloads_the_served_adapter_unless_it_still_fits() {
     rec.base_model = "m".into();
     rec.decision.verdict = GateVerdict::Reject;
     assert!(must_unload_after_gate(&rec, Some(&served), store, "m.gguf"));
+}
+
+// ===========================================================================
+// HUP-S9.4 rest (fan-out 6): the local-devnet round flow (citrate-chain docs/fl/FL_ROUND_V1.md),
+// per-round consent for the device worker (D-29), and re-applying a loaded adapter after a
+// restart. Written red-first: these names did not exist when this block was added.
+// ===========================================================================
+
+/// The receipt `scripts/fl/devnet-round-e2e.sh` (citrate-chain) wrote for a three-device round
+/// on a throwaway local devnet, copied as data. The trainer was the fixture trainer.
+const DEVNET_RECEIPT: &str = include_str!("../tests/fixtures/fl/devnet-round-receipt-2026-10-01.json");
+const DEVNET_ROUND: &str = "0x29a0bbad3829ef8c62a4ba4b8c6bb61f0e893db107b033a80e55171f159a3dfe";
+const DEVNET_ADAPTER: &str = "ae4ed1b17bac676a1890f3b55e3f62a6a094517dfc3df318523507b279b766bd";
+const DEVNET_DIGEST: &str = "0x693073fe0498b87124bfa8b7629c6e6ef7c628de047e1fe81651815255bc9ecf";
+
+fn receipt_value() -> serde_json::Value {
+    serde_json::from_str(DEVNET_RECEIPT).unwrap()
+}
+
+/// A receipt whose merged adapter is `sha` (the devnet one otherwise).
+fn receipt_for(sha: &str) -> String {
+    let mut v = receipt_value();
+    v["aggregate"]["adapter_sha256"] = serde_json::Value::String(sha.into());
+    v.to_string()
+}
+
+#[test]
+fn the_devnet_round_receipt_parses_and_names_the_merged_adapter() {
+    let r = parse_round_result(DEVNET_RECEIPT).unwrap();
+    assert_eq!(r.round_id, DEVNET_ROUND);
+    assert_eq!(r.adapter_sha256, DEVNET_ADAPTER);
+    assert_eq!(r.record_digest, DEVNET_DIGEST);
+    assert_eq!(r.chain_id, 1337);
+    assert_eq!(r.participants, 3);
+    assert_eq!(r.ledger, "0x768cced6b5d55bca63e76ef806f1eef06ef68bba");
+}
+
+#[test]
+fn a_round_result_is_refused_unless_accepted_and_replayed_clean() {
+    type Edit = fn(&mut serde_json::Value);
+    let cases: Vec<(&str, Edit)> = vec![
+        ("rejected round", |v| v["round0_status"] = "Rejected".into()),
+        ("no status", |v| {
+            v.as_object_mut().unwrap().remove("round0_status");
+        }),
+        ("replay mismatch", |v| v["replay"]["mismatches"] = serde_json::json!(["chunk 3"])),
+        ("merged adapter unchecked", |v| v["replay"]["merged_adapter_checked"] = false.into()),
+        ("chain digest differs", |v| v["record_digest"]["chain"] = format!("0x{}", "0".repeat(64)).into()),
+        ("replay digest differs", |v| v["replay"]["record_digest"] = format!("0x{}", "1".repeat(64)).into()),
+        ("aggregate names another round", |v| v["aggregate"]["round_id"] = format!("0x{}", "2".repeat(64)).into()),
+        ("replay names another round", |v| v["replay"]["round_id"] = format!("0x{}", "3".repeat(64)).into()),
+        ("adapter hash not hex", |v| v["aggregate"]["adapter_sha256"] = "zz".into()),
+        ("round id not hex", |v| {
+            v["round_id"] = "0x1234".into();
+        }),
+        ("fewer than three devices", |v| v["aggregate"]["participants"] = 2.into()),
+        ("no replay", |v| {
+            v.as_object_mut().unwrap().remove("replay");
+        }),
+    ];
+    for (what, edit) in cases {
+        let mut v = receipt_value();
+        edit(&mut v);
+        assert!(parse_round_result(&v.to_string()).is_err(), "accepted: {what}");
+    }
+    // A top-level `status` is the general name; `round0_status` is the devnet script's.
+    let mut v = receipt_value();
+    v.as_object_mut().unwrap().remove("round0_status");
+    v["status"] = "Accepted".into();
+    assert!(parse_round_result(&v.to_string()).is_ok());
+    assert!(parse_round_result("{}").is_err());
+    assert!(parse_round_result(&"x".repeat(MAX_ROUND_RESULT_BYTES + 1)).is_err());
+}
+
+#[test]
+fn the_gate_binds_an_adapter_to_its_round_result() {
+    let d = tmpdir("gate-round");
+    let (p, h) = write_adapter(&d, b"GGUF\x03\x00\x00\x00merged-adapter");
+    let rr = d.join("round.json");
+    std::fs::write(&rr, receipt_for(&h)).unwrap();
+    let mut req = gate_request(&d, &p, &h, true);
+    req.round_result_path = Some(rr.to_string_lossy().to_string());
+    let rec = evaluate_adapter(&req, NOW).unwrap();
+    let round = rec.round.clone().unwrap();
+    assert_eq!(round.round_id, DEVNET_ROUND);
+    assert_eq!(round.record_digest, DEVNET_DIGEST);
+    assert_eq!(round.chain_id, 1337);
+    assert_eq!(rec.decision.verdict, GateVerdict::Accept);
+    // With a round result, the expected hash may be left empty: it is the round's merged adapter.
+    req.expected_sha256 = String::new();
+    assert_eq!(evaluate_adapter(&req, NOW).unwrap().adapter_sha256, h);
+    // A round result naming another adapter is refused, whatever hash the member typed.
+    std::fs::write(&rr, receipt_for(&"4".repeat(64))).unwrap();
+    req.expected_sha256 = h.clone();
+    let err = evaluate_adapter(&req, NOW).unwrap_err();
+    assert!(err.contains("round"), "{err}");
+    // Without a round result the record says so (None), as before.
+    let plain = evaluate_adapter(&gate_request(&d, &p, &h, true), NOW).unwrap();
+    assert!(plain.round.is_none());
+    // And an empty expected hash without a round result is still refused.
+    let mut no_hash = gate_request(&d, &p, &h, true);
+    no_hash.expected_sha256 = String::new();
+    assert!(evaluate_adapter(&no_hash, NOW).is_err());
+}
+
+#[test]
+fn a_round_id_in_the_proposal_is_validated_and_bound_into_the_plan_hash() {
+    let bad = RoundProposal {
+        round_id: Some("0x1234".into()),
+        ..Default::default()
+    };
+    assert!(bad.validate().is_err());
+    let upper = RoundProposal {
+        round_id: Some(DEVNET_ROUND.to_ascii_uppercase().replacen("0X", "0x", 1)),
+        ..Default::default()
+    };
+    assert!(upper.validate().is_ok());
+    // No round id: the proposal serializes exactly as before, so earlier plan hashes hold.
+    let plain = serde_json::to_value(RoundProposal::default()).unwrap();
+    assert!(plain.get("roundId").is_none(), "{plain}");
+    let with = RoundProposal {
+        round_id: Some(DEVNET_ROUND.into()),
+        ..Default::default()
+    };
+    let view = live_view(3, 0, 0, "shadow");
+    let a = build_plan(RoundProposal::default(), view.clone(), "m.gguf", &gpu_device(), NOW).unwrap();
+    let b = build_plan(with, view, "m.gguf", &gpu_device(), NOW).unwrap();
+    assert_ne!(a.plan_hash, b.plan_hash);
+    assert_eq!(b.proposal.round_id.as_deref(), Some(DEVNET_ROUND));
+    assert!(b.explain.compute.contains(DEVNET_ROUND), "{}", b.explain.compute);
+}
+
+fn plan_for_round(fl: &FlRounds, base: &str, round: Option<&str>, trajectories: u32) -> RoundPlan {
+    let p = RoundProposal {
+        round_id: round.map(str::to_string),
+        max_trajectories: trajectories,
+        ..Default::default()
+    };
+    let plan = build_plan(p, read_coordinator(Some(base), &http()), "m.gguf", &gpu_device(), NOW).unwrap();
+    fl.remember_plan(plan.clone());
+    plan
+}
+
+fn consent_rounds_on_disk(fl: &FlRounds) -> Vec<String> {
+    let raw = std::fs::read_to_string(fl.consent_path().unwrap()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    v["rounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_start_for_a_round_writes_the_device_worker_consent_file() {
+    let fx = fixture(200, status_json(3, 0, 0, 4, "shadow"));
+    let fl = fl_with_store("consent");
+    let plan = plan_for_round(&fl, &fx.base, Some(DEVNET_ROUND), 500);
+    let r = start_round(&fl, &plan.plan_hash, &http(), NOW + 1).unwrap();
+    assert_eq!(r.round_id.as_deref(), Some(DEVNET_ROUND));
+    let path = r.consent_file.clone().unwrap();
+    assert_eq!(std::path::PathBuf::from(&path), fl.consent_path().unwrap());
+    assert!(r.note.contains("CITRATE_FL_CONSENT_FILE"), "{}", r.note);
+    assert!(!r.training_started);
+    // The exact shape citrate-compute-pool's training-worker reads: {"rounds":["0x…"]}.
+    assert_eq!(consent_rounds_on_disk(&fl), vec![DEVNET_ROUND.to_string()]);
+    assert_eq!(fl.consented_rounds().unwrap(), vec![DEVNET_ROUND.to_string()]);
+    assert_eq!(fl.starts()[0].round_id.as_deref(), Some(DEVNET_ROUND));
+    // A second plan for the same round (different numbers) cannot consent twice.
+    let again = plan_for_round(&fl, &fx.base, Some(DEVNET_ROUND), 400);
+    let err = start_round(&fl, &again.plan_hash, &http(), NOW + 2).unwrap_err();
+    assert!(err.contains("already"), "{err}");
+    assert_eq!(fl.starts().len(), 1);
+}
+
+#[test]
+fn consent_can_be_withdrawn_and_is_then_gone_from_the_worker_file() {
+    let fx = fixture(200, status_json(3, 0, 0, 4, "shadow"));
+    let fl = fl_with_store("consent-revoke");
+    let plan = plan_for_round(&fl, &fx.base, Some(DEVNET_ROUND), 500);
+    start_round(&fl, &plan.plan_hash, &http(), NOW + 1).unwrap();
+    fl.revoke_consent(&DEVNET_ROUND.to_ascii_uppercase().replacen("0X", "0x", 1), NOW + 5)
+        .unwrap();
+    assert!(consent_rounds_on_disk(&fl).is_empty());
+    assert_eq!(fl.starts()[0].revoked_at_ms, Some(NOW + 5));
+    // Withdrawing what was never given is an error, not a silent success.
+    let err = fl.revoke_consent(DEVNET_ROUND, NOW + 6).unwrap_err();
+    assert!(err.contains("no consent"), "{err}");
+    // Persisted across a restart.
+    let again = FlRounds::with_store(fl.store_path().unwrap().to_path_buf());
+    assert_eq!(again.starts()[0].revoked_at_ms, Some(NOW + 5));
+    assert!(again.consented_rounds().unwrap().is_empty());
+    // After withdrawing, a fresh approval for the same round is allowed again.
+    let fresh = plan_for_round(&again, &fx.base, Some(DEVNET_ROUND), 300);
+    start_round(&again, &fresh.plan_hash, &http(), NOW + 7).unwrap();
+    assert_eq!(consent_rounds_on_disk(&again), vec![DEVNET_ROUND.to_string()]);
+}
+
+#[test]
+fn a_start_without_a_round_writes_no_consent() {
+    let fx = fixture(200, status_json(3, 0, 0, 4, "shadow"));
+    let fl = fl_with_store("consent-none");
+    let plan = plan_for_round(&fl, &fx.base, None, 500);
+    let r = start_round(&fl, &plan.plan_hash, &http(), NOW + 1).unwrap();
+    assert!(r.consent_file.is_none());
+    assert!(r.round_id.is_none());
+    assert!(!fl.consent_path().unwrap().exists());
+    assert!(fl.consented_rounds().unwrap().is_empty());
+}
+
+#[test]
+fn an_unreadable_consent_file_is_not_overwritten_and_nothing_starts() {
+    let fx = fixture(200, status_json(3, 0, 0, 4, "shadow"));
+    let fl = fl_with_store("consent-corrupt");
+    let cp = fl.consent_path().unwrap();
+    std::fs::create_dir_all(cp.parent().unwrap()).unwrap();
+    std::fs::write(&cp, b"{not json").unwrap();
+    let plan = plan_for_round(&fl, &fx.base, Some(DEVNET_ROUND), 500);
+    assert!(start_round(&fl, &plan.plan_hash, &http(), NOW + 1).is_err());
+    assert_eq!(std::fs::read(&cp).unwrap(), b"{not json");
+    assert!(fl.starts().is_empty());
+}
+
+#[test]
+fn a_round_start_needs_a_place_for_the_consent_file() {
+    let fx = fixture(200, status_json(3, 0, 0, 4, "shadow"));
+    let fl = FlRounds::default();
+    let plan = plan_for_round(&fl, &fx.base, Some(DEVNET_ROUND), 500);
+    assert!(start_round(&fl, &plan.plan_hash, &http(), NOW + 1).is_err());
+    assert!(fl.starts().is_empty());
+}
+
+#[test]
+fn a_loaded_adapter_is_remembered_and_reapplied_after_a_restart() {
+    let d = tmpdir("restore");
+    let store = tmpdir("restore-adapters");
+    let fl = fl_with_store("restore-store");
+    let (p, h) = write_adapter(&d, b"GGUF\x03\x00\x00\x00adapter-r");
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW).unwrap()).unwrap();
+    let served = authorize_load(&fl, &h, "m.gguf", &store).unwrap();
+    fl.set_active(&h, "m.gguf").unwrap();
+    // The app restarts: a fresh state over the same file, nothing served yet.
+    let again = FlRounds::with_store(fl.store_path().unwrap().to_path_buf());
+    assert_eq!(again.active().unwrap().sha256, h);
+    assert_eq!(restore_active(&again, "m.gguf", &store).unwrap(), Some(served.clone()));
+    // On another base it is not applied, and it is kept for when that base is served again.
+    assert_eq!(restore_active(&again, "other.gguf", &store).unwrap(), None);
+    assert!(again.active().is_some());
+    // The copy is re-hashed: a damaged copy with a changed source is refused, not served.
+    std::fs::write(&served, b"GGUF\x03\x00\x00\x00tampered").unwrap();
+    std::fs::write(&p, b"GGUF\x03\x00\x00\x00changed").unwrap();
+    assert!(restore_active(&again, "m.gguf", &store).is_err());
+}
+
+#[test]
+fn unload_a_reject_or_a_base_switch_ends_the_reapply() {
+    let d = tmpdir("restore-end");
+    let store = tmpdir("restore-end-adapters");
+    let fl = fl_with_store("restore-end-store");
+    let (p, h) = write_adapter(&d, b"GGUF\x03\x00\x00\x00adapter-s");
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW).unwrap()).unwrap();
+    authorize_load(&fl, &h, "m.gguf", &store).unwrap();
+    // unload
+    fl.set_active(&h, "m.gguf").unwrap();
+    fl.forget_active().unwrap();
+    assert_eq!(restore_active(&fl, "m.gguf", &store).unwrap(), None);
+    // a later REJECT for that adapter
+    fl.set_active(&h, "m.gguf").unwrap();
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, false), NOW + 1).unwrap()).unwrap();
+    assert!(fl.active().is_none());
+    // a re-ACCEPT does not bring it back by itself: loading again is the member's click
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW + 2).unwrap()).unwrap();
+    assert_eq!(restore_active(&fl, "m.gguf", &store).unwrap(), None);
+    // an ACCEPT measured on another base than the one it was loaded on also ends it
+    fl.set_active(&h, "m.gguf").unwrap();
+    let mut other = evaluate_adapter(&gate_request(&d, &p, &h, true), NOW + 3).unwrap();
+    other.base_model = "other".into();
+    fl.record_gate(other).unwrap();
+    assert!(fl.active().is_none());
+    // a gate record for a different adapter leaves it alone
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW + 4).unwrap()).unwrap();
+    fl.set_active(&h, "m.gguf").unwrap();
+    let (p2, h2) = {
+        let d2 = tmpdir("restore-end-2");
+        let r = write_adapter(&d2, b"GGUF\x03\x00\x00\x00adapter-t");
+        (r.0, r.1)
+    };
+    let d2 = p2.parent().unwrap().to_path_buf();
+    fl.record_gate(evaluate_adapter(&gate_request(&d2, &p2, &h2, false), NOW + 5).unwrap()).unwrap();
+    assert_eq!(fl.active().unwrap().sha256, h);
+    // set_active refuses an adapter that is not accepted for that base
+    assert!(fl.set_active(&h2, "m.gguf").is_err());
+    assert!(fl.set_active(&h, "other.gguf").is_err());
+}
+
+#[test]
+fn two_concurrent_starts_for_one_round_consent_once() {
+    let fx = fixture(200, status_json(3, 0, 0, 4, "shadow"));
+    let fl = Arc::new(fl_with_store("consent-race"));
+    let a = plan_for_round(&fl, &fx.base, Some(DEVNET_ROUND), 500);
+    let b = plan_for_round(&fl, &fx.base, Some(DEVNET_ROUND), 499);
+    let hs: Vec<_> = [a.plan_hash, b.plan_hash]
+        .into_iter()
+        .map(|h| {
+            let fl = fl.clone();
+            std::thread::spawn(move || start_round(&fl, &h, &http(), NOW + 1).is_ok())
+        })
+        .collect();
+    let ok: usize = hs.into_iter().map(|h| usize::from(h.join().unwrap())).sum();
+    assert_eq!(ok, 1);
+    assert_eq!(fl.starts().len(), 1);
+    assert_eq!(consent_rounds_on_disk(&fl), vec![DEVNET_ROUND.to_string()]);
+}
+
+#[test]
+fn the_start_path_puts_the_remembered_adapter_into_the_server_argv() {
+    let d = tmpdir("reapply");
+    let store = tmpdir("reapply-adapters");
+    let fl = fl_with_store("reapply-store");
+    let (p, h) = write_adapter(&d, b"GGUF\x03\x00\x00\x00adapter-u");
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW).unwrap()).unwrap();
+    authorize_load(&fl, &h, "m.gguf", &store).unwrap();
+    fl.set_active(&h, "m.gguf").unwrap();
+    let again = FlRounds::with_store(fl.store_path().unwrap().to_path_buf());
+    let mgr = crate::serve::LlamaServerManager::new(d.join("no-such-bin"), d.join("m.gguf"), d.join("crash.jsonl"), 18098);
+    reapply_into(&again, &mgr, &store);
+    assert_eq!(mgr.lora(), Some(adapter_store_path(&store, &h)));
+    let args = mgr.spawn_args_for_test();
+    let i = args.iter().position(|a| a == "--lora").unwrap();
+    assert_eq!(args[i + 1], adapter_store_path(&store, &h).to_string_lossy());
+    assert!(again.restore_error().is_none());
+    // An adapter already set is left alone.
+    let other = d.join("other-adapter.gguf");
+    mgr.set_lora(Some(other.clone()));
+    reapply_into(&again, &mgr, &store);
+    assert_eq!(mgr.lora(), Some(other));
+    // On another base nothing is set; a failed re-apply is reported, not served.
+    let mgr2 = crate::serve::LlamaServerManager::new(d.join("no-such-bin"), d.join("other.gguf"), d.join("crash.jsonl"), 18097);
+    reapply_into(&again, &mgr2, &store);
+    assert_eq!(mgr2.lora(), None);
+    std::fs::write(adapter_store_path(&store, &h), b"GGUF\x03\x00\x00\x00tampered").unwrap();
+    std::fs::write(&p, b"GGUF\x03\x00\x00\x00changed").unwrap();
+    let mgr3 = crate::serve::LlamaServerManager::new(d.join("no-such-bin"), d.join("m.gguf"), d.join("crash.jsonl"), 18096);
+    reapply_into(&again, &mgr3, &store);
+    assert_eq!(mgr3.lora(), None);
+    assert!(again.restore_error().unwrap().contains("was not put back"));
+}
+
+#[test]
+fn only_a_base_switch_with_an_adapter_set_drops_it() {
+    let a = std::path::Path::new("/m/a.gguf");
+    let b = std::path::Path::new("/m/b.gguf");
+    let l = std::path::Path::new("/adapters/x.gguf");
+    assert!(base_switch_drops_adapter(Some(l), a, b));
+    assert!(!base_switch_drops_adapter(Some(l), a, a));
+    assert!(!base_switch_drops_adapter(None, a, b));
 }

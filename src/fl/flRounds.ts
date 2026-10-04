@@ -32,11 +32,13 @@ function num(v: unknown, fallback: number): number {
  */
 export function proposalFromToolArgs(args: Record<string, unknown>): FlRoundProposal {
   const req = typeof args.requires === "string" && (CAPS as readonly string[]).includes(args.requires) ? (args.requires as FlCapability) : DEFAULT_PROPOSAL.requires;
+  const roundId = typeof args.roundId === "string" ? args.roundId.trim() : "";
   return {
     requires: req,
     loraRank: num(args.loraRank, DEFAULT_PROPOSAL.loraRank),
     maxTrajectories: num(args.maxTrajectories, DEFAULT_PROPOSAL.maxTrajectories),
     leaseHours: num(args.leaseHours, DEFAULT_PROPOSAL.leaseHours),
+    ...(roundId ? { roundId } : {}),
   };
 }
 
@@ -60,6 +62,9 @@ export function flStartCerSpec(plan: FlRoundPlan, origin: string): CerSpec {
       { k: "Compute", v: plan.explain.compute },
       { k: "Reward", v: plan.explain.reward },
       { k: "Privacy", v: plan.explain.privacy },
+      ...(plan.proposal.roundId
+        ? [{ k: "Round", v: `${plan.proposal.roundId}. Approving writes your consent for this round only; you can withdraw it on the Train surface.` }]
+        : []),
       { k: "Plan", v: plan.planHash.slice(0, 16) + "…" },
     ],
     cost: "none, no chain transaction",
@@ -114,6 +119,9 @@ export function formatPlanForAgent(plan: FlRoundPlan): string {
     `Reward: ${plan.explain.reward}`,
     `Privacy: ${plan.explain.privacy}`,
   ];
+  if (plan.proposal.roundId) {
+    lines.push(`Round: ${plan.proposal.roundId}. Joining writes the member's consent for this round only, which the device training worker checks; the member can withdraw it.`);
+  }
   if (plan.canStart) {
     lines.push(
       `This plan can start. Explain it to the member in plain words, and if they want to join, call fl_round_start with planHash "${plan.planHash}". The member decides on an approval card; joining records their approval, and this build has no device training worker, so no training runs yet.`,
@@ -137,5 +145,9 @@ export function gateSummary(rec: FlAdapterGateRecord): { headline: string; lines
     const delta = m.improvement === null ? "" : ` (${m.improvement >= 0 ? "+" : ""}${m.improvement.toFixed(3)})`;
     return `${m.metric} ${f3(m.base)} to ${f3(m.candidate)}${delta}`;
   });
-  return { headline, lines: [...lines, ...d.reasons] };
+  const r = rec.round;
+  const round = r
+    ? `From round ${r.roundId} (record ${r.recordDigest}, ${r.participants} devices, chain ${r.chainId}); its round result was checked: Accepted, and the chain, bundle and replay digests agree.`
+    : "No round result was given, so this adapter is not tied to a round.";
+  return { headline, lines: [round, ...lines, ...d.reasons] };
 }

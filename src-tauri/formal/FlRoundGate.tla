@@ -16,6 +16,12 @@
 (* its --lora file on every restart. Assumption: the app-owned copy is not *)
 (* modified while it is being served (same trust as the model files); it   *)
 (* may be damaged while not served, and a load re-hashes it.               *)
+(*                                                                         *)
+(* Re-apply (fan-out 6): a load is remembered in fl_rounds.json (`saved`). *)
+(* An app restart serves nothing until the start path re-applies `saved`   *)
+(* through the same checks as a load. `wanted` is a ghost: the member's    *)
+(* standing intent, set by Load and ended by Unload, a base switch while   *)
+(* loaded, or a gate record that no longer allows it on its base.          *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -35,12 +41,17 @@ VARIABLES
     copy,                            \* copy[v]: the version stored at adapters/<v>.gguf, or "none"
     base,                            \* the served base model
     loaded,                          \* the adapter (version) llama-server is configured with
-    served                           \* the bytes the running llama-server read at its last spawn
+    served,                          \* the bytes the running llama-server read at its last spawn
+    saved, savedBase,                \* the remembered adapter and the base it was loaded on
+    wanted,                          \* ghost: the member's standing intent
+    restored                         \* ghost: a restart re-applied an adapter at least once
 
 vars == <<coord, settle, made, seenCoord, seenSettle, approved, started, startCoord,
-          startSettle, content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served>>
+          startSettle, content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served,
+          saved, savedBase, wanted, restored>>
 startVars == <<made, seenCoord, seenSettle, approved, started, startCoord, startSettle>>
-loadVars == <<content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served>>
+memVars == <<saved, savedBase, wanted, restored>>
+loadVars == <<content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served, saved, savedBase, wanted, restored>>
 
 TypeOK ==
     /\ coord \in Phases /\ settle \in Settles
@@ -56,6 +67,9 @@ TypeOK ==
     /\ base \in Bases
     /\ loaded \in Versions \cup {NoAdapter}
     /\ served \in Versions \cup {"none", NoAdapter}
+    /\ saved \in Versions \cup {NoAdapter} /\ savedBase \in Bases
+    /\ wanted \in Versions \cup {NoAdapter}
+    /\ restored \in BOOLEAN
 
 Init ==
     /\ coord \in Phases /\ settle \in Settles
@@ -72,6 +86,9 @@ Init ==
     /\ base \in Bases
     /\ loaded = NoAdapter
     /\ served = NoAdapter
+    /\ saved = NoAdapter /\ savedBase = CHOOSE b \in Bases : TRUE
+    /\ wanted = NoAdapter
+    /\ restored = FALSE
 
 (* ---- environment ---- *)
 CoordChange(c, s) ==
@@ -80,12 +97,12 @@ CoordChange(c, s) ==
 
 Swap(f, v) ==
     /\ content' = [content EXCEPT ![f] = v]
-    /\ UNCHANGED <<coord, settle, startVars, gateVerdict, gateBase, gateSrc, copy, base, loaded, served>>
+    /\ UNCHANGED <<coord, settle, startVars, gateVerdict, gateBase, gateSrc, copy, base, loaded, served, memVars>>
 
 DamageCopy(v, w) ==
     /\ copy[v] # "none" /\ loaded # v
     /\ copy' = [copy EXCEPT ![v] = w]
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base, loaded, served>>
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base, loaded, served, memVars>>
 
 (* ---- start ---- *)
 Plan(p) ==
@@ -122,7 +139,13 @@ Gate(f, verdict, b) ==
     /\ IF loaded = v /\ (verdict = "REJECT" \/ b # base)
           THEN /\ loaded' = NoAdapter /\ served' = NoAdapter
           ELSE UNCHANGED <<loaded, served>>
-    /\ UNCHANGED <<coord, settle, startVars, content, copy, base>>
+    \* FlRounds::record_gate: a record that no longer allows the remembered adapter on the base it
+    \* was loaded on ends the re-apply.
+    /\ IF saved = v /\ (verdict = "REJECT" \/ b # savedBase)
+          THEN saved' = NoAdapter
+          ELSE UNCHANGED saved
+    /\ wanted' = IF wanted = v /\ (verdict = "REJECT" \/ b # savedBase) THEN NoAdapter ELSE wanted
+    /\ UNCHANGED <<coord, settle, startVars, content, copy, base, savedBase, restored>>
 
 \* The copy load would serve after refreshing it: a good copy is reused, a bad one is replaced from
 \* the source, and the result is accepted only if it hashes to v.
@@ -135,24 +158,52 @@ Load(v) ==
           THEN /\ copy' = [copy EXCEPT ![v] = v]
                /\ loaded' = v
                /\ served' = copy'[v]
+               /\ saved' = v /\ savedBase' = base /\ wanted' = v
+               /\ UNCHANGED restored
           ELSE /\ copy' = [copy EXCEPT ![v] = "none"]
-               /\ UNCHANGED <<loaded, served>>
+               /\ UNCHANGED <<loaded, served, memVars>>
     /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base>>
 
 Unload ==
     /\ loaded' = NoAdapter /\ served' = NoAdapter
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base>>
+    /\ saved' = NoAdapter /\ wanted' = NoAdapter
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, savedBase, restored>>
 
+\* model_catalog_select: a switch while an adapter is loaded drops it and forgets it.
 SelectBase(b) ==
     /\ base' = b
     /\ loaded' = IF b # base THEN NoAdapter ELSE loaded
     /\ served' = IF b # base THEN NoAdapter ELSE served
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy>>
+    /\ IF b # base /\ loaded # NoAdapter
+          THEN saved' = NoAdapter /\ wanted' = NoAdapter
+          ELSE UNCHANGED <<saved, wanted>>
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, savedBase, restored>>
 
 \* The supervisor restarts llama-server after a crash with the same argv: it re-reads --lora.
 CrashRestart ==
     /\ served' = IF loaded = NoAdapter THEN NoAdapter ELSE copy[loaded]
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, loaded>>
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, loaded, memVars>>
+
+\* The app quits and starts again on some base: nothing is served, the store survives.
+AppRestart(b) ==
+    /\ base' = b /\ loaded' = NoAdapter /\ served' = NoAdapter
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, memVars>>
+
+\* fl_rounds::reapply_before_start + restore_active: the remembered adapter goes back only on the
+\* base it was loaded on, through the same checks and re-hash as Load. Not a new intent.
+Restore ==
+    /\ loaded = NoAdapter /\ saved # NoAdapter
+    /\ savedBase = base
+    /\ gateVerdict[saved] = "ACCEPT"
+    /\ gateBase[saved] = base
+    /\ IF Refreshed(saved) = saved
+          THEN /\ copy' = [copy EXCEPT ![saved] = saved]
+               /\ loaded' = saved
+               /\ served' = copy'[saved]
+               /\ restored' = TRUE
+          ELSE /\ copy' = [copy EXCEPT ![saved] = "none"]
+               /\ UNCHANGED <<loaded, served, restored>>
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base, saved, savedBase, wanted>>
 
 Next ==
     \/ \E c \in Phases, s \in Settles : CoordChange(c, s)
@@ -164,6 +215,8 @@ Next ==
     \/ Unload
     \/ \E b \in Bases : SelectBase(b)
     \/ CrashRestart
+    \/ \E b \in Bases : AppRestart(b)
+    \/ Restore
 
 Spec == Init /\ [][Next]_vars
 
@@ -186,7 +239,13 @@ LoadedIsAccepted ==
 \* What llama-server actually read is exactly the gated version, across swaps and crash restarts.
 ServedIsLoaded == served = loaded
 
+\* Only what the member loaded and has not since unloaded (or lost to a gate record or a base
+\* switch) is ever configured, across restarts.
+LoadedIsWanted == loaded # NoAdapter => loaded = wanted
+
 (* ---- non-vacuity (expected to be VIOLATED, see FlRoundGate_Reach.cfg) ---- *)
 NeverStarts == \A p \in Plans : started[p] = 0
 NeverLoads == loaded = NoAdapter
+\* A restart can put an adapter back (expected VIOLATED, see FlRoundGate_ReachRestore.cfg).
+NeverRestores == ~restored
 =============================================================================

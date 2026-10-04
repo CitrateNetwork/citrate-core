@@ -618,6 +618,9 @@ pub async fn model_serve_start(app_h: tauri::AppHandle) -> std::result::Result<(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let st1 = tauri::Manager::try_state::<crate::model::ModelState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        // HUP-S9.4: put back the LoRA adapter the member loaded before a restart, if the eval
+        // gate still allows it on this base (never fails the start).
+        crate::fl_rounds::reapply_before_start(&app_h);
         // HUP-S1.6: size the context + GPU offload for the effective tier and the active model.
         let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(
             &app_h,

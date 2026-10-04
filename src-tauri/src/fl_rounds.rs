@@ -16,8 +16,20 @@
 //! What "start" means today: the member's HIC-1 decision (an explicit approve in the UI, no
 //! signature, no wallet) authorizes this device to join the round described by one exact plan
 //! hash. Core re-reads the coordinator at that moment and refuses if anything the member saw has
-//! changed. This build does not include the device training worker (HUP-S9.1/S9.2), so no
-//! training runs yet; the receipt says so. Nothing here holds a key or signs (Rule 3).
+//! changed. When the plan names a round (`roundId`, the `round_id` of citrate-chain
+//! `docs/fl/FL_ROUND_V1.md` section 2), the approval is also written as that round's per-round
+//! consent (D-29) to `<app data>/fl_consent.json`, in the exact `{"rounds":["0x…"]}` shape the
+//! compute-pool device worker reads through `CITRATE_FL_CONSENT_FILE`. The member can withdraw it.
+//! This build does not bundle the device training worker, so no training runs from the app; the
+//! receipt says so. Nothing here holds a key or signs (Rule 3).
+//!
+//! Round results (the local-devnet flow, FL_ROUND_V1 sections 6 and 9): the gate can bind an
+//! adapter to the round that produced it. Core reads the round result the operator's round tool
+//! wrote (`scripts/fl/devnet-round-e2e.sh` writes one per round) and accepts it only if the round
+//! is Accepted, the chain, bundle and independent-replay record digests agree, the replay found no
+//! mismatch and checked the merged adapter, and at least three devices took part. The adapter file
+//! must hash to the round's merged adapter. Core does not read the ledger itself: on 40204 the
+//! ledger is not deployed, and a devnet is throwaway.
 //!
 //! Loading an adapter: `fl_adapter_gate` hashes the file, checks it is GGUF, compares the base
 //! and candidate scorecards and records ACCEPT or REJECT bound to that hash. `fl_adapter_load`
@@ -25,7 +37,11 @@
 //! the scorecards measured, copies the file into `<app data>/adapters/<sha256>.gguf` and re-hashes
 //! the copy (TOCTOU), then restarts llama-server with `--lora` pointing at the copy. The copy
 //! matters because the supervisor re-reads `--lora` on every crash restart. Switching the base
-//! model drops the adapter. Formal model: `formal/FlRoundGate.tla`.
+//! model drops the adapter. A loaded adapter is remembered (`active` in `fl_rounds.json`) and put
+//! back when the app next starts the local model on the same base, through the same checks as a
+//! load (latest gate record ACCEPT for that base, copy re-hashed). Unload, a later REJECT, an
+//! ACCEPT on another base, or switching the base while it is loaded ends that. Formal model:
+//! `formal/FlRoundGate.tla`.
 //!
 //! Gate thresholds are conservative placeholders, **pending owner sign-off**: no metric may get
 //! worse at all, and the mean of the shared metrics must strictly improve.
@@ -43,6 +59,14 @@ use sha2::{Digest, Sha256};
 pub const COORDINATOR_ENV: &str = "CITRATE_FL_COORDINATOR_URL";
 /// The app-data file holding the coordinator setting, start authorizations and gate records.
 pub const STORE_FILE: &str = "fl_rounds.json";
+/// The app-data file holding per-round consent for the device worker (`CITRATE_FL_CONSENT_FILE`).
+pub const CONSENT_FILE: &str = "fl_consent.json";
+/// The env variable the compute-pool device worker reads the consent file path from.
+pub const WORKER_CONSENT_ENV: &str = "CITRATE_FL_CONSENT_FILE";
+/// The largest round result file read for the gate. The devnet receipt is about 3 KB.
+pub const MAX_ROUND_RESULT_BYTES: usize = 64 * 1024;
+/// A round result names at least this many devices (US-9.1; FL_ROUND_V1 `minParticipants`).
+pub const MIN_ROUND_PARTICIPANTS: u64 = 3;
 /// The largest `/v1/status` body accepted. The real one is about 100 bytes.
 pub const MAX_STATUS_BYTES: usize = 16 * 1024;
 /// How long a plan stays startable. After that the member plans again (the coordinator moves).
@@ -271,6 +295,10 @@ pub struct RoundProposal {
     pub lora_rank: u32,
     pub max_trajectories: u32,
     pub lease_hours: u32,
+    /// The round to join (`0x` + 64 hex, FL_ROUND_V1 `round_id`), as the operator published it.
+    /// With one, an approved start also writes the device worker's consent for that round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_id: Option<String>,
 }
 
 impl Default for RoundProposal {
@@ -282,8 +310,19 @@ impl Default for RoundProposal {
             lora_rank: 8,
             max_trajectories: 500,
             lease_hours: 6,
+            round_id: None,
         }
     }
+}
+
+/// `0x` followed by 64 hex digits (a keccak or round id).
+fn is_b32_hex(s: &str) -> bool {
+    s.len() == 66 && s.starts_with("0x") && s[2..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `0x` followed by 40 hex digits.
+fn is_address_hex(s: &str) -> bool {
+    s.len() == 42 && s.starts_with("0x") && s[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 impl RoundProposal {
@@ -298,6 +337,11 @@ impl RoundProposal {
         }
         if !(1..=48).contains(&self.lease_hours) {
             return Err("the lease must be from 1 to 48 hours".into());
+        }
+        if let Some(r) = &self.round_id {
+            if !is_b32_hex(r.trim()) {
+                return Err("the round id must be 0x followed by 64 hex digits".into());
+            }
         }
         Ok(())
     }
@@ -393,6 +437,8 @@ pub fn build_plan(
     now_ms: u64,
 ) -> Result<RoundPlan, String> {
     proposal.validate()?;
+    let mut proposal = proposal;
+    proposal.round_id = proposal.round_id.map(|r| r.trim().to_ascii_lowercase());
     let mut blockers = Vec::new();
 
     let data = format!(
@@ -410,8 +456,12 @@ pub fn build_plan(
         ),
         _ => "The coordinator's job counts are not available.".to_string(),
     };
+    let round_words = match &proposal.round_id {
+        Some(r) => format!(" The round is {r}. Joining writes your consent for this round only, which the device training worker checks before it takes a job; you can withdraw it."),
+        None => " No round is named, so joining records your approval and writes no consent for a device worker.".to_string(),
+    };
     let compute = format!(
-        "{pool} Your device would take one job at a time, each leased for up to {} hours, at the {} tier. It trains a LoRA adapter of rank {} on {}.",
+        "{pool} Your device would take one job at a time, each leased for up to {} hours, at the {} tier. It trains a LoRA adapter of rank {} on {}.{round_words}",
         proposal.lease_hours,
         capability_words(proposal.requires),
         proposal.lora_rank,
@@ -505,6 +555,12 @@ pub struct StartRecord {
     pub coordinator_url: String,
     pub requires: Capability,
     pub authorized_at_ms: u64,
+    /// The round this approval consented to, when the plan named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_id: Option<String>,
+    /// When the member withdrew that consent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,6 +572,25 @@ pub struct StartReceipt {
     /// Always false in this build: no device training worker is bundled.
     pub training_started: bool,
     pub note: String,
+    /// The round consented to, when the plan named one.
+    pub round_id: Option<String>,
+    /// Where that consent was written (pass it to the worker as `CITRATE_FL_CONSENT_FILE`).
+    pub consent_file: Option<String>,
+}
+
+/// The adapter the member loaded, remembered so it is put back after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveAdapter {
+    pub sha256: String,
+    /// The served model file it was loaded on.
+    pub base_model: String,
+}
+
+/// The device worker's consent file: exactly `{"rounds":["0x…"]}`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ConsentFile {
+    rounds: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -527,12 +602,16 @@ struct StoreFile {
     starts: Vec<StartRecord>,
     #[serde(default)]
     gates: BTreeMap<String, AdapterGateRecord>,
+    #[serde(default)]
+    active: Option<ActiveAdapter>,
 }
 
 #[derive(Default)]
 struct Inner {
     file: StoreFile,
     plans: VecDeque<RoundPlan>,
+    /// Why the last re-apply after a restart did not happen, if it failed.
+    restore_error: Option<String>,
     /// Set when the store file exists but could not be read. Writes are then refused so the
     /// member's data is not overwritten with an empty file.
     load_error: Option<String>,
@@ -543,6 +622,9 @@ struct Inner {
 pub struct FlRounds {
     inner: Mutex<Inner>,
     path: Option<PathBuf>,
+    /// Serializes starts and consent withdrawals, so the consent file and the start records change
+    /// together (a start's rollback never removes another start's consent).
+    consent_lock: Mutex<()>,
 }
 
 impl FlRounds {
@@ -559,6 +641,7 @@ impl FlRounds {
         FlRounds {
             inner: Mutex::new(inner),
             path: Some(path),
+            consent_lock: Mutex::new(()),
         }
     }
 
@@ -632,7 +715,119 @@ impl FlRounds {
     /// later REJECT revokes an earlier ACCEPT.
     pub fn record_gate(&self, rec: AdapterGateRecord) -> Result<(), String> {
         self.mutate(|f| {
+            // A record that no longer allows the remembered adapter on the base it was loaded on
+            // ends the re-apply; a later ACCEPT does not restore it without a new load.
+            if let Some(a) = &f.active {
+                if a.sha256 == rec.adapter_sha256
+                    && (rec.decision.verdict != GateVerdict::Accept
+                        || model_stem(&rec.base_model) != model_stem(&a.base_model))
+                {
+                    f.active = None;
+                }
+            }
             f.gates.insert(rec.adapter_sha256.clone(), rec);
+            Ok(())
+        })
+    }
+
+    /// The adapter to put back after a restart, if any.
+    pub fn active(&self) -> Option<ActiveAdapter> {
+        self.lock().file.active.clone()
+    }
+
+    /// Remember a loaded adapter. Refused unless its latest gate record is ACCEPT for that base.
+    pub fn set_active(&self, sha: &str, base_model_file: &str) -> Result<(), String> {
+        let sha = sha.trim().to_ascii_lowercase();
+        self.mutate(|f| {
+            match f.gates.get(&sha) {
+                Some(r)
+                    if r.decision.verdict == GateVerdict::Accept
+                        && model_stem(&r.base_model) == model_stem(base_model_file) => {}
+                _ => return Err(
+                    "only an adapter the eval gate accepted for this base model can be remembered"
+                        .to_string(),
+                ),
+            }
+            f.active = Some(ActiveAdapter {
+                sha256: sha.clone(),
+                base_model: base_model_file.to_string(),
+            });
+            Ok(())
+        })
+    }
+
+    /// Forget the remembered adapter (unload, or a base switch while it was loaded).
+    pub fn forget_active(&self) -> Result<(), String> {
+        self.mutate(|f| {
+            f.active = None;
+            Ok(())
+        })
+    }
+
+    pub fn restore_error(&self) -> Option<String> {
+        self.lock().restore_error.clone()
+    }
+
+    fn note_restore(&self, e: Option<String>) {
+        self.lock().restore_error = e;
+    }
+
+    /// `<app data>/fl_consent.json`, next to the store. None without an app data folder.
+    pub fn consent_path(&self) -> Option<PathBuf> {
+        self.path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|d| d.join(CONSENT_FILE))
+    }
+
+    fn read_consent(&self) -> Result<ConsentFile, String> {
+        let Some(path) = self.consent_path() else {
+            return Ok(ConsentFile::default());
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<ConsentFile>(&bytes).map_err(|e| {
+                format!("{CONSENT_FILE} is unreadable ({e}); fix or remove it before saving")
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ConsentFile::default()),
+            Err(e) => Err(format!("{CONSENT_FILE} could not be read ({e})")),
+        }
+    }
+
+    fn write_consent(&self, c: &ConsentFile) -> Result<PathBuf, String> {
+        let path = self
+            .consent_path()
+            .ok_or_else(|| "no app data folder to write the round consent into".to_string())?;
+        let bytes = serde_json::to_vec_pretty(c).map_err(|e| e.to_string())?;
+        write_atomic(&path, &bytes)?;
+        Ok(path)
+    }
+
+    /// The rounds this device consented to, as the worker would read them.
+    pub fn consented_rounds(&self) -> Result<Vec<String>, String> {
+        Ok(self.read_consent()?.rounds)
+    }
+
+    /// Withdraw consent for a round: removed from the worker's file first (it takes effect at the
+    /// worker's next job), then recorded on the start.
+    pub fn revoke_consent(&self, round_id: &str, now_ms: u64) -> Result<(), String> {
+        let _serial = self.consent_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let rid = round_id.trim().to_ascii_lowercase();
+        let live = |s: &StartRecord| {
+            s.round_id.as_deref() == Some(rid.as_str()) && s.revoked_at_ms.is_none()
+        };
+        if !self.starts().iter().any(live) {
+            return Err(format!("there is no consent for round {rid} to withdraw"));
+        }
+        let mut c = self.read_consent()?;
+        let before = c.rounds.len();
+        c.rounds.retain(|r| !r.trim().eq_ignore_ascii_case(&rid));
+        if c.rounds.len() != before {
+            self.write_consent(&c)?;
+        }
+        self.mutate(|f| {
+            for s in f.starts.iter_mut().filter(|s| live(s)) {
+                s.revoked_at_ms = Some(now_ms);
+            }
             Ok(())
         })
     }
@@ -718,6 +913,7 @@ pub fn start_round(
     http: &dyn CoordinatorHttp,
     now_ms: u64,
 ) -> Result<StartReceipt, String> {
+    let _serial = fl.consent_lock.lock().unwrap_or_else(|e| e.into_inner());
     let plan = fl
         .lookup_plan(plan_hash)
         .ok_or_else(|| "no plan with that hash on this device; plan the round first".to_string())?;
@@ -750,25 +946,71 @@ pub fn start_round(
         }
         _ => return Err("the coordinator changed since you approved: it cannot be read now; plan again".into()),
     }
+    let round_id = plan.proposal.round_id.clone();
     let rec = StartRecord {
         plan_hash: plan_hash.to_string(),
         coordinator_url: url.clone(),
         requires: plan.proposal.requires,
         authorized_at_ms: now_ms,
+        round_id: round_id.clone(),
+        revoked_at_ms: None,
     };
-    fl.mutate(|f| {
+    // Per-round consent (D-29) goes to the worker's file first; if recording the start then fails,
+    // the consent is taken back, so the file never holds a round without a recorded approval.
+    let mut consent_file = None;
+    let mut previous_consent = None;
+    if let Some(rid) = &round_id {
+        if fl
+            .starts()
+            .iter()
+            .any(|s| s.round_id.as_deref() == Some(rid.as_str()) && s.revoked_at_ms.is_none())
+        {
+            return Err(format!("you already consented to round {rid}"));
+        }
+        let c = fl.read_consent()?;
+        let mut next = c.clone();
+        if !next
+            .rounds
+            .iter()
+            .any(|r| r.trim().eq_ignore_ascii_case(rid))
+        {
+            next.rounds.push(rid.clone());
+        }
+        consent_file = Some(fl.write_consent(&next)?);
+        previous_consent = Some(c);
+    }
+    let recorded = fl.mutate(|f| {
         if f.starts.iter().any(|s| s.plan_hash == rec.plan_hash) {
             return Err("you already authorized this plan".to_string());
         }
         f.starts.push(rec.clone());
         Ok(())
-    })?;
+    });
+    if let Err(e) = recorded {
+        if let Some(c) = previous_consent {
+            if let Err(undo) = fl.write_consent(&c) {
+                return Err(format!(
+                    "{e}; the round consent could not be taken back ({undo}), remove it from {CONSENT_FILE}"
+                ));
+            }
+        }
+        return Err(e);
+    }
+    let note = match (&round_id, &consent_file) {
+        (Some(rid), Some(path)) => format!(
+            "Your approval for this exact plan is recorded, and your consent for round {rid} is written to {}. A device training worker started with {WORKER_CONSENT_ENV} set to that file takes part in this round only. This build does not bundle the worker, so no training has started from the app.",
+            path.display()
+        ),
+        _ => "Your approval for this exact plan is recorded on this device. This build does not include the device training worker (HUP-S9.1/S9.2), so no training has started.".to_string(),
+    };
     Ok(StartReceipt {
         plan_hash: rec.plan_hash,
         coordinator_url: url,
         authorized_at_ms: now_ms,
         training_started: false,
-        note: "Your approval for this exact plan is recorded on this device. This build does not include the device training worker (HUP-S9.1/S9.2), so no training has started.".into(),
+        note,
+        round_id,
+        consent_file: consent_file.map(|p| p.to_string_lossy().to_string()),
     })
 }
 
@@ -1093,6 +1335,143 @@ pub fn decide_eval_gate(adapter_sha: &str, p: &EvalPair) -> GateDecision {
 }
 
 // ---------------------------------------------------------------------------
+// Round results (local-devnet flow, citrate-chain docs/fl/FL_ROUND_V1.md)
+// ---------------------------------------------------------------------------
+
+/// The round an adapter came from, as its round result states it. Every field was checked for
+/// shape and for agreement between the chain, the coordinator's bundle and the independent replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoundBinding {
+    pub round_id: String,
+    pub record_digest: String,
+    /// sha256 of the merged adapter file (FL_ROUND_V1 section 6 `adapter_hash`).
+    pub adapter_sha256: String,
+    pub chain_id: u64,
+    pub ledger: String,
+    pub participants: u64,
+}
+
+#[derive(Deserialize)]
+struct WireRoundAggregate {
+    adapter_sha256: String,
+    round_id: String,
+    record_digest: String,
+    participants: u64,
+}
+
+#[derive(Deserialize)]
+struct WireRoundReplay {
+    round_id: String,
+    record_digest: String,
+    merged_adapter_checked: bool,
+    mismatches: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct WireRoundDigests {
+    chain: String,
+    bundle: String,
+    replay: String,
+}
+
+#[derive(Deserialize)]
+struct WireRoundResult {
+    chain_id: u64,
+    ledger: String,
+    round_id: String,
+    aggregate: WireRoundAggregate,
+    replay: WireRoundReplay,
+    record_digest: WireRoundDigests,
+    /// The round's ledger status. The devnet script writes it as `round0_status`.
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    round0_status: Option<String>,
+}
+
+/// Read a round result strictly. Refused unless the round is Accepted, at least three devices
+/// took part, the replay found no mismatch and checked the merged adapter, and every record
+/// digest and round id in it agree.
+pub fn parse_round_result(body: &str) -> Result<RoundBinding, String> {
+    if body.len() > MAX_ROUND_RESULT_BYTES {
+        return Err("the round result is too large".into());
+    }
+    let w: WireRoundResult = serde_json::from_str(body).map_err(|_| {
+        "not a round result (the round tool's receipt: round_id, aggregate, replay, record_digest)"
+            .to_string()
+    })?;
+    let rid = w.round_id.to_ascii_lowercase();
+    if !is_b32_hex(&rid) {
+        return Err("the round result's round id is not 0x followed by 64 hex digits".into());
+    }
+    if !is_address_hex(&w.ledger) {
+        return Err("the round result's ledger is not an address".into());
+    }
+    let sha = w.aggregate.adapter_sha256.to_ascii_lowercase();
+    if !is_sha256_hex(&sha) {
+        return Err("the round result's adapter hash is not a sha256 hex".into());
+    }
+    if !w.aggregate.round_id.eq_ignore_ascii_case(&rid)
+        || !w.replay.round_id.eq_ignore_ascii_case(&rid)
+    {
+        return Err("the round result names more than one round".into());
+    }
+    let digest = w.record_digest.chain.to_ascii_lowercase();
+    if !is_b32_hex(&digest) {
+        return Err("the round result's record digest is not 0x followed by 64 hex digits".into());
+    }
+    let all = [
+        &w.record_digest.bundle,
+        &w.record_digest.replay,
+        &w.aggregate.record_digest,
+        &w.replay.record_digest,
+    ];
+    if all.iter().any(|d| !d.eq_ignore_ascii_case(&digest)) {
+        return Err(
+            "the round's record digests disagree (chain, bundle and replay must match)".into(),
+        );
+    }
+    if !w.replay.mismatches.is_empty() {
+        return Err(format!(
+            "the independent replay found {} mismatch(es) in this round",
+            w.replay.mismatches.len()
+        ));
+    }
+    if !w.replay.merged_adapter_checked {
+        return Err("the independent replay did not check the merged adapter".into());
+    }
+    if w.aggregate.participants < MIN_ROUND_PARTICIPANTS {
+        return Err(format!(
+            "the round had {} devices; at least {MIN_ROUND_PARTICIPANTS} are required",
+            w.aggregate.participants
+        ));
+    }
+    match w.status.or(w.round0_status).as_deref() {
+        Some("Accepted") => {}
+        Some(other) => {
+            return Err(format!(
+                "the round is {}, not Accepted",
+                if other.len() <= 32 {
+                    other
+                } else {
+                    "in another state"
+                }
+            ))
+        }
+        None => return Err("the round result does not say the round was accepted".into()),
+    }
+    Ok(RoundBinding {
+        round_id: rid,
+        record_digest: digest,
+        adapter_sha256: sha,
+        chain_id: w.chain_id,
+        ledger: w.ledger.to_ascii_lowercase(),
+        participants: w.aggregate.participants,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Adapter file, gate record, load authorization
 // ---------------------------------------------------------------------------
 
@@ -1108,6 +1487,10 @@ pub struct AdapterGateRequest {
     pub base_qa_path: Option<String>,
     #[serde(default)]
     pub candidate_qa_path: Option<String>,
+    /// The round result for the round that produced this adapter (optional). With one, the
+    /// expected hash may be left empty: it is the round's merged adapter.
+    #[serde(default)]
+    pub round_result_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1118,6 +1501,9 @@ pub struct AdapterGateRecord {
     /// The model name the scorecards measured; the served base must match it to load.
     pub base_model: String,
     pub decided_at_ms: u64,
+    /// The round this adapter came from, when a round result was given.
+    #[serde(default)]
+    pub round: Option<RoundBinding>,
     pub decision: GateDecision,
 }
 
@@ -1145,10 +1531,14 @@ fn hash_file(path: &Path) -> Result<(String, bool), String> {
 }
 
 fn read_capped(path: &str) -> Result<String, String> {
+    read_capped_to(path, MAX_SCORECARD_BYTES, "scorecard")
+}
+
+fn read_capped_to(path: &str, cap: u64, what: &str) -> Result<String, String> {
     let p = Path::new(path);
     let meta = std::fs::metadata(p).map_err(|e| format!("cannot read {path}: {e}"))?;
-    if !meta.is_file() || meta.len() > MAX_SCORECARD_BYTES {
-        return Err(format!("{path} is not a scorecard file of a sensible size"));
+    if !meta.is_file() || meta.len() > cap {
+        return Err(format!("{path} is not a {what} file of a sensible size"));
     }
     std::fs::read_to_string(p).map_err(|e| format!("cannot read {path}: {e}"))
 }
@@ -1158,7 +1548,30 @@ pub fn evaluate_adapter(
     req: &AdapterGateRequest,
     now_ms: u64,
 ) -> Result<AdapterGateRecord, String> {
-    let expected = req.expected_sha256.trim().to_ascii_lowercase();
+    let round = match req
+        .round_result_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => Some(parse_round_result(&read_capped_to(
+            p,
+            MAX_ROUND_RESULT_BYTES as u64,
+            "round result",
+        )?)?),
+        None => None,
+    };
+    let typed = req.expected_sha256.trim().to_ascii_lowercase();
+    let expected = match &round {
+        Some(r) if typed.is_empty() => r.adapter_sha256.clone(),
+        Some(r) if typed != r.adapter_sha256 => {
+            return Err(format!(
+                "the round result names merged adapter {}, not {typed}",
+                r.adapter_sha256
+            ))
+        }
+        _ => typed,
+    };
     if !is_sha256_hex(&expected) {
         return Err("the expected adapter hash must be a sha256 hex string (64 characters)".into());
     }
@@ -1190,6 +1603,7 @@ pub fn evaluate_adapter(
         adapter_path: path.to_string_lossy().to_string(),
         base_model: pair.base_tools.model.clone(),
         decided_at_ms: now_ms,
+        round,
         decision,
     })
 }
@@ -1260,6 +1674,24 @@ pub fn authorize_load(
     Ok(dest)
 }
 
+/// After a restart: the remembered adapter's served path, if it may be put back now. `None` when
+/// nothing is remembered or another base is served (it stays remembered for that base). Goes
+/// through [`authorize_load`], so the latest gate record must still be ACCEPT for this base and
+/// the copy is re-hashed.
+pub fn restore_active(
+    fl: &FlRounds,
+    current_model_file: &str,
+    store: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let Some(a) = fl.active() else {
+        return Ok(None);
+    };
+    if model_stem(&a.base_model) != model_stem(current_model_file) {
+        return Ok(None);
+    }
+    authorize_load(fl, &a.sha256, current_model_file, store).map(Some)
+}
+
 /// After a new gate record for an adapter: must the served adapter be dropped? Yes when it is this
 /// adapter and the new record no longer allows it on the served base (a REJECT, or an ACCEPT
 /// measured on a different base). Found by TLC (`FlRoundGate.tla`, LoadedIsAccepted).
@@ -1323,6 +1755,14 @@ pub struct FlOverview {
     pub gates: Vec<AdapterGateRecord>,
     /// The adapter llama-server is (or will be) started with, if any.
     pub active_adapter: Option<String>,
+    /// The adapter remembered for re-applying after a restart.
+    pub remembered_adapter: Option<ActiveAdapter>,
+    /// Why the last re-apply did not happen, if it failed.
+    pub restore_error: Option<String>,
+    /// The rounds this device consented to (the worker's file), and where that file is.
+    pub consented_rounds: Vec<String>,
+    pub consent_file: Option<String>,
+    pub consent_error: Option<String>,
     pub store_error: Option<String>,
 }
 
@@ -1334,11 +1774,20 @@ pub async fn fl_overview(app_h: tauri::AppHandle) -> Result<FlOverview, String> 
         let fl = state(&app_h)?;
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let (consented_rounds, consent_error) = match fl.consented_rounds() {
+            Ok(r) => (r, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
         Ok(FlOverview {
             config: resolve_coordinator(&fl, env_coordinator().as_deref()),
             starts: fl.starts(),
             gates: fl.gates(),
             active_adapter: serve.0.lora().map(|p| p.to_string_lossy().to_string()),
+            remembered_adapter: fl.active(),
+            restore_error: fl.restore_error(),
+            consented_rounds,
+            consent_file: fl.consent_path().map(|p| p.to_string_lossy().to_string()),
+            consent_error,
             store_error: fl.load_error(),
         })
     })
@@ -1427,6 +1876,21 @@ pub async fn fl_round_start(
     .await
 }
 
+/// **Command — fl_round_consent_revoke.** Withdraw this device's consent for one round. Lowers
+/// authority only, so it needs no approval card.
+#[tauri::command]
+pub async fn fl_round_consent_revoke(
+    app_h: tauri::AppHandle,
+    round_id: String,
+) -> Result<Vec<String>, String> {
+    crate::blocking::off_main(move || {
+        let fl = state(&app_h)?;
+        fl.revoke_consent(&round_id, now_ms())?;
+        fl.consented_rounds()
+    })
+    .await
+}
+
 /// **Command — fl_adapter_gate.** Hash the adapter, compare the eval scorecards, record the
 /// verdict bound to the hash. If that adapter is being served and the new record no longer allows
 /// it on the served base, it is unloaded.
@@ -1486,8 +1950,11 @@ pub async fn fl_adapter_load(app_h: tauri::AppHandle, sha256: String) -> Result<
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let store = adapter_store(&app_h)?;
-        let path = authorize_load(&fl, &sha256, &serve.0.current_model_file(), &store)?;
+        let base = serve.0.current_model_file();
+        let path = authorize_load(&fl, &sha256, &base, &store)?;
         restart_with_lora(&app_h, &serve, Some(path.clone()))?;
+        fl.set_active(&sha256, &base)?;
+        fl.note_restore(None);
         Ok(path.to_string_lossy().to_string())
     })
     .await
@@ -1499,9 +1966,68 @@ pub async fn fl_adapter_unload(app_h: tauri::AppHandle) -> Result<(), String> {
     crate::blocking::off_main(move || {
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        restart_with_lora(&app_h, &serve, None)
+        restart_with_lora(&app_h, &serve, None)?;
+        let fl = state(&app_h)?;
+        fl.note_restore(None);
+        fl.forget_active()
     })
     .await
+}
+
+/// Before the local model server starts: put the remembered adapter back if it still passes the
+/// load checks for the base about to be served. Never fails the start; a refusal is kept for
+/// `fl_overview`. Runs only while the server is stopped and no adapter is set.
+pub fn reapply_before_start(app: &tauri::AppHandle) {
+    let (Some(fl), Some(serve)) = (
+        tauri::Manager::try_state::<FlRounds>(app),
+        tauri::Manager::try_state::<crate::serve::ServeState>(app),
+    ) else {
+        return;
+    };
+    if serve.0.is_running() || serve.0.lora().is_some() {
+        return;
+    }
+    match adapter_store(app) {
+        Ok(store) => reapply_into(&fl, &serve.0, &store),
+        Err(e) => fl.note_restore(Some(e)),
+    }
+}
+
+/// The body of [`reapply_before_start`] over an explicit server manager and adapter store.
+pub fn reapply_into(fl: &FlRounds, serve: &crate::serve::LlamaServerManager, store: &Path) {
+    if serve.is_running() || serve.lora().is_some() {
+        return;
+    }
+    match restore_active(fl, &serve.current_model_file(), store) {
+        Ok(Some(path)) => {
+            serve.set_lora(Some(path));
+            fl.note_restore(None);
+        }
+        Ok(None) => fl.note_restore(None),
+        Err(e) => {
+            eprintln!("citrate-core: fl_rounds: the remembered adapter was not re-applied: {e}");
+            fl.note_restore(Some(format!(
+                "The adapter you loaded earlier was not put back: {e}"
+            )));
+        }
+    }
+}
+
+/// Does selecting `next` drop the served adapter? Yes when one is set and the base changes.
+pub fn base_switch_drops_adapter(lora: Option<&Path>, current: &Path, next: &Path) -> bool {
+    lora.is_some() && current != next
+}
+
+/// After the member switched the base model while an adapter was loaded: the adapter belongs to
+/// the old base, so it is no longer remembered.
+pub fn forget_after_base_switch(app: &tauri::AppHandle) {
+    if let Some(fl) = tauri::Manager::try_state::<FlRounds>(app) {
+        if let Err(e) = fl.forget_active() {
+            eprintln!(
+                "citrate-core: fl_rounds: could not forget the adapter after a base switch: {e}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
