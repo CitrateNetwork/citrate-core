@@ -6,9 +6,16 @@ import { describeUndo, isFileTool, parseFileChange, type UndoOutcome } from "./f
 const body = (o: Record<string, unknown>) => JSON.stringify(o);
 
 describe("HUP-S2.9 file changes", () => {
-  it("knows the four sidecar file tools and nothing else", () => {
-    for (const t of ["fs_write", "fs_edit", "fs_delete", "fs_rename"]) expect(isFileTool(t)).toBe(true);
-    for (const t of ["fs_read", "node_status", "", "FS_WRITE"]) expect(isFileTool(t)).toBe(false);
+  it("knows every checkpointed sidecar write tool and nothing else", () => {
+    for (const t of ["fs_write", "fs_edit", "fs_delete", "fs_rename", "file_write", "sheet_write"]) expect(isFileTool(t)).toBe(true);
+    for (const t of ["fs_read", "file_read", "file_list", "sheet_read", "node_status", "", "FS_WRITE"]) expect(isFileTool(t)).toBe(false);
+  });
+
+  it("offers undo on a grant-session file_write and sheet_write (HUP-S2.9: every agent write)", () => {
+    const w = parseFileChange("file_write", body({ path: "/w/a.sol", paths: ["/w/a.sol"], bytes: 3, written: true, checkpoint: { session: "s1-ab", seq: 2 } }));
+    expect(w).toEqual({ session: "s1-ab", seq: 2, tool: "file_write", paths: ["/w/a.sol"] });
+    const s = parseFileChange("sheet_write", body({ path: "/w/q3.csv", paths: ["/w/q3.csv"], format: "csv", written: true, checkpoint: { session: "s1-ab", seq: 3 } }));
+    expect(s?.seq).toBe(3);
   });
 
   it("reads the checkpoint a file tool result names", () => {

@@ -334,6 +334,10 @@ export interface MemoryHit {
   kind: string;
   title: string;
   status?: string;
+  /** HUP-S3.1: `<repo>:<path>[#<anchor>]` of a document passage (search with `passages`). */
+  cite?: string;
+  /** HUP-S3.1: the hit's text (search with `passages`). */
+  passage?: string;
 }
 export interface MemoryResult {
   tenant: string;
@@ -408,6 +412,9 @@ export interface KnowledgeImportReport {
   edgesAdded: number;
   tenantsImported: string[];
   tenantsSkipped: string[];
+  /** HUP-S3.1: nodes embedded on this machine, and nodes that took the release's precomputed vectors. */
+  nodesEmbedded?: number;
+  vectorsReused?: number;
 }
 
 export interface MemoryDomain {
@@ -416,7 +423,8 @@ export interface MemoryDomain {
   stop(): Promise<void>;
   assert(fact: string): Promise<"approved" | "declined">;
   recall(tenant: string, budget?: number): Promise<MemoryResult>;
-  search(tenant: string, query: string, budget?: number): Promise<MemoryResult>;
+  /** `opts.passages` (HUP-S3.1): each hit also carries its text and citation. */
+  search(tenant: string, query: string, budget?: number, opts?: { passages?: boolean }): Promise<MemoryResult>;
   neighbors(tenant: string, idPrefix: string, budget?: number): Promise<MemoryNeighbor[]>;
   /** Recall the personal + chain-state tenants for the Storage constellation. */
   constellation(budget?: number): Promise<MemoryResult[]>;
@@ -1113,7 +1121,7 @@ export interface AgentHarnessDomain {
   /** HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar). Open a session on the LOCAL
    *  model (endpoint + key are Rust-owned; the webview supplies only the prompt + tool specs, every
    *  tool runs in core through its approval gates). Returns the session id. */
-  sessionOpen(systemPrompt: string, toolsJson: string): Promise<string>;
+  sessionOpen(systemPrompt: string, toolsJson: string, persona?: SessionPersonaChoice | null): Promise<string>;
   sessionSend(id: string, text: string): Promise<void>;
   /** Long-poll the session's events after sequence `after` (waits up to `waitMs` for new ones). */
   sessionEvents(id: string, after: number, waitMs: number): Promise<SessionEventsPage>;
@@ -1147,6 +1155,11 @@ export interface AgentHarnessDomain {
   undoStep(id: string, seq: number): Promise<UndoOutcome>;
   /** HUP-S2.9 — undo every change of the session not undone yet (all or nothing). */
   undoSession(id: string): Promise<UndoOutcome>;
+  /** HUP-S2.6 — record the member's answer on an approval card or a wallet review in core's HIC
+   *  outbox (then in the decision records the nightly anchor covers). Resolves with the record id,
+   *  or null in a build that keeps no decision records (web/dev); rejects when it could not be
+   *  written. */
+  recordDecision(kind: "ceremony.approval" | "agent.tool_approval", decision: "approved" | "denied", subject: string, reason: string): Promise<number | null>;
   /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
   workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
   /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */
@@ -1166,6 +1179,10 @@ export interface AgentHarnessDomain {
   learnMemories(): Promise<LearnedMemory[]>;
   /** HUP-S3.4 — store learned memories that are still waiting for the memory store. */
   learnStorePending(): Promise<LearnedMemory[]>;
+  /** HUP-S3.4 — resolve a contradiction: keep one learned memory, set aside another (HIC-1; the
+   *  sidecar records the decision before anything changes). Returns the updated ledger. A refusal
+   *  rejects with a message starting `LEARN_REFUSED: `. */
+  learnResolve(keep: string, retract: string): Promise<LearnedMemory[]>;
   /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
    *  `PUBLISH_DISABLED: ` while publishing is off. */
   learnPublish(id: string, version: string): Promise<void>;
@@ -1175,8 +1192,60 @@ export interface AgentHarnessDomain {
   /** HUP-S3.3 — the sidecar validates a member-defined persona and renders its fragment. A refusal
    *  rejects with a message starting `PERSONA_REFUSED: `. */
   personaCheck(persona: CustomPersonaInput): Promise<HermesPersona>;
-  /** HUP-S3.3 — every track's workflow family (definitions; nothing runs). */
+  /** HUP-S3.3 — every track's workflow family, with `needs_tools` and, when this sidecar cannot
+   *  run one, `unavailable` (why). */
   workflows(): Promise<TrackWorkflow[]>;
+  /** HUP-S3.3 (US-3.3 AC2) — run a track's catalog workflow in a session by id. Rejects with a
+   *  message starting `WORKFLOW_REFUSED: ` (unknown workflow, or a tool the session lacks). Read
+   *  the run with `workflowStatus`. */
+  trackWorkflowRun(sessionId: string, workflowId: string): Promise<TrackWorkflowStart>;
+  /** HUP-S2.2 — the `shell_run` commands the sidecar holds for the member's decision in a session. */
+  shellPending(sessionId: string): Promise<ShellPendingView[]>;
+  /** HUP-S2.2 — allow or decline one held command. The decision carries the exact argv and folder
+   *  the member was shown; the sidecar refuses it (rejects with `SHELL_DECISION_REFUSED: `) when
+   *  they differ from what is waiting or nothing with that id waits any more. */
+  shellDecide(sessionId: string, id: string, allow: boolean, argv: string[], cwd: string): Promise<void>;
+}
+
+/** HUP-S2.2 — the OS sandbox a held command would run in, as the sidecar describes it. */
+export interface ShellSandboxSummary {
+  /** "seatbelt" | "bwrap" | "none". */
+  backend: string;
+  enforced: boolean;
+  /** "denied" | "allowed". */
+  network: string;
+  writable: string[];
+  readable_extra: string[];
+  /** One line for people. */
+  summary: string;
+}
+
+/** HUP-S2.2 — one `shell_run` command waiting for the member (`GET /sessions/:id/shell/pending`). */
+export interface ShellPendingView {
+  id: string;
+  callId: string;
+  tool: string;
+  hic: string;
+  /** Exactly as proposed: the program name first, one entry per argument. */
+  argv: string[];
+  resolvedProgram: string;
+  /** The canonical folder it runs in. */
+  cwd: string;
+  timeoutSecs: number;
+  sandbox: ShellSandboxSummary;
+  expiresInSecs: number;
+}
+
+/** HUP-S3.3 — the persona a sidecar session applies (skill allowlist + tool emphasis): a shipped
+ *  persona by id, or a member-defined one. */
+export type SessionPersonaChoice = { persona: string } | { customPersona: CustomPersonaInput };
+
+/** HUP-S3.3 — what `POST /sessions/:id/track_workflows` answers. */
+export interface TrackWorkflowStart {
+  run_id: string;
+  workflow_id: string;
+  track: string;
+  evidence: string;
 }
 
 // HUP-S3.3 + S3.7 — persona and track-workflow wire shapes. These mirror the sidecar's
@@ -1201,6 +1270,8 @@ export interface HermesPersona {
   /** True while the shipped name is a placeholder (the UI says so). */
   name_pending_sign_off: boolean;
   custom: boolean;
+  /** Allowlisted skills this sidecar has installed (absent for a custom persona's check). */
+  skills_installed?: string[];
 }
 export interface CustomPersonaInput {
   id: string;
@@ -1229,6 +1300,10 @@ export interface TrackWorkflow {
   /** "tool-report" (a tool's own report decides) or "answer-shape" (the answer's structure). */
   evidence: "tool-report" | "answer-shape" | string;
   tools: string[];
+  /** Tools a passing run must call. */
+  needs_tools?: string[];
+  /** Why this sidecar cannot run the workflow (e.g. the toolchain is off); null = it can. */
+  unavailable?: string | null;
   verifier_names: string[];
   steps: TrackWorkflowStep[];
 }
@@ -1306,6 +1381,15 @@ export interface AgentSkillsDomain {
   read(name: string): Promise<string>;
   /** Remove an authored skill (idempotent). */
   remove(name: string): Promise<void>;
+  /** HUP-S3.2: convert skills saved in the older flat-file format to SKILL.md, and say what happened. */
+  migrate(): Promise<SkillMigrationReport>;
+}
+/** HUP-S3.2: what converting older flat-file skills to SKILL.md did (skills_local.rs). */
+export interface SkillMigrationReport {
+  /** Slugs now saved as SKILL.md skills. */
+  converted: string[];
+  /** Old files left in place, each with the reason. */
+  failed: { file: string; reason: string }[];
 }
 
 // ── Social identity (Connections · social discovery). Privacy model: ADR-2026-08-30. ──
