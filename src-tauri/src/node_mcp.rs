@@ -28,6 +28,9 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// HUP-S4.1: the label of the built-in Hermes entry's token (shown on its approval requests).
+pub const HERMES_TOKEN_LABEL: &str = "Hermes in this app";
+
 /// The persisted switch (`<app data>/node-mcp/config.json`). Off unless the member turns it on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeMcpConfig {
@@ -194,6 +197,43 @@ impl NodeMcpState {
             stdio_command: std::env::current_exe()
                 .ok()
                 .map(|p| p.to_string_lossy().to_string()),
+        }
+    }
+
+    /// Whether the member turned the server on (it listens while on).
+    pub fn enabled(&self) -> bool {
+        self.config().enabled
+    }
+
+    /// The port the server listens on now (or would).
+    pub fn bound_port(&self) -> u16 {
+        self.server
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.addr.port())
+            .unwrap_or_else(|| self.port())
+    }
+
+    /// HUP-S4.1: the connect token for the built-in Hermes entry. `current` (the token in the
+    /// allowlist file Hermes was last given) is kept while it is still a live in-memory token;
+    /// otherwise every earlier Hermes token is revoked (its sessions and pending requests close)
+    /// and a new one is minted. Only its hash is held, in memory.
+    pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> {
+        if let Some(t) = current.filter(|t| self.shared.tokens.is_live_ephemeral(t)) {
+            return Ok(t.to_string());
+        }
+        self.revoke_hermes_tokens();
+        self.shared
+            .tokens
+            .issue_ephemeral(HERMES_TOKEN_LABEL, now_ms())
+            .map(|t| t.connect_token)
+    }
+
+    /// HUP-S4.1: revoke every in-memory (Hermes) token.
+    pub fn revoke_hermes_tokens(&self) {
+        for id in self.shared.tokens.ephemeral_ids() {
+            let _ = self.revoke_token(&id);
         }
     }
 

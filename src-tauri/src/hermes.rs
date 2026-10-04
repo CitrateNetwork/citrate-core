@@ -2104,6 +2104,11 @@ pub mod personas;
 #[path = "hermes_shell.rs"]
 pub mod shell;
 
+// HUP-S4.1: the member's decision on an MCP card the sidecar holds (child module: reuses the
+// bearer-authed control).
+#[path = "hermes_mcp_cards.rs"]
+pub mod mcp_cards;
+
 #[cfg(test)]
 mod brief_tests {
     include!("hermes_brief_tests.rs");

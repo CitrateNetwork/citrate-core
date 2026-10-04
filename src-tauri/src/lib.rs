@@ -232,6 +232,9 @@ pub fn node_mcp_stdio_main() -> i32 {
     node_mcp_http::stdio_main()
 }
 
+/// The flag `main` checks for the stdio shim (shared with Hermes's built-in `node` entry).
+pub const NODE_MCP_STDIO_FLAG: &str = node_mcp_http::STDIO_FLAG;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Linux + NVIDIA black-screen fix. WebKitGTK's GPU-accelerated compositing / DMABUF renderer
@@ -653,6 +656,8 @@ pub fn run() {
             hermes::personas::hermes_track_workflow_run,
             // HUP-S2.2: the member decides each shell_run command the sidecar holds.
             hermes::shell::hermes_shell_pending,
+            hermes::mcp_cards::hermes_mcp_pending,
+            hermes::mcp_cards::hermes_mcp_decide,
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,

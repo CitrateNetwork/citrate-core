@@ -30,6 +30,9 @@ use std::time::Duration;
 pub const DEFAULT_PORT: u16 = 47204;
 /// The MCP endpoint path.
 pub const MCP_PATH: &str = "/mcp";
+/// The flag that runs this executable as the stdio shim (also what core writes into Hermes's
+/// allowlist for its built-in `node` entry).
+pub const STDIO_FLAG: &str = "--mcp-stdio";
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;

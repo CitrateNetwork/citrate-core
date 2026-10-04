@@ -58,11 +58,19 @@ fn assert_host_accepts(cfg: &Value) {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'));
         assert!(names.insert(name.to_string()), "duplicate {name}");
+        // Only the node entry allows write tools: its writes are approval requests in the app.
         assert_eq!(
             s["allow_write_tools"],
-            Value::Bool(false),
-            "{name} must not allow writes"
+            Value::Bool(name == NODE_SERVER_NAME),
+            "{name}: allow_write_tools"
         );
+        if let Some(env) = s.get("env") {
+            for (k, v) in env.as_object().expect("env object") {
+                assert!(!k.is_empty() && !k.contains('='));
+                let v = v.as_str().expect("string env value");
+                assert!(!v.contains('$') && !v.contains('%'), "no env references");
+            }
+        }
         match s["transport"].as_str() {
             Some("stdio") => {
                 let cmd = s["command"].as_str().expect("command");
@@ -82,8 +90,8 @@ fn assert_host_accepts(cfg: &Value) {
 #[test]
 fn defaults_are_off_so_nothing_changes_for_members() {
     let s = McpSettings::default();
-    assert!(!s.mem && !s.scan);
-    assert!(render_config(&s, Some(&mem_target())).is_none());
+    assert!(!s.mem && !s.scan && !s.node);
+    assert!(render_config(&s, Some(&mem_target()), None).is_none());
 }
 
 #[test]
@@ -91,8 +99,9 @@ fn scan_renders_the_public_explorer_mcp_endpoint_read_only() {
     let s = McpSettings {
         mem: false,
         scan: true,
+        node: false,
     };
-    let cfg = render_config(&s, None).expect("one server");
+    let cfg = render_config(&s, None, None).expect("one server");
     assert_host_accepts(&cfg);
     let servers = cfg["servers"].as_array().expect("servers");
     assert_eq!(servers.len(), 1);
@@ -110,8 +119,9 @@ fn mem_renders_core_itself_as_the_stdio_bridge() {
     let s = McpSettings {
         mem: true,
         scan: false,
+        node: false,
     };
-    let cfg = render_config(&s, Some(&mem_target())).expect("one server");
+    let cfg = render_config(&s, Some(&mem_target()), None).expect("one server");
     assert_host_accepts(&cfg);
     let m = &cfg["servers"][0];
     assert_eq!(m["name"], "mem");
@@ -136,13 +146,15 @@ fn mem_without_a_resolvable_bridge_is_left_out_not_guessed() {
     let s = McpSettings {
         mem: true,
         scan: false,
+        node: false,
     };
-    assert!(render_config(&s, None).is_none());
+    assert!(render_config(&s, None, None).is_none());
     let both = McpSettings {
         mem: true,
         scan: true,
+        node: false,
     };
-    let cfg = render_config(&both, None).expect("scan only");
+    let cfg = render_config(&both, None, None).expect("scan only");
     assert_eq!(cfg["servers"].as_array().map(|a| a.len()), Some(1));
     assert_eq!(cfg["servers"][0]["name"], "scan");
 }
@@ -156,8 +168,9 @@ fn a_relative_bridge_executable_is_refused() {
     let s = McpSettings {
         mem: true,
         scan: false,
+        node: false,
     };
-    assert!(render_config(&s, Some(&t)).is_none());
+    assert!(render_config(&s, Some(&t), None).is_none());
 }
 
 #[test]
@@ -166,8 +179,9 @@ fn sync_writes_the_file_when_enabled_and_removes_it_when_disabled() {
     let on = McpSettings {
         mem: true,
         scan: true,
+        node: false,
     };
-    let path = sync_config_file(&dir, &on, Some(&mem_target()))
+    let path = sync_config_file(&dir, &on, Some(&mem_target()), None)
         .expect("io")
         .expect("written");
     assert_eq!(path, config_path(&dir));
@@ -182,7 +196,7 @@ fn sync_writes_the_file_when_enabled_and_removes_it_when_disabled() {
         assert_eq!(mode, 0o600);
     }
     let off = McpSettings::default();
-    assert!(sync_config_file(&dir, &off, Some(&mem_target()))
+    assert!(sync_config_file(&dir, &off, Some(&mem_target()), None)
         .expect("io")
         .is_none());
     assert!(
@@ -198,6 +212,7 @@ fn settings_round_trip_and_a_missing_or_corrupt_file_is_the_default() {
     let s = McpSettings {
         mem: false,
         scan: true,
+        node: false,
     };
     save_settings(&dir, &s).expect("save");
     assert_eq!(load_settings(&dir), s);
@@ -210,9 +225,10 @@ fn the_view_lists_both_servers_and_says_why_one_is_unavailable() {
     let s = McpSettings {
         mem: true,
         scan: false,
+        node: false,
     };
-    let v = build_view(&s, None, false, false);
-    assert_eq!(v.servers.len(), 2);
+    let v = build_view(&s, None, false, false, false);
+    assert_eq!(v.servers.len(), 3);
     let mem = v.servers.iter().find(|x| x.name == "mem").expect("mem row");
     assert!(mem.enabled && !mem.available);
     assert!(mem.detail.contains("not available"), "{}", mem.detail);
@@ -223,9 +239,185 @@ fn the_view_lists_both_servers_and_says_why_one_is_unavailable() {
         .expect("scan row");
     assert!(!scan.enabled && scan.available);
     assert!(!v.restart_required);
-    let running = build_view(&s, Some(&mem_target()), true, true);
+    let running = build_view(&s, Some(&mem_target()), false, true, true);
     assert!(
         running.restart_required,
         "a running sidecar reads the file only at start"
     );
+}
+
+// ---------------------------------------------------------------------------
+// HUP-S4.1 (US-4.1 AC1): the built-in `node` entry.
+// ---------------------------------------------------------------------------
+
+/// A connect-token-shaped value built at run time (no credential-looking literal in the source).
+fn node_target() -> NodeTarget {
+    NodeTarget {
+        exe: PathBuf::from("/Applications/Citrate.app/Contents/MacOS/citrate-core"),
+        port: 47204,
+        token: format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "ab".repeat(32)),
+    }
+}
+
+fn node_on() -> McpSettings {
+    McpSettings {
+        mem: false,
+        scan: false,
+        node: true,
+    }
+}
+
+#[test]
+fn the_node_entry_is_off_by_default_and_needs_the_switch() {
+    let off = McpSettings::default();
+    assert!(render_config(&off, None, Some(&node_target())).is_none());
+    // An old settings file without the field reads as off.
+    let old: McpSettings = serde_json::from_str(r#"{"mem":true,"scan":true}"#).expect("parse");
+    assert!(!old.node);
+}
+
+#[test]
+fn the_node_entry_runs_the_stdio_shim_with_a_minted_token() {
+    let cfg = render_config(&node_on(), None, Some(&node_target())).expect("node");
+    assert_host_accepts(&cfg);
+    let n = &cfg["servers"][0];
+    assert_eq!(n["name"], NODE_SERVER_NAME);
+    assert_eq!(n["transport"], "stdio");
+    assert_eq!(
+        n["command"],
+        "/Applications/Citrate.app/Contents/MacOS/citrate-core"
+    );
+    assert_eq!(n["args"], serde_json::json!([crate::node_mcp_http::STDIO_FLAG]));
+    assert_eq!(n["args"][0], "--mcp-stdio");
+    assert_eq!(n["env"][NODE_TOKEN_ENV], node_target().token);
+    assert_eq!(n["env"][NODE_PORT_ENV], "47204");
+    assert_eq!(n["allow_write_tools"], true);
+}
+
+#[test]
+fn the_node_entry_is_left_out_without_a_target_a_relative_exe_or_a_token() {
+    assert!(render_config(&node_on(), None, None).is_none());
+    let mut rel = node_target();
+    rel.exe = PathBuf::from("citrate-core");
+    assert!(render_config(&node_on(), None, Some(&rel)).is_none());
+    let mut empty = node_target();
+    empty.token.clear();
+    assert!(render_config(&node_on(), None, Some(&empty)).is_none());
+}
+
+#[test]
+fn the_node_entry_keeps_its_name_reserved_from_member_servers() {
+    // agent-mcp-host refuses member entries named `node` or `citrate-node`; core's own entry is
+    // the only way the name appears in the allowlist.
+    assert_eq!(NODE_SERVER_NAME, "node");
+    let all = McpSettings {
+        mem: true,
+        scan: true,
+        node: true,
+    };
+    let cfg = render_config(&all, Some(&mem_target()), Some(&node_target())).expect("three");
+    assert_host_accepts(&cfg);
+    let names: Vec<&str> = cfg["servers"]
+        .as_array()
+        .expect("servers")
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["mem", "scan", "node"]);
+}
+
+#[test]
+fn the_current_node_token_is_read_back_from_the_written_file() {
+    let dir = tmp_dir("node-token");
+    assert_eq!(current_node_token(&dir), None);
+    sync_config_file(&dir, &node_on(), None, Some(&node_target()))
+        .expect("io")
+        .expect("written");
+    assert_eq!(current_node_token(&dir), Some(node_target().token));
+    sync_config_file(&dir, &McpSettings::default(), None, Some(&node_target())).expect("io");
+    assert_eq!(current_node_token(&dir), None);
+}
+
+#[test]
+fn a_node_target_never_prints_its_token() {
+    let d = format!("{:?}", node_target());
+    assert!(!d.contains(&node_target().token), "{d}");
+}
+
+#[test]
+fn the_view_says_the_node_server_must_be_on_first() {
+    let v = build_view(&node_on(), None, false, false, false);
+    let n = v
+        .servers
+        .iter()
+        .find(|x| x.name == NODE_SERVER_NAME)
+        .expect("node row");
+    assert!(n.enabled && !n.available);
+    assert!(n.detail.contains("Turn on"), "{}", n.detail);
+    let v = build_view(&node_on(), None, true, false, false);
+    let n = v
+        .servers
+        .iter()
+        .find(|x| x.name == NODE_SERVER_NAME)
+        .expect("node row");
+    assert!(n.available);
+    assert!(n.detail.contains("approval"), "{}", n.detail);
+}
+
+/// HUP-S4.1: the MCP eval items (`src/agent/eval/toolcall-v2.d/mcp.json`) name only real tools of
+/// this node's MCP server, as Hermes sees them through the built-in entry (`mcp__node__<tool>`),
+/// and expect a write tool only where the task asks for one explicitly.
+#[test]
+fn eval_items_name_real_node_tools() {
+    use crate::node_mcp_tools::{tool, ToolKind};
+    let ds: Value =
+        serde_json::from_str(include_str!("../../src/agent/eval/toolcall-v2.d/mcp.json"))
+            .expect("mcp.json parses");
+    assert_eq!(ds["version"], "toolcall-v2-mcp");
+    assert_eq!(ds["server"], NODE_SERVER_NAME);
+    assert_eq!(ds["provenance"]["disjointFromTraining"], true);
+    let prefix = format!("mcp__{NODE_SERVER_NAME}__");
+    let resolve = |name: &str| {
+        let short = name
+            .strip_prefix(&prefix)
+            .unwrap_or_else(|| panic!("{name} is not a node MCP tool"));
+        tool(short).unwrap_or_else(|| panic!("{short} is not in the node MCP catalog"))
+    };
+    let tasks = ds["tasks"].as_array().expect("tasks");
+    assert!(tasks.len() >= 10);
+    let mut ids = std::collections::HashSet::new();
+    for t in tasks {
+        let id = t["id"].as_str().expect("id");
+        assert!(ids.insert(id.to_string()), "duplicate id {id}");
+        assert!(!t["prompt"].as_str().unwrap_or("").trim().is_empty(), "{id}");
+        let tags: Vec<&str> = t["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(!tags.is_empty(), "{id}");
+        match t["expect"]["tool"].as_str() {
+            None => assert!(t["expect"]["tool"].is_null(), "{id}"),
+            Some(name) => {
+                let def = resolve(name);
+                if !matches!(def.kind, ToolKind::Read) {
+                    assert!(tags.contains(&"explicit-write"), "{id} expects a write tool");
+                }
+                let schema = (def.input_schema)();
+                if let Some(m) = t["expect"]["argsMatch"].as_object() {
+                    for k in m.keys() {
+                        assert!(
+                            schema["properties"].get(k).is_some(),
+                            "{id}: {name} has no argument {k}"
+                        );
+                    }
+                }
+            }
+        }
+        for a in t["expect"]["alsoAccept"].as_array().into_iter().flatten() {
+            let def = resolve(a.as_str().expect("name"));
+            assert!(matches!(def.kind, ToolKind::Read), "{id}: alsoAccept must be a read tool");
+        }
+    }
 }

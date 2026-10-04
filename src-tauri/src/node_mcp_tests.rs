@@ -1570,3 +1570,164 @@ fn bidi_controls_never_reach_approval_text() {
     };
     assert_eq!(c.origin(), "mcp:Claude Code via xy");
 }
+
+// HUP-S4.1 (US-4.1 AC1): the built-in Hermes entry's connect token.
+
+#[test]
+fn an_ephemeral_token_verifies_is_never_written_and_revokes() {
+    let dir = std::env::temp_dir().join(format!("n6-node-mcp-eph-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("tokens.json");
+    let s = TokenStore::load(path.clone());
+    let t = s.issue_ephemeral("Hermes in this app", 5).expect("issue");
+    assert!(t.connect_token.starts_with(crate::node_mcp_token::TOKEN_PREFIX));
+    assert!(s.verify(&t.connect_token, 6).is_some());
+    assert!(s.is_live_ephemeral(&t.connect_token));
+    assert!(!path.exists(), "an in-memory token never touches disk");
+    // A persisted token issued later does not write the in-memory one either.
+    let p = s.issue("Cursor", 7).expect("issue");
+    let on_disk = std::fs::read_to_string(&path).expect("written");
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(
+        t.connect_token.as_bytes(),
+    ));
+    assert!(!on_disk.contains(&digest), "{on_disk}");
+    assert!(!s.is_live_ephemeral(&p.connect_token));
+    assert_eq!(s.list().len(), 2);
+    // The next app launch knows nothing of it.
+    assert!(TokenStore::load(path.clone())
+        .verify(&t.connect_token, 8)
+        .is_none());
+    assert!(s.revoke(&t.id).expect("revoke"));
+    assert!(s.verify(&t.connect_token, 9).is_none());
+    assert!(s.verify(&p.connect_token, 9).is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_hermes_token_is_kept_while_live_and_rotated_otherwise() {
+    let st = NodeMcpState::new(Arc::new(Fixture::default()), TokenStore::in_memory(), None);
+    let t1 = st.hermes_token(None).expect("mint");
+    assert_eq!(st.hermes_token(Some(&t1)).expect("keep"), t1);
+    let t2 = st.hermes_token(Some("not-a-live-token")).expect("rotate");
+    assert_ne!(t1, t2);
+    assert!(
+        st.shared().tokens.verify(&t1, 1).is_none(),
+        "the earlier Hermes token is revoked"
+    );
+    assert!(st.shared().tokens.verify(&t2, 1).is_some());
+    // A member's persisted token is never adopted as Hermes's.
+    let member = st.create_token("Claude Code").expect("issue");
+    let t3 = st.hermes_token(Some(&member.connect_token)).expect("mint");
+    assert_ne!(t3, member.connect_token);
+    assert!(st.shared().tokens.verify(&member.connect_token, 2).is_some());
+    let views = st.status().tokens;
+    assert!(views.iter().any(|v| v.label == HERMES_TOKEN_LABEL));
+    st.revoke_hermes_tokens();
+    assert!(st.shared().tokens.verify(&t3, 3).is_none());
+    assert!(st.shared().tokens.verify(&member.connect_token, 3).is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Demo (manual), HUP-S4.1: Hermes's built-in `node` entry against the real server
+// ---------------------------------------------------------------------------
+
+/// Chain reads from the live public 40204 RPC; a proposed transaction is recorded as a harness
+/// ceremony (nothing is signed: in the app the SignatureCeremony opens instead).
+struct HermesDemoBackend {
+    proposals: std::sync::Mutex<Vec<(String, String, u128)>>,
+}
+
+impl NodeBackend for HermesDemoBackend {
+    fn node_status(&self) -> Result<Value, String> {
+        PublicChainOnly.node_status()
+    }
+    fn rpc_read(&self, method: &str, params: Value) -> Result<RpcRead, String> {
+        PublicChainOnly.rpc_read(method, params)
+    }
+    fn wallet_address(&self) -> Result<String, String> {
+        PublicChainOnly.wallet_address()
+    }
+    fn memory_search(&self, t: &str, q: &str, n: usize) -> Result<Value, String> {
+        PublicChainOnly.memory_search(t, q, n)
+    }
+    fn groups(&self) -> Result<Value, String> {
+        PublicChainOnly.groups()
+    }
+    fn cluster_status(&self, g: &str) -> Result<Value, String> {
+        PublicChainOnly.cluster_status(g)
+    }
+    fn cluster_peers(&self, g: &str) -> Result<Value, String> {
+        PublicChainOnly.cluster_peers(g)
+    }
+    fn invites(&self, g: &str) -> Result<Value, String> {
+        PublicChainOnly.invites(g)
+    }
+    fn propose_transaction(
+        &self,
+        origin: &str,
+        to: &str,
+        value_wei: u128,
+        _data: &str,
+    ) -> Result<ProposedSignature, String> {
+        let mut p = self.proposals.lock().unwrap_or_else(|e| e.into_inner());
+        p.push((origin.into(), to.into(), value_wei));
+        let id = format!("harness-ceremony-{}", p.len());
+        Ok(ProposedSignature {
+            ceremony_id: id.clone(),
+            ceremony: json!({"id": id, "origin": origin, "decoded": {"action": "Transfer", "destination": to, "valueWei": value_wei.to_string()}, "requiresRawAck": false, "note": "demo harness: nothing is signed"}),
+        })
+    }
+    fn close_ceremony(&self, _: &str) {}
+}
+
+/// Run with `cargo test --lib hermes_node_entry_demo -- --ignored --nocapture` and
+/// `HERMES_NODE_DEMO_SHIM=<a citrate-core binary>`, `HERMES_NODE_DEMO_ALLOWLIST=<file>`. Starts the
+/// real node MCP server, mints Hermes's in-memory token, writes the allowlist core would give
+/// Hermes (the built-in `node` entry), serves for `HERMES_NODE_DEMO_HOLD_SECS` (default 60) while
+/// an external agent-mcp-host connects through the stdio shim, then prints the approval inbox.
+#[test]
+#[ignore = "manual demo: needs network access to rpc.citrate.ai and a citrate-core binary"]
+fn hermes_node_entry_demo() {
+    let backend = Arc::new(HermesDemoBackend {
+        proposals: std::sync::Mutex::new(Vec::new()),
+    });
+    let state = NodeMcpState::new(backend.clone(), TokenStore::in_memory(), None);
+    let port = state.start_on(47298).expect("bind");
+    let token = state.hermes_token(None).expect("mint");
+    let exe = std::path::PathBuf::from(std::env::var("HERMES_NODE_DEMO_SHIM").expect("shim exe"));
+    let settings = crate::hermes_mcp::McpSettings {
+        mem: false,
+        scan: false,
+        node: true,
+    };
+    let target = crate::hermes_mcp::NodeTarget { exe, port, token };
+    let cfg = crate::hermes_mcp::render_config(&settings, None, Some(&target)).expect("node entry");
+    let out = std::env::var("HERMES_NODE_DEMO_ALLOWLIST").expect("allowlist path");
+    crate::node_mcp_token::write_private(
+        std::path::Path::new(&out),
+        serde_json::to_string_pretty(&cfg).expect("json").as_bytes(),
+    )
+    .expect("write");
+    let redacted = cfg.to_string().replace(&target.token, "cnmcp_<minted for Hermes, elided>");
+    println!("allowlist core wrote for Hermes: {redacted}");
+    println!("serving {} ; tokens: {:?}", crate::node_mcp_http::endpoint_url(port), state.status().tokens.iter().map(|t| t.label.clone()).collect::<Vec<_>>());
+    let secs: u64 = std::env::var("HERMES_NODE_DEMO_HOLD_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < until {
+        if !state.requests().is_empty() && std::env::var("HERMES_NODE_DEMO_STOP_ON_REQUEST").is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    for r in state.requests() {
+        println!("approval inbox: {}", serde_json::to_string(&r).expect("json"));
+    }
+    println!("recent calls: {}", serde_json::to_string(&state.status().recent_calls).expect("json"));
+    println!("harness ceremonies opened: {:?}", backend.proposals.lock().map(|p| p.clone()).unwrap_or_default());
+    state.revoke_hermes_tokens();
+    state.stop();
+}

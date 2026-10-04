@@ -34,7 +34,7 @@ import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import type { FlRoundPlan } from "../bridge/domains";
-import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
@@ -45,7 +45,7 @@ import { validateNewSkill, runPrompt } from "../agent/userSkills";
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -929,6 +929,9 @@ export class Store {
             // HUP-S2.2: shell_run commands the sidecar holds, and the member's bound decision.
             shellPending: (id) => h.shellPending(id),
             shellDecide: (id, approvalId, allow, argv, cwd) => h.shellDecide(id, approvalId, allow, argv, cwd),
+            // HUP-S4.1: MCP requests the sidecar holds (effectful calls after taint, pages to open).
+            mcpPending: (id) => h.mcpPending(id),
+            mcpDecide: (id, approvalId, allow, subject) => h.mcpDecide(id, approvalId, allow, subject),
           },
           // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
           () => this.sidecarSystemPrompt(),
@@ -2131,6 +2134,7 @@ export class Store {
           },
           // HUP-S2.2: every held shell_run is decided by the member on its card.
           onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
+          onMcpApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               recordFileChange(ev.change, msgId);
@@ -2345,6 +2349,7 @@ export class Store {
           },
           // HUP-S2.2: every held shell_run is decided by the member on its card.
           onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
+          onMcpApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
@@ -2418,6 +2423,29 @@ export class Store {
       sponsorColor: "var(--tx-3)",
       card: shellRunCard(p),
       hic: { reason: SHELL_RUN_HIC_REASON },
+    });
+    return r === "approved";
+  }
+
+  /**
+   * HUP-S4.1 (US-4.1 AC2): put a held MCP request in front of the member with the HIC banner: an
+   * effectful MCP call after the session read untrusted content (server, tool, the exact
+   * arguments, the server's hints), or a server asking to open a page (the full address and its
+   * host; the app opens it only on Approve). True only when the member pressed Approve.
+   */
+  async approveMcpRequest(p: McpPendingView): Promise<boolean> {
+    const page = p.kind === "open_url";
+    const r = await this.requestSig({
+      origin: "chat agent",
+      requester: `Hermes · MCP server ${p.server}`,
+      title: page ? "Open a page for an MCP server" : "Approve an MCP action",
+      chainless: true,
+      rows: [],
+      cost: "none, no chain transaction",
+      sponsor: "explicit decision required",
+      sponsorColor: "var(--tx-3)",
+      card: mcpRequestCard(p),
+      hic: { reason: page ? MCP_OPEN_URL_HIC_REASON : p.reason || MCP_CALL_HIC_REASON },
     });
     return r === "approved";
   }

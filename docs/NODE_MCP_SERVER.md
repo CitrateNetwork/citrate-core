@@ -1,8 +1,8 @@
 ---
 created: 2026-10-01
-branch: hup/n4-node-mcp
+branch: hup/n4-node-mcp (Hermes built-in entry on hup/n6-mcp-host, 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
-status: implemented (HUP-S4.2 + S8.5); off by default; port and personal-memory scope pending owner sign-off
+status: implemented (HUP-S4.2 + S8.5; HUP-S4.1 Hermes entry); off by default; port and personal-memory scope pending owner sign-off
 ---
 
 # The citrate-node MCP server
@@ -51,6 +51,27 @@ The shim only ever sends the token to a loopback address. `CITRATE_NODE_MCP_PORT
 `env = { CITRATE_NODE_MCP_TOKEN = "..." }`.
 
 Check it from Claude Code with `/mcp`, or ask it to "use citrate-node to show the chain head".
+
+## Hermes in this app (HUP-S4.1)
+
+Hermes reaches this server through a built-in entry, **This node**, in the Agent surface's
+**Connected tools (MCP)** card. It is off by default, and it can be turned on only while the node
+MCP server is on. When it is on, at every Hermes start core:
+
+1. keeps Hermes's current connect token if it is still live, or else revokes every earlier one
+   (their sessions and pending requests close) and mints a new token labelled
+   "Hermes in this app". That token is held only as its SHA-256, **in memory**: it is never
+   written to `tokens.json`, and it ends when the app exits;
+2. writes the `node` entry into Hermes's MCP allowlist (`hermes/mcp.json`, 0600): this
+   executable run as the stdio shim (`--mcp-stdio`), with `CITRATE_NODE_MCP_TOKEN` and
+   `CITRATE_NODE_MCP_PORT` in the entry's explicit environment, and `allow_write_tools = true`
+   (pending owner sign-off, A24).
+
+Write tools still never act on their own: each becomes a request in this server's approval
+inbox (shown in the app, labelled with the token), and a transaction is signed only through the
+SignatureCeremony. Once a Hermes session has read MCP output (always untrusted), an effectful MCP
+call additionally waits for the member on the sidecar's MCP approval card before it is even sent.
+The names `node` and `citrate-node` stay reserved, so a member-added server cannot take them.
 
 ## What it offers
 

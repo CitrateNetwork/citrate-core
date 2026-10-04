@@ -8,7 +8,7 @@
 // =====================================================================
 import { parseFileChange, isFileTool } from "./fileChanges";
 import { TurnStopped, untilStopped, type ChatProvider, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
-import type { SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
+import type { McpPendingView, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import type { WorkflowRunView } from "./learn";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
@@ -27,7 +27,14 @@ export interface SidecarSessionApi {
   shellPending?(id: string): Promise<ShellPendingView[]>;
   /** HUP-S2.2 — the member's decision, bound to the exact argv and folder shown. */
   shellDecide?(id: string, approvalId: string, allow: boolean, argv: string[], cwd: string): Promise<void>;
+  /** HUP-S4.1: the MCP requests the sidecar holds for the member (absent = not supported). */
+  mcpPending?(id: string): Promise<McpPendingView[]>;
+  /** HUP-S4.1: the member's decision, bound to the subject (arguments or URL) shown. */
+  mcpDecide?(id: string, approvalId: string, allow: boolean, subject: string): Promise<void>;
 }
+
+/** HUP-S4.1: every MCP tool the sidecar offers is named `mcp__<server>__<tool>`. */
+export const MCP_TOOL_PREFIX = "mcp__";
 
 /** HUP-S2.2 — the sidecar-hosted tool whose every call the member decides. */
 export const SHELL_RUN_TOOL = "shell_run";
@@ -41,6 +48,10 @@ export interface SidecarProviderOptions {
   shellPollMs?: number;
   /** How long to look before leaving the decision to the sidecar's own timeout (ms). */
   shellWaitMs?: number;
+  /** HUP-S4.1: pause between looks for MCP requests held for an in-flight MCP call (ms). */
+  mcpPollMs?: number;
+  /** HUP-S4.1: how long to keep looking while an MCP call is in flight (a task can run long). */
+  mcpWaitMs?: number;
 }
 
 const SUMMARY_CHARS = 300;
@@ -127,6 +138,8 @@ export function createSidecarProvider(
 ): ChatProvider {
   const shellPollMs = options.shellPollMs ?? 250;
   const shellWaitMs = options.shellWaitMs ?? 10_000;
+  const mcpPollMs = options.mcpPollMs ?? 250;
+  const mcpWaitMs = options.mcpWaitMs ?? 20 * 60_000;
   let sessionId: string | null = null;
   let lastSeq = 0;
   // Replay safety: core calls already run whose result the loop has not yet recorded (a
@@ -219,6 +232,51 @@ export function createSidecarProvider(
       }
     }
 
+    /**
+     * HUP-S4.1 (US-4.1 AC2): while the MCP call `callId` is in flight, put every request the
+     * sidecar holds for it in front of the member (an effectful call after taint, or a page the
+     * server asks to open) and send each decision bound to the subject shown. Stops once the
+     * sidecar answered the call, the turn stopped, or after `mcpWaitMs`. A failed decision is
+     * reported and never retried as an approval.
+     */
+    async function decideMcp(callId: string, laterInPage: boolean): Promise<void> {
+      if (!api.mcpPending || !api.mcpDecide || laterInPage) return;
+      const deadline = Date.now() + mcpWaitMs;
+      const decided = new Set<string>();
+      for (;;) {
+        if (stopping) return;
+        const list = await api.mcpPending(id).catch(() => [] as McpPendingView[]);
+        for (const card of list.filter((p) => p.callId === callId && !decided.has(p.id))) {
+          decided.add(card.id);
+          let allow = false;
+          if (callbacks.onMcpApproval) {
+            try {
+              allow = (await untilStopped(callbacks.onMcpApproval(card), signal)) === true;
+            } catch (e) {
+              if (e instanceof TurnStopped) stopOnce();
+              allow = false;
+            }
+          }
+          if (stopping) allow = false;
+          try {
+            await api.mcpDecide(id, card.id, allow, card.subject);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            callbacks.onActivity?.({
+              kind: "notice",
+              text: msg.startsWith("MCP_PAGE_NOT_OPENED")
+                ? `You allowed the page for MCP server ${card.server}, but it could not be opened (${msg.replace(/^MCP_PAGE_NOT_OPENED:\s*/, "")}). Open ${card.subject} yourself if you still want to.`
+                : `Your decision on ${card.remoteTool} (MCP server ${card.server}) did not reach Hermes (${msg}). It was not run.`,
+            });
+          }
+        }
+        const peek = await api.events(id, lastSeq, 0).catch(() => null);
+        if (peek?.events.some((e) => e.event.type === "tool_result" && e.event.call_id === callId)) return;
+        if (Date.now() >= deadline) return;
+        await sleep(mcpPollMs);
+      }
+    }
+
     try {
       let final = "";
       let failure: string | null = null;
@@ -270,6 +328,13 @@ export function createSidecarProvider(
               callbacks.onStatus("tool");
               const answered = fresh.some((e) => e.event.type === "tool_result" && e.event.call_id === cid);
               await decideShell(cid, answered);
+              continue;
+            }
+            if (!stopping && c && typeof c.id === "string" && typeof c.name === "string" && c.name.startsWith(MCP_TOOL_PREFIX)) {
+              const cid = c.id;
+              callbacks.onStatus("tool");
+              const answered = fresh.some((e) => e.event.type === "tool_result" && e.event.call_id === cid);
+              await decideMcp(cid, answered);
               continue;
             }
           }
