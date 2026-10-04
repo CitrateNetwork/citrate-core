@@ -19,6 +19,8 @@ export interface SidecarSessionApi {
   events(id: string, after: number, waitMs: number): Promise<{ events: { seq: number; event: Record<string, unknown> }[]; lastSeq: number; busy: boolean; pendingCoreCalls?: string[] }>;
   toolResult(id: string, callId: string, status: "ok" | "denied" | "error", content: string): Promise<void>;
   stop(id: string): Promise<void>;
+  /** Close a session this provider no longer uses (absent = sessions are left to the sidecar). */
+  close?(id: string): Promise<void>;
   /** HUP-S3.3 — start a track's catalog workflow in the session (absent = workflows unavailable). */
   trackWorkflowRun?(id: string, workflowId: string): Promise<{ run_id: string }>;
   /** HUP-S3.3 — a workflow run's state (`running` until the sidecar's verifiers have decided). */
@@ -231,6 +233,24 @@ export function createSidecarProvider(
   // and never sees the stopped turn's events.
   let previous: Promise<unknown> = Promise.resolve();
 
+  /**
+   * Run `call` on this provider's session; when the sidecar no longer holds that session (404),
+   * open a fresh one and run it once more there. Any other failure, or a second 404, is reported.
+   */
+  async function onSession<T>(call: (id: string) => Promise<T>): Promise<{ id: string; value: T }> {
+    const first = await ensureSession();
+    try {
+      return { id: first, value: await call(first) };
+    } catch (e) {
+      // The sidecar answers 404 for a session it no longer holds (it restarted, or its table was
+      // full and it replaced this idle session with a newer one).
+      if (!isSessionGone(e)) throw e;
+      dropSession(first);
+      const id = await ensureSession();
+      return { id, value: await call(id) };
+    }
+  }
+
   async function ensureSession(): Promise<string> {
     if (!sessionId) {
       const p = persona();
@@ -270,6 +290,12 @@ export function createSidecarProvider(
     // HUP-S7.6: Stop goes through the session's own stop route (it ends the turn and releases a
     // waiting tool); from then on this turn only drains its events to `done` and runs nothing.
     let stopping = false;
+    // A session this turn stopped is not reused; it is closed once its events are drained.
+    let abandoned = false;
+    const abandon = () => {
+      dropSession(id);
+      abandoned = true;
+    };
     const stopOnce = () => {
       if (stopping) return;
       stopping = true;
@@ -335,8 +361,8 @@ export function createSidecarProvider(
           if (type === "done") {
             if (ev.outcome === "stopped") {
               // A session's stop switch stays on, so every later turn in it would end at once with
-              // an empty answer. Leave it; the next turn opens a fresh session.
-              dropSession(id);
+              // an empty answer. Leave it (closed once drained); the next turn opens a fresh session.
+              abandon();
               if (!stopping) failure = failure ?? "the agent session was stopped; send again to start a fresh one";
             } else if (runId === null && !stopping && ev.outcome !== "answered") failure = failure ?? `turn ended: ${String(ev.outcome)}`;
             // A workflow step attempt ends with its own `done`; only the run state ends a workflow.
@@ -475,7 +501,7 @@ export function createSidecarProvider(
           // The session is idle: the run has a verdict unless it has not started yet.
           const view = await api.workflowStatus(id, runId);
           if (view.state !== "running") {
-            if (stopping) dropSession(id);
+            if (stopping) abandon();
             return { final, failure, stopping, view };
           }
         }
@@ -484,7 +510,7 @@ export function createSidecarProvider(
           if (idle >= MAX_IDLE_POLLS) {
             if (stopping) {
               // The stop route was called on this session, so it is not reused (see `done` above).
-              dropSession(id);
+              abandon();
               return { final, failure, stopping, view: null };
             }
             throw new Error(runId === null ? "the agent session stopped responding" : "the workflow run stopped responding");
@@ -493,6 +519,8 @@ export function createSidecarProvider(
       }
     } finally {
       signal?.removeEventListener("abort", stopOnce);
+      // Close it in the sidecar too, so stopped sessions never fill the sidecar's table.
+      if (abandoned && sessionId !== id) api.close?.(id).catch(() => undefined);
     }
   }
 
@@ -639,8 +667,11 @@ export function createSidecarProvider(
     started.clear();
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
-    const id = await ensureSession();
-    const { run_id } = await api.trackWorkflowRun(id, workflowId);
+    const start = api.trackWorkflowRun.bind(api);
+    const {
+      id,
+      value: { run_id },
+    } = await onSession((sid) => start(sid, workflowId));
     const { failure, stopping, view } = await drive(id, opts, run_id);
     if (stopping) throw new TurnStopped();
     if (!view) {
