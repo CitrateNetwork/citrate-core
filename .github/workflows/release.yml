@@ -84,8 +84,13 @@ jobs:
           set -euo pipefail
           DL="$RUNNER_TEMP/skills-bundle-dl"
           rm -rf "$DL" && mkdir -p "$DL"
-          gh release download runtime-deps -p skills-bundle.tar.gz -D "$DL" --clobber
-          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz
+          # Same shape as the runtime-deps step below, so the PBA-L7b-005 pin tripwire
+          # (scripts/ci/check-release-pins.sh) sees every download go through the verified list.
+          ASSETS=(skills-bundle.tar.gz)
+          for a in "${ASSETS[@]}"; do
+            gh release download runtime-deps -p "$a" -D "$DL" --clobber
+          done
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" "${ASSETS[@]}"
           node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
 
       # ── Stage the runtime artifacts the bundle needs but git does not carry:
