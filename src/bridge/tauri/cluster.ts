@@ -11,8 +11,11 @@ import type {
   ClusterMemberDevices,
   ClusterPeer,
   ClusterStatus,
+  DeviceLinkIngest,
+  DeviceLinkShareOffer,
   DeviceLinks,
   DeviceRevokePrepared,
+  MeshStatus,
 } from "../domains";
 import type { CeremonyView } from "../types";
 
@@ -60,5 +63,18 @@ export const tauriCluster: ClusterDomain = {
   },
   importDeviceLink(code): Promise<DeviceLinks> {
     return invoke<DeviceLinks>("device_link_import", { code });
+  },
+  // HUP-S8.1 follow-on: other members' links ride the group relay as control messages.
+  deviceLinksShareOffer(groupId): Promise<DeviceLinkShareOffer | null> {
+    return invoke<DeviceLinkShareOffer | null>("device_links_share_offer", { group: groupId });
+  },
+  async deviceLinksMarkShared(groupId, digest) {
+    await invoke("device_links_mark_shared", { group: groupId, digest });
+  },
+  deviceLinksIngest(sender, body): Promise<DeviceLinkIngest> {
+    return invoke<DeviceLinkIngest>("device_links_ingest", { sender, body });
+  },
+  meshStatus(): Promise<MeshStatus> {
+    return invoke<MeshStatus>("cluster_mesh_status");
   },
 };

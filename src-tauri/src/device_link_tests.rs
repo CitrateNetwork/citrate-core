@@ -565,6 +565,45 @@ fn import_refuses_an_overlong_code_even_when_it_parses() {
     assert!(st.links.is_empty());
 }
 
+// ---- link codes that travel with a fleet pairing (S8.2) ----
+
+#[test]
+fn a_paired_machine_of_the_same_member_is_added_and_others_are_only_reported() {
+    let (member, wallet) = (seed(1), seed(3));
+    let mut st = DeviceLinkStore::default();
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), None),
+        PairedLink::None
+    );
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some("  ")),
+        PairedLink::None
+    );
+
+    let mine = serde_json::to_string(&wire(&member, &seed(4), &wallet, 1, "Linux box")).expect("json");
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some(&mine)),
+        PairedLink::Added
+    );
+    assert_eq!(st.links.len(), 1);
+
+    // Another person's machine: reported, never stored (a pairing does not make it yours).
+    let theirs = serde_json::to_string(&wire(&seed(7), &seed(5), &seed(8), 0, "Theirs")).expect("json");
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some(&theirs)),
+        PairedLink::OtherMember
+    );
+    // A forged code of "our" member: refused.
+    let mut forged = wire(&member, &seed(6), &wallet, 2, "Forged");
+    forged.wallet_sig = sign_eip191(&seed(9), "x").expect("sign");
+    let forged = serde_json::to_string(&forged).expect("json");
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some(&forged)),
+        PairedLink::Refused
+    );
+    assert_eq!(st.links.len(), 1, "only the verified own device was stored");
+}
+
 // ---- revoking a device needs a one-shot confirmation core minted ----
 
 #[test]

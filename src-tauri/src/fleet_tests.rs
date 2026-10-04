@@ -19,6 +19,7 @@ fn me(id: &str, label: &str, tier: Option<&str>) -> DeviceSelf {
         device_id: id.into(),
         label: label.into(),
         tier: tier.map(str::to_string),
+        link_code: None,
     }
 }
 
@@ -58,6 +59,7 @@ fn the_roster_round_trips_and_upserts_by_id() {
         addr: Some("192.168.1.30".into()),
         paired_at: 10,
         via: PairVia::Issued,
+        device_link: None,
         code: None,
     };
     upsert(&mut r, dev.clone());
@@ -99,6 +101,7 @@ fn the_roster_is_capped() {
                 addr: None,
                 paired_at: i as u64,
                 via: PairVia::Joined,
+                device_link: None,
                 code: None,
             },
         );
@@ -116,8 +119,20 @@ fn join_requests_are_validated() {
         device_id: "a".repeat(32),
         label: "Laptop".into(),
         tier: Some("T0".into()),
+        device_link: None,
     };
     assert!(ok.valid());
+    // A device link code rides along, bounded like a pasted code.
+    assert!(JoinRequest {
+        device_link: Some("{}".into()),
+        ..ok.clone()
+    }
+    .valid());
+    assert!(!JoinRequest {
+        device_link: Some("x".repeat(4097)),
+        ..ok.clone()
+    }
+    .valid());
     assert!(!JoinRequest { v: 2, ..ok.clone() }.valid());
     assert!(!JoinRequest {
         device_id: "zz".into(),
@@ -161,6 +176,7 @@ fn rig(tag: &str) -> Rig {
         issuer: issuer.clone(),
         roster_path: roster.clone(),
         me: Mutex::new(me(&"c".repeat(32), "Studio", Some("T2"))),
+        link_hook: None,
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -280,6 +296,7 @@ fn the_server_stops_when_told() {
         issuer: Arc::new(Mutex::new(PairIssuer::from_seed([1u8; 32]))),
         roster_path: tmpdir("stop").join(ROSTER_FILE),
         me: Mutex::new(me(&"c".repeat(32), "Studio", None)),
+        link_hook: None,
     });
     let h = std::thread::spawn(move || serve_pairing(listener, ctx, |_| true));
     assert!(h.join().is_ok());
@@ -348,6 +365,61 @@ fn a_broken_issuer_roster_never_burns_the_link() {
     assert_eq!(r.issuer.lock().unwrap().outstanding(r.now), 1);
     // The unreadable file is left exactly as it was.
     assert_eq!(std::fs::read(&r.roster).unwrap(), b"{not json");
+}
+
+// ---- HUP-S8.1/S8.2: paired machines exchange their DeviceLink codes ----------------------------
+
+#[test]
+fn paired_machines_exchange_their_device_link_codes() {
+    let d = tmpdir("links");
+    let roster = d.join(ROSTER_FILE);
+    let issuer = Arc::new(Mutex::new(PairIssuer::from_seed([6u8; 32])));
+    let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_hook = seen.clone();
+    let mut studio = me(&"c".repeat(32), "Studio", Some("T2"));
+    studio.link_code = Some("issuer-link-code".into());
+    let ctx = Arc::new(PairCtx {
+        issuer: issuer.clone(),
+        roster_path: roster.clone(),
+        me: Mutex::new(studio),
+        link_hook: Some(Arc::new(move |code: Option<&str>| {
+            seen_hook.lock().unwrap().push(code.map(str::to_string));
+            PairedLink::Added
+        })),
+    });
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let now = now_secs();
+    std::thread::spawn(move || serve_pairing(listener, ctx, |_| false));
+    let link = issuer
+        .lock()
+        .unwrap()
+        .issue("Studio", Some("T2"), vec![format!("127.0.0.1:{port}")], now)
+        .unwrap()
+        .1;
+
+    let mut joiner = me(&"d".repeat(32), "Linux box", Some("T1"));
+    joiner.link_code = Some("joiner-link-code".into());
+    let got = join_local(&link, &joiner, now).unwrap();
+    // The joiner receives the issuer's code (core verifies and stores it).
+    assert_eq!(got.peer_link_code.as_deref(), Some("issuer-link-code"));
+    // The issuer handed the joiner's code to its hook, and recorded the outcome on the roster entry.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![Some("joiner-link-code".to_string())]
+    );
+    let r = load_roster(&roster).unwrap();
+    assert_eq!(r.devices[0].device_link, Some(PairedLink::Added));
+}
+
+#[test]
+fn a_pairing_without_link_codes_is_unchanged() {
+    let r = rig("nolinks");
+    let link = link_for(&r);
+    let got = join_local(&link, &me(&"d".repeat(32), "Linux box", None), r.now).unwrap();
+    assert_eq!(got.peer_link_code, None);
+    let roster = load_roster(&r.roster).unwrap();
+    assert_eq!(roster.devices[0].device_link, None);
 }
 
 // ---- red-team follow-ups: the joiner authenticates the issuer; hints stay on private networks --

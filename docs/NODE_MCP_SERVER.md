@@ -107,7 +107,8 @@ partial match, or not verified. The source text is left out; no ABI is ever gues
 at 0x0120: it encodes `public key (32 bytes) || signature (64 bytes) || message (at most 8 KiB)`,
 calls the precompile read-only and returns `valid`; an answer that is not a 32-byte word is an
 error, never "valid"), `wallet_info`, `address_book`, `memory_search`,
-`groups_list`, `cluster_status`, `cluster_peers`, `invites_list` (ids only, never links or
+`groups_list`, `cluster_status`, `cluster_peers`, `cluster_devices` (each member's linked
+machines and whether they are connected; HUP-S8.3), `invites_list` (ids only, never links or
 tokens), `devices_list` (linked devices and revoked device addresses; no signatures), `pins_list`
 (the files this node keeps), `request_status`.
 

@@ -21,6 +21,9 @@ export interface FleetProbe {
   tier: TierReport;
 }
 
+/** What happened to the other machine's DeviceLink code in a pairing (core `PairedLink`). */
+export type PairedLink = "none" | "added" | "otherMember" | "refused";
+
 export interface FleetDevice {
   id: string;
   label: string;
@@ -29,6 +32,8 @@ export interface FleetDevice {
   addr: string | null;
   pairedAt: number;
   via: "issued" | "joined";
+  /** HUP-S8.1: absent when no link code came with the pairing. */
+  deviceLink?: PairedLink;
   /** Six digits both machines show for this pairing (absent for older entries). */
   code?: string | null;
 }
@@ -57,6 +62,17 @@ export interface PairOffer {
   qr: QrMatrix;
   expiresAt: number;
   hints: string[];
+  /** For a machine without Citrate Core: the install page and its QR. */
+  installUrl?: string;
+  installQr?: QrMatrix;
+  /** This machine is linked, so its DeviceLink travels with the pairing. */
+  carriesDeviceLink?: boolean;
+}
+
+/** Whether THIS machine has a DeviceLink (from `device_links`). */
+export interface LinkStatus {
+  linked: boolean;
+  label: string | null;
 }
 
 export interface PairClaim {
@@ -111,6 +127,16 @@ export interface FleetApi {
   inspectLink(link: string): Promise<PairClaim>;
   joinLink(link: string): Promise<JoinResult>;
   tailscale(lanPeers: number, unreachable: boolean): Promise<TailscaleView>;
+  /** HUP-S8.1: whether this machine is linked (optional: the wizard works without it). */
+  linkStatus?(): Promise<LinkStatus>;
+  /** HUP-S8.1: open the wallet ceremony that links this machine (signs nothing by itself). */
+  linkThisDevice?(label: string): Promise<void>;
+}
+
+/** Link status from the cluster bridge's `myDevices` (the wizard's view of `device_links`). */
+export function linkStatusOf(d: { thisDevice: string | null; links: { device: string; label: string }[] }): LinkStatus {
+  const mine = d.thisDevice ? d.links.find((l) => l.device === d.thisDevice) : undefined;
+  return { linked: !!mine, label: mine?.label ?? null };
 }
 
 export const tauriFleet: FleetApi = {

@@ -59,6 +59,7 @@ mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
 mod device_link;
+mod device_link_share;
 mod docs_ingest;
 mod earnings;
 mod escalation;
@@ -125,6 +126,7 @@ mod widgets;
 // command names once here + in generate_handler! below; each lane fills in its own module's
 // bodies (never this file). See .agentile/cx-ownership.map.
 mod cluster;
+mod cluster_mesh;
 mod comms;
 mod hermes;
 mod hermes_learn;
@@ -664,6 +666,11 @@ pub fn run() {
             device_link::device_link_revoke,
             device_link::device_link_export,
             device_link::device_link_import,
+            device_link_share::device_links_share_offer,
+            device_link_share::device_links_mark_shared,
+            device_link_share::device_links_ingest,
+            cluster_mesh::cluster_mesh_status,
+            cluster_mesh::cluster_mesh_set_enabled,
             training::training_start,
             training::training_status,
             training::training_contribute,

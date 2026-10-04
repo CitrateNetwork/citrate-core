@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 // UDS framing below stays byte-identical to the pre-port path.
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -522,14 +522,77 @@ pub struct ClusterPeerDto {
 // The lazy-start singleton + roster feed from comms.
 // ---------------------------------------------------------------------------
 
-static MANAGER: OnceLock<ClusterDaemonManager> = OnceLock::new();
-/// Serializes first-time manager init so `mgr.start()` (mint bearer → write the bearer file → spawn the
-/// daemon) happens for EXACTLY ONE manager. Without it, two concurrent first calls (e.g. the cluster
-/// tab opening + a roster/file load) each build + start their own manager, spawning two daemons and
-/// overwriting `cluster.bearer`; `get_or_init` then commits one manager whose in-memory bearer no
-/// longer matches the surviving daemon's file → the IPC handshake is rejected "unauthorized". Mirrors
-/// the comms.rs fix (device identity + bearer scheme is the same).
-static MANAGER_INIT: Mutex<()> = Mutex::new(());
+/// A process-wide value that is built once, shared, and can be replaced.
+///
+/// First-time init runs under the slot's lock, so `mgr.start()` (mint bearer → write the bearer file →
+/// spawn the daemon) happens for EXACTLY ONE manager. Without that, two concurrent first calls (e.g.
+/// the cluster tab opening + a roster/file load) each build + start their own manager, spawning two
+/// daemons and overwriting `cluster.bearer`, and the committed manager's bearer no longer matches the
+/// surviving daemon's file → "unauthorized". Mirrors the comms.rs fix.
+///
+/// HUP-S8.1 follow-on: unlike the `OnceLock` it replaces, the slot can be emptied
+/// ([`take_if`](Self::take_if)), so a new mesh identity (this machine just linked, or was removed)
+/// takes effect on the next cluster call instead of after an app restart.
+pub(crate) struct Slot<T> {
+    inner: Mutex<Option<Arc<T>>>,
+}
+
+impl<T> Slot<T> {
+    pub(crate) const fn new() -> Self {
+        Slot {
+            inner: Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Arc<T>>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The current value, if any.
+    pub(crate) fn get(&self) -> Option<Arc<T>> {
+        self.lock().clone()
+    }
+
+    /// The current value, or the one `init` builds (run at most once per empty slot, under the lock).
+    #[cfg(test)]
+    pub(crate) fn get_or_try_insert(
+        &self,
+        init: impl FnOnce() -> std::result::Result<T, String>,
+    ) -> std::result::Result<Arc<T>, String> {
+        self.get_or_try_insert_ensured(init, |_| Ok(()))
+    }
+
+    /// Like [`get_or_try_insert`](Self::get_or_try_insert), and `ensure` runs on the existing value
+    /// under the same lock (e.g. restart a daemon that died). A value [`take_if`](Self::take_if) has
+    /// taken out is therefore never handed to `ensure` again: a reload cannot race a restart of the
+    /// old manager.
+    pub(crate) fn get_or_try_insert_ensured(
+        &self,
+        init: impl FnOnce() -> std::result::Result<T, String>,
+        ensure: impl FnOnce(&T) -> std::result::Result<(), String>,
+    ) -> std::result::Result<Arc<T>, String> {
+        let mut g = self.lock();
+        if let Some(v) = g.as_ref() {
+            ensure(v)?;
+            return Ok(Arc::clone(v));
+        }
+        let v = Arc::new(init()?);
+        *g = Some(Arc::clone(&v));
+        Ok(v)
+    }
+
+    /// Empty the slot when `pred` holds for the current value; returns the value taken out.
+    pub(crate) fn take_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<Arc<T>> {
+        let mut g = self.lock();
+        if g.as_deref().is_some_and(pred) {
+            g.take()
+        } else {
+            None
+        }
+    }
+}
+
+static MANAGER: Slot<ClusterDaemonManager> = Slot::new();
 
 /// Stop the cluster-daemon if this session started it (called on graceful app teardown). Removes the
 /// seed file and drops the mesh cleanly. Idempotent and a no-op if the daemon was never started.
@@ -539,21 +602,36 @@ pub fn shutdown() {
     }
 }
 
-/// The opt-in libp2p transport config, read from citrate-core's OWN env, paired with the comms seed.
-/// `CITRATE_CLUSTER_LISTEN` present → real cross-machine mesh (CL-S3, soak-gated); absent → `None` =
-/// in-process. Kept env-driven (not a UI toggle) so it cannot be flipped on for partner traffic before
-/// the two-machine soak + the Rule-8 transport sign-off.
-/// Whether the operator turned the cross-machine transport on (`CITRATE_CLUSTER_LISTEN` set).
-fn libp2p_requested() -> bool {
-    std::env::var(ENV_LISTEN)
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false)
+/// HUP-S8.1 follow-on: when the identity this machine should mesh as has changed (it was just linked,
+/// or its link was removed), stop the running daemon so the next cluster call starts it under the
+/// new identity. No restart of the app. Returns whether a daemon was stopped; a no-op when none runs
+/// or the identity is unchanged.
+pub(crate) fn reload_mesh_identity(app: &tauri::AppHandle) -> std::result::Result<bool, String> {
+    if MANAGER.get().is_none() {
+        return Ok(false);
+    }
+    let want = crate::device_link::mesh_identity(app, libp2p_requested(app))?;
+    match MANAGER.take_if(|m| m.self_addr != want.address) {
+        Some(old) => {
+            old.stop();
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
-fn libp2p_opts_from_env(seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
-    let listen = std::env::var(ENV_LISTEN)
-        .ok()
-        .filter(|s| !s.trim().is_empty())?;
+/// The opt-in libp2p transport config, paired with the mesh seed. The listen address comes from the
+/// mesh policy (`cluster_mesh::current`): today exactly the operator's `CITRATE_CLUSTER_LISTEN` (CL-S3,
+/// soak-gated), or `None` = in-process. The policy's on-by-default branch stays unreachable until the
+/// CL-S4 transport sign-off and a multi-group daemon are recorded in `cluster_mesh` (HUP-S8.4), so it
+/// cannot be flipped on for partner traffic before the soak + the Rule-8 transport sign-off.
+/// Whether the cross-machine transport is on for this app run.
+fn libp2p_requested(app: &tauri::AppHandle) -> bool {
+    crate::cluster_mesh::current(app).listen.is_some()
+}
+
+fn libp2p_opts(listen: Option<String>, seed_hex: Zeroizing<String>) -> Option<Libp2pOpts> {
+    let listen = listen.filter(|s| !s.trim().is_empty())?;
     let bootstrap = std::env::var(ENV_BOOTSTRAP)
         .ok()
         .filter(|s| !s.trim().is_empty());
@@ -573,24 +651,24 @@ pub fn is_daemon_running() -> bool {
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton.
 fn ensure_started(
     app: &tauri::AppHandle,
-) -> std::result::Result<&'static ClusterDaemonManager, String> {
+) -> std::result::Result<Arc<ClusterDaemonManager>, String> {
+    // First-time init and any restart run under the slot's lock: only ONE thread builds + starts +
+    // commits the manager (the surviving daemon's bearer always matches the committed manager's), and
+    // a manager a mesh-identity reload took out is never restarted behind it.
+    MANAGER.get_or_try_insert_ensured(
+        || build_and_start(app),
+        |m| {
+            if !m.is_running() {
+                m.start().map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Build the manager for this machine's current mesh identity and start its daemon.
+fn build_and_start(app: &tauri::AppHandle) -> std::result::Result<ClusterDaemonManager, String> {
     use tauri::Manager;
-    if let Some(m) = MANAGER.get() {
-        if !m.is_running() {
-            m.start().map_err(|e| e.to_string())?;
-        }
-        return Ok(m);
-    }
-    // Serialize first-time init (double-checked): only ONE thread builds + starts + commits the
-    // manager, so the surviving daemon's bearer always matches the committed manager's (no
-    // "unauthorized"). A concurrent caller that lost the race re-reads the committed manager here.
-    let _init = MANAGER_INIT.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(m) = MANAGER.get() {
-        if !m.is_running() {
-            m.start().map_err(|e| e.to_string())?;
-        }
-        return Ok(m);
-    }
     let data_root = app
         .path()
         .app_data_dir()
@@ -601,8 +679,9 @@ fn ensure_started(
     // HUP-S8.1: when the cross-machine transport is on AND this machine holds an active DeviceLink,
     // mesh as this machine's own device key instead (its own PeerId; the daemon admits it through
     // the link). Otherwise nothing changes.
-    let identity = crate::device_link::mesh_identity(app, libp2p_requested())?;
-    let libp2p = libp2p_opts_from_env(identity.seed_hex);
+    let mesh = crate::cluster_mesh::current(app);
+    let identity = crate::device_link::mesh_identity(app, mesh.listen.is_some())?;
+    let libp2p = libp2p_opts(mesh.listen, identity.seed_hex);
     let bin = resolve_cluster_daemon_bin(app)?;
     let mut mgr = ClusterDaemonManager::new(
         bin,
@@ -616,7 +695,7 @@ fn ensure_started(
         mgr = mgr.with_libp2p(opts);
     }
     mgr.start().map_err(|e| e.to_string())?;
-    Ok(MANAGER.get_or_init(|| mgr))
+    Ok(mgr)
 }
 
 /// Route one request to the running daemon.
@@ -629,16 +708,22 @@ fn route(app: &tauri::AppHandle, req: Request) -> std::result::Result<Response, 
 async fn feed_roster(app: &tauri::AppHandle, group: &str) -> std::result::Result<(), String> {
     let roster = crate::comms::groups_roster(app.clone(), group.to_string()).await?;
     // HUP-S8.1: send the device links + revocations this machine knows with the roster, so a link
-    // and its revocation are applied in the same reconcile. A missing store is empty; a corrupt one
-    // is an error (never silently dropped, which would lose revocations).
-    let store = crate::device_link::DeviceLinkStore::load(&crate::device_link::store_path(app)?)?;
+    // and its revocation are applied in the same reconcile: our own first, then other members' links
+    // learned over the group relay (device_link_share), within the daemon's caps and IPC line. A
+    // missing store is empty; a corrupt one is an error (never silently dropped, which would lose
+    // revocations).
+    let own = crate::device_link::DeviceLinkStore::load(&crate::device_link::store_path(app)?)?;
+    let peers = crate::device_link_share::PeerLinkStore::load(
+        &crate::device_link_share::peer_store_path(app)?,
+    )?;
+    let (devices, revocations) = crate::device_link_share::roster_update(&own, &peers, &roster);
     match route(
         app,
         Request::SetRoster {
             group: group.to_string(),
             roster,
-            devices: store.links,
-            revocations: store.revocations,
+            devices,
+            revocations,
         },
     )? {
         Response::Reconciled { rejected, .. } => {

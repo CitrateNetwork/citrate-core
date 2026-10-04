@@ -1876,6 +1876,16 @@ export class Store {
    */
   handleDeepLink(url: string): void {
     if (!url) return;
+    // HUP-S8.2 — a fleet pairing link goes to the "Connect my machines" wizard, filled in. It is
+    // checked and used only when the member presses "Pair" (the wizard verifies the signature and
+    // expiry first). It never falls through to the group-invite parser below.
+    if (url.startsWith("citrate://pair?")) {
+      if (url.length <= 2048) {
+        this.setState({ pendingPairLink: url });
+        this.go("cluster");
+      }
+      return;
+    }
     // PHONEPAY-S4 — a `citrate://claim?…` onboarding link takes precedence over the
     // join/invite handling below. The params are untrusted HINTS ONLY (A8): we stash
     // the email + order hint to steer sign-in and detect a wrong-account mismatch, land
@@ -1931,6 +1941,11 @@ export class Store {
       },
     });
     this.go("groups");
+  }
+
+  /** HUP-S8.2 — clear the pending pairing link once the fleet wizard has taken it. */
+  clearPendingPairLink(): void {
+    this.setState({ pendingPairLink: null });
   }
 
   /** Clear the pending deep-link invite once Groups has consumed it. */
@@ -4004,6 +4019,8 @@ export class Store {
       view = await bridge.cluster.linkDeviceRequest(label);
     } catch (err) {
       this.toast("Couldn't start the device link: " + String((err as Error).message ?? err));
+      // Let the caller settle (refresh, clear a busy state); nothing was signed.
+      onDone?.();
       return;
     }
     this.openWalletReview("device-link", "Link this device to your Citrate identity", view, "no funds move", () => onDone?.());

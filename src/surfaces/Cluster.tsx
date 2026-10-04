@@ -7,7 +7,7 @@
 // only when it is actually connected (Rule 1 — never a fabricated peer); a lone node meshes with
 // no one yet.
 // =====================================================================
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SurfaceProps } from "./shared";
 import type { Store } from "../shell/store";
 import {
@@ -24,11 +24,15 @@ import {
   cancelRevokeDevice,
   importDeviceCode,
   exportDeviceCode,
+  shareMyDeviceLinks,
+  syncPeerDeviceLinks,
+  loadMeshStatus,
 } from "../shell/slices/cluster";
 import { FleetWizard } from "../fleet/FleetWizard";
-import { tauriFleet } from "../bridge/tauri/fleet";
+import { linkStatusOf, tauriFleet, type FleetApi } from "../bridge/tauri/fleet";
 import { BRIDGE_MODE } from "../bridge/mode";
-import { deviceNameError, devicePanelModel } from "./clusterDevices";
+import { bridge } from "../bridge";
+import { deviceNameError, deviceNameFrom, devicePanelModel } from "./clusterDevices";
 
 function shortAddr(a: string): string {
   if (!a) return "—";
@@ -52,6 +56,8 @@ function YourDevices({ store }: { store: Store }) {
   const nameError = name ? deviceNameError(name) : null;
   const refresh = () => {
     void loadMyDevices();
+    // A new link (or none, if declined) is shared with your groups; core sends nothing unchanged.
+    void shareMyDeviceLinks();
     if (st.selectedId) void loadMemberDevices(st.selectedId);
   };
   return (
@@ -61,11 +67,14 @@ function YourDevices({ store }: { store: Store }) {
       </div>
       <p style={{ padding: "0 16px", margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
         Linking gives this machine its own key, tied to you by a link your wallet signs. The mesh can
-        then tell your machines apart, and you can remove one without the others. Removing a machine
-        revokes its device key; a machine that still holds your wallet can still join your groups as
-        you, so for a lost or stolen machine also move your funds to a new wallet. No funds move here.
-        Linked devices use their own key once the cross-machine mesh is turned on (an operator
-        setting while the transport is in review).
+        then tell your machines apart, and you can remove one without the others. No funds move. Link
+        each of your machines: your links are shared with your groups so other members' nodes admit
+        them. Removing a machine revokes its device key; a machine that still holds your wallet can
+        still join your groups as you, so for a lost or stolen machine also move your funds to a new
+        wallet.
+      </p>
+      <p data-testid="cluster-mesh-note" style={{ padding: "6px 16px 0", margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
+        {st.mesh?.note ?? "Linked devices use their own key once the cross-machine mesh is on."}
       </p>
       {model.thisDeviceLinked ? (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", fontSize: 12.5, color: "var(--tx-2)" }}>
@@ -163,17 +172,42 @@ function YourDevices({ store }: { store: Store }) {
   );
 }
 
-export function Cluster({ store }: SurfaceProps) {
+export function Cluster({ store, s }: SurfaceProps) {
   const st = clusterSlice.use();
 
   useEffect(() => {
     void loadClusterGroups();
     void loadMyDevices();
+    void loadMeshStatus();
+    // HUP-S8.1 follow-on: share your links with your groups (nothing is sent when you have none or
+    // a group already has this exact set).
+    void shareMyDeviceLinks();
   }, []);
 
   useEffect(() => {
-    if (st.selectedId) void loadMemberDevices(st.selectedId);
+    const id = st.selectedId;
+    if (!id) return;
+    // Pick up other members' links from the group relay first, so the roster sent with the next
+    // cluster call admits their machines; then list the group's devices.
+    void syncPeerDeviceLinks(id).finally(() => void loadMemberDevices(id));
   }, [st.selectedId]);
+
+  // The wizard links this machine through the same review gate as "Link this device".
+  const fleetApi = useMemo<FleetApi>(
+    () => ({
+      ...tauriFleet,
+      linkStatus: async () => linkStatusOf(await bridge.cluster.myDevices()),
+      linkThisDevice: (label: string) =>
+        new Promise<void>((resolve) => {
+          void store.linkThisDevice(deviceNameFrom(label), () => {
+            void loadMyDevices();
+            void shareMyDeviceLinks();
+            resolve();
+          });
+        }),
+    }),
+    [store],
+  );
 
   const memberOfDevice = new Map<string, string>();
   for (const m of st.memberDevices) for (const d of m.devices) memberOfDevice.set(d.device, d.label);
@@ -194,7 +228,12 @@ export function Cluster({ store }: SurfaceProps) {
       </p>
 
       {/* HUP-S8.2/S8.3 — "Connect my machines": probe, opt-in discovery, link/QR pairing, Tailscale help. */}
-      <FleetWizard api={tauriFleet} available={BRIDGE_MODE === "tauri"} />
+      <FleetWizard
+        api={fleetApi}
+        available={BRIDGE_MODE === "tauri"}
+        initialLink={s.pendingPairLink}
+        onInitialLinkTaken={() => store.clearPendingPairLink()}
+      />
 
       {st.error && (
         <div className="surface" role="alert" style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--bad, #c0392b)", lineHeight: 1.5 }}>

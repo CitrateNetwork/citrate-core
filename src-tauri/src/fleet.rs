@@ -13,11 +13,14 @@
 //!    detection (`fleet_tailscale.rs`) drives plain-language guidance; tailnet addresses are
 //!    added to the link's hints.
 //!
-//! **What this is not (yet).** The roster here is a LOCAL list of paired machines. The
-//! wallet-signed `DeviceLink` that binds a device to the member on the cluster roster (D-31,
-//! S8.1) is issued through the SignatureCeremony and is not part of this WP; the wizard says so.
-//! No key here is a wallet key and nothing here signs a transaction (Rule 3). The pairing key is
-//! an in-memory ed25519 key used only to sign pairing links.
+//! **DeviceLinks travel with the pairing (HUP-S8.1 follow-on).** The roster here is a LOCAL list
+//! of paired machines. The wallet-signed `DeviceLink` that binds a device to the member on the
+//! cluster roster (D-31) is issued on each machine through the SignatureCeremony
+//! (`device_link.rs`); when a machine is linked, its link code rides in the pairing exchange (both
+//! directions) and the other machine verifies all three signatures and stores it only if it names
+//! the same member (`device_link::import_paired_code`). Pairing never signs anything. No key here
+//! is a wallet key and nothing here signs a transaction (Rule 3). The pairing key is an in-memory
+//! ed25519 key used only to sign pairing links.
 //!
 //! Pending owner sign-off (defaults, marked where they live): the role names per tier, the
 //! pairing link lifetime, and discovery consent not being remembered across restarts.
@@ -32,6 +35,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
+use crate::device_link::PairedLink;
 use crate::fleet_mdns::{Advert, Discovery, Seen};
 use crate::fleet_pairing::{
     confirmation_code, qr_matrix, reply_bytes, verify_link, verify_reply, PairClaim, PairError,
@@ -47,8 +51,12 @@ pub const MAX_DEVICES: usize = 64;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(2500);
 /// Read/write deadline on a pairing connection.
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
-/// Longest request/reply line on the pairing port.
-const MAX_LINE: u64 = 4096;
+/// Longest request/reply line on the pairing port (a pairing link plus a DeviceLink code).
+const MAX_LINE: u64 = 8192;
+/// Longest DeviceLink code carried in a pairing (matches `device_link`'s import cap).
+pub const MAX_LINK_CODE: usize = 4096;
+/// The page that installs Citrate Core on the matching platform (same link as the network gate).
+pub const INSTALL_URL: &str = "https://citrate.ai/download";
 /// How long a browse waits for answers.
 const BROWSE_WAIT: Duration = Duration::from_millis(1500);
 
@@ -106,6 +114,10 @@ pub struct FleetDevice {
     pub addr: Option<String>,
     pub paired_at: u64,
     pub via: PairVia,
+    /// HUP-S8.1: what happened to the other machine's DeviceLink code in this pairing
+    /// (absent in rosters written before links travelled with pairings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_link: Option<PairedLink>,
     /// The six-digit code both screens showed for this pairing (absent for older entries).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -181,6 +193,8 @@ pub struct DeviceSelf {
     pub device_id: String,
     pub label: String,
     pub tier: Option<String>,
+    /// This machine's DeviceLink code, when it is linked (public attestation; HUP-S8.1).
+    pub link_code: Option<String>,
 }
 
 /// joiner → issuer.
@@ -192,6 +206,10 @@ pub struct JoinRequest {
     pub device_id: String,
     pub label: String,
     pub tier: Option<String>,
+    /// HUP-S8.1: the joiner's DeviceLink code, when it is linked. Omitted otherwise, so an unlinked
+    /// joiner sends the exact request it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_link: Option<String>,
 }
 
 impl JoinRequest {
@@ -201,6 +219,10 @@ impl JoinRequest {
             && id_ok(&self.device_id)
             && label_ok(&self.label)
             && tier_ok(&self.tier)
+            && self
+                .device_link
+                .as_ref()
+                .is_none_or(|c| c.len() <= MAX_LINK_CODE)
     }
 }
 
@@ -213,6 +235,9 @@ pub struct JoinReply {
     pub device_id: Option<String>,
     pub label: Option<String>,
     pub tier: Option<String>,
+    /// HUP-S8.1: the issuer's DeviceLink code, when it is linked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_link: Option<String>,
     /// The issuer's pairing-key signature over [`reply_bytes`]: the joiner checks it against the
     /// key in the link, so only the machine that minted the link can complete the pairing.
     #[serde(default)]
@@ -227,11 +252,15 @@ impl JoinReply {
             device_id: None,
             label: None,
             tier: None,
+            device_link: None,
             proof: None,
         }
     }
 }
 
+/// What the issuer does with the joiner's DeviceLink code (production: verify + store through
+/// `device_link::store_paired_code`). Never signs.
+pub type LinkHook = Arc<dyn Fn(Option<&str>) -> PairedLink + Send + Sync>;
 /// Addresses a pairing link may point the joiner at: private (RFC 1918), CGNAT / tailnet
 /// (100.64.0.0/10), link-local, and IPv6 unique-local or link-local. Never this machine's loopback,
 /// a public address, or the cloud metadata address, so a pasted link cannot make Core probe them.
@@ -262,6 +291,8 @@ pub struct PairCtx {
     pub issuer: Arc<Mutex<PairIssuer>>,
     pub roster_path: PathBuf,
     pub me: Mutex<DeviceSelf>,
+    /// HUP-S8.1: handles the joiner's DeviceLink code; `None` ignores it.
+    pub link_hook: Option<LinkHook>,
 }
 
 fn handle_conn(stream: TcpStream, ctx: &PairCtx) -> std::io::Result<()> {
@@ -311,6 +342,10 @@ fn answer(line: &str, peer_ip: Option<String>, ctx: &PairCtx) -> JoinReply {
         Ok(x) => x,
         Err(e) => return JoinReply::refuse(e),
     };
+    let device_link = match (&ctx.link_hook, req.device_link.as_deref()) {
+        (Some(hook), code) => Some(hook(code)).filter(|r| *r != PairedLink::None),
+        (None, _) => None,
+    };
     upsert(
         &mut roster,
         FleetDevice {
@@ -321,6 +356,7 @@ fn answer(line: &str, peer_ip: Option<String>, ctx: &PairCtx) -> JoinReply {
             addr: peer_ip,
             paired_at: now_secs(),
             via: PairVia::Issued,
+            device_link,
             code: Some(confirmation_code(
                 &claim.nonce,
                 &claim.issuer_pub,
@@ -337,6 +373,7 @@ fn answer(line: &str, peer_ip: Option<String>, ctx: &PairCtx) -> JoinReply {
         device_id: Some(me.device_id),
         label: Some(me.label),
         tier: me.tier,
+        device_link: me.link_code,
         proof: Some(proof),
     }
 }
@@ -382,6 +419,9 @@ pub enum JoinError {
 #[serde(rename_all = "camelCase")]
 pub struct JoinOutcome {
     pub device: FleetDevice,
+    /// HUP-S8.1: the issuer's DeviceLink code, for core to verify and store.
+    #[serde(skip)]
+    pub peer_link_code: Option<String>,
     /// The six-digit code this screen shows; the other machine shows the same one.
     pub code: String,
 }
@@ -423,6 +463,7 @@ pub fn join_link_with(
         device_id: me.device_id.clone(),
         label: me.label.clone(),
         tier: me.tier.clone(),
+        device_link: me.link_code.clone(),
     };
     let mut tried = Vec::new();
     for hint in &claim.hints {
@@ -457,6 +498,7 @@ pub fn join_link_with(
                 if !proven {
                     return Err(JoinError::Protocol);
                 }
+                let peer_link_code = reply.device_link.filter(|c| c.len() <= MAX_LINK_CODE);
                 let code = confirmation_code(&claim.nonce, &claim.issuer_pub, &me.device_id);
                 return Ok(JoinOutcome {
                     code: code.clone(),
@@ -468,8 +510,10 @@ pub fn join_link_with(
                         addr: Some(addr.ip().to_string()),
                         paired_at: now,
                         via: PairVia::Joined,
+                        device_link: None,
                         code: Some(code),
                     },
+                    peer_link_code,
                 });
             }
             Ok(reply) => {
@@ -721,6 +765,11 @@ pub struct PairOffer {
     pub qr: QrMatrix,
     pub expires_at: u64,
     pub hints: Vec<String>,
+    /// For a machine without Citrate Core: the install page and its QR (S8.2 install link).
+    pub install_url: String,
+    pub install_qr: QrMatrix,
+    /// Whether this machine's DeviceLink travels with the pairing (it is linked).
+    pub carries_device_link: bool,
 }
 
 /// **Command — fleet_pair_create.** Open a pairing link (and QR). Starts the pairing listener
@@ -734,11 +783,19 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
     let path = roster_path(&app)?;
     ensure_roster_saved(&path)?;
     let (me, _) = self_view(&app)?;
+    // HUP-S8.1: this machine's link code (if linked) rides in the pairing reply.
+    let link_code = crate::device_link::own_link_code(&app);
     let tailnet =
         crate::fleet_tailscale::tailnet_ipv4s(&crate::fleet_tailscale::detect_tailscale());
     let mut rt = lock_rt()?;
     let port = match &rt.server {
-        Some((port, running, _)) if running.load(Ordering::SeqCst) => *port,
+        Some((port, running, ctx)) if running.load(Ordering::SeqCst) => {
+            // The machine may have been linked since the listener started.
+            if let Ok(mut g) = ctx.me.lock() {
+                g.link_code = link_code.clone();
+            }
+            *port
+        }
         _ => {
             let listener =
                 TcpListener::bind("0.0.0.0:0").map_err(|e| format!("pairing listener: {e}"))?;
@@ -751,6 +808,13 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
                     device_id: me.device_id.clone(),
                     label: me.label.clone(),
                     tier: me.tier.clone(),
+                    link_code: link_code.clone(),
+                }),
+                link_hook: Some({
+                    let app = app.clone();
+                    Arc::new(move |code: Option<&str>| {
+                        crate::device_link::store_paired_code(&app, code)
+                    })
                 }),
             });
             let (iss, flag, c) = (rt.issuer.clone(), running.clone(), ctx.clone());
@@ -791,6 +855,9 @@ pub fn fleet_pair_create_sync(app: tauri::AppHandle) -> Result<PairOffer, String
         link,
         expires_at: claim.expires_at,
         hints,
+        install_url: INSTALL_URL.to_string(),
+        install_qr: qr_matrix(INSTALL_URL)?,
+        carries_device_link: link_code.is_some(),
     })
 }
 
@@ -872,9 +939,16 @@ pub fn fleet_pair_join_sync(app: tauri::AppHandle, link: String) -> Result<JoinR
             device_id: me.device_id,
             label: me.label,
             tier: me.tier,
+            link_code: crate::device_link::own_link_code(&app),
         },
         now_secs(),
     );
+    let res = res.map(|mut o| {
+        // HUP-S8.1: the issuer's link (if it is one of this member's devices) is verified + stored.
+        let r = crate::device_link::store_paired_code(&app, o.peer_link_code.as_deref());
+        o.device.device_link = Some(r).filter(|r| *r != PairedLink::None);
+        o
+    });
     if let Ok(o) = &res {
         upsert(&mut roster, o.device.clone());
         save_roster(&path, &roster)?;

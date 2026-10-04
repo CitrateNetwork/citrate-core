@@ -14,6 +14,8 @@ import { bridge } from "../bridge";
 import { Markdown } from "../components/Markdown";
 import type { DirectorySearchHit, Group, GroupRole, InviteClaim, PendingInvite, ResolvedIdentity } from "../bridge/domains";
 import { SOCIAL_BINDING_MSG_PREFIX } from "../bridge/domains";
+import { visibleConversation } from "./groupControlMessages";
+import { ingestDeviceLinkMessages, isDeviceLinkMessage } from "../fleet/deviceLinkShare";
 import { addablePeople, filterPeople } from "./peopleDirectory";
 import { buildJoinLink } from "./referral";
 import { RelayStatusChip } from "./RelayStatusChip";
@@ -185,8 +187,16 @@ export function Groups({ store, s }: SurfaceProps) {
     };
   }, [st.messages]);
 
+  // HUP-S8.1 follow-on: other members' DeviceLink shares. Core verifies every signature and that the
+  // relay attributes the share to the member it speaks for; only then are the links kept.
+  useEffect(() => {
+    const shares = st.messages.filter((m) => isDeviceLinkMessage(m.body));
+    if (shares.length === 0) return;
+    void ingestDeviceLinkMessages(shares, (sender, body) => bridge.cluster.deviceLinksIngest(sender, body));
+  }, [st.messages]);
+
   // Control messages never render in the conversation.
-  const visibleMessages = st.messages.filter((m) => !m.body.startsWith(SOCIAL_BINDING_MSG_PREFIX));
+  const visibleMessages = visibleConversation(st.messages);
 
   // While the chat is open on a group, drain the mailbox on an interval so messages from other members
   // arrive live. `reloadMessages` folds drained messages into retained history (dedup + persist); an

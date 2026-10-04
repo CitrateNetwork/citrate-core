@@ -13,6 +13,8 @@ import type {
   FleetProbe,
   FleetRole,
   JoinResult,
+  LinkStatus,
+  PairedLink,
   PairClaim,
   PairOffer,
   SeenDevice,
@@ -37,6 +39,8 @@ export interface WizardState {
   tailscale: TailscaleView | null;
   /** The last join could not reach the other machine at any address. */
   unreachable: boolean;
+  /** HUP-S8.1: whether this machine is linked (null until read). */
+  link: LinkStatus | null;
 }
 
 export type WizardAction =
@@ -51,7 +55,10 @@ export type WizardAction =
   | { type: "linkInput"; link: string }
   | { type: "inspected"; claim: PairClaim }
   | { type: "joined"; result: JoinResult }
-  | { type: "tailscale"; view: TailscaleView };
+  | { type: "tailscale"; view: TailscaleView }
+  | { type: "linkStatus"; status: LinkStatus }
+  /** A pairing link handed in by a `citrate://pair` deep link: filled in, never auto-joined. */
+  | { type: "prefill"; link: string };
 
 export function initialWizard(): WizardState {
   return {
@@ -66,6 +73,7 @@ export function initialWizard(): WizardState {
     roster: [],
     tailscale: null,
     unreachable: false,
+    link: null,
   };
 }
 
@@ -117,6 +125,10 @@ export function reduce(s: WizardState, a: WizardAction): WizardState {
     }
     case "tailscale":
       return { ...s, busy: false, tailscale: a.view };
+    case "linkStatus":
+      return { ...s, busy: false, link: a.status };
+    case "prefill":
+      return { ...s, joinLink: a.link, inspect: null, error: null, step: "pair" };
   }
 }
 
@@ -129,6 +141,8 @@ export interface DeviceRow {
   role: FleetRole;
   where: "this machine" | "paired" | "on this network";
   addr: string | null;
+  /** Paired machines: what happened to their device link in the pairing. */
+  link: PairedLink | null;
   /** HUP-S8.2: the six-digit code both machines show for a pairing. */
   code: string | null;
 }
@@ -138,11 +152,20 @@ export function deviceRows(s: WizardState): DeviceRow[] {
   const rows: DeviceRow[] = [];
   if (s.probe) {
     const d = s.probe.device;
-    rows.push({ key: `self:${d.deviceId}`, label: d.label, tier: d.tier, role: d.role, where: "this machine", addr: null, code: null });
+    rows.push({ key: `self:${d.deviceId}`, label: d.label, tier: d.tier, role: d.role, where: "this machine", addr: null, link: null, code: null });
   }
   for (const d of s.roster) {
     // The code is the same on both machines: the member can compare the two screens.
-    rows.push({ key: `paired:${d.id}`, label: d.label, tier: d.tier, role: d.role, where: "paired", addr: d.addr, code: d.code ?? null });
+    rows.push({
+      key: `paired:${d.id}`,
+      label: d.label,
+      tier: d.tier,
+      role: d.role,
+      where: "paired",
+      addr: d.addr,
+      link: d.deviceLink && d.deviceLink !== "none" ? d.deviceLink : null,
+      code: d.code ?? null,
+    });
   }
   for (const d of s.discovery.devices) {
     rows.push({
@@ -152,6 +175,7 @@ export function deviceRows(s: WizardState): DeviceRow[] {
       role: d.advert.role,
       where: "on this network",
       addr: d.ip,
+      link: null,
       code: null,
     });
   }
@@ -176,6 +200,20 @@ export function roleLabel(role: FleetRole): string {
       return "Heavy: serves the larger models";
     default:
       return "Role unknown";
+  }
+}
+
+/** Plain words for a paired machine's device link. */
+export function linkNote(link: PairedLink | null): string {
+  switch (link) {
+    case "added":
+      return "linked under you";
+    case "otherMember":
+      return "another person's machine (not added to your devices)";
+    case "refused":
+      return "its device link did not verify";
+    default:
+      return "not linked yet";
   }
 }
 

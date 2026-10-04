@@ -102,6 +102,10 @@ impl NodeBackend for Fixture {
     fn cluster_peers(&self, _group: &str) -> Result<Value, String> {
         Ok(json!({"peers": [{"address": "0xabc", "online": true}]}))
     }
+    fn cluster_devices(&self, group: &str) -> Result<Value, String> {
+        Ok(json!({"members": [{"member": "0xabc", "role": "member", "online": true, "group": group,
+            "devices": [{"device": "0xd1", "index": 0, "label": "Studio Mac", "issuedAt": 1, "online": true}]}]}))
+    }
     fn invites(&self, _group: &str) -> Result<Value, String> {
         Ok(json!({"invites": []}))
     }
@@ -382,6 +386,7 @@ fn tools_list_carries_annotations_and_strict_schemas() {
         "groups_list",
         "cluster_status",
         "cluster_peers",
+        "cluster_devices",
         "invites_list",
         "request_status",
         "tx_propose",
@@ -1711,6 +1716,25 @@ fn bidi_controls_never_reach_approval_text() {
         read_only: false,
     };
     assert_eq!(c.origin(), "mcp:Claude Code via xy");
+}
+
+// HUP-S8.3 (US-8.3 AC1): the device list is a read tool with read-only annotations, takes a group,
+// and refuses a bad group id before reaching the backend.
+#[test]
+fn cluster_devices_is_a_read_tool_that_lists_members_with_their_machines() {
+    let def = crate::node_mcp_tools::tool("cluster_devices").expect("listed");
+    let j = crate::node_mcp_tools::tool_json(def);
+    assert_eq!(j["annotations"]["readOnlyHint"], json!(true));
+    assert_eq!(j["inputSchema"]["required"], json!(["group"]));
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = ctx("t");
+    let r = call(&core, &c, "cluster_devices", json!({"group": "grp_a"}));
+    let m = &r["result"]["structuredContent"]["members"][0];
+    assert_eq!(m["devices"][0]["label"], "Studio Mac");
+    assert_eq!(m["group"], "grp_a");
+    let bad = call(&core, &c, "cluster_devices", json!({"group": "has space"}));
+    assert!(is_tool_error(&bad));
 }
 
 // ---------------------------------------------------------------------------

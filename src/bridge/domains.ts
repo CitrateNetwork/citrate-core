@@ -924,6 +924,41 @@ export interface ClusterDomain {
   exportDeviceLink(): Promise<string>;
   /** HUP-S8.1: add another of your own devices from its code (verified before it is stored). */
   importDeviceLink(code: string): Promise<DeviceLinks>;
+  /**
+   * HUP-S8.1 follow-on: the group message that shares YOUR links and revocations with `groupId`, or
+   * null when there is nothing to share or this exact set was already sent there.
+   */
+  deviceLinksShareOffer(groupId: string): Promise<DeviceLinkShareOffer | null>;
+  /** Record that the set with `digest` was sent to `groupId`. */
+  deviceLinksMarkShared(groupId: string, digest: string): Promise<void>;
+  /** Accept another member's share message (verified in core before anything is stored). */
+  deviceLinksIngest(sender: string, body: string): Promise<DeviceLinkIngest>;
+  /** HUP-S8.4 prep: whether the cross-machine mesh transport is on, and why. */
+  meshStatus(): Promise<MeshStatus>;
+}
+
+/** Group-message prefix of a DeviceLink share (a control message; never shown in chat). It starts
+ *  with U+0001, like the social-binding sentinel, so nothing a member types can match it. */
+export const DEVICE_LINKS_MSG_PREFIX = "\u0001cdlink1:";
+export interface DeviceLinkShareOffer {
+  body: string;
+  digest: string;
+}
+export interface DeviceLinkIngest {
+  links: number;
+  revocations: number;
+  refused: string[];
+}
+/** The cross-machine mesh transport policy (core `cluster_mesh.rs`). */
+export interface MeshStatus {
+  /** The cross-machine transport is on for this app run. */
+  on: boolean;
+  /** `operator`: CITRATE_CLUSTER_LISTEN is set; `default`: on by default after sign-off; `off`. */
+  source: "operator" | "default" | "off";
+  /** The CL-S4 transport sign-off is recorded in this build. */
+  signedOff: boolean;
+  /** Plain-language reason for the member. */
+  note: string;
 }
 
 // ── C-21 train-together: group federated training (lane s5) ──
