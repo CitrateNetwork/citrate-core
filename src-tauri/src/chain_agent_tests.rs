@@ -579,8 +579,45 @@ fn approve_passes_the_vault_gate_and_records_before_sending() {
     );
     assert!(body.contains("before_send"));
     assert!(
+        body.contains("forget_unsent"),
+        "a send the node refused must not hold the day"
+    );
+    assert!(
         body.contains("CustodyState"),
         "the member's vault is the unlock gate"
     );
     assert!(body.contains("with_placeholder_caps"), "gas caps apply");
+}
+
+/// Review follow-up: a send the node refused outright (for example an unfunded anchor key) is not
+/// on the way. Its record is forgotten, on disk too, so the next nightly pass can raise the day
+/// again; it would otherwise wait on a transaction that can never be mined.
+#[test]
+fn a_refused_send_does_not_hold_the_day() {
+    let path = in_flight_path("refused");
+    let h = InFlightAnchors::load(Some(path.clone()));
+    let sent = receipt(None, None);
+    h.record(&sent).expect("record before send");
+    // Another transaction for the day is never forgotten by this one's refusal.
+    let other = AnchorReceipt {
+        tx_hash: format!("0x{}", "ef".repeat(32)),
+        ..sent.clone()
+    };
+    h.forget_unsent(&other);
+    assert!(h.days().contains(&20000));
+    assert!(InFlightAnchors::load(Some(path.clone()))
+        .days()
+        .contains(&20000));
+    h.forget_unsent(&sent);
+    assert!(h.days().is_empty());
+    let reloaded = InFlightAnchors::load(Some(path));
+    assert!(reloaded.days().is_empty(), "forgotten on disk too");
+    let mut port = Port {
+        status: serde_json::json!({ "awaitingConfirmation": [{"day": 20000}] }),
+        ..Port::default()
+    };
+    port.plans.insert(20000, ready_plan(20000, 0xa0, REG));
+    let c = AnchorCeremony::new();
+    let r = nightly_tick_with(&port, &c, AnchorGate::Ready, Some(REG), &reloaded.days()).unwrap();
+    assert_eq!(r.raised.len(), 1, "the day can be anchored again");
 }

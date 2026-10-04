@@ -132,6 +132,7 @@ fn approve(
         AnchorGuards {
             vault: &v,
             before_send: &rec,
+            not_sent: &|_: &AnchorReceipt| {},
         },
     )
 }
@@ -535,6 +536,7 @@ fn guarded<'a>(
     AnchorGuards {
         vault: v,
         before_send: rec,
+        not_sent: &|_: &AnchorReceipt| {},
     }
 }
 
@@ -652,4 +654,98 @@ fn the_gas_cap_leaves_room_for_the_next_registry_version() {
     const NEXT_REGISTRY_ANCHOR_GAS: u64 = 335_227;
     const ROOM: u64 = NEXT_REGISTRY_ANCHOR_GAS + NEXT_REGISTRY_ANCHOR_GAS / 10;
     const { assert!(PLACEHOLDER_MAX_GAS_LIMIT >= ROOM) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// review follow-up: a send the node refused is not in flight
+
+fn node_error(msg: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": msg } })
+}
+
+/// Approve with scripted RPC answers; returns the result and the records passed to
+/// `before_send` and `not_sent`.
+fn approve_logged(
+    send: Option<Value>,
+) -> (
+    Result<AnchorReceipt>,
+    Vec<AnchorReceipt>,
+    Vec<AnchorReceipt>,
+    usize,
+) {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c
+        .request(good_request(20_000, root(0x61)), REGISTRY)
+        .unwrap();
+    let mut answers = vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+    ];
+    // `None`: the transport fails on the send (no scripted answer), so its outcome is unknown.
+    answers.extend(send);
+    let rpc = RpcClient::with_transport(MockRpc::new(answers));
+    let vault = unlocked_vault();
+    let recorded = RefCell::new(Vec::new());
+    let forgotten = RefCell::new(Vec::new());
+    let rec = |r: &AnchorReceipt| -> std::result::Result<(), String> {
+        recorded.borrow_mut().push(r.clone());
+        Ok(())
+    };
+    let forget = |r: &AnchorReceipt| forgotten.borrow_mut().push(r.clone());
+    let r = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &forget,
+        },
+    );
+    let pending = c.pending().len();
+    (r, recorded.into_inner(), forgotten.into_inner(), pending)
+}
+
+#[test]
+fn a_send_the_node_refuses_is_forgotten_and_the_card_stays() {
+    let (r, recorded, forgotten, pending) = approve_logged(Some(node_error(
+        "insufficient funds for gas * price + value",
+    )));
+    assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(forgotten, recorded, "the same record is forgotten");
+    assert_eq!(pending, 1, "the card goes back for another try");
+}
+
+#[test]
+fn a_send_with_an_unknown_outcome_stays_in_flight() {
+    // Transport failure: the node may have the transaction.
+    let (r, recorded, forgotten, pending) = approve_logged(None);
+    assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
+    assert_eq!(recorded.len(), 1);
+    assert!(forgotten.is_empty(), "the re-poll decides, not the error");
+    assert_eq!(pending, 0, "no second approval while it may be on the way");
+    // The node already has it: accepted, so it stays in flight too.
+    let (_, recorded, forgotten, pending) = approve_logged(Some(node_error("already known")));
+    assert_eq!(recorded.len(), 1);
+    assert!(forgotten.is_empty());
+    assert_eq!(pending, 0);
+}
+
+#[test]
+fn only_a_node_error_proves_a_send_was_refused() {
+    assert!(send_refused(&RpcError::Node("nonce too low".into())));
+    assert!(send_refused(&RpcError::Node("insufficient funds".into())));
+    assert!(!send_refused(&RpcError::Node("Already Known".into())));
+    assert!(!send_refused(&RpcError::Node(
+        "known transaction: 0xab".into()
+    )));
+    assert!(!send_refused(&RpcError::Transport("timeout".into())));
+    assert!(!send_refused(&RpcError::BadResponse("html".into())));
+    assert!(!send_refused(&RpcError::MissingField("hash".into())));
 }

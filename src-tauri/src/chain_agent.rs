@@ -438,6 +438,16 @@ impl InFlightAnchors {
         }
     }
 
+    /// The node refused this transaction outright, so it is not on the way: forget its record,
+    /// but only while the record is still that transaction (never another send for the day).
+    pub fn forget_unsent(&self, r: &AnchorReceipt) {
+        let mut m = self.lock();
+        if m.get(&r.day).is_some_and(|held| held.tx_hash == r.tx_hash) {
+            m.remove(&r.day);
+            let _ = self.save(&m);
+        }
+    }
+
     /// Days on the way.
     pub fn days(&self) -> BTreeSet<u64> {
         self.lock().keys().copied().collect()
@@ -690,6 +700,7 @@ pub async fn hermes_anchor_approve(
             .ok_or("internal: custody state unavailable")?;
         let rpc = crate::rpc::RpcClient::citrate();
         let record = |r: &AnchorReceipt| held.record(r);
+        let not_sent = |r: &AnchorReceipt| held.forget_unsent(r);
         let receipt = ceremony()
             .approve_and_broadcast(
                 &keyring(),
@@ -701,6 +712,7 @@ pub async fn hermes_anchor_approve(
                 AnchorGuards {
                     vault: &custody.0,
                     before_send: &record,
+                    not_sent: &not_sent,
                 },
             )
             .map_err(|e| e.to_string())?;

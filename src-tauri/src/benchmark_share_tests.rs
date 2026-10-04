@@ -163,3 +163,26 @@ fn a_day_is_prepared_once_per_session_unless_released() {
     assert!(reserve_day(day));
     release_day(day);
 }
+
+/// Review follow-up: the command shares only a closed UTC day, so numbers that can still change are
+/// never put on chain (the Journal offers yesterday; the command enforces it too).
+#[test]
+fn only_a_closed_day_is_shared() {
+    assert!(is_closed_day("2026-10-03", "2026-10-04"));
+    assert!(is_closed_day("2025-12-31", "2026-01-01"));
+    assert!(!is_closed_day("2026-10-04", "2026-10-04"), "today is open");
+    assert!(
+        !is_closed_day("2026-10-05", "2026-10-04"),
+        "the future is open"
+    );
+    assert!(!is_closed_day("2026-1-03", "2026-10-04"), "shape-checked");
+    assert!(utc_today().is_some_and(|t| crate::hermes::chain::valid_day(&t)));
+    let src = include_str!("benchmark_share.rs");
+    let i = src
+        .find("pub async fn hermes_benchmark_share(")
+        .expect("command");
+    assert!(
+        src[i..].contains("is_closed_day(&day, &today)"),
+        "the command checks the day is closed"
+    );
+}

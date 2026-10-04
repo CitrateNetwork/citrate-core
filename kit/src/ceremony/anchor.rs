@@ -287,6 +287,24 @@ pub struct AnchorGuards<'a> {
     /// after signing and before sending; if it fails nothing is sent. This is what lets a restart
     /// know a day is already on the way, so it never raises a second anchor for it.
     pub before_send: &'a dyn Fn(&AnchorReceipt) -> std::result::Result<(), String>,
+    /// Called with the same record when the node refused the transaction outright (a JSON-RPC
+    /// error on the send, such as "insufficient funds"), so it was never accepted and can never
+    /// be mined: the caller forgets the in-flight record, or the day would wait on it forever. Not
+    /// called when the outcome of the send is unknown (transport failure, or the node says it
+    /// already has the transaction); then the record stays and the re-poll decides.
+    pub not_sent: &'a dyn Fn(&AnchorReceipt),
+}
+
+/// Whether a send error proves the node did not accept the transaction. Only a JSON-RPC error
+/// object does; a node that reports it already knows the transaction did accept it.
+pub fn send_refused(e: &RpcError) -> bool {
+    match e {
+        RpcError::Node(m) => {
+            let m = m.to_ascii_lowercase();
+            !(m.contains("already known") || m.contains("known transaction"))
+        }
+        _ => false,
+    }
 }
 
 /// What happened to a broadcast anchor. `block_number` / `status` are `None` while unknown.
@@ -525,7 +543,16 @@ impl AnchorCeremony {
         if let Err(e) = (guards.before_send)(&in_flight) {
             return Err(keep(p, AnchorError::NotRecorded(e)));
         }
-        let tx_hash = rpc.send_raw_transaction(&signed.raw).map_err(rpc_err)?;
+        let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
+            Ok(h) => h,
+            Err(e) if send_refused(&e) => {
+                // Refused by the node: nothing is on the way, so the day is not held and the
+                // card goes back for another try.
+                (guards.not_sent)(&in_flight);
+                return Err(keep(p, rpc_err(e)));
+            }
+            Err(e) => return Err(rpc_err(e)),
+        };
         let (block_number, status) =
             match rpc.poll_receipt(&tx_hash, cfg.poll_attempts, cfg.poll_interval) {
                 Ok(r) => (Some(r.block_number), r.status),

@@ -209,6 +209,21 @@ pub fn validate(
     Ok(out)
 }
 
+/// Only a closed UTC day is shared: `day` (YYYY-MM-DD) must be before `today` (YYYY-MM-DD), so a
+/// day's numbers are never recorded on chain while they can still change.
+pub fn is_closed_day(day: &str, today: &str) -> bool {
+    crate::hermes::chain::valid_day(day) && crate::hermes::chain::valid_day(today) && day < today
+}
+
+/// Today's UTC date, `None` if the clock is before 1970.
+fn utc_today() -> Option<String> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    crate::ceremony::anchor::date_of_day(secs / 86_400)
+}
+
 /// The member's agent id: their first AgentSBT token, if they hold one.
 pub fn agent_id_of(st: &crate::agent_sbt::AgentSbtStatus) -> Result<u128, String> {
     let first = st
@@ -268,6 +283,12 @@ pub async fn hermes_benchmark_share(
     crate::blocking::off_main(move || {
         if !crate::hermes::chain::valid_day(&day) {
             return Err("day must be YYYY-MM-DD".into());
+        }
+        let today = utc_today().ok_or("the system clock is not set")?;
+        if !is_closed_day(&day, &today) {
+            return Err(format!(
+                "Only a closed day can be shared; {day} (UTC) is not over yet."
+            ));
         }
         let settings = crate::chain_agent::load_settings(&crate::chain_agent::settings_path(&app)?);
         let registry = crate::chain_agent::benchmark_registry().ok_or(

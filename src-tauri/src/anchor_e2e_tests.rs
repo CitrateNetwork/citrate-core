@@ -361,6 +361,7 @@ fn anvil_anchor_and_benchmark_end_to_end() {
     vault.init(&mut pw.clone()).expect("vault init");
     let held = InFlightAnchors::load(Some(work.join(crate::chain_agent::IN_FLIGHT_FILE)));
     let record = |r: &crate::ceremony::anchor::AnchorReceipt| held.record(r);
+    let not_sent = |r: &crate::ceremony::anchor::AnchorReceipt| held.forget_unsent(r);
     vault.lock();
     let locked = ceremony.approve_and_broadcast(
         &keyring,
@@ -371,6 +372,7 @@ fn anvil_anchor_and_benchmark_end_to_end() {
         AnchorGuards {
             vault: &vault,
             before_send: &record,
+            not_sent: &not_sent,
         },
     );
     assert!(locked.is_err(), "a locked vault must not sign");
@@ -388,6 +390,7 @@ fn anvil_anchor_and_benchmark_end_to_end() {
             AnchorGuards {
                 vault: &vault,
                 before_send: &record,
+                not_sent: &not_sent,
             },
         )
         .expect("anchored");
