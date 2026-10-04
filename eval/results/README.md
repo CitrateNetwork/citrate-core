@@ -62,20 +62,15 @@ not cite the passage the item requires (T1 11, T0 15), then key points missed wi
 citation (T1 3, T0 10). T1 also answered 5 of the 15 unanswerable probes instead of saying the
 docs do not cover them.
 
-### Proposed AC2 target (pending owner sign-off)
+### AC2 target (owner decision, 2026-10-04)
 
-US-3.1 AC2 needs a pass-rate target; none is set (A15/A43), so gate g2-knowledge stays
-`met: false`. Proposal, for the owner to accept, change or replace:
+The owner set the US-3.1 AC2 target for gate g2-knowledge: **T1 pass >= 75 % and citation hit
+rate >= 80 %** on `qa-v1` through the memory_search tool.
 
-- **Gating (T1, the tier the gate names):** pass >= 75 % on `qa-v1` through the memory_search
-  tool, citation validity >= 95 % (citations resolve to bundled nodes), false abstention <= 5 %.
-  The 2026-10-02 T1 run clears all three (77.3 %, 99.7 %, 0.7 %).
-- **T0 guided-tier bar (reported, not gating):** pass >= 60 % and citation validity >= 95 %.
-  The 2026-10-02 T0 run clears both (65.3 %, 98.8 %).
-- **Watch, not gate:** unanswerable-probe abstention (T1 10/15) and the agentile-hic category.
-
-Each figure sits a little under one measured run, so it records today's level rather than a
-stretch goal. If the owner wants a stretch bar instead, set it here and in gates.yaml.
+The 2026-10-02 T1 run (Qwen3.8-27B Q4_0) clears it: pass 77.3 %, citation hit rate 81.5 %
+(citation validity 99.7 %). T0 (Gemma 4 E4B Q4_0) is reported, not gating: pass 65.3 %,
+citation hit rate 69.6 %. Unanswerable-probe abstention and the agentile-hic category stay on
+the watch list.
 
 ## Machine
 
