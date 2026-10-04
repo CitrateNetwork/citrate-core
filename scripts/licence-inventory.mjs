@@ -14,7 +14,9 @@
 // Every key must be covered by exactly one entry; a cover that matches nothing is stale (except
 // planned:<name>, and corpus:<id> when no corpus is given). Every licence text an entry names
 // must exist, every file in src-tauri/licenses/ must be named by an entry, and every bundle
-// config must ship `licenses/*`. A shipped copyleft entry must carry a source offer.
+// config must ship `licenses/*`. A shipped copyleft entry must carry a source offer, and a
+// third-party entry that ships with the app (installer, skills bundle, corpus text) must name at
+// least one licence text under src-tauri/licenses/.
 //
 // review states (ok / action / owner) are reported, not failed: they are the review's findings.
 // --require-sign-off also fails while sign_off.status is not "signed" (for a release checklist).
@@ -31,6 +33,8 @@ const COPYLEFT = new Set(["none", "weak", "strong", "network"]);
 const SIGN_OFF = new Set(["pending owner sign-off", "signed"]);
 const LICENCE_DIR = "src-tauri/licenses";
 const LICENCE_GLOB = "licenses/*";
+const BUNDLED = new Set(["installer", "skills-bundle", "corpus-text"]);
+const PER_SOURCE = "LicenseRef-per-source";
 
 class Usage extends Error {}
 
@@ -129,9 +133,17 @@ export function checkInventory(inv, { repoRoot, corpusSources = null }) {
         errors.push(`${id}: shipped ${c.copyleft} copyleft needs a source_offer`);
       }
     }
+    if (typeof c.first_party !== "boolean") errors.push(`${id}: first_party must be true or false`);
     for (const t of c.licence_texts ?? []) {
       named.add(path.normalize(t));
       if (!fs.existsSync(path.join(repoRoot, t))) errors.push(`${id}: licence text ${t} does not exist`);
+    }
+    // Third-party code or text that ships with the app must carry its notice in the app: at least
+    // one licence text under src-tauri/licenses/ (the `licenses/*` resource). First-run downloads
+    // fetch from upstream, and per-source umbrellas defer to their per-source entries.
+    if (c.first_party === false && BUNDLED.has(c.ships_as) && c.spdx !== PER_SOURCE) {
+      const bundled = (c.licence_texts ?? []).some((t) => path.normalize(t).startsWith(path.normalize(LICENCE_DIR) + path.sep));
+      if (!bundled) errors.push(`${id}: shipped third-party component names no licence text under ${LICENCE_DIR}/`);
     }
     if (!Array.isArray(c.covers) || c.covers.length === 0) errors.push(`${id}: covers is empty`);
     for (const k of c.covers ?? []) {

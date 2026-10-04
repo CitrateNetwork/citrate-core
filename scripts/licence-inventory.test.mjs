@@ -50,6 +50,8 @@ function fixtureRepo() {
     '# lock\nversion = 1\n\n[[source]]\nlabel = "trailofbits"\nlicense = "CC-BY-SA-4.0"\n\n[[skill]]\nsource = "trailofbits"\n',
   );
   write(root, "src-tauri/licenses/kubo.LICENSE", "MIT text\n");
+  write(root, "src-tauri/licenses/llama.cpp.LICENSE", "MIT text\n");
+  write(root, "src-tauri/licenses/tob.LICENSE", "CC BY-SA text\n");
   write(root, "src-tauri/licenses/README.md", "index\n");
   return root;
 }
@@ -61,8 +63,8 @@ function fixtureInventory() {
     sign_off: { status: "pending owner sign-off", by: null, date: null },
     components: [
       { ...base, id: "kubo", spdx: "MIT OR Apache-2.0", ships_as: "installer", covers: ["externalBin:binaries/ipfs"], licence_texts: ["src-tauri/licenses/kubo.LICENSE"] },
-      { ...base, id: "llama", spdx: "MIT", ships_as: "installer", covers: ["resource:llama"] },
-      { ...base, id: "texts", spdx: "LicenseRef-various", ships_as: "installer", covers: ["resource:licenses"] },
+      { ...base, id: "llama", spdx: "MIT", ships_as: "installer", covers: ["resource:llama"], licence_texts: ["src-tauri/licenses/llama.cpp.LICENSE"] },
+      { ...base, id: "texts", first_party: true, spdx: "LicenseRef-various", ships_as: "installer", covers: ["resource:licenses"] },
       { ...base, id: "corpus", spdx: "LicenseRef-per-source", ships_as: "installer", covers: ["resource:knowledge-corpus"] },
       {
         ...base,
@@ -76,7 +78,7 @@ function fixtureInventory() {
         gap: "mirror or upstream: owner call",
       },
       { ...base, id: "solady", spdx: "MIT", ships_as: "first-run-download", covers: ["library:solady", "corpus:solady"] },
-      { ...base, id: "tob", spdx: "CC-BY-SA-4.0", ships_as: "skills-bundle", copyleft: "weak", covers: ["skills:trailofbits"], source_offer: "upstream" },
+      { ...base, id: "tob", spdx: "CC-BY-SA-4.0", ships_as: "skills-bundle", copyleft: "weak", covers: ["skills:trailofbits"], source_offer: "upstream", licence_texts: ["src-tauri/licenses/tob.LICENSE"] },
       { ...base, id: "searxng", spdx: "AGPL-3.0-or-later", ships_as: "not-shipped", copyleft: "network", covers: ["planned:searxng"], review: "owner", gap: "not shipped yet" },
     ],
   };
@@ -204,6 +206,35 @@ describe("checkInventory on a fixture repo", () => {
     const inv2 = fixtureInventory();
     delete inv2.components[4].gap;
     expect(errorsOf(inv2, root).join("\n")).toMatch(/slither.*gap/);
+  });
+
+  it("fails a shipped third-party component that names no bundled licence text", () => {
+    // The class of the Kubo / BGE finding: an entry with no text passes every other check.
+    const root = fixtureRepo();
+    const inv = fixtureInventory();
+    inv.components[0].licence_texts = [];
+    fs.rmSync(path.join(root, "src-tauri/licenses/kubo.LICENSE"));
+    expect(errorsOf(inv, root).join("\n")).toMatch(/kubo: shipped third-party component names no licence text under src-tauri\/licenses/);
+    // A text outside src-tauri/licenses/ does not ship in the installer, so it does not count.
+    const inv2 = fixtureInventory();
+    write(root, "components/licenses/tob.LICENSE", "x\n");
+    inv2.components[6].licence_texts = ["components/licenses/tob.LICENSE"];
+    write(root, "src-tauri/licenses/kubo.LICENSE", "MIT text\n");
+    fs.rmSync(path.join(root, "src-tauri/licenses/tob.LICENSE"));
+    expect(errorsOf(inv2, root).join("\n")).toMatch(/tob: shipped third-party component names no licence text/);
+    // First-party, first-run downloads, planned items and per-source umbrellas are exempt.
+    const ok = fixtureInventory();
+    write(root, "src-tauri/licenses/tob.LICENSE", "CC BY-SA text\n");
+    expect(ok.components.find((c) => c.id === "slither").licence_texts).toEqual([]);
+    expect(ok.components.find((c) => c.id === "corpus").licence_texts).toEqual([]);
+    expect(errorsOf(ok, root)).toEqual([]);
+  });
+
+  it("fails an entry whose first_party is not a boolean", () => {
+    const root = fixtureRepo();
+    const inv = fixtureInventory();
+    delete inv.components[2].first_party;
+    expect(errorsOf(inv, root).join("\n")).toMatch(/texts: first_party must be true or false/);
   });
 
   it("checks corpus sources against a staged manifest: missing, extra and excluded sources", () => {

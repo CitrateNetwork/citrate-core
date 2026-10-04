@@ -16,7 +16,8 @@ closes when the owner (or counsel) signs section 6 and the source offer is publi
 
 The machine-readable inventory is [`release/licences.json`](../release/licences.json). The check
 `node scripts/licence-inventory.mjs` fails when anything the app ships has no entry, when an entry
-names a licence text that does not exist, or when a shipped copyleft entry has no source offer.
+names a licence text that does not exist, when a third-party entry that ships with the app names no
+licence text under `src-tauri/licenses/`, or when a shipped copyleft entry has no source offer.
 This page explains the findings; the JSON file is the record.
 
 ## 1. What was reviewed
