@@ -28,6 +28,55 @@ Citrate QA baseline is 10 % pass (the 15 unanswerable probes) and gate g2-knowle
 QA scorer was fixed in the same WP so that "the documentation does not cover X" counts as an
 abstention; see the T0 record.
 
+## 2026-10-02 runs: QA through the app's memory_search tool (gate g2-knowledge)
+
+Both runs ask the 150 `qa-v1` questions with `scripts/eval-qa.mjs --memory-socket <socket>` in
+the default `--retrieval-mode tool`: the model is offered the app's own `memory_search` tool
+(`MEMORY_SEARCH_TOOL`, k=5 passages), each call runs on a `mem-mcp` daemon whose store imported
+the full knowledge corpus (digest `970966831d9c`, 32,702 nodes, see
+`docs/KNOWLEDGE_CORPUS_IMPORT.md`), and results are rendered with the app's `formatMemoryHits`.
+Scoring is the same deterministic scorer as the 2026-10-01 baseline. No separate run record
+(`.run.md`) was written for these two runs; the JSON scorecards hold every answer, tool call and
+retrieved node id.
+
+| Metric | T1 Qwen3.8 27B Q4_0 | T0 Gemma 4 E4B Q4_0 |
+|---|---:|---:|
+| scorecard | [2026-10-02-qa-tool-Qwen3.8-27B-Q4_0.json](2026-10-02-qa-tool-Qwen3.8-27B-Q4_0.json) | [2026-10-02-qa-tool-gemma-4-E4B-it-Q4_0.json](2026-10-02-qa-tool-gemma-4-E4B-it-Q4_0.json) |
+| started (UTC) | 2026-10-02 08:06 | 2026-10-02 07:46 |
+| pass | 77.3 % (116/150) | 65.3 % (98/150) |
+| answerable items passed | 106/135 | 84/135 |
+| unanswerable probes passed | 10/15 | 14/15 |
+| key-point coverage | 89.6 % | 75.8 % |
+| citation hit | 81.5 % | 69.6 % |
+| citation validity | 99.7 % | 98.8 % |
+| citations naming a retrieved node | 99.7 % | 96.9 % |
+| false abstention | 0.7 % | 14.8 % |
+| memory_search calls | 456 | 153 (1 item made none) |
+| weakest category | agentile-hic 26.7 % | agentile-hic 46.7 % |
+
+Against the 2026-10-01 baseline without the corpus (T0 10.0 % pass, every pass an abstention,
+0.0 % citation hit), retrieval moves T0 to 65.3 %. Of the failed items, the largest group misses
+both the key points and the required citation, which points at retrieval not finding the right
+passage (T1 14 of 34 failures, T0 26 of 52). Next come answers that cover the key points but do
+not cite the passage the item requires (T1 11, T0 15), then key points missed with the right
+citation (T1 3, T0 10). T1 also answered 5 of the 15 unanswerable probes instead of saying the
+docs do not cover them.
+
+### Proposed AC2 target (pending owner sign-off)
+
+US-3.1 AC2 needs a pass-rate target; none is set (A15/A43), so gate g2-knowledge stays
+`met: false`. Proposal, for the owner to accept, change or replace:
+
+- **Gating (T1, the tier the gate names):** pass >= 75 % on `qa-v1` through the memory_search
+  tool, citation validity >= 95 % (citations resolve to bundled nodes), false abstention <= 5 %.
+  The 2026-10-02 T1 run clears all three (77.3 %, 99.7 %, 0.7 %).
+- **T0 guided-tier bar (reported, not gating):** pass >= 60 % and citation validity >= 95 %.
+  The 2026-10-02 T0 run clears both (65.3 %, 98.8 %).
+- **Watch, not gate:** unanswerable-probe abstention (T1 10/15) and the agentile-hic category.
+
+Each figure sits a little under one measured run, so it records today's level rather than a
+stretch goal. If the owner wants a stretch bar instead, set it here and in gates.yaml.
+
 ## Machine
 
 Apple M2 Max, 32 GB unified memory, macOS 15.6.1. The Citrate Core app's own `llama-server` was

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-01
-updated: 2026-10-01
-branch: hup/m2-knowledge
+updated: 2026-10-04
+branch: hup/m2-core
 author: Larry Klosowski + Claude Opus 5.5
 status: implemented; staging wired and bound to the bundled BGE model; release upload pending (see "Not done")
 wp: HUP-S3.1
@@ -107,6 +107,13 @@ renders the result with `formatMemoryHits`, and stops after the app's `AGENT_MAX
 citation in the answer is resolved to them: `citedNodes` per item and `citationNodeRate` in
 the scorecard (the share of answer citations that name a node the run retrieved from the
 imported graph). `--retrieval-mode passages` keeps the older retrieve-then-answer run.
+
+Measured on 2026-10-02 against this corpus (digest `970966831d9c`), 150 `qa-v1` questions:
+T1 Qwen3.8 27B Q4_0 passed 77.3 % (citation hit 81.5 %, citation validity 99.7 %, false
+abstention 0.7 %); T0 Gemma 4 E4B Q4_0 passed 65.3 % (69.6 %, 98.8 %, 14.8 %). The baseline
+without the corpus was 10.0 % on T0. Breakdown, failure groups and a proposed AC2 target
+(pending owner sign-off) are in `eval/results/README.md`; the rendered table is
+`eval/results/SCORECARD.md`.
 
 ## Licences
 
