@@ -222,3 +222,19 @@ fn a_diff_for_another_step_is_refused() {
     );
     assert!(m.checkpoint_diff("s3-ab", 2).is_err());
 }
+
+#[test]
+fn a_step_diff_passes_on_at_most_the_file_cap() {
+    let files: Vec<String> = (0..MAX_DIFF_FILES + 5)
+        .map(|i| format!(r#"{{"path":"f{i}.txt","before":{{"kind":"absent"}},"after":{{"kind":"text","text":"x"}}}}"#))
+        .collect();
+    let body = format!(
+        r#"{{"session":"s3-ab","seq":4,"status":"committed","files":[{}]}}"#,
+        files.join(",")
+    );
+    let (_rec, m) = with_reply(200, &body);
+    let d = m.checkpoint_diff("s3-ab", 4).unwrap();
+    assert!(d.ok);
+    assert_eq!(d.files.len(), MAX_DIFF_FILES);
+    assert_eq!(d.files[0].path, "f0.txt");
+}
