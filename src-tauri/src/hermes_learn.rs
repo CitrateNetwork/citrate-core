@@ -79,6 +79,57 @@ const RESOLUTION_SCHEMA: &str = "citrate.learn.resolve.v1";
 /// Longest CID accepted from the IPFS node for a skill pin.
 const MAX_CID_LEN: usize = 128;
 
+/// HUP-S3.2: the `skills.lock` shipped beside the reviewed third-party skills (sidecar env).
+pub const SKILLS_LOCK_ENV: &str = "CITRATE_HERMES_SKILLS_LOCK";
+/// HUP-S3.2: the staged reviewed third-party skills, `<root>/<source>/<path>/` (sidecar env).
+pub const SKILLS_THIRD_PARTY_ENV: &str = "CITRATE_HERMES_SKILLS_THIRD_PARTY";
+
+/// HUP-S3.2 (US-3.2 AC2): every place the sidecar's one SKILL.md loader reads skills from, besides
+/// the learned-skills folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSources {
+    /// The member's saved skills (`skill_write`, the Agent surface): `skills_local.rs`.
+    pub authored: PathBuf,
+    /// Citrate's own bundled `SKILL.md` skills (resource `skills/`).
+    pub first_party: Option<PathBuf>,
+    /// The reviewed third-party skills: (`skills.lock`, staged tree) (resource `skills-bundle/`).
+    pub third_party: Option<(PathBuf, PathBuf)>,
+}
+
+/// The sidecar env for every skill source, in precedence order (first wins): the learned skills,
+/// the member's saved skills, Citrate's bundled skills, then the reviewed third-party skills (a
+/// separate locked source the sidecar checks file by file against `skills.lock`). A bundled
+/// source that is not staged in this build is left out rather than pointing at nothing.
+pub fn skills_env(learned: Option<&Path>, s: &SkillSources) -> Vec<(String, String)> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(l) = learned {
+        dirs.push(l.to_path_buf());
+    }
+    dirs.push(s.authored.clone());
+    if let Some(fp) = s.first_party.as_ref().filter(|p| p.is_dir()) {
+        dirs.push(fp.clone());
+    }
+    // A path the platform list cannot carry (it holds the separator) is left out.
+    dirs.retain(|d| std::env::join_paths([d]).is_ok());
+    let mut env = Vec::new();
+    if let Ok(joined) = std::env::join_paths(&dirs) {
+        env.push((SKILLS_ENV.to_string(), joined.to_string_lossy().to_string()));
+    }
+    if let Some((lock, root)) = &s.third_party {
+        if lock.is_file() && root.is_dir() {
+            env.push((
+                SKILLS_LOCK_ENV.to_string(),
+                lock.to_string_lossy().to_string(),
+            ));
+            env.push((
+                SKILLS_THIRD_PARTY_ENV.to_string(),
+                root.to_string_lossy().to_string(),
+            ));
+        }
+    }
+    env
+}
+
 /// The sidecar env for a learn folder and a skills folder.
 pub fn learn_env(learn_dir: &Path, skills_dir: &Path) -> Vec<(String, String)> {
     let skills = skills_dir.to_string_lossy().to_string();
@@ -403,7 +454,17 @@ impl Ledger {
         let tmp = dir.join(".learned-memories.json.tmp");
         let res = (|| -> std::io::Result<()> {
             use std::io::Write as _;
-            let mut f = std::fs::File::create(&tmp)?;
+            // Owner-only: a temporary file left by an interrupted save is replaced, never reused
+            // with its old permissions.
+            let _ = std::fs::remove_file(&tmp);
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp)?;
             f.write_all(&body)?;
             f.sync_all()?;
             std::fs::rename(&tmp, path)

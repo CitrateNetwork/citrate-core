@@ -34,7 +34,7 @@ fn mgr(rec: std::sync::Arc<Rec>) -> HermesManager {
 const REPORT: &str = r#"{"workers":[
   {"kind":"toolchain","state":"running","healthy":true,"pid":4242,"restarts":1,
    "last_exit":"killed by signal 9","last_error":null,"running_since_ms":1700000000000},
-  {"kind":"browser","state":"not_built","detail":"the browser worker arrives with HUP-S5.1; no browser tools exist yet"}
+  {"kind":"browser","state":"not_built","detail":"the browser tools (HUP-S5.1) run in the sidecar and drive the managed Chromium as its own process; a separate browser worker is not built"}
 ]}"#;
 
 #[test]

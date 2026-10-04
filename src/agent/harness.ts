@@ -18,6 +18,7 @@
 import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 import type { ShellPendingView } from "../bridge/domains";
+import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
 
@@ -305,25 +306,7 @@ export function createLocalProvider(getContext: () => AgentContext, inferLocal: 
 /// in the store's `handleTool`. Reads (search/recall) are safe; app_navigate is a
 /// UI move; memory_assert + journal_append are WRITES that queue for approval.
 export const AGENT_TOOLS = [
-  {
-    type: "function",
-    function: {
-      name: "memory_search",
-      description:
-        "Semantic search over the member's memory graph, including preloaded Citrate documentation (the 'citrate-docs' tenant). Use for any Citrate protocol/how-to/docs question. Returns real hits or an empty result.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "what to search for" },
-          tenant: {
-            type: "string",
-            description: "graph to search: 'citrate-docs' (documentation) or 'personal' (the member's own notes). Defaults to citrate-docs.",
-          },
-        },
-        required: ["query"],
-      },
-    },
-  },
+  MEMORY_SEARCH_TOOL,
   {
     type: "function",
     function: {

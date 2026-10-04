@@ -106,6 +106,12 @@ pub enum ImportLine {
         edges_added: u64,
         tenants_imported: Vec<String>,
         tenants_skipped: Vec<String>,
+        /// Nodes the importer embedded on this machine (0 from an older importer).
+        #[serde(default)]
+        nodes_embedded: u64,
+        /// Nodes that took the corpus's precomputed vectors (0 from an older importer).
+        #[serde(default)]
+        vectors_reused: u64,
     },
     Error {
         stage: String,
@@ -136,6 +142,10 @@ pub struct KnowledgeImportReport {
     pub edges_added: u64,
     pub tenants_imported: Vec<String>,
     pub tenants_skipped: Vec<String>,
+    /// Nodes embedded on this machine during the import.
+    pub nodes_embedded: u64,
+    /// Nodes that took the release's precomputed vectors instead (no CPU embedding).
+    pub vectors_reused: u64,
 }
 
 impl KnowledgeImportReport {
@@ -393,6 +403,8 @@ fn run_importer(
         edges_added,
         tenants_imported,
         tenants_skipped,
+        nodes_embedded,
+        vectors_reused,
         ..
     }) = done
     else {
@@ -418,6 +430,8 @@ fn run_importer(
         edges_added,
         tenants_imported,
         tenants_skipped,
+        nodes_embedded,
+        vectors_reused,
     }
 }
 
@@ -463,19 +477,30 @@ pub fn import_with_manager(
     report
 }
 
+/// `dir` when it holds a staged corpus (a `manifest.json` file), else `None`.
+/// Every build ships `knowledge-corpus/README.md` so the bundle resource glob
+/// always matches; only a release that staged a corpus adds the manifest, so a
+/// README-only directory is an honest `no-bundle`, not a failed import.
+pub fn staged_corpus_dir(dir: &Path) -> Option<PathBuf> {
+    let manifest = dir.join("manifest.json");
+    std::fs::metadata(&manifest)
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+        .then(|| dir.to_path_buf())
+}
+
 /// The bundled corpus directory: [`CORPUS_DIR_ENV`] first (dev), else the app
-/// resource dir. `None` when absent: the app honestly ships without a corpus
-/// until the release stages one.
+/// resource dir. `None` when no corpus is staged: the app honestly ships
+/// without one until the release stages it (`scripts/stage-knowledge-corpus.sh`).
 fn resolve_corpus_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     use tauri::Manager;
     if let Ok(p) = std::env::var(CORPUS_DIR_ENV) {
-        let d = PathBuf::from(p);
-        if d.is_dir() {
+        if let Some(d) = staged_corpus_dir(Path::new(&p)) {
             return Some(d);
         }
     }
     let d = app.path().resource_dir().ok()?.join(RESOURCE_DIR);
-    d.is_dir().then_some(d)
+    staged_corpus_dir(&d)
 }
 
 /// HUP-S3.1 — import the bundled knowledge corpus (first run; idempotent).

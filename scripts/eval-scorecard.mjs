@@ -25,6 +25,20 @@ export const G1_STEP_SUCCESS_BAR = 0.8;
 
 const isRate = (v) => v === null || (typeof v === "number" && Number.isFinite(v));
 
+/**
+ * The dataset cell of a QA row: the set, plus the retrieval the run used (HUP-S3.1: answering from
+ * the bundled knowledge corpus, either through the app's memory_search tool or with passages
+ * retrieved before the question). A closed-book run shows the set only.
+ */
+function qaDataset(sc) {
+  const r = sc.retrieval;
+  if (!r || !Array.isArray(r.tenants)) return sc.datasetVersion;
+  // The corpus digest prefix tells runs over different imported corpora apart.
+  const corpus = typeof r.corpusDigest === "string" ? `corpus ${r.corpusDigest.slice(0, 12)}` : "corpus";
+  if (r.mode === "memory_search tool") return `${sc.datasetVersion} + ${corpus} (memory_search tool, k=${r.k})`;
+  return `${sc.datasetVersion} + ${corpus} (${r.tenants.join("+")}, k=${r.k})`;
+}
+
 /** {kind:"tools"|"qa"|"sidecar", sc} for a scorecard file's parsed JSON, else null. */
 export function classifyScorecard(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
@@ -167,14 +181,14 @@ export function renderScorecardMarkdown(cards, meta) {
   out.push("", "## Citrate QA", "");
   if (cards.qa.length) {
     out.push(
-      "| file | model | tier | dataset | n | pass | key points | citation hit | citation validity | abstention | false abstention | failures |",
-      "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+      "| file | model | tier | dataset | n | pass | key points | citation hit | citation validity | abstention | false abstention | citations to nodes | failures |",
+      "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     );
     for (const { file, sc } of cards.qa) {
       out.push(
-        `| ${cell(file)} | ${cell(sc.model)} | ${sc.tier ?? "-"} | ${cell(sc.datasetVersion)} | ${sc.n} | ` +
+        `| ${cell(file)} | ${cell(sc.model)} | ${sc.tier ?? "-"} | ${cell(qaDataset(sc))} | ${sc.n} | ` +
           `${pct(sc.passRate)} | ${pct(sc.keyPointCoverage)} | ${pct(sc.citationHitRate)} | ` +
-          `${pct(sc.citationValidity)} | ${pct(sc.abstentionRate)} | ${pct(sc.falseAbstentionRate)} | ${sc.failures.length} |`,
+          `${pct(sc.citationValidity)} | ${pct(sc.abstentionRate)} | ${pct(sc.falseAbstentionRate)} | ${pct(sc.citationNodeRate)} | ${sc.failures.length} |`,
       );
     }
   } else {
@@ -230,6 +244,8 @@ export function renderScorecardMarkdown(cards, meta) {
     "  success measurement.",
     "- One run per row at temperature 0: no variance estimate.",
     "- Latency and throughput are not in the JSON scorecards; see the run log next to the results.",
+    "- \"citations to nodes\" (retrieval runs only) is the share of answer citations that name a node",
+    "  the run's own searches returned from the imported corpus graph; it is n/a on a closed-book run.",
     "",
   );
   return out.join("\n");

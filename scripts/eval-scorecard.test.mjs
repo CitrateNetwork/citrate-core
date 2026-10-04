@@ -121,8 +121,40 @@ describe("renderScorecardMarkdown", () => {
 
   it("renders the QA row, with n/a for a null rate", () => {
     expect(md()).toContain(
-      "| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 | 75.0% | 81.3% | 70.0% | n/a | 100.0% | 5.0% | 1 |",
+      "| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 | 75.0% | 81.3% | 70.0% | n/a | 100.0% | 5.0% | n/a | 1 |",
     );
+  });
+
+  it("marks a QA run that answered from the retrieved corpus (HUP-S3.1)", () => {
+    const rag = { ...QA, scorecard: { ...QA.scorecard, retrieval: { mode: "memory.search passages", tenants: ["citrate-docs", "methodology"], k: 5 } } };
+    fs.writeFileSync(path.join(tmp, "results", "2026-10-01-qa-rag-m-small.json"), JSON.stringify(rag));
+    try {
+      expect(md()).toContain("| 2026-10-01-qa-rag-m-small.json | m-small | T0 | qa-v1 + corpus (citrate-docs+methodology, k=5) | 40 |");
+      // The closed-book row is unchanged.
+      expect(md()).toContain("| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 |");
+    } finally {
+      fs.rmSync(path.join(tmp, "results", "2026-10-01-qa-rag-m-small.json"));
+    }
+  });
+
+  it("marks a run that answered through the app's memory_search tool, with its node-citation rate (g2-knowledge)", () => {
+    const tool = {
+      ...QA,
+      scorecard: {
+        ...QA.scorecard,
+        citationNodeRate: 0.875,
+        retrieval: { mode: "memory_search tool", tenants: ["citrate-docs", "methodology", "refs", "skills"], k: 5, maxTurns: 6, corpusDigest: "6e6f5689f9566db7" + "0".repeat(48) },
+      },
+    };
+    fs.writeFileSync(path.join(tmp, "results", "2026-10-01-qa-tool-m-small.json"), JSON.stringify(tool));
+    try {
+      expect(md()).toContain("| 2026-10-01-qa-tool-m-small.json | m-small | T0 | qa-v1 + corpus 6e6f5689f956 (memory_search tool, k=5) | 40 |");
+      expect(md()).toMatch(/\| 2026-10-01-qa-tool-m-small\.json \|.*\| 87\.5% \| 1 \|$/m);
+      // A run without retrieval shows n/a in the node column.
+      expect(md()).toContain("| 2026-10-01-qa-m-small.json | m-small | T0 | qa-v1 | 40 | 75.0% | 81.3% | 70.0% | n/a | 100.0% | 5.0% | n/a | 1 |");
+    } finally {
+      fs.rmSync(path.join(tmp, "results", "2026-10-01-qa-tool-m-small.json"));
+    }
   });
 
   it("marks the g1 valid-tool-call bar per tier: met / not met on T1+, T0 has its own bar", () => {
