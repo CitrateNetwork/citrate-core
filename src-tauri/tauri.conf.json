@@ -36,6 +36,7 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "resources": [
+      "skills/**/*",
       "capsules/hello/*",
       "capsules/echo-chain/*"
     ],

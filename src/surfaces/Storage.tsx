@@ -148,7 +148,8 @@ function ConstellationOffline({ store, s, state }: SurfaceProps & { state: "load
 /** HUP-S3.1 — skip reasons from the Rust importer, in plain words. */
 const KNOWLEDGE_SKIP_TEXT: Record<string, string> = {
   "no-bundle": "Built-in knowledge: not included in this build.",
-  "not-semantic": "Built-in knowledge: waits for the bundled search model.",
+  // The import embeds with the bundled BGE model; a build without it never imports the corpus.
+  "not-semantic": "Built-in knowledge: not imported, this build has no bundled search model.",
   "already-imported": "Built-in knowledge ready.",
   "in-progress": "Built-in knowledge: an import is already running.",
 };

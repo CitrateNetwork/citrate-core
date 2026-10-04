@@ -7,7 +7,7 @@ status: test fixture
 
 # Fixture knowledge corpus (HUP-S3.1)
 
-A byte-exact copy of the citrate-memories `mem-corpus` golden fixture
+A byte-exact copy of the citrate-memories `mem-corpus` golden fixture (corpus format `citrate-corpus/2`)
 (`crates/mem-corpus/tests/fixtures/bundle`, built from that crate's fixture spec).
 It is small, synthetic test content, not the release corpus. The importer reads only
 `manifest.json`, `skills.lock` and `tenants/`; this README is not part of the corpus.
