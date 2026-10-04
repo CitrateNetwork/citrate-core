@@ -132,6 +132,7 @@ fn approve(
         AnchorGuards {
             vault: &v,
             before_send: &rec,
+            not_sent: &|_| {},
         },
     )
 }
@@ -399,6 +400,8 @@ fn a_reverted_or_unmined_receipt_never_confirms() {
         tx_hash: "0x".into(),
         block_number: block,
         status,
+        nonce: None,
+        from: None,
     };
     assert!(receipt_confirms(&mk(Some(1), Some(1))));
     assert!(!receipt_confirms(&mk(Some(1), Some(0))));
@@ -535,6 +538,7 @@ fn guarded<'a>(
     AnchorGuards {
         vault: v,
         before_send: rec,
+        not_sent: &|_| {},
     }
 }
 
@@ -642,4 +646,118 @@ fn the_gas_caps_are_placeholders_pending_owner_sign_off() {
     const { assert!(GAS_CAPS_PENDING_OWNER_SIGNOFF) };
     assert_eq!(PLACEHOLDER_MAX_GAS_LIMIT, 200_000);
     assert_eq!(PLACEHOLDER_MAX_GAS_PRICE_WEI, 50_000_000_000);
+}
+
+// ---------------------------------------------------------------------------------------------
+// a refused send does not hold the day forever
+
+fn err(msg: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": msg } })
+}
+
+#[test]
+fn the_record_carries_the_nonce_and_the_sender() {
+    let kr = FakeKeyring::default();
+    let addr = ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c
+        .request(good_request(20_000, root(0x61)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(happy_rpc("0x1"));
+    let r = approve(&c, &kr, &rpc, &v.id, REGISTRY).unwrap();
+    assert_eq!(r.nonce, Some(5));
+    assert_eq!(
+        r.from.as_deref().map(str::to_ascii_lowercase),
+        Some(addr.to_ascii_lowercase())
+    );
+}
+
+#[test]
+fn a_send_the_node_refused_and_does_not_hold_withdraws_the_record_and_keeps_the_card() {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c
+        .request(good_request(20_000, root(0x62)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+        err("insufficient funds for gas * price + value"),
+        ok(Value::Null),
+    ]));
+    let vault = unlocked_vault();
+    let recorded = RefCell::new(Vec::<AnchorReceipt>::new());
+    let withdrawn = RefCell::new(Vec::<AnchorReceipt>::new());
+    let rec = |r: &AnchorReceipt| -> std::result::Result<(), String> {
+        recorded.borrow_mut().push(r.clone());
+        Ok(())
+    };
+    let gone = |r: &AnchorReceipt| withdrawn.borrow_mut().push(r.clone());
+    let out = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &gone,
+        },
+    );
+    assert!(matches!(out, Err(AnchorError::Rpc(_))), "{out:?}");
+    assert_eq!(recorded.borrow().len(), 1);
+    assert_eq!(
+        *withdrawn.borrow(),
+        *recorded.borrow(),
+        "the same record is withdrawn"
+    );
+    assert_eq!(c.pending().len(), 1, "the card stays for another try");
+    assert_eq!(
+        rpc.transport().methods().last().map(String::as_str),
+        Some("eth_getTransactionByHash")
+    );
+}
+
+#[test]
+fn a_send_error_for_a_transaction_the_node_holds_or_cannot_say_keeps_the_day_held() {
+    for lookup in [ok(json!({ "hash": "0xcd" })), err("lookup failed")] {
+        let kr = FakeKeyring::default();
+        ensure_anchor_key(&kr).unwrap();
+        let c = AnchorCeremony::new();
+        let v = c
+            .request(good_request(20_000, root(0x63)), REGISTRY)
+            .unwrap();
+        let rpc = RpcClient::with_transport(MockRpc::new(vec![
+            ok(json!("0x5")),
+            ok(json!("0x3b9aca00")),
+            ok(json!("0xb000")),
+            err("timeout"),
+            lookup,
+        ]));
+        let vault = unlocked_vault();
+        let rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+        let withdrawn = RefCell::new(0usize);
+        let gone = |_: &AnchorReceipt| *withdrawn.borrow_mut() += 1;
+        let out = c.approve_and_broadcast(
+            &kr,
+            &rpc,
+            &v.id,
+            REGISTRY,
+            cfg(),
+            AnchorGuards {
+                vault: &vault,
+                before_send: &rec,
+                not_sent: &gone,
+            },
+        );
+        assert!(matches!(out, Err(AnchorError::Rpc(_))), "{out:?}");
+        assert_eq!(*withdrawn.borrow(), 0, "possibly sent: the day stays held");
+        assert!(
+            c.pending().is_empty(),
+            "no second card for a possibly sent day"
+        );
+    }
 }

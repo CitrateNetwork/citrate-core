@@ -686,6 +686,7 @@ pub async fn hermes_anchor_approve(
             .ok_or("internal: custody state unavailable")?;
         let rpc = crate::rpc::RpcClient::citrate();
         let record = |r: &AnchorReceipt| held.record_sent(r);
+        let not_sent = |r: &AnchorReceipt| held.settle_day(r.day);
         let receipt = ceremony()
             .approve_and_broadcast(
                 &keyring(),
@@ -697,6 +698,7 @@ pub async fn hermes_anchor_approve(
                 AnchorGuards {
                     vault: &custody.0,
                     before_send: &record,
+                    not_sent: &not_sent,
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -718,20 +720,63 @@ pub async fn hermes_anchor_reject(id: String) -> Result<(), String> {
     crate::blocking::off_main(move || ceremony().reject(&id).map_err(|e| e.to_string())).await
 }
 
-/// Recheck broadcast anchors whose receipt was not mined in time; settle those that are now.
+/// What a re-poll found for one sent, unsettled anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Repoll {
+    /// Mined: this receipt decides the day.
+    Mined(AnchorReceipt),
+    /// No receipt, and the sender's mined nonce has passed this transaction's nonce: another
+    /// transaction took the nonce, so this one can never be mined and the day may be raised again.
+    Dropped,
+    /// Still unknown: keep holding the day.
+    Wait,
+}
+
+/// Decide a re-poll from the sender's mined nonce (read FIRST) and the receipt (read after it).
+/// Reading the nonce first means a transaction mined between the two reads shows up as a receipt,
+/// never as `Dropped`. Records without a nonce or sender (older ones) only ever wait.
+pub fn repoll_decision(
+    r: &AnchorReceipt,
+    latest_nonce: Option<u64>,
+    receipt: Option<crate::rpc::Receipt>,
+) -> Repoll {
+    if let Some(rc) = receipt {
+        return Repoll::Mined(AnchorReceipt {
+            block_number: Some(rc.block_number),
+            status: rc.status,
+            ..r.clone()
+        });
+    }
+    match (r.nonce, latest_nonce) {
+        (Some(n), Some(mined)) if mined > n => Repoll::Dropped,
+        _ => Repoll::Wait,
+    }
+}
+
+/// Recheck broadcast anchors whose receipt was not mined in time; settle those that are now, and
+/// release a day whose transaction can no longer be mined.
 fn repoll_submitted(port: &dyn AnchorPort, held: &InFlightAnchors) {
     let pending: Vec<AnchorReceipt> = held.all();
     let rpc = crate::rpc::RpcClient::citrate();
     for r in pending {
-        if let Ok(Some(rc)) = rpc.transaction_receipt(&r.tx_hash) {
-            let done = AnchorReceipt {
-                block_number: Some(rc.block_number),
-                status: rc.status,
-                ..r.clone()
-            };
-            if settle(port, &done).unwrap_or(false) || rc.status == Some(0) {
+        let latest = r.from.as_deref().and_then(|a| rpc.latest_nonce(a).ok());
+        let Ok(receipt) = rpc.transaction_receipt(&r.tx_hash) else {
+            continue;
+        };
+        match repoll_decision(&r, latest, receipt) {
+            Repoll::Mined(done) => {
+                if settle(port, &done).unwrap_or(false) || done.status == Some(0) {
+                    held.settle_day(r.day);
+                }
+            }
+            Repoll::Dropped => {
+                eprintln!(
+                    "citrate-core: the anchor for day {} was replaced or dropped; it can be raised again",
+                    r.day
+                );
                 held.settle_day(r.day);
             }
+            Repoll::Wait => {}
         }
     }
 }

@@ -212,6 +212,21 @@ impl<T: RpcTransport> RpcClient<T> {
         parse_hex_quantity(&result, "eth_getTransactionCount")
     }
 
+    /// `eth_getTransactionCount(address, "latest")`: how many of the address's transactions are
+    /// mined. A sent transaction whose nonce is below this and that has no receipt was replaced or
+    /// dropped and can never be mined.
+    pub fn latest_nonce(&self, address: &str) -> Result<u64, RpcError> {
+        let result = self.request("eth_getTransactionCount", json!([address, "latest"]))?;
+        parse_hex_quantity(&result, "eth_getTransactionCount")
+    }
+
+    /// `eth_getTransactionByHash(hash)`: whether the node holds the transaction (pending or
+    /// mined). `false` only on an explicit `null` answer.
+    pub fn transaction_known(&self, tx_hash: &str) -> Result<bool, RpcError> {
+        let result = self.request("eth_getTransactionByHash", json!([tx_hash]))?;
+        Ok(!result.is_null())
+    }
+
     /// `eth_gasPrice` → the current network gas price in wei (real value).
     pub fn gas_price(&self) -> Result<u64, RpcError> {
         let result = self.request("eth_gasPrice", json!([]))?;

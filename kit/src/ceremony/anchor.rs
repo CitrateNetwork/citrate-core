@@ -284,6 +284,10 @@ pub struct AnchorGuards<'a> {
     /// after signing and before sending; if it fails nothing is sent. This is what lets a restart
     /// know a day is already on the way, so it never raises a second anchor for it.
     pub before_send: &'a dyn Fn(&AnchorReceipt) -> std::result::Result<(), String>,
+    /// The send failed and the node does not hold the transaction, so it was never sent: the
+    /// record `before_send` wrote is withdrawn (the card stays pending for another try). Without
+    /// this, a refused send (for example an unfunded anchor key) would hold the day forever.
+    pub not_sent: &'a dyn Fn(&AnchorReceipt),
 }
 
 /// What happened to a broadcast anchor. `block_number` / `status` are `None` while unknown.
@@ -296,6 +300,12 @@ pub struct AnchorReceipt {
     pub tx_hash: String,
     pub block_number: Option<u64>,
     pub status: Option<u64>,
+    /// The transaction's nonce (absent in records from before it was kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<u64>,
+    /// The anchor key's address that sent it (absent in records from before it was kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// A day may be marked anchored only on a mined receipt whose status is 1.
@@ -518,11 +528,24 @@ impl AnchorCeremony {
             tx_hash: format!("0x{}", hex::encode(signed.hash)),
             block_number: None,
             status: None,
+            nonce: Some(nonce),
+            from: Some(from.clone()),
         };
         if let Err(e) = (guards.before_send)(&in_flight) {
             return Err(keep(p, AnchorError::NotRecorded(e)));
         }
-        let tx_hash = rpc.send_raw_transaction(&signed.raw).map_err(rpc_err)?;
+        let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
+            Ok(h) => h,
+            Err(e) => {
+                // Only an explicit "not held" from the node means nothing went out; any other
+                // answer (including a failed lookup) keeps the day held as possibly sent.
+                if matches!(rpc.transaction_known(&in_flight.tx_hash), Ok(false)) {
+                    (guards.not_sent)(&in_flight);
+                    return Err(keep(p, rpc_err(e)));
+                }
+                return Err(rpc_err(e));
+            }
+        };
         let (block_number, status) =
             match rpc.poll_receipt(&tx_hash, cfg.poll_attempts, cfg.poll_interval) {
                 Ok(r) => (Some(r.block_number), r.status),
@@ -537,6 +560,8 @@ impl AnchorCeremony {
             tx_hash,
             block_number,
             status,
+            nonce: Some(nonce),
+            from: Some(from),
         })
     }
 }

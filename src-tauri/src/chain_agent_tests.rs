@@ -268,6 +268,8 @@ fn receipt(block: Option<u64>, status: Option<u64>) -> AnchorReceipt {
         tx_hash: format!("0x{}", "cd".repeat(32)),
         block_number: block,
         status,
+        nonce: None,
+        from: None,
     }
 }
 
@@ -566,4 +568,68 @@ fn approve_passes_the_vault_gate_and_records_before_sending() {
         "the member's vault is the unlock gate"
     );
     assert!(body.contains("with_placeholder_caps"), "gas caps apply");
+}
+
+// ---------------------------------------------------------------------------------------------
+// re-poll: a transaction that can no longer be mined releases its day
+
+fn sent(nonce: Option<u64>) -> AnchorReceipt {
+    AnchorReceipt {
+        nonce,
+        from: nonce.map(|_| format!("0x{}", "ab".repeat(20))),
+        ..receipt(None, None)
+    }
+}
+
+#[test]
+fn a_mined_receipt_decides_the_day_whatever_the_nonce_says() {
+    let rc = crate::rpc::Receipt {
+        tx_hash: sent(Some(5)).tx_hash,
+        block_number: 42,
+        status: Some(1),
+    };
+    match repoll_decision(&sent(Some(5)), Some(9), Some(rc)) {
+        Repoll::Mined(done) => {
+            assert_eq!((done.block_number, done.status), (Some(42), Some(1)));
+            assert!(receipt_confirms(&done));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn no_receipt_and_a_mined_nonce_past_it_releases_the_day() {
+    assert_eq!(
+        repoll_decision(&sent(Some(5)), Some(6), None),
+        Repoll::Dropped
+    );
+}
+
+#[test]
+fn otherwise_a_sent_day_stays_held() {
+    // Not yet mined, nonce not passed (equal: the transaction may still be the next one mined).
+    assert_eq!(repoll_decision(&sent(Some(5)), Some(5), None), Repoll::Wait);
+    assert_eq!(repoll_decision(&sent(Some(5)), Some(4), None), Repoll::Wait);
+    // The nonce could not be read.
+    assert_eq!(repoll_decision(&sent(Some(5)), None, None), Repoll::Wait);
+    // An older record without a nonce never releases on its own.
+    assert_eq!(repoll_decision(&sent(None), Some(100), None), Repoll::Wait);
+}
+
+#[test]
+fn an_older_in_flight_file_without_nonces_still_loads() {
+    let path = in_flight_path("older-file");
+    let old = serde_json::json!([{
+        "day": 20000,
+        "commitment": format!("0x{}", "a0".repeat(32)),
+        "txHash": format!("0x{}", "cd".repeat(32)),
+        "blockNumber": null,
+        "status": null
+    }]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, old.to_string()).unwrap();
+    let h = InFlightAnchors::load(Some(path));
+    assert!(h.blocked().is_none());
+    assert_eq!(h.all()[0].nonce, None);
+    assert!(h.days().contains(&20000));
 }
