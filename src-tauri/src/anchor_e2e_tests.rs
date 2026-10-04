@@ -360,7 +360,7 @@ fn anvil_anchor_and_benchmark_end_to_end() {
     let mut pw = b"anvil-rehearsal-only".to_vec();
     vault.init(&mut pw.clone()).expect("vault init");
     let held = InFlightAnchors::load(Some(work.join(crate::chain_agent::IN_FLIGHT_FILE)));
-    let record = |r: &crate::ceremony::anchor::AnchorReceipt| held.record(r);
+    let record = |r: &crate::ceremony::anchor::AnchorReceipt| held.record_sent(r);
     let not_sent = |r: &crate::ceremony::anchor::AnchorReceipt| held.forget_unsent(r);
     vault.lock();
     let locked = ceremony.approve_and_broadcast(

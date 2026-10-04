@@ -799,15 +799,85 @@ pub async fn device_links(app: tauri::AppHandle) -> Result<DeviceLinksDto, Strin
     .await
 }
 
-/// **device_link_revoke**: the member's comms key signs a revocation of `device`. Permanent for
-/// that key; the cluster daemon evicts it on the next roster update. Revoking THIS machine also
-/// deletes its device key, so a later link mints a fresh one.
+/// How long a prepared device revocation may be confirmed.
+pub const REVOKE_CONFIRM_SECS: u64 = 120;
+
+/// What the member confirms before a device is revoked.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokePrepared {
+    pub confirm_id: String,
+    /// Canonical device address (lowercase hex, no `0x`).
+    pub device: String,
+    pub statement: String,
+    pub confirm_by: u64,
+}
+
+/// One pending device revocation at a time: a one-shot id core minted for one device. A revocation
+/// is permanent, so `device_link_revoke` runs only with the id `device_link_revoke_prepare` returned
+/// when the member opened the confirmation (a caller cannot revoke by naming a device).
+#[derive(Default)]
+pub struct RevokeConfirmations(Mutex<Option<(String, String, u64)>>);
+
+impl RevokeConfirmations {
+    pub fn prepare(&self, device: &str, now: u64, id: String) -> Result<RevokePrepared, String> {
+        let device = canonical_address(device).ok_or("device address is malformed")?;
+        let confirm_by = now.saturating_add(REVOKE_CONFIRM_SECS);
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((id.clone(), device.clone(), confirm_by));
+        Ok(RevokePrepared {
+            statement: format!(
+                "Remove device 0x{device} for good. Its key can never be linked again, and the group mesh drops it on the next roster update. This cannot be undone."
+            ),
+            confirm_id: id,
+            device,
+            confirm_by,
+        })
+    }
+
+    /// The device for `id`, consumed. A wrong id leaves the pending one in place.
+    pub fn consume(&self, id: &str, now: u64) -> Result<String, String> {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref() {
+            Some((pid, _, _)) if pid == id => {}
+            _ => return Err("this confirmation is not the current one; start again".into()),
+        }
+        let (_, device, confirm_by) = g.take().ok_or("no confirmation is pending")?;
+        if now >= confirm_by {
+            return Err("the confirmation timed out; start again".into());
+        }
+        Ok(device)
+    }
+}
+
+fn revoke_confirmations() -> &'static RevokeConfirmations {
+    static C: std::sync::OnceLock<RevokeConfirmations> = std::sync::OnceLock::new();
+    C.get_or_init(RevokeConfirmations::default)
+}
+
+/// **device_link_revoke_prepare**: step 1 of removing a device. Returns what the member confirms
+/// and a one-shot id valid for [`REVOKE_CONFIRM_SECS`]. Signs nothing.
+#[tauri::command]
+pub async fn device_link_revoke_prepare(device: String) -> Result<RevokePrepared, String> {
+    crate::blocking::off_main(move || {
+        use rand::RngCore;
+        let mut b = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut b);
+        revoke_confirmations().prepare(&device, now_secs(), hex::encode(b))
+    })
+    .await
+}
+
+/// **device_link_revoke**: the member confirmed `confirm_id`; their comms key signs a revocation of
+/// that device. Permanent for that key; the cluster daemon evicts it on the next roster update.
+/// Revoking THIS machine also deletes its device key, so a later link mints a fresh one.
 #[tauri::command]
 pub async fn device_link_revoke(
     app: tauri::AppHandle,
-    device: String,
+    confirm_id: String,
 ) -> Result<DeviceLinksDto, String> {
     crate::blocking::off_main(move || {
+        let device = revoke_confirmations().consume(&confirm_id, now_secs())?;
         let member = crate::comms::device_identity(&app)?;
         let rev = sign_revocation(&member.seed_hex, &device, now_secs())?;
         let path = store_path(&app)?;

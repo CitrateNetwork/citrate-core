@@ -44,9 +44,17 @@ mod daemons;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_reader;
 mod deploy_gate;
+// HUP-S6.3 → S6.4: Hermes's toolchain reports into the deploy gate (retro A27).
+mod deploy_gate_toolchain;
+// HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
+mod faucet;
 mod fl_rounds;
+// HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
+mod forge_toolchain;
+mod fork_dry_run;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod hic_records;
+mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
@@ -83,13 +91,16 @@ mod postdeploy;
 // HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
 mod node_mcp;
 mod node_mcp_approvals;
+mod node_mcp_hermes;
 mod node_mcp_http;
 mod node_mcp_live;
 mod node_mcp_protocol;
 mod node_mcp_token;
 mod node_mcp_tools;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
+mod grant_deny;
 mod popout;
+mod popout_contract;
 // HUP-S5.1 + S5.6 — the member's controls for Hermes's browser (the sidecar runs it).
 mod browser;
 mod provisioning;
@@ -103,6 +114,8 @@ mod skill_registry;
 mod skills_local;
 mod staking;
 mod telemetry;
+// HUP-S6.2 / US-6.4: contract templates for members (citrate-templates renderer).
+mod template_forge;
 mod tier;
 mod transfer;
 mod validator;
@@ -131,6 +144,9 @@ mod main_thread_tripwire;
 // HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
 #[cfg(test)]
 mod privacy_contract_tests;
+// HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
+#[cfg(test)]
+mod hello_mint_e2e_tests;
 
 use tauri::Manager;
 
@@ -233,6 +249,9 @@ fn sweep_orphan_sidecars() {
 pub fn node_mcp_stdio_main() -> i32 {
     node_mcp_http::stdio_main()
 }
+
+/// The flag `main` checks for the stdio shim (shared with Hermes's built-in `node` entry).
+pub const NODE_MCP_STDIO_FLAG: &str = node_mcp_http::STDIO_FLAG;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -341,12 +360,14 @@ pub fn run() {
             app.manage(ceremony::build_ceremony_state());
             // HUP-S6.4 — D-4 deploy gate records (memory only), consulted by contract_deploy.
             app.manage(deploy_gate::DeployGateState::default());
+            app.manage(popout_contract::ContractInbox::default());
             // HUP-S9.4 — federated rounds: coordinator setting, start authorizations, eval-gate records.
             app.manage(fl_rounds::build_state(app.handle()));
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
             app.manage(escalation::EscalationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
             app.manage(web_budgets::build_web_budget_state(app.handle()));
+            app.manage(faucet::build_faucet_state(app.handle()));
             // Wallet-link — bind THIS device's custody EOA to the member's Citrate
             // identity, through the ceremony above. Until a wallet is bound the
             // authority's `wallet_address` claim is the counterfactual smart-wallet
@@ -552,6 +573,12 @@ pub fn run() {
             // HUP-S6.4 — the D-4 deploy gate (verifier outputs in, READY / NOT READY out).
             deploy_gate::deploy_gate_submit,
             deploy_gate::deploy_gate_lookup,
+            // HUP-S6.3 → S6.4 — a Hermes session's toolchain reports into the gate (A27).
+            deploy_gate_toolchain::deploy_gate_submit_toolchain,
+            // HUP-S6.2 / US-6.4 — contract templates (render into a granted folder).
+            template_forge::template_list,
+            template_forge::template_render,
+            fork_dry_run::deploy_gate_fork_dry_run,
             // HUP-S9.4 — plan/explain/start federated rounds (HIC-1) and the LoRA eval gate.
             fl_rounds::fl_overview,
             fl_rounds::fl_coordinator_set,
@@ -581,9 +608,16 @@ pub fn run() {
             escalation::escalation_budget,
             escalation::escalation_budget_set,
             escalation::escalation_quote,
+            escalation::escalation_confirm_prepare,
             escalation::escalation_run,
             hic_records::hic_record_decision,
             escalation::escalation_registry_status,
+            inference_router::escalation_registry_quote,
+            inference_router::escalation_registry_request,
+            inference_router::escalation_registry_result,
+            inference_router::escalation_registry_mine,
+            inference_router::escalation_registry_claim_refund,
+            inference_router::escalation_registry_expire,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
             web_budgets::web_budget_revoke,
@@ -592,6 +626,11 @@ pub fn run() {
             web_budgets::web_signing_request,
             web_budgets::web_signing_approve,
             web_budgets::web_signing_reject,
+            faucet::faucet_status,
+            faucet::faucet_grant,
+            faucet::faucet_revoke,
+            faucet::faucet_request,
+            faucet::faucet_open_challenge,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
@@ -621,6 +660,7 @@ pub fn run() {
             device_link::device_link_approve,
             device_link::device_link_reject,
             device_link::device_links,
+            device_link::device_link_revoke_prepare,
             device_link::device_link_revoke,
             device_link::device_link_export,
             device_link::device_link_import,
@@ -646,6 +686,8 @@ pub fn run() {
             hermes::undo::hermes_checkpoints,
             hermes::undo::hermes_undo_step,
             hermes::undo::hermes_undo_session,
+            // HUP-S5.4 — one step's diff for the Code and diff pop-out (read-only).
+            hermes::undo::hermes_checkpoint_diff,
             hermes::hermes_tracks,
             hermes::hermes_brief_create,
             hermes::hermes_brief_check,
@@ -655,6 +697,8 @@ pub fn run() {
             hermes::personas::hermes_track_workflow_run,
             // HUP-S2.2: the member decides each shell_run command the sidecar holds.
             hermes::shell::hermes_shell_pending,
+            hermes::mcp_cards::hermes_mcp_pending,
+            hermes::mcp_cards::hermes_mcp_decide,
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
@@ -675,6 +719,9 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
+            forge_toolchain::toolchain_settings_get,
+            forge_toolchain::toolchain_settings_set,
             // node — the real citrate-node under the SidecarSupervisor (C1.1).
             // Replaces the A1.3 seam stubs: node_status returns REAL height/peers
             // from the node's local RPC; node_start spawns the node with an
@@ -909,6 +956,8 @@ pub fn run() {
             seam::commissary_catalog,
             seam::comms_connections,
             popout::popout_open,
+            popout_contract::popout_contract_send,
+            popout_contract::popout_contract_take,
             popout::popout_monitor_facts,
             browser::hermes_browser_status,
             browser::hermes_browser_frame,

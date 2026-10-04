@@ -419,7 +419,7 @@ impl InFlightAnchors {
 
     /// Record a signed anchor before it is sent (or update a sent one). Fails, and keeps memory
     /// unchanged, when it cannot be saved.
-    pub fn record(&self, r: &AnchorReceipt) -> Result<(), String> {
+    pub fn record_sent(&self, r: &AnchorReceipt) -> Result<(), String> {
         let mut m = self.lock();
         let mut next = m.clone();
         next.insert(r.day, r.clone());
@@ -471,7 +471,7 @@ pub fn after_broadcast(
 ) -> (bool, String) {
     let hold = || {
         // Best effort: the record written before the send already holds the day.
-        let _ = held.record(r);
+        let _ = held.record_sent(r);
     };
     match (r.block_number, receipt_confirms(r)) {
         (Some(block), true) => match port.and_then(|p| settle(p, r)) {
@@ -699,7 +699,7 @@ pub async fn hermes_anchor_approve(
         let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&app)
             .ok_or("internal: custody state unavailable")?;
         let rpc = crate::rpc::RpcClient::citrate();
-        let record = |r: &AnchorReceipt| held.record(r);
+        let record = |r: &AnchorReceipt| held.record_sent(r);
         let not_sent = |r: &AnchorReceipt| held.forget_unsent(r);
         let receipt = ceremony()
             .approve_and_broadcast(
@@ -734,22 +734,97 @@ pub async fn hermes_anchor_reject(id: String) -> Result<(), String> {
     crate::blocking::off_main(move || ceremony().reject(&id).map_err(|e| e.to_string())).await
 }
 
-/// Recheck broadcast anchors whose receipt was not mined in time; settle those that are now.
+/// What a re-poll found for one sent, unsettled anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Repoll {
+    /// Mined: this receipt decides the day.
+    Mined(AnchorReceipt),
+    /// No receipt, and the sender's mined nonce has passed this transaction's nonce: another
+    /// transaction took the nonce, so this one can never be mined and the day may be raised again.
+    Dropped,
+    /// Still unknown: keep holding the day.
+    Wait,
+}
+
+/// Decide a re-poll from the sender's mined nonce (read FIRST) and the receipt (read after it).
+/// Reading the nonce first means a transaction mined between the two reads shows up as a receipt,
+/// never as `Dropped`. Records without a nonce or sender (older ones) only ever wait.
+pub fn repoll_decision(
+    r: &AnchorReceipt,
+    latest_nonce: Option<u64>,
+    receipt: Option<crate::rpc::Receipt>,
+) -> Repoll {
+    if let Some(rc) = receipt {
+        return Repoll::Mined(AnchorReceipt {
+            block_number: Some(rc.block_number),
+            status: rc.status,
+            ..r.clone()
+        });
+    }
+    match (r.nonce, latest_nonce) {
+        (Some(n), Some(mined)) if mined > n => Repoll::Dropped,
+        _ => Repoll::Wait,
+    }
+}
+
+/// Recheck broadcast anchors whose receipt was not mined in time; settle those that are now, and
+/// release a day whose transaction can no longer be mined.
 fn repoll_submitted(port: &dyn AnchorPort, held: &InFlightAnchors) {
     let pending: Vec<AnchorReceipt> = held.all();
     let rpc = crate::rpc::RpcClient::citrate();
     for r in pending {
-        if let Ok(Some(rc)) = rpc.transaction_receipt(&r.tx_hash) {
-            let done = AnchorReceipt {
-                block_number: Some(rc.block_number),
-                status: rc.status,
-                ..r.clone()
-            };
-            if settle(port, &done).unwrap_or(false) || rc.status == Some(0) {
+        let latest = r.from.as_deref().and_then(|a| rpc.latest_nonce(a).ok());
+        let Ok(receipt) = rpc.transaction_receipt(&r.tx_hash) else {
+            continue;
+        };
+        match repoll_decision(&r, latest, receipt) {
+            Repoll::Mined(done) => {
+                if settle(port, &done).unwrap_or(false) || done.status == Some(0) {
+                    held.settle_day(r.day);
+                }
+            }
+            Repoll::Dropped => {
+                eprintln!(
+                    "citrate-core: the anchor for day {} was replaced or dropped; it can be raised again",
+                    r.day
+                );
                 held.settle_day(r.day);
             }
+            Repoll::Wait => {}
         }
     }
+}
+
+/// HUP-S4.2 (`anchor_propose` over the citrate-node MCP server): `Ok` when an anchor pass could
+/// raise approval cards now, otherwise the member-facing reason (the same status line the app shows).
+pub fn anchor_ready(app: &tauri::AppHandle) -> Result<(), String> {
+    let registry = anchor_registry();
+    let gate = anchor_gate(registry.as_deref(), &load_settings(&settings_path(app)?));
+    match gate {
+        AnchorGate::Ready => Ok(()),
+        g => Err(anchor_status_line(g)),
+    }
+}
+
+/// HUP-S4.2: run one anchor pass now (the member approved an `anchor_propose` request). Exactly
+/// the nightly pass: only when the gate is `Ready`, days with an anchor already in flight are
+/// skipped, and each ready day becomes an approval card. Signs nothing.
+pub fn anchor_now(app: &tauri::AppHandle) -> Result<TickReport, String> {
+    anchor_ready(app)?;
+    let registry = anchor_registry();
+    let gate = anchor_gate(registry.as_deref(), &load_settings(&settings_path(app)?));
+    let m = crate::hermes::chain::manager_for(app)?;
+    if !m.is_running() {
+        return Err(
+            "Hermes is not running, so its decision-record days cannot be read.".to_string(),
+        );
+    }
+    // The same in-flight set the nightly pass uses (persisted across restarts).
+    let held = submitted(app);
+    if let Some(why) = held.blocked() {
+        return Err(why.to_string());
+    }
+    nightly_tick_with(m, ceremony(), gate, registry.as_deref(), &held.days())
 }
 
 /// Start the nightly scheduler thread if, and only if, the gate is `Ready` (deployed registry and

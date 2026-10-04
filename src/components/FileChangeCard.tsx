@@ -10,7 +10,16 @@ import type { UndoCard } from "../shell/slices/agentUndo";
 
 const VERB: Record<string, string> = { fs_write: "Wrote", fs_edit: "Edited", fs_delete: "Deleted", fs_rename: "Renamed" };
 
-export function FileChangeCard({ card, onUndo }: { card: UndoCard; onUndo: (session: string, seq: number) => void }) {
+export function FileChangeCard({
+  card,
+  onUndo,
+  onDiff,
+}: {
+  card: UndoCard;
+  onUndo: (session: string, seq: number) => void;
+  /** HUP-S5.4: open the Code and diff pop-out on this change (desktop app only). */
+  onDiff?: (session: string, seq: number) => void;
+}) {
   const verb = VERB[card.tool] ?? "Changed";
   const what = card.tool === "fs_rename" && card.paths.length === 2 ? `${card.paths[0]} to ${card.paths[1]}` : card.paths.join(", ");
   const canUndo = card.state === "applied" || card.state === "refused" || card.state === "failed";
@@ -25,6 +34,11 @@ export function FileChangeCard({ card, onUndo }: { card: UndoCard; onUndo: (sess
           <span style={{ color: card.state === "undone" ? "var(--tx-3)" : "var(--accent-text)" }}>{verb}</span>{" "}
           <span className="mono">{what}</span>
         </span>
+        {onDiff ? (
+          <button className="btn btn-sm btn-ghost" data-testid="file-change-diff" onClick={() => onDiff(card.session, card.seq)} title="Show what this change did, line by line">
+            Diff
+          </button>
+        ) : null}
         {card.state !== "undone" ? (
           <button
             className="btn btn-sm"

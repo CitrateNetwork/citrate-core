@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "popout-contract",
+  "description": "HUP-S6.7: the Contract reader may hand its requests to Rust (popout_contract_send), which checks the sender before the main window runs them. Nothing else.",
+  "windows": ["popout-contract"],
+  "permissions": ["contract-reader-relay"]
+}

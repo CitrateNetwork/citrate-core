@@ -132,7 +132,7 @@ fn approve(
         AnchorGuards {
             vault: &v,
             before_send: &rec,
-            not_sent: &|_: &AnchorReceipt| {},
+            not_sent: &|_| {},
         },
     )
 }
@@ -400,6 +400,8 @@ fn a_reverted_or_unmined_receipt_never_confirms() {
         tx_hash: "0x".into(),
         block_number: block,
         status,
+        nonce: None,
+        from: None,
     };
     assert!(receipt_confirms(&mk(Some(1), Some(1))));
     assert!(!receipt_confirms(&mk(Some(1), Some(0))));
@@ -536,7 +538,7 @@ fn guarded<'a>(
     AnchorGuards {
         vault: v,
         before_send: rec,
-        not_sent: &|_: &AnchorReceipt| {},
+        not_sent: &|_| {},
     }
 }
 
@@ -646,6 +648,123 @@ fn the_gas_caps_are_placeholders_pending_owner_sign_off() {
     assert_eq!(PLACEHOLDER_MAX_GAS_PRICE_WEI, 50_000_000_000);
 }
 
+// ---------------------------------------------------------------------------------------------
+// a refused send does not hold the day forever
+
+fn err(msg: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": msg } })
+}
+
+#[test]
+fn the_record_carries_the_nonce_and_the_sender() {
+    let kr = FakeKeyring::default();
+    let addr = ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c
+        .request(good_request(20_000, root(0x61)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(happy_rpc("0x1"));
+    let r = approve(&c, &kr, &rpc, &v.id, REGISTRY).unwrap();
+    assert_eq!(r.nonce, Some(5));
+    assert_eq!(
+        r.from.as_deref().map(str::to_ascii_lowercase),
+        Some(addr.to_ascii_lowercase())
+    );
+}
+
+#[test]
+fn a_send_the_node_refused_and_does_not_hold_withdraws_the_record_and_keeps_the_card() {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c
+        .request(good_request(20_000, root(0x62)), REGISTRY)
+        .unwrap();
+    let rpc = RpcClient::with_transport(MockRpc::new(vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+        err("insufficient funds for gas * price + value"),
+        ok(Value::Null),
+    ]));
+    let vault = unlocked_vault();
+    let recorded = RefCell::new(Vec::<AnchorReceipt>::new());
+    let withdrawn = RefCell::new(Vec::<AnchorReceipt>::new());
+    let rec = |r: &AnchorReceipt| -> std::result::Result<(), String> {
+        recorded.borrow_mut().push(r.clone());
+        Ok(())
+    };
+    let gone = |r: &AnchorReceipt| withdrawn.borrow_mut().push(r.clone());
+    let out = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &gone,
+        },
+    );
+    assert!(matches!(out, Err(AnchorError::Rpc(_))), "{out:?}");
+    assert_eq!(recorded.borrow().len(), 1);
+    assert_eq!(
+        *withdrawn.borrow(),
+        *recorded.borrow(),
+        "the same record is withdrawn"
+    );
+    assert_eq!(c.pending().len(), 1, "the card stays for another try");
+    assert_eq!(
+        rpc.transport().methods().last().map(String::as_str),
+        Some("eth_getTransactionByHash")
+    );
+}
+
+#[test]
+fn a_send_error_for_a_transaction_the_node_holds_or_cannot_say_keeps_the_day_held() {
+    for lookup in [ok(json!({ "hash": "0xcd" })), err("lookup failed")] {
+        let kr = FakeKeyring::default();
+        ensure_anchor_key(&kr).unwrap();
+        let c = AnchorCeremony::new();
+        let v = c
+            .request(good_request(20_000, root(0x63)), REGISTRY)
+            .unwrap();
+        let rpc = RpcClient::with_transport(MockRpc::new(vec![
+            ok(json!("0x5")),
+            ok(json!("0x3b9aca00")),
+            ok(json!("0xb000")),
+            err("timeout"),
+            lookup,
+        ]));
+        let vault = unlocked_vault();
+        let rec = |_: &AnchorReceipt| -> std::result::Result<(), String> { Ok(()) };
+        let withdrawn = RefCell::new(0usize);
+        let gone = |_: &AnchorReceipt| *withdrawn.borrow_mut() += 1;
+        let out = c.approve_and_broadcast(
+            &kr,
+            &rpc,
+            &v.id,
+            REGISTRY,
+            cfg(),
+            AnchorGuards {
+                vault: &vault,
+                before_send: &rec,
+                not_sent: &gone,
+            },
+        );
+        assert!(matches!(out, Err(AnchorError::Rpc(_))), "{out:?}");
+        assert_eq!(*withdrawn.borrow(), 0, "possibly sent: the day stays held");
+        assert!(
+            c.pending().is_empty(),
+            "no second card for a possibly sent day"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// P-anchor lane (stacked): gas-cap room and the refused-send fallback
+
 /// The cap must leave room for the registry version the next redeploy ships: on the anvil
 /// rehearsal (scripts/anvil-anchor-e2e.sh, 2026-10-01) its `anchor()` estimated 335,227 gas,
 /// because it keeps a second, per-committer record. A cap below that refuses every anchor.
@@ -666,7 +785,7 @@ fn node_error(msg: &str) -> Value {
 /// Approve with scripted RPC answers; returns the result and the records passed to
 /// `before_send` and `not_sent`.
 fn approve_logged(
-    send: Option<Value>,
+    send: &[Value],
 ) -> (
     Result<AnchorReceipt>,
     Vec<AnchorReceipt>,
@@ -684,8 +803,9 @@ fn approve_logged(
         ok(json!("0x3b9aca00")),
         ok(json!("0xb000")),
     ];
-    // `None`: the transport fails on the send (no scripted answer), so its outcome is unknown.
-    answers.extend(send);
+    // An empty list: the transport fails on the send (no scripted answer), so its outcome is
+    // unknown. Answers after the send's are the node's reply to the "do you hold it" lookup.
+    answers.extend(send.iter().cloned());
     let rpc = RpcClient::with_transport(MockRpc::new(answers));
     let vault = unlocked_vault();
     let recorded = RefCell::new(Vec::new());
@@ -713,9 +833,10 @@ fn approve_logged(
 
 #[test]
 fn a_send_the_node_refuses_is_forgotten_and_the_card_stays() {
-    let (r, recorded, forgotten, pending) = approve_logged(Some(node_error(
-        "insufficient funds for gas * price + value",
-    )));
+    let (r, recorded, forgotten, pending) = approve_logged(&[
+        node_error("insufficient funds for gas * price + value"),
+        ok(Value::Null),
+    ]);
     assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
     assert_eq!(recorded.len(), 1);
     assert_eq!(forgotten, recorded, "the same record is forgotten");
@@ -725,13 +846,15 @@ fn a_send_the_node_refuses_is_forgotten_and_the_card_stays() {
 #[test]
 fn a_send_with_an_unknown_outcome_stays_in_flight() {
     // Transport failure: the node may have the transaction.
-    let (r, recorded, forgotten, pending) = approve_logged(None);
+    let (r, recorded, forgotten, pending) = approve_logged(&[]);
     assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
     assert_eq!(recorded.len(), 1);
     assert!(forgotten.is_empty(), "the re-poll decides, not the error");
     assert_eq!(pending, 0, "no second approval while it may be on the way");
     // The node already has it: accepted, so it stays in flight too.
-    let (_, recorded, forgotten, pending) = approve_logged(Some(node_error("already known")));
+    // Even when the lookup then says it is not held (a node behind a load balancer).
+    let (_, recorded, forgotten, pending) =
+        approve_logged(&[node_error("already known"), ok(Value::Null)]);
     assert_eq!(recorded.len(), 1);
     assert!(forgotten.is_empty());
     assert_eq!(pending, 0);

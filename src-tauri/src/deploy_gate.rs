@@ -7,9 +7,9 @@
 //! |---|---|
 //! | Forge tests | `forge test --json` parsed; at least one test ran; zero failed |
 //! | Slither | a successful Slither JSON report (or Slither SARIF) with zero High findings |
-//! | Aderyn | an Aderyn JSON report with zero High issues (its two High counts agree) |
+//! | Aderyn | an Aderyn JSON report with zero High issues (its two High counts agree), or Aderyn SARIF with zero High results |
 //! | Medusa campaign | the summary reports zero failed and at least one passed property test, and the campaign reached its call budget (budget ≥ [`MIN_MEDUSA_CALL_BUDGET`]; the planset names 50,000 calls for template invariants) |
-//! | Fork dry run | the dry-run receipt succeeded with a contract address, the dry run deployed exactly this init code, and the contract does not use Citrate precompiles (an anvil fork cannot simulate them) |
+//! | Fork dry run | the dry-run receipt succeeded with a contract address and the dry run deployed exactly this init code. On a plain anvil fork the contract must not use Citrate precompiles (anvil cannot simulate them). On the Citrate-aware fork (HUP-S6.10, [`crate::fork_dry_run`]) it ran on chain 40204 state, every later step (the test mint) succeeded, and every Citrate precompile it touched or calls is one the fork runs with the node's own code; a contract that uses Citrate precompiles passes only on a run core made itself (`forkInCore`, [`ForkProvenance::Core`]) |
 //!
 //! A tool that is not installed, or that errored, is a FAIL for its item, never a pass.
 //! Each item carries evidence: counts, the SHA-256 of the raw tool output, run time and the
@@ -25,8 +25,10 @@
 //! **Inputs.** The verifiers that run the tools live in the agent runtime (HUP-S6.3). This
 //! module defines the typed input they hand over ([`GateInputs`]): the raw outputs, never a
 //! pre-computed verdict. Every verdict here comes from a deterministic parser (planset
-//! red-team correction 4). Records live in memory only: a restart forgets them and the gate
-//! must run again.
+//! red-team correction 4), and these parsers are the one source of truth for a deploy verdict
+//! (retro A27): [`crate::deploy_gate_toolchain`] hands over the raw reports of Hermes's
+//! toolchain runs, never the runtime's own step verdicts. Records live in memory only: a restart
+//! forgets them and the gate must run again.
 //!
 //! Rule 3: nothing here signs or holds a key. `contract_deploy` consults [`GateStore`] and
 //! only then opens a PENDING SignatureCeremony.
@@ -118,7 +120,25 @@ pub struct GateInputs {
     pub slither: ToolRun,
     pub aderyn: ToolRun,
     pub medusa: MedusaInput,
-    pub fork_dry_run: ForkDryRunInput,
+    /// A fork dry run the caller ran and hands over. Exactly one of this and
+    /// [`GateInputs::fork_in_core`]; neither is a FAIL for the fork item.
+    #[serde(default)]
+    pub fork_dry_run: Option<ForkDryRunInput>,
+    /// HUP-S6.10: ask core to run the fork step itself on the Citrate-aware fork
+    /// (`citrate-fork`), on exactly this init code. Only a run core made itself can vouch for
+    /// Citrate precompile coverage (see [`ForkProvenance`]).
+    #[serde(default)]
+    pub fork_in_core: Option<crate::fork_dry_run::ForkInCore>,
+}
+
+/// Who produced the fork item's output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkProvenance {
+    /// Handed in through `deploy_gate_submit` (the runtime verifiers or the UI). Its
+    /// precompile coverage list is the caller's word, so the gate does not rely on it.
+    Caller,
+    /// Run by core itself (`fork_in_core`): core chose the binary, the plan and the init code.
+    Core,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -281,6 +301,21 @@ pub fn initcode_from_hex(
 /// Evaluate the gate for `inputs`. `Err` only for malformed bytecode or compiler settings;
 /// every tool problem becomes a failing item in a NOT READY record.
 pub fn evaluate(inputs: &GateInputs, now_ms: u64) -> Result<GateRecord, String> {
+    evaluate_with_fork(
+        inputs,
+        inputs.fork_dry_run.as_ref(),
+        ForkProvenance::Caller,
+        now_ms,
+    )
+}
+
+/// [`evaluate`] with the fork item's input and its provenance given explicitly.
+pub fn evaluate_with_fork(
+    inputs: &GateInputs,
+    fork: Option<&ForkDryRunInput>,
+    provenance: ForkProvenance,
+    now_ms: u64,
+) -> Result<GateRecord, String> {
     let initcode = initcode_from_hex(&inputs.bytecode_hex, inputs.constructor_args_hex.as_deref())?;
     let binding = binding_hash(&initcode, &inputs.compiler)?;
     let items = vec![
@@ -300,12 +335,25 @@ pub fn evaluate(inputs: &GateInputs, now_ms: u64) -> Result<GateRecord, String> 
         eval_tool(GateItemId::Medusa, &inputs.medusa.run, "medusa", |out| {
             parse_medusa(out, inputs.medusa.call_budget)
         }),
-        eval_tool(
-            GateItemId::ForkDryRun,
-            &inputs.fork_dry_run.run,
-            "anvil",
-            |out| parse_fork(out, &inputs.fork_dry_run, &initcode),
-        ),
+        match fork {
+            Some(f) => eval_tool(
+                GateItemId::ForkDryRun,
+                &f.run,
+                match provenance {
+                    ForkProvenance::Core => "citrate-fork",
+                    ForkProvenance::Caller => "the fork dry run",
+                },
+                |out| parse_fork(out, f, &initcode, provenance),
+            ),
+            None => eval_tool(
+                GateItemId::ForkDryRun,
+                &ToolRun::Error {
+                    message: "no fork dry run was supplied (send forkDryRun or forkInCore)".into(),
+                },
+                "the fork dry run",
+                |_| fail("no fork dry run"),
+            ),
+        },
     ];
     let verdict = if items.iter().all(|i| i.pass) {
         Verdict::Ready
@@ -398,22 +446,69 @@ fn eval_tool(
     }
 }
 
+/// How many failing tests a reason names; the rest are counted.
+const MAX_NAMED_FAILURES: usize = 3;
+/// Each named failure (test name plus its reason) is cut to this many chars.
+const MAX_NAMED_FAILURE_CHARS: usize = 160;
+
+/// `" (a; b; c and N more)"` naming up to [`MAX_NAMED_FAILURES`] failures, each bounded, so the
+/// card and the refusal cite the finding itself and not only a count. Empty when none.
+fn named_failures(names: &[String]) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let cut = |s: &str| {
+        if s.chars().count() <= MAX_NAMED_FAILURE_CHARS {
+            s.to_string()
+        } else {
+            let mut o: String = s.chars().take(MAX_NAMED_FAILURE_CHARS).collect();
+            o.push('…');
+            o
+        }
+    };
+    let shown: Vec<String> = names
+        .iter()
+        .take(MAX_NAMED_FAILURES)
+        .map(|n| cut(n))
+        .collect();
+    let rest = names.len().saturating_sub(MAX_NAMED_FAILURES);
+    let more = if rest > 0 {
+        format!(" and {rest} more")
+    } else {
+        String::new()
+    };
+    format!(" ({}{more})", shown.join("; "))
+}
+
 fn parse_forge(out: &str) -> Parsed {
     let Ok(serde_json::Value::Object(suites)) = serde_json::from_str::<serde_json::Value>(out)
     else {
         return fail("forge output is not a `forge test --json` report");
     };
     let (mut passed, mut failed, mut skipped, mut unknown) = (0u64, 0u64, 0u64, 0u64);
-    for suite in suites.values() {
+    let mut failures: Vec<String> = Vec::new();
+    for (suite_id, suite) in &suites {
         let Some(results) = suite.get("test_results").and_then(|r| r.as_object()) else {
             return fail(
                 "forge output is not a `forge test --json` report (a suite has no test_results)",
             );
         };
-        for t in results.values() {
+        // `test/Token.t.sol:LemonDropsTest` → `LemonDropsTest`.
+        let contract = suite_id.rsplit(':').next().unwrap_or(suite_id);
+        for (test, t) in results {
             match t.get("status").and_then(|s| s.as_str()) {
                 Some("Success") => passed += 1,
-                Some("Failure") => failed += 1,
+                Some("Failure") => {
+                    failed += 1;
+                    let why = t
+                        .get("reason")
+                        .and_then(|r| r.as_str())
+                        .filter(|r| !r.trim().is_empty());
+                    failures.push(match why {
+                        Some(r) => format!("{contract}.{test}: {}", r.trim()),
+                        None => format!("{contract}.{test}"),
+                    });
+                }
                 Some("Skipped") => skipped += 1,
                 _ => unknown += 1,
             }
@@ -427,7 +522,13 @@ fn parse_forge(out: &str) -> Parsed {
         ("unrecognized".to_string(), unknown),
     ]);
     let (pass, reason) = if failed > 0 {
-        (false, format!("{failed} failed, {passed} passed"))
+        (
+            false,
+            format!(
+                "{failed} failed{}, {passed} passed",
+                named_failures(&failures)
+            ),
+        )
     } else if unknown > 0 {
         (
             false,
@@ -570,10 +671,83 @@ fn parse_slither_sarif(v: &serde_json::Value) -> Parsed {
     slither_verdict(by, "SARIF")
 }
 
+/// The report inside aderyn's stdout: the text between its `STDOUT START` / `STDOUT END`
+/// markers when present (aderyn prints a banner and a sign-off around the report), else all of it.
+fn aderyn_report_text(out: &str) -> &str {
+    match out.find("STDOUT START") {
+        Some(a) => {
+            let body = &out[a + "STDOUT START".len()..];
+            match body.rfind("STDOUT END") {
+                Some(b) => &body[..b],
+                None => body,
+            }
+        }
+        None => out,
+    }
+}
+
+/// Aderyn's SARIF (what `aderyn --output <x>.sarif --stdout` prints, and what the Hermes
+/// `aderyn_scan` tool runs). Aderyn writes a High issue as level `warning` (or `error`) and a Low
+/// issue as `note`; any other or missing level counts as High (fail closed). Results with kind
+/// `pass` or `notApplicable` are not findings.
+fn parse_aderyn_sarif(v: &serde_json::Value) -> Parsed {
+    let Some(runs) = v
+        .get("runs")
+        .and_then(|r| r.as_array())
+        .filter(|r| !r.is_empty())
+    else {
+        return fail("aderyn SARIF has no runs");
+    };
+    let (mut high, mut low) = (0u64, 0u64);
+    for run in runs {
+        let name = run
+            .pointer("/tool/driver/name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        if !name.eq_ignore_ascii_case("aderyn") {
+            return fail(format!("SARIF report is from {name:?}, not Aderyn"));
+        }
+        for res in run
+            .get("results")
+            .and_then(|r| r.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[])
+        {
+            if matches!(
+                res.get("kind").and_then(|k| k.as_str()),
+                Some("pass") | Some("notApplicable")
+            ) {
+                continue;
+            }
+            match res.get("level").and_then(|l| l.as_str()) {
+                Some("note") => low += 1,
+                _ => high += 1,
+            }
+        }
+    }
+    let counts = BTreeMap::from([("high".to_string(), high), ("low".to_string(), low)]);
+    if high > 0 {
+        Parsed {
+            pass: false,
+            reason: format!("{high} High issue(s) (SARIF)"),
+            counts,
+        }
+    } else {
+        Parsed {
+            pass: true,
+            reason: format!("0 High, {low} Low (SARIF)"),
+            counts,
+        }
+    }
+}
+
 fn parse_aderyn(out: &str) -> Parsed {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(out) else {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(aderyn_report_text(out).trim()) else {
         return fail("aderyn output is not JSON");
     };
+    if v.get("runs").is_some() {
+        return parse_aderyn_sarif(&v);
+    }
     let count_high = v.pointer("/issue_count/high").and_then(|h| h.as_u64());
     let listed_high = v
         .pointer("/high_issues/issues")
@@ -676,7 +850,21 @@ fn parse_medusa(out: &str, budget: u64) -> Parsed {
     let mut calls: Option<u64> = None;
     let mut elapsed: Option<u64> = None;
     let mut summary: Option<(u64, u64)> = None;
+    let mut failures: Vec<String> = Vec::new();
+    // Names already collected: a set, so up to MAX_OUTPUT_BYTES of log stays linear.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for line in text.lines() {
+        // `⇾ [FAILED] Property Test: LemonDropsProperties.property_x()` names the finding.
+        if let Some(rest) = line.split("[FAILED]").nth(1) {
+            let name = rest
+                .split_once("Test:")
+                .map(|(_, n)| n)
+                .unwrap_or(rest)
+                .trim();
+            if !name.is_empty() && seen.insert(name) {
+                failures.push(name.to_string());
+            }
+        }
         if line.contains("fuzz:") {
             if let Some(c) = number_after(line, "calls:") {
                 calls = Some(c);
@@ -723,7 +911,10 @@ fn parse_medusa(out: &str, budget: u64) -> Parsed {
             "call budget {budget} is below the minimum of {MIN_MEDUSA_CALL_BUDGET}"
         ))
     } else if failed > 0 {
-        Some(format!("{failed} failed, {passed} passed property test(s)"))
+        Some(format!(
+            "{failed} failed{}, {passed} passed property test(s)",
+            named_failures(&failures)
+        ))
     } else if passed == 0 {
         Some("no property tests ran".to_string())
     } else if calls_done < budget {
@@ -816,7 +1007,69 @@ fn hex_u64(v: &serde_json::Value) -> Option<u64> {
     }
 }
 
-fn parse_fork(out: &str, input: &ForkDryRunInput, initcode: &[u8]) -> Parsed {
+/// The fork item's checks on a citrate-fork report (HUP-S6.10): chain 40204, a create first,
+/// every later step succeeded, and every Citrate precompile touched (or found by the bytecode
+/// scan) is one the fork runs with the node's own code.
+fn citrate_fork_problems(
+    ev: &crate::fork_dry_run::CitrateForkEvidence,
+    sites: &[String],
+    provenance: ForkProvenance,
+    problems: &mut Vec<String>,
+    counts: &mut BTreeMap<String, u64>,
+) {
+    // The report's coverage list (`real`) is only as good as whoever produced the report. A
+    // caller-supplied report could list every address as real, so precompile use is accepted
+    // only from a run core made itself.
+    if provenance == ForkProvenance::Caller && (!ev.touched.is_empty() || !sites.is_empty()) {
+        problems.push(
+            "the contract uses Citrate precompiles; only a fork dry run core runs itself (forkInCore) can vouch for them"
+                .into(),
+        );
+    }
+    if ev.chain_id != crate::fork_dry_run::DEPLOY_CHAIN_ID {
+        problems.push(format!(
+            "the dry run ran on chain {} state, not chain 40204",
+            ev.chain_id
+        ));
+    }
+    if !ev.first_step_is_create {
+        problems.push("the dry run did not start with the contract creation".into());
+    }
+    if !ev.failed_later_steps.is_empty() {
+        problems.push(format!(
+            "the dry run's later steps failed: {}",
+            ev.failed_later_steps.join("; ")
+        ));
+    }
+    counts.insert(
+        "citrate_precompiles_touched".to_string(),
+        ev.touched.len() as u64,
+    );
+    if !ev.unavailable_touched.is_empty() {
+        problems.push(format!(
+            "the contract called Citrate precompile(s) {} that the fork cannot reproduce, so the dry run does not show what 40204 would do",
+            ev.unavailable_touched.join(", ")
+        ));
+    }
+    let not_real: Vec<&str> = sites
+        .iter()
+        .filter(|s| !ev.real.contains(s))
+        .map(String::as_str)
+        .collect();
+    if !not_real.is_empty() {
+        problems.push(format!(
+            "the bytecode calls Citrate precompile(s) {} that the fork cannot reproduce",
+            not_real.join(", ")
+        ));
+    }
+}
+
+fn parse_fork(
+    out: &str,
+    input: &ForkDryRunInput,
+    initcode: &[u8],
+    provenance: ForkProvenance,
+) -> Parsed {
     let Ok(receipt) = serde_json::from_str::<serde_json::Value>(out) else {
         return fail("fork dry-run output is not a receipt JSON");
     };
@@ -845,23 +1098,37 @@ fn parse_fork(out: &str, input: &ForkDryRunInput, initcode: &[u8]) -> Parsed {
         )),
         Err(e) => problems.push(e),
     }
-    match input.citrate_precompiles {
-        PrecompileUse::None => {}
-        PrecompileUse::Used => problems.push(
-            "the contract uses Citrate precompiles, which an anvil fork cannot simulate (needs the Citrate-aware fork, HUP-S6.10)".into(),
-        ),
-        PrecompileUse::Unknown => problems.push(
-            "Citrate precompile use is unknown, and an anvil fork cannot simulate precompiles".into(),
-        ),
-    }
     let sites = precompile_call_sites(initcode);
     counts.insert("precompile_call_sites".to_string(), sites.len() as u64);
-    if !sites.is_empty() {
-        problems.push(format!(
-            "the bytecode calls Citrate precompile(s) {}, which an anvil fork cannot simulate",
-            sites.join(", ")
-        ));
-    }
+    // HUP-S6.10: a citrate-fork report carries its own precompile evidence.
+    let engine = match crate::fork_dry_run::citrate_fork_evidence(&receipt) {
+        Some(Ok(ev)) => {
+            citrate_fork_problems(&ev, &sites, provenance, &mut problems, &mut counts);
+            format!("the Citrate-aware fork (40204 block {})", ev.fork_block)
+        }
+        Some(Err(e)) => {
+            problems.push(e);
+            "the Citrate-aware fork".to_string()
+        }
+        None => {
+            match input.citrate_precompiles {
+                PrecompileUse::None => {}
+                PrecompileUse::Used => problems.push(
+                    "the contract uses Citrate precompiles, which an anvil fork cannot simulate (run the dry run on the Citrate-aware fork, HUP-S6.10)".into(),
+                ),
+                PrecompileUse::Unknown => problems.push(
+                    "Citrate precompile use is unknown, and an anvil fork cannot simulate precompiles".into(),
+                ),
+            }
+            if !sites.is_empty() {
+                problems.push(format!(
+                    "the bytecode calls Citrate precompile(s) {}, which an anvil fork cannot simulate",
+                    sites.join(", ")
+                ));
+            }
+            "an anvil fork".to_string()
+        }
+    };
     if problems.is_empty() {
         let gas = counts
             .get("gas_used")
@@ -870,7 +1137,7 @@ fn parse_fork(out: &str, input: &ForkDryRunInput, initcode: &[u8]) -> Parsed {
         Parsed {
             pass: true,
             reason: format!(
-                "deployed at {} on an anvil fork{gas}",
+                "deployed at {} on {engine}{gas}",
                 address.unwrap_or_default()
             ),
             counts,
@@ -1031,9 +1298,36 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+/// Evaluates a submission. With `fork_in_core`, core runs the fork step itself on the
+/// Citrate-aware fork (`bin`, bounded by `timeout`) for exactly the submitted init code, and
+/// the fork item is judged as core-made. No Tauri; `deploy_gate_submit` calls this.
+pub fn evaluate_submission(
+    inputs: &GateInputs,
+    bin: Option<&std::path::Path>,
+    timeout: std::time::Duration,
+    now_ms: u64,
+) -> Result<GateRecord, String> {
+    let Some(opts) = &inputs.fork_in_core else {
+        return evaluate(inputs, now_ms);
+    };
+    if inputs.fork_dry_run.is_some() {
+        return Err("send forkDryRun or forkInCore, not both".into());
+    }
+    let req = crate::fork_dry_run::ForkDryRunRequest {
+        bytecode_hex: inputs.bytecode_hex.clone(),
+        constructor_args_hex: inputs.constructor_args_hex.clone(),
+        state_rpc: opts.state_rpc.clone(),
+        from: opts.from.clone(),
+        test_mint: opts.test_mint.clone(),
+    };
+    let fork = crate::fork_dry_run::dry_run(&req, bin, timeout)?;
+    evaluate_with_fork(inputs, Some(&fork), ForkProvenance::Core, now_ms)
+}
+
 /// **Command — deploy_gate_submit.** Evaluate verifier outputs for one bytecode and store the
-/// record (replacing any earlier record for the same init-code hash). A NOT READY result rejects
-/// any deploy ceremony still open for that hash. Returns the record.
+/// record (replacing any earlier record for the same init-code hash). With `forkInCore`, core
+/// runs the fork step itself on the Citrate-aware fork first ([`evaluate_submission`]). A NOT
+/// READY result rejects any deploy ceremony still open for that hash. Returns the record.
 #[tauri::command]
 pub async fn deploy_gate_submit(
     app_h: tauri::AppHandle,
@@ -1044,7 +1338,18 @@ pub async fn deploy_gate_submit(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let cer = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        let rec = evaluate(&inputs, now_ms())?;
+        let rec = match &inputs.fork_in_core {
+            None => evaluate(&inputs, now_ms())?,
+            Some(_) => {
+                let bin = crate::fork_dry_run::resolve_fork_bin_for_app(&app_h);
+                evaluate_submission(
+                    &inputs,
+                    bin.as_deref(),
+                    crate::fork_dry_run::FORK_TIMEOUT,
+                    now_ms(),
+                )?
+            }
+        };
         // An already-decided ceremony cannot be rejected again; that error is expected and moot.
         st.0.record_and_revoke(rec.clone(), |id| {
             let _ = cer.0.reject(id);

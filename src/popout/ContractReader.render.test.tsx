@@ -105,8 +105,12 @@ describe("Feature: read any contract (US-6.3)", () => {
     await act(async () => { type($(el, "cr-address"), ADDR); });
     await click($(el, "cr-load"));
     await click($(el, "cr-explain-mint(uint256)"));
-    const prompt = (calls.find((x) => x.op === "explain")?.args as { prompt: string }).prompt;
-    expect(prompt).toContain("mint(uint256)");
+    // The reader names the function by its ABI entry; the main window builds the prompt.
+    const args = calls.find((x) => x.op === "explain")?.args as { address: string; target: string; fn: { name: string; type: string } };
+    expect(args.address).toBe(ADDR);
+    expect(args.target).toBe("citrate");
+    expect(args.fn).toMatchObject({ type: "function", name: "mint" });
+    expect(args).not.toHaveProperty("prompt");
     expect($(el, "cr-explanation-mint(uint256)")?.textContent).toContain("Mints up to 10 tokens.");
     expect($(el, "cr-explanation-mint(uint256)")?.textContent).toMatch(/Hermes \(local model\)/);
   });

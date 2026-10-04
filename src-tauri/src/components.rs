@@ -30,7 +30,7 @@ pub const COMPONENT_MANIFEST_URL: &str =
 pub const COMPONENT_MANIFEST_SIG_URL: &str =
     "https://citrate-cdn.nyc3.cdn.digitaloceanspaces.com/downloads/components/stable/manifest.json.minisig";
 const MAX_SIG_BYTES: u64 = 4096;
-const BUNDLE_JSON: &str = include_str!("../../components/toolchain-bundle.json");
+pub(crate) const BUNDLE_JSON: &str = include_str!("../../components/toolchain-bundle.json");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,10 +97,37 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn components_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn components_root<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
     use tauri::Manager as _;
     let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(base.join("components"))
+}
+
+/// HUP-S5.1: the name of the managed Chromium component (`components/toolchain-bundle.json`).
+pub const CHROMIUM_COMPONENT: &str = "chromium";
+
+/// HUP-S5.1: the managed Chromium's executable when the signed `chromium` component is installed
+/// in `root` and its entrypoint for this platform exists; `None` otherwise ("not installed").
+/// Read-only: never creates the store.
+pub(crate) fn managed_chromium(root: &Path) -> Option<PathBuf> {
+    let st = read_state(root).ok()?;
+    let installed = st.components.get(CHROMIUM_COMPONENT)?;
+    let platform = Platform::current()?;
+    let bundle = Bundle::parse(BUNDLE_JSON).ok()?;
+    let tool = bundle.tools.iter().find(|t| t.name == CHROMIUM_COMPONENT)?;
+    let eps = tool
+        .artifacts
+        .get(platform.as_str())
+        .and_then(|a| a.entrypoints.clone())
+        .unwrap_or_else(|| tool.entrypoints.clone());
+    let rel = citrate_components::extract::safe_relative_path(eps.first()?).ok()?;
+    let exe = root
+        .join(CHROMIUM_COMPONENT)
+        .join(&installed.current.dir)
+        .join(rel);
+    exe.is_file().then_some(exe)
 }
 
 /// The recorded state without creating the store.

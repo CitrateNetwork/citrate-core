@@ -175,6 +175,8 @@ export function GrantsPanel({ io, nowSecs = realNow }: GrantsPanelProps) {
             <div style={{ display: "flex", flexDirection: "column" }}>
               {view.grants.map((g) => {
                 const liveRow = g.status === "active" || g.status === "not_yet_active";
+                // Blocked: rooted in a protected location, so Hermes ignores it; it can still be revoked.
+                const revocable = liveRow || g.status === "blocked";
                 const rem = left(g.remainingSecs);
                 return (
                   <div
@@ -189,9 +191,15 @@ export function GrantsPanel({ io, nowSecs = realNow }: GrantsPanelProps) {
                       {g.access}
                     </span>
                     <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)", minWidth: 120, textAlign: "right" }}>
-                      {g.status === "active" && rem !== null ? `${fmtCountdown(rem)} left` : g.status === "active" ? "until revoked" : g.status.replace(/_/g, " ")}
+                      {g.status === "active" && rem !== null
+                        ? `${fmtCountdown(rem)} left`
+                        : g.status === "active"
+                          ? "until revoked"
+                          : g.status === "blocked"
+                            ? "blocked: protected folder"
+                            : g.status.replace(/_/g, " ")}
                     </span>
-                    {liveRow ? (
+                    {revocable ? (
                       <button className="btn btn-ghost btn-sm" data-testid="revoke" disabled={busy} onClick={() => void run(() => x.invoke<GrantsChange>("agent_grants_revoke", { id: g.id }))}>
                         Revoke
                       </button>

@@ -35,6 +35,9 @@ export function simCluster(_host: SimHost): ClusterDomain {
     async linkDeviceReject() {
       /* sim: nothing pending */
     },
+    async revokeDevicePrepare() {
+      throw new Error("Removing a device needs the Citrate Core desktop app.");
+    },
     async revokeDevice() {
       throw new Error("Removing a device needs the Citrate Core desktop app.");
     },
