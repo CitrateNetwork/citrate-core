@@ -1755,9 +1755,10 @@ name = "apple-notes"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "apple/apple-notes"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "c652e01e47938b8ac21c97873e0a14f5f3a773b554bd10737fbfdcc5e5c28d23"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "6aa607b107906e49280dc874d40ed564924c7ffb43d1e065b78d980463f1afe6"
 refs = []
 stripped = []
 
@@ -1766,9 +1767,10 @@ name = "apple-reminders"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "apple/apple-reminders"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "ee5084f2d7ec196488bef2c74248fb3d8328d1b2e3277ddda3f0de9da6fc7131"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "91fcc8e77bd266783857e1d1599033699780ecb249bc0d5ee07de65cb1173205"
 refs = []
 stripped = []
 
@@ -1777,9 +1779,10 @@ name = "findmy"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "apple/findmy"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "19ec56e3b7f9f0be13c26d99948ed5684d8fb1f9c478da078c19356b5df63f57"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "4b90c656e8f92f86c63776866b15d9efa5314e8be80e443feb26806d905f7901"
 refs = []
 stripped = []
 
@@ -1788,9 +1791,10 @@ name = "imessage"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "apple/imessage"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "bc68b1648e301409bc25b1084ec26766213ca9f3c1b2fd3d3d6ebe3dbde9e967"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0e11a60d33dd93ada46508de9f067a5eacf35e1279ea14ab5ad0094179336104"
 refs = []
 stripped = []
 
@@ -1800,7 +1804,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/claude-code"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "4d195cf896e7d1a045b966216c46392d00672adc9c59b7919aa00e931ba8f762"
 refs = []
 stripped = []
@@ -1811,7 +1815,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/codex"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "bdf27c02052f06d3d44ca82efa3249aa408f8ac00ffb9ec6051061965d5fc5f1"
 refs = []
 stripped = []
@@ -1822,7 +1826,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/hermes-agent"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell, safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "083e305e004fc82cacedaadd5fb7271fb9947e9d90e47da128593e1fc951a353"
 refs = []
 stripped = []
@@ -1832,9 +1836,10 @@ name = "opencode"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/opencode"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "afb3ea1f1b4300705f4a44f41ef2bb6f36c45e474b677dcb3c0aa4e6b3740595"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "288b178227514a37055ed89a5b384da98200936a5dbc6ab483d10deeccb29818"
 refs = []
 stripped = []
 
@@ -1844,7 +1849,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "computer-use"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 11: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "33fdce112f142cd3ec1978b53720099b706b3b51e1781d37c3b4f30f32ebdddd"
 refs = []
 stripped = []
@@ -1854,10 +1859,13 @@ name = "architecture-diagram"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/architecture-diagram"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "0e7e2736aafe052e409c2ad27863d51ef3007c116711e584033787ccb5d99d3f"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "98c228571b3b426435adfe564b174e10673c12a94798db965f295dff03dc4562"
+refs = [
+  { path = "templates/template.html", sha256 = "d17a1631a14f108dd469ad16c83d667d917565ebe780f42fad7321be327de442" },
+]
 stripped = []
 
 [[skill]]
@@ -1865,9 +1873,10 @@ name = "ascii-art"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/ascii-art"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "b69fdd300045a3e68b4886c5c5c714f904c9277ac40b2da371bf9e156fd9fa88"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "c78b9e10f9ef05e9d9902f6ac19ba6e5ee4ea5fcb97df0f4288b144348481924"
 refs = []
 stripped = []
 
@@ -1876,10 +1885,21 @@ name = "ascii-video"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/ascii-video"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+verdict = "include-as-is"
 skill_md_sha256 = "1d4f84e0eacc0d8adfaee62e0f2ab947dd79302ebbf55d5cd07d94a92c92cb95"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "1f2b99082f852a2fca0fe4476068198189875bd1761970931c7104bab6e96c77"
+refs = [
+  { path = "README.md", sha256 = "a182ea6fd86e9a1a3e1d8e3281e0274b7cd33ef7b15c10bd12064ad4d75fbfae" },
+  { path = "references/architecture.md", sha256 = "d537a3f6e6263cdd87a9cc71938706e50e8d7cc454aab36231923c319abd4aeb" },
+  { path = "references/composition.md", sha256 = "3bdcb525921a3143b9f5e453fe6c4473f2992ac3404faa061d1883b8693da66c" },
+  { path = "references/effects.md", sha256 = "842f5720af3bf5a2d0ef7f0c9c832b8cc357caf93a9c534030f0f2b156c39f67" },
+  { path = "references/inputs.md", sha256 = "d9b723aa68f4239e7d306ed9ecd1e45b506e1197fb0c87194fbbe5a96f3d9402" },
+  { path = "references/optimization.md", sha256 = "a9e78b131bf7fd6d575759c7eaf121a93e26bd56e2e0f6af67fd9fa766811713" },
+  { path = "references/scenes.md", sha256 = "6c9a0293a5be961269f5d02e5b6dc83d4960a10511dfd777bc1033d416ecf093" },
+  { path = "references/shaders.md", sha256 = "29cac0af0b4614b3782fbd19c2f2857d8e95fec70c0ea68be86f5c5d0702c669" },
+  { path = "references/troubleshooting.md", sha256 = "eb992b11d051ba1ec8bb47d62cb28c329b69fc8ebc5ba38d4f501a9893ae9ebd" },
+]
 stripped = []
 
 [[skill]]
@@ -1887,10 +1907,58 @@ name = "baoyu-infographic"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/baoyu-infographic"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "89e25da6d8ea1cac79b18d9e6c4c3b8d7a522df2eef559f151f19c6ce5b2a002"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "f883a14be9629bbebf6ff916745a308cb2829eaf9119dc832ef3e3c5b11450d4"
+refs = [
+  { path = "PORT_NOTES.md", sha256 = "5dd3dbe9e9e713af903c7b29d391e259d93491b1504223880d8296c7a7093d51" },
+  { path = "references/analysis-framework.md", sha256 = "666d5682334ffde15bbd095a19d0720aa877b0f8c411cafbb60889f3f16fe71a" },
+  { path = "references/base-prompt.md", sha256 = "a0d476aa0042d25d4c757e7f400883a04f586e74920ac822b89a50dffa185d16" },
+  { path = "references/layouts/bento-grid.md", sha256 = "b8dfb690b90d935483c5bfcfbd1476f31b392990fe81b1b67ad571008f6e6e99" },
+  { path = "references/layouts/binary-comparison.md", sha256 = "6740c77e89b4cd120e2da9c96feb447fb707e40ef42ee1774794337c8079c8ee" },
+  { path = "references/layouts/bridge.md", sha256 = "ead9bd74c76c6de214e0fcee0b6bb756764b10f67ccaba52b591d05136bc7e1d" },
+  { path = "references/layouts/circular-flow.md", sha256 = "96c560cdf274e62cebecdd864e7d7a18ce44863c78cbda3ff62f48233839e859" },
+  { path = "references/layouts/comic-strip.md", sha256 = "3ed52755443e435304cb28925da1f7465bd6186aac2ac125d9336c8e0afed028" },
+  { path = "references/layouts/comparison-matrix.md", sha256 = "77bfeb08fd66287e11db575582262f80a6c8471c5dfa6b9508e3c48e567ae14e" },
+  { path = "references/layouts/dashboard.md", sha256 = "045514ab6f196ff0ab2c7ead9755e955eff582c5cdedc163eb0a4b18aebee2b6" },
+  { path = "references/layouts/dense-modules.md", sha256 = "5d73084f494c863b5c6186925f0eec0372a80157b63ebc6021379a5659b10420" },
+  { path = "references/layouts/funnel.md", sha256 = "e505f04f334d8da00607972b19b23f9a2e24b6c2cff8cdb8fbe6baa0698c7286" },
+  { path = "references/layouts/hierarchical-layers.md", sha256 = "5fdacc7c543788a32d9e73b4cc26465e54adec498dd4975cdcff85ca2f2d1da9" },
+  { path = "references/layouts/hub-spoke.md", sha256 = "d79526313a7f6550e5586652d871dee3b958c2ea400242a9a9c3f2bccf4b57a5" },
+  { path = "references/layouts/iceberg.md", sha256 = "26a21caf9a3d8dd4172565953f2cd060bca0b3ab2afd82f54828dc7542f5e9e3" },
+  { path = "references/layouts/isometric-map.md", sha256 = "ec0be8d54e5a8db5182696c637fd8769f9b9a6c7f4f190ca9f6f4ea7fc00732a" },
+  { path = "references/layouts/jigsaw.md", sha256 = "1b5566cdf0981677bf79437a6c5877749a7ecc22fcf1cccc1bee864c9d865e75" },
+  { path = "references/layouts/linear-progression.md", sha256 = "65dea6f3fc3c131c7d3fc32050e541b3f60e5896699adc0e8624d1c5cc469757" },
+  { path = "references/layouts/periodic-table.md", sha256 = "8fa5c1823092eecd84e88cf8a3f9547e5ce7389dfeec4fd87b6277154f33f858" },
+  { path = "references/layouts/story-mountain.md", sha256 = "251491e38320301caa0e2c29c4d7c73f910f598c8a00f924eb7e58a70cc7f2e8" },
+  { path = "references/layouts/structural-breakdown.md", sha256 = "eff60da27c0603113a283488824312e1078140872ff204935bf2c3cfe712c1fc" },
+  { path = "references/layouts/tree-branching.md", sha256 = "f493c76aa8d5ace6b5cf96a8ca2480f1131ee2ad41d335fdcb82f3ab83d928fc" },
+  { path = "references/layouts/venn-diagram.md", sha256 = "c0babb164e540dcdc83f9006835024d04e3e2782665ceac4742e59b02a0cfd48" },
+  { path = "references/layouts/winding-roadmap.md", sha256 = "52dc70d953e795696a71a4331b951cc428283016d8a01e0ffcf9f1d79eb6e4f4" },
+  { path = "references/structured-content-template.md", sha256 = "d979b8d4fb37746fbf404d5737ec76e5837f066b97f6bd45c9b9b9478bee0877" },
+  { path = "references/styles/aged-academia.md", sha256 = "596be4263818615dc491531bb326370a276c3995d13b27a7d3222da7ab8fffd3" },
+  { path = "references/styles/bold-graphic.md", sha256 = "d7262e681a5d8ca93aea397dbd4f00925724af9d20909adef877f5f117e2dabd" },
+  { path = "references/styles/chalkboard.md", sha256 = "d903ffb1bd67b7f05972acbf82fec2305d93c149f458ad434097e4b18ff94df5" },
+  { path = "references/styles/claymation.md", sha256 = "c55e726c0d1156f2715107dd3b3d3c60af385b48db33b6121cb569494aa59644" },
+  { path = "references/styles/corporate-memphis.md", sha256 = "156e6e27009fdc3305e97ef242cb1a45fac65a054f73cd62718ce99bf5171ebf" },
+  { path = "references/styles/craft-handmade.md", sha256 = "91740549239ab391d18532c83317a137c68cb11ab33ea154130db68a791288c0" },
+  { path = "references/styles/cyberpunk-neon.md", sha256 = "68fdaa033dbece53c5e788972ab47fc548df621f23c1ab408c7c633b457f6491" },
+  { path = "references/styles/hand-drawn-edu.md", sha256 = "f08c3abbdde1b63a8ff8e5a6d82024d2bf961fcff42c032510cf8dd0194e48b8" },
+  { path = "references/styles/ikea-manual.md", sha256 = "64816d33fd9fb5c22024d2db48f9e4ca7ca38c64cfad1d020880c7f32ccd5690" },
+  { path = "references/styles/kawaii.md", sha256 = "d88bf32f4257c13ee68b6b13e7af733aa67b4eedce14e50182a791272f389f3a" },
+  { path = "references/styles/knolling.md", sha256 = "59302d093c12766b1924e659c406429cc2543055ddf791f0d42760a1b2eaafbd" },
+  { path = "references/styles/lego-brick.md", sha256 = "3753f54d30e02bce4de89a1ace9db4ba82bd8395ae8f643c3670449aaaab04c7" },
+  { path = "references/styles/morandi-journal.md", sha256 = "13d230f40671f05d80c6e8b134e426da1c7f5a463d354ab241ca0f1ee30fec0d" },
+  { path = "references/styles/origami.md", sha256 = "58f51438267c1499591d272bd7e434283565799889a4b0c75debf2329f2b919b" },
+  { path = "references/styles/pixel-art.md", sha256 = "1a1dffbccf818e77fd8b16f7a5872e245a934db77ce2aa2a5b6348268bb2f5f3" },
+  { path = "references/styles/pop-laboratory.md", sha256 = "c920d07989697c46aa3482fe2b2f4c6387ab803e3f19ca11206a35a2ac7b7ff9" },
+  { path = "references/styles/retro-pop-grid.md", sha256 = "d59faa1639c15a6624c51746d9725de50a40c448dbbeba8faf6eb00ac3468023" },
+  { path = "references/styles/storybook-watercolor.md", sha256 = "d7067bc69f56f3fad42e3f2671c86317c36962f38fd69a181f9d606d6fd54f88" },
+  { path = "references/styles/subway-map.md", sha256 = "a122e7f9f5b990f804b717d6e696f916922ff61227e72bfe5e540fd51c66d359" },
+  { path = "references/styles/technical-schematic.md", sha256 = "2b21ce445c6a2b1ef280c2d7b4cb8e87e2f6e720f85cb68a8ba40a5c2d73a12d" },
+  { path = "references/styles/ui-wireframe.md", sha256 = "9a27502ab6bba76ad042cfa08834053f9e563c76cc8ffb46456cd3db2a6523a3" },
+]
 stripped = []
 
 [[skill]]
@@ -1898,9 +1966,10 @@ name = "claude-design"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/claude-design"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "1582b0d49e48bdf937b2f555098484e0979cdfa285c6cc9fa329ba8e416d347a"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "f3c93b6c916e3db202da49d54d50478a7cf86ed107aedfe346d9c89a9ca1c924"
 refs = []
 stripped = []
 
@@ -1909,21 +1978,42 @@ name = "comfyui"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/comfyui"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 13: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "fc9514a3b888b35226a3d2276955bfcf1778fd1e61f4000d79c8c0c53e7905c3"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9844364d8a350e702d9aa9a7197c5423a355ad3a4b6cc0bb1148898b9ef0869f"
+refs = [
+  { path = "references/official-cli.md", sha256 = "9d62db1d40af7a4639ede8b9ac599c4e180451342570b08b125d656f4b68e1bc" },
+  { path = "references/rest-api.md", sha256 = "01077c38f6d5d737e2f0ec126ccce7eceef64fc754f15c852a63dbcd58da493c" },
+  { path = "references/template-integrity.md", sha256 = "746caa050d4e321b142efecf5a16c72d609e3c08cec9061ba4108781d14aa7d9" },
+  { path = "references/workflow-format.md", sha256 = "c5749b962b8e438b777e7f4d6529469c53b945728cc847083110e5a742fd0af4" },
+  { path = "tests/README.md", sha256 = "88cbd358ddb132c3b1f9a36f6382d17b3783ba5900aa4f14dd06b320626c3959" },
+  { path = "tests/pytest.ini", sha256 = "9cb092ce40432ff6caf766ceb1b9f32ff4d0f91de693bdbeec8d9916a9839ce8" },
+  { path = "workflows/README.md", sha256 = "2e1cd819ff6da81b1c41daa74f95f3c4df564bf512d18a63e566890cea4c6bbd" },
+  { path = "workflows/animatediff_video.json", sha256 = "96742617937e0294d421e1b3dc53c44c431081577598257bfd6121abe1c3ada2" },
+  { path = "workflows/flux_dev_txt2img.json", sha256 = "db0afca70c46f552b7bc4c4b9d63761da81232f6ce78e3dd98b2af0488bfb16c" },
+  { path = "workflows/sd15_txt2img.json", sha256 = "db6ef4f9bf3b8e0f0c88c08ab8f0a45ae3816fb2ea2ad4460443b1ac424052a5" },
+  { path = "workflows/sdxl_img2img.json", sha256 = "0b6888ec7e55310020d6d12f6af32502eb3374b7ebefaad3734df8b5596bdac5" },
+  { path = "workflows/sdxl_inpaint.json", sha256 = "c9cd10adb7ce9e3c17df3c38c1a597229dc939ff5ae6f8a24d505ea8a053b54c" },
+  { path = "workflows/sdxl_txt2img.json", sha256 = "5266fa4f35fb9a0fa485e8d7700a23ba4917f1a91c0abe17c1b4f6beb68a8e1f" },
+  { path = "workflows/upscale_4x.json", sha256 = "9f97b0da2826cf2afb8347f8099c691dd7682143eb6966ad874572b91d560ebe" },
+  { path = "workflows/wan_video_t2v.json", sha256 = "29425bee0ffbb2d558de19ca787d23b76f91257f663098041a81931fe623441b" },
+]
+stripped = ["scripts/_common.py", "scripts/auto_fix_deps.py", "scripts/check_deps.py", "scripts/comfyui_setup.sh", "scripts/extract_schema.py", "scripts/fetch_logs.py", "scripts/hardware_check.py", "scripts/health_check.py", "scripts/run_batch.py", "scripts/run_workflow.py", "scripts/ws_monitor.py", "tests/conftest.py", "tests/test_check_deps.py", "tests/test_cloud_integration.py", "tests/test_common.py", "tests/test_extract_schema.py", "tests/test_run_workflow.py"]
 
 [[skill]]
 name = "design-md"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/design-md"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "38ed14bc712a413fdd2514ea9acf6864ffb64fcbaffe6b5cc608021a75ff89fa"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "255a6a186b17cc0d9e5973d079f971e9cf3aeb82221d8410785f61d24c8acd4e"
+refs = [
+  { path = "templates/starter.md", sha256 = "587571ab914ebe6c228d786aeb3b531d88b5b53dcffd5295333d609275a0b2d4" },
+]
 stripped = []
 
 [[skill]]
@@ -1931,21 +2021,30 @@ name = "excalidraw"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/excalidraw"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "beef7b8ea01e73a3fe95f9562beaf262c9f51712e1e00e507c6d41b1b00e49ba"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "dbe5b6cd84d826fb02e5cc92dcadc756c467e98e8a00f3aeae9b9965c22135d5"
+refs = [
+  { path = "references/colors.md", sha256 = "4546bb6756acb1ea2fd3a917c6883b2cee054345d3268fe8b377275fa590092c" },
+  { path = "references/dark-mode.md", sha256 = "ef1ceeea938fe62ec745a4abec478188098f99573cac6f38db3992eacedbe6df" },
+  { path = "references/examples.md", sha256 = "411e4c571135a94264becb365b7963f4370c7564aa7fb6eefa822b4538a1c399" },
+]
+stripped = ["scripts/upload.py"]
 
 [[skill]]
 name = "humanizer"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/humanizer"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "4f2eece5122e8296e65930225d744f4fbaf50747e91031c1e17c5ea273911c35"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "318ccdf39a7b7754fbfd7557c6173c21625c82d59054068353454b1b8472ffcc"
+refs = [
+  { path = "LICENSE", sha256 = "4ac4810254ab36d45419141aeb8e69bf50652cfafe5b2dab947d06d44e5cbf96" },
+]
 stripped = []
 
 [[skill]]
@@ -1953,32 +2052,121 @@ name = "manim-video"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/manim-video"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "3459a6af999f0c9bfd61eb867836c8de90b33253493eb1b6aa4118d82fd320f4"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "fd65793afcc52357bb86a85ca65ca71f79eb82d3ebf23c2260e0281af764d838"
+refs = [
+  { path = "README.md", sha256 = "a30f3ec6105d5b23bc5ec28e8e2809e9ceed49f1fd816570d5b5656d0aa65819" },
+  { path = "references/animation-design-thinking.md", sha256 = "87812340f4756f5e2cc653e6e13ec922562a58483bcd66a5317c19ace5e08220" },
+  { path = "references/animations.md", sha256 = "e00bf77a8e17bf457b7669175ac5dc9ffa68e93d35b3f092036a6077892ba51d" },
+  { path = "references/camera-and-3d.md", sha256 = "36a17d79a0d7b9b11b8e645417f10ebcd2e051228c06867611a3271db7f28ad4" },
+  { path = "references/decorations.md", sha256 = "dfd7bd79a57a0b1860aae5a5d6d282b1b517445457db4d4493519d77c0f568de" },
+  { path = "references/equations.md", sha256 = "7408d2688b497f423770e33408d883d54e293a1ba3abb892ebb799a698b50e38" },
+  { path = "references/graphs-and-data.md", sha256 = "347847bc60f1e5f00ab8ad0f81deede00e8c702b3e1d13a22358e358f370be12" },
+  { path = "references/mobjects.md", sha256 = "771421e463b526dcc4e2593ae327358ef26919f698c48ee4e32cc7749d32dcda" },
+  { path = "references/paper-explainer.md", sha256 = "ab67495a01e60f2c45afded7c3c80a4e4501c841a562d1a6d305cc74787a4fc4" },
+  { path = "references/production-quality.md", sha256 = "d9f41d3c58396a94750e6d7c56c9fe5aaa0d067679df059adbe472ceab87d9c0" },
+  { path = "references/rendering.md", sha256 = "8a326d4081d658018fccb8ee4df34be6a945b40466f08f4675924f98649c6ac2" },
+  { path = "references/scene-planning.md", sha256 = "c54a8cf6cf864ff5a60d4569e4e285f0fca88e40f3cbff1350b70b099af319e0" },
+  { path = "references/troubleshooting.md", sha256 = "7ee9880cf32ab2b4e1eeaa289464f211e96e9510004635ade59ee6660a4909df" },
+  { path = "references/updaters-and-trackers.md", sha256 = "96c024dce576750a917277e0f4e09135fa7be25ea7e9248b702d36533b22dae5" },
+  { path = "references/visual-design.md", sha256 = "6703a312d9e35820a84140343b5c484050874ff19daf5c72789fa00cc1644c99" },
+]
+stripped = ["scripts/setup.sh"]
 
 [[skill]]
 name = "p5js"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/p5js"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 6: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "6a9722e2633ecdb3736e304f56c646258c5e777fd2c15a59c0d2b3ffa91b665a"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "34745d059a7bde6de02d1fe046618011361f0e546d1ec5ce3b523e314c7ce182"
+refs = [
+  { path = "README.md", sha256 = "8251be0e41fbe1bd0a903ac93b38beb2b64375696fd0cd23bb73dd2ef8f8054f" },
+  { path = "references/animation.md", sha256 = "7b71c1fd7c7778bfe3e348e49ae8b4cae59c5eb730a42d9b603acce7801bbe57" },
+  { path = "references/color-systems.md", sha256 = "4c210028c4d6e8cf72df7eb0c730b6faea6ac60d627d333991040c42e7f5d699" },
+  { path = "references/core-api.md", sha256 = "8b1278b31bd4e003cb093da1858e4d0753eb304540c8f4e8e567c682222753e7" },
+  { path = "references/export-pipeline.md", sha256 = "b88e7236c5a674c2541d664c1c1f7cdf2eea0ef7da43c047ac2d45e3fd239667" },
+  { path = "references/interaction.md", sha256 = "2951d6e9df71c467fe9ac8401c771a0b93b7c648dd4723108743f339d3c82aa3" },
+  { path = "references/shapes-and-geometry.md", sha256 = "0a468a75d22322552abffec0cb1305d94ee531c850dd8b590584fd1078d48ed2" },
+  { path = "references/troubleshooting.md", sha256 = "89812ad4fa9f08bde59ee1050107c723bd1b9046a81f8dd0aad94d4a9d8b215f" },
+  { path = "references/typography.md", sha256 = "d26c532a850750c6d6e64ddaa0465a499bfd44023465a6a19d8909637266654c" },
+  { path = "references/visual-effects.md", sha256 = "644cbaf5f91b44dfa54ec125ccdff44c445f454781ff98edd316d30df258db56" },
+  { path = "references/webgl-and-3d.md", sha256 = "86ce498bccba5ce24ab9ba6d104723ea2739db6da27c2aec4284848ba306860d" },
+  { path = "templates/viewer.html", sha256 = "6a0f3f42fbc6a52cc82cd5990a856474cdbf43d2f157d2183a09b9cec91a331a" },
+]
+stripped = ["scripts/export-frames.js", "scripts/render.sh", "scripts/serve.sh", "scripts/setup.sh"]
 
 [[skill]]
 name = "popular-web-designs"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/popular-web-designs"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'author'"
+verdict = "include-as-is"
 skill_md_sha256 = "cd89bdb86008bb30b35d9bdd30e06587f75ee54055c54e1a79afb20418264b3d"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "6666b70696ac23dc60e52929e145c783b0d63632c976b346ee886ad509d3423a"
+refs = [
+  { path = "templates/airbnb.md", sha256 = "4d6277a1e6432047f25cc7b7443d7eac7a9bde5b483c609cf7bb7f5c9abab70b" },
+  { path = "templates/airtable.md", sha256 = "9795a57c10e0773d547a219db6c7d9aa294b7fc8f0b9cec96f9e293655dc5f30" },
+  { path = "templates/apple.md", sha256 = "9dfce6c8ba40c93b6e9a3d537b24dad8643df56d0839bada58f8cf41f99ecaec" },
+  { path = "templates/bmw.md", sha256 = "f4d82d0acd92db83e63dc21424fdcb198b3c620ce30ea7726a2c0ce4927d6dbe" },
+  { path = "templates/cal.md", sha256 = "87b5ebb39dfaa2b3d86be692ad2210392476bb5a6b9190e977de61cd3f2d510f" },
+  { path = "templates/claude.md", sha256 = "0644dd065f1167959a157648a420d64756963fef47df8584968c0003dbce56ed" },
+  { path = "templates/clay.md", sha256 = "fc18ca7b88c2840bc35ce574803f6d5ee87415457aad1e116a2e34513fefebe4" },
+  { path = "templates/clickhouse.md", sha256 = "1f92343a51ca05fa742ee012d902c829478b97f7a49c4055e047349730bbb6fa" },
+  { path = "templates/cohere.md", sha256 = "0db7feff1fe45ccf39a6ffe6758620284dea9d235e42db7b7efaab1ae0e3b4c3" },
+  { path = "templates/coinbase.md", sha256 = "d34fc53bf9d0d68c8a825cde92f6243add31e6e471012ce519bdeb09b7592cf9" },
+  { path = "templates/composio.md", sha256 = "2398498177e69c32819695c16718e83eea3d5499798c600d6aa4a025a496f448" },
+  { path = "templates/cursor.md", sha256 = "9c0584ad583057cf88c47f352a395d0e6d508b98f5e844188d0df2a122c7a100" },
+  { path = "templates/elevenlabs.md", sha256 = "ba0f7455143c2fd89422e09baf3b92030fb55422eb500a46af2432528f72e585" },
+  { path = "templates/expo.md", sha256 = "513bded0ab8137833488cba76526644f64f6d91de8bce0793253a261e78807cb" },
+  { path = "templates/figma.md", sha256 = "d04a5225723177d265e80125d50c249861c3e0e91ea1f3dab469ba06f61dee70" },
+  { path = "templates/framer.md", sha256 = "4374dc30dd981448936fa7f1d84e34025a0380a909e17ac9f43cc4e41adef0c5" },
+  { path = "templates/hashicorp.md", sha256 = "fc14c7103c6dcd7cb649b92042a5a7fb8b9327d3d35fee665e84f7806a851089" },
+  { path = "templates/ibm.md", sha256 = "328494dcf5266f17b71ccff3fb68b3a7077c8fe1f45d7688c26ba24f0aeae3fd" },
+  { path = "templates/intercom.md", sha256 = "a8a3f040a170b061d7ea84457fe9f56b7733d282fc6b436d6d498966b7d81275" },
+  { path = "templates/kraken.md", sha256 = "4c318649813d7293829bda3e26536a33f625546ce6ed530b5af50c7897b91a6c" },
+  { path = "templates/linear.app.md", sha256 = "0826aef4c683f0d9cefdd5464ae26865e003e827544da9d30d63010471e32835" },
+  { path = "templates/lovable.md", sha256 = "c4092616ed94b011142b36eb4a0eeb8611f1e5032ed6d4594663489cb4307779" },
+  { path = "templates/minimax.md", sha256 = "8b1cfa04f435ed4931cca8d81fa8998d714db5ad193512a6e240862dd517c1a1" },
+  { path = "templates/mintlify.md", sha256 = "2a1e56e99fbe94835f90240f03e60292b14811bd5712dde696f3622a6aa5bec4" },
+  { path = "templates/miro.md", sha256 = "47307a1d603f3e1c9cbfde1bdee2b976bc6a27b75357076bc75e84bfd2bdfa1d" },
+  { path = "templates/mistral.ai.md", sha256 = "82b090855a45a16fca45962c7f9ff78debb7ea3ed064846658e9a21e5fadb70f" },
+  { path = "templates/mongodb.md", sha256 = "96531df710b4a49a0b68af6f1cf81b8927d48a7ee215315e6ed7e09c7d6b615f" },
+  { path = "templates/notion.md", sha256 = "9afd11387e550f2ce085514b38a5e0393d6192a1d9e05a14342356977a832621" },
+  { path = "templates/nvidia.md", sha256 = "9a565542920f930ac743d17fa5226afb2be2e8f921333960b4d03bdbe3f9977d" },
+  { path = "templates/ollama.md", sha256 = "56e636e385fd1a9c79e9352f8b3d1a02919c30fa7fe8fe2e14f25f422b64b7e5" },
+  { path = "templates/opencode.ai.md", sha256 = "fac924b83e1483e46fdf15a56791b10b739c194c1ea9a7b2cf2945de21ba7aec" },
+  { path = "templates/pinterest.md", sha256 = "eaec9d13e6450e74074198743337f1e9b0d21572123a4ab1ebccdd66e114faf0" },
+  { path = "templates/posthog.md", sha256 = "9d17a75b45720763c0107885f3f77f8f2871e4957e145a49696d569ddc5052a2" },
+  { path = "templates/raycast.md", sha256 = "90304a7a878784920768d8bdd46ac519cdc2258daf157dcb3668cd8e7bc47f67" },
+  { path = "templates/replicate.md", sha256 = "7753ebfffb73d2a25bbc1abfe84ac7f0d05903a36a7068446f877bd0f097a02f" },
+  { path = "templates/resend.md", sha256 = "9ee46f856f8d89d8dea4abb3d2c78a210825e8263f126eab3bdd939de0060834" },
+  { path = "templates/revolut.md", sha256 = "1d024aa8105e22a192b4670b9406a9ca73aa4a1b85a65508f9b409864cb9b5ee" },
+  { path = "templates/runwayml.md", sha256 = "81fe46161ae5501da5b9c473e298f32cb02de2d3b5605b192aa7bb635b7cb269" },
+  { path = "templates/sanity.md", sha256 = "174ae98a518f69230f54865b8a47699e475dde7ad822e14e52eb26ecbbf52799" },
+  { path = "templates/sentry.md", sha256 = "edac951ab2807005002e2619472526ec4118ebb8332aec6698c9f9dfb659fa81" },
+  { path = "templates/spacex.md", sha256 = "8b91bf24463cb5c8e98aacf43af02305faaeb8f28bf24199d90cfebca7b3c48f" },
+  { path = "templates/spotify.md", sha256 = "5cc773b31d12a9a3c54a100e10a9729818bb07e611bb837f3891007f88840af6" },
+  { path = "templates/stripe.md", sha256 = "cdddebb03bc5282ad9eabf2e6fde823d7a2deb828f9dc8ca4ab6f919b42aef05" },
+  { path = "templates/supabase.md", sha256 = "deeabf2b03efd5a0fc8e1d3876fc3f9bfe0ea480fbf35fddfb3e43f7943f938d" },
+  { path = "templates/superhuman.md", sha256 = "edbd6f3c175f45cd264a7fbf17ad9a367b68a5eb1068d385639973658730bd93" },
+  { path = "templates/together.ai.md", sha256 = "de149f63fd3c7bd0190a86a2d194ab8b2800bb4ec5c0312711d11dca8b07487a" },
+  { path = "templates/uber.md", sha256 = "68291d1291680183e2786965d076053f66e4fd68efb47cdb4ba48256ecf2b2b6" },
+  { path = "templates/vercel.md", sha256 = "ad326ef79b6e4415f564e31b4317170384b2cf424a2e582c4cbc4df53dea9705" },
+  { path = "templates/voltagent.md", sha256 = "e73d9409a63d157774528b260b3249fb52745e6b242efe8bc1ae2e9f04b08827" },
+  { path = "templates/warp.md", sha256 = "0a6569a598ca207704ab87fedd76fc1ac2cae537f0da8eb3d9ca5cb843d309ab" },
+  { path = "templates/webflow.md", sha256 = "64c4d2929e2bc906086d6d04e4638cc4f87fd553ac8073d5f3cea7b46a620d13" },
+  { path = "templates/wise.md", sha256 = "6496785cb61f66b5c3edc74f6a8bf6fe10d4e16ada427bbdd7dc6c92f0a0c656" },
+  { path = "templates/x.ai.md", sha256 = "5454af16b5f3daee9a2f05658d267bb0bd8a025e1870bad996a85677a091d284" },
+  { path = "templates/zapier.md", sha256 = "9aac8e73a4a471fecb2d252afead66c82436e7525e7f9d1e6bbe64e375c65160" },
+]
 stripped = []
 
 [[skill]]
@@ -1986,10 +2174,15 @@ name = "pretext"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/pretext"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "532570c95d1a0bf671a5565fa3c2a6131d3579f4378dd852012b39335a7668e3"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "25df0ec1adc0fe48eb79a53e83f460bb384b8ccf94ecebf7f8e24dd57e3e208c"
+refs = [
+  { path = "references/patterns.md", sha256 = "e8d50e198fefdeb83e68f84ef4fbe036583ff5f7d65a41a58e1ab8725027f13e" },
+  { path = "templates/donut-orbit.html", sha256 = "8b0cd47880a9cc6ad16f90afe02b11aea1e2436c833924bb91e55dc460966fbe" },
+  { path = "templates/hello-orb-flow.html", sha256 = "6a1c76b51e8e792fa2b00ed3a5bf1e314a17ada192289155dce6b33da149ddda" },
+]
 stripped = []
 
 [[skill]]
@@ -1997,9 +2190,10 @@ name = "sketch"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/sketch"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "c643ff8657341b39284dbe1c70442b4ac746f5702d8457759376d4165d6879e5"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9ee4ef154a0a8c637fa3932769bbd5d68d1c84a7b427ef2c072d696cfdfdde59"
 refs = []
 stripped = []
 
@@ -2008,9 +2202,10 @@ name = "songwriting-and-ai-music"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/songwriting-and-ai-music"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'tags'"
+verdict = "include-as-is"
 skill_md_sha256 = "093dfa88e5b3596a35463a516733d014c202d14b49643724dea65e9c09c970b1"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "37c0127e154813dfe87db04749c8ef4d29a0f1e836bff1cbca8697033b56218d"
 refs = []
 stripped = []
 
@@ -2019,20 +2214,45 @@ name = "touchdesigner-mcp"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/touchdesigner-mcp"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "70a4217786c49122b76f2247fe63b18a61f4a0feaf18f4a4b5d176f2125b3641"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "43689b31f3ce9fcea2af8ccc49b079f7287aabf2d6da9664b6f459a615b42821"
+refs = [
+  { path = "references/3d-scene.md", sha256 = "f0b17b4383333198474da7a58ea8c4063f46f1465f0f1275053c5a538028456b" },
+  { path = "references/animation.md", sha256 = "9c7482f38e86f80a89d0df98db8ec2e99c8227fdceab099667730a1000e14386" },
+  { path = "references/audio-reactive.md", sha256 = "3ea60c5954b4b1b682397a1f6bf85dccfc277354cc6f4e021b4ca68d18b623be" },
+  { path = "references/dat-scripting.md", sha256 = "062ea3608ba9475d1c76bc59d8e4a5f0a0d1dd3a60006e2380e634367f460fe1" },
+  { path = "references/external-data.md", sha256 = "0d7b782cba9a3045bfb67e1a3150588e4889db3fd7938071fa367daf6afaa932" },
+  { path = "references/geometry-comp.md", sha256 = "f86b1e8333419ce23180cc7de06848744c4f3168124918745bfaa10b30479a42" },
+  { path = "references/glsl.md", sha256 = "53809b02394c797615601bfb541a43b14105087d8465d76c604ec24168257f88" },
+  { path = "references/layout-compositor.md", sha256 = "4e6dd1f86f5b85525554e4c33dbfa5f767326ae1eef0855a0aa6257bfb35bdcb" },
+  { path = "references/mcp-tools.md", sha256 = "d702a7353c76711a0797885da87a1adf1fd2640533aa415dab06eb6df6304eb1" },
+  { path = "references/midi-osc.md", sha256 = "1e9c8de828e6eda23425098cd9dd03edabf75d41b24484fca63d3f3b0cced192" },
+  { path = "references/network-patterns.md", sha256 = "fd519867cc2ed9b2de8fd07fcb928b55547f39fa4767bc5d33c3a300b7a17236" },
+  { path = "references/operator-tips.md", sha256 = "24ea49a21d78ddf7f5b40efc13e6a9d2705a6de0a0f40b51f8fac87444efa5f2" },
+  { path = "references/operators.md", sha256 = "ad67bbe2880eb479e0eccabd72f9513939e87ecc6158baf43a7ffe1cc01d719e" },
+  { path = "references/panel-ui.md", sha256 = "3acc029c90a1aab73b969380f96d987d41877dcba382e75d72166ca17a92a32d" },
+  { path = "references/particles.md", sha256 = "066bb5ccb4d396c444651b7e245cbc214810e22b2144cc98316713dea3ee9a8b" },
+  { path = "references/pitfalls.md", sha256 = "288f0da8ca0f1371b9d4bd6253c68f0de9f36c9aa2d89011e6b2eab30c040d0b" },
+  { path = "references/postfx.md", sha256 = "eef5fee9615fa76b9dfcd92fa815157e2a67dead31a78618c4b68565f537e2db" },
+  { path = "references/projection-mapping.md", sha256 = "b5ad7c4cb1c64360dcd1252f9868e4031b7e93eb1a4a726326ea89b84a86ff80" },
+  { path = "references/python-api.md", sha256 = "f898b84a6c2155c39a94ce60865676b9db78aac0147ae6e6d3c9b1b41644f269" },
+  { path = "references/replicator.md", sha256 = "b17907d2fb8a53447d854bb14e00295f37e1afff47693715b817163877e33317" },
+  { path = "references/troubleshooting.md", sha256 = "c01460dd47d2a59ebf6d221d717b7563df1f823ac9b8e574787fe39e12e4e876" },
+]
+stripped = ["scripts/setup.sh"]
 
 [[skill]]
 name = "jupyter-live-kernel"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "data-science/jupyter-live-kernel"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "d93c4b4f50e66c0c074d49e43e28bf5ab87531eaa48884d0083568db827f5869"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "bf79f0dbfa4b71e5dd8634dc6e9e9bb48e8f8b3a63a8b5485d938f71218d5fe1"
 refs = []
 stripped = []
 
@@ -2041,10 +2261,14 @@ name = "dogfood"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "dogfood"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 6: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "36b1a710c61727c2be3c43ba20d68605cfed199afc90e27bde9746f4b80b91dd"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "99e90ff07285e79d6e5910d39ac74ee47c8c5b73c25329c8a803d40850924b08"
+refs = [
+  { path = "references/issue-taxonomy.md", sha256 = "b90546fab5b59494ebea35b957ccc1d98bab8eaeaaa3529a142b15ea96df2b31" },
+  { path = "templates/dogfood-report-template.md", sha256 = "6db9127715d3d1482542e48dd2d71fcb25238e614b1e5739ec193fa143962a26" },
+]
 stripped = []
 
 [[skill]]
@@ -2053,7 +2277,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "email/himalaya"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "0f6c9bb4c0a5c4f4627e139b6beb2b1ba0addd7145895196528b8125929e3837"
 refs = []
 stripped = []
@@ -2063,9 +2287,10 @@ name = "codebase-inspection"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "github/codebase-inspection"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "87ddc0578d9bcbc80addb34ca045e4263689873ce02b1b73e3d57275ec6315c6"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "511e2dbd3bba91076c9b36e31a1fdbea040f1b0d375f364b8cf3d6132131de51"
 refs = []
 stripped = []
 
@@ -2075,7 +2300,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "github/github-auth"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "6b49a0655a5810928219a2b8415ee8badcfa4af4e6e2763aa235ce47c5f72a13"
 refs = []
 stripped = []
@@ -2086,7 +2311,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "github/github-code-review"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "2d1956e52d88bd88c166dfa54f5e0e353fc4478c6cb6cf08431261a2337efc4d"
 refs = []
 stripped = []
@@ -2097,7 +2322,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "github/github-issues"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "c1be1ca373adebd879408280e8987069e3d07fd0b93f41b4600c5b6df95b85dd"
 refs = []
 stripped = []
@@ -2108,7 +2333,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "github/github-pr-workflow"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "2461c0a678c2cc66d8ac27170e0c6334cf431f9ade43e775cc5f9c56c0c4f3c6"
 refs = []
 stripped = []
@@ -2119,7 +2344,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "github/github-repo-management"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "d70d999ddf231f9e6c9a6f1502b2f94d2bdd25875b528b781532209206137d9b"
 refs = []
 stripped = []
@@ -2129,9 +2354,10 @@ name = "gif-search"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "media/gif-search"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 11: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "a8349043740a8805d4ebfeb3a21f67ec0e9a9733a84f96403ca142c88a312b5d"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "faa3b9e40e6f2dc574f6bddaa00cac52c4d478853d2c9139647c2970325f31a2"
 refs = []
 stripped = []
 
@@ -2140,9 +2366,10 @@ name = "heartmula"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "media/heartmula"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 6: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "d6f8322ba9ab47564ff73dc0ee8d8158d78cea4de557e5b0abe5c6921a12fa57"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "6fbdedd66e181c6cfc55d70dccdc44294fdd1ff1bebd88bf29f5955677203fce"
 refs = []
 stripped = []
 
@@ -2151,9 +2378,10 @@ name = "songsee"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "media/songsee"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "d9d8d1394c630bd83329cd54cd8f18e0e3cd140debe31c3ccf5d9667f054de07"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "502aa72d7f6a0c655b9d3507e15c4b3c77d29f9027b8385c149ae66d63dec0bb"
 refs = []
 stripped = []
 
@@ -2162,11 +2390,15 @@ name = "youtube-content"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "media/youtube-content"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "03cba418b10c64a316124fd9c0cde640bfe87da86f30df8136b8498003eafed8"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "612292160e76472d48f24fbda61e31b7e68455dfad1dea5a44481b90cf6b176a"
+refs = [
+  { path = "references/output-formats.md", sha256 = "f24e6939b47511a7dfc1257f3087c9dafd027fe7836d0e65b0feb3214f598cd1" },
+]
+stripped = ["scripts/fetch_transcript.py"]
 
 [[skill]]
 name = "lm-evaluation-harness"
@@ -2174,7 +2406,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/evaluation/lm-evaluation-harness"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'evaluating-llms-harness' does not match its directory 'lm-evaluation-harness'"
 skill_md_sha256 = "5426016d51e3b49e85c0ddc53a837393463a4f77aaa52ae504b78ff5ed596a67"
 refs = []
 stripped = []
@@ -2184,10 +2416,15 @@ name = "weights-and-biases"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/evaluation/weights-and-biases"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "7cabb8bcc00797373ada06b51fcf7b504f51d79b8816829847635bbb03bb5d9c"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "69dc68f522166816092e25e6c22701f5756bce0ee7435c2223512c7938184a6e"
+refs = [
+  { path = "references/artifacts.md", sha256 = "3e4c2ebe70b310e74fdadb5e08af9822eba5b585ef6ad1e66012016b8fc6d461" },
+  { path = "references/integrations.md", sha256 = "b11f806e19002e589d959d6f56d9d03986520923ee89ee4328822a6fff190251" },
+  { path = "references/sweeps.md", sha256 = "c59012acf49ec73b0bbf4b2ff7713d0611d1372ba92a9e21337ae76d153a1f0d" },
+]
 stripped = []
 
 [[skill]]
@@ -2196,7 +2433,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/huggingface-hub"
 verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'author'"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "10d5bdf26e08ce4728923d8321493d1d18f7413f3a621e64c8feae6263cfe54c"
 refs = []
 stripped = []
@@ -2206,10 +2443,18 @@ name = "llama-cpp"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/inference/llama-cpp"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "9c1ef45f6197fbc08b643416d5f2c2e5469dbd45fb01e17cf48a0406ffacf8c2"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "8cd208f93a6d8ed91ef08aa60c9d7dac4b184e26b8cf9b778de906938e5e78b7"
+refs = [
+  { path = "references/advanced-usage.md", sha256 = "ee7ed3b7c06b393b85109d5aa4816cf7d6e6fd2f0a8fdbb90db5eb03ad301f88" },
+  { path = "references/hub-discovery.md", sha256 = "b53ab078551d41089c6af7180ce7bcaec469b05966bd2282804697043168e640" },
+  { path = "references/optimization.md", sha256 = "4e89811c0827f5eb9deb9fc609cd441eb197fb0fa85e79dd8c1f272b14a669fd" },
+  { path = "references/quantization.md", sha256 = "6e3039e2230d75d1d97a3d5712be3b31f6ed3b6feb58cbf313c84e1968f7f51b" },
+  { path = "references/server.md", sha256 = "bd1dadb7e72f6b98086ea57772263485008990e11309b31c2f84ef2cc7d20321" },
+  { path = "references/troubleshooting.md", sha256 = "a83f9df40a6db7857b4b3ce3a982da7e939680ee89079170d4d258392804e09c" },
+]
 stripped = []
 
 [[skill]]
@@ -2218,7 +2463,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/inference/vllm"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'serving-llms-vllm' does not match its directory 'vllm'"
 skill_md_sha256 = "ab72192b7aee4e6d5db617a286ef2733911eb4f38313f67e1d0fe9cdba69fb3e"
 refs = []
 stripped = []
@@ -2229,7 +2474,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/models/audiocraft"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'audiocraft-audio-generation' does not match its directory 'audiocraft'"
 skill_md_sha256 = "eebe52632e3312a55a352d766828e7153b2ee23e2e67c0e4e874474e5c52198c"
 refs = []
 stripped = []
@@ -2240,7 +2485,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/models/segment-anything"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'segment-anything-model' does not match its directory 'segment-anything'"
 skill_md_sha256 = "86440d99e8ec3bd7f0a92640d62bf307915ec2a7154e45dd55a214d58ee6966d"
 refs = []
 stripped = []
@@ -2250,9 +2495,10 @@ name = "obsidian"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "note-taking/obsidian"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+verdict = "include-as-is"
 skill_md_sha256 = "b3f669a8a14611c48f512f751eb0873f958b8bee3d944760fb8aaf269a2c4f55"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0c111c4887be2066f93db26d8c9e1d8a8d75bda071206fa5b02ab038ed2f61b2"
 refs = []
 stripped = []
 
@@ -2261,9 +2507,10 @@ name = "airtable"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/airtable"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 11: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "016198b563b8f8c4441b002bce8ad0e0865f2f39f1da22476beb7a7daed482aa"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "cb0a78def0783740d6ffcbe885a2cab408e11e4dd2038977b595170689596f72"
 refs = []
 stripped = []
 
@@ -2272,31 +2519,38 @@ name = "google-workspace"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/google-workspace"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "014a4818ee1b363d11fafa2353bcea4fd4f8e0c0802322708023d3cd2e3f43b6"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "c81d9cb7c1fe232ea0606e7a6c77eb7751765178d197e681ade710f07e12735d"
+refs = [
+  { path = "references/gmail-search-syntax.md", sha256 = "340b78000fba67b9c5373978185446eb549a474870decf8c439edb03b3883bc5" },
+]
+stripped = ["scripts/_hermes_home.py", "scripts/google_api.py", "scripts/gws_bridge.py", "scripts/setup.py"]
 
 [[skill]]
 name = "maps"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/maps"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "8c961ecf662838e3ff287570d343db8b1587ca7a6d565ec53eeab13f89407b29"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "b3e3cd1bd68222c82dde670f79807f378b637f8e113e7b8cc8c5772240417325"
 refs = []
-stripped = []
+stripped = ["scripts/maps_client.py"]
 
 [[skill]]
 name = "nano-pdf"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/nano-pdf"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "4243b329789c6d7fcea95749438228e5f8cbc0234cd44d2d72cd86f837bf1f35"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "5396186be010c63b6f67da522bb97bd115a0418029f961debb5d7cbcfff7981c"
 refs = []
 stripped = []
 
@@ -2306,7 +2560,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/notion"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "798ad178ead72ad3056f5301e83b447fce3407de07d5ff8b0209b134b4eae866"
 refs = []
 stripped = []
@@ -2316,20 +2570,25 @@ name = "ocr-and-documents"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/ocr-and-documents"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "720a1f1a534167ef29b563199e76e3146b2d77b3455a772c6eae5696ef7a384a"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "3d883233f46a22c15c55f747172cf5252301f6c372a0c922eaa9409c2b4ac8db"
+refs = [
+  { path = "DESCRIPTION.md", sha256 = "0da2ba89cf066f7e554dc00fcfa05b2d10c300ec693394a9136d27ce3fc2d1e2" },
+]
+stripped = ["scripts/extract_marker.py", "scripts/extract_pymupdf.py"]
 
 [[skill]]
 name = "petdex"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/petdex"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "ca52cda72a9c49d60c4a3c2dbfa6c64c87e62562857b598599cc496b30116fd1"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "31affbab01e36b0f548c98fed6c46a576481ab3c12147f4ce6a87bc28db95758"
 refs = []
 stripped = []
 
@@ -2338,20 +2597,27 @@ name = "powerpoint"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/powerpoint"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "bb2084f5da312eec50f8ab3b1cb0f6ad3a86f4933f521b273fdc4dd1d4f52ada"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "d7ae96661df19bf87cbc5e0499c08d37d9bf4eeeae31734a33e94d52e8c88ac0"
+refs = [
+  { path = "LICENSE.txt", sha256 = "79f6d8f5b427252fa3b1c11ecdbdb6bf610b944f7530b4de78f770f38741cfaa" },
+  { path = "editing.md", sha256 = "6cb47c3ab17e60b7de37e83131c409ef5a90a01bfb54e999905a9c9f7dd88e68" },
+  { path = "pptxgenjs.md", sha256 = "9539534d92b7170813b735a448750df3580390da2da6c52a02b687ed53ecba86" },
+]
+stripped = ["scripts/__init__.py", "scripts/add_slide.py", "scripts/clean.py", "scripts/office/helpers/__init__.py", "scripts/office/helpers/merge_runs.py", "scripts/office/helpers/simplify_redlines.py", "scripts/office/pack.py"]
 
 [[skill]]
 name = "teams-meeting-pipeline"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/teams-meeting-pipeline"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "5d3091690cf52058e6c87ccfe10688bfa44cb129db8a567a7be59a88035a128e"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "782cce19a6434c84cec3daa4aa5a9928b7e73c83bd16802b2e6a58e16682094f"
 refs = []
 stripped = []
 
@@ -2360,20 +2626,23 @@ name = "arxiv"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/arxiv"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "2a6073a1ad08823dbdf26be64440b54155298db38fdee52c7b0a5d1cd0cfb05d"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9e5613ddc74fd70044654091c026134f63290d3ab062ef0062956c9efa404262"
 refs = []
-stripped = []
+stripped = ["scripts/search_arxiv.py"]
 
 [[skill]]
 name = "blogwatcher"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/blogwatcher"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "b85be5a9b86b90287266dd142a0ae9740be926298fbcb772f56b8a4d6451bb12"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "b4e30240628a2f59fd4c714c7328c1d07e97176bf65342d243a528f95e3bb849"
 refs = []
 stripped = []
 
@@ -2382,9 +2651,10 @@ name = "llm-wiki"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/llm-wiki"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "a37ae04745b04b8e9bbd8de37cdcbc2b2187ccafb68418e436a46ebb1e491ee5"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0501165a113b4c51f1e6323b547400d6a06cdd7da41bb911863e4c4b10773091"
 refs = []
 stripped = []
 
@@ -2393,11 +2663,15 @@ name = "polymarket"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/polymarket"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'author'"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "becfa71e730b482c3f087c4de4071fd25f0feb475aec1293aee0b845c10fa190"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "6c694c23f46447ea83721fbb2fa5ee9703eb50c9429b8196d74111ead4c73c0b"
+refs = [
+  { path = "references/api-endpoints.md", sha256 = "d000b3c89c51fee874d5e097f9b9f057c353734710b567915b4189e54ca176a3" },
+]
+stripped = ["scripts/polymarket.py"]
 
 [[skill]]
 name = "research-paper-writing"
@@ -2415,9 +2689,10 @@ name = "openhue"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "smart-home/openhue"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "550f94848d10ab82619db8fec240a4d2b792c33606fba5d391bf3a78bc1119e9"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "ae3b011b95737359200f4b8b63f9a3a9abd3456abb2e12cff8ba111dca8ac208"
 refs = []
 stripped = []
 
@@ -2427,7 +2702,7 @@ source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "social-media/xurl"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "8b1899dc7188328a6589cd62ed594591c2d243c483bdfbd45c8a027f4e0332dd"
 refs = []
 stripped = []
@@ -2437,9 +2712,10 @@ name = "hermes-agent-skill-authoring"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/hermes-agent-skill-authoring"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "7d3aa79739df5c17424869fe3c783ddeb5c340d6b4b30a993100f982b24eadd6"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "536260577b48f349489aaa0f34e760ce849fe03c311a110b50ac4c06aceca4af"
 refs = []
 stripped = []
 
@@ -2448,9 +2724,10 @@ name = "node-inspect-debugger"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/node-inspect-debugger"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "f2f72c0c9e67143effc8cb9871a242309813af72c61b8d62548ae275c86f2d08"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "623d3c06b0869f090c9f25301a581a71fff240fb538656f5e72a81e6d4c06c7f"
 refs = []
 stripped = []
 
@@ -2459,9 +2736,10 @@ name = "plan"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/plan"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "399038641c1905f44c57c8eabf87206ef972f967028daf3458c9d17f61e64fd8"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "bab8345bb37ce60f9a5296febe3d646ac3e4c3c592953af60af1bd7df18b1510"
 refs = []
 stripped = []
 
@@ -2470,9 +2748,10 @@ name = "python-debugpy"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/python-debugpy"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "ce7e38367ea54fb86e32d41be2fb3682482b7e3d748316cb666b3d4e3ca51a40"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "c1fc3d18ab32176a0600aa306c3b54f4f712941476a6e669ea43b0d7917b5c75"
 refs = []
 stripped = []
 
@@ -2481,9 +2760,10 @@ name = "requesting-code-review"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/requesting-code-review"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "1126afb626b38f5b398afac61de1c2c5551913d020f7c745e5468a78f143bcfd"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "8af91ec2cc28ea904ddf4e32ef9c5a882501de4f9d4cefaa2ef11524ac0cabef"
 refs = []
 stripped = []
 
@@ -2492,9 +2772,10 @@ name = "simplify-code"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/simplify-code"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "5549142eb234a6decabf8c4ff59dad5279c80997bb7c9b14405fd4edf81d7b6c"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "c8f5965aaecb872879c05236aebff63142bffcd9b70f7ef3ee2859f1421af897"
 refs = []
 stripped = []
 
@@ -2503,9 +2784,10 @@ name = "spike"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/spike"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "891bc0a6fbb7aa6cb4164e48e2d20aae56aad7bbd83d20d093ba89a8ed2b48ab"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9fc33adcec9673b20de9607d2b8fba5b6690aee585b07d87fcf06ec2889b4c7a"
 refs = []
 stripped = []
 
@@ -2514,9 +2796,10 @@ name = "systematic-debugging"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/systematic-debugging"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "ec6c97b1d5534a86328ded47e607a7cfb797629ddb1eb842b9a36b298c4b76d3"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "eee0fe43896ecaf103c5e4f1bdf1ba5b44a991ef37d3ef1993652fd089f8e2d0"
 refs = []
 stripped = []
 
@@ -2525,9 +2808,10 @@ name = "test-driven-development"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/test-driven-development"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "39361054f58ecc8de9cac0f1364aee94e795a446030bb57595f7b7ca0c1ffbbe"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "14933b0515c9120f8c120a4fdce4405f846bf2fdb155124c0006a10a1f657895"
 refs = []
 stripped = []
 
@@ -2536,9 +2820,10 @@ name = "yuanbao"
 source = "hermes-skills"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "yuanbao"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 6: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "239e4875f511124fab06e94ff21511fd8f857554c6ffd82dfb796ed275b4ff32"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "5d632151d257bbcf704878cdae610b6ed2a1371ec9ad7e2728b1bb886d9db765"
 refs = []
 stripped = []
 
@@ -2548,7 +2833,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/antigravity-cli"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell, safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "d697957e832c0c17c807464d106a471b8be15f573049b1f008c700ff89506e4a"
 refs = []
 stripped = []
@@ -2559,7 +2844,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/blackbox"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "fd66cd3748724a4869b8e0046642a6348b72572e51154459450d5e7c0da5e95e"
 refs = []
 stripped = []
@@ -2570,7 +2855,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/grok"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell, safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "a19ba446be039abbf5323b44c3eaca06f71e4df86189c2885c135fdea1e35cfb"
 refs = []
 stripped = []
@@ -2580,9 +2865,10 @@ name = "honcho"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/honcho"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "d592e79a28a16629dad192e9bccde86ea3ef3284a0259b1157a8175d1cfa8692"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "1b0c04da6d6cdd28ced0231a32f2d55faa4fa670788480bea562eb76fc37ee53"
 refs = []
 stripped = []
 
@@ -2592,7 +2878,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "autonomous-ai-agents/openhands"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "ff4f504c5cd1f010ecf2efae802b486798f1a26b098a4bf24ada018e754f2c72"
 refs = []
 stripped = []
@@ -2602,42 +2888,49 @@ name = "evm"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "blockchain/evm"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "cd1604e4b0712bd7d710899f887f012ada056206eb51e2da687bd208b94e3695"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "b19f5da01f3eaf234a78608b27411fa69c18e6a169ac4e3c74919b082846af73"
 refs = []
-stripped = []
+stripped = ["scripts/evm_client.py"]
 
 [[skill]]
 name = "hyperliquid"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "blockchain/hyperliquid"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "5dbf6d0a355ed25360c69e7147d9b3e406040827f75c4c89d0d4b1140149e227"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9293b069bfbfd6c5070d94a2ad8016f3cc4e66f1ef1974a89e8634072932b0fc"
 refs = []
-stripped = []
+stripped = ["scripts/hyperliquid_client.py"]
 
 [[skill]]
 name = "solana"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "blockchain/solana"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "1002083d99926218718185164754c0acc0290f226ce602c0e19b337b0f520e51"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "2c3618c5c8338e84b7b79e9eb9accea953754fab6d3887b25bc43d54f091c141"
 refs = []
-stripped = []
+stripped = ["scripts/solana_client.py"]
 
 [[skill]]
 name = "one-three-one-rule"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "communication/one-three-one-rule"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 16: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "e2da7f526aa812a34a1766fb05fe1c1720e253eddf1290312092735f60ecf5bb"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "b4a5af3990367f85c8d496a110f37a43e360bc5453d8c1e6ff9c1a1743aafd93"
 refs = []
 stripped = []
 
@@ -2646,10 +2939,46 @@ name = "baoyu-article-illustrator"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/baoyu-article-illustrator"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "9de0861d5fe4da97d053aa972baffc68d7271c0bc13344161ab36f9f67827aa3"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0e9ba667fa761435b9bde6861e1ef40b2577f94a1e7f1392c572c0d756310f4f"
+refs = [
+  { path = "PORT_NOTES.md", sha256 = "062dfd16b97ed055839da2a14e258d407197c298fa48800f36cfcbe957c951eb" },
+  { path = "prompts/system.md", sha256 = "62492d3874b8c103bdeba50611dfb571a20e65923afafc25775e7df95fd86269" },
+  { path = "references/palettes/macaron.md", sha256 = "29735369d5a56d0c24652806ff6326d1716a3c8fc8578e03f4cd8d31b80f1060" },
+  { path = "references/palettes/mono-ink.md", sha256 = "a45b5ba9656c56d44e3b4774cd8454bd68ea8a0ee93defa823906c7b1bb0b055" },
+  { path = "references/palettes/neon.md", sha256 = "9b2689b9dc7d0d3382f9f0a7a80c25ce7305e1cdb58e5699f2dbb969af4a8349" },
+  { path = "references/palettes/warm.md", sha256 = "6db979618df3b217ad0f46a4fe897e32bf08c0e3189a3873400b2ffc7175041c" },
+  { path = "references/prompt-construction.md", sha256 = "221badadf42d56e64a8275c21a7872ee5b47579d87489a162e341bcab94d1893" },
+  { path = "references/style-presets.md", sha256 = "2cd47e5be9b807522ddb030484563a1a9b9163668a815c7f5fcaf58d32857c0a" },
+  { path = "references/styles.md", sha256 = "e619cc16e970b2cc00ba840f2e0e3698396ce37b2b74c8303874df716a08b29c" },
+  { path = "references/styles/blueprint.md", sha256 = "4836bdd8c4fcb17694b3010fd21c091e0b2234dca2aafe0ac5fd046d5fb24f67" },
+  { path = "references/styles/chalkboard.md", sha256 = "242f11f226016b388c4d69f1c950fff78a0462ebe47109150b8cfde53b793366" },
+  { path = "references/styles/editorial.md", sha256 = "ca096334d70ff7b96ab32ec7796e0c49d60eba1fdb934249559976c33daef008" },
+  { path = "references/styles/elegant.md", sha256 = "8bc8ad9a290646f806e2447af513f9c4df76befae6aa3ad777b02bb514b92cfc" },
+  { path = "references/styles/fantasy-animation.md", sha256 = "5bc59a1780be6682a21d211b9b4289056c7f44aeba8016560bd2ef7ddb454e3d" },
+  { path = "references/styles/flat-doodle.md", sha256 = "094beb61d541c2b2afc73a1162a1f4962e8ef6c4caa03f67c09c2f8637b52e24" },
+  { path = "references/styles/flat.md", sha256 = "999afbadd7a32138e6036ee13f23da9f199e82deca351dfec2f29ed9abced28c" },
+  { path = "references/styles/ink-notes.md", sha256 = "5fcb449e9343271498c23642618ebc6b4df1029c3356f42c78abb1c9fd7128a1" },
+  { path = "references/styles/intuition-machine.md", sha256 = "7009797b135ef1d9752b81d9bf71d4035039207602edb18b74f8c6bd82413201" },
+  { path = "references/styles/minimal.md", sha256 = "9f45c7852e8b053e1083737a3ca79b175556121951792f814b47f9c596be6e1a" },
+  { path = "references/styles/nature.md", sha256 = "44302deb399cdd5856439b493ffb74925866f238c8bc6379094cab93b05ed631" },
+  { path = "references/styles/notion.md", sha256 = "52efbd2587c46104e2b47bf2e259a3a1bb8546ad5ed15b274a374d9af1a5b314" },
+  { path = "references/styles/pixel-art.md", sha256 = "3c6a7ce22957179e3a344c4ec8085793951ba2dbab59d8315fe1b5af24a19246" },
+  { path = "references/styles/playful.md", sha256 = "ea58b9791b4babd3eaeb2d7285fec44ad7e58d3416ec415e564d7207d00d0940" },
+  { path = "references/styles/retro.md", sha256 = "6f69883852c693f314f0f1dd3ab1f025aaf4bd4c6f0708dbeeaa74fe0c9066d7" },
+  { path = "references/styles/scientific.md", sha256 = "0d360a3ab10df6d6dd47c9cee76fa18e3a57fd805d52df84e0b7e24ce315befa" },
+  { path = "references/styles/screen-print.md", sha256 = "52faa0188b7beb71d118d6ef4e936891e615d02eadada8ccf8b79665f605a9f2" },
+  { path = "references/styles/sketch-notes.md", sha256 = "9fd928a3c49f9e371b4a2b9e9fc2b8ad678f8be7184e9f79f12c96b1ab1652a0" },
+  { path = "references/styles/sketch.md", sha256 = "e74cc5696fbeb7e52be9cf126784c4a8e58787a5810e3b84f2972cdc69689aae" },
+  { path = "references/styles/vector-illustration.md", sha256 = "9b28324319a29f82480401e092d513f9b212571d283bc43c6a8d029f829ed027" },
+  { path = "references/styles/vintage.md", sha256 = "b10f965bcdd7951927614a958159d1081aba3f841c97096c704f8ab2431642a6" },
+  { path = "references/styles/warm.md", sha256 = "bebcacbf585b7dd47939a58923a09708aec708afdd88b0c372efe3c1fe461394" },
+  { path = "references/styles/watercolor.md", sha256 = "d66b08079ea4d99d80691fe2a0aef6075ad58ec7adcc1f8976d7ac0249804cb4" },
+  { path = "references/usage.md", sha256 = "83d2ebe50890a411c672bfb86afc048cd98d1054daef134e82aae64a57391aef" },
+  { path = "references/workflow.md", sha256 = "1e21ee7665fb71896a02f6b300734a16580ec06114be5443fa4e1f6265e7f200" },
+]
 stripped = []
 
 [[skill]]
@@ -2657,10 +2986,46 @@ name = "baoyu-comic"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/baoyu-comic"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "39daa86a4c9737a51c2734455a4b27f3fd35eb80ae2a70820093d4354a1e2de2"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "5a787df7866bf2ba3c4689a31e1dc3f6e387553d7ff0937a9e0e775fb6aa6781"
+refs = [
+  { path = "PORT_NOTES.md", sha256 = "6af24f784063dad0e8814feb4304072f4202415dffc32a2ea15169b38891534d" },
+  { path = "references/analysis-framework.md", sha256 = "7917f3552fb4f0b8eba8671d63b4970de31c9308dfdc7a9e9872c15bb45cf726" },
+  { path = "references/art-styles/chalk.md", sha256 = "735f5eea5723d1d6c9e136f95d509661dcfdf4aecf376da1a610380561783c06" },
+  { path = "references/art-styles/ink-brush.md", sha256 = "cf43c5345bc8c80b4f0f7c2ce4810392a489494af248cd8ff6c21831fb839c9a" },
+  { path = "references/art-styles/ligne-claire.md", sha256 = "8906cb27124d23c3a31953b54b6c30eff4d35608f99b38fe5d05dbcdf7a62cdc" },
+  { path = "references/art-styles/manga.md", sha256 = "b2ea678169e7caa473205f2c33ce973d9ad7b2a9249efbc156cb946ef6314cf5" },
+  { path = "references/art-styles/minimalist.md", sha256 = "d5ff796d5cb517751f58f94af8b58a7fb0485c83acdbea6722d93067932bead6" },
+  { path = "references/art-styles/realistic.md", sha256 = "6b12457bc3d30eac36aa47862e387a0ef75899422a2298de4fb361d2fbdeba46" },
+  { path = "references/auto-selection.md", sha256 = "1d5de33377dbb0c97f90d51e8e8c62049b9f68eab7cb1e67fb4e11958d12bf2e" },
+  { path = "references/base-prompt.md", sha256 = "9cea612602d354d3ebe5e4d0b4619e615e4ca7b94cfe3c4a012c942db2194d37" },
+  { path = "references/character-template.md", sha256 = "4a1479a239e0c54de327e16fbb2e58aa707652f66152283669aa94382a598210" },
+  { path = "references/layouts/cinematic.md", sha256 = "5ac2a2aa0fc0776851e8af478b37b9fc831047a3bd9f4a83347b7927865cb7e5" },
+  { path = "references/layouts/dense.md", sha256 = "0dde755a4f36cca13fd5937cebbb1daebb00769e6480b799773270b6187361e7" },
+  { path = "references/layouts/four-panel.md", sha256 = "89819b87e5fe2227003f45e3419a9d5d07430256b1aedad6c6a0bee3e52b68f3" },
+  { path = "references/layouts/mixed.md", sha256 = "bd69b3bfca5b5d5986d0b9885645ba24a8a6a26efbb2760ac7cbf249b13c831e" },
+  { path = "references/layouts/splash.md", sha256 = "eb7c74f8c006ddffbb345737732773b55202be3b3f5f4350f2993323b1e5113e" },
+  { path = "references/layouts/standard.md", sha256 = "4b498faee176acbaf6638129bbd91efaab2bbf6dd972facb47b5362884a7a583" },
+  { path = "references/layouts/webtoon.md", sha256 = "2de64e32988aaa14779806007dfdbe382f0b423e0a0cea041d1a1c816ed382e0" },
+  { path = "references/ohmsha-guide.md", sha256 = "f4efbcfbb232079762ca09a3830cff2ab1ffe435ec89efa63055ca6e1be645dd" },
+  { path = "references/partial-workflows.md", sha256 = "2d6f8527082778c72dab8d17b3bd8ca61481fd8594cddc0768228f7b716debc6" },
+  { path = "references/presets/concept-story.md", sha256 = "00e667ff72abee8dc39ebc5f1579976f6df9444e63dcce80332f38daa18dede5" },
+  { path = "references/presets/four-panel.md", sha256 = "2d41f004ce8e5d02f22c71c86fc57d02315c069fc7fb4023492c86d92911f6f6" },
+  { path = "references/presets/ohmsha.md", sha256 = "811ec3e61a4ba9b59be71e19f2ba571b4a4e331ab0d167c7a7a1d1b102f28d54" },
+  { path = "references/presets/shoujo.md", sha256 = "194353514a875356432514db25c299bbe0aaf01c1e4bfc8a36b98e129533e8bf" },
+  { path = "references/presets/wuxia.md", sha256 = "8f4df8d695a337afb5f1b84803bbcc3d84ee3131135323311682f237a77a9846" },
+  { path = "references/storyboard-template.md", sha256 = "917836d5fa0e2c19e52dc827c994e5773a56a2d15e44f89805e05259e8747b34" },
+  { path = "references/tones/action.md", sha256 = "c62c2f2a64557a20d1d3c29bf60f2cab0f144b5be423fec0d6cddbebf71e7ec4" },
+  { path = "references/tones/dramatic.md", sha256 = "02fe6d7dd1b7c49e9f1b12f39f25b570b625567bd52a7a5b3ddf4a11e4f745d7" },
+  { path = "references/tones/energetic.md", sha256 = "f2ab2580fa60f03ac69155d6af712322841875b2c0bbbb84bc5d8f3185210571" },
+  { path = "references/tones/neutral.md", sha256 = "fc0cd10f068cd5adfba703f903867dd08dbbaf6d1f4eee7a98a107e8e5db68a7" },
+  { path = "references/tones/romantic.md", sha256 = "7d51adc7c5b2ae681b64d4d7425900afe7ad38f22a0d30d887bc6e7e1d603c94" },
+  { path = "references/tones/vintage.md", sha256 = "6cc33000124283d91c885059e7e7d933b8e7070a6887e412bd8c32c276372564" },
+  { path = "references/tones/warm.md", sha256 = "a80705960f18d23f1717c52b51e2a681f300dcce1f827fc1a5890fbb16811d1d" },
+  { path = "references/workflow.md", sha256 = "424bcbb2ddea8b6808ccacc8b21c870389dddf17c54c2153b6884799d069abe4" },
+]
 stripped = []
 
 [[skill]]
@@ -2668,9 +3033,10 @@ name = "blender-mcp"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/blender-mcp"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'requires'"
+verdict = "include-as-is"
 skill_md_sha256 = "0edd9c57d0171b28bd0350eea5af8a312bcc02352282dc4eae49322fabf41aa6"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "aeaa1608fc5512367233de1f8020828654be967d9aaf81966b75fab239c248e8"
 refs = []
 stripped = []
 
@@ -2679,10 +3045,31 @@ name = "concept-diagrams"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/concept-diagrams"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "7691a8201899b259a3058ed90f5b2c983c1c3ab4c7295a09f623cb97d5cddc41"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "e549ca412a89fa3b986e0911d5b89ef8c2eccd99a414ee295e8fdbc1dfe48770"
+refs = [
+  { path = "examples/apartment-floor-plan-conversion.md", sha256 = "ceb12290ea71a3ec13f54c3dfde169fd4535a05d2a0687ff9d85b1bcd7200fb5" },
+  { path = "examples/automated-password-reset-flow.md", sha256 = "c208e230b4a9ed33e6f2e55a6f74bbcdad239cb3d3034337ffa3f9034bf56082" },
+  { path = "examples/autonomous-llm-research-agent-flow.md", sha256 = "e736920b94e8f89e6f0275f1a94bad43843c0291e275a26edc0157dbf5545d86" },
+  { path = "examples/banana-journey-tree-to-smoothie.md", sha256 = "84ea5c0351d7cd329a97cf4890517879cdd85f445b77f442a2542a609d0ccd70" },
+  { path = "examples/commercial-aircraft-structure.md", sha256 = "baf688d75122cc5e66393efad04244121040315b4b5e8a2ad1783d0918451b26" },
+  { path = "examples/cpu-ooo-microarchitecture.md", sha256 = "1870f34507b3ddd75101d0d4cc12de46fd789ad15280f900a8ba9a60a076e6b7" },
+  { path = "examples/electricity-grid-flow.md", sha256 = "54815922d842f66fc689cde362f84543e003468d85369e7827499e99a6599e71" },
+  { path = "examples/feature-film-production-pipeline.md", sha256 = "3c98c6bde3458aafef8c7b62067a14f767580a3652c90803a6a7c6ab400f7493" },
+  { path = "examples/hospital-emergency-department-flow.md", sha256 = "0bae6b4d276c1cee035e379b2cf4824a462976b58e86cc976349dbc102e77977" },
+  { path = "examples/ml-benchmark-grouped-bar-chart.md", sha256 = "98ff16c3d9d22a3c5a5b699e028f6a080abccb1e8fbf6c8e62d8cba8dc5fd851" },
+  { path = "examples/place-order-uml-sequence.md", sha256 = "f162b36f0b849dde48800e91a11f07f1e7cb8728620d9ce4223820bede6414b6" },
+  { path = "examples/smart-city-infrastructure.md", sha256 = "7ad7762ebf1b205ab37990c86f91fd493cbdf5ff659242ff72fcfb9fb1777ffb" },
+  { path = "examples/smartphone-layer-anatomy.md", sha256 = "dce5b194797fbecce59e69ecec87f5dffaa82eff06cb6531e4d4e2dcb8e2f188" },
+  { path = "examples/sn2-reaction-mechanism.md", sha256 = "1c4c7e62d31e8be5abdf00f19fe656c504d294519b96bdce539767fa518a08da" },
+  { path = "examples/wind-turbine-structure.md", sha256 = "392aa932db6b626582dc8cfd4e89c4a99571c2edad032501fe7e4819a3bdba30" },
+  { path = "references/dashboard-patterns.md", sha256 = "09db70368ea5a176388289491e9e30a0478422fa2913272a33cc389caf8cbedd" },
+  { path = "references/infrastructure-patterns.md", sha256 = "ece5ef64f425ca6c736bd5acd994f3577142c53383812c2acf89449efd4e450d" },
+  { path = "references/physical-shape-cookbook.md", sha256 = "37a57278ab296761fbe9a26ece1a312a947b69a2904963e33698572085b78b63" },
+  { path = "templates/template.html", sha256 = "ae903da95a3a0a94da555bb22a689fba7a97c87659d581bb19ef089c7cf96973" },
+]
 stripped = []
 
 [[skill]]
@@ -2690,10 +3077,39 @@ name = "creative-ideation"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/creative-ideation"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "b0b2a36387ecdf363550a341ee6941fe4fae0443564d730c0121a6a66114f36c"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "c0508f3f557c6c6cfdba4cefb96ac668d3e1f42dd3240f286a0c3f88e8852011"
+refs = [
+  { path = "references/anti-slop.md", sha256 = "796a13eb2261da541bc88e998107bde05051afe98d4593067014870ddbec4622" },
+  { path = "references/exercises.md", sha256 = "26d06abe06a0e9fc0777fdd1c94845bd7438d2085ebcf720b614cc4304193817" },
+  { path = "references/full-prompt-library.md", sha256 = "2ff29d678fe05c5f4e3bf8cfa427fa388f04af1817820acde03d34d325ee403e" },
+  { path = "references/heuristics.md", sha256 = "77e4a4e6d84d46a2032dacafce7f3aac7c84369d0567573d3f543454791ac71d" },
+  { path = "references/method-catalog.md", sha256 = "7e2c3ea7a665b34e869732cc9cbe1e3fb3bcaf2775925b764c1985af8375ffc8" },
+  { path = "references/methods/affinity-diagrams.md", sha256 = "530d23c4a5318081abdb02dd9a16cdccfb710f6ff3c59ca4c655103847ca1ee5" },
+  { path = "references/methods/analogy-and-blending.md", sha256 = "c4791856bd9cfa6cc466a7afd41a6d575e8ea891f37c3f82cc5615df6acc0d36" },
+  { path = "references/methods/biomimicry.md", sha256 = "858c03f00d012274ee1dd8ecb1dcbc3f0b863dfeffc81a5aee850a013ba6afb8" },
+  { path = "references/methods/chance-and-remix.md", sha256 = "9598c9f6ebafdfa23c4066b50b6fb9ebe2c45867786095b7775d8b5e52163c94" },
+  { path = "references/methods/compression-progress.md", sha256 = "bd4950f559d03ef2a225adc73cf6452acfc3d8863e41cf82ecf518aae26c29f0" },
+  { path = "references/methods/creative-discipline.md", sha256 = "c9bb83348fd90b1315c5d78bbbe4f18d30b3c1b8378037588442cb38404fa77d" },
+  { path = "references/methods/defamiliarization.md", sha256 = "588095139e2d48ab2c1af5af74676aca0bfc922f2d294c69dcb7c8351b3f8878" },
+  { path = "references/methods/derive-and-mapping.md", sha256 = "16b88dee7743896616c4e81aa24cb736a4b85597f2527bc1094914d16108e354" },
+  { path = "references/methods/first-principles.md", sha256 = "a16641171d7c2f2174f11ebb265a62d05e4872f41fb0165d8b59b5652c82a071" },
+  { path = "references/methods/jobs-to-be-done.md", sha256 = "35572cbcb92f3281ee066821dede7d968b319be5c9c51a842f8852efa63adf27" },
+  { path = "references/methods/lateral-provocations.md", sha256 = "de8149d9e88b0caf2fed9204fdabf5aded1fca374820a79bc21e228a1be01f8f" },
+  { path = "references/methods/leverage-points.md", sha256 = "64843a765d197451c5a6b914f27ae96e1332df6196d39b52298f62609c5c3cbd" },
+  { path = "references/methods/oblique-strategies.md", sha256 = "4dfeb8b6fe9440c6432c77d8c14a680a4494fd42e8732269e18515e0b26d163a" },
+  { path = "references/methods/oulipo.md", sha256 = "939f40ca502fb462a63609ef98f8cf484b96dd57ba380cfbbd5eb4eac36eb946" },
+  { path = "references/methods/pataphysics.md", sha256 = "23440de3e5a336154c24c002a66238cd1ddce166675a479a56d505c1e157af1a" },
+  { path = "references/methods/pattern-languages.md", sha256 = "4337612cae61449b33a09417dffb4f078437c034d018d70d0bce94191a9c6040" },
+  { path = "references/methods/polya.md", sha256 = "3d2cc6a75fac4cb488ddfbf8c895d7545fe7847f8f7ee6f58e4d44e5f99bcb33" },
+  { path = "references/methods/premortem-and-inversion.md", sha256 = "188f1897e66276942bfadd0c54b1821b867487ff60ee9265583bbd439497a71f" },
+  { path = "references/methods/scamper.md", sha256 = "73ab6700be4c46723a9a0d74845ce3f7ea0f722b476046ce440481790ec0cc6b" },
+  { path = "references/methods/story-skeletons.md", sha256 = "17925ac3f62ecb730561bf118a0c2e55d509cc4c8ec85394b51506435bf73881" },
+  { path = "references/methods/triz-principles.md", sha256 = "a4c877bc84f5fec2318c7a4929b86dbf1e48186d9510aff2e9a103ba9198c7a7" },
+  { path = "references/methods/volume-generation.md", sha256 = "605a9b158a5d7f6305d61c7c14f50584e87b8201749492256c8e3d352c35e06c" },
+]
 stripped = []
 
 [[skill]]
@@ -2702,7 +3118,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/hyperframes"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: the name collides with the admitted frontend-skills hyperframes skill; one loader source cannot hold two skills of one name"
 skill_md_sha256 = "da32efe3b316e1a2b13eb43ec1f94d0f1baf4d22803275206e487e204604f163"
 refs = []
 stripped = []
@@ -2713,7 +3129,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/kanban-video-orchestrator"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "2bd6a08de5f310a085d58710a0538668b1723344f4436b8c5a471fb567d03033"
 refs = []
 stripped = []
@@ -2723,22 +3139,31 @@ name = "meme-generation"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/meme-generation"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "7b78562bf82396285865948b33dbb674b95527b9fe7a197f838b395dd7cf295d"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "7dfd73a8251bbc735ec2e1a50e352031be77e3c0eedb75ba2bdb8428904113bc"
+refs = [
+  { path = "EXAMPLES.md", sha256 = "cf246c6b103855592fe5ddc67d67861b93dce51dc38091126dba969eb6dc1197" },
+]
+stripped = ["scripts/generate_meme.py", "scripts/templates.json"]
 
 [[skill]]
 name = "pixel-art"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "creative/pixel-art"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "01f351726675bb5ec258ca891bcd03ad6dbb51d4c16fe8e4ed25621ec2f1de04"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "fe64b4cc9fca41624cfa3538f087c3fa603265eb3216eddba840548522a31b88"
+refs = [
+  { path = "ATTRIBUTION.md", sha256 = "16e33382764250a5da332c3727e2383ae27ea5ddd05c0ef52071cb94d3562c22" },
+  { path = "references/palettes.md", sha256 = "ee2f510b1b3a6913f6ec19fb716573c173d8d251413fde4a8622009d6b5934fa" },
+]
+stripped = ["scripts/__init__.py", "scripts/palettes.py", "scripts/pixel_art.py", "scripts/pixel_art_video.py"]
 
 [[skill]]
 name = "cli"
@@ -2746,7 +3171,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "devops/cli"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "loader would refuse it: name 'inference-sh-cli' does not match its directory 'cli'"
 skill_md_sha256 = "7a41a46d63224684dfdb2dac74795a2c1bed4b92e896d8c52eb32e8061685d20"
 refs = []
 stripped = []
@@ -2756,9 +3181,10 @@ name = "docker-management"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "devops/docker-management"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "0e362cce7c39d0d264c3269b0c34b6ffffa8ca92403545af9ca271eccc0ff2c4"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "260548ec1e80c05408c4f0d184e02ecf1880b7b1ee66bc1932c12c3b2568ff46"
 refs = []
 stripped = []
 
@@ -2767,9 +3193,10 @@ name = "hermes-s6-container-supervision"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "devops/hermes-s6-container-supervision"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "ffa655617945c85fdd29e4bc9bde765ed3873f7e6ca3e382be60e9290709aad5"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9c3fb312ebd723a669cb4900decfdd19f4c353dea43442dd878d73c7b39a2c5e"
 refs = []
 stripped = []
 
@@ -2778,9 +3205,10 @@ name = "pinggy-tunnel"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "devops/pinggy-tunnel"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "fd58677ecd5fddd7a94249827d1137fa9a32fd43a8b6c1b41c4085eb2629a80f"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "5fa55c1e5ee9bed39b2db77f1ab4753a24c122ec405a35d17c933078250d8e05"
 refs = []
 stripped = []
 
@@ -2789,20 +3217,23 @@ name = "watchers"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "devops/watchers"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "29c01df1882d6e15c36a4c0af5a854a3c4fab5cf1c6657c02a0979315e8c606a"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "a43031429cb88d1c5489785050cc3758211afa92c10785f924c9082a97303021"
 refs = []
-stripped = []
+stripped = ["scripts/_watermark.py", "scripts/watch_github.py", "scripts/watch_http_json.py", "scripts/watch_rss.py"]
 
 [[skill]]
 name = "adversarial-ux-test"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "dogfood/adversarial-ux-test"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "ad4401ace143ce7d3becaaecd79a2f96aec05d4771031ebd27c0d9b81a9881c7"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "82f0c1e8b1f31415776397d67902de1804b8eab688d1ba301181f993d2d25932"
 refs = []
 stripped = []
 
@@ -2811,9 +3242,10 @@ name = "agentmail"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "email/agentmail"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 6: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "12e10595db82948e00f9afce41964c6cd271bf2990e785bbba2fa8b4fdcbbebe"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "29ad63a711eae346f0e6d7c35f5981455e1ac7650bf934757bcf9d15160d443b"
 refs = []
 stripped = []
 
@@ -2822,10 +3254,15 @@ name = "3-statement-model"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/3-statement-model"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "587d8151fea28424145530eca52eb107bf2c2c49a123bd26b233dd4d70ab0d70"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "e96c9438d3a236680bc188bba54401b28931b92120f550f06e60653427ad3448"
+refs = [
+  { path = "references/formatting.md", sha256 = "7e1c5ca7dd566f6821a6094efcbe48913d984766d7278178111ec4c67aca8778" },
+  { path = "references/formulas.md", sha256 = "5761041366248bba14782f72082b9396c7e47291491999ea85be1c9c2875df5e" },
+  { path = "references/sec-filings.md", sha256 = "9765c2f789b8d87baeca89b7f3a5ddc68d6068c06b39b4445224197d6e444e93" },
+]
 stripped = []
 
 [[skill]]
@@ -2833,9 +3270,10 @@ name = "comps-analysis"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/comps-analysis"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "24ec14d62d7be3e1394dbac27a137596eb30c45c3efe8a3e9674236fd643d166"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "1dec581c46efac4359d52e46009136c084f0dd7748498026efaa26e8456fa0e3"
 refs = []
 stripped = []
 
@@ -2844,31 +3282,39 @@ name = "dcf-model"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/dcf-model"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "a6acd237bc4005f6419e18419589f28be316eb38f00369d1d9c9392b55ea588e"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "1994af088231a61b143e82578ea91a481759f3b564d354397048829e99959b07"
+refs = [
+  { path = "TROUBLESHOOTING.md", sha256 = "6e605b455032973465f685535251a7d2d889a2dad9b05ba8d6dfc01f801b28d0" },
+  { path = "requirements.txt", sha256 = "c007f21b5659d4a29dfde17ad586b31ace9e2c5cdb2aeaa39950a7f7c6a75a8f" },
+]
+stripped = ["scripts/validate_dcf.py"]
 
 [[skill]]
 name = "excel-author"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/excel-author"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "3445ec1d481f375922640752f8d849c6cf3bc8e791ff989ab8f9ec00d21471ec"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "a5d11e85ff9dbaa4a7c5b3dc3a356ff4b92454593b0f26ab833c8a556efadfb3"
 refs = []
-stripped = []
+stripped = ["scripts/recalc.py"]
 
 [[skill]]
 name = "lbo-model"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/lbo-model"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "7cf6b5d937d7c57dc6fa2bfede74455a822bc5171780e6a5d4de83a43bb3a13e"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0e2a0a3ac3a06c31dc34df268bff9a297f86dbf5ae3100e295fd346a1679b18e"
 refs = []
 stripped = []
 
@@ -2877,9 +3323,10 @@ name = "merger-model"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/merger-model"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "64f323ee1fcaded21db495d3dd9c76b6564ca6100d1e66bd9b4462b4727439a9"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "c4bee7a82512f6511b3b9fd0699c526c2999b3b796afdc72ebcf6a06872e1d34"
 refs = []
 stripped = []
 
@@ -2888,9 +3335,10 @@ name = "pptx-author"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/pptx-author"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "716f68baffa3f04d3c3cdbab5e5356454964987929d7d0e221a7a9c79f4d9ec5"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "44e599de0cf51a986d63148d5e028385f6f57114b0cad01fc84ebb5a75ea61b6"
 refs = []
 stripped = []
 
@@ -2899,20 +3347,23 @@ name = "stocks"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "finance/stocks"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "8f8c724cf99515f3f2d138e4c134bed5dd2046fbe4947f65e132e0f53e160ff0"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "028349817e2222f80b890f3170fa355e5dadb6c0eda02e934c9c4c3aca467d5c"
 refs = []
-stripped = []
+stripped = ["scripts/stocks_client.py"]
 
 [[skill]]
 name = "minecraft-modpack-server"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "gaming/minecraft-modpack-server"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'tags'"
+verdict = "include-as-is"
 skill_md_sha256 = "858f64c0e67efb296f832e63fdd3aedd16e954a2da474619eeaafef3cafec821"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "f53d2b56e8e2bebe9b07f5c813531060db55d32c1264f5651d74dc97294e1c7a"
 refs = []
 stripped = []
 
@@ -2921,9 +3372,10 @@ name = "pokemon-player"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "gaming/pokemon-player"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'tags'"
+verdict = "include-as-is"
 skill_md_sha256 = "fe8da8e6dc5599ef3f5a0d4ffb8cb03083227643e2ca9594b9e2be19e07e667c"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "ee643b194d5a1391e3153b2813e2b5fb5784bbc49422bf776afe53572dc83673"
 refs = []
 stripped = []
 
@@ -2932,21 +3384,30 @@ name = "fitness-nutrition"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "health/fitness-nutrition"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 14: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "433eb4dd583dc40f59b9b57619462e519bbf9e33717cffa63be74e85699c6471"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0e83d16cf18c355dc75539e57671c21092c72213db01958d2a35f9d484dc310a"
+refs = [
+  { path = "references/FORMULAS.md", sha256 = "2728c2d308be073390fb2fd633021ecc6b246289bca30ab40bb5a2aaa71db403" },
+]
+stripped = ["scripts/body_calc.py", "scripts/nutrition_search.py"]
 
 [[skill]]
 name = "neuroskill-bci"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "health/neuroskill-bci"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 13: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "078d78c01356904b5c3be6c2ff9873d988799f395fee2a1f253639b744b0d4a9"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "81e0d7deb274d988d9a8c8f37fb454a0f71390ca0e9dbfb813c50c2a93241366"
+refs = [
+  { path = "references/api.md", sha256 = "518aeab1e7aca6161eb52177fb4a92d3c6764722512462971b852217f885fd49" },
+  { path = "references/metrics.md", sha256 = "a25875c4fe453bc26fe0773412df70cfc26dca151203894cc06f7268c45362ef" },
+  { path = "references/protocols.md", sha256 = "66e579a7261cf64ca776fa9164b5eefbcfb179f4f5e8d2f63bb9b6e387770c3f" },
+]
 stripped = []
 
 [[skill]]
@@ -2954,20 +3415,25 @@ name = "fastmcp"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mcp/fastmcp"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "62d5d58a279909c6bd1c55d70dc1c51118c8c7e8f0ff7530e10cc7a6de0fba28"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0915b389cb2da4c8fbcdcb990de407623b4dc93e533083f88c2b8bc92485c106"
+refs = [
+  { path = "references/fastmcp-cli.md", sha256 = "c60573a39c12a352b33a01931a2d06283fe39a8dbdecfcf8cb751ed6aef074b2" },
+]
+stripped = ["scripts/scaffold_fastmcp.py", "templates/api_wrapper.py", "templates/database_server.py", "templates/file_processor.py"]
 
 [[skill]]
 name = "mcporter"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mcp/mcporter"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "cfa853b5deabe6b170545bb33337500f22d91a30c9e5ea59456b562fd09d5e98"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "d26b51bac622cb4df07dd25dc6d07236a7702b991fd5cb2caf21ee471f4051e6"
 refs = []
 stripped = []
 
@@ -2976,11 +3442,13 @@ name = "openclaw-migration"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "migration/openclaw-migration"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "d3c6a122332632dab133dea27edb1fd051feb7410ad90c98f7f3b8d34490c466"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "bd337fa58774cb3dbe118737ef5900f67e5cbd8b3593aa6a20395b8eb62c2cf2"
 refs = []
-stripped = []
+stripped = ["scripts/openclaw_to_hermes.py"]
 
 [[skill]]
 name = "accelerate"
@@ -2988,7 +3456,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/accelerate"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'huggingface-accelerate' does not match its directory 'accelerate'"
 skill_md_sha256 = "0754c78b724091c4090cef8a2e448333df0a94067cd45d1030b00231c3cb3f87"
 refs = []
 stripped = []
@@ -2998,10 +3466,13 @@ name = "chroma"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/chroma"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "e5e79c324874c0f03a456ef4dcd1f064f05e059d410ab04ffa070361a509b3d8"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "31c3805e0b6140ee5604bb7cbabd929832b93b3de49bdbee57bac22c4ddf4230"
+refs = [
+  { path = "references/integration.md", sha256 = "fe82af7e33a228d2d2f80c73b3e096937c3a49f873035d86d0e9e6ba6034f5fe" },
+]
 stripped = []
 
 [[skill]]
@@ -3009,10 +3480,13 @@ name = "clip"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/clip"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "6b18785db99c5a442ede300400e9f69c6e359429f8447515567fe006c93f4f5e"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "2ecb05a0015dc06cc84eddd71683c4a598d513960d961136a5579e62cb00c319"
+refs = [
+  { path = "references/applications.md", sha256 = "682fc313e63cefbe466ed0efdf48048946a3abb292e5f32cf4058fcf59692ae9" },
+]
 stripped = []
 
 [[skill]]
@@ -3020,10 +3494,13 @@ name = "faiss"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/faiss"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "6ff662b5b5715708229e024fdbf5451a7299426cb52cafaa1bd052641c105758"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "71fb3a0182b80e585bc24aae4af0b2c6aa1cd93ca530f71d091830ce02cb283b"
+refs = [
+  { path = "references/index_types.md", sha256 = "aa6cb4267ad3a8bcc1d245e77c7312ced189d21b67b3d590d2e93b37e3ef3faf" },
+]
 stripped = []
 
 [[skill]]
@@ -3032,7 +3509,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/flash-attention"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'optimizing-attention-flash' does not match its directory 'flash-attention'"
 skill_md_sha256 = "5cbde033c8544cc0615071b242ce236d225e14e5122a6dbde7165bddd6c85b64"
 refs = []
 stripped = []
@@ -3042,10 +3519,15 @@ name = "guidance"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/guidance"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "4409b0995122bb1f3e2e19b47eb91fd66d8015f992c93ea8fac28d3078ceff5b"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "e8e7a1ab27a3537d475da968242a8427cd95f5b538697812962c90819074a029"
+refs = [
+  { path = "references/backends.md", sha256 = "cf7ac97bcca4dc4208385038337bd23e68c26789f6c1e5d14e83f7f5aa31fd01" },
+  { path = "references/constraints.md", sha256 = "d50d0d4eab3a04ff4aa1e0bcd2c67717b25ff4251346095c29fa8d1841e9cebd" },
+  { path = "references/examples.md", sha256 = "08701c3fa2067a0c58359c10dcfdcd50ff1d2c8e8d6b88a42679bb80d5853361" },
+]
 stripped = []
 
 [[skill]]
@@ -3053,10 +3535,16 @@ name = "huggingface-tokenizers"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/huggingface-tokenizers"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "8ae10d6d98aa0ee36b9e08b0bae2dff157802c2ef0e4a9ca90aef34085a1c435"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "f23f0bff5c0776009417f37d3b31f0af1da53e5581feeb1755921937f9dbc710"
+refs = [
+  { path = "references/algorithms.md", sha256 = "b26bb48dca45c57797e23ee8d3afa3c602ffbb243a47c0a9a171f3f6828a08ed" },
+  { path = "references/integration.md", sha256 = "9e9c3f938424434da8e7b962ff536b2b3b4b585a0dabc5c9292a12c2a1682349" },
+  { path = "references/pipeline.md", sha256 = "3fe8a70a27b1bf9aa52f6320a4da569c510fcf602e026cfc57a3f1518175cfc6" },
+  { path = "references/training.md", sha256 = "9732225aacd7dacd83063a1c206e8566793fe41c628fd32f827e3489246dfcfe" },
+]
 stripped = []
 
 [[skill]]
@@ -3064,10 +3552,15 @@ name = "outlines"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/inference/outlines"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "5bf7a17a3a5a87d93ec17afee71bb393ff2a1e9f3a6fa9fcde5fc5fda7fd8e6c"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "ed0e117c64256b056b27c897417305286806e9445fa6d7ba27cf8bee216b1e41"
+refs = [
+  { path = "references/backends.md", sha256 = "b2e1698429b8c0a2425493a1d7f82cc36623d40503e8d414b5d66bd0b99167a1" },
+  { path = "references/examples.md", sha256 = "1055815c239a3b9f266f0c80a2eeb0e94c4e1275f243aab4807a3a74ab684431" },
+  { path = "references/json_generation.md", sha256 = "5392ed2d69970778ff18b81b510f5c3f3f4fae00856bd967dd6b596357cd117e" },
+]
 stripped = []
 
 [[skill]]
@@ -3075,10 +3568,15 @@ name = "instructor"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/instructor"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "17b435f1c3bb9125998686e632a013c705fdf13a25742e373b96e6e756442422"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "bd7286316f11e3921a81b20f731a99ffff494757feecf330c3de4119bc6b0c64"
+refs = [
+  { path = "references/examples.md", sha256 = "77da5ba3ffc15c9acd01ecd9d35090e8cdda5df7990f840024ae50d291580ea8" },
+  { path = "references/providers.md", sha256 = "5482459ae8d27494b6848b9bbf4fac8c55f810bc7829ec29368ba15e5e67db6e" },
+  { path = "references/validation.md", sha256 = "83039b93f697c72141e618210d9acdd9fa50654b22cc810b3eff23fddbd7dfe4" },
+]
 stripped = []
 
 [[skill]]
@@ -3087,7 +3585,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/lambda-labs"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'lambda-labs-gpu-cloud' does not match its directory 'lambda-labs'"
 skill_md_sha256 = "77b7e02e7e53317a6933b1f5dc608c658a8f39ab43794826db87211c047b9f8b"
 refs = []
 stripped = []
@@ -3097,10 +3595,13 @@ name = "llava"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/llava"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "5c4dd6ce70f8e32af2b39b3e2d311e705e9a0082942df2b547056c29a0fe6b52"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "a48eefd2d33a4f0f53b1810745c7bf045e4dbef36e1a2823fe868bc59645a56a"
+refs = [
+  { path = "references/training.md", sha256 = "6377ab1567ba7d2882bb079233c534fa8e3ff209f2c624f0fbc9db019bc53aa0" },
+]
 stripped = []
 
 [[skill]]
@@ -3109,7 +3610,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/modal"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'modal-serverless-gpu' does not match its directory 'modal'"
 skill_md_sha256 = "723a4c8beed632f9d290db5ed1ffe38156d1e216662a469e6b58ecca0d13e5ed"
 refs = []
 stripped = []
@@ -3119,10 +3620,14 @@ name = "nemo-curator"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/nemo-curator"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "afbce199ca7503867bf48d02a7383aa995145ffc76106c0b770762f25f94a016"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "e793a31e044079a27b473adb80a3ae3bee0486c0b134ba8fe15eda14e14dc16d"
+refs = [
+  { path = "references/deduplication.md", sha256 = "ca5594ba9ee317726f7f5932d89f82b7be0b2db9744e41b935f541bd13f2fa0a" },
+  { path = "references/filtering.md", sha256 = "d02c933f79b140c65e88a5af1567aa47a6cbf8eed522d8eae5ef977daf346f0a" },
+]
 stripped = []
 
 [[skill]]
@@ -3130,10 +3635,17 @@ name = "obliteratus"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/obliteratus"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "9fb394a0af2a9733bc7e88919580a49c4a17108d0012543a839138ced5aac8d1"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "52ec942236a9969a2ea48407cb7599081a6a3071bea24099763a4e847895fd8e"
+refs = [
+  { path = "references/analysis-modules.md", sha256 = "7f8e5320e97739e83bbbc4b3049a879cea4bcbb509e2aa93f9b95d130b49c13e" },
+  { path = "references/methods-guide.md", sha256 = "e87c6e6fb9fdeec9c2d1921f07f49105bd80f1c52e382253c345d8ce39364f49" },
+  { path = "templates/abliteration-config.yaml", sha256 = "11bdb66c6af528b4971cc56e35937268296dfee347879eba28bb6ddc784ac4e7" },
+  { path = "templates/analysis-study.yaml", sha256 = "ae8cf7580c90d8228449c5cd7a0b2e5835b170bceb0445617caa213d0b4daba0" },
+  { path = "templates/batch-abliteration.yaml", sha256 = "f635607584579b31cc119f76daff4f98a2445a7b9471b61732ed06efba0ab304" },
+]
 stripped = []
 
 [[skill]]
@@ -3142,7 +3654,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/peft"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'peft-fine-tuning' does not match its directory 'peft'"
 skill_md_sha256 = "0dabfc591157be5c248da9d453e1e825823340228ba34929f3f095a14e2f6925"
 refs = []
 stripped = []
@@ -3152,10 +3664,13 @@ name = "pinecone"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/pinecone"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "b74df7625eb54ea187d3a529157a8f43dd321adb637ea9068c3bd1f470bc2862"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9d373609232d78fb912b03a23987090fd0cd63d8163ddb7df8466cdc21708136"
+refs = [
+  { path = "references/deployment.md", sha256 = "20b7582d8d8a9fa73b2a7d8dfd76bade640bf0a8683de349224791c33e3855c3" },
+]
 stripped = []
 
 [[skill]]
@@ -3174,10 +3689,15 @@ name = "pytorch-lightning"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/pytorch-lightning"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "e58fbcdc0fd9f3323d01340a4d89c7381d83fbb380101c568e56bba70f083430"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "237d9957cf6de01d49fa29554d99448bc99ec3b9e5e92441944f9acf77991e93"
+refs = [
+  { path = "references/callbacks.md", sha256 = "2940b978bdec21b6f8da54c72d1858015e5ba290f9b05f1a659d67c25860e259" },
+  { path = "references/distributed.md", sha256 = "c7d183b74a48550541658ace014c6ef8fa15f2c625075369e4ad644ad950ecdf" },
+  { path = "references/hyperparameter-tuning.md", sha256 = "fb733b9a324d4bb0c941c70b9bb01c59785d53a1827b48db5274520e1eb66e16" },
+]
 stripped = []
 
 [[skill]]
@@ -3186,7 +3706,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/qdrant"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'qdrant-vector-search' does not match its directory 'qdrant'"
 skill_md_sha256 = "5b7fc64f72a126f4b2c3bb58527a81950b1ca7ab2671fa674922f6f6d9dd0827"
 refs = []
 stripped = []
@@ -3196,10 +3716,15 @@ name = "dspy"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/research/dspy"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "67410a6b216d79eb257eba1c5d0fa945080b98998ffc131e2cf873bee77e3dd0"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "08a1037285998c73113f9d4e892a86d70ea7403d44a04c6f6864e37d6fcd9586"
+refs = [
+  { path = "references/examples.md", sha256 = "a617b7ed15a81fc460eb8e98d19565ce843828554b926265bc8571721258d2d0" },
+  { path = "references/modules.md", sha256 = "a2a1ba76f0b808c40d8d64be689954538ea00e1d53cd413e2a4951758b5aed6f" },
+  { path = "references/optimizers.md", sha256 = "ddf19b520df9741b7f3b5e5c9993a1c381d282608b4e3b2b9359a6a0b8595a78" },
+]
 stripped = []
 
 [[skill]]
@@ -3208,7 +3733,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/saelens"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'sparse-autoencoder-training' does not match its directory 'saelens'"
 skill_md_sha256 = "2d9ffce4734cc5efaef70e05adb7b4dd0855a61a9ec50230807e03aee3e68d25"
 refs = []
 stripped = []
@@ -3219,7 +3744,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/simpo"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'simpo-training' does not match its directory 'simpo'"
 skill_md_sha256 = "87a8f3fb5e4321a8c0548e4878aa3c1632263aef5af1738f156e12ca3f416e86"
 refs = []
 stripped = []
@@ -3230,7 +3755,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/slime"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'slime-rl-training' does not match its directory 'slime'"
 skill_md_sha256 = "c75a54bbaa1677c6830b5dfdb3f55999d3af69a229b7cf1dd019457c86d90972"
 refs = []
 stripped = []
@@ -3241,7 +3766,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/stable-diffusion"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'stable-diffusion-image-generation' does not match its directory 'stable-diffusion'"
 skill_md_sha256 = "7c9cee8dba3e1b031b46d7c0d6fb331d94a5af8978fb765f43f2ee7aa46b4ec6"
 refs = []
 stripped = []
@@ -3251,10 +3776,15 @@ name = "tensorrt-llm"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/tensorrt-llm"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "7b914ffe6b4fa06f2bb95ef784beb0c375f813c3c79ef8581957ca6d6876069d"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "9aca1136cbaf411e34242fa66c8c0edb25a60d50a583d5b6fe1f066ba993ec43"
+refs = [
+  { path = "references/multi-gpu.md", sha256 = "f5992df6c444d4300dd1b7cbe150e998806128c911eba3387f4aada84a01ecee" },
+  { path = "references/optimization.md", sha256 = "deb727998b471654231730faf2e4ad2ae82fea99e18ae991528a94bba57a83e8" },
+  { path = "references/serving.md", sha256 = "edab4ad7f7bda4938ff62ddb9d01f846829f42a4fb03b7fcd00eb48d5d3fc893" },
+]
 stripped = []
 
 [[skill]]
@@ -3263,7 +3793,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/torchtitan"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'distributed-llm-pretraining-torchtitan' does not match its directory 'torchtitan'"
 skill_md_sha256 = "c6524deef44ba8179cbe8c0f9e004940b5aff793150ed372a86279880d83a8b6"
 refs = []
 stripped = []
@@ -3274,7 +3804,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/training/axolotl"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "180458a8fbe7830df8837dfba388d9be4bd52dc15181b3481bf30cc192037ef0"
 refs = []
 stripped = []
@@ -3285,7 +3815,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/training/trl-fine-tuning"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "loader would refuse it: name 'fine-tuning-with-trl' does not match its directory 'trl-fine-tuning'"
 skill_md_sha256 = "edf51a71f3212edf79595279dcaf7d489fb6def4c437fc5975543fb879e8de53"
 refs = []
 stripped = []
@@ -3296,7 +3826,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/training/unsloth"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path, pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "b3e1386f66a5c781820a09c78c25d7067c2c4d91667ecddb30e91536ee694e18"
 refs = []
 stripped = []
@@ -3306,10 +3836,13 @@ name = "whisper"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "mlops/whisper"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 9: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "2ab396f01b31ed0ae4793dae0233bafecbaf3d87326cd0c7613d42a33680beb5"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "8a4cfc48752e34812de29bccec8f31ce4f7d8e248a498c825cb45276dc26d9d0"
+refs = [
+  { path = "references/languages.md", sha256 = "2803cd39805b989c465f5b6c1c1d1a4c825510fb5469d5f96eae9eb775b51f37" },
+]
 stripped = []
 
 [[skill]]
@@ -3317,9 +3850,10 @@ name = "mpp-agent"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "payments/mpp-agent"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "f44db1c9d2d0a4d49a5051aa16b4e92e18ba4ce3db611b92e5a7fd8e3b204445"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "93580da8439b3ecc6b0b9e13fa1b14bd126749e8f1373d88b749a1bd460f45a1"
 refs = []
 stripped = []
 
@@ -3328,9 +3862,10 @@ name = "stripe-link-cli"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "payments/stripe-link-cli"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "9d0047a6fff69855173839f8baf89d912564e51f7ed3a210891d9c0b4fabfe7b"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0b20a967b1922bb096e8f1f506f9b99f12bc694e2875148af42248834f2ad168"
 refs = []
 stripped = []
 
@@ -3339,9 +3874,10 @@ name = "stripe-projects"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "payments/stripe-projects"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "e290eb0073ea3ce364e62019bbf257571b58caacc029543999e96071b98e222e"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "a8eaa2509cd31dbe27ada227d67b9ca24e3d7be6cc1a672e65b596aaa4e686b3"
 refs = []
 stripped = []
 
@@ -3350,11 +3886,13 @@ name = "canvas"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/canvas"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "2ae9112e968ec78bcdf08fce00bf93649ca4414715da523b2ec3893f01368188"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "1124b121dfc65a8254184be938655b6218ad121c3031fff1a133f77a16e8b015"
 refs = []
-stripped = []
+stripped = ["scripts/canvas_api.py"]
 
 [[skill]]
 name = "here-now"
@@ -3362,7 +3900,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/here-now"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+reason = "loader would refuse it: invalid name \"here.now\""
 skill_md_sha256 = "63099ac68d040fcc874e5c3135441c14875dc6d9d28c5d40959d0cf84780f19d"
 refs = []
 stripped = []
@@ -3372,21 +3910,29 @@ name = "memento-flashcards"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/memento-flashcards"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 12: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "107be2ae586f7eaf870fe88dfe0c516cb41d8f242960b3620cfabe2a2e68cd04"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "7982b5c5b3c25ab7f71780d52fe8d237fbaec7267c605ec4945e8b2e296a0490"
 refs = []
-stripped = []
+stripped = ["scripts/memento_cards.py", "scripts/youtube_quiz.py"]
 
 [[skill]]
 name = "shop"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/shop"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "11cebb959f2f4d1edbb145178194d6cc33aeb3389678de08697d5da8ec6d6358"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "f424c34841fa61559e041805340ee1092224e6ea1621f14f9b23638d82d895cf"
+refs = [
+  { path = "references/catalog-mcp.md", sha256 = "67beb62fdb298168d71a94dad516c0d29659073195aa68a81c2a564377beb568" },
+  { path = "references/direct-api.md", sha256 = "d95f98370593ee4477755baec20ad7de22ce1d19cabaa5e7c45f62de5fe24145" },
+  { path = "references/legal.md", sha256 = "caf7967898af1b36091ee17404d014bf74766677120dbd5b1204dd73e3e473a6" },
+  { path = "references/safety.md", sha256 = "79cf0d0c7ca74baaa246b5106f6c53fea3f6ae9989725191088884d9d779ade3" },
+]
 stripped = []
 
 [[skill]]
@@ -3394,9 +3940,10 @@ name = "shopify"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/shopify"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 11: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "c627a5250806da587571038611d2f989ba5415dfc50f052b0e681e3b3f3e52f1"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "4bb7c333d90a465a4f7b308a5e0af02dceb5a22865c1c24f9de72254bfaa62bc"
 refs = []
 stripped = []
 
@@ -3405,9 +3952,10 @@ name = "siyuan"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/siyuan"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "9d8a840bf14ade53266c9ee793b21c8b89dcb21278e1cf387f82a4d772aa11b9"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "a34a559c4abe357afd75c54e4a75b4bf22904ba4ba89452463e2839e2b4f200b"
 refs = []
 stripped = []
 
@@ -3416,20 +3964,23 @@ name = "telephony"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "productivity/telephony"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "014bfa26440aadc6529f1e4e5bc26d17f819d5d7301a644a17fc4eec94aa72ce"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "6d986244681c7b4c78d38a210d27c71b53645ab89e478d3dbdb8ea8d59fd8dd6"
 refs = []
-stripped = []
+stripped = ["scripts/telephony.py"]
 
 [[skill]]
 name = "bioinformatics"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/bioinformatics"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 6: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "36ae22f7783a3e17f52140cf3df2bc79adddd1399925b5898a0cfa20c65ef73f"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "915fda5c4a38b2d6a07859d2621a26d25f8c776bc729359319d65a4a3f8a21c7"
 refs = []
 stripped = []
 
@@ -3439,7 +3990,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/darwinian-evolver"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag safety-disable not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "962725ad3936ad54ca725ae7134017aca8abdfde0677e38262a02a2ed690122c"
 refs = []
 stripped = []
@@ -3449,55 +4000,80 @@ name = "domain-intel"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/domain-intel"
-verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "0799bf22231488442998db4d01bb12fcb17fec47c4a0351fd3f303915a59bd6c"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "6cc6b7a703f2a9d152570d6f62fcdd5d924ca0ee9da647434a55a33d857fdea2"
 refs = []
-stripped = []
+stripped = ["scripts/domain_intel.py"]
 
 [[skill]]
 name = "drug-discovery"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/drug-discovery"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 14: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "b7eb32a28367ef3a82d87d7c7d1233d74811bfb1fb216df1d8389df524e2b37c"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "f0bea2f20296a7aea4526bb88f0477ce95150c287704e19a878f8f069e319da7"
+refs = [
+  { path = "references/ADMET_REFERENCE.md", sha256 = "1228fc394f8aac42bdb146deeebc13cb18e8df193ad5da4a46ac0eee6586ff07" },
+]
+stripped = ["scripts/chembl_target.py", "scripts/ro5_screen.py"]
 
 [[skill]]
 name = "duckduckgo-search"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/duckduckgo-search"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "8957fbe7863794d6b0eed5fdab6230a0de895b3ed70f251e2321a5884daa9d20"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "c6ff09158dd2ec185f7f729a45a8395ff21395ed11e558193251080b37e8c1cc"
 refs = []
-stripped = []
+stripped = ["scripts/duckduckgo.sh"]
 
 [[skill]]
 name = "gitnexus-explorer"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/gitnexus-explorer"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "67cf4a63d6960d7ad9d59a012f727eb9353ec2551c9afdbbd9f853fd4aadc6d5"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "0baab6d27410bd52939e78fca6c563a10ada5fe085075821ba0213e8ab689f59"
 refs = []
-stripped = []
+stripped = ["scripts/proxy.mjs"]
 
 [[skill]]
 name = "osint-investigation"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/osint-investigation"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 7: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "c75b5a30a1972046f75d1175d71ce995aa4af67bfa6a0439bd43cbc699df76e5"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "573be04c2290f0b19a125fbb79947c5b608166bfae9d4599298cbf3c9e839841"
+refs = [
+  { path = "references/sources/courtlistener.md", sha256 = "af965f421cbfbd96a96e848e5523e4e34c07fc1eedd9e66f31dc5dbdbe817c15" },
+  { path = "references/sources/gdelt.md", sha256 = "30889b42cb92638c27476527189e836ee9f13bfc7344a5da097e920d81fada7c" },
+  { path = "references/sources/icij-offshore.md", sha256 = "de9a78282e0e402921bba911a773d6c1ebe3a0223cb8ad109061731a1685af91" },
+  { path = "references/sources/nyc-acris.md", sha256 = "5085c47d002f4680fdc209328dd6c0b293d8a25dd73a2c5722db68ce08f1dc24" },
+  { path = "references/sources/ofac-sdn.md", sha256 = "631c37cf9fad515b2e0d34ab597965df8634156aed5a186959728fe638c13095" },
+  { path = "references/sources/opencorporates.md", sha256 = "f3406184c4afeaf8bfc9aca58f14f3aa5cede359ca4f5372d0ceefa85a4a98d5" },
+  { path = "references/sources/sec-edgar.md", sha256 = "877c465d00ce4c8ed736ffd5db59c89c8e5a51550086908ad6fb44b50c25dd0b" },
+  { path = "references/sources/senate-ld.md", sha256 = "f06400d5aa10c1336268d54ffab9e3aa6e31e85a211fc31825843fec48c8daa8" },
+  { path = "references/sources/usaspending.md", sha256 = "f80a59de1dac539af24785bc8e7b5c0cc26a60253d5638cb86a18676fec0efea" },
+  { path = "references/sources/wayback.md", sha256 = "1c6502ef9de69d560208e784ca79a51fb53f35f57ce57c91f52df507beb8ca6e" },
+  { path = "references/sources/wikipedia.md", sha256 = "24fdf463fa3a74119618b696f7fe976702692cd4ed0b696cc17987754177aa86" },
+  { path = "templates/source-template.md", sha256 = "2ded3a421e05be393c7ec795fc68568ce10fd2195ccd052d98c69ffa901942cd" },
+]
+stripped = ["scripts/_http.py", "scripts/_normalize.py", "scripts/build_findings.py", "scripts/entity_resolution.py", "scripts/fetch_courtlistener.py", "scripts/fetch_gdelt.py", "scripts/fetch_icij_offshore.py", "scripts/fetch_nyc_acris.py", "scripts/fetch_ofac_sdn.py", "scripts/fetch_opencorporates.py", "scripts/fetch_sec_edgar.py", "scripts/fetch_senate_ld.py", "scripts/fetch_usaspending.py", "scripts/fetch_wayback.py", "scripts/fetch_wikipedia.py", "scripts/timing_analysis.py"]
 
 [[skill]]
 name = "parallel-cli"
@@ -3505,7 +4081,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/parallel-cli"
 verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+reason = "HUP-S3.2 intake rewrite pass: red flag pipe-to-shell not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "59245b30f3d9426a85f5ae8ef8c141720d022b746a47bf13d6369d11a90ca9b7"
 refs = []
 stripped = []
@@ -3515,9 +4091,10 @@ name = "qmd"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/qmd"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "cebbdbaa558d7d4b428c8ab52b2db0bf2fd399b24b8574a49134ae29688483c1"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "db7fca525a05b16e3ff3a8f35eb43a771b789ef568a48d57c0be2a5294ddcddb"
 refs = []
 stripped = []
 
@@ -3526,9 +4103,10 @@ name = "scrapling"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/scrapling"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "fdf4c925f55abb0bb408757fd3ab44c10037704b55d2d92ce95293c5227372d3"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "56bebc1eda6bc0dd30d90e286adcbf8ea5702ef14c7d485a6264c1eba49e0b9f"
 refs = []
 stripped = []
 
@@ -3537,21 +4115,27 @@ name = "searxng-search"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "research/searxng-search"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "3eecf1185abf164ec57b70d1cf5cae0bca3c0f980a1bd15c4868cca34e50ea5f"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "eab9a91401fc706142742de4a2780d59faccc4c62593fd9af73fba797b9b2a4c"
 refs = []
-stripped = []
+stripped = ["scripts/searxng.sh"]
 
 [[skill]]
 name = "1password"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/1password"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "cbbe1e8439043c4ea458d0cd14f44ca4266ae58a18e2e2d269ec0b60275f0387"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "1d95d05c86d1fb2830d4306ffe5753c22ca14031a811665befe67d47bc10aff8"
+refs = [
+  { path = "references/cli-examples.md", sha256 = "723b11df3e98a14ad6fe80fbc435f0e6c9751d25349427e58100f8a58607a391" },
+  { path = "references/get-started.md", sha256 = "6ba0407ae8798745259a97bf041658085f7149638a58558043198a13837924ae" },
+]
 stripped = []
 
 [[skill]]
@@ -3559,11 +4143,18 @@ name = "godmode"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/godmode"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "1c2e9f28deeaeafca1384c3fccc4f00a8a799e7f0eda0815aeaae368d1f54c57"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "1a41b3d41ce1ff61946dcc310159fae82742b277ca462db8cddb573dba077054"
+refs = [
+  { path = "references/jailbreak-templates.md", sha256 = "4978c900ebd6058e2bcc6f6beea53d1a4517009869124bab5a10fec47a4421af" },
+  { path = "references/refusal-detection.md", sha256 = "1347f7cbfe9eac573a8be279495aecb89dc3a9db3729f402bf552d39d261bdc3" },
+  { path = "templates/prefill-subtle.json", sha256 = "1ae0ea27dff040a8da6b5e1a0557d3ee8f6355b5f5ce5e4dacfd533e4259669f" },
+  { path = "templates/prefill.json", sha256 = "834a066c5fcf3d82db2e919d6f28d4be1a880c27df139e6cefeca5565524f2ab" },
+]
+stripped = ["scripts/auto_jailbreak.py", "scripts/godmode_race.py", "scripts/load_godmode.py", "scripts/parseltongue.py"]
 
 [[skill]]
 name = "oss-forensics"
@@ -3571,7 +4162,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/oss-forensics"
 verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+reason = "HUP-S3.2 intake rewrite pass: red flag credential-path not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "c609d02d9c49f1d4a03de21519de29c49b706976481eb63245e059fd24d73248"
 refs = []
 stripped = []
@@ -3581,9 +4172,10 @@ name = "sherlock"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/sherlock"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "e79d38077bff7db2a3538f48c37079557b02e8212c94d7a1229d5ad07a5eda05"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "e6bf6d8edc51a305b19305bf6e0154aef22539153d7056ab92dc1be67d88f0ea"
 refs = []
 stripped = []
 
@@ -3592,11 +4184,50 @@ name = "unbroker"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/unbroker"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 10: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "075d93606b0a5c0e56a7e52bdad39bfe703f254465d03e7b460a245cd2d56ce8"
-refs = []
-stripped = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "907552a1ef2fe9cad8442d0e8a119f5a4e42b74db666cf5d1e0cdbf385595977"
+refs = [
+  { path = "README.md", sha256 = "d198cbdfae53c25991ec57f859d39304d4e3085f42e78e6e9a08adb4d75a9f34" },
+  { path = "assets/unbroker.png", sha256 = "ca40ce8c043353a31205efc545100c3112024ce7a34e01c2c3f2d01cac780c43" },
+  { path = "references/brokers/addresses.json", sha256 = "1593c033458bafd3453787557af06f96f4d4aa3cb78c2ad981a58eec1c11dc86" },
+  { path = "references/brokers/advancedbackgroundchecks.json", sha256 = "5bc1f4e693b58befb1e979eb06e0c7a498172197dc023c9510325a900232f791" },
+  { path = "references/brokers/beenverified.json", sha256 = "c4f0715e9dc0cb67b0f629c11467133a8f7b9f80cf378d02b3760980f8943618" },
+  { path = "references/brokers/clustal.json", sha256 = "c464a3f69d1e809be7cb231031164cb865894d7467f5f1a480fff2f8d23611ce" },
+  { path = "references/brokers/clustrmaps.json", sha256 = "8cd48575457e21941016eccbcbb85ef67b953a8f9fdf597c03df59131b85c11a" },
+  { path = "references/brokers/cyberbackgroundchecks.json", sha256 = "3ac6b644a39aa2adc68f4a65166b4d13ce0a7ca66f047121b1bbb47379a413da" },
+  { path = "references/brokers/familytreenow.json", sha256 = "4355fd1deeba8a4b53c63b037f98b208d2a027fbc51335a001f86f314464125a" },
+  { path = "references/brokers/fastpeoplesearch.json", sha256 = "f9eb8dcb690d822ae35570f572141cac7a848007ef3cee3cfe2d4f39cbe454c6" },
+  { path = "references/brokers/intelius.json", sha256 = "1fbd111c68d457fe9553e27aec8d21af7badbfb499adc8891dae1a9ca6adfb64" },
+  { path = "references/brokers/mylife.json", sha256 = "5e0bbe777f7f69484a70040f02449a2a8f5ee5a120984ae18c33d78dbb51d9d0" },
+  { path = "references/brokers/nuwber.json", sha256 = "4c522adcb07766001928baf25f4ec91c563fbcd5b36f4a1459828c83ee74f018" },
+  { path = "references/brokers/peekyou.json", sha256 = "ae1474651173c6d5206907bb0bc4a021290ca84e6745dc7014eb80a0cfab6d4a" },
+  { path = "references/brokers/peoplefinders.json", sha256 = "ecafd936cc77373704c06c0f2b0d2da784997d3584d42fe47d80d8f6332d4adf" },
+  { path = "references/brokers/radaris.json", sha256 = "8a8c698c0d58f55a2c61b415e8cff64857edd0ddb421a2b7396400b0112f0fb8" },
+  { path = "references/brokers/rehold.json", sha256 = "77aeb3149380e649afd73922de7a1eb1d0dd3ad8b231162eb56c541a619b41a7" },
+  { path = "references/brokers/searchpeoplefree.json", sha256 = "80a7eb64432c05867d8c20ee41c7139f1ebb4567b4b4a3b1c54f2375c2eefb40" },
+  { path = "references/brokers/socialcatfish.json", sha256 = "c80e247bd0900f2e8ec467d0177c98ed01fcd8c0b687bb18a5efabe6db99fb1a" },
+  { path = "references/brokers/spokeo.json", sha256 = "423a97ed76e357dd4f5954bab7a2176ccbd04e4d82170d6e528ff9771f9e69cf" },
+  { path = "references/brokers/thatsthem.json", sha256 = "43a420336ec58cb323af6dbdd75e64eb59acb7bafe7b52517c99fed633344069" },
+  { path = "references/brokers/truepeoplesearch.json", sha256 = "a0f63638559cd819c67cbcc706a48a8c73d1b3d285e466ab59669b8c7efabf65" },
+  { path = "references/brokers/usphonebook.json", sha256 = "4d1eea42d831932d4c23a8d15721dcc8021fcdc4f13b1a36e4608e2e354c0942" },
+  { path = "references/brokers/whitepages.json", sha256 = "64347fb6cba011bb5bae7294c4696e34ad2e5db433abdb9471d73f16b4a72d32" },
+  { path = "references/legal/ccpa.md", sha256 = "b97253e05ca1898e5fee04284a0e4224f092572634a97e881fef3022c19c5f24" },
+  { path = "references/legal/drop.md", sha256 = "b267fd81fbedfc47e612b9ced11f00105c221f4fe36df2ec607e22c5b8c813ce" },
+  { path = "references/legal/gdpr.md", sha256 = "1d470d5e83c4a4b034b36e07bc5500746bd47a0cc5ba0c613f48f0e0c588dc54" },
+  { path = "references/methods.md", sha256 = "94bdd6386a4b308f1b2c22d085849a4ad48c521f6f9cd0de66caafce463ac281" },
+  { path = "references/site-playbooks.md", sha256 = "67fc8d6f689c8f4ef232449e7e9ec903ebb54869a26d28eb5cbe7ca3d5c7647f" },
+  { path = "references/state-machine.md", sha256 = "8856ffa67c0b7619e6b49c17109e9be6c91ce5914f831ec563c23a6bff6ed680" },
+  { path = "templates/consent/authorization.md", sha256 = "98a75d506983720f5ac4d9fefa151040926ed1d923e7e3fee82207851fe1c7f3" },
+  { path = "templates/emails/ccpa-authorized-agent.txt", sha256 = "352be4838a80d7ea0138ba61b83a9ea2ad44451571ce5f31807e007fd2243b50" },
+  { path = "templates/emails/ccpa-deletion.txt", sha256 = "0ac5c78e8fb9118dd3c4d1789fd6cbdf8702d049677cf1d6d84c1b5073f98dff" },
+  { path = "templates/emails/ccpa-indirect-deletion.txt", sha256 = "10baa0a99fd91f15d0733d11df188cde9cb99abd2730be2d0c1a17a8607d4525" },
+  { path = "templates/emails/gdpr-erasure.txt", sha256 = "58a0ff986c55f0f1278efc0dbd56a80b6aea76f8eb926e8cc73c320ca5479a58" },
+  { path = "templates/emails/generic-optout.txt", sha256 = "7742bc0e347cb5cf02c457f29bd667c1fdc65cb40939cd04e41885cd0d7d745f" },
+]
+stripped = ["scripts/autopilot.py", "scripts/badbool.py", "scripts/brokers.py", "scripts/cdp.py", "scripts/config.py", "scripts/crypto.py", "scripts/dossier.py", "scripts/email_modes.py", "scripts/emailer.py", "scripts/ledger.py", "scripts/legal.py", "scripts/paths.py", "scripts/pdd.py", "scripts/registry.py", "scripts/report.py", "scripts/scan.py", "scripts/storage.py", "scripts/tiers.py", "scripts/vectors.py"]
 
 [[skill]]
 name = "web-pentest"
@@ -3604,7 +4235,7 @@ source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "security/web-pentest"
 verdict = "exclude"
-reason = "loader would refuse it: unknown frontmatter key 'platforms'"
+reason = "HUP-S3.2 intake rewrite pass: red flag exfil-endpoint not content-reviewed yet; stays out until the owner reviews it"
 skill_md_sha256 = "435f1a9c868a4be9bbb1ef1e6f6409c42e494f898fc25b7fea37e85c8ef7be9a"
 refs = []
 stripped = []
@@ -3614,10 +4245,16 @@ name = "code-wiki"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/code-wiki"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "1c5a93d9010c9b6c66395718cac50c0b793204d906487f219966d211d2f255d7"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "d0f8ffaf75b0949178dbe4db357e5e7ab45e5eafbda172f6e556faed4a93522d"
+refs = [
+  { path = "templates/README.md", sha256 = "0c38fb312fbe6f6f1c8169b93648966275e28f0ae5f312c7195023f6b91bc240" },
+  { path = "templates/architecture.md", sha256 = "91f4c340c29460d777ba1317ec0d46da677f2768d848e74ee3ac90d1699bbc60" },
+  { path = "templates/getting-started.md", sha256 = "190b3e93cfa8872de69f846a86b7250a154ce3ed3c50d3127eeae8c0a02c1f36" },
+  { path = "templates/module.md", sha256 = "5a5f02b93dc45712a444c279e4b993a01937436082a0c8a9e64e2fa7f597a8d7" },
+]
 stripped = []
 
 [[skill]]
@@ -3625,9 +4262,10 @@ name = "rest-graphql-debug"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/rest-graphql-debug"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 7: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "4921a93f47056bb8039df8a79d0d2eb12255f7172bd8f91595a236b97d5d96d5"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "a7603aa2f3b309404bf25cc584cd102ffd061a0e88fe2ea577cec9f76163fa16"
 refs = []
 stripped = []
 
@@ -3636,10 +4274,14 @@ name = "subagent-driven-development"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "software-development/subagent-driven-development"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "7120fad8ceb9860be267baee027ccb8d5e62629f055d044006cd169c7872d150"
-refs = []
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "529d8e112a9228243f5b1aaec6d11ef4ba8571dac9ec91e04f3c9983b1dd46c8"
+refs = [
+  { path = "references/context-budget-discipline.md", sha256 = "325d4f3b16db3215a1d7d8771b4c03af40cad62a468df5c44757c1e6366f2c9c" },
+  { path = "references/gates-taxonomy.md", sha256 = "2740dbfb83cb58d2e8bffd6d2dca95c2dbccca3b60138dcb81b9be905554043a" },
+]
 stripped = []
 
 [[skill]]
@@ -3647,19 +4289,22 @@ name = "cloudflare-temporary-deploy"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "web-development/cloudflare-temporary-deploy"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-with-scripts-stripped"
+reason = "ships without its scripts and executable files"
 skill_md_sha256 = "442cf5ab7dccea1b3e42696d366e1c94f732fddd479f4fc0e85c2743b8959537"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "8ae08ea6e29c85ed59f937d0d244762a8903fb5d20e7a395dd54637b1d5aafbe"
 refs = []
-stripped = []
+stripped = ["scripts/parse_deploy_output.py"]
 
 [[skill]]
 name = "page-agent"
 source = "hermes-optional"
 commit = "5445e42b87b9918d5b1bfa9f4eadd8e4bb10ff37"
 path = "web-development/page-agent"
-verdict = "exclude"
-reason = "loader would refuse it: frontmatter line 8: nested collections are not supported"
+verdict = "include-as-is"
 skill_md_sha256 = "8474b19f2cf68a399847446a1914a116d920817fdfb345cc8e91e1f436f3dd31"
+intake_rewrite = "flatten-frontmatter"
+shipped_skill_md_sha256 = "f4ff92e614d9ca6ffe1aa48a89beeaf742c44ce39dbc2ef52186b4d9222071cd"
 refs = []
 stripped = []
