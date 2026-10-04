@@ -352,6 +352,26 @@ fn strip_test_module(src: &str) -> String {
     }
 }
 
+/// The signer tripwires must scan everything before the terminal test module. ceremony.rs has an
+/// earlier `#[cfg(test)]` helper; code after it (reject, the budgeted SIWE path, the command
+/// surface) is production code and must stay in scope.
+#[test]
+fn strip_test_module_keeps_code_after_an_inner_cfg_test_helper() {
+    let src = include_str!("ceremony.rs");
+    let non_test = strip_test_module(src);
+    for needle in [
+        "pub fn reject(",
+        "pub fn request_siwe_budgeted(",
+        "pub fn sign_reject_sync(",
+    ] {
+        assert!(non_test.contains(needle), "{needle} must be scanned");
+    }
+    assert!(!non_test.contains("include!(\"ceremony_tests.rs\")"));
+    let synthetic = "fn a() {}\n#[cfg(test)]\nfn helper() {}\nfn b() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+    let cut = strip_test_module(synthetic);
+    assert!(cut.contains("fn b()") && !cut.contains("fn t()"));
+}
+
 // =========================================================================
 // B1.2-ADV-2 — no invoke command returns key/seed/entropy; compile barrier holds.
 // =========================================================================

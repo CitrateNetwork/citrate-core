@@ -13,6 +13,13 @@ renamed from the script's UTC-dated default (`2026-10-01-<model>.json`) to
 in the scorecard: they come from the `llama-server` per-request `print_timing` log lines for the
 same run (80 requests each).
 
+## 2026-10-04 runs (HUP-S1.7, HUP-S1.10: eval v2 and the sidecar eval)
+
+[2026-10-04-eval-v2.run.md](2026-10-04-eval-v2.run.md): `toolcall-v2` + `injection-v2` single-turn on
+T0 and T1, and `scripts/eval-sidecar.mjs` (workflow-v1 step success, live MCP and browser
+injection) on T0 and T1, all with the app's real serve flags and the app's server stopped. The
+`-sidecar-` files are written by `eval-sidecar.mjs` and keep its file name.
+
 ## 2026-10-01 runs (HUP-S3.5)
 
 Each run has a record with YAML frontmatter (model, quant, tier, ctx, date, hardware, commands):
@@ -62,20 +69,15 @@ not cite the passage the item requires (T1 11, T0 15), then key points missed wi
 citation (T1 3, T0 10). T1 also answered 5 of the 15 unanswerable probes instead of saying the
 docs do not cover them.
 
-### Proposed AC2 target (pending owner sign-off)
+### AC2 target (owner decision, 2026-10-04)
 
-US-3.1 AC2 needs a pass-rate target; none is set (A15/A43), so gate g2-knowledge stays
-`met: false`. Proposal, for the owner to accept, change or replace:
+The owner set the US-3.1 AC2 target for gate g2-knowledge: **T1 pass >= 75 % and citation hit
+rate >= 80 %** on `qa-v1` through the memory_search tool.
 
-- **Gating (T1, the tier the gate names):** pass >= 75 % on `qa-v1` through the memory_search
-  tool, citation validity >= 95 % (citations resolve to bundled nodes), false abstention <= 5 %.
-  The 2026-10-02 T1 run clears all three (77.3 %, 99.7 %, 0.7 %).
-- **T0 guided-tier bar (reported, not gating):** pass >= 60 % and citation validity >= 95 %.
-  The 2026-10-02 T0 run clears both (65.3 %, 98.8 %).
-- **Watch, not gate:** unanswerable-probe abstention (T1 10/15) and the agentile-hic category.
-
-Each figure sits a little under one measured run, so it records today's level rather than a
-stretch goal. If the owner wants a stretch bar instead, set it here and in gates.yaml.
+The 2026-10-02 T1 run (Qwen3.8-27B Q4_0) clears it: pass 77.3 %, citation hit rate 81.5 %
+(citation validity 99.7 %). T0 (Gemma 4 E4B Q4_0) is reported, not gating: pass 65.3 %,
+citation hit rate 69.6 %. Unanswerable-probe abstention and the agentile-hic category stay on
+the watch list.
 
 ## Machine
 

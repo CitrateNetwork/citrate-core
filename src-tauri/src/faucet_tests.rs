@@ -910,6 +910,28 @@ impl crate::node_mcp_protocol::NodeBackend for FaucetOnlyBackend {
         Err("not in this test".into())
     }
     fn close_ceremony(&self, _id: &str) {}
+    fn devices(&self) -> Result<Value, String> {
+        Err("absent".into())
+    }
+    fn pins(&self) -> Result<Value, String> {
+        Err("absent".into())
+    }
+    fn propose_deploy(
+        &self,
+        _o: &str,
+        _b: &str,
+        _c: &str,
+        _v: u128,
+        _g: Option<u64>,
+    ) -> Result<crate::node_mcp_protocol::ProposedSignature, String> {
+        Err("absent".into())
+    }
+    fn anchor_ready(&self) -> Result<(), String> {
+        Err("absent".into())
+    }
+    fn contract_abi(&self, _a: &str) -> Result<Value, String> {
+        Err("absent".into())
+    }
     fn faucet_request(&self, origin: &str, initcode_hash: &str) -> Result<Value, String> {
         self.asked
             .lock()
@@ -924,6 +946,7 @@ fn mcp_call(core: &crate::node_mcp_protocol::McpCore, args: Value) -> Value {
         token_id: "t1".into(),
         token_label: "Hermes".into(),
         client_name: Some("hermes".into()),
+        read_only: false,
     };
     core.dispatch(
         &c,
@@ -995,6 +1018,28 @@ fn a_backend_without_a_faucet_says_so() {
             Err("x".into())
         }
         fn close_ceremony(&self, _id: &str) {}
+        fn devices(&self) -> Result<Value, String> {
+            Err("absent".into())
+        }
+        fn pins(&self) -> Result<Value, String> {
+            Err("absent".into())
+        }
+        fn propose_deploy(
+            &self,
+            _o: &str,
+            _b: &str,
+            _c: &str,
+            _v: u128,
+            _g: Option<u64>,
+        ) -> Result<crate::node_mcp_protocol::ProposedSignature, String> {
+            Err("absent".into())
+        }
+        fn anchor_ready(&self) -> Result<(), String> {
+            Err("absent".into())
+        }
+        fn contract_abi(&self, _a: &str) -> Result<Value, String> {
+            Err("absent".into())
+        }
     }
     let core = crate::node_mcp_protocol::McpCore::new(
         Arc::new(Plain),

@@ -284,6 +284,19 @@ fn the_ledger_round_trips_through_its_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn the_ledger_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("hlearn-perms-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("learned-memories.json");
+    let ledger = Ledger::load(&path).unwrap();
+    ledger.save(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_assert_reply_names_the_new_node() {
     assert_eq!(node_id_from_assert("asserted 0a1b2c3d4e5f [Claim] in personal by x").as_deref(), Some("0a1b2c3d4e5f"));
@@ -310,10 +323,40 @@ fn publishing_is_off_until_signed_off_and_says_why() {
     assert!(p.enabled, "{}", p.note);
 }
 
+/// Canonical `registerSkill` calldata, written out word by word here (independent of the code
+/// under test): name "deploy-checklist", version "1.0.0", manifest "", description "d",
+/// tags ["hermes-learned"].
+fn register_calldata() -> String {
+    let w = |hex: &str| format!("{hex:0>64}");
+    let s = |text: &str| {
+        let mut h = hex::encode(text.as_bytes());
+        while !h.len().is_multiple_of(64) {
+            h.push('0');
+        }
+        format!("{}{h}", w(&format!("{:x}", text.len())))
+    };
+    // Heads: 5 offsets. Tails: name(3 words) version(2) cid(1) desc(2) tags(arr).
+    let name = s("deploy-checklist");
+    let version = s("1.0.0");
+    let cid = s("");
+    let desc = s("d");
+    let tag = s("hermes-learned");
+    let arr = format!("{}{}{}", w("1"), w("20"), tag);
+    let mut off = 5 * 32;
+    let mut heads = String::new();
+    let mut tails = String::new();
+    for part in [&name, &version, &cid, &desc, &arr] {
+        heads.push_str(&w(&format!("{off:x}")));
+        off += part.len() / 2;
+        tails.push_str(part);
+    }
+    format!("0x2a996145{heads}{tails}")
+}
+
 fn payload(to: &str, owner: &str) -> serde_json::Value {
     serde_json::json!({
         "chain_id": 40204, "to": to, "value": "0x0",
-        "data": "0x2a996145", "function": "registerSkill(string,string,string,string,string[])",
+        "data": register_calldata(), "function": "registerSkill(string,string,string,string,string[])",
         "name": "deploy-checklist", "version": "1.0.0", "manifest_cid": "", "description": "d",
         "tags": ["hermes-learned"], "owner": owner, "content_sha256": "ab", "expected_skill_hash": "0x00",
         "hic": "hic-1", "broadcast": false, "proposal_id": PID
@@ -347,6 +390,35 @@ fn a_publish_payload_becomes_a_ceremony_intent_only_when_it_matches() {
     assert!(publish_intent(&p, reg, me).is_err());
     let mut p = payload(reg, me);
     p["value"] = serde_json::json!("0x1");
+    assert!(publish_intent(&p, reg, me).is_err());
+}
+
+#[test]
+fn the_publish_calldata_must_encode_exactly_the_fields_the_member_sees() {
+    let reg = "0x2b687899ef4af05a18f4f36ce1fe9d51c017a97c";
+    let me = "0x1111111111111111111111111111111111111111";
+    // The calldata is the canonical encoding of the payload's own fields.
+    assert_eq!(
+        encode_register_skill("deploy-checklist", "1.0.0", "", "d", &["hermes-learned".to_string()]),
+        hex::decode(&register_calldata()[2..]).unwrap()
+    );
+    // Pinned against Foundry's encoder (cast 1.5.1 calldata with the same arguments).
+    const CAST: &str = "0x2a99614500000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000000e000000000000000000000000000000000000000000000000000000000000001200000000000000000000000000000000000000000000000000000000000000140000000000000000000000000000000000000000000000000000000000000018000000000000000000000000000000000000000000000000000000000000000106465706c6f792d636865636b6c697374000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005312e302e3000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000e6865726d65732d6c6561726e6564000000000000000000000000000000000000";
+    assert_eq!(register_calldata(), CAST);
+    // Only the selector, or calldata for another name, tags or trailing bytes: refused.
+    for bad in [
+        "0x2a996145".to_string(),
+        register_calldata().replace(&hex::encode("deploy-checklist"), &hex::encode("drain-the-wallet")),
+        register_calldata().replace(&hex::encode("hermes-learned"), &hex::encode("hermes-official")),
+        format!("{}00", register_calldata()),
+    ] {
+        let mut p = payload(reg, me);
+        p["data"] = serde_json::json!(bad);
+        assert!(publish_intent(&p, reg, me).is_err(), "{bad}");
+    }
+    // The fields themselves are bounded and the name is required.
+    let mut p = payload(reg, me);
+    p["name"] = serde_json::json!("");
     assert!(publish_intent(&p, reg, me).is_err());
 }
 
@@ -726,4 +798,39 @@ fn the_publish_payload_must_carry_the_pinned_cid() {
     assert!(check_manifest_cid(&p, "bafkreiother").is_err());
     p["manifest_cid"] = serde_json::json!("");
     assert!(check_manifest_cid(&p, "bafkreiexampleskillcid").is_err());
+}
+
+/// HUP-S7.7 / US-9.2: Citrate's first-party literacy skills (`src-tauri/skills/`, including
+/// citrate-paraconsensus and citrate-belnap-aggregate) are a resource in every bundle config, so
+/// the `first_party` skills source the sidecar is pointed at exists in every build, not only in
+/// the release overlays.
+#[test]
+fn every_bundle_config_ships_the_first_party_skills() {
+    let src_tauri = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for entry in std::fs::read_dir(src_tauri).expect("src-tauri").flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        if !(file.starts_with("tauri.") && file.ends_with(".conf.json")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path()).expect("read config");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("config is JSON");
+        let listed: Vec<&str> = json
+            .pointer("/bundle/resources")
+            .and_then(|r| r.as_array())
+            .unwrap_or_else(|| panic!("{file} has no bundle.resources list"))
+            .iter()
+            .filter_map(|r| r.as_str())
+            .collect();
+        assert!(listed.contains(&"skills/**/*"), "{file} must bundle skills/**/*");
+        checked += 1;
+    }
+    assert!(checked >= 6, "expected the base config and the overlays, saw {checked}");
+    // The resource the sidecar is pointed at holds the literacy skills US-9.2 relies on.
+    for name in ["citrate-paraconsensus", "citrate-belnap-aggregate", "citrate-precompiles"] {
+        assert!(
+            src_tauri.join("skills").join(name).join("SKILL.md").is_file(),
+            "src-tauri/skills/{name}/SKILL.md"
+        );
+    }
 }
