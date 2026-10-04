@@ -11,6 +11,14 @@
 // phase flips it. The surfaces above these interfaces never change.
 // =====================================================================
 import type {
+  TemplateCatalog,
+  TemplateRenderInput,
+  TemplateRenderView,
+  ToolchainGateRequest,
+  ToolchainGateResult,
+  ToolchainStatus,
+} from "../agent/contractForge";
+import type {
   DeployGateInputs,
   DeployGateLookup,
   DeployGateRecord,
@@ -1701,6 +1709,18 @@ export interface ContractsDomain {
   postdeployPinSite(projectDir: string): Promise<SitePinView>;
   /** HUP-S6.6 — write the Vercel-ready export folder (no account actions). */
   postdeployVercelExport(projectDir: string): Promise<VercelExportView>;
+  /** HUP-S6.2 / US-6.4 — the bundled contract templates with their parameter forms, the tier in
+   *  effect and its Medusa budget. Read-only. */
+  templateList(): Promise<TemplateCatalog>;
+  /** HUP-S6.2 / US-6.4 — render a template into a folder granted for writing (core validates
+   *  every parameter and refuses before writing anything). */
+  templateRender(input: TemplateRenderInput): Promise<TemplateRenderView>;
+  /** HUP-S6.3 — the toolchain switch (off by default; applies when Hermes next starts). */
+  toolchainSettings(): Promise<ToolchainStatus>;
+  toolchainSetEnabled(enabled: boolean): Promise<ToolchainStatus>;
+  /** HUP-S6.3 → S6.4 — run the deploy gate on a Hermes session's toolchain reports for one
+   *  forge artifact; core re-parses the raw reports and stores the verdict. */
+  gateFromToolchain(request: ToolchainGateRequest): Promise<ToolchainGateResult>;
 }
 
 /** HUP-S6.7 — what CitrateScan says about an address. Mirrors Rust `contract_reader::VerifiedSource`. */

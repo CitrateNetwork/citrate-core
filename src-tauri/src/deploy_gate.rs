@@ -7,7 +7,7 @@
 //! |---|---|
 //! | Forge tests | `forge test --json` parsed; at least one test ran; zero failed |
 //! | Slither | a successful Slither JSON report (or Slither SARIF) with zero High findings |
-//! | Aderyn | an Aderyn JSON report with zero High issues (its two High counts agree) |
+//! | Aderyn | an Aderyn JSON report with zero High issues (its two High counts agree), or Aderyn SARIF with zero High results |
 //! | Medusa campaign | the summary reports zero failed and at least one passed property test, and the campaign reached its call budget (budget ≥ [`MIN_MEDUSA_CALL_BUDGET`]; the planset names 50,000 calls for template invariants) |
 //! | Fork dry run | the dry-run receipt succeeded with a contract address and the dry run deployed exactly this init code. On a plain anvil fork the contract must not use Citrate precompiles (anvil cannot simulate them). On the Citrate-aware fork (HUP-S6.10, [`crate::fork_dry_run`]) it ran on chain 40204 state, every later step (the test mint) succeeded, and every Citrate precompile it touched or calls is one the fork runs with the node's own code; a contract that uses Citrate precompiles passes only on a run core made itself (`forkInCore`, [`ForkProvenance::Core`]) |
 //!
@@ -25,8 +25,10 @@
 //! **Inputs.** The verifiers that run the tools live in the agent runtime (HUP-S6.3). This
 //! module defines the typed input they hand over ([`GateInputs`]): the raw outputs, never a
 //! pre-computed verdict. Every verdict here comes from a deterministic parser (planset
-//! red-team correction 4). Records live in memory only: a restart forgets them and the gate
-//! must run again.
+//! red-team correction 4), and these parsers are the one source of truth for a deploy verdict
+//! (retro A27): [`crate::deploy_gate_toolchain`] hands over the raw reports of Hermes's
+//! toolchain runs, never the runtime's own step verdicts. Records live in memory only: a restart
+//! forgets them and the gate must run again.
 //!
 //! Rule 3: nothing here signs or holds a key. `contract_deploy` consults [`GateStore`] and
 //! only then opens a PENDING SignatureCeremony.
@@ -669,10 +671,83 @@ fn parse_slither_sarif(v: &serde_json::Value) -> Parsed {
     slither_verdict(by, "SARIF")
 }
 
+/// The report inside aderyn's stdout: the text between its `STDOUT START` / `STDOUT END`
+/// markers when present (aderyn prints a banner and a sign-off around the report), else all of it.
+fn aderyn_report_text(out: &str) -> &str {
+    match out.find("STDOUT START") {
+        Some(a) => {
+            let body = &out[a + "STDOUT START".len()..];
+            match body.rfind("STDOUT END") {
+                Some(b) => &body[..b],
+                None => body,
+            }
+        }
+        None => out,
+    }
+}
+
+/// Aderyn's SARIF (what `aderyn --output <x>.sarif --stdout` prints, and what the Hermes
+/// `aderyn_scan` tool runs). Aderyn writes a High issue as level `warning` (or `error`) and a Low
+/// issue as `note`; any other or missing level counts as High (fail closed). Results with kind
+/// `pass` or `notApplicable` are not findings.
+fn parse_aderyn_sarif(v: &serde_json::Value) -> Parsed {
+    let Some(runs) = v
+        .get("runs")
+        .and_then(|r| r.as_array())
+        .filter(|r| !r.is_empty())
+    else {
+        return fail("aderyn SARIF has no runs");
+    };
+    let (mut high, mut low) = (0u64, 0u64);
+    for run in runs {
+        let name = run
+            .pointer("/tool/driver/name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        if !name.eq_ignore_ascii_case("aderyn") {
+            return fail(format!("SARIF report is from {name:?}, not Aderyn"));
+        }
+        for res in run
+            .get("results")
+            .and_then(|r| r.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[])
+        {
+            if matches!(
+                res.get("kind").and_then(|k| k.as_str()),
+                Some("pass") | Some("notApplicable")
+            ) {
+                continue;
+            }
+            match res.get("level").and_then(|l| l.as_str()) {
+                Some("note") => low += 1,
+                _ => high += 1,
+            }
+        }
+    }
+    let counts = BTreeMap::from([("high".to_string(), high), ("low".to_string(), low)]);
+    if high > 0 {
+        Parsed {
+            pass: false,
+            reason: format!("{high} High issue(s) (SARIF)"),
+            counts,
+        }
+    } else {
+        Parsed {
+            pass: true,
+            reason: format!("0 High, {low} Low (SARIF)"),
+            counts,
+        }
+    }
+}
+
 fn parse_aderyn(out: &str) -> Parsed {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(out) else {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(aderyn_report_text(out).trim()) else {
         return fail("aderyn output is not JSON");
     };
+    if v.get("runs").is_some() {
+        return parse_aderyn_sarif(&v);
+    }
     let count_high = v.pointer("/issue_count/high").and_then(|h| h.as_u64());
     let listed_high = v
         .pointer("/high_issues/issues")

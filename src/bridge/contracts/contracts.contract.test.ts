@@ -173,4 +173,27 @@ describe("HUP-S6.6 / S6.7 — the Contract reader and post-deploy seams", () => 
       await expect(bridge.contracts.postdeployPinSite("/p")).rejects.toThrow(/desktop node/i);
     }
   });
+  it("forge calls map to their commands (HUP-S6.2 / S6.3)", async () => {
+    invokeMock.mockResolvedValue(null);
+    await tauriContracts.templateList();
+    expect(invokeMock).toHaveBeenLastCalledWith("template_list");
+    const input = { template: "erc20", params: { name: "Lemon Drops" }, outDir: "/p/lemon" };
+    await tauriContracts.templateRender(input);
+    expect(invokeMock).toHaveBeenLastCalledWith("template_render", { input });
+    await tauriContracts.toolchainSettings();
+    expect(invokeMock).toHaveBeenLastCalledWith("toolchain_settings_get");
+    await tauriContracts.toolchainSetEnabled(true);
+    expect(invokeMock).toHaveBeenLastCalledWith("toolchain_settings_set", { settings: { enabled: true } });
+    const request = { sessionId: "s1-ab", project: "/p/lemon", artifact: "Token.sol/LemonDrops.json" };
+    await tauriContracts.gateFromToolchain(request);
+    expect(invokeMock).toHaveBeenLastCalledWith("deploy_gate_submit_toolchain", { request });
+  });
+
+  it("sim is honest — templates, the toolchain and the gate need the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.templateList()).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.toolchainSetEnabled(true)).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.gateFromToolchain({ sessionId: "s", project: "/p", artifact: "A.sol/A.json" })).rejects.toThrow(/desktop node/i);
+    }
+  });
 });

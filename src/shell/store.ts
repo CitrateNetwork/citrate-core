@@ -39,6 +39,7 @@ import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
+import { runContractView } from "../agent/contractView";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
@@ -3003,6 +3004,10 @@ export class Store {
           result = "verified-source lookup unavailable: " + (e instanceof Error ? e.message : String(e));
         }
         }
+    } else if (call.name === "contract_view") {
+      // HUP-S6.7 / US-6.3 AC2 — READ: an eth_call through core's contract_view_call (no effect,
+      // no approval); a non-view function is refused, the result is fenced as untrusted data.
+      result = await runContractView(bridge.contracts, args as Record<string, unknown>);
     } else if (call.name === "belnap_codec") {
       // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
       result = belnapCodecTool(args as Record<string, unknown>);
