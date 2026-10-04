@@ -7,6 +7,8 @@
 // HUP-S5.1: the Browser pop-out renders the views the main window sends, re-announces itself every
 // few seconds (the main window polls the browser only while it hears from it), and its Stop asks the
 // main window to stop Hermes's browser.
+// HUP-S5.4: the Code and diff pop-out asks the main window for an agent session's checkpointed
+// file changes and their diffs (read-only) over its own request channel.
 // HUP-S10.6 (a11y): the document is titled after the pop-out, and every state (not built,
 // waiting, failed) is a <main> landmark with an <h1>, with a polite status or an alert.
 // =====================================================================
@@ -22,6 +24,8 @@ import { MediaPlayer } from "./MediaPlayer";
 import { mediaTauriTransport } from "./mediaBridge";
 import { BrowserPopout } from "./BrowserPopout";
 import type { BrowserView } from "./browserView";
+import { DiffViewer } from "./DiffViewer";
+import { createDiffClient, type DiffClient, type DiffFocus } from "./diffChannel";
 
 /** How often a Browser pop-out re-announces itself to the main window. */
 export const BROWSER_HEARTBEAT_MS = 3_000;
@@ -120,6 +124,7 @@ export function PopoutRoot({
   }, [kind]);
 
   if (kind === "contract") return <ContractReaderWindow transport={transport} relay={contractRelay ?? tauriContractRelay} />;
+  if (kind === "diff") return <DiffWindow transport={transport} />;
   if (kind === "media") return <MediaPlayer transport={mediaTransport} />;
   if (!hasView) {
     return (
@@ -217,4 +222,53 @@ function ContractReaderWindow({ transport, relay }: { transport: () => Promise<B
     );
   }
   return <ContractReader client={client} />;
+}
+
+/** HUP-S5.4 — the Code and diff window: its requests go to the main window over the channel. */
+function DiffWindow({ transport }: { transport: () => Promise<BridgeTransport> }) {
+  const [client, setClient] = useState<DiffClient | null>(null);
+  const [focus, setFocus] = useState<DiffFocus | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let made: DiffClient | null = null;
+    void (async () => {
+      try {
+        const c = await createDiffClient(await transport(), (f) => setFocus(f));
+        if (cancelled) {
+          c.close();
+          return;
+        }
+        made = c;
+        setClient(c);
+      } catch (err) {
+        if (!cancelled) setFailed(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      made?.close();
+    };
+  }, [transport]);
+
+  if (failed) {
+    return (
+      <Frame title={POPOUT_TITLES.diff}>
+        <p role="alert" style={para}>
+          The Code and diff window could not connect to the main window: {failed}
+        </p>
+      </Frame>
+    );
+  }
+  if (!client) {
+    return (
+      <Frame title={POPOUT_TITLES.diff}>
+        <p role="status" aria-live="polite" style={para}>
+          Connecting to the main window…
+        </p>
+      </Frame>
+    );
+  }
+  return <DiffViewer client={client} focus={focus} />;
 }

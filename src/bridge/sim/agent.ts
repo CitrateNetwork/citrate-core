@@ -96,6 +96,10 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async undoSession() {
       return NO_UNDO;
     },
+    // HUP-S5.4 — no sidecar, so no diffs. Say so (Rule 1).
+    async checkpointDiff(id, seq) {
+      return { ok: false, session: id, seq, status: "", files: [], kind: "disabled", reason: "diffs of agent file changes need the desktop app" };
+    },
     // HUP-S2.6 — web/dev keeps no decision records; say so with null (never an invented id).
     async recordDecision() {
       return null;

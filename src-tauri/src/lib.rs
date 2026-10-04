@@ -657,6 +657,8 @@ pub fn run() {
             hermes::undo::hermes_checkpoints,
             hermes::undo::hermes_undo_step,
             hermes::undo::hermes_undo_session,
+            // HUP-S5.4 — one step's diff for the Code and diff pop-out (read-only).
+            hermes::undo::hermes_checkpoint_diff,
             hermes::hermes_tracks,
             hermes::hermes_brief_create,
             hermes::hermes_brief_check,

@@ -1,5 +1,5 @@
 // =====================================================================
-// HUP-S5.2 / S5.3: the member's web opt-ins for Hermes, TypeScript side.
+// HUP-S5.1 / S5.2 / S5.3: the member's web opt-ins for Hermes, TypeScript side.
 //
 // Core (src-tauri/src/hermes_web.rs) stores the choices and turns them into the Hermes sidecar's
 // environment when Hermes starts; the tools run in the sidecar (citrate-agent-runtime
@@ -10,6 +10,8 @@
 export type ReaderChoice = "local" | "jina";
 
 export interface HermesWebSettings {
+  /** HUP-S5.1: Hermes's own headless browser (the `browser_*` tools). Off by default. */
+  browserEnabled: boolean;
   searchEnabled: boolean;
   searxngPath: string | null;
   reader: ReaderChoice;
@@ -22,6 +24,8 @@ export interface HermesWebSettings {
 
 export interface HermesWebStatus {
   settings: HermesWebSettings;
+  /** The managed Chromium's executable when the signed component is installed; null = not installed. */
+  managedChromium: string | null;
   searxngFound: boolean;
   jinaKeyFileFound: boolean;
   jevKeyFileFound: boolean;
@@ -31,6 +35,7 @@ export interface HermesWebStatus {
 }
 
 export const DEFAULT_WEB_SETTINGS: HermesWebSettings = {
+  browserEnabled: false,
   searchEnabled: false,
   searxngPath: null,
   reader: "local",

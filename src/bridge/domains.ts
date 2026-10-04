@@ -13,6 +13,7 @@
 import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import type { VerifiedSourceView } from "../agent/verifiedSource";
 import type { CheckpointList, UndoOutcome } from "../agent/fileChanges";
+import type { StepDiff } from "../popout/diffModel";
 import type { LearnAcceptResult, LearnContent, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView, WorkflowSpec } from "../agent/learn";
 import type {
   AppConfig,
@@ -1169,6 +1170,9 @@ export interface AgentHarnessDomain {
   undoStep(id: string, seq: number): Promise<UndoOutcome>;
   /** HUP-S2.9 — undo every change of the session not undone yet (all or nothing). */
   undoSession(id: string): Promise<UndoOutcome>;
+  /** HUP-S5.4 — what one agent file change did, path by path, for the Code and diff pop-out
+   *  (read-only). A refusal (pruned, not found, undo not enabled) resolves with `ok: false`. */
+  checkpointDiff(id: string, seq: number): Promise<StepDiff>;
   /** HUP-S2.6 — record the member's answer on an approval card or a wallet review in core's HIC
    *  outbox (then in the decision records the nightly anchor covers). Resolves with the record id,
    *  or null in a build that keeps no decision records (web/dev); rejects when it could not be
