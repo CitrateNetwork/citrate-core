@@ -294,7 +294,7 @@ fn the_node_entry_runs_the_stdio_shim_with_a_minted_token() {
     assert_eq!(n["env"][NODE_PORT_ENV], "47204");
     // One switch (pending owner sign-off) drives the entry and the token scope; today read only.
     assert_eq!(n["allow_write_tools"], HERMES_NODE_WRITE_TOOLS);
-    assert!(!HERMES_NODE_WRITE_TOOLS);
+    const { assert!(!HERMES_NODE_WRITE_TOOLS) };
 }
 
 #[test]
