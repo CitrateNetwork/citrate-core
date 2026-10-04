@@ -993,6 +993,9 @@ export interface FlRoundProposal {
   loraRank: number;
   maxTrajectories: number;
   leaseHours: number;
+  /** The round to join (0x + 64 hex, citrate-chain FL_ROUND_V1 round_id). With one, an approved
+   *  start also writes this device's consent for that round (D-29). */
+  roundId?: string;
 }
 export type FlSettlement = "shadow" | "live" | "unknown";
 export type FlPoolPhase = "noWork" | "open" | "running" | "complete";
@@ -1034,12 +1037,17 @@ export interface FlStartReceipt {
   /** Always false in this build: the device training worker is not bundled (HUP-S9.1/S9.2). */
   trainingStarted: boolean;
   note: string;
+  roundId: string | null;
+  /** Where the round consent was written (the worker's CITRATE_FL_CONSENT_FILE). */
+  consentFile: string | null;
 }
 export interface FlStartRecord {
   planHash: string;
   coordinatorUrl: string;
   requires: FlCapability;
   authorizedAtMs: number;
+  roundId?: string;
+  revokedAtMs?: number;
 }
 export interface FlCoordinatorConfig {
   url: string | null;
@@ -1054,6 +1062,18 @@ export interface FlAdapterGateRequest {
   candidateToolsPath: string;
   baseQaPath?: string;
   candidateQaPath?: string;
+  /** The round result (receipt) of the round that produced this adapter. */
+  roundResultPath?: string;
+}
+/** The round an adapter came from, as its round result file states it. Core checks that the file is
+ *  consistent (Accepted, chain, bundle and replay digests agree); it does not read the ledger. */
+export interface FlRoundBinding {
+  roundId: string;
+  recordDigest: string;
+  adapterSha256: string;
+  chainId: number;
+  ledger: string;
+  participants: number;
 }
 export interface FlMetricDelta {
   metric: string;
@@ -1066,6 +1086,7 @@ export interface FlAdapterGateRecord {
   adapterPath: string;
   baseModel: string;
   decidedAtMs: number;
+  round: FlRoundBinding | null;
   decision: {
     verdict: "ACCEPT" | "REJECT";
     reasons: string[];
@@ -1079,6 +1100,13 @@ export interface FlOverview {
   starts: FlStartRecord[];
   gates: FlAdapterGateRecord[];
   activeAdapter: string | null;
+  /** The adapter put back after a restart (on the base it was loaded on). */
+  rememberedAdapter: { sha256: string; baseModel: string } | null;
+  restoreError: string | null;
+  /** The rounds this device consented to, as the device worker reads them, and that file. */
+  consentedRounds: string[];
+  consentFile: string | null;
+  consentError: string | null;
   storeError: string | null;
 }
 export interface FlRoundsDomain {
@@ -1094,6 +1122,8 @@ export interface FlRoundsDomain {
   /** Load an ACCEPTED adapter into llama-server (`--lora`). Returns the served copy's path. */
   loadAdapter(sha256: string): Promise<string>;
   unloadAdapter(): Promise<void>;
+  /** Withdraw this device's consent for one round. Returns the rounds still consented. */
+  revokeConsent(roundId: string): Promise<string[]>;
 }
 
 // ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──

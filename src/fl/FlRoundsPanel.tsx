@@ -4,11 +4,14 @@
 // Coordinator setting, plan + plain-words explanation, HIC-1 start, and the LoRA eval gate.
 // Everything shown comes from core (fl_rounds.rs). Without a configured coordinator it says so;
 // a start records the member's approval and says plainly that no training runs in this build.
+// A plan may name a round (FL_ROUND_V1 round_id): its start writes per-round consent for the
+// device worker, listed here with Withdraw. The gate can bind an adapter to its round result, and
+// a loaded adapter is put back after a restart.
 // =====================================================================
 import { useEffect, useState } from "react";
 import type { FlAdapterGateRecord, FlOverview, FlRoundPlan, FlRoundsDomain, FlStartReceipt } from "../bridge/domains";
 import type { CerSpec } from "../shell/state";
-import { approveAndStartRound, gateSummary } from "./flRounds";
+import { approveAndStartRound, DEFAULT_PROPOSAL, gateSummary } from "./flRounds";
 
 export interface FlRoundsPanelProps {
   fl: FlRoundsDomain;
@@ -25,10 +28,11 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
   const [ov, setOv] = useState<FlOverview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [coordInput, setCoordInput] = useState("");
+  const [roundInput, setRoundInput] = useState("");
   const [plan, setPlan] = useState<FlRoundPlan | null>(null);
   const [receipt, setReceipt] = useState<FlStartReceipt | null>(null);
   const [busy, setBusy] = useState(false);
-  const [gate, setGate] = useState({ adapter: "", sha: "", baseTools: "", candTools: "", baseQa: "", candQa: "" });
+  const [gate, setGate] = useState({ adapter: "", sha: "", round: "", baseTools: "", candTools: "", baseQa: "", candQa: "" });
   const [gateRec, setGateRec] = useState<FlAdapterGateRecord | null>(null);
 
   const refresh = async () => {
@@ -61,7 +65,8 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
     setReceipt(null);
     setBusy(true);
     try {
-      setPlan(await fl.plan());
+      const roundId = roundInput.trim();
+      setPlan(await fl.plan(roundId ? { ...DEFAULT_PROPOSAL, roundId } : undefined));
     } catch (e) {
       setErr(msg(e));
     } finally {
@@ -97,6 +102,7 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
         candidateToolsPath: gate.candTools.trim(),
         ...(gate.baseQa.trim() ? { baseQaPath: gate.baseQa.trim() } : {}),
         ...(gate.candQa.trim() ? { candidateQaPath: gate.candQa.trim() } : {}),
+        ...(gate.round.trim() ? { roundResultPath: gate.round.trim() } : {}),
       });
       setGateRec(rec);
       await refresh();
@@ -123,6 +129,17 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
     try {
       await fl.unloadAdapter();
       toast("Adapter unloaded; the base model serves alone.");
+      await refresh();
+    } catch (e) {
+      setErr(msg(e));
+    }
+  };
+
+  const revoke = async (roundId: string) => {
+    setErr(null);
+    try {
+      await fl.revokeConsent(roundId);
+      toast("Consent withdrawn for that round.");
       await refresh();
     } catch (e) {
       setErr(msg(e));
@@ -185,6 +202,14 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <input
+            className="input"
+            data-testid="fl-round-id"
+            value={roundInput}
+            placeholder="round id (0x…, optional, as the operator published it)"
+            onInput={(e) => setRoundInput((e.target as HTMLInputElement).value)}
+            onChange={(e) => setRoundInput(e.target.value)}
+          />
           <div style={{ display: "flex", gap: 10 }}>
             <button className="btn btn-secondary" data-testid="fl-plan" onClick={() => void doPlan()} disabled={busy}>
               Plan a round
@@ -225,14 +250,41 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
           )}
         </div>
 
+        <div data-testid="fl-consents" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span className="mono" style={label}>Round consent</span>
+          {ov?.consentError ? (
+            <p style={{ ...para, color: "var(--warn)" }}>{ov.consentError}</p>
+          ) : ov && ov.consentedRounds.length > 0 ? (
+            <>
+              <p style={para}>
+                This device consented to the rounds below. A device training worker started with CITRATE_FL_CONSENT_FILE set to{" "}
+                <span className="mono">{ov.consentFile}</span> takes part in these rounds only.
+              </p>
+              {ov.consentedRounds.map((r, i) => (
+                <div key={r} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-2)", wordBreak: "break-all" }}>
+                    {r}
+                  </span>
+                  <button className="btn btn-secondary" data-testid={`fl-consent-revoke-${i}`} onClick={() => void revoke(r)}>
+                    Withdraw
+                  </button>
+                </div>
+              ))}
+            </>
+          ) : (
+            <p style={para}>No round consent on this device. Joining a plan that names a round writes consent for that round only.</p>
+          )}
+        </div>
+
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span className="mono" style={label}>Round adapter and the eval gate</span>
           <p style={para}>
-            Downloading a round's adapter from LoRAFactory is not deployed yet. Give the adapter file and its published sha256, plus the eval scorecards for the base model and for the
+            Downloading a round's adapter from LoRAFactory is not deployed yet. Give the adapter file and its published sha256 (or the round result the round tool wrote, which names the merged adapter; core checks that the file says Accepted, names at least three devices, and that its chain, bundle and replay digests agree, but does not read the ledger itself), plus the eval scorecards for the base model and for the
             base model with this adapter (scripts/eval-tools.mjs, optionally scripts/eval-qa.mjs, with --model set to the base model's file name and --adapter-sha256). The adapter loads only if nothing got worse and the score improved.
           </p>
           {field("adapter", "fl-gate-adapter", "adapter .gguf path")}
-          {field("sha", "fl-gate-sha", "expected sha256")}
+          {field("round", "fl-gate-round", "round result .json from the round tool (optional)")}
+          {field("sha", "fl-gate-sha", "expected sha256 (may be empty with a round result)")}
           {field("baseTools", "fl-gate-base-tools", "base tool-call scorecard .json")}
           {field("candTools", "fl-gate-cand-tools", "candidate tool-call scorecard .json")}
           {field("baseQa", "fl-gate-base-qa", "base QA scorecard .json (optional)")}
@@ -258,6 +310,13 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
                 </div>
               )}
             </div>
+          )}
+          {ov?.rememberedAdapter && (
+            <p data-testid="fl-remembered" style={para}>
+              {ov.restoreError
+                ? ov.restoreError
+                : `This adapter is put back when the app starts the local model on ${ov.rememberedAdapter.baseModel}, if the eval gate still accepts it there. Unload to stop that.`}
+            </p>
           )}
           {ov?.activeAdapter && (
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

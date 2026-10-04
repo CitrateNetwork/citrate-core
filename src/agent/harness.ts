@@ -602,6 +602,7 @@ export const AGENT_TOOLS = [
           loraRank: { type: "number", description: "LoRA rank, a power of two from 1 to 64; defaults to 8" },
           maxTrajectories: { type: "number", description: "most verified conversations this device may train on; defaults to 500" },
           leaseHours: { type: "number", description: "longest lease per job, 1 to 48 hours; defaults to 6" },
+          roundId: { type: "string", description: "the round to join, 0x followed by 64 hex digits, exactly as the operator published it; joining a named round writes the member's consent for that round only" },
         },
       },
     },

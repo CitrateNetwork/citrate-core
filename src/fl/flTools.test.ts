@@ -97,3 +97,26 @@ describe("fl_round_start (HIC-1)", () => {
     expect(out).toContain("plan the round first");
   });
 });
+
+describe("fl_round_plan with a named round (fan-out 6)", () => {
+  it("offers a roundId parameter and passes it to core", async () => {
+    const tool = AGENT_TOOLS.find((t) => t.function.name === "fl_round_plan")!;
+    expect(Object.keys(tool.function.parameters.properties)).toContain("roundId");
+    const round = "0x" + "ab".repeat(32);
+    const plan = vi.spyOn(bridge.flRounds, "plan").mockResolvedValue(livePlan());
+    await store.handleTool(call("fl_round_plan", { roundId: round }), "m1", noop);
+    expect(plan).toHaveBeenCalledWith({ requires: "federated", loraRank: 8, maxTrajectories: 500, leaseHours: 6, roundId: round });
+  });
+});
+
+describe("fl_round_start for a named round (fan-out 6)", () => {
+  it("names the round and its consent on the one approval card", async () => {
+    const round = "0x" + "cd".repeat(32);
+    vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan({ proposal: { requires: "federated", loraRank: 8, maxTrajectories: 500, leaseHours: 6, roundId: round } }));
+    const sig = vi.spyOn(store, "requestSig").mockResolvedValue("declined");
+    await store.handleTool(call("fl_round_start", { planHash: PLAN_HASH }), "m1", noop);
+    expect(sig).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(sig.mock.calls[0][0].card)).toContain(round);
+    expect(JSON.stringify(sig.mock.calls[0][0].card)).toContain("consent for this round only");
+  });
+});

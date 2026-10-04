@@ -3050,7 +3050,9 @@ export class Store {
           p,
           "chat agent",
           (spec) => {
-            const card = fieldsCard("fl_round_start", ann, { coordinator: spec.rows[0]?.v ?? "", plan: p.planHash }, "join the federated round of plan " + p.planHash.slice(0, 12));
+            const fields: Record<string, unknown> = { coordinator: spec.rows[0]?.v ?? "", plan: p.planHash };
+            if (p.proposal.roundId) fields.round = p.proposal.roundId + " (writes consent for this round only)";
+            const card = fieldsCard("fl_round_start", ann, fields, "join the federated round of plan " + p.planHash.slice(0, 12));
             return hic ? { ...spec, card, hic } : { ...spec, card };
           },
         );

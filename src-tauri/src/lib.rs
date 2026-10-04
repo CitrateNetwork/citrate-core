@@ -587,6 +587,7 @@ pub fn run() {
             fl_rounds::fl_round_plan,
             fl_rounds::fl_round_plan_lookup,
             fl_rounds::fl_round_start,
+            fl_rounds::fl_round_consent_revoke,
             fl_rounds::fl_adapter_gate,
             fl_rounds::fl_adapter_load,
             fl_rounds::fl_adapter_unload,
