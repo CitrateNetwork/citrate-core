@@ -192,6 +192,9 @@ describe("gateSummary with a round", () => {
     expect(s).toContain("0x" + "6".repeat(64));
     expect(s).toMatch(/3 devices/);
     expect(s).toMatch(/chain 1337/);
+    // Honest wording: core checks the result file's own consistency, not the ledger.
+    expect(s).toMatch(/did not read the ledger/i);
+    expect(s).not.toMatch(/round result was checked: Accepted/);
     const plain = gateSummary({ ...rec, round: null }).lines.join("\n");
     expect(plain).toMatch(/no round result/i);
   });

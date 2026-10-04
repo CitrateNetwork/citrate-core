@@ -279,7 +279,7 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span className="mono" style={label}>Round adapter and the eval gate</span>
           <p style={para}>
-            Downloading a round's adapter from LoRAFactory is not deployed yet. Give the adapter file and its published sha256 (or the round result the round tool wrote, which names the merged adapter and is checked: Accepted, at least three devices, and the chain, bundle and replay digests agree), plus the eval scorecards for the base model and for the
+            Downloading a round's adapter from LoRAFactory is not deployed yet. Give the adapter file and its published sha256 (or the round result the round tool wrote, which names the merged adapter; core checks that the file says Accepted, names at least three devices, and that its chain, bundle and replay digests agree, but does not read the ledger itself), plus the eval scorecards for the base model and for the
             base model with this adapter (scripts/eval-tools.mjs, optionally scripts/eval-qa.mjs, with --model set to the base model's file name and --adapter-sha256). The adapter loads only if nothing got worse and the score improved.
           </p>
           {field("adapter", "fl-gate-adapter", "adapter .gguf path")}

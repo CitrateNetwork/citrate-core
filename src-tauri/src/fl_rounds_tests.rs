@@ -1126,6 +1126,23 @@ fn consent_can_be_withdrawn_and_is_then_gone_from_the_worker_file() {
 }
 
 #[test]
+fn a_round_listed_in_the_worker_file_can_always_be_withdrawn() {
+    // The panel lists the worker file and offers Withdraw for every round in it. A round can be
+    // there without a live start record (the app stopped between writing consent and recording
+    // the start, or the file was edited by hand). Withdrawing lowers authority, so it must work.
+    let fl = fl_with_store("consent-orphan");
+    let cp = fl.consent_path().unwrap();
+    std::fs::create_dir_all(cp.parent().unwrap()).unwrap();
+    std::fs::write(&cp, format!("{{\"rounds\":[\"{DEVNET_ROUND}\"]}}")).unwrap();
+    assert!(fl.starts().is_empty());
+    fl.revoke_consent(DEVNET_ROUND, NOW + 1).unwrap();
+    assert!(consent_rounds_on_disk(&fl).is_empty());
+    // Still an error when the round is in neither place.
+    let err = fl.revoke_consent(DEVNET_ROUND, NOW + 2).unwrap_err();
+    assert!(err.contains("no consent"), "{err}");
+}
+
+#[test]
 fn a_start_without_a_round_writes_no_consent() {
     let fx = fixture(200, status_json(3, 0, 0, 4, "shadow"));
     let fl = fl_with_store("consent-none");

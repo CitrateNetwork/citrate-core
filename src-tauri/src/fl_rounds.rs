@@ -815,13 +815,16 @@ impl FlRounds {
         let live = |s: &StartRecord| {
             s.round_id.as_deref() == Some(rid.as_str()) && s.revoked_at_ms.is_none()
         };
-        if !self.starts().iter().any(live) {
-            return Err(format!("there is no consent for round {rid} to withdraw"));
-        }
         let mut c = self.read_consent()?;
         let before = c.rounds.len();
         c.rounds.retain(|r| !r.trim().eq_ignore_ascii_case(&rid));
-        if c.rounds.len() != before {
+        let in_file = c.rounds.len() != before;
+        // A round in the worker file without a live start (the app stopped between writing the
+        // consent and recording the start, or a hand edit) can still be withdrawn.
+        if !in_file && !self.starts().iter().any(live) {
+            return Err(format!("there is no consent for round {rid} to withdraw"));
+        }
+        if in_file {
             self.write_consent(&c)?;
         }
         self.mutate(|f| {
@@ -1338,8 +1341,9 @@ pub fn decide_eval_gate(adapter_sha: &str, p: &EvalPair) -> GateDecision {
 // Round results (local-devnet flow, citrate-chain docs/fl/FL_ROUND_V1.md)
 // ---------------------------------------------------------------------------
 
-/// The round an adapter came from, as its round result states it. Every field was checked for
-/// shape and for agreement between the chain, the coordinator's bundle and the independent replay.
+/// The round an adapter came from, as its round result file states it. Every field was checked for
+/// shape and for agreement between the chain, bundle and replay digests the file records. Core
+/// does not read the ledger, so this is the file's own consistency, not an on-chain proof.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoundBinding {

@@ -147,7 +147,7 @@ export function gateSummary(rec: FlAdapterGateRecord): { headline: string; lines
   });
   const r = rec.round;
   const round = r
-    ? `From round ${r.roundId} (record ${r.recordDigest}, ${r.participants} devices, chain ${r.chainId}); its round result was checked: Accepted, and the chain, bundle and replay digests agree.`
+    ? `From round ${r.roundId} (record ${r.recordDigest}, ${r.participants} devices, chain ${r.chainId}); its round result file says Accepted, at least three devices took part, and its chain, bundle and replay digests agree. Core checked that file only; it did not read the ledger.`
     : "No round result was given, so this adapter is not tied to a round.";
   return { headline, lines: [round, ...lines, ...d.reasons] };
 }

@@ -1001,7 +1001,8 @@ export interface FlAdapterGateRequest {
   /** The round result (receipt) of the round that produced this adapter. */
   roundResultPath?: string;
 }
-/** The round an adapter came from, checked by core (chain, bundle and replay digests agree). */
+/** The round an adapter came from, as its round result file states it. Core checks that the file is
+ *  consistent (Accepted, chain, bundle and replay digests agree); it does not read the ledger. */
 export interface FlRoundBinding {
   roundId: string;
   recordDigest: string;
