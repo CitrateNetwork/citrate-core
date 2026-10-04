@@ -1155,6 +1155,11 @@ export interface AgentHarnessDomain {
   undoStep(id: string, seq: number): Promise<UndoOutcome>;
   /** HUP-S2.9 — undo every change of the session not undone yet (all or nothing). */
   undoSession(id: string): Promise<UndoOutcome>;
+  /** HUP-S2.6 — record the member's answer on an approval card or a wallet review in core's HIC
+   *  outbox (then in the decision records the nightly anchor covers). Resolves with the record id,
+   *  or null in a build that keeps no decision records (web/dev); rejects when it could not be
+   *  written. */
+  recordDecision(kind: "ceremony.approval" | "agent.tool_approval", decision: "approved" | "denied", subject: string, reason: string): Promise<number | null>;
   /** HUP-S3.4 — run a declarative, verifier-judged workflow in a session; returns the run id. */
   workflowRun(sessionId: string, workflow: WorkflowSpec): Promise<string>;
   /** HUP-S3.4 — a workflow run's state and (when verified) its evidence. */
@@ -1194,6 +1199,41 @@ export interface AgentHarnessDomain {
    *  message starting `WORKFLOW_REFUSED: ` (unknown workflow, or a tool the session lacks). Read
    *  the run with `workflowStatus`. */
   trackWorkflowRun(sessionId: string, workflowId: string): Promise<TrackWorkflowStart>;
+  /** HUP-S2.2 — the `shell_run` commands the sidecar holds for the member's decision in a session. */
+  shellPending(sessionId: string): Promise<ShellPendingView[]>;
+  /** HUP-S2.2 — allow or decline one held command. The decision carries the exact argv and folder
+   *  the member was shown; the sidecar refuses it (rejects with `SHELL_DECISION_REFUSED: `) when
+   *  they differ from what is waiting or nothing with that id waits any more. */
+  shellDecide(sessionId: string, id: string, allow: boolean, argv: string[], cwd: string): Promise<void>;
+}
+
+/** HUP-S2.2 — the OS sandbox a held command would run in, as the sidecar describes it. */
+export interface ShellSandboxSummary {
+  /** "seatbelt" | "bwrap" | "none". */
+  backend: string;
+  enforced: boolean;
+  /** "denied" | "allowed". */
+  network: string;
+  writable: string[];
+  readable_extra: string[];
+  /** One line for people. */
+  summary: string;
+}
+
+/** HUP-S2.2 — one `shell_run` command waiting for the member (`GET /sessions/:id/shell/pending`). */
+export interface ShellPendingView {
+  id: string;
+  callId: string;
+  tool: string;
+  hic: string;
+  /** Exactly as proposed: the program name first, one entry per argument. */
+  argv: string[];
+  resolvedProgram: string;
+  /** The canonical folder it runs in. */
+  cwd: string;
+  timeoutSecs: number;
+  sandbox: ShellSandboxSummary;
+  expiresInSecs: number;
 }
 
 /** HUP-S3.3 — the persona a sidecar session applies (skill allowlist + tool emphasis): a shipped

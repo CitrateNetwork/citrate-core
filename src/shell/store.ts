@@ -34,7 +34,7 @@ import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import type { FlRoundPlan } from "../bridge/domains";
-import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
@@ -46,7 +46,7 @@ import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/u
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -59,7 +59,7 @@ import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
 import { widgetsApi, refreshWidgets } from "../widgets/api";
 import { isWidgetQuery, WIDGET_QUERIES } from "../widgets/catalog";
-import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
+import { beginTurn, commandRan, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
@@ -897,7 +897,16 @@ export class Store {
       const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
-      if (kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri") {
+      // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
+      // (same local model, same approvals), so chat never depends on the sidecar being up.
+      const sidecarUp =
+        kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
+          ? await bridge.agentHarness
+              .status()
+              .then((st) => st.running)
+              .catch(() => false)
+          : false;
+      if (sidecarUp) {
         const h = bridge.agentHarness;
         // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint.
         const escalationReady = await bridge.escalation
@@ -916,6 +925,9 @@ export class Store {
             // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
             trackWorkflowRun: (id, workflowId) => h.trackWorkflowRun(id, workflowId),
             workflowStatus: (id, runId) => h.workflowStatus(id, runId),
+            // HUP-S2.2: shell_run commands the sidecar holds, and the member's bound decision.
+            shellPending: (id) => h.shellPending(id),
+            shellDecide: (id, approvalId, allow, argv, cwd) => h.shellDecide(id, approvalId, allow, argv, cwd),
           },
           // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
           () => this.sidecarSystemPrompt(),
@@ -1969,7 +1981,27 @@ export class Store {
     const res = this.resolvers[head.id!];
     delete this.resolvers[head.id!];
     this.setState({ queue: s.queue.slice(1), cerPhase: "review", cerStep: 0 });
+    // HUP-S2.6 — the member's answer on this card is a HIC-1 decision: record it.
+    this.recordDecision(
+      head.card ? "agent.tool_approval" : "ceremony.approval",
+      result === "approved",
+      head.title + " · " + head.requester,
+      head.hic?.reason ?? "the member's answer on the approval card",
+    );
     if (res) res(result);
+  }
+
+  /** HUP-S2.6 — record an approval-card or wallet-review answer in the decision records. The
+   *  decision stands either way; a record that could not be written is said out loud, after any
+   *  notice already on screen (the outcome of the action itself is never covered up). */
+  recordDecision(kind: "ceremony.approval" | "agent.tool_approval", approved: boolean, subject: string, reason: string): void {
+    bridge.agentHarness
+      .recordDecision(kind, approved ? "approved" : "denied", subject.slice(0, 300), reason.slice(0, 400))
+      .catch((err) => {
+        const text = "This decision was not recorded: " + String((err as Error)?.message ?? err);
+        if (this.state.toast) setTimeout(() => this.toast(text), 3100);
+        else this.toast(text);
+      });
   }
   approveCer(): void {
     const head = this.state.queue[0];
@@ -2096,10 +2128,16 @@ export class Store {
               throw e;
             }
           },
+          // HUP-S2.2: every held shell_run is decided by the member on its card.
+          onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               recordFileChange(ev.change, msgId);
               void refreshUndoPanel(bridge.agentHarness);
+            } else if (ev.kind === "command_run") {
+              commandRan(ev);
+            } else if (ev.kind === "notice") {
+              this.toast(ev.text);
             } else if (ev.kind === "verifier") {
               patch((m) => ({ ...m, chips: m.chips.concat([verifierChip(ev)]) }));
             } else if (!ac.signal.aborted) noteStep(ev.step);
@@ -2304,12 +2342,23 @@ export class Store {
               throw e;
             }
           },
+          // HUP-S2.2: every held shell_run is decided by the member on its card.
+          onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
               ensure();
               recordFileChange(ev.change, asstId);
               void refreshUndoPanel(bridge.agentHarness);
+              return;
+            }
+            // HUP-S2.2 (US-2.2 AC3): a command run that happened is logged even if the turn stopped.
+            if (ev.kind === "command_run") {
+              commandRan(ev);
+              return;
+            }
+            if (ev.kind === "notice") {
+              this.toast(ev.text);
               return;
             }
             if (!stopped() && ev.kind === "step") noteStep(ev.step);
@@ -2349,6 +2398,27 @@ export class Store {
       if (this.chatScrollEl) this.chatScrollEl.scrollTop = this.chatScrollEl.scrollHeight;
       if (this.jChatScrollEl) this.jChatScrollEl.scrollTop = this.jChatScrollEl.scrollHeight;
     });
+  }
+
+  /**
+   * HUP-S2.2 (US-2.2 AC2) — put a held shell_run command in front of the member on the approval
+   * card (exact argv, folder, program, timeout, OS sandbox) with the HIC banner. True only when the
+   * member pressed Approve; the caller sends that decision bound to this command's id.
+   */
+  async approveShellRun(p: ShellPendingView): Promise<boolean> {
+    const r = await this.requestSig({
+      origin: "chat agent",
+      requester: "Hermes · tool " + p.tool,
+      title: "Approve a command",
+      chainless: true,
+      rows: [],
+      cost: "none, no chain transaction",
+      sponsor: "explicit decision required",
+      sponsorColor: "var(--tx-3)",
+      card: shellRunCard(p),
+      hic: { reason: SHELL_RUN_HIC_REASON },
+    });
+    return r === "approved";
   }
 
   async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta): Promise<string> {
@@ -4009,6 +4079,8 @@ export class Store {
     // as signing so Reject / Escape cannot report "nothing was signed" for a signature that may
     // still complete; every branch below clears the review with the REAL outcome.
     this.setState({ walletReview: { ...r, approving: true } });
+    // HUP-S2.6 — the member approved this review (HIC-1): record it.
+    this.recordDecision("ceremony.approval", true, r.kind + ": " + r.label, r.spendSummary ?? r.hic?.reason ?? "the member approved the wallet review");
     // A wallet LINK is not a transaction: it is a personal_sign whose proof is
     // POSTed to the authority. It must never reach signing.broadcast, which would
     // try to send a tx. Route it to the dedicated command, which signs, submits,
@@ -4201,6 +4273,8 @@ export class Store {
     const r = this.state.walletReview;
     if (!r || r.approving) return;
     this.setState({ walletReview: null });
+    // HUP-S2.6 — the member declined this review (HIC-1): record it.
+    this.recordDecision("ceremony.approval", false, r.kind + ": " + r.label, r.spendSummary ?? r.hic?.reason ?? "the member declined the wallet review");
     try {
       // The link path has its own reject: it also drops the one-time challenge
       // nonce, so a declined link cannot be resumed with a stale nonce.

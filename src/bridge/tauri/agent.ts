@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView } from "../domains";
 import type { CeremonyView } from "../types";
 import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 import type { LearnAcceptResult, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView } from "../../agent/learn";
@@ -107,6 +107,10 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   undoSession(id) {
     return invoke<UndoOutcome>("hermes_undo_session", { id });
   },
+  // HUP-S2.6 — the member's answer on a card, into core's HIC outbox (src-tauri/src/hic_records.rs).
+  recordDecision(kind, decision, subject, reason) {
+    return invoke<number>("hic_record_decision", { kind, decision, subject, reason });
+  },
   // HUP-S3.4 — verified workflow runs + verified self-learning (src-tauri/src/hermes_learn.rs).
   workflowRun(sessionId, workflow) {
     return invoke<string>("hermes_workflow_run", { sessionId, workflowJson: JSON.stringify(workflow) });
@@ -153,6 +157,12 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   trackWorkflowRun(sessionId, workflowId) {
     return invoke<TrackWorkflowStart>("hermes_track_workflow_run", { sessionId, workflowId });
+  },
+  shellPending(sessionId) {
+    return invoke<ShellPendingView[]>("hermes_shell_pending", { sessionId });
+  },
+  async shellDecide(sessionId, id, allow, argv, cwd) {
+    await invoke("hermes_shell_decide", { sessionId, id, allow, argv, cwd });
   },
 };
 

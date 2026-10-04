@@ -1126,7 +1126,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {/* HUP-S1.1c — opt-in preview of the sidecar-owned agent loop (ADR loop-in-sidecar). */}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-              <span className="eyebrow">Hermes · agent loop (preview)</span>
+              <span className="eyebrow">Hermes · agent loop</span>
               <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
                 <input
                   id="hermes-sidecar-loop"
@@ -1141,7 +1141,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 Run Hermes's loop in the agent sidecar
               </label>
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
-                Uses your local model. Tools still run here, behind the same approvals. Needs the Hermes sidecar running. Off by default until the parity checks pass.
+                On by default. Uses your local model, and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop instead.
               </span>
             </div>
             {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}

@@ -17,6 +17,7 @@
 import { useId, type CSSProperties, type ReactNode } from "react";
 import { formatElapsed, workerLine, type DaemonsSection, type MonitorSnapshot } from "./monitorSnapshot";
 import type { UndoPanel } from "./undoPanel";
+import type { RunRow } from "../shell/slices/turnActivity";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -107,6 +108,16 @@ function UndoSection({ panel, onUndo }: { panel: UndoPanel; onUndo: (session: st
   );
 }
 
+/** HUP-S2.2 — a command run's outcome in words, with its exit code when it has one. */
+function runStatusText(r: RunRow): string {
+  if (r.timedOut) return "timed out";
+  const words: Record<string, string> = { completed: "done", declined: "declined by you", refused: "refused", failed: "failed", not_installed: "not installed" };
+  const base = words[r.status] ?? r.status;
+  return r.exitCode === null ? base : `${base}, exit ${r.exitCode}`;
+}
+
+const runDuration = (ms: number) => (ms < 1000 ? `${ms} ms` : formatElapsed(0, ms));
+
 const clock = (ms: number) => new Date(ms).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
 
 /** HUP-S10.3 — scheduled daemons: status, today's budget use, next run, and Pause / Resume / Stop. */
@@ -190,6 +201,8 @@ export function ActivityMonitor({
   const headingId = useId();
   const toolsId = useId();
   const workersId = useId();
+  const runsId = useId();
+  const runs = turn.runs ?? [];
   const stopName = running ? "Stop the running turn" : turn.state === "stopping" ? "Stopping the turn" : "Stop (nothing is running)";
 
   return (
@@ -252,6 +265,28 @@ export function ActivityMonitor({
                 <span className="mono" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{t.name}</span>
                 <span className="mono" style={{ color: TOOL_STATE_COLOR[t.state] ?? "var(--tx-2)" }}>{t.state}</span>
                 <span className="mono" style={{ color: "var(--tx-3)" }}>{formatElapsed(t.startedAt, t.endedAt ?? now)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div style={{ paddingTop: 8 }} data-testid="mon-runs">
+        <span id={runsId} className="mono" style={label}>
+          Command runs
+        </span>
+        {runs.length === 0 ? (
+          <div style={{ ...note, paddingTop: 4 }}>No commands ran this turn.</div>
+        ) : (
+          <ul aria-labelledby={runsId} style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 6 }}>
+            {runs.map((r) => (
+              <li key={r.callId + ":" + r.at} data-testid="mon-run-row" style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 12, color: "var(--tx-1)" }}>
+                <span style={{ display: "flex", gap: 8 }}>
+                  <span className="mono" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{r.tool}</span>
+                  <span className="mono" style={{ color: r.status === "completed" && !r.timedOut ? "var(--tx-2)" : "var(--warn)" }}>{runStatusText(r)}</span>
+                  <span className="mono" style={{ color: "var(--tx-3)" }}>{r.durationMs === null ? "" : runDuration(r.durationMs)}</span>
+                </span>
+                {r.summary ? <span style={{ ...note, overflowWrap: "anywhere" }}>{r.summary}</span> : null}
+                <span style={{ ...note, overflowWrap: "anywhere" }}>{r.sandbox ?? "no OS sandbox reported"}</span>
               </li>
             ))}
           </ul>

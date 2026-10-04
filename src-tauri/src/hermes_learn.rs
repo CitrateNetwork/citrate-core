@@ -454,7 +454,17 @@ impl Ledger {
         let tmp = dir.join(".learned-memories.json.tmp");
         let res = (|| -> std::io::Result<()> {
             use std::io::Write as _;
-            let mut f = std::fs::File::create(&tmp)?;
+            // Owner-only: a temporary file left by an interrupted save is replaced, never reused
+            // with its old permissions.
+            let _ = std::fs::remove_file(&tmp);
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp)?;
             f.write_all(&body)?;
             f.sync_all()?;
             std::fs::rename(&tmp, path)

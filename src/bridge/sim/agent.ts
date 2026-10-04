@@ -96,6 +96,10 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async undoSession() {
       return NO_UNDO;
     },
+    // HUP-S2.6 — web/dev keeps no decision records; say so with null (never an invented id).
+    async recordDecision() {
+      return null;
+    },
     // HUP-S3.4 — learning needs the sidecar and its decision log; web/dev has neither. Honest
     // empty lists and refusals, never an invented proposal (Rule 1).
     async workflowRun() {
@@ -147,6 +151,13 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     },
     async trackWorkflowRun() {
       throw new Error("WORKFLOW_REFUSED: track workflows run in the Hermes sidecar in the desktop app");
+    },
+    // HUP-S2.2 — shell_run lives in the Hermes sidecar; nothing is held here.
+    async shellPending() {
+      return [];
+    },
+    async shellDecide() {
+      throw new Error("SHELL_DECISION_REFUSED: commands run in the Hermes sidecar in the desktop app");
     },
   };
 }
