@@ -126,15 +126,6 @@ impl RouterProvider {
     }
 }
 
-fn word_u128(w: &[u8]) -> Result<u128, String> {
-    if w.len() != 32 || w[..16].iter().any(|b| *b != 0) {
-        return Err("abi word: value too large".into());
-    }
-    let mut b = [0u8; 16];
-    b.copy_from_slice(&w[16..]);
-    Ok(u128::from_be_bytes(b))
-}
-
 fn word_dec(w: &[u8]) -> Result<String, String> {
     let mut a = [0u8; 32];
     if w.len() != 32 {
@@ -555,6 +546,48 @@ pub async fn escalation_registry_result(request_id: u64) -> Result<RegistryResul
         let rpc = RpcClient::citrate();
         let r = RouterReader::new(&rpc, router)?.request(request_id)?;
         Ok(result_view(request_id, &r))
+    })
+    .await
+}
+
+/// The pending-ceremony tx JSON for `claimRefund()`: withdraws the wei credited back to the member.
+pub fn claim_refund_tx_json(from: &str, router: &str, gas: u64) -> String {
+    json!({
+        "from": from,
+        "to": router,
+        "value": "0x0",
+        "data": format!("0x{}", hex::encode(selector(CLAIM_REFUND_SIG))),
+        "gas": format!("0x{gas:x}"),
+        "chainId": format!("0x{:x}", 40204u64),
+    })
+    .to_string()
+}
+
+/// Gas for `claimRefund()`: a balance write and one value transfer, with headroom.
+pub const CLAIM_REFUND_GAS: u64 = 80_000;
+
+/// **escalation_registry_claim_refund** — raise the HIC-1 approval to withdraw the refund credited
+/// to the member (unused ceilings, expired requests). Refuses when nothing is owed.
+#[tauri::command]
+pub async fn escalation_registry_claim_refund(app_h: tauri::AppHandle) -> Result<(), String> {
+    let router = pinned_router()?;
+    crate::blocking::off_main(move || {
+        let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
+            .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+        let rpc = RpcClient::citrate();
+        if RouterReader::new(&rpc, router)?.refund_owed(&wallet.address)? == "0" {
+            return Err("there is no refund to claim".into());
+        }
+        ceremony.0.request(crate::ceremony::SignatureIntent {
+            origin: "agent:hermes".to_string(),
+            kind: crate::ceremony::IntentKind::Transaction,
+            chain_id: 40204,
+            raw: claim_refund_tx_json(&wallet.address, router, CLAIM_REFUND_GAS),
+        });
+        Ok(())
     })
     .await
 }

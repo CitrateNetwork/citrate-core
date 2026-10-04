@@ -8,7 +8,7 @@ import { tauriEscalation } from "../tauri/escalation";
 
 describe("bridge contract — escalation (HUP-S1.5)", () => {
   it("exposes the escalation domain", () => {
-    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "run", "registryStatus", "registryQuote", "registryRequest", "registryResult", "registryMine"] as const) {
+    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "run", "registryStatus", "registryQuote", "registryRequest", "registryResult", "registryMine", "registryClaimRefund"] as const) {
       expect(typeof bridge.escalation[k]).toBe("function");
     }
   });
@@ -26,6 +26,7 @@ describe("bridge contract — escalation (HUP-S1.5)", () => {
     await expect(bridge.escalation.registryRequest("0x" + "5a".repeat(32), "hi", "1000", "1000")).rejects.toThrow(/desktop app/);
     await expect(bridge.escalation.registryResult(0)).rejects.toThrow(/desktop app/);
     await expect(bridge.escalation.registryMine()).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.registryClaimRefund()).rejects.toThrow(/desktop app/);
   });
 });
 
@@ -80,5 +81,7 @@ describe("tauri escalation invokes the registered commands", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_result", { requestId: 4 });
     await tauriEscalation.registryMine();
     expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_mine");
+    await tauriEscalation.registryClaimRefund();
+    expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_claim_refund");
   });
 });

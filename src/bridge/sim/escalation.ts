@@ -62,5 +62,8 @@ export function simEscalation(_host: SimHost): EscalationDomain {
     async registryMine() {
       throw new Error(REGISTRY_NEEDS_APP);
     },
+    async registryClaimRefund() {
+      throw new Error(REGISTRY_NEEDS_APP);
+    },
   };
 }

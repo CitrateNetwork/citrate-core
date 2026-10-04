@@ -53,4 +53,7 @@ export const tauriEscalation: EscalationDomain = {
   registryMine() {
     return invoke<EscalationRegistryMine>("escalation_registry_mine");
   },
+  registryClaimRefund() {
+    return invoke<void>("escalation_registry_claim_refund");
+  },
 };

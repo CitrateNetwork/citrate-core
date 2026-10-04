@@ -9,6 +9,15 @@
 // WrappedSALT from citrate-chain, and runs it with CITRATE_ANVIL_RPC + CITRATE_ANVIL_ARTIFACTS.
 
 use super::*;
+
+fn word_u128(w: &[u8]) -> Result<u128, String> {
+    if w.len() != 32 || w[..16].iter().any(|b| *b != 0) {
+        return Err("abi word: value too large".into());
+    }
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&w[16..]);
+    Ok(u128::from_be_bytes(b))
+}
 use std::cell::RefCell;
 
 fn w_u(n: u128) -> [u8; 32] {
@@ -678,5 +687,24 @@ fn anvil_dry_run_inference_router_and_wsalt_authorization() {
     assert!(
         matches!(replay, Err(_) | Ok((0, _))),
         "replay must fail: {replay:?}"
+    );
+}
+
+#[test]
+fn the_claim_refund_tx_is_a_known_zero_value_call() {
+    let raw = claim_refund_tx_json(
+        "0x2222222222222222222222222222222222222222",
+        "0x1111111111111111111111111111111111111111",
+        CLAIM_REFUND_GAS,
+    );
+    let (tx, d) = crate::txdecode::decode_transaction(&raw).unwrap_or_else(|| panic!("decodes"));
+    assert_eq!(tx.value, 0);
+    assert_eq!(tx.data, selector(CLAIM_REFUND_SIG).to_vec());
+    assert!(d.action.starts_with("Call claimRefund()"), "{}", d.action);
+    assert_eq!(
+        tauri::async_runtime::block_on(escalation_registry_result(1))
+            .err()
+            .as_deref(),
+        Some(ROUTE_OFF)
     );
 }

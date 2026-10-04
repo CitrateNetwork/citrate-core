@@ -122,6 +122,7 @@ commands.allow = [
   "escalation_registry_request",
   "escalation_registry_result",
   "escalation_registry_mine",
+  "escalation_registry_claim_refund",
   "web_budget_status",
   "web_budget_grant",
   "web_budget_revoke",
