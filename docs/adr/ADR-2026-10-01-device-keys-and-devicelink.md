@@ -43,12 +43,17 @@ wallet-signed DeviceLink.
    that device key and evicts in the same roster update. Revoking this machine also deletes its
    device key, so linking it again mints a fresh one. Revocation is two steps in core:
    `device_link_revoke_prepare` returns the statement the member confirms and a one-shot id for
-   that device, and `device_link_revoke` takes only that id (added 2026-10-01).
+   that device, and `device_link_revoke` takes only that id (added 2026-10-01). Both are
+   main-window commands, so this stops a call that names a device from revoking it without the
+   confirmation step; it does not stop a script running in the main window, which can take both
+   steps (the same trust the signature ceremony gives the main window).
    **Limit (added 2026-10-01).** Revocation removes a device key, not the member: the comms key is
    derived from the wallet and stays admitted beside linked devices, so a revoked machine that still
-   holds the wallet can rejoin as the member's comms identity. The Cluster surface says so. Closing
-   that needs the mesh to stop admitting the comms identity for members with linked devices (or a
-   comms key rotation on revocation), which is cluster-side work.
+   holds the wallet can rejoin as the member's comms identity. The Cluster surface says so. The
+   cluster side now stops admitting the comms identity for a member with a linked device or a
+   revocation of its own (citrate-cluster ADR-003, proposed, on branch `hup/n5-rt-other`). Even then
+   a machine that still holds the wallet can derive the comms key and sign a fresh link, so only a
+   new wallet removes such a machine for good.
 5. **Defaults change nothing.** The mesh uses the device key only when the operator has turned on
    the cross-machine transport (`CITRATE_CLUSTER_LISTEN`, soak-gated) AND this machine has an active
    link. Otherwise the cluster meshes as the comms identity exactly as before. The identity is chosen

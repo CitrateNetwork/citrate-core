@@ -28,7 +28,10 @@
 //!   id core mints for that quote and price as the member's card opens
 //!   (`escalation_confirm_prepare`); `escalation_run` accepts no "confirmed" flag. The `tainted`
 //!   input still comes from the chat harness, the only holder of that context today. Reported clean,
-//!   a run can at most use the budget the member set (HIC-2), never go past it.
+//!   a run can at most use the budget the member set (HIC-2), never go past it. Limit: the card is
+//!   drawn by the main window, so a script running there can open it and answer it the way the
+//!   member's click does. That is the same trust the signature ceremony gives the main window; the
+//!   id stops a tool call or harness path from approving spend by passing a flag.
 //! - **EgressOptInOnly.** Requests only go to endpoints the member added. Removing an endpoint
 //!   deletes its key and voids its quotes.
 //!
