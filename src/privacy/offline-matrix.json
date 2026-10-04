@@ -12,7 +12,7 @@
     { "id": "cloud-ai", "feature": "Hermes on a cloud AI provider", "offline": "unavailable", "behaviour": "The turn fails with a provider error. Your key is never echoed in the message. Switch to the local model to keep working.", "probe": "rust:ai_provider_unreachable" },
     { "id": "sign-in", "feature": "Sign in and account details", "offline": "unavailable", "behaviour": "Sign-in fails with a network error. An existing session keeps working until it needs a refresh.", "probe": "rust:oidc_unreachable" },
     { "id": "model-download", "feature": "Model downloads", "offline": "unavailable", "behaviour": "The download fails with an error. A partial download is kept and resumes from the same byte later.", "probe": "rust:model_download_unreachable" },
-    { "id": "node-sync", "feature": "Node sync with the network", "offline": "degrades", "behaviour": "The node keeps its last synced state and shows zero peers. It catches up when the network returns.", "probe": "none", "unprobedReason": "Needs a running node binary and peers; covered by the node vitals honesty tests, not by this offline probe." },
-    { "id": "messaging", "feature": "Group messaging and invites", "offline": "unavailable", "behaviour": "Messages cannot reach the relay while offline.", "probe": "none", "unprobedReason": "The relay transport has no test seam in core yet; tracked as a follow-up." }
+    { "id": "node-sync", "feature": "Node sync with the network", "offline": "degrades", "behaviour": "The node keeps its last synced state and shows zero peers. It catches up when the network returns.", "probe": "rust:node_sync_tip_unreachable" },
+    { "id": "messaging", "feature": "Group messaging and invites", "offline": "unavailable", "behaviour": "Messages cannot reach the relay while offline.", "probe": "rust:messaging_relay_unreachable" }
   ]
 }

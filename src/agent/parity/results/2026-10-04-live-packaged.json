@@ -1,0 +1,248 @@
+{
+  "suite": "parity-v1 live",
+  "ranAt": "2026-10-04T14:45:46.246Z",
+  "binary": "Citrate Core.app/Contents/MacOS/hermes",
+  "binarySha256": "c7144115f1114a048dbec70452c57342aaf7ddac5e681af1011f329730a4fc4b",
+  "parityV1Sha256": "769a1809b656bfc1ab755926d3e41f4779521dfdff25bd2d63ec960cc889a71a",
+  "sessionMaxSteps": 8,
+  "passed": 21,
+  "failed": 0,
+  "results": [
+    {
+      "id": "final_answer_no_tools",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 1,
+      "host_calls": [],
+      "error": ""
+    },
+    {
+      "id": "single_tool_then_answer",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "memory_search"
+      ],
+      "error": ""
+    },
+    {
+      "id": "multiple_tools_one_step",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "node_status",
+        "staking_status",
+        "groups_list"
+      ],
+      "error": ""
+    },
+    {
+      "id": "text_alongside_tool_calls_is_not_final",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "node_status"
+      ],
+      "error": ""
+    },
+    {
+      "id": "tool_error_fed_back",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "memory_search"
+      ],
+      "error": ""
+    },
+    {
+      "id": "declined_approval_fed_back",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "memory_assert"
+      ],
+      "error": ""
+    },
+    {
+      "id": "turn_cap_exhausted",
+      "pass": true,
+      "override": "config:default_turn_cap",
+      "outcome": "step_limit",
+      "model_calls": 8,
+      "host_calls": [
+        "memory_search",
+        "memory_search",
+        "memory_search",
+        "memory_search",
+        "memory_search",
+        "memory_search",
+        "memory_search",
+        "memory_search"
+      ],
+      "error": "step budget of 8 exhausted"
+    },
+    {
+      "id": "answer_on_last_allowed_turn",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 6,
+      "host_calls": [
+        "memory_search",
+        "memory_search",
+        "memory_search",
+        "memory_search",
+        "memory_search"
+      ],
+      "error": ""
+    },
+    {
+      "id": "provider_error",
+      "pass": true,
+      "override": "transport",
+      "outcome": "failed",
+      "model_calls": 1,
+      "host_calls": [],
+      "error": "model provider error: HTTP 503"
+    },
+    {
+      "id": "provider_error_after_tool",
+      "pass": true,
+      "override": "transport",
+      "outcome": "failed",
+      "model_calls": 2,
+      "host_calls": [
+        "node_status"
+      ],
+      "error": "model provider error: HTTP 503"
+    },
+    {
+      "id": "history_carried_into_request",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 1,
+      "host_calls": [],
+      "error": ""
+    },
+    {
+      "id": "empty_reply",
+      "pass": true,
+      "override": null,
+      "outcome": "failed",
+      "model_calls": 1,
+      "host_calls": [],
+      "error": "model returned an unusable response: empty assistant message"
+    },
+    {
+      "id": "malformed_tool_arguments",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [],
+      "error": ""
+    },
+    {
+      "id": "unknown_tool",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [],
+      "error": ""
+    },
+    {
+      "id": "per_step_tool_cap",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "node_status",
+        "staking_status",
+        "groups_list",
+        "skills_list"
+      ],
+      "error": ""
+    },
+    {
+      "id": "stop_requested_during_tool",
+      "pass": true,
+      "override": null,
+      "outcome": "stopped",
+      "model_calls": 1,
+      "host_calls": [
+        "node_status"
+      ],
+      "error": ""
+    },
+    {
+      "id": "unparseable_model_message",
+      "pass": true,
+      "override": null,
+      "outcome": "failed",
+      "model_calls": 1,
+      "host_calls": [],
+      "error": "model returned an unusable response: not JSON"
+    },
+    {
+      "id": "missing_tool_call_id",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "node_status"
+      ],
+      "error": ""
+    },
+    {
+      "id": "missing_tool_arguments",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "node_status"
+      ],
+      "error": ""
+    },
+    {
+      "id": "object_tool_arguments",
+      "pass": true,
+      "override": null,
+      "outcome": "answered",
+      "model_calls": 2,
+      "host_calls": [
+        "memory_search"
+      ],
+      "error": ""
+    },
+    {
+      "id": "nameless_tool_call",
+      "pass": true,
+      "override": null,
+      "outcome": "failed",
+      "model_calls": 1,
+      "host_calls": [],
+      "error": "model returned an unusable response: empty assistant message"
+    }
+  ],
+  "processSplit": {
+    "pass": true,
+    "detail": "toolchain pid 34453 killed (SIGKILL); restarted as pid 34504, restarts 1, last exit \"killed by signal 9\"; /health 200 throughout; browser not_built"
+  },
+  "sidecarStderrTail": "citrate-agent-sidecar: 0 skills, control on 127.0.0.1:52277\n"
+}

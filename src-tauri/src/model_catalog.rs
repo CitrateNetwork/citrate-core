@@ -610,10 +610,21 @@ pub fn model_catalog_select_sync(
     // HUP-S1.6: size the context + GPU offload for the effective tier and the TARGET model.
     let path = models_dir.join(&file);
     let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(&app, &path));
+    // HUP-S9.4: switching the base while an adapter is loaded drops it (serve.rs), and it is then
+    // no longer remembered for a restart either.
+    let drops_adapter = crate::fl_rounds::base_switch_drops_adapter(
+        serve.0.lora().as_deref(),
+        &serve.0.current_model_path(),
+        &path,
+    );
     serve
         .0
         .select_model_planned(path, true, plan)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if drops_adapter {
+        crate::fl_rounds::forget_after_base_switch(&app);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

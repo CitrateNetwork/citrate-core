@@ -520,6 +520,11 @@ export interface AppState {
   /** HUP-S3.7 — read Hermes's replies aloud with the persona's voice (the system speech engine).
    *  Off by default. Persisted. */
   hermesReadAloud: boolean;
+  /** HUP-S10.4 (US-10.4 AC1) — write today's Hermes summary into the journal automatically once a
+   *  day. Off by default; the member turns it on in the Journal. Persisted. */
+  journalAutoSummary: boolean;
+  /** The journal day (UTC `YYYY-MM-DD`) the automatic summary last ran for, or null. Persisted. */
+  journalAutoSummaryDay: string | null;
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -559,6 +564,12 @@ export interface AppState {
    * goal) and the raw link; Groups renders a banner and, for a full invite-token link, redeems it.
    * Cleared once consumed. Null when no deep-link is pending.
    */
+  /**
+   * HUP-S8.2 — a `citrate://pair?…` fleet pairing link opened from a QR code or another app
+   * (transient, not persisted). The Cluster surface's wizard fills it in; nothing pairs until the
+   * member presses "Pair". Null when none is pending.
+   */
+  pendingPairLink: string | null;
   pendingInvite: {
     url: string;
     clusterId?: string;
@@ -797,6 +808,8 @@ export function freshState(pid: string): AppState {
     hermesPersona: null,
     customPersonas: [],
     hermesReadAloud: false,
+    journalAutoSummary: false,
+    journalAutoSummaryDay: null,
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -807,6 +820,7 @@ export function freshState(pid: string): AppState {
     peopleState: "loading",
     myGroups: [],
     pendingInvite: null,
+    pendingPairLink: null,
     pendingClaim: null,
     memDaemon: "idle",
     memDaemonError: null,
@@ -942,7 +956,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {

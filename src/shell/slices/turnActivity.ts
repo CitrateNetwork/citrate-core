@@ -37,6 +37,33 @@ export interface RunRow {
   at: number;
 }
 
+/** HUP-S7.6 (US-7.4 AC1) — the model server's report for the latest model call of the turn. */
+export interface UsageReport {
+  promptTokens: number;
+  completionTokens: number;
+  /** Generation time of the completion in ms, or null when the server does not report it. */
+  generationMs: number | null;
+  /** Model calls this turn that reported usage. */
+  calls: number;
+}
+
+/** HUP-S7.6 — one approval this turn asked the member for, and how it was decided. */
+export interface ApprovalRow {
+  callId: string;
+  tool: string;
+  state: "pending" | "approved" | "declined" | "failed";
+  at: number;
+}
+
+/** HUP-S7.6 — one verifier verdict on a workflow step attempt. */
+export interface VerifierRow {
+  step: string;
+  name: string;
+  passed: boolean;
+  detail: string;
+  at: number;
+}
+
 export interface TurnActivity {
   state: "idle" | "running" | "stopping";
   /** The provider the turn started on (`ChatProvider.kind`), kept for the whole turn. */
@@ -52,12 +79,26 @@ export interface TurnActivity {
   /** HUP-S2.2: the command runs of this turn (most recent last). */
   runs: RunRow[];
   outcome: "answered" | "failed" | "stopped" | null;
+  /** HUP-S7.6: the latest model call's reported usage, or null when none was reported. */
+  usage?: UsageReport | null;
+  /** HUP-S7.6: a workflow run's step ids, or null for a chat turn (no plan). */
+  plan?: string[] | null;
+  /** HUP-S7.6: approvals asked this turn (most recent last). */
+  approvals?: ApprovalRow[];
+  /** HUP-S7.6: verifier verdicts this turn (most recent last). */
+  verifiers?: VerifierRow[];
 }
 
 /** The monitor lists at most this many tool calls of the current turn (the most recent ones). */
 export const MAX_TOOL_ROWS = 20;
 /** The monitor lists at most this many command runs of the current turn (the most recent ones). */
 export const MAX_RUN_ROWS = 20;
+/** At most this many approvals, verifier verdicts and plan steps are kept per turn. */
+export const MAX_APPROVAL_ROWS = 20;
+export const MAX_VERIFIER_ROWS = 40;
+export const MAX_PLAN_STEPS = 50;
+/** Longest verifier detail kept, in characters. */
+export const MAX_VERIFIER_DETAIL = 240;
 
 export const IDLE_ACTIVITY: TurnActivity = {
   state: "idle",
@@ -71,6 +112,10 @@ export const IDLE_ACTIVITY: TurnActivity = {
   tools: [],
   runs: [],
   outcome: null,
+  usage: null,
+  plan: null,
+  approvals: [],
+  verifiers: [],
 };
 
 export const turnActivity = createSlice<TurnActivity>(IDLE_ACTIVITY);
@@ -150,4 +195,63 @@ export function commandRan(ev: Extract<TurnActivityEvent, { kind: "command_run" 
     at: now,
   };
   turnActivity.set((s) => ({ runs: (s.runs ?? []).concat([row]).slice(-MAX_RUN_ROWS) }));
+}
+
+/**
+ * HUP-S7.6 (US-7.4 AC1) — record the token usage the model server reported for one model call.
+ * Only reported numbers are kept; a call without a report leaves the last one in place and the
+ * monitor still says where its number came from.
+ */
+export function usageReported(ev: Extract<TurnActivityEvent, { kind: "usage" }>): void {
+  if (!live()) return;
+  turnActivity.set((s) => ({
+    usage: {
+      promptTokens: ev.promptTokens,
+      completionTokens: ev.completionTokens,
+      generationMs: ev.generationMs,
+      calls: (s.usage?.calls ?? 0) + 1,
+    },
+  }));
+}
+
+/** HUP-S7.6 — a workflow run's plan (step ids in order). */
+export function planReported(steps: string[]): void {
+  if (!live()) return;
+  turnActivity.set({ plan: steps.slice(0, MAX_PLAN_STEPS) });
+}
+
+/** HUP-S7.6 — an approval was asked for (pending) or decided. A decision updates its pending row. */
+export function approvalNoted(callId: string, tool: string, state: ApprovalRow["state"], now: number = Date.now()): void {
+  if (!live()) return;
+  turnActivity.set((s) => {
+    const rows = s.approvals ?? [];
+    const i = rows.findIndex((r) => r.callId === callId && r.state === "pending");
+    if (state !== "pending" && i >= 0) {
+      return { approvals: rows.map((r, j) => (j === i ? { ...r, state, at: now } : r)) };
+    }
+    return { approvals: rows.concat([{ callId, tool, state, at: now }]).slice(-MAX_APPROVAL_ROWS) };
+  });
+}
+
+/** HUP-S7.6 — one verifier verdict on a workflow step attempt. */
+export function verifierReported(ev: Extract<TurnActivityEvent, { kind: "verifier" }>, now: number = Date.now()): void {
+  if (!live()) return;
+  const row: VerifierRow = { step: ev.step, name: ev.name, passed: ev.passed, detail: ev.detail.slice(0, MAX_VERIFIER_DETAIL), at: now };
+  turnActivity.set((s) => ({ verifiers: (s.verifiers ?? []).concat([row]).slice(-MAX_VERIFIER_ROWS) }));
+}
+
+/** HUP-S7.6 — the tokens per second of a usage report, or null when the server gave no time. */
+export function tokensPerSecond(u: UsageReport | null | undefined): number | null {
+  if (!u || u.generationMs === null || u.generationMs <= 0) return null;
+  return Math.round((u.completionTokens / (u.generationMs / 1000)) * 10) / 10;
+}
+
+/** HUP-S7.6 — the state of each plan step from its latest verifier verdicts. */
+export function planStepStates(plan: string[], verifiers: VerifierRow[]): { step: string; state: "not checked yet" | "passed" | "failed" }[] {
+  return plan.map((step) => {
+    const latest = new Map<string, boolean>();
+    for (const v of verifiers) if (v.step === step) latest.set(v.name, v.passed);
+    if (latest.size === 0) return { step, state: "not checked yet" as const };
+    return { step, state: [...latest.values()].every(Boolean) ? ("passed" as const) : ("failed" as const) };
+  });
 }

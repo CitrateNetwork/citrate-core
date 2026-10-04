@@ -1,14 +1,22 @@
-//! HUP-S5.2 / S5.3: the member's web opt-ins for Hermes: private search (`web_search` over a
-//! local SearXNG), page reading (`read_url`, local readability by default, the Jina Reader only as
-//! an explicit choice), and the opt-in TypeSafe Jev backend of the `decide()` slot.
+//! HUP-S5.1 / S5.2 / S5.3: the member's web opt-ins for Hermes: its own browser (the managed
+//! Chromium, `CITRATE_HERMES_BROWSER`), private search (`web_search` over a local SearXNG), page
+//! reading (`read_url`, local readability by default, the Jina Reader only as an explicit choice),
+//! and the opt-in TypeSafe Jev backend of the `decide()` slot.
 //!
 //! The tools themselves run in the Hermes sidecar (citrate-agent-runtime `agent-search`,
 //! `agent-loop::decide`). Core owns the member's choices: it stores them in
 //! `<app data>/hermes/web-settings.json` and turns them into the sidecar's environment when it
 //! starts Hermes ([`sidecar_env`]). Changes apply the next time Hermes starts.
 //!
-//! **Defaults change nothing.** Everything is off: no search tools, local reading, no Jev. With the
-//! default settings no variable is passed and the sidecar behaves exactly as before.
+//! **Defaults change nothing.** Everything is off: no browser, no search tools, local reading, no
+//! Jev. With the default settings no variable is passed and the sidecar behaves exactly as before.
+//!
+//! **The browser.** With the switch on, the sidecar offers the `browser_*` tools and runs a
+//! headless Chromium with a fresh private profile. It prefers the managed Chromium installed by the
+//! signed component updater (`chromium` component, HUP-S5.5): when that is installed, core passes
+//! its executable as `CITRATE_BROWSER_CHROMIUM`. Until then the sidecar uses a Chrome already on
+//! this computer, or reports "not installed". Attaching to the member's own Chrome is never a
+//! setting: it stays a per-session consent in the Browser pop-out.
 //!
 //! **Keys.** A Jina or TypeSafe key is a file the member chooses (absolute path, readable only by
 //! them); core passes the path, never the key, and never reads or returns it. Moving these keys into
@@ -26,6 +34,8 @@ pub const MAX_JEV_ORIGINS: usize = 32;
 /// Every variable [`sidecar_env`] may emit. The manager drops anything else from an env source, so
 /// these settings can never override the control bind, the bearer file, or the capsule folder.
 pub const SIDECAR_ENV_KEYS: &[&str] = &[
+    "CITRATE_HERMES_BROWSER",
+    "CITRATE_BROWSER_CHROMIUM",
     "CITRATE_HERMES_SEARCH",
     "CITRATE_HERMES_SEARXNG",
     "CITRATE_HERMES_SEARXNG_DATA",
@@ -56,6 +66,8 @@ pub enum ReaderChoice {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HermesWebSettings {
+    /// HUP-S5.1: offer the `browser_*` tools (Hermes's own headless browser). Off by default.
+    pub browser_enabled: bool,
     /// Offer `web_search` + `read_url` to Hermes.
     pub search_enabled: bool,
     /// Absolute path of `searxng-run` (or its virtualenv). None = search reports "not installed".
@@ -78,6 +90,9 @@ pub struct HermesWebSettings {
 #[serde(rename_all = "camelCase")]
 pub struct HermesWebStatus {
     pub settings: HermesWebSettings,
+    /// HUP-S5.1: the managed Chromium's executable when the signed `chromium` component is
+    /// installed; `None` = not installed (the sidecar then looks for a Chrome on this computer).
+    pub managed_chromium: Option<String>,
     /// The configured SearXNG program exists.
     pub searxng_found: bool,
     pub jina_key_file_found: bool,
@@ -161,10 +176,28 @@ pub fn save(dir: &Path, s: &HermesWebSettings) -> Result<(), String> {
         .map_err(|_| "cannot write the web settings".to_string())
 }
 
-/// The sidecar environment for these settings. The default settings produce nothing.
+/// The sidecar environment for these settings, with no managed Chromium installed. The default
+/// settings produce nothing.
+#[cfg(test)]
 pub fn sidecar_env(s: &HermesWebSettings, hermes_dir: &Path) -> Vec<(String, String)> {
+    sidecar_env_with(s, hermes_dir, None)
+}
+
+/// The sidecar environment for these settings; `managed_chromium` is the installed managed
+/// Chromium's executable, passed only while the browser switch is on.
+pub fn sidecar_env_with(
+    s: &HermesWebSettings,
+    hermes_dir: &Path,
+    managed_chromium: Option<&Path>,
+) -> Vec<(String, String)> {
     let mut env = Vec::new();
     let mut put = |k: &str, v: String| env.push((k.to_string(), v));
+    if s.browser_enabled {
+        put("CITRATE_HERMES_BROWSER", "1".into());
+        if let Some(p) = managed_chromium.filter(|p| p.is_absolute()) {
+            put("CITRATE_BROWSER_CHROMIUM", p.to_string_lossy().into_owned());
+        }
+    }
     if s.search_enabled {
         put("CITRATE_HERMES_SEARCH", "1".into());
         if let Some(p) = &s.searxng_path {
@@ -213,9 +246,28 @@ fn file_exists(p: &Option<String>) -> bool {
         .unwrap_or(false)
 }
 
-/// The status the Settings card renders.
+/// The status the Settings card renders, with no managed Chromium installed.
+#[cfg(test)]
 pub fn status_for(s: HermesWebSettings, load_error: Option<String>) -> HermesWebStatus {
+    status_with(s, load_error, None)
+}
+
+/// The status the Settings card renders.
+pub fn status_with(
+    s: HermesWebSettings,
+    load_error: Option<String>,
+    managed_chromium: Option<&Path>,
+) -> HermesWebStatus {
     let mut notices = Vec::new();
+    if s.browser_enabled {
+        notices.push(match managed_chromium {
+            Some(_) => "Hermes's browser is on. It uses the managed Chromium with a fresh private profile each time, never your own browser profile.".to_string(),
+            None => "Hermes's browser is on. The managed Chromium is not installed yet (it comes with the signed component updater), so Hermes uses a Chrome already on this computer with a fresh private profile, or says it is not installed.".to_string(),
+        });
+        notices.push(
+            "Pages Hermes opens are treated as untrusted: after it reads one, every click, entry or new address needs your approval. Attaching to your own Chrome is asked for each session in the Browser pop-out.".to_string(),
+        );
+    }
     let searxng_found = file_exists(&s.searxng_path)
         || s.searxng_path
             .as_deref()
@@ -251,6 +303,7 @@ pub fn status_for(s: HermesWebSettings, load_error: Option<String>) -> HermesWeb
         }
     }
     HermesWebStatus {
+        managed_chromium: managed_chromium.map(|p| p.to_string_lossy().into_owned()),
         searxng_found,
         jina_key_file_found: file_exists(&s.jina_key_file),
         jev_key_file_found,
@@ -261,7 +314,8 @@ pub fn status_for(s: HermesWebSettings, load_error: Option<String>) -> HermesWeb
     }
 }
 
-/// An env source over a settings getter (tests use a closure; production reads the file).
+/// An env source over a settings getter, with no managed Chromium (tests use a closure).
+#[cfg(test)]
 pub fn env_source_from(
     get: impl Fn() -> HermesWebSettings + Send + Sync + 'static,
     hermes_dir: PathBuf,
@@ -269,10 +323,17 @@ pub fn env_source_from(
     Arc::new(move || sidecar_env(&get(), &hermes_dir))
 }
 
-/// The production env source: the stored settings at each start (a corrupt file = defaults).
-pub fn file_env_source(hermes_dir: PathBuf) -> EnvSource {
-    let dir = hermes_dir.clone();
-    env_source_from(move || load(&dir).unwrap_or_default(), hermes_dir)
+/// The production env source: the stored settings at each start (a corrupt file = defaults),
+/// and the managed Chromium as installed in `components_root` at that moment.
+pub fn file_env_source(hermes_dir: PathBuf, components_root: Option<PathBuf>) -> EnvSource {
+    Arc::new(move || {
+        let s = load(&hermes_dir).unwrap_or_default();
+        let managed = match (&components_root, s.browser_enabled) {
+            (Some(root), true) => crate::components::managed_chromium(root),
+            _ => None,
+        };
+        sidecar_env_with(&s, &hermes_dir, managed.as_deref())
+    })
 }
 
 fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -288,9 +349,12 @@ fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, S
 pub async fn hermes_web_settings_get(app: tauri::AppHandle) -> Result<HermesWebStatus, String> {
     crate::blocking::off_main(move || {
         let dir = hermes_dir(&app)?;
+        let managed = crate::components::components_root(&app)
+            .ok()
+            .and_then(|r| crate::components::managed_chromium(&r));
         Ok(match load(&dir) {
-            Ok(s) => status_for(s, None),
-            Err(e) => status_for(HermesWebSettings::default(), Some(e)),
+            Ok(s) => status_with(s, None, managed.as_deref()),
+            Err(e) => status_with(HermesWebSettings::default(), Some(e), managed.as_deref()),
         })
     })
     .await
@@ -307,7 +371,10 @@ pub async fn hermes_web_settings_set(
         let dir = hermes_dir(&app)?;
         let s = validate(settings)?;
         save(&dir, &s)?;
-        Ok(status_for(s, None))
+        let managed = crate::components::components_root(&app)
+            .ok()
+            .and_then(|r| crate::components::managed_chromium(&r));
+        Ok(status_with(s, None, managed.as_deref()))
     })
     .await
 }

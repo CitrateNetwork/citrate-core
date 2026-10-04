@@ -576,6 +576,17 @@ impl HermesManager {
                 path.to_string_lossy().to_string(),
             ));
         }
+        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
+        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
+        if let Some(allow) = &self.mcp_allowlist {
+            spec.env.push((
+                crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
+                allow
+                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
+                    .to_string_lossy()
+                    .to_string(),
+            ));
+        }
         if let Some(dir) = &self.checkpoints_dir {
             spec.env.push((
                 undo::HERMES_CHECKPOINTS_ENV.to_string(),
@@ -600,11 +611,10 @@ impl HermesManager {
             }
         }
         if let Some(src) = &self.env_source {
-            spec.env.extend(
-                src()
-                    .into_iter()
-                    .filter(|(k, _)| crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())),
-            );
+            spec.env.extend(src().into_iter().filter(|(k, _)| {
+                crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
+            }));
         }
         let health_url = format!("http://{}/health", self.control_addr);
         spec.health_check = Some(HealthCheck {
@@ -1459,7 +1469,22 @@ pub(crate) fn manager<R: tauri::Runtime>(
         .with_skill_sources(skill_sources)
         .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
         .with_chain_data_dir(base.clone())
-        .with_env_source(crate::hermes_web::file_env_source(base.clone()));
+        .with_env_source({
+            // HUP-S5.2/S5.3 web opt-ins and HUP-S6.3 the toolchain switch, read at each start.
+            let web = crate::hermes_web::file_env_source(
+                base.clone(),
+                crate::components::components_root(app).ok(),
+            );
+            let toolchain = crate::forge_toolchain::file_env_source(
+                base.clone(),
+                crate::forge_toolchain::places_for(app)?,
+            );
+            std::sync::Arc::new(move || {
+                let mut env = web();
+                env.extend(toolchain());
+                env
+            })
+        });
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
@@ -2136,6 +2161,11 @@ pub mod personas;
 // the bearer-authed control).
 #[path = "hermes_shell.rs"]
 pub mod shell;
+
+// HUP-S4.1: the member's decision on an MCP card the sidecar holds (child module: reuses the
+// bearer-authed control).
+#[path = "hermes_mcp_cards.rs"]
+pub mod mcp_cards;
 
 #[cfg(test)]
 mod brief_tests {

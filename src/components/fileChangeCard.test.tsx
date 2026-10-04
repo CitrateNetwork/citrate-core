@@ -66,4 +66,18 @@ describe("HUP-S2.9 file-change card", () => {
     expect(note?.textContent).toContain("changed after the agent's edit");
     expect((q(el, "file-change-undo") as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it("HUP-S5.4: Diff opens the change in the Code and diff pop-out, also after an undo", () => {
+    const onDiff = vi.fn();
+    const el = render(<FileChangeCard card={card({ state: "undone" })} onUndo={vi.fn()} onDiff={onDiff} />);
+    const b = q(el, "file-change-diff") as HTMLButtonElement;
+    expect(b.textContent).toBe("Diff");
+    act(() => b.click());
+    expect(onDiff).toHaveBeenCalledWith("s4-cafe", 3);
+  });
+
+  it("HUP-S5.4: without a Diff handler (the web preview) there is no Diff button", () => {
+    const el = render(<FileChangeCard card={card()} onUndo={vi.fn()} />);
+    expect(q(el, "file-change-diff")).toBeNull();
+  });
 });

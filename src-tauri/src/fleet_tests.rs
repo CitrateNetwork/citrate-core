@@ -19,6 +19,7 @@ fn me(id: &str, label: &str, tier: Option<&str>) -> DeviceSelf {
         device_id: id.into(),
         label: label.into(),
         tier: tier.map(str::to_string),
+        link_code: None,
     }
 }
 
@@ -58,6 +59,8 @@ fn the_roster_round_trips_and_upserts_by_id() {
         addr: Some("192.168.1.30".into()),
         paired_at: 10,
         via: PairVia::Issued,
+        device_link: None,
+        code: None,
     };
     upsert(&mut r, dev.clone());
     upsert(
@@ -98,6 +101,8 @@ fn the_roster_is_capped() {
                 addr: None,
                 paired_at: i as u64,
                 via: PairVia::Joined,
+                device_link: None,
+                code: None,
             },
         );
     }
@@ -114,8 +119,20 @@ fn join_requests_are_validated() {
         device_id: "a".repeat(32),
         label: "Laptop".into(),
         tier: Some("T0".into()),
+        device_link: None,
     };
     assert!(ok.valid());
+    // A device link code rides along, bounded like a pasted code.
+    assert!(JoinRequest {
+        device_link: Some("{}".into()),
+        ..ok.clone()
+    }
+    .valid());
+    assert!(!JoinRequest {
+        device_link: Some("x".repeat(4097)),
+        ..ok.clone()
+    }
+    .valid());
     assert!(!JoinRequest { v: 2, ..ok.clone() }.valid());
     assert!(!JoinRequest {
         device_id: "zz".into(),
@@ -136,6 +153,14 @@ fn join_requests_are_validated() {
 
 // ---- pairing end to end (loopback TCP) ------------------------------------------------------
 
+/// The tests run both machines on this one: loopback hints are allowed here. Production
+/// `join_link` never connects to a loopback hint (see `hint_ip_allowed`).
+fn join_local(link: &str, me: &DeviceSelf, now: u64) -> Result<JoinOutcome, JoinError> {
+    join_link_with(link, me, now, &|ip: std::net::IpAddr| {
+        ip.is_loopback() || hint_ip_allowed(ip)
+    })
+}
+
 struct Rig {
     issuer: Arc<Mutex<PairIssuer>>,
     port: u16,
@@ -151,6 +176,7 @@ fn rig(tag: &str) -> Rig {
         issuer: issuer.clone(),
         roster_path: roster.clone(),
         me: Mutex::new(me(&"c".repeat(32), "Studio", Some("T2"))),
+        link_hook: None,
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -180,7 +206,7 @@ fn a_device_pairs_once_and_both_rosters_record_it() {
     let r = rig("e2e");
     let link = link_for(&r);
     let joiner = me(&"d".repeat(32), "Linux box", Some("T1"));
-    let got = join_link(&link, &joiner, r.now).unwrap();
+    let got = join_local(&link, &joiner, r.now).unwrap();
     // The joiner learns the issuer.
     assert_eq!(got.device.id, "c".repeat(32));
     assert_eq!(got.device.label, "Studio");
@@ -198,7 +224,7 @@ fn a_device_pairs_once_and_both_rosters_record_it() {
     assert_eq!(d.via, PairVia::Issued);
     assert_eq!(d.addr.as_deref(), Some("127.0.0.1"));
     // Single use over the wire too.
-    let again = join_link(&link, &me(&"e".repeat(32), "Other", None), r.now);
+    let again = join_local(&link, &me(&"e".repeat(32), "Other", None), r.now);
     assert_eq!(
         again.err(),
         Some(JoinError::Refused(PairError::AlreadyUsed))
@@ -212,7 +238,7 @@ fn an_expired_link_is_refused_before_any_connection() {
     let link = link_for(&r);
     let joiner = me(&"d".repeat(32), "Linux box", Some("T1"));
     assert_eq!(
-        join_link(&link, &joiner, r.now + PAIR_TTL_SECS).err(),
+        join_local(&link, &joiner, r.now + PAIR_TTL_SECS).err(),
         Some(JoinError::Link(PairError::Expired))
     );
 }
@@ -223,7 +249,7 @@ fn a_device_cannot_pair_with_itself() {
     let link = link_for(&r);
     let same = me(&"c".repeat(32), "Studio again", Some("T2"));
     assert_eq!(
-        join_link(&link, &same, r.now).err(),
+        join_local(&link, &same, r.now).err(),
         Some(JoinError::Refused(PairError::SameDevice))
     );
 }
@@ -240,7 +266,7 @@ fn an_unreachable_issuer_is_reported_as_unreachable() {
     let (_c, link) = iss
         .issue("Studio", None, vec![format!("127.0.0.1:{port}")], now)
         .unwrap();
-    let res = join_link(&link, &me(&"d".repeat(32), "Linux box", None), now);
+    let res = join_local(&link, &me(&"d".repeat(32), "Linux box", None), now);
     match res {
         Err(JoinError::Unreachable(tried)) => assert_eq!(tried, vec![format!("127.0.0.1:{port}")]),
         other => panic!("{other:?}"),
@@ -270,6 +296,7 @@ fn the_server_stops_when_told() {
         issuer: Arc::new(Mutex::new(PairIssuer::from_seed([1u8; 32]))),
         roster_path: tmpdir("stop").join(ROSTER_FILE),
         me: Mutex::new(me(&"c".repeat(32), "Studio", None)),
+        link_hook: None,
     });
     let h = std::thread::spawn(move || serve_pairing(listener, ctx, |_| true));
     assert!(h.join().is_ok());
@@ -324,7 +351,7 @@ fn an_invalid_join_request_on_the_wire_is_refused_and_burns_nothing() {
     assert_eq!(r.issuer.lock().unwrap().outstanding(r.now), 1);
     assert!(!r.roster.exists());
     // The link still works for the real machine afterwards.
-    let ok = join_link(&link, &me(&"d".repeat(32), "Linux box", Some("T1")), r.now);
+    let ok = join_local(&link, &me(&"d".repeat(32), "Linux box", Some("T1")), r.now);
     assert!(ok.is_ok(), "{ok:?}");
 }
 
@@ -333,9 +360,147 @@ fn a_broken_issuer_roster_never_burns_the_link() {
     let r = rig("brokenroster");
     let link = link_for(&r);
     std::fs::write(&r.roster, b"{not json").unwrap();
-    let res = join_link(&link, &me(&"d".repeat(32), "Linux box", Some("T1")), r.now);
+    let res = join_local(&link, &me(&"d".repeat(32), "Linux box", Some("T1")), r.now);
     assert_eq!(res.err(), Some(JoinError::Refused(PairError::Malformed)));
     assert_eq!(r.issuer.lock().unwrap().outstanding(r.now), 1);
     // The unreadable file is left exactly as it was.
     assert_eq!(std::fs::read(&r.roster).unwrap(), b"{not json");
+}
+
+// ---- HUP-S8.1/S8.2: paired machines exchange their DeviceLink codes ----------------------------
+
+#[test]
+fn paired_machines_exchange_their_device_link_codes() {
+    let d = tmpdir("links");
+    let roster = d.join(ROSTER_FILE);
+    let issuer = Arc::new(Mutex::new(PairIssuer::from_seed([6u8; 32])));
+    let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_hook = seen.clone();
+    let mut studio = me(&"c".repeat(32), "Studio", Some("T2"));
+    studio.link_code = Some("issuer-link-code".into());
+    let ctx = Arc::new(PairCtx {
+        issuer: issuer.clone(),
+        roster_path: roster.clone(),
+        me: Mutex::new(studio),
+        link_hook: Some(Arc::new(move |code: Option<&str>| {
+            seen_hook.lock().unwrap().push(code.map(str::to_string));
+            PairedLink::Added
+        })),
+    });
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let now = now_secs();
+    std::thread::spawn(move || serve_pairing(listener, ctx, |_| false));
+    let link = issuer
+        .lock()
+        .unwrap()
+        .issue("Studio", Some("T2"), vec![format!("127.0.0.1:{port}")], now)
+        .unwrap()
+        .1;
+
+    let mut joiner = me(&"d".repeat(32), "Linux box", Some("T1"));
+    joiner.link_code = Some("joiner-link-code".into());
+    let got = join_local(&link, &joiner, now).unwrap();
+    // The joiner receives the issuer's code (core verifies and stores it).
+    assert_eq!(got.peer_link_code.as_deref(), Some("issuer-link-code"));
+    // The issuer handed the joiner's code to its hook, and recorded the outcome on the roster entry.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![Some("joiner-link-code".to_string())]
+    );
+    let r = load_roster(&roster).unwrap();
+    assert_eq!(r.devices[0].device_link, Some(PairedLink::Added));
+}
+
+#[test]
+fn a_pairing_without_link_codes_is_unchanged() {
+    let r = rig("nolinks");
+    let link = link_for(&r);
+    let got = join_local(&link, &me(&"d".repeat(32), "Linux box", None), r.now).unwrap();
+    assert_eq!(got.peer_link_code, None);
+    let roster = load_roster(&r.roster).unwrap();
+    assert_eq!(roster.devices[0].device_link, None);
+}
+
+// ---- red-team follow-ups: the joiner authenticates the issuer; hints stay on private networks --
+
+#[test]
+fn both_sides_show_the_same_confirmation_code() {
+    let r = rig("code");
+    let link = link_for(&r);
+    let got = join_local(&link, &me(&"d".repeat(32), "Linux box", Some("T1")), r.now).unwrap();
+    assert_eq!(got.code.len(), 6);
+    assert!(got.code.bytes().all(|b| b.is_ascii_digit()));
+    let roster = load_roster(&r.roster).unwrap();
+    assert_eq!(roster.devices[0].code.as_deref(), Some(got.code.as_str()));
+}
+
+/// A listener that answers like an issuer but does not hold the pairing key.
+fn impostor(reply: serde_json::Value) -> u16 {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((s, _)) = l.accept() {
+            let mut line = String::new();
+            let _ = BufReader::new(s.try_clone().unwrap()).read_line(&mut line);
+            let _ = (&s).write_all(format!("{reply}\n").as_bytes());
+        }
+    });
+    port
+}
+
+#[test]
+fn a_reply_without_the_issuers_proof_is_not_a_pairing() {
+    let now = now_secs();
+    for proof in [serde_json::Value::Null, serde_json::json!("00".repeat(64))] {
+        let port = impostor(serde_json::json!({
+            "ok": true, "error": null, "deviceId": "c".repeat(32), "label": "Studio",
+            "tier": "T2", "proof": proof,
+        }));
+        let mut iss = PairIssuer::from_seed([9u8; 32]);
+        let (_c, link) = iss
+            .issue("Studio", None, vec![format!("127.0.0.1:{port}")], now)
+            .unwrap();
+        assert_eq!(
+            join_local(&link, &me(&"d".repeat(32), "Linux box", None), now).err(),
+            Some(JoinError::Protocol)
+        );
+    }
+}
+
+#[test]
+fn hints_are_only_private_cgnat_or_link_local_addresses() {
+    for ok in ["10.1.2.3", "172.16.0.9", "192.168.1.20", "100.64.1.10", "169.254.10.1", "fe80::1", "fd12::1"] {
+        assert!(hint_ip_allowed(ok.parse().unwrap()), "{ok}");
+    }
+    for bad in ["8.8.8.8", "127.0.0.1", "0.0.0.0", "169.254.169.254", "255.255.255.255", "::1", "2001:4860::8888", "224.0.0.1", "172.32.0.1", "100.128.0.1"] {
+        assert!(!hint_ip_allowed(bad.parse().unwrap()), "{bad}");
+    }
+}
+
+#[test]
+fn a_link_pointing_at_this_machine_or_the_internet_makes_no_connection() {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.set_nonblocking(true).unwrap();
+    let port = l.local_addr().unwrap().port();
+    let now = now_secs();
+    let mut iss = PairIssuer::from_seed([7u8; 32]);
+    let (_c, link) = iss
+        .issue("Studio", None, vec![format!("127.0.0.1:{port}"), "8.8.8.8:53".into()], now)
+        .unwrap();
+    let res = join_link(&link, &me(&"d".repeat(32), "Linux box", None), now);
+    assert!(matches!(res, Err(JoinError::Unreachable(ref t)) if t.is_empty()), "{res:?}");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(l.accept().is_err(), "nothing connected to the loopback hint");
+}
+
+#[test]
+fn the_pairing_port_answers_only_local_network_peers() {
+    for ok in ["127.0.0.1", "192.168.1.4", "100.70.1.2", "fe80::2"] {
+        assert!(peer_allowed(ok.parse().unwrap()), "{ok}");
+    }
+    for bad in ["8.8.8.8", "2001:4860::8888"] {
+        assert!(!peer_allowed(bad.parse().unwrap()), "{bad}");
+    }
 }

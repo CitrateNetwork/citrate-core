@@ -23,7 +23,15 @@
       "knowledge-corpus/**/*",
       "licenses/*",
       "capsules/hello/*",
-      "capsules/echo-chain/*"
+      "capsules/echo-chain/*",
+      "../templates/*.json",
+      "../templates/_common/**/*",
+      "../templates/erc1155/**/*",
+      "../templates/erc20/**/*",
+      "../templates/erc721/**/*",
+      "../templates/erc721-solady/**/*",
+      "../templates/governor/**/*",
+      "../templates/hello-mint/**/*"
     ],
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },

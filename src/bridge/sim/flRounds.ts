@@ -18,5 +18,6 @@ export function simFlRounds(_host: SimHost): FlRoundsDomain {
     gateAdapter: refuse,
     loadAdapter: refuse,
     unloadAdapter: refuse,
+    revokeConsent: refuse,
   };
 }

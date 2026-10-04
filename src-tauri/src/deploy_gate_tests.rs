@@ -20,6 +20,12 @@ const MEDUSA_PASS: &str = include_str!("../tests/fixtures/deploygate/medusa-pass
 const MEDUSA_FAIL: &str = include_str!("../tests/fixtures/deploygate/medusa-fail.handwritten.txt");
 const MEDUSA_SHORT: &str =
     include_str!("../tests/fixtures/deploygate/medusa-short.handwritten.txt");
+// HUP-S6 g3-gate (fan-out 6): REAL captures from the measured macOS arm64 component archives
+// (aderyn 0.6.8, medusa 1.5.1) on the rendered hello-mint template ("Lemon Drops", T1 budget).
+// `medusa-fail.real.txt` is the same project with the payment check removed.
+const ADERYN_CLEAN_REAL: &str = include_str!("../tests/fixtures/deploygate/aderyn-clean.real.json");
+const MEDUSA_PASS_REAL: &str = include_str!("../tests/fixtures/deploygate/medusa-pass.real.txt");
+const MEDUSA_FAIL_REAL: &str = include_str!("../tests/fixtures/deploygate/medusa-fail.real.txt");
 const ANVIL_RECEIPT: &str = include_str!("../tests/fixtures/deploygate/anvil-receipt.json");
 const ANVIL_TX: &str = include_str!("../tests/fixtures/deploygate/anvil-tx.json");
 const INITCODE: &str = include_str!("../tests/fixtures/deploygate/initcode.hex");
@@ -68,12 +74,18 @@ fn green_inputs() -> GateInputs {
             run: ran(MEDUSA_PASS),
             call_budget: 50_000,
         },
-        fork_dry_run: ForkDryRunInput {
+        fork_dry_run: Some(ForkDryRunInput {
             run: ran(ANVIL_RECEIPT),
             tx_input_hex: anvil_tx_input(),
             citrate_precompiles: PrecompileUse::None,
-        },
+        }),
+        fork_in_core: None,
     }
+}
+
+/// The caller-supplied fork input of `inp` (green_inputs always has one).
+fn fork_mut(inp: &mut GateInputs) -> &mut ForkDryRunInput {
+    inp.fork_dry_run.as_mut().expect("fork input")
 }
 
 fn item(rec: &GateRecord, id: GateItemId) -> &GateItem {
@@ -211,7 +223,7 @@ fn not_installed_is_a_fail_for_every_item_never_a_pass() {
             GateItemId::Slither => inp.slither = ToolRun::NotInstalled,
             GateItemId::Aderyn => inp.aderyn = ToolRun::NotInstalled,
             GateItemId::Medusa => inp.medusa.run = ToolRun::NotInstalled,
-            GateItemId::ForkDryRun => inp.fork_dry_run.run = ToolRun::NotInstalled,
+            GateItemId::ForkDryRun => fork_mut(&mut inp).run = ToolRun::NotInstalled,
         }
         let rec = evaluate(&inp, 0).expect("evaluates");
         assert_eq!(
@@ -397,7 +409,7 @@ fn fork_dry_run_must_deploy_exactly_this_initcode() {
     let mut inp = green_inputs();
     // The dry run deployed a different constructor argument.
     let other = anvil_tx_input().replace("00000000aa", "00000000bb");
-    inp.fork_dry_run.tx_input_hex = other;
+    fork_mut(&mut inp).tx_input_hex = other;
     let rec = evaluate(&inp, 0).expect("evaluates");
     assert_eq!(failing(&rec), vec![GateItemId::ForkDryRun]);
     assert!(item(&rec, GateItemId::ForkDryRun)
@@ -408,11 +420,11 @@ fn fork_dry_run_must_deploy_exactly_this_initcode() {
 #[test]
 fn fork_dry_run_reverted_receipt_fails() {
     let mut inp = green_inputs();
-    inp.fork_dry_run.run = ran(&ANVIL_RECEIPT.replace("\"status\":\"0x1\"", "\"status\":\"0x0\""));
+    fork_mut(&mut inp).run = ran(&ANVIL_RECEIPT.replace("\"status\":\"0x1\"", "\"status\":\"0x0\""));
     let rec = evaluate(&inp, 0).expect("evaluates");
     assert_eq!(failing(&rec), vec![GateItemId::ForkDryRun]);
     let mut inp = green_inputs();
-    inp.fork_dry_run.run = ran(&ANVIL_RECEIPT.replace(
+    fork_mut(&mut inp).run = ran(&ANVIL_RECEIPT.replace(
         "\"contractAddress\":\"0x5fbdb2315678afecb367f032d93f642f64180aa3\"",
         "\"contractAddress\":null",
     ));
@@ -424,7 +436,7 @@ fn fork_dry_run_reverted_receipt_fails() {
 fn citrate_precompiles_used_or_unknown_cannot_be_ready_on_an_anvil_fork() {
     for p in [PrecompileUse::Used, PrecompileUse::Unknown] {
         let mut inp = green_inputs();
-        inp.fork_dry_run.citrate_precompiles = p;
+        fork_mut(&mut inp).citrate_precompiles = p;
         let rec = evaluate(&inp, 0).expect("evaluates");
         assert_eq!(failing(&rec), vec![GateItemId::ForkDryRun], "{p:?}");
         assert!(item(&rec, GateItemId::ForkDryRun)
@@ -454,7 +466,7 @@ fn precompile_call_site_in_bytecode_fails_even_when_declared_none() {
     let (code_hex, _) = split_fixture();
     let tainted = format!("{code_hex}6101075afa");
     inp.bytecode_hex = tainted.clone();
-    inp.fork_dry_run.tx_input_hex = format!(
+    fork_mut(&mut inp).tx_input_hex = format!(
         "{}{}",
         tainted,
         inp.constructor_args_hex
@@ -614,7 +626,11 @@ fn gate_inputs_deserialize_from_the_documented_json_shape() {
     assert_eq!(inp.constructor_args_hex, None);
     assert!(!inp.compiler.via_ir);
     assert_eq!(inp.slither, ToolRun::NotInstalled);
-    assert_eq!(inp.fork_dry_run.citrate_precompiles, PrecompileUse::Unknown);
+    assert_eq!(
+        inp.fork_dry_run.as_ref().map(|f| f.citrate_precompiles),
+        Some(PrecompileUse::Unknown)
+    );
+    assert_eq!(inp.fork_in_core, None);
 }
 
 #[test]
@@ -861,4 +877,107 @@ fn free_text_from_the_verifier_is_bounded_in_the_record() {
         .clone()
         .expect("version kept");
     assert!(version.chars().count() <= MAX_TOOL_TEXT_CHARS + 1);
+}
+
+// ---------------------------------------------------------------- real aderyn + medusa captures
+
+#[test]
+fn real_aderyn_and_medusa_captures_pass_the_gate() {
+    let mut inp = green_inputs();
+    inp.aderyn = ran(ADERYN_CLEAN_REAL);
+    inp.medusa.run = ran(MEDUSA_PASS_REAL);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    assert_eq!(rec.verdict, Verdict::Ready, "failing: {:?}", failing(&rec));
+    let ad = item(&rec, GateItemId::Aderyn);
+    assert_eq!(ad.evidence.counts.get("high"), Some(&0));
+    assert_eq!(ad.evidence.counts.get("low"), Some(&7));
+    let md = item(&rec, GateItemId::Medusa);
+    // The last progress line before the T1 test limit (50,000 calls) halted the campaign.
+    assert_eq!(md.evidence.counts.get("calls"), Some(&81_117));
+    assert_eq!(md.evidence.counts.get("passed"), Some(&14));
+    assert_eq!(md.evidence.counts.get("failed"), Some(&0));
+}
+
+#[test]
+fn a_real_failed_medusa_campaign_names_the_failed_tests() {
+    let mut inp = green_inputs();
+    inp.medusa.run = ran(MEDUSA_FAIL_REAL);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    assert_eq!(failing(&rec), vec![GateItemId::Medusa]);
+    let r = &item(&rec, GateItemId::Medusa).reason;
+    assert!(r.starts_with("2 failed"), "{r}");
+    assert!(
+        r.contains("LemonDropsProperties.property_payments_are_accounted()")
+            && r.contains("LemonDropsProperties.property_wrong_payment_never_accepted()"),
+        "the finding is named: {r}"
+    );
+}
+
+#[test]
+fn a_forge_failure_names_the_failing_test_and_its_reason() {
+    let mut inp = green_inputs();
+    inp.forge_tests = ran(FORGE_FAIL);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    let r = &item(&rec, GateItemId::ForgeTests).reason;
+    assert!(r.starts_with("1 failed"), "{r}");
+    assert!(r.contains("BrokenTest.test_wrongSupply()"), "{r}");
+    assert!(r.contains("supply"), "the revert reason rides along: {r}");
+}
+
+#[test]
+fn named_failures_are_bounded() {
+    // 40 failing tests with long reasons: the reason names a few and counts the rest.
+    let mut results = serde_json::Map::new();
+    for i in 0..40 {
+        results.insert(
+            format!("test_{i}()"),
+            serde_json::json!({"status": "Failure", "reason": "x".repeat(2_000)}),
+        );
+    }
+    let out = serde_json::json!({"test/T.t.sol:T": {"test_results": results}}).to_string();
+    let mut inp = green_inputs();
+    inp.forge_tests = ran(&out);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    let r = &item(&rec, GateItemId::ForgeTests).reason;
+    assert!(r.starts_with("40 failed"), "{r}");
+    assert!(r.contains("and 37 more"), "{r}");
+    assert!(r.chars().count() <= 1_200, "{}", r.chars().count());
+
+    let mut log = String::from("fuzz: elapsed: 9s, calls: 50000 (5104/sec)\n");
+    for i in 0..40 {
+        log.push_str(&format!("[FAILED] Property Test: P.property_{i}_{}()\n", "y".repeat(500)));
+    }
+    log.push_str("Test summary: 0 test(s) passed, 40 test(s) failed\n");
+    let mut inp = green_inputs();
+    inp.medusa.run = ran(&log);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    let r = &item(&rec, GateItemId::Medusa).reason;
+    assert!(r.starts_with("40 failed"), "{r}");
+    assert!(r.contains("and 37 more"), "{r}");
+    assert!(r.chars().count() <= 1_200, "{}", r.chars().count());
+}
+
+#[test]
+fn many_distinct_failed_medusa_lines_parse_in_linear_time() {
+    // Up to MAX_OUTPUT_BYTES of tool output reaches the parser; collecting the names of failed
+    // properties must not compare every new name against every earlier one.
+    let n = 80_000;
+    let mut log = String::from("fuzz: elapsed: 9s, calls: 50000 (5104/sec)\n");
+    for i in 0..n {
+        log.push_str(&format!("[FAILED] Property Test: P.property_{i}()\n"));
+    }
+    log.push_str(&format!("Test summary: 0 test(s) passed, {n} test(s) failed\n"));
+    assert!(log.len() < MAX_OUTPUT_BYTES);
+    let mut inp = green_inputs();
+    inp.medusa.run = ran(&log);
+    let t = std::time::Instant::now();
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(5),
+        "parsing took {:?}",
+        t.elapsed()
+    );
+    let r = &item(&rec, GateItemId::Medusa).reason;
+    assert!(r.starts_with(&format!("{n} failed")), "{r}");
+    assert!(r.contains(&format!("and {} more", n - 3)), "{r}");
 }

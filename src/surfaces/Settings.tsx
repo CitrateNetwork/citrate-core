@@ -41,6 +41,7 @@ import type { GoogleServiceStatus } from "../agent/schedule/schedule";
 import { invoke } from "../bridge/tauri/invoke";
 import { EscalationSettings } from "./EscalationSettings";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
+import { FaucetPanel } from "../faucet/FaucetPanel";
 import { McpServersPanel } from "./McpServersPanel";
 import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
@@ -118,7 +119,7 @@ let aiModelEl: HTMLInputElement | null = null;
 
 const CONN: [string, string, string][] = [
   ["gcal", "Google Calendar", "events · read + add events you confirm"],
-  ["gsheets", "Google Sheets", "spreadsheets · connect only for now; no in-app sheet view yet"],
+  ["gsheets", "Google Sheets", "spreadsheets · Journal > Sheets, and Hermes's sheet tools (adding rows asks you first)"],
   ["gdrive", "Google Drive", "files · read"],
   ["notion", "Notion", "pages · read + draft"],
   ["linear", "Linear", "issues · read + draft"],
@@ -1029,7 +1030,13 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
 
         {/* ---------- Memberships & billing ---------- */}
         {/* ---------- Budgets (HUP-S2.3) ---------- */}
-        {s.sSec === "budgets" && <BudgetsPanel />}
+        {s.sSec === "budgets" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <BudgetsPanel />
+            {/* HUP-S6.5: deploy-gas top-ups from the faucet, off by default. */}
+            <FaucetPanel />
+          </div>
+        )}
 
         {s.sSec === "billing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1124,7 +1131,7 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
         {/* ---------- App ---------- */}
         {s.sSec === "app" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {/* HUP-S1.1c — opt-in preview of the sidecar-owned agent loop (ADR loop-in-sidecar). */}
+            {/* HUP-S1.1c — the sidecar-owned agent loop (ADR loop-in-sidecar), on by default since the owner decision of 2026-10-01. */}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
               <span className="eyebrow">Hermes · agent loop</span>
               <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>

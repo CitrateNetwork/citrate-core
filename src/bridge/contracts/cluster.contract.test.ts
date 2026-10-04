@@ -17,9 +17,16 @@ describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
       "linkDeviceRequest",
       "linkDeviceApprove",
       "linkDeviceReject",
+      "revokeDevicePrepare",
       "revokeDevice",
       "exportDeviceLink",
       "importDeviceLink",
+      // HUP-S8.1 follow-on: other members' links over the group relay
+      "deviceLinksShareOffer",
+      "deviceLinksMarkShared",
+      "deviceLinksIngest",
+      // HUP-S8.4 prep: mesh transport policy
+      "meshStatus",
     ] as const) {
       expect(typeof bridge.cluster[m]).toBe("function");
     }
@@ -36,9 +43,15 @@ describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
       expect(await bridge.cluster.devices("g")).toEqual([]);
       expect(await bridge.cluster.myDevices()).toEqual({ thisDevice: null, links: [], revoked: [] });
       await expect(bridge.cluster.linkDeviceRequest("laptop")).rejects.toThrow(/desktop app/);
-      await expect(bridge.cluster.revokeDevice("aa")).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.revokeDevicePrepare("aa")).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.revokeDevice("c-1")).rejects.toThrow(/desktop app/);
       await expect(bridge.cluster.exportDeviceLink()).rejects.toThrow(/desktop app/);
       await expect(bridge.cluster.importDeviceLink("{}")).rejects.toThrow(/desktop app/);
+      // Nothing to share and nothing accepted in the sim: no fabricated links.
+      expect(await bridge.cluster.deviceLinksShareOffer("g")).toBeNull();
+      expect(await bridge.cluster.deviceLinksIngest("aa", "cdlink1:{}")).toEqual({ links: 0, revocations: 0, refused: [] });
+      const mesh = await bridge.cluster.meshStatus();
+      expect(mesh.on).toBe(false);
     }
   });
 });

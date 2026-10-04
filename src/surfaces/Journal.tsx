@@ -23,10 +23,11 @@ import { useRef, useState } from "react";
 import { LoaderMark } from "../components/LoaderMark";
 import { SurfaceProps } from "./shared";
 import { JournalPage } from "../shell/state";
-import { applyHermesSummary, ensureDailyEntry, hermesDayLines } from "../journal/dailyEntry";
+import { ensureDailyEntry } from "../journal/dailyEntry";
 import { JournalVaultPanel } from "../journal/JournalVaultPanel";
 import { desktopJournalIo } from "../journal/encryptedExport";
 import { SchedulePanel } from "../agent/schedule/SchedulePanel";
+import { SheetsPanel } from "../agent/sheets/SheetsPanel";
 import { desktopScheduleIo } from "../agent/schedule/schedule";
 import { HermesDailyReport } from "../journal/HermesDailyReport";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -141,6 +142,7 @@ export function Journal({ store, s }: SurfaceProps) {
   const [vault, setVault] = useState<null | "export" | "import">(null);
   // HUP-S10.2: Hermes's schedule (and Google Calendar when connected), shown as a week calendar.
   const [showSchedule, setShowSchedule] = useState(false);
+  const [showSheets, setShowSheets] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
 
   const jPages = s.jPages || [];
@@ -224,16 +226,12 @@ export function Journal({ store, s }: SurfaceProps) {
   };
   // HUP-S10.4 — "what Hermes did today", from records on this device only.
   const isTodayEntry = !!jSelPage && jSelPage.kind === "daily" && jSelPage.id === "d-" + todayStr();
+  // US-10.4 AC1: also the day's metering, daemon runs and recent personal memory (store.writeDailySummary).
   const onJSummary = () => {
-    const st = store.state;
-    const day = todayStr();
-    const pages = st.jPages || [];
-    const lines = hermesDayLines({ pages, activity: st.activity || [], today: day });
-    store.setState({
-      jPages: pages.map((p) => (p.id === "d-" + day ? { ...p, blocks: applyHermesSummary(p.blocks, lines) } : p)),
-    });
-    store.save();
-    store.toast(lines.length ? "Summary added from local records. Edit it like any bullet." : "Nothing recorded today; the entry says so.");
+    void store
+      .writeDailySummary(todayStr())
+      .then((n) => store.toast(n ? "Summary added from local records. Edit it like any bullet." : "Nothing recorded today; the entry says so."))
+      .catch((e) => store.toast("The summary could not be written: " + (e instanceof Error ? e.message : String(e))));
   };
 
   const jPinDisabled = !jSelPage || jSelPage.pinned || s.jEditing;
@@ -356,6 +354,9 @@ export function Journal({ store, s }: SurfaceProps) {
           <button data-testid="j-schedule" className="btn btn-ghost btn-sm" aria-pressed={showSchedule} onClick={() => setShowSchedule((v) => !v)} title="Hermes's schedule as a calendar">
             Schedule
           </button>
+          <button data-testid="j-sheets" className="btn btn-ghost btn-sm" aria-pressed={showSheets} onClick={() => setShowSheets((v) => !v)} title="Read and add rows to your Google spreadsheets">
+            Sheets
+          </button>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <span className="eyebrow" style={{ padding: "0 2px 4px" }}>
@@ -429,6 +430,9 @@ export function Journal({ store, s }: SurfaceProps) {
               </span>
             )}
           </span>
+          <label data-testid="j-auto-summary" style={{ fontSize: 11.5, color: "var(--tx-2)", display: "inline-flex", alignItems: "center", gap: 4 }} title="Off by default. Once a day, late in the journal day (UTC), Hermes writes today's summary from records on this device.">
+            <input type="checkbox" checked={s.journalAutoSummary} onChange={(e) => store.setJournalAutoSummary(e.target.checked)} /> Daily summary
+          </label>
           {isTodayEntry && jViewing && (
             <button data-testid="j-summary" className="btn btn-ghost btn-sm" onClick={onJSummary} title="Summarize today from records on this device">
               Hermes summary
@@ -448,6 +452,12 @@ export function Journal({ store, s }: SurfaceProps) {
         {showSchedule && (
           <div style={{ paddingTop: 14 }} id="journal-schedule">
             <SchedulePanel io={desktopScheduleIo} />
+          </div>
+        )}
+
+        {showSheets && (
+          <div style={{ paddingTop: 14 }} id="journal-sheets">
+            <SheetsPanel io={desktopScheduleIo} />
           </div>
         )}
 

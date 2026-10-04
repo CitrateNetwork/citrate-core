@@ -80,13 +80,32 @@ fn optional_pins_are_read_only_when_well_formed() {
     );
 }
 
-/// Honest-state tripwire: the shipped book has neither registry (F-4: not deployed on 40204).
-/// When the redeploy lands and the book is regenerated, this test fails on purpose: the surface
-/// and the schedule must then be rechecked against the deployed contracts.
+/// Honest-state tripwire (flipped by HUP fan-out 6): the shipped book pins both registries, the
+/// addresses citrate-chain's canonical 40204 book names and `scripts/sync-addresses.py --rpc`
+/// found code at (2026-10-04). A reroll or redeploy that moves them fails this on purpose: the
+/// surface, the schedule and the anvil rehearsal must then be rechecked.
 #[test]
-fn the_shipped_book_has_no_anchor_or_benchmark_registry_yet() {
-    assert_eq!(anchor_registry(), None);
-    assert_eq!(benchmark_registry(), None);
+fn the_shipped_book_pins_the_anchor_and_benchmark_registries() {
+    assert_eq!(
+        anchor_registry().as_deref(),
+        Some("0x41e0f9a4dcd29c650dc58ee569bf267fd9ba4817")
+    );
+    assert_eq!(
+        benchmark_registry().as_deref(),
+        Some("0x84247a5f65370947c792181a3afed5ac0f452ec8")
+    );
+}
+
+/// Pinned does not mean on: the member's settings still default to off, so the shipped book
+/// starts no schedule and shares nothing until the member turns a feature on.
+#[test]
+fn a_pinned_registry_changes_nothing_until_the_member_turns_it_on() {
+    let off = ChainSettings::default();
+    assert_eq!(
+        anchor_gate(anchor_registry().as_deref(), &off),
+        AnchorGate::Off
+    );
+    assert!(!off.anchor_nightly && !off.share_benchmarks);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -149,8 +168,9 @@ fn the_gate_needs_a_deployed_registry_and_the_members_choice() {
     assert_eq!(anchor_gate(None, &on), AnchorGate::NotDeployed);
     assert_eq!(anchor_gate(Some(REG), &off), AnchorGate::Off);
     assert_eq!(anchor_gate(Some(REG), &on), AnchorGate::Ready);
-    assert!(anchor_status_line(AnchorGate::NotDeployed).contains("not deployed on 40204"));
-    assert!(benchmark_status_line(None, &off).contains("not deployed on 40204"));
+    assert!(anchor_status_line(AnchorGate::NotDeployed)
+        .contains("not in this app's 40204 address book"));
+    assert!(benchmark_status_line(None, &off).contains("not in this app's 40204 address book"));
     for line in [
         anchor_status_line(AnchorGate::NotDeployed),
         anchor_status_line(AnchorGate::Off),
@@ -268,6 +288,8 @@ fn receipt(block: Option<u64>, status: Option<u64>) -> AnchorReceipt {
         tx_hash: format!("0x{}", "cd".repeat(32)),
         block_number: block,
         status,
+        nonce: None,
+        from: None,
     }
 }
 
@@ -432,43 +454,235 @@ impl AnchorPort for DownPort {
     }
 }
 
+fn in_flight_path(tag: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let d = std::env::temp_dir().join(format!(
+        "citrate-anchor-inflight-{tag}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    d.join(IN_FLIGHT_FILE)
+}
+
+fn held(tag: &str) -> InFlightAnchors {
+    InFlightAnchors::load(Some(in_flight_path(tag)))
+}
+
 #[test]
 fn a_sent_anchor_is_never_forgotten_after_broadcast() {
     // Mined and confirmed, but the sidecar could not record it: kept for the re-poll, so the day
     // is not raised again.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("a");
     let port: &dyn AnchorPort = &DownPort;
-    let (anchored, line) = after_broadcast(Ok(port), &receipt(Some(9), Some(1)), &held);
+    let (anchored, line) = after_broadcast(Ok(port), &receipt(Some(9), Some(1)), &h);
     assert!(!anchored);
     assert!(line.contains("block 9"), "{line}");
-    assert!(held.lock().unwrap().contains_key(&20000));
+    assert!(h.days().contains(&20000));
     // Hermes not reachable at all: same.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("b");
     let (anchored, _) = after_broadcast(
         Err("Hermes is not running".into()),
         &receipt(Some(9), Some(1)),
-        &held,
+        &h,
     );
     assert!(!anchored);
-    assert!(held.lock().unwrap().contains_key(&20000));
+    assert!(h.days().contains(&20000));
     // Receipt unknown: kept.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("c");
     let (anchored, _) = after_broadcast(
         Err("Hermes is not running".into()),
         &receipt(None, None),
-        &held,
+        &h,
     );
     assert!(!anchored);
-    assert!(held.lock().unwrap().contains_key(&20000));
+    assert!(h.days().contains(&20000));
     // Reverted: not kept (the day may be raised again), not anchored.
-    let held = Mutex::new(BTreeMap::new());
+    let h = held("d");
+    h.record_sent(&receipt(None, None))
+        .expect("record before send");
     let ok_port = Port::default();
-    let (anchored, _) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(0)), &held);
+    let (anchored, _) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(0)), &h);
     assert!(!anchored);
-    assert!(held.lock().unwrap().is_empty());
+    assert!(h.days().is_empty());
     // Confirmed and recorded: anchored, nothing kept.
-    let (anchored, line) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(1)), &held);
+    h.record_sent(&receipt(None, None))
+        .expect("record before send");
+    let (anchored, line) = after_broadcast(Ok(&ok_port), &receipt(Some(9), Some(1)), &h);
     assert!(anchored);
     assert_eq!(line, "Anchored in block 9.");
-    assert!(held.lock().unwrap().is_empty());
+    assert!(h.days().is_empty());
+}
+
+#[test]
+fn an_in_flight_anchor_survives_a_restart() {
+    // A day sent but not yet mined must still be known after the app restarts, or the nightly
+    // pass would raise a second card and a second signed anchor for it.
+    let path = in_flight_path("restart");
+    {
+        let h = InFlightAnchors::load(Some(path.clone()));
+        h.record_sent(&receipt(None, None))
+            .expect("record before send");
+    }
+    let h = InFlightAnchors::load(Some(path.clone()));
+    assert_eq!(h.blocked(), None);
+    assert!(h.days().contains(&20000));
+    let mut port = Port {
+        status: serde_json::json!({ "awaitingConfirmation": [{"day": 20000}] }),
+        ..Port::default()
+    };
+    port.plans.insert(20000, ready_plan(20000, 0xa0, REG));
+    let c = AnchorCeremony::new();
+    let r = nightly_tick_with(&port, &c, AnchorGate::Ready, Some(REG), &h.days()).unwrap();
+    assert!(r.raised.is_empty(), "no second card for a day in flight");
+    assert_eq!(r.skipped.len(), 1);
+    // Settled: removed on disk too.
+    h.settle_day(20000);
+    assert!(InFlightAnchors::load(Some(path)).days().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_in_flight_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let path = in_flight_path("perms");
+    let h = InFlightAnchors::load(Some(path.clone()));
+    h.record_sent(&receipt(None, None)).expect("record");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn an_unreadable_in_flight_file_blocks_new_anchors_instead_of_forgetting() {
+    let path = in_flight_path("bad");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{ not json").unwrap();
+    let h = InFlightAnchors::load(Some(path.clone()));
+    assert!(h.blocked().is_some());
+    assert!(h.record_sent(&receipt(None, None)).is_err());
+    assert!(
+        std::fs::read(&path).unwrap().starts_with(b"{ not json"),
+        "kept as is"
+    );
+    // No app data folder at all: also blocked, never silently in memory.
+    assert!(InFlightAnchors::load(None).blocked().is_some());
+}
+
+#[test]
+fn approve_passes_the_vault_gate_and_records_before_sending() {
+    let src = include_str!("chain_agent.rs");
+    let i = src
+        .find("pub async fn hermes_anchor_approve(")
+        .expect("command");
+    let body = &src[i..i + 2500];
+    assert!(
+        body.contains("AnchorGuards"),
+        "approve must pass the guards"
+    );
+    assert!(body.contains("before_send"));
+    assert!(
+        body.contains("CustodyState"),
+        "the member's vault is the unlock gate"
+    );
+    assert!(body.contains("with_placeholder_caps"), "gas caps apply");
+}
+
+// ---------------------------------------------------------------------------------------------
+// re-poll: a transaction that can no longer be mined releases its day
+
+fn sent(nonce: Option<u64>) -> AnchorReceipt {
+    AnchorReceipt {
+        nonce,
+        from: nonce.map(|_| format!("0x{}", "ab".repeat(20))),
+        ..receipt(None, None)
+    }
+}
+
+#[test]
+fn a_mined_receipt_decides_the_day_whatever_the_nonce_says() {
+    let rc = crate::rpc::Receipt {
+        tx_hash: sent(Some(5)).tx_hash,
+        block_number: 42,
+        status: Some(1),
+    };
+    match repoll_decision(&sent(Some(5)), Some(9), Some(rc)) {
+        Repoll::Mined(done) => {
+            assert_eq!((done.block_number, done.status), (Some(42), Some(1)));
+            assert!(receipt_confirms(&done));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn no_receipt_and_a_mined_nonce_past_it_releases_the_day() {
+    assert_eq!(
+        repoll_decision(&sent(Some(5)), Some(6), None),
+        Repoll::Dropped
+    );
+}
+
+#[test]
+fn otherwise_a_sent_day_stays_held() {
+    // Not yet mined, nonce not passed (equal: the transaction may still be the next one mined).
+    assert_eq!(repoll_decision(&sent(Some(5)), Some(5), None), Repoll::Wait);
+    assert_eq!(repoll_decision(&sent(Some(5)), Some(4), None), Repoll::Wait);
+    // The nonce could not be read.
+    assert_eq!(repoll_decision(&sent(Some(5)), None, None), Repoll::Wait);
+    // An older record without a nonce never releases on its own.
+    assert_eq!(repoll_decision(&sent(None), Some(100), None), Repoll::Wait);
+}
+
+#[test]
+fn an_older_in_flight_file_without_nonces_still_loads() {
+    let path = in_flight_path("older-file");
+    let old = serde_json::json!([{
+        "day": 20000,
+        "commitment": format!("0x{}", "a0".repeat(32)),
+        "txHash": format!("0x{}", "cd".repeat(32)),
+        "blockNumber": null,
+        "status": null
+    }]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, old.to_string()).unwrap();
+    let h = InFlightAnchors::load(Some(path));
+    assert!(h.blocked().is_none());
+    assert_eq!(h.all()[0].nonce, None);
+    assert!(h.days().contains(&20000));
+}
+
+/// Review follow-up: a send the node refused outright (for example an unfunded anchor key) is not
+/// on the way. Its record is forgotten, on disk too, so the next nightly pass can raise the day
+/// again; it would otherwise wait on a transaction that can never be mined.
+#[test]
+fn a_refused_send_does_not_hold_the_day() {
+    let path = in_flight_path("refused");
+    let h = InFlightAnchors::load(Some(path.clone()));
+    let sent = receipt(None, None);
+    h.record_sent(&sent).expect("record before send");
+    // Another transaction for the day is never forgotten by this one's refusal.
+    let other = AnchorReceipt {
+        tx_hash: format!("0x{}", "ef".repeat(32)),
+        ..sent.clone()
+    };
+    h.forget_unsent(&other);
+    assert!(h.days().contains(&20000));
+    assert!(InFlightAnchors::load(Some(path.clone()))
+        .days()
+        .contains(&20000));
+    h.forget_unsent(&sent);
+    assert!(h.days().is_empty());
+    let reloaded = InFlightAnchors::load(Some(path));
+    assert!(reloaded.days().is_empty(), "forgotten on disk too");
+    let mut port = Port {
+        status: serde_json::json!({ "awaitingConfirmation": [{"day": 20000}] }),
+        ..Port::default()
+    };
+    port.plans.insert(20000, ready_plan(20000, 0xa0, REG));
+    let c = AnchorCeremony::new();
+    let r = nightly_tick_with(&port, &c, AnchorGate::Ready, Some(REG), &reloaded.days()).unwrap();
+    assert_eq!(r.raised.len(), 1, "the day can be anchored again");
 }

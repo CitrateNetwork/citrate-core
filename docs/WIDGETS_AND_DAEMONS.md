@@ -96,10 +96,13 @@ budget. Rust (`src-tauri/src/daemons.rs`) owns every schedule, budget and ledger
 
 - A due daemon whose day budget is used up is **skipped** (counted, with a note); it never runs
   "just this once".
-- A run's tokens are **estimated** (characters / 4): each model round re-reads the system prompt,
-  the tool list and the conversation so far. No provider reports usage to the app yet; every
-  screen says "estimated".
-- The runner stops a run as soon as its estimate passes the run's allowance (`over_budget`), so
+- A run's tokens are **measured** when the model server reports usage for every model call of the
+  run (llama-server's `usage`, carried as core's `citrate_usage` on the in-app loop or the
+  sidecar's `usage` event): the sum of each call's prompt and written tokens. While any call has
+  no report, the run is **estimated** (characters / 4: each model round re-reads the system
+  prompt, the tool list and the conversation so far). Screens and the run log say which
+  (updated 2026-10-04, branch `hup/n6-everyday-monitor`).
+- The runner stops a run as soon as its count passes the run's allowance (`over_budget`), so
   the day's limit can be passed by at most one model round. The run is charged what it used.
 - A run the app never reports back is released after 30 minutes and charged its full allowance.
 - The budget resets at local midnight.
@@ -130,7 +133,7 @@ budget. Rust (`src-tauri/src/daemons.rs`) owns every schedule, budget and ledger
 ### Where to see them
 
 - **Hermes home, Daemons card:** create, pause or resume, remove, "Pause all"; each row shows the
-  status, the schedule and next run, today's runs and estimated tokens against the budget, spend
+  status, the schedule and next run, today's runs and tokens (measured or estimated) against the budget, spend
   (0), skips, the last outcome and note, and (this session) the last full answer.
 - **Activity monitor (pop-out):** a Daemons section with the same status and budget line, Pause /
   Resume per daemon, and "Stop the daemon run" while one is running. The pop-out sends
@@ -160,9 +163,14 @@ main thread) and allowed for the main window only (`permissions/main-window.toml
   iframe are covered by unit and component tests; a click-through in the packaged app (macOS,
   Linux, Windows) has not been done. In particular, that the platform webviews honour the custom
   scheme's CSP header and `frame-ancestors` is asserted by the response we send, not observed.
-- Token use is estimated, not measured (no provider reports usage to the app yet).
-- Daemon runs are not written to the journal or the metering log; the last answer is kept for
-  this session only, the ledger keeps a one-line note.
+- Token use is measured only when the model server reports usage for every call of a run;
+  otherwise it is estimated, and labelled so.
+- Each finished run is appended to `daemon-runs.jsonl` in the metering folder
+  (`<app data>/hermes/metering`, next to the sidecar's `metering.jsonl`; core is its only
+  writer) with its times, tokens, token source and outcome, never its reply or note. The app
+  also writes one `@daemon` bullet per run into that day's journal entry (typed fields only),
+  and the journal's daily summary lists the day's runs from the log. The last answer is kept
+  for this session only; the ledger keeps a one-line note.
 - Daemons only run while the app is open (the runner lives in the main window).
 - Widget queries are not counted in the Activity monitor yet (`WidgetFrame` exposes `onQuery`).
 - Time zones: the webview passes its UTC offset with every call; a daylight-saving change can

@@ -79,8 +79,8 @@ describe("daemons in the monitor snapshot", () => {
     const s = buildMonitorSnapshot({ ...base, daemons: daemonsSection(view, { blocked: null, error: null }) });
     expect(isMonitorSnapshot(s)).toBe(true);
     expect(s.daemons.rows).toEqual([
-      { id: ID, name: "Node digest", status: "running", paused: false, running: true, runsToday: 2, maxRuns: 4, tokensToday: 4_100, maxTokens: 20_000, nextRunAt: 1_790_845_200_000, lastOutcome: "answered", lastNote: "Height 120,345." },
-      { id: "d1111111111111111", name: "Budget hog", status: "budget used up today", paused: false, running: false, runsToday: 1, maxRuns: 1, tokensToday: 1_000, maxTokens: 1_000, nextRunAt: null, lastOutcome: "over_budget", lastNote: null },
+      { id: ID, name: "Node digest", status: "running", paused: false, running: true, runsToday: 2, maxRuns: 4, tokensToday: 4_100, maxTokens: 20_000, nextRunAt: 1_790_845_200_000, lastOutcome: "answered", lastNote: "Height 120,345.", lastTokenSource: null },
+      { id: "d1111111111111111", name: "Budget hog", status: "budget used up today", paused: false, running: false, runsToday: 1, maxRuns: 1, tokensToday: 1_000, maxTokens: 1_000, nextRunAt: null, lastOutcome: "over_budget", lastNote: null, lastTokenSource: null },
     ]);
   });
 

@@ -31,6 +31,7 @@ import type { DeployGateLookup } from "../agent/deployGate";
 import { DeployGateCard } from "../shell/DeployGateCard";
 import { HermesMcpPanel } from "../components/HermesMcpCard";
 import { PostDeployPanel } from "../shell/PostDeployPanel";
+import { ContractForgePanel } from "../shell/ContractForgePanel";
 import { bridge } from "../bridge";
 import { openContractReader } from "../popout/appHost";
 import { LearnedPanel } from "../shell/LearnedPanel";
@@ -304,7 +305,7 @@ export function Agent({ store, s }: SurfaceProps) {
                 )}
               </div>
 
-              {/* HUP-S4.3 — MCP servers Hermes may use (memory graph, CitrateScan); both off by default. */}
+              {/* HUP-S4.3 + S4.2 — MCP servers Hermes may use (memory graph, CitrateScan, this node); all off by default. */}
               <HermesMcpPanel />
 
               {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
@@ -446,6 +447,8 @@ export function Agent({ store, s }: SurfaceProps) {
                 </span>
                 {gateRefusal && <DeployGateCard record={gateRefusal.record} initcodeHash={gateRefusal.initcodeHash} />}
               </div>
+              {/* HUP-S6.2 / S6.3 / S6.9 — templates, the toolchain switch, and the gate from Hermes's runs. */}
+              <ContractForgePanel ops={bridge.contracts} />
               {/* HUP-S6.6 — after the deploy: verify, switch the site to 40204, pin, export. */}
               <PostDeployPanel
                 ops={bridge.contracts}

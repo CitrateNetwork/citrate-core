@@ -144,18 +144,51 @@ describe("FleetWizardView", () => {
     expect(html).toContain("linux-box");
   });
 
-  it("done step lists devices and is honest about what is not issued yet", () => {
+  it("done step lists devices and says, per machine, whether its device link came across", () => {
     const html = render(
       st(
         { type: "probed", probe },
-        { type: "joined", result: { ok: true, device: { id: "b".repeat(32), label: "Studio", tier: "T2", role: "heavy", addr: "192.168.1.20", pairedAt: 1, via: "joined" }, errorKind: null, message: null, tried: [] } },
+        { type: "joined", result: { ok: true, device: { id: "b".repeat(32), label: "Studio", tier: "T2", role: "heavy", addr: "192.168.1.20", pairedAt: 1, via: "joined", deviceLink: "added" }, errorKind: null, message: null, tried: [] } },
       ),
     );
     expect(html).toContain("Studio");
     expect(html).toContain("paired");
+    expect(html).toContain("linked under you");
     expect(html).toContain("wallet-signed device link");
-    expect(html).toContain("not issued yet");
     expect(html).toContain("Groups");
+    const unlinked = render(
+      st(
+        { type: "probed", probe },
+        { type: "joined", result: { ok: true, device: { id: "c".repeat(32), label: "Old box", tier: null, role: "unknown", addr: null, pairedAt: 1, via: "joined" }, errorKind: null, message: null, tried: [] } },
+      ),
+    );
+    expect(unlinked).toContain("not linked yet");
+  });
+
+  it("pair step offers to link this machine first, and an install link for a machine without Citrate Core", () => {
+    const withInstall: PairOffer = {
+      ...offer,
+      installUrl: "https://citrate.ai/download",
+      installQr: { size: 2, rows: ["11", "01"] },
+      carriesDeviceLink: false,
+    };
+    const html = renderToStaticMarkup(
+      <FleetWizardView
+        state={st({ type: "probed", probe }, { type: "goto", step: "pair" }, { type: "offer", offer: withInstall }, { type: "linkStatus", status: { linked: false, label: null } })}
+        nowSecs={1_000}
+        available
+        canLink
+        {...h}
+        onLinkDevice={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="fleet-link-device"');
+    expect(html).toContain("not linked yet");
+    expect(html).toContain('data-testid="fleet-install-qr"');
+    expect(html).toContain("https://citrate.ai/download");
+    const linked = render(st({ type: "probed", probe }, { type: "goto", step: "pair" }, { type: "linkStatus", status: { linked: true, label: "Studio Mac" } }));
+    expect(linked).toContain("Studio Mac");
+    expect(linked).not.toContain('data-testid="fleet-link-device"');
   });
 
   it("an error is shown as an alert", () => {

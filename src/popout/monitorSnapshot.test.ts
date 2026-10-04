@@ -35,11 +35,11 @@ describe("HUP-S7.6 monitor snapshot", () => {
     expect(spendFor("mystery").amount).toBeNull();
   });
 
-  it("the context window is the local server's real --ctx-size; usage is honestly unknown", () => {
+  it("the context window is the local server's real --ctx-size; usage is unknown until the server reports it", () => {
     const local = contextFor("local", 8192);
     expect(local.windowTokens).toBe(8192);
     expect(local.usedTokens).toBeNull();
-    expect(local.usedNote).toMatch(/does not report/i);
+    expect(local.usedNote).toMatch(/has not reported token usage/i);
     expect(contextFor("sidecar", 8192).windowTokens).toBe(8192);
     expect(contextFor("local", null).windowTokens).toBeNull();
     expect(contextFor("agent", 8192).windowTokens).toBeNull();

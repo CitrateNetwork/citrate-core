@@ -1,0 +1,62 @@
+{
+  "added": "2026-10-04",
+  "by": "HUP-S10.2 US-10.2 AC2 + AC3 (gsheets_read, gsheets_append, schedule_list, schedule_add, calendar_list; lane N5-everyday)",
+  "note": "Fragment for toolcall-v2 (A50: v1 frozen, a lane that adds tools adds a new fragment). Single-turn, hand-written, disjoint from any training set. src/agent/eval/everydayEval.test.ts checks every item against the real AGENT_TOOLS with the v1 parser until the v2 loader merges this directory.",
+  "tasks": [
+    {
+      "id": "tc-gsheets-read-range",
+      "prompt": "Read rows 1 to 20 of the Budget tab in my spreadsheet 1AbCdEfGhIjKlMnOpQrStUvWxYz012345, columns A to D.",
+      "expect": { "tool": "gsheets_read", "argsMatch": { "spreadsheetId": "re:1AbCdEfGhIjKlMnOpQrStUvWxYz012345", "range": "re:^'?Budget'?!A1?:D20$" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-gsheets-read-link",
+      "prompt": "What's in A1:C10 of https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit ?",
+      "expect": { "tool": "gsheets_read", "argsMatch": { "spreadsheetId": "re:1AbCdEfGhIjKlMnOpQrStUvWxYz012345", "range": "re:A1:C10" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "tc-gsheets-append-explicit",
+      "prompt": "Add a row to the Expenses sheet of spreadsheet 1AbCdEfGhIjKlMnOpQrStUvWxYz012345: 2026-10-04, coffee, 3.50.",
+      "expect": { "tool": "gsheets_append", "argsMatch": { "spreadsheetId": "re:1AbCdEfGhIjKlMnOpQrStUvWxYz012345", "range": "re:Expenses", "rows": "re:coffee" } },
+      "tags": ["tool-choice", "args", "write-explicit"]
+    },
+    {
+      "id": "nw-gsheets-read-not-append",
+      "prompt": "Just tell me what the Expenses sheet in 1AbCdEfGhIjKlMnOpQrStUvWxYz012345 says in A1:C5, don't change it.",
+      "expect": { "tool": "gsheets_read", "argsMatch": { "range": "re:Expenses!A1:C5" } },
+      "tags": ["no-write", "args", "read"]
+    },
+    {
+      "id": "tc-schedule-list-week",
+      "prompt": "What's on Hermes's schedule for the next week?",
+      "expect": { "tool": "schedule_list" },
+      "tags": ["tool-choice", "read"]
+    },
+    {
+      "id": "tc-schedule-add-weekly",
+      "prompt": "Put a weekly review on your schedule every Monday starting 2026-10-05 at 09:00, 45 minutes.",
+      "expect": { "tool": "schedule_add", "argsMatch": { "title": "re:review", "start": "re:^2026-10-05T09:00", "repeat": "weekly" } },
+      "tags": ["tool-choice", "args", "write-explicit"]
+    },
+    {
+      "id": "nw-schedule-question",
+      "prompt": "Do you have anything scheduled tomorrow? Don't add anything.",
+      "expect": { "tool": "schedule_list", "alsoAccept": ["calendar_list"] },
+      "tags": ["no-write", "read"]
+    },
+    {
+      "id": "tc-calendar-list-days",
+      "prompt": "What's on my Google Calendar for the next 3 days?",
+      "expect": { "tool": "calendar_list", "argsMatch": { "days": "re:^3$" } },
+      "tags": ["tool-choice", "args", "read"]
+    },
+    {
+      "id": "nw-calendar-howto",
+      "prompt": "How do I connect my Google Calendar to Citrate Core?",
+      "expect": { "tool": null, "alsoAccept": ["memory_search", "app_navigate"] },
+      "tags": ["no-write"],
+      "note": "A how-to question is not a request to read the calendar."
+    }
+  ]
+}

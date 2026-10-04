@@ -47,3 +47,17 @@ describe("devicePanelModel", () => {
     expect(m.rows).toHaveLength(1);
   });
 });
+
+// HUP-S8.2: the wizard links a machine under the name it already has; the name is made valid first.
+import { deviceNameFrom } from "./clusterDevices";
+describe("deviceNameFrom", () => {
+  it("keeps a valid name and repairs or replaces one core would refuse", () => {
+    expect(deviceNameFrom("Studio Mac")).toBe("Studio Mac");
+    expect(deviceNameFrom("  Larry's MacBook Pro (M3)  ")).toBe("Larry's MacBook Pro M3");
+    expect(deviceNameFrom("🙂🙂")).toBe("My machine");
+    expect(deviceNameFrom("x".repeat(80))).toHaveLength(48);
+    for (const n of ["Studio Mac", "  Larry's MacBook Pro (M3)  ", "🙂", "a/b\\c", "x".repeat(80)]) {
+      expect(deviceNameError(deviceNameFrom(n))).toBeNull();
+    }
+  });
+});

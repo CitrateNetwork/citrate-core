@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Journal } from "./Journal";
 import { freshState, type AppState } from "../shell/state";
-import type { Store } from "../shell/store";
+import { Store } from "../shell/store";
 import { HERMES_SUMMARY_HEADER, NO_HERMES_ACTIVITY_LINE } from "../journal/dailyEntry";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -60,6 +60,8 @@ describe("Journal surface — HUP-S10.4", () => {
       }),
       save: vi.fn(),
       toast: vi.fn(),
+      // US-10.4 AC1: the summary is assembled by the store (web preview: no desktop sources).
+      writeDailySummary: Store.prototype.writeDailySummary,
     } as unknown as Store;
     const host = document.createElement("div");
     document.body.appendChild(host);

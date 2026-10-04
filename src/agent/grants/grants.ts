@@ -16,7 +16,8 @@ export interface GrantRow {
   kind: "folder" | "full_access" | string;
   root: string;
   access: "read" | "write";
-  status: "active" | "expired" | "revoked" | "not_yet_active" | string;
+  /** `blocked`: rooted in a protected location, so Hermes ignores it (it can still be revoked). */
+  status: "active" | "expired" | "revoked" | "not_yet_active" | "blocked" | string;
   grantedAt: number;
   expiresAt: number | null;
   remainingSecs: number | null;

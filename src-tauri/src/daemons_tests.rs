@@ -707,3 +707,197 @@ fn every_daemon_command_is_async_registered_and_allowed_for_the_main_window_only
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// HUP-S10.3 — measured tokens and the daemon run log (metering folder)
+// ---------------------------------------------------------------------------
+
+fn run_log_tmp(tag: &str) -> std::path::PathBuf {
+    use rand::RngCore;
+    let mut r = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut r);
+    std::env::temp_dir()
+        .join(format!("n6-daemon-runlog-{tag}-{}", hex::encode(r)))
+        .join("metering")
+        .join(RUN_LOG_FILE)
+}
+
+#[test]
+fn a_finished_run_records_its_token_source_and_returns_a_content_free_log_entry() {
+    let (mut b, id) = book_with("* * * * *", OCT1);
+    let c = b.claim_due(OCT1 + MIN, 0).expect("claim").remove(0);
+    let entry = b
+        .finish_run_with(
+            &id,
+            &c.run_id,
+            812,
+            TokenSource::Measured,
+            RunOutcome::Answered,
+            "the model's reply text never reaches the log",
+            OCT1 + 2 * MIN,
+        )
+        .expect("finish");
+    assert_eq!(
+        entry,
+        RunLogEntry {
+            schema: RUN_LOG_SCHEMA,
+            daemon_id: id.clone(),
+            run_id: c.run_id.clone(),
+            name: "Node digest".into(),
+            started_ms: OCT1 + MIN,
+            ended_ms: OCT1 + 2 * MIN,
+            tokens: 812,
+            token_source: TokenSource::Measured,
+            outcome: RunOutcome::Answered,
+        }
+    );
+    let line = serde_json::to_string(&entry).expect("json");
+    assert!(!line.contains("reply text"), "no run content in the log");
+    let v = b.view(&id, OCT1 + 2 * MIN, 0).expect("v");
+    assert_eq!(v.last_token_source.as_deref(), Some("measured"));
+    assert_eq!(v.tokens_today, 812);
+}
+
+#[test]
+fn the_plain_finish_counts_tokens_as_estimated() {
+    let (mut b, id) = book_with("* * * * *", OCT1);
+    let c = b.claim_due(OCT1 + MIN, 0).expect("claim").remove(0);
+    b.finish_run(&id, &c.run_id, 40, RunOutcome::Failed, "", OCT1 + 2 * MIN)
+        .expect("finish");
+    let v = b.view(&id, OCT1 + 2 * MIN, 0).expect("v");
+    assert_eq!(v.last_token_source.as_deref(), Some("estimated"));
+    // A runner that does not say where its count came from is estimated.
+    let src: TokenSource = Default::default();
+    assert_eq!(src, TokenSource::Estimated);
+}
+
+#[test]
+fn an_older_daemons_file_without_a_token_source_still_loads() {
+    let (b, _) = book_with("0 9 * * *", OCT1);
+    let json = b
+        .to_json()
+        .expect("json")
+        .replace("\"lastTokenSource\": null,", "");
+    assert!(!json.contains("lastTokenSource"));
+    assert!(DaemonBook::from_json(&json).is_ok());
+}
+
+#[test]
+fn the_run_log_appends_and_reads_back_a_window() {
+    let path = run_log_tmp("window");
+    let mk = |run: &str, ended: u64, src: TokenSource| RunLogEntry {
+        schema: RUN_LOG_SCHEMA,
+        daemon_id: "d1".into(),
+        run_id: run.into(),
+        name: "Node digest".into(),
+        started_ms: ended - MIN,
+        ended_ms: ended,
+        tokens: 100,
+        token_source: src,
+        outcome: RunOutcome::Answered,
+    };
+    assert_eq!(
+        read_run_log(&path, 0, u64::MAX).expect("missing log"),
+        (vec![], 0),
+        "a missing log is an empty list"
+    );
+    append_run_log(&path, &mk("r1", OCT1 - MIN, TokenSource::Estimated)).expect("a1");
+    append_run_log(&path, &mk("r2", OCT1 + HOUR, TokenSource::Measured)).expect("a2");
+    append_run_log(&path, &mk("r3", OCT1 + DAY, TokenSource::Measured)).expect("a3");
+    let (runs, bad) = read_run_log(&path, OCT1, OCT1 + DAY).expect("read");
+    assert_eq!(bad, 0);
+    assert_eq!(
+        runs.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(),
+        vec!["r2"],
+        "only runs that ended inside [from, to)"
+    );
+    assert_eq!(runs[0].token_source, TokenSource::Measured);
+    let _ = std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).expect("dir"));
+}
+
+#[test]
+fn a_damaged_run_log_line_is_counted_not_guessed() {
+    let path = run_log_tmp("damaged");
+    std::fs::create_dir_all(path.parent().expect("dir")).expect("mkdir");
+    std::fs::write(&path, "not json\n{\"schema\":99}\n").expect("seed");
+    let entry = RunLogEntry {
+        schema: RUN_LOG_SCHEMA,
+        daemon_id: "d1".into(),
+        run_id: "r1".into(),
+        name: "x".into(),
+        started_ms: OCT1,
+        ended_ms: OCT1,
+        tokens: 1,
+        token_source: TokenSource::Estimated,
+        outcome: RunOutcome::Stopped,
+    };
+    append_run_log(&path, &entry).expect("append");
+    let (runs, bad) = read_run_log(&path, 0, u64::MAX).expect("read");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(bad, 2);
+    let _ = std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).expect("dir"));
+}
+
+#[test]
+fn a_read_returns_only_the_newest_entries_when_the_window_holds_too_many() {
+    let path = run_log_tmp("cap");
+    for i in 0..(RUN_LOG_READ_MAX as u64 + 3) {
+        append_run_log(
+            &path,
+            &RunLogEntry {
+                schema: RUN_LOG_SCHEMA,
+                daemon_id: "d1".into(),
+                run_id: format!("r{i}"),
+                name: "x".into(),
+                started_ms: OCT1 + i,
+                ended_ms: OCT1 + i,
+                tokens: 1,
+                token_source: TokenSource::Estimated,
+                outcome: RunOutcome::Answered,
+            },
+        )
+        .expect("append");
+    }
+    let (runs, _) = read_run_log(&path, 0, u64::MAX).expect("read");
+    assert_eq!(runs.len(), RUN_LOG_READ_MAX);
+    assert_eq!(runs[0].run_id, "r3");
+    assert_eq!(
+        runs.last().map(|r| r.run_id.clone()),
+        Some(format!("r{}", RUN_LOG_READ_MAX + 2))
+    );
+    let _ = std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).expect("dir"));
+}
+
+#[test]
+fn a_run_log_past_the_read_cap_still_yields_its_newest_runs() {
+    // Reviewer (N5-everyday): at the hard ceiling (16 daemons x 48 runs a day) the log passes the
+    // read cap in weeks. The journal must keep reading the newest runs, never fail for good.
+    let path = run_log_tmp("tail");
+    let mk = |i: u64| RunLogEntry {
+        schema: RUN_LOG_SCHEMA,
+        daemon_id: "d1".into(),
+        run_id: format!("r{i}"),
+        name: "Node digest".into(),
+        started_ms: OCT1 + i,
+        ended_ms: OCT1 + i,
+        tokens: 1,
+        token_source: TokenSource::Estimated,
+        outcome: RunOutcome::Answered,
+    };
+    for i in 0..40 {
+        append_run_log(&path, &mk(i)).expect("append");
+    }
+    let len = std::fs::metadata(&path).expect("meta").len();
+    let cap = len / 4;
+    let (runs, bad) = read_run_log_capped(&path, 0, u64::MAX, cap).expect("a big log is read");
+    assert_eq!(bad, 0, "the cut first line is dropped, not counted as damaged");
+    assert!(!runs.is_empty() && runs.len() < 40, "only the tail is read");
+    assert_eq!(runs.last().map(|r| r.run_id.as_str()), Some("r39"));
+    let first: u64 = runs[0].run_id[1..].parse().expect("id");
+    assert_eq!(
+        runs.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>(),
+        (first..40).map(|i| format!("r{i}")).collect::<Vec<_>>(),
+        "a contiguous run of the newest entries"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().and_then(|p| p.parent()).expect("dir"));
+}
