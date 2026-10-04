@@ -150,6 +150,92 @@ pub fn x402_budgetable(req: &X402Request, taint: &TaskTaint) -> Result<(), FallT
     Err(FallThrough::X402Inert)
 }
 
+/// The longest validity window core gives an x402 authorization (D3 `validity_max`, 10 min).
+pub const X402_VALIDITY_MAX_S: u64 = 600;
+/// `validAfter` is set this far before "now" so a chain clock a little behind the member's does
+/// not reject a fresh authorization as "not yet valid" (D3 only requires `validAfter <= now`).
+pub const X402_VALID_AFTER_SKEW_S: u64 = 30;
+
+/// Why core would not build an x402 authorization from a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum X402BuildError {
+    /// The request names a different asset than the allowlist entry it is checked against.
+    AssetMismatch,
+    /// The request's payee differs from the recipient the member approved.
+    RecipientMismatch,
+    /// Zero, malformed or out-of-range amount, or a malformed address.
+    Malformed(crate::eip712::Eip712Error),
+    ZeroAmount,
+    /// Validity of zero or above [`X402_VALIDITY_MAX_S`].
+    Validity,
+}
+
+impl X402Asset {
+    /// The EIP-712 domain this asset's authorizations are hashed under.
+    pub fn domain(&self) -> Result<crate::eip712::Domain, X402BuildError> {
+        Ok(crate::eip712::Domain {
+            name: self.name.to_string(),
+            version: self.version.to_string(),
+            chain_id: self.chain_id,
+            verifying_contract: crate::eip712::parse_address(self.verifying_contract)
+                .map_err(X402BuildError::Malformed)?,
+        })
+    }
+}
+
+/// Build the pinned `TransferWithAuthorization` for one x402 request (ADR D3 "Core builds the
+/// bytes it signs"): the asset must be `asset` (an allowlist entry), the payee must be the
+/// recipient the member approved, `from` is the member's active wallet, the window is at most
+/// [`X402_VALIDITY_MAX_S`], and `nonce` comes from core ([`fresh_x402_nonce`]), never the request.
+///
+/// This builds and hashes; it does not decide budgetability ([`x402_budgetable`]) and never signs.
+pub fn build_x402_authorization(
+    asset: &X402Asset,
+    approved_recipient: &str,
+    req: &X402Request,
+    from: &str,
+    now_s: u64,
+    validity_s: u64,
+    nonce: [u8; 32],
+) -> Result<crate::eip712::TransferWithAuthorization, X402BuildError> {
+    use crate::eip712::{parse_address, parse_u256_dec, TransferWithAuthorization};
+    if !req.asset.eq_ignore_ascii_case(asset.verifying_contract) {
+        return Err(X402BuildError::AssetMismatch);
+    }
+    if !req.recipient.eq_ignore_ascii_case(approved_recipient) {
+        return Err(X402BuildError::RecipientMismatch);
+    }
+    if validity_s == 0 || validity_s > X402_VALIDITY_MAX_S {
+        return Err(X402BuildError::Validity);
+    }
+    let value = parse_u256_dec(&req.amount).map_err(X402BuildError::Malformed)?;
+    if value == [0u8; 32] {
+        return Err(X402BuildError::ZeroAmount);
+    }
+    let to = parse_address(&req.recipient).map_err(X402BuildError::Malformed)?;
+    let from = parse_address(from).map_err(X402BuildError::Malformed)?;
+    let valid_before = now_s
+        .checked_add(validity_s)
+        .ok_or(X402BuildError::Validity)?;
+    TransferWithAuthorization::new(
+        from,
+        to,
+        value,
+        now_s.saturating_sub(X402_VALID_AFTER_SKEW_S),
+        valid_before,
+        nonce,
+    )
+    .map_err(X402BuildError::Malformed)
+}
+
+/// A 32-byte authorization nonce from the OS CSPRNG (D3: core generates it, never the caller).
+pub fn fresh_x402_nonce() -> [u8; 32] {
+    use rand::RngCore as _;
+    let mut n = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut n);
+    n
+}
+
 /// What the current agent task has read that it did not author (D2 #19).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskTaint {

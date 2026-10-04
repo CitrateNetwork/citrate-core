@@ -36,6 +36,9 @@ use sha2::{Digest, Sha256};
 
 /// The registry file (every entry), under `<app local data>/hermes/`.
 pub const REGISTRY_FILE: &str = "mcp-servers.json";
+/// The env var naming [`REGISTRY_FILE`] to the Hermes sidecar: its dry-run probe
+/// (`POST /mcp/probe`) starts only an entry saved there exactly as sent.
+pub const MCP_REGISTRY_ENV: &str = "CITRATE_HERMES_MCP_REGISTRY";
 /// The allowlist file the sidecar reads (enabled, reviewed entries only).
 pub const ALLOWLIST_FILE: &str = "mcp-allowlist.json";
 /// The runtime's limit on configured servers (`agent-mcp-host::config::MAX_SERVERS`).

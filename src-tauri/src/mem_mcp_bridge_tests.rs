@@ -80,20 +80,24 @@ fn malformed_input_is_answered_not_forwarded() {
 
 #[test]
 fn tools_list_ids_are_tracked_so_only_that_response_is_rewritten() {
-    let g = gate_request(&json!({"jsonrpc":"2.0","id":9,"method":"tools/list"}).to_string());
+    let req = json!({"jsonrpc":"2.0","id":9,"method":"tools/list"});
+    let g = gate_request(&req.to_string());
     assert_eq!(
         g,
         Gate::Forward {
             list_id: Some("9".into()),
-            has_id: true
+            has_id: true,
+            line: req.to_string(),
         }
     );
-    let g = gate_request(&json!({"jsonrpc":"2.0","id":10,"method":"ping"}).to_string());
+    let req = json!({"jsonrpc":"2.0","id":10,"method":"ping"});
+    let g = gate_request(&req.to_string());
     assert_eq!(
         g,
         Gate::Forward {
             list_id: None,
-            has_id: true
+            has_id: true,
+            line: req.to_string(),
         }
     );
 }
@@ -303,4 +307,21 @@ fn the_flag_is_distinctive_and_not_a_tauri_or_webview_argument() {
     ));
     assert_eq!(parse_bridge_args(&["--other".into()]), None);
     assert_eq!(parse_bridge_args(&[]), None);
+}
+
+/// The daemon receives the request exactly as the gate understood it: the bridge forwards its own
+/// serialization of the parsed value, never the raw line, so the gate's decision does not depend
+/// on both sides resolving duplicate keys (or any other parser difference) the same way.
+#[test]
+fn the_daemon_gets_the_gates_reading_of_the_request_not_the_raw_line() {
+    let raw = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"memory.assert","name":"memory.recall","arguments":{}}}"#;
+    match gate_request(raw) {
+        Gate::Forward { line, .. } => {
+            assert!(!line.contains("memory.assert"), "{line}");
+            let v: serde_json::Value = serde_json::from_str(&line).expect("json");
+            assert_eq!(v["params"]["name"], "memory.recall");
+            assert!(!line.contains('\n'));
+        }
+        other => panic!("expected a forward: {other:?}"),
+    }
 }

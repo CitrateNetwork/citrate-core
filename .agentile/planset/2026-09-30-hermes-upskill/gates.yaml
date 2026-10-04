@@ -60,7 +60,19 @@ gates:
           Hugging Face repo.
       - {id: g1-render, desc: "Markdown golden tests + real SSE streaming", met: false}
       - {id: g1-sidebar, desc: "Sidebar per D-34 with nav tests", met: false}
-      - {id: g1-loop, desc: "Loop in sidecar; UI/CLI/MCP share a session", met: false}
+      - id: g1-loop
+        desc: "Loop in sidecar; UI/CLI/MCP share a session"
+        met: false
+        evidence: .agentile/sprints/active/sprint-hup-s1-one-agent/WP-S1.9-live-parity.md
+        note: >-
+          2026-10-04 evidence: the sidecar loop is on by default (owner decision 2026-10-01) and
+          parity-v1 passes 21/21 end to end against a packaged build (sidecarProvider.ts, the
+          control API as hermes.rs calls it, the bundled sidecar binary, a scripted model), with the
+          process split checked on the same binary (src/agent/parity/results/2026-10-04-live-packaged.json).
+          The CLI shares sessions (citrate-agent hermes events --session <id> --follow). Still open:
+          no MCP client can reach a Hermes session (the node MCP server has no session tools), a
+          webview reload does not reattach to a running session, and the turn cap (6 vs 8) is an
+          owner call before harness.ts can retire.
       - {id: g1-wallet-unlink, desc: "Wallet unlink (S1.11, #117) merged after identity#31 + primary_wallet fix deployed; unlink tests green", met: false}
       - {id: g1-eval, desc: "Per-tier eval on synthetic tool-call tasks: T1+ >=90% valid tool calls, >=80% step success; T0 guided-tier bar set from its baseline", met: false, evidence: eval/}
   - id: gate2
@@ -78,7 +90,16 @@ gates:
           web_signin tests, WebSigningBudget TLC green. Capsule sandbox: per-session sandbox wired,
           guest-capsule tests. Not yet: Linux and Windows proof runs (hardware), packaged-app QA
           (S11); shell_run and the toolchain stay off by default pending owner sign-off.
-      - {id: g2-knowledge, desc: "Bundled graph imported offline; Citrate QA eval >= target with citations", met: false}
+      - id: g2-knowledge
+        desc: "Bundled graph imported offline; Citrate QA eval >= target with citations"
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-m2/M2_STATUS.md
+        note: >-
+          Met 2026-10-04. Owner target (2026-10-04): T1 pass >= 75 % and citation hit rate >= 80 % on
+          qa-v1 through the memory_search tool. T1 run 2026-10-02: 77.3 % pass, 81.5 % citation hit,
+          99.7 % citation validity (eval/results/README.md, SCORECARD.md). Corpus format 2 staged in
+          every bundle config behind the BGE gate; first-run import tested. Release step: upload of the
+          corpus tarball and the import-corpus mem-mcp (A45, DGX team).
       - id: g2-personas
         desc: ">=5 personas (owner-named) + 5 tracks with workflows"
         met: true
@@ -88,7 +109,7 @@ gates:
           (owner decision 2026-10-01, Operator ships); five tracks with ten workflows, runnable per
           session and from chat. TTS voices and the Guide/Operator default tracks are shipped
           defaults pending owner sign-off.
-      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: false}
+      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: true, evidence: "docs/NODE_MCP_SERVER.md (Demo transcript parts 1-3: Claude Code and Hermes agent-mcp-host as clients, 2026-10-01; Claude Code and the read-only Hermes token, 2026-10-04)"}
   - id: gate3
     name: hello mint (S5, S6)
     status: pending
@@ -96,8 +117,26 @@ gates:
       - {id: g3-updater, desc: "Signed component updater live w/ CVE SLA before the browser ships (@rule8)", met: false}
       - {id: g3-licence, desc: "Licence review for bundled/first-run tools complete; source offer published", met: false}
       - {id: g3-browser, desc: "Browser pop-out + search + decide() slot scored", met: false}
-      - {id: g3-gate, desc: "DeployGate TLC-green; injected-bug run yields NOT READY", met: false}
-      - {id: g3-e2e, desc: "hello-mint Gherkin passes on a T1 machine: deploy, verify, mint, IPFS pin", met: false}
+      - id: g3-gate
+        desc: "DeployGate TLC-green; injected-bug run yields NOT READY"
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s6-dapp-forge/EVIDENCE-n6-hellomint-e2e.md
+        note: >-
+          Met 2026-10-04 on hup/n6-hellomint-e2e. TLC DeployGate.cfg no error (3,378 distinct
+          states), Reach config violates NeverSigns as intended. scripts/e2e-hello-mint.sh: the
+          rendered hello-mint with its supply cap check removed, run through real forge, slither,
+          aderyn 0.6.8, medusa 1.5.1 and an anvil fork dry run, is NOT READY naming
+          test_mint_stops_at_the_cap, and contract_deploy opens no ceremony. Aderyn and medusa
+          came from the measured bundle archives (test-only config); a member install does not
+          have them yet (component key ceremony).
+      - id: g3-e2e
+        desc: "hello-mint Gherkin passes on a T1 machine: deploy, verify, mint, IPFS pin"
+        met: false
+        note: >-
+          Local half passes (2026-10-04, EVIDENCE-n6-hellomint-e2e.md): READY, ceremony deploy on
+          an anvil chain with chain id 40204, code check, mint through a ceremony, Vercel export
+          built, IPFS pin. Still needed: a member approving the deploy on 40204 in the packaged
+          app with funded SALT, CitrateScan verification, the faucet (S6.5).
   - id: gate4
     name: Chain-native + fleet + learning (S7, S8, S9)
     status: pending

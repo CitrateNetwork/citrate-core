@@ -4,6 +4,8 @@
 // enabled only with the token of a successful check of the entry as it stands).
 // =====================================================================
 import { useEffect, useState } from "react";
+import type { McpRuntimeView } from "../bridge/domains";
+import { runtimeLine } from "./mcpRuntime";
 import {
   draftFromServer,
   draftToInput,
@@ -61,6 +63,8 @@ export function McpServersPanel({ io }: { io: () => Promise<McpIo> }) {
   const [form, setForm] = useState<{ draft: McpDraft; previous: string | null; errors: McpFieldError[] } | null>(null);
   const [review, setReview] = useState<McpReview | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  // HUP-S4.1: each server's live state in the running sidecar (null while loading or unavailable).
+  const [runtime, setRuntime] = useState<McpRuntimeView | null>(null);
 
   const run = async <T,>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
     setBusy(true);
@@ -86,6 +90,8 @@ export function McpServersPanel({ io }: { io: () => Promise<McpIo> }) {
         if (x.mode !== "tauri") return;
         const list = await x.invoke<McpServerView[]>("mcp_servers_list", {});
         if (live) setServers(list);
+        const rt = await x.invoke<McpRuntimeView>("mcp_servers_runtime", {}).catch(() => null);
+        if (live) setRuntime(rt);
       } catch (e) {
         if (live) setError(e instanceof Error ? e.message : String(e));
       }
@@ -174,6 +180,15 @@ export function McpServersPanel({ io }: { io: () => Promise<McpIo> }) {
             <span className="mono" style={{ fontSize: 11, color: "var(--tx-2)", wordBreak: "break-all" }}>
               {where(s)}
             </span>
+            {s.enabled &&
+              (() => {
+                const line = runtimeLine(runtime, s.name);
+                return line ? (
+                  <span data-testid={`mcp-runtime-${s.name}`} className="mono" style={{ fontSize: 10.5, color: TONE[line.tone] }}>
+                    {line.text}
+                  </span>
+                ) : null;
+              })()}
             {s.env.length > 0 && (
               <span className="mono" style={{ fontSize: 10.5, color: "var(--tx-3)" }}>
                 {s.env.map((e) => `${e.key} = ${e.masked}`).join(" · ")}

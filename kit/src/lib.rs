@@ -26,6 +26,7 @@ pub mod blocking;
 pub mod ceremony;
 pub mod config;
 pub mod custody;
+pub mod eip712;
 pub mod fsutil;
 pub mod oidc;
 pub mod rpc;

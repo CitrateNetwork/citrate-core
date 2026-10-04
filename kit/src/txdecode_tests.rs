@@ -163,3 +163,74 @@ fn value_overflowing_u128_is_rejected_not_truncated() {
     .to_string();
     assert!(decode_transaction(&raw).is_none());
 }
+
+// HUP-S1.5: the registry escalation call is legible and says the input goes on chain publicly.
+fn request_inference_calldata(input: &[u8], max_price: u128) -> Vec<u8> {
+    let mut d = selector_of("requestInference(bytes32,bytes,uint256)").to_vec();
+    d.extend_from_slice(&[0x5a; 32]);
+    let mut w = [0u8; 32];
+    w[31] = 0x60;
+    d.extend_from_slice(&w);
+    let mut m = [0u8; 32];
+    m[16..].copy_from_slice(&max_price.to_be_bytes());
+    d.extend_from_slice(&m);
+    let mut l = [0u8; 32];
+    l[24..].copy_from_slice(&(input.len() as u64).to_be_bytes());
+    d.extend_from_slice(&l);
+    d.extend_from_slice(input);
+    d.resize(d.len() + (32 - input.len() % 32) % 32, 0);
+    d
+}
+
+fn router_tx(data: &[u8], value: u128) -> String {
+    serde_json::json!({
+        "to": "0x1111111111111111111111111111111111111111",
+        "value": format!("0x{value:x}"),
+        "data": format!("0x{}", hex::encode(data)),
+        "gas": "0x30d40",
+    })
+    .to_string()
+}
+
+#[test]
+fn request_inference_is_legible_and_warns_the_input_is_public() {
+    let data = request_inference_calldata(b"plan the migration", 5_000);
+    let (_, d) = decode_transaction(&router_tx(&data, 5_000)).unwrap_or_else(|| panic!("decodes"));
+    assert!(d.action.contains("Request inference"), "{}", d.action);
+    assert!(d.action.contains(&format!("0x{}", "5a".repeat(32))), "{}", d.action);
+    assert!(d.action.contains("18 bytes of input"), "{}", d.action);
+    assert!(d.action.contains("publicly on chain"), "{}", d.action);
+    assert!(d.action.contains("price ceiling 5000 wei"), "{}", d.action);
+    assert_eq!(d.cost, "5000 wei");
+    assert_ne!(d.action, crate::ceremony::UNRECOGNIZED_ACTION);
+}
+
+#[test]
+fn malformed_request_inference_falls_back_to_the_generic_label() {
+    let mut data = request_inference_calldata(b"abc", 1);
+    // Non-zero padding is not the canonical encoding.
+    let last = data.len() - 1;
+    data[last] = 1;
+    let (_, d) = decode_transaction(&router_tx(&data, 1)).unwrap_or_else(|| panic!("decodes"));
+    assert!(d.action.starts_with("Call requestInference()"), "{}", d.action);
+    // A wrong offset word too.
+    let mut data = request_inference_calldata(b"abc", 1);
+    data[4 + 63] = 0x40;
+    let (_, d) = decode_transaction(&router_tx(&data, 1)).unwrap_or_else(|| panic!("decodes"));
+    assert!(d.action.starts_with("Call requestInference()"), "{}", d.action);
+}
+
+#[test]
+fn claim_refund_is_a_known_call() {
+    let data = selector_of("claimRefund()").to_vec();
+    let (_, d) = decode_transaction(&router_tx(&data, 0)).unwrap_or_else(|| panic!("decodes"));
+    assert!(d.action.starts_with("Call claimRefund()"), "{}", d.action);
+}
+
+#[test]
+fn expire_request_is_a_known_call() {
+    let mut data = selector_of("expireRequest(uint256)").to_vec();
+    data.extend_from_slice(&[0u8; 32]);
+    let (_, d) = decode_transaction(&router_tx(&data, 0)).unwrap_or_else(|| panic!("decodes"));
+    assert!(d.action.starts_with("Call expireRequest()"), "{}", d.action);
+}

@@ -607,3 +607,52 @@ fn e2e_anvil_deploy_is_read_back_and_post_deploy_steps_run() {
         eprintln!("e2e: pinned site CID {}", pin.cid);
     }
 }
+
+// ---- verify runs forge with a pinned compiler and a minimal environment ----
+
+#[test]
+fn verify_runs_forge_with_the_lock_files_compiler_and_a_minimal_env() {
+    let d = project();
+    let p = open_project(d.path()).expect("project");
+    let env = forge_verify_env(&p).expect("env");
+    let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    assert_eq!(get("FOUNDRY_SOLC"), Some("0.8.36"), "the compiler is the lock file's version");
+    for (k, _) in &env {
+        assert!(
+            ["PATH", "HOME", "TMPDIR", "FOUNDRY_SOLC"].contains(&k.as_str()),
+            "{k} must not reach forge"
+        );
+    }
+}
+
+#[test]
+fn verify_refuses_a_project_whose_build_config_could_run_other_programs() {
+    // A compiler given as a path in foundry.toml.
+    let d = project();
+    std::fs::write(
+        d.path().join("contracts/foundry.toml"),
+        "[profile.default]\nsolc = \"/tmp/evil-solc\"\n",
+    )
+    .unwrap();
+    let p = open_project(d.path()).expect("project");
+    let e = forge_verify_preflight(&p).expect_err("refused");
+    assert!(e.contains("compiler"), "{e}");
+    // A version string is fine.
+    std::fs::write(
+        d.path().join("contracts/foundry.toml"),
+        "[profile.default]\nsolc = \"0.8.36\"\n",
+    )
+    .unwrap();
+    assert!(forge_verify_preflight(&p).is_ok());
+    // An env file forge would load.
+    std::fs::write(d.path().join("contracts/.env"), "FOUNDRY_SOLC=/tmp/evil\n").unwrap();
+    assert!(forge_verify_preflight(&p).expect_err(".env").contains(".env"));
+    std::fs::remove_file(d.path().join("contracts/.env")).unwrap();
+    // An unreadable config is refused, never skipped.
+    std::fs::write(d.path().join("contracts/foundry.toml"), "solc = [").unwrap();
+    assert!(forge_verify_preflight(&p).is_err());
+    // A lock file whose compiler is not a version is refused.
+    let mut p2 = open_project(d.path()).expect("project");
+    p2.solc = "../../bin/solc".into();
+    assert!(forge_verify_env(&p2).is_err());
+}

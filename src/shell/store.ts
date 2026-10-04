@@ -30,23 +30,24 @@ import {
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
-import { createSidecarProvider } from "../agent/sidecarProvider";
+import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import type { FlRoundPlan } from "../bridge/domains";
-import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
 import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
+import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
-import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
+import { withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -913,6 +914,13 @@ export class Store {
           .endpoints()
           .then((e) => e.length > 0)
           .catch(() => false);
+        // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
+        // first sidecar provider of this app load does that; a later rebuild (persona or provider
+        // change) means a fresh session, so the saved one is let go.
+        const sessionStore = localSessionStore();
+        const firstSidecarBuild = !this.sidecarReattachTried;
+        this.sidecarReattachTried = true;
+        if (!firstSidecarBuild) sessionStore.save(null);
         this.provider = createSidecarProvider(
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
@@ -920,21 +928,30 @@ export class Store {
             open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
+            // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
+            position: (id) => h.sessionEvents(id, Number.MAX_SAFE_INTEGER, 0).then((p) => p.lastSeq),
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
+            // L-20: a stopped session is closed, so it never fills the sidecar's session table.
+            close: (id) => h.sessionClose(id),
             // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
             trackWorkflowRun: (id, workflowId) => h.trackWorkflowRun(id, workflowId),
             workflowStatus: (id, runId) => h.workflowStatus(id, runId),
             // HUP-S2.2: shell_run commands the sidecar holds, and the member's bound decision.
             shellPending: (id) => h.shellPending(id),
             shellDecide: (id, approvalId, allow, argv, cwd) => h.shellDecide(id, approvalId, allow, argv, cwd),
+            // HUP-S4.1: MCP requests the sidecar holds (effectful calls after taint, pages to open).
+            mcpPending: (id) => h.mcpPending(id),
+            mcpDecide: (id, approvalId, allow, subject) => h.mcpDecide(id, approvalId, allow, subject),
           },
-          // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
+          // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
           () => withEscalationTool(annotatedAgentTools(), escalationReady),
           () => this.sidecarPersonaChoice(),
+          { store: sessionStore },
         );
         this.reflectProvider();
+        if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
         return;
       }
       if (kind === "local") {
@@ -972,9 +989,10 @@ export class Store {
   private reflectProvider(): void {
     const p = this.provider;
     if (!p) return;
-    // local → local; gateway (real/agentic) → real; anything else → the honest demo.
+    // local (the app's own loop or the Hermes sidecar loop, both on the local model) → local;
+    // gateway (real/agentic) → real; anything else → the honest demo.
     const kind: "local" | "real" | "demo" =
-      p.kind === "local" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
+      p.kind === "local" || p.kind === "sidecar" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
   }
 
@@ -1963,8 +1981,16 @@ export class Store {
   }
 
   // ---------- ceremony ----------
-  requestSig(spec: CerSpec): Promise<string> {
+  /**
+   * Queue an approval card. With `signal` (a daemon run), the card is withdrawn and resolves
+   * "expired" when the run ends, unless the member is already approving it.
+   */
+  requestSig(spec: CerSpec, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve("expired");
+        return;
+      }
       const id = "cer" + ++this.cid;
       this.resolvers[id] = resolve;
       this.setState((s) => ({
@@ -1972,7 +1998,20 @@ export class Store {
         cerPhase: s.queue.length ? s.cerPhase : "review",
         cerStep: 0,
       }));
+      signal?.addEventListener("abort", () => this.withdrawCer(id), { once: true });
     });
+  }
+  /** Remove one pending card and resolve it "expired". A card mid-approval stays. */
+  withdrawCer(id: string): void {
+    const res = this.resolvers[id];
+    if (!res) return;
+    const s = this.state;
+    const at = s.queue.findIndex((q) => q.id === id);
+    if (at < 0) return;
+    if (at === 0 && s.cerPhase !== "review") return;
+    delete this.resolvers[id];
+    this.setState({ queue: s.queue.filter((q) => q.id !== id), ...(at === 0 ? { cerPhase: "review" as const, cerStep: 0 } : {}) });
+    res("expired");
   }
   finishCer(result: string): void {
     const s = this.state;
@@ -2046,13 +2085,11 @@ export class Store {
     this.scrollChat();
   }
 
-  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context, then the
-   *  chosen persona's fragment (none = exactly the base prompt and context). */
+  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context only. The
+   *  chosen persona travels as `sidecarPersonaChoice()`; the sidecar checks it and renders its
+   *  fragment itself, so a fragment kept in app state never reaches the prompt (L-23). */
   sidecarSystemPrompt(): string {
-    return composeSystemPrompt(
-      AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
-      this.state.hermesPersona,
-    );
+    return AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot());
   }
 
   /** HUP-S3.3 — what the sidecar session applies for the chosen persona (null = none). */
@@ -2130,6 +2167,7 @@ export class Store {
           },
           // HUP-S2.2: every held shell_run is decided by the member on its card.
           onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
+          onMcpApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               recordFileChange(ev.change, msgId);
@@ -2199,6 +2237,97 @@ export class Store {
     await this.sendChat(text);
   }
 
+  /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
+  private sidecarReattachTried = false;
+
+  /**
+   * HUP-S1.1 (US-1.1 AC3) — after a reload, pick the saved Hermes session back up: a turn that was
+   * running (or finished while the view was gone) is shown to its end, core calls the loop asks for
+   * run through the same gates, calls that were in progress at the reload are reported as
+   * interrupted, and a session Hermes no longer has is let go with a plain notice.
+   */
+  private async resumeSidecarSession(provider: ChatProvider): Promise<void> {
+    if (!provider.reattach || this.state.chatStatus !== "ready") return;
+    const ac = new AbortController();
+    const msgId = "m" + ++this.mid;
+    let shown = false;
+    const ensure = () => {
+      if (shown) return;
+      shown = true;
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: msgId, who: "Agent", text: "", chips: [], streaming: true }]) }));
+    };
+    const patch = (fn: (m: ChatMsg) => ChatMsg) =>
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? fn(m) : m)) }));
+    let began = false;
+    const begin = () => {
+      if (began) return;
+      began = true;
+      this.turnAbort = ac;
+      beginTurn(provider.kind, `${provider.label} · resumed after reload`);
+    };
+    try {
+      const r = await provider.reattach({
+        signal: ac.signal,
+        callbacks: {
+          onStatus: (st) => {
+            if (ac.signal.aborted) return;
+            begin();
+            notePhase(st);
+            if (st === "streaming") ensure();
+            this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : (st as AppState["chatStatus"]) });
+          },
+          onToken: (tk) => {
+            if (ac.signal.aborted) return;
+            ensure();
+            patch((m) => ({ ...m, text: m.text + tk }));
+            this.scrollChat();
+          },
+          onToolCall: async (call, meta) => {
+            if (ac.signal.aborted) return "stopped by the member before this ran; nothing was done.";
+            toolStarted(call.id, call.name);
+            try {
+              const result = await this.handleTool(call, msgId, ensure, meta);
+              toolFinished(call.id, true);
+              return result;
+            } catch (e) {
+              toolFinished(call.id, false);
+              throw e;
+            }
+          },
+          onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
+          onActivity: (ev) => {
+            if (ev.kind === "file_change") {
+              ensure();
+              recordFileChange(ev.change, msgId);
+              void refreshUndoPanel(bridge.agentHarness);
+            } else if (ev.kind === "command_run") {
+              commandRan(ev);
+            } else if (ev.kind === "notice") {
+              this.toast(ev.text);
+            } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
+          },
+        },
+      });
+      if (r.kind === "gone") this.toast(r.notice);
+      if (r.kind === "resumed") {
+        ensure();
+        if (r.failure) patch((m) => ({ ...m, error: r.failure ?? undefined }));
+        endTurn(r.failure ? "failed" : "answered");
+      }
+    } catch (e) {
+      if (began) {
+        ensure();
+        const stopped = e instanceof TurnStopped || ac.signal.aborted;
+        patch((m) => ({ ...m, error: stopped ? "stopped by you" : e instanceof Error ? e.message : String(e) }));
+        endTurn(stopped ? "stopped" : "failed");
+      }
+    }
+    if (this.turnAbort === ac) this.turnAbort = null;
+    if (shown) patch((m) => ({ ...m, streaming: false }));
+    if (began) this.setState({ chatStatus: "ready" });
+    this.scrollChat();
+  }
+
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
   private turnAbort: AbortController | null = null;
   /** HUP-S3.1: the in-flight knowledge import, shared by overlapping callers. */
@@ -2246,7 +2375,7 @@ export class Store {
         stop: (id) => h.sessionStop(id),
         close: (id) => h.sessionClose(id),
       },
-      handleTool: (call, meta) => this.handleTool(call, "daemon-run", () => undefined, meta),
+      handleTool: (call, meta, signal) => this.handleTool(call, "daemon-run", () => undefined, meta, signal),
     });
   }
 
@@ -2344,6 +2473,7 @@ export class Store {
           },
           // HUP-S2.2: every held shell_run is decided by the member on its card.
           onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
+          onMcpApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
@@ -2421,7 +2551,30 @@ export class Store {
     return r === "approved";
   }
 
-  async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta): Promise<string> {
+  /**
+   * HUP-S4.1 (US-4.1 AC2): put a held MCP request in front of the member with the HIC banner: an
+   * effectful MCP call after the session read untrusted content (server, tool, the exact
+   * arguments, the server's hints), or a server asking to open a page (the full address and its
+   * host; the app opens it only on Approve). True only when the member pressed Approve.
+   */
+  async approveMcpRequest(p: McpPendingView): Promise<boolean> {
+    const page = p.kind === "open_url";
+    const r = await this.requestSig({
+      origin: "chat agent",
+      requester: `Hermes · MCP server ${p.server}`,
+      title: page ? "Open a page for an MCP server" : "Approve an MCP action",
+      chainless: true,
+      rows: [],
+      cost: "none, no chain transaction",
+      sponsor: "explicit decision required",
+      sponsorColor: "var(--tx-3)",
+      card: mcpRequestCard(p),
+      hic: { reason: page ? MCP_OPEN_URL_HIC_REASON : p.reason || MCP_CALL_HIC_REASON },
+    });
+    return r === "approved";
+  }
+
+  async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta, signal?: AbortSignal): Promise<string> {
     let args: Record<string, string> = {};
     try {
       args = JSON.parse(call.arguments || "{}");
@@ -2437,7 +2590,8 @@ export class Store {
     const ann = annotationFor(call.name);
     const hic: HicRequirement | undefined =
       meta?.hic === "required" ? { reason: meta.hicReason || "this action needs your explicit approval" } : undefined;
-    const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card });
+    // `signal`: a daemon run's; its cards close when the run ends.
+    const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card }, signal);
     let held = false;
     if (hic && !SELF_GATED_TOOLS.has(call.name)) {
       const r = await ask(
@@ -2456,7 +2610,10 @@ export class Store {
       if (r !== "approved") {
         held = true;
         status = r;
-        result = `The member declined ${call.name}; nothing was done.`;
+        result =
+          r === "expired"
+            ? `The approval for ${call.name} expired because the run ended; nothing was done.`
+            : `The member declined ${call.name}; nothing was done.`;
       }
     }
     if (held) {
@@ -2469,7 +2626,8 @@ export class Store {
         {
           endpoints: () => e.endpoints(),
           quote: (id, prompt, system, maxTokens) => e.quote(id, prompt, system, maxTokens),
-          run: (q, shown, confirmed, tainted) => e.run(q, shown, confirmed, tainted),
+          prepareConfirm: async (q, shown) => (await e.confirmPrepare(q, shown)).confirmId,
+          run: (q, shown, confirmId, tainted) => e.run(q, shown, confirmId, tainted),
           confirm: (q, reason, question) => {
             const a = escalationApproval(q, reason, question);
             return ask(
@@ -2845,6 +3003,9 @@ export class Store {
           result = "verified-source lookup unavailable: " + (e instanceof Error ? e.message : String(e));
         }
         }
+    } else if (call.name === "belnap_codec") {
+      // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
+      result = belnapCodecTool(args as Record<string, unknown>);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
@@ -2898,10 +3059,12 @@ export class Store {
           : "couldn't prepare the deploy: " + msg;
       }
     }
+    // A daemon run's card closed with its run: whatever the branch did with the outcome, nothing ran.
+    if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
     const label =
       call.name.replace("_", ".") +
       (args.query ? " · " + args.query : "") +
-      (status === "approved" ? " · approved" : status === "declined" ? " · declined" : " ✓");
+      (status === "approved" ? " · approved" : status === "declined" ? " · declined" : status === "expired" ? " · expired" : " ✓");
     ensure();
     this.setState((s) => ({
       chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? { ...m, chips: m.chips.concat([{ label, status }]) } : m)),

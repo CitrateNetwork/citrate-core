@@ -15,6 +15,7 @@ import type {
   ClusterPeer,
   ClusterStatus,
   DeviceLinks,
+  DeviceRevokePrepared,
   Group,
   PinRow,
 } from "../../bridge/domains";
@@ -46,6 +47,8 @@ export interface ClusterState {
   memberDevices: ClusterMemberDevices[];
   /** HUP-S8.1: a device revoke is in flight (the device address), or null. */
   revoking: string | null;
+  /** A removal core prepared and the member has not confirmed yet. */
+  revokePrepared: DeviceRevokePrepared | null;
 }
 
 const initial: ClusterState = {
@@ -62,6 +65,7 @@ const initial: ClusterState = {
   myDevices: null,
   memberDevices: [],
   revoking: null,
+  revokePrepared: null,
 };
 
 export const clusterSlice = createSlice<ClusterState>(initial);
@@ -124,11 +128,29 @@ export async function loadMemberDevices(groupId: string): Promise<void> {
   }
 }
 
-/** HUP-S8.1 — revoke one of your devices (permanent for that device key), then refresh. */
-export async function revokeMyDevice(device: string): Promise<void> {
-  clusterSlice.set({ revoking: device, error: null });
+/** HUP-S8.1 — step 1 of removing one of your devices: core mints the confirmation for it. */
+export async function prepareRevokeDevice(device: string): Promise<void> {
+  clusterSlice.set({ error: null, revokePrepared: null });
   try {
-    const myDevices = await bridge.cluster.revokeDevice(device);
+    const revokePrepared = await bridge.cluster.revokeDevicePrepare(device);
+    clusterSlice.set({ revokePrepared });
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+  }
+}
+
+/** Drop a prepared removal without revoking anything. */
+export function cancelRevokeDevice(): void {
+  clusterSlice.set({ revokePrepared: null });
+}
+
+/** HUP-S8.1 — you confirmed: revoke the prepared device (permanent for that device key), then refresh. */
+export async function revokeMyDevice(): Promise<void> {
+  const prepared = clusterSlice.get().revokePrepared;
+  if (!prepared) return;
+  clusterSlice.set({ revoking: prepared.device, error: null, revokePrepared: null });
+  try {
+    const myDevices = await bridge.cluster.revokeDevice(prepared.confirmId);
     clusterSlice.set({ myDevices, revoking: null });
     const id = clusterSlice.get().selectedId;
     if (id) await Promise.all([selectClusterGroup(id), loadMemberDevices(id)]);

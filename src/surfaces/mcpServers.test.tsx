@@ -319,3 +319,35 @@ describe("Settings has an MCP servers section", () => {
 
 // vi is imported for parity with the other panel tests' tooling.
 void vi;
+
+describe("HUP-S4.1: the live state of an enabled server", () => {
+  it("shows connected with the tool count from the running Hermes", async () => {
+    const on = { ...NOTES, enabled: true, needsReview: false };
+    const { io } = makeIo((cmd) =>
+      cmd === "mcp_servers_list"
+        ? [on]
+        : cmd === "mcp_servers_runtime"
+          ? { running: true, configured: true, servers: [{ name: "notes", transport: "stdio", state: "ready", era: "modern", tools: 3, skipped: [] }] }
+          : null,
+    );
+    const { host, root } = await mount(<McpServersPanel io={async () => io} />);
+    expect(q(host, "mcp-runtime-notes")?.textContent).toBe("connected · 3 tools · MCP 2026-07-28");
+    root.unmount();
+  });
+
+  it("shows a failed server with its reason, and nothing for a server still under review", async () => {
+    const on = { ...NOTES, enabled: true, needsReview: false };
+    const off = { ...NOTES, name: "draft", enabled: false };
+    const { io } = makeIo((cmd) =>
+      cmd === "mcp_servers_list"
+        ? [on, off]
+        : cmd === "mcp_servers_runtime"
+          ? { running: true, servers: [{ name: "notes", transport: "stdio", state: "failed", tools: 0, skipped: [], error: "could not start the server", nextRetryMs: 2000 }] }
+          : null,
+    );
+    const { host, root } = await mount(<McpServersPanel io={async () => io} />);
+    expect(q(host, "mcp-runtime-notes")?.textContent).toBe("failed: could not start the server · retrying in 2 s");
+    expect(q(host, "mcp-runtime-draft")).toBeNull();
+    root.unmount();
+  });
+});

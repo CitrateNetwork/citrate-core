@@ -428,11 +428,111 @@ fn forge_bin() -> Result<PathBuf, String> {
     )
 }
 
+fn is_version(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|x| !x.is_empty() && x.len() <= 4 && x.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The environment forge runs with for Verify: only what it needs to find itself and a temp dir,
+/// plus the compiler pinned to the lock file's version (`FOUNDRY_SOLC` overrides `foundry.toml`).
+/// Nothing else from the app's environment (keys, endpoints) reaches it.
+pub fn forge_verify_env(p: &HelloMintProject) -> Result<Vec<(String, String)>, String> {
+    if !is_version(&p.solc) {
+        return Err("the project's lock file does not name a compiler version".into());
+    }
+    let mut env: Vec<(String, String)> = ["PATH", "HOME", "TMPDIR"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect();
+    env.push(("FOUNDRY_SOLC".into(), p.solc.clone()));
+    Ok(env)
+}
+
+/// The `foundry.toml` forge would use for `dir`: the nearest one at or above it.
+fn nearest_foundry_toml(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .map(|d| d.join("foundry.toml"))
+        .find(|f| std::fs::symlink_metadata(f).is_ok())
+}
+
+fn env_file_in(dir: &Path) -> Option<String> {
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+        let n = e.file_name().to_string_lossy().to_string();
+        (n == ".env" || n.starts_with(".env.")).then_some(n)
+    })
+}
+
+/// Collect every `solc` / `solc_version` value in a parsed `foundry.toml`, at any depth.
+fn solc_values(v: &toml::Value, out: &mut Vec<String>) {
+    if let toml::Value::Table(t) = v {
+        for (k, x) in t {
+            if matches!(k.as_str(), "solc" | "solc_version" | "solc-version") {
+                out.push(match x {
+                    toml::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                });
+            }
+            solc_values(x, out);
+        }
+    }
+}
+
+/// Before Verify runs forge in the member's project: refuse a build configuration that could make
+/// forge run a program other than a released compiler (a compiler given as a path, an env file forge
+/// would load, a config that is a link or cannot be read). The same rules the agent's toolchain
+/// applies to its own runs.
+pub fn forge_verify_preflight(p: &HelloMintProject) -> Result<(), String> {
+    let fix = "review or remove it, then try again";
+    if let Some(n) = env_file_in(&p.contracts_dir) {
+        return Err(format!(
+            "the contracts folder has {n}, which forge would load; {fix}"
+        ));
+    }
+    let Some(cfg) = nearest_foundry_toml(&p.contracts_dir) else {
+        return Ok(());
+    };
+    let meta =
+        std::fs::symlink_metadata(&cfg).map_err(|e| format!("foundry.toml: {}", e.kind()))?;
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 1024 * 1024 {
+        return Err(format!(
+            "{} is a link, not a file, or too large; {fix}",
+            cfg.display()
+        ));
+    }
+    let text = std::fs::read_to_string(&cfg).map_err(|e| format!("foundry.toml: {}", e.kind()))?;
+    let parsed: toml::Value =
+        toml::from_str(&text).map_err(|_| format!("{} could not be read; {fix}", cfg.display()))?;
+    let mut solc = Vec::new();
+    solc_values(&parsed, &mut solc);
+    if let Some(bad) = solc.iter().find(|v| !is_version(v)) {
+        return Err(format!(
+            "{} names the compiler as {bad:?}, not a version number; {fix}",
+            cfg.display()
+        ));
+    }
+    if let Some(dir) = cfg.parent() {
+        if let Some(n) = env_file_in(dir) {
+            return Err(format!(
+                "{} has {n}, which forge would load; {fix}",
+                dir.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Run forge in `contracts/` to get the standard-JSON input of the project contract.
-fn forge_standard_json(p: &HelloMintProject, address: &str) -> Result<String, String> {
+pub(crate) fn forge_standard_json(p: &HelloMintProject, address: &str) -> Result<String, String> {
+    forge_verify_preflight(p)?;
+    let env = forge_verify_env(p)?;
     let bin = forge_bin()?;
     let out = std::process::Command::new(bin)
         .current_dir(&p.contracts_dir)
+        .env_clear()
+        .envs(env)
         .args(forge_standard_json_args(p, address))
         .output()
         .map_err(|e| format!("forge could not be run: {e}"))?;
@@ -607,7 +707,7 @@ fn kubo_api() -> String {
 }
 
 /// Add the built site to the local kubo daemon as one pinned folder.
-fn pin_site(p: &HelloMintProject, api: &str) -> Result<SitePin, String> {
+pub(crate) fn pin_site(p: &HelloMintProject, api: &str) -> Result<SitePin, String> {
     let files = collect_site_files(&p.app_dir.join("dist"))?;
     let bytes: u64 = files.iter().map(|(_, b)| b.len() as u64).sum();
     let (boundary, body) = directory_multipart(&files);
