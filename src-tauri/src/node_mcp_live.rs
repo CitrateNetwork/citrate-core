@@ -267,9 +267,9 @@ impl NodeBackend for LiveBackend {
             .ok_or("the deploy gate is not available")?;
         // The one deploy path: refused unless the gate is READY for exactly these bytes.
         let proposal = crate::contract_deploy::propose_deploy(
-            &custody,
-            &ceremony,
-            &gate,
+            &custody.0,
+            &ceremony.0,
+            &gate.0,
             origin,
             bytecode,
             Some(constructor_args),

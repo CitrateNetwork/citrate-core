@@ -165,3 +165,6 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
 # ceremony tx-broadcast test to ecrecover the broadcast signature back to the
 # wallet address. Same `rlp` 0.5 the wallet-core lean crypto path uses.
 rlp = "0.5"
+# HUP-S6 test-only: the local hello-mint end-to-end test renders the template with the
+# workspace's own renderer crate (templates/renderer, no new third-party crates).
+citrate-templates = { path = "../templates/renderer" }

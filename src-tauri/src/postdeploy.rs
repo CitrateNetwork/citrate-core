@@ -525,7 +525,7 @@ pub fn forge_verify_preflight(p: &HelloMintProject) -> Result<(), String> {
 }
 
 /// Run forge in `contracts/` to get the standard-JSON input of the project contract.
-fn forge_standard_json(p: &HelloMintProject, address: &str) -> Result<String, String> {
+pub(crate) fn forge_standard_json(p: &HelloMintProject, address: &str) -> Result<String, String> {
     forge_verify_preflight(p)?;
     let env = forge_verify_env(p)?;
     let bin = forge_bin()?;
@@ -707,7 +707,7 @@ fn kubo_api() -> String {
 }
 
 /// Add the built site to the local kubo daemon as one pinned folder.
-fn pin_site(p: &HelloMintProject, api: &str) -> Result<SitePin, String> {
+pub(crate) fn pin_site(p: &HelloMintProject, api: &str) -> Result<SitePin, String> {
     let files = collect_site_files(&p.app_dir.join("dist"))?;
     let bytes: u64 = files.iter().map(|(_, b)| b.len() as u64).sum();
     let (boundary, body) = directory_multipart(&files);

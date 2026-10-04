@@ -398,22 +398,69 @@ fn eval_tool(
     }
 }
 
+/// How many failing tests a reason names; the rest are counted.
+const MAX_NAMED_FAILURES: usize = 3;
+/// Each named failure (test name plus its reason) is cut to this many chars.
+const MAX_NAMED_FAILURE_CHARS: usize = 160;
+
+/// `" (a; b; c and N more)"` naming up to [`MAX_NAMED_FAILURES`] failures, each bounded, so the
+/// card and the refusal cite the finding itself and not only a count. Empty when none.
+fn named_failures(names: &[String]) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let cut = |s: &str| {
+        if s.chars().count() <= MAX_NAMED_FAILURE_CHARS {
+            s.to_string()
+        } else {
+            let mut o: String = s.chars().take(MAX_NAMED_FAILURE_CHARS).collect();
+            o.push('…');
+            o
+        }
+    };
+    let shown: Vec<String> = names
+        .iter()
+        .take(MAX_NAMED_FAILURES)
+        .map(|n| cut(n))
+        .collect();
+    let rest = names.len().saturating_sub(MAX_NAMED_FAILURES);
+    let more = if rest > 0 {
+        format!(" and {rest} more")
+    } else {
+        String::new()
+    };
+    format!(" ({}{more})", shown.join("; "))
+}
+
 fn parse_forge(out: &str) -> Parsed {
     let Ok(serde_json::Value::Object(suites)) = serde_json::from_str::<serde_json::Value>(out)
     else {
         return fail("forge output is not a `forge test --json` report");
     };
     let (mut passed, mut failed, mut skipped, mut unknown) = (0u64, 0u64, 0u64, 0u64);
-    for suite in suites.values() {
+    let mut failures: Vec<String> = Vec::new();
+    for (suite_id, suite) in &suites {
         let Some(results) = suite.get("test_results").and_then(|r| r.as_object()) else {
             return fail(
                 "forge output is not a `forge test --json` report (a suite has no test_results)",
             );
         };
-        for t in results.values() {
+        // `test/Token.t.sol:LemonDropsTest` → `LemonDropsTest`.
+        let contract = suite_id.rsplit(':').next().unwrap_or(suite_id);
+        for (test, t) in results {
             match t.get("status").and_then(|s| s.as_str()) {
                 Some("Success") => passed += 1,
-                Some("Failure") => failed += 1,
+                Some("Failure") => {
+                    failed += 1;
+                    let why = t
+                        .get("reason")
+                        .and_then(|r| r.as_str())
+                        .filter(|r| !r.trim().is_empty());
+                    failures.push(match why {
+                        Some(r) => format!("{contract}.{test}: {}", r.trim()),
+                        None => format!("{contract}.{test}"),
+                    });
+                }
                 Some("Skipped") => skipped += 1,
                 _ => unknown += 1,
             }
@@ -427,7 +474,13 @@ fn parse_forge(out: &str) -> Parsed {
         ("unrecognized".to_string(), unknown),
     ]);
     let (pass, reason) = if failed > 0 {
-        (false, format!("{failed} failed, {passed} passed"))
+        (
+            false,
+            format!(
+                "{failed} failed{}, {passed} passed",
+                named_failures(&failures)
+            ),
+        )
     } else if unknown > 0 {
         (
             false,
@@ -676,7 +729,21 @@ fn parse_medusa(out: &str, budget: u64) -> Parsed {
     let mut calls: Option<u64> = None;
     let mut elapsed: Option<u64> = None;
     let mut summary: Option<(u64, u64)> = None;
+    let mut failures: Vec<String> = Vec::new();
+    // Names already collected: a set, so up to MAX_OUTPUT_BYTES of log stays linear.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for line in text.lines() {
+        // `⇾ [FAILED] Property Test: LemonDropsProperties.property_x()` names the finding.
+        if let Some(rest) = line.split("[FAILED]").nth(1) {
+            let name = rest
+                .split_once("Test:")
+                .map(|(_, n)| n)
+                .unwrap_or(rest)
+                .trim();
+            if !name.is_empty() && seen.insert(name) {
+                failures.push(name.to_string());
+            }
+        }
         if line.contains("fuzz:") {
             if let Some(c) = number_after(line, "calls:") {
                 calls = Some(c);
@@ -723,7 +790,10 @@ fn parse_medusa(out: &str, budget: u64) -> Parsed {
             "call budget {budget} is below the minimum of {MIN_MEDUSA_CALL_BUDGET}"
         ))
     } else if failed > 0 {
-        Some(format!("{failed} failed, {passed} passed property test(s)"))
+        Some(format!(
+            "{failed} failed{}, {passed} passed property test(s)",
+            named_failures(&failures)
+        ))
     } else if passed == 0 {
         Some("no property tests ran".to_string())
     } else if calls_done < budget {
