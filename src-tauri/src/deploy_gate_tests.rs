@@ -68,12 +68,18 @@ fn green_inputs() -> GateInputs {
             run: ran(MEDUSA_PASS),
             call_budget: 50_000,
         },
-        fork_dry_run: ForkDryRunInput {
+        fork_dry_run: Some(ForkDryRunInput {
             run: ran(ANVIL_RECEIPT),
             tx_input_hex: anvil_tx_input(),
             citrate_precompiles: PrecompileUse::None,
-        },
+        }),
+        fork_in_core: None,
     }
+}
+
+/// The caller-supplied fork input of `inp` (green_inputs always has one).
+fn fork_mut(inp: &mut GateInputs) -> &mut ForkDryRunInput {
+    inp.fork_dry_run.as_mut().expect("fork input")
 }
 
 fn item(rec: &GateRecord, id: GateItemId) -> &GateItem {
@@ -211,7 +217,7 @@ fn not_installed_is_a_fail_for_every_item_never_a_pass() {
             GateItemId::Slither => inp.slither = ToolRun::NotInstalled,
             GateItemId::Aderyn => inp.aderyn = ToolRun::NotInstalled,
             GateItemId::Medusa => inp.medusa.run = ToolRun::NotInstalled,
-            GateItemId::ForkDryRun => inp.fork_dry_run.run = ToolRun::NotInstalled,
+            GateItemId::ForkDryRun => fork_mut(&mut inp).run = ToolRun::NotInstalled,
         }
         let rec = evaluate(&inp, 0).expect("evaluates");
         assert_eq!(
@@ -397,7 +403,7 @@ fn fork_dry_run_must_deploy_exactly_this_initcode() {
     let mut inp = green_inputs();
     // The dry run deployed a different constructor argument.
     let other = anvil_tx_input().replace("00000000aa", "00000000bb");
-    inp.fork_dry_run.tx_input_hex = other;
+    fork_mut(&mut inp).tx_input_hex = other;
     let rec = evaluate(&inp, 0).expect("evaluates");
     assert_eq!(failing(&rec), vec![GateItemId::ForkDryRun]);
     assert!(item(&rec, GateItemId::ForkDryRun)
@@ -408,11 +414,11 @@ fn fork_dry_run_must_deploy_exactly_this_initcode() {
 #[test]
 fn fork_dry_run_reverted_receipt_fails() {
     let mut inp = green_inputs();
-    inp.fork_dry_run.run = ran(&ANVIL_RECEIPT.replace("\"status\":\"0x1\"", "\"status\":\"0x0\""));
+    fork_mut(&mut inp).run = ran(&ANVIL_RECEIPT.replace("\"status\":\"0x1\"", "\"status\":\"0x0\""));
     let rec = evaluate(&inp, 0).expect("evaluates");
     assert_eq!(failing(&rec), vec![GateItemId::ForkDryRun]);
     let mut inp = green_inputs();
-    inp.fork_dry_run.run = ran(&ANVIL_RECEIPT.replace(
+    fork_mut(&mut inp).run = ran(&ANVIL_RECEIPT.replace(
         "\"contractAddress\":\"0x5fbdb2315678afecb367f032d93f642f64180aa3\"",
         "\"contractAddress\":null",
     ));
@@ -424,7 +430,7 @@ fn fork_dry_run_reverted_receipt_fails() {
 fn citrate_precompiles_used_or_unknown_cannot_be_ready_on_an_anvil_fork() {
     for p in [PrecompileUse::Used, PrecompileUse::Unknown] {
         let mut inp = green_inputs();
-        inp.fork_dry_run.citrate_precompiles = p;
+        fork_mut(&mut inp).citrate_precompiles = p;
         let rec = evaluate(&inp, 0).expect("evaluates");
         assert_eq!(failing(&rec), vec![GateItemId::ForkDryRun], "{p:?}");
         assert!(item(&rec, GateItemId::ForkDryRun)
@@ -454,7 +460,7 @@ fn precompile_call_site_in_bytecode_fails_even_when_declared_none() {
     let (code_hex, _) = split_fixture();
     let tainted = format!("{code_hex}6101075afa");
     inp.bytecode_hex = tainted.clone();
-    inp.fork_dry_run.tx_input_hex = format!(
+    fork_mut(&mut inp).tx_input_hex = format!(
         "{}{}",
         tainted,
         inp.constructor_args_hex
@@ -614,7 +620,11 @@ fn gate_inputs_deserialize_from_the_documented_json_shape() {
     assert_eq!(inp.constructor_args_hex, None);
     assert!(!inp.compiler.via_ir);
     assert_eq!(inp.slither, ToolRun::NotInstalled);
-    assert_eq!(inp.fork_dry_run.citrate_precompiles, PrecompileUse::Unknown);
+    assert_eq!(
+        inp.fork_dry_run.as_ref().map(|f| f.citrate_precompiles),
+        Some(PrecompileUse::Unknown)
+    );
+    assert_eq!(inp.fork_in_core, None);
 }
 
 #[test]

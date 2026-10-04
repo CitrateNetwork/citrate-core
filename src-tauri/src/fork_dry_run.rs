@@ -17,6 +17,11 @@
 //!   code the fork actually executed;
 //! * reads a report back as evidence for the gate parser ([`citrate_fork_evidence`]).
 //!
+//! `deploy_gate_submit` with `forkInCore` ([`ForkInCore`]) runs this same step inside core on
+//! exactly the submitted init code. That is the path a precompile-using contract needs: a
+//! report handed in by a caller (`forkDryRun`, including the output of
+//! `deploy_gate_fork_dry_run`) cannot vouch for Citrate precompile coverage.
+//!
 //! State source: chain 40204's public RPC, or the member's local anvil fork of it (http
 //! loopback only, the same rule as the contract reader). `citrate-fork` only calls read
 //! methods; nothing here holds a key, signs, or sends a transaction (Rule 3). The fork-only
@@ -75,6 +80,20 @@ pub struct ForkDryRunRequest {
     pub state_rpc: Option<String>,
     /// The sender to simulate (the member's address gives the real create address); defaults
     /// to [`DRY_RUN_SENDER`].
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub test_mint: Option<TestMint>,
+}
+
+/// `deploy_gate_submit`'s `forkInCore`: run the fork step in core on the submitted init code.
+/// The same options as [`ForkDryRunRequest`] without the bytecode, which comes from the gate
+/// inputs so the run is bound to exactly what is being gated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForkInCore {
+    #[serde(default)]
+    pub state_rpc: Option<String>,
     #[serde(default)]
     pub from: Option<String>,
     #[serde(default)]
@@ -152,20 +171,36 @@ pub fn resolve_fork_bin(
     p.is_file().then_some(p)
 }
 
+/// The fork binary for the running app: `CITRATE_FORK_BIN`, else the installed component.
+pub fn resolve_fork_bin_for_app(app_h: &tauri::AppHandle) -> Option<PathBuf> {
+    use tauri::Manager as _;
+    let components = app_h
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("components"));
+    let env = std::env::var(FORK_BIN_ENV).ok();
+    resolve_fork_bin(env.as_deref(), components.as_deref())
+}
+
+/// The tool version a report names (`engine engineVersion`), read from the report itself so
+/// no second, unbounded process run is needed.
+fn report_version(output: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(output).ok()?;
+    let engine = v.get("engine")?.as_str()?;
+    let version = v.get("engineVersion")?.as_str()?;
+    Some(format!("{engine} {version}"))
+}
+
 /// Runs `citrate-fork run --plan - --rpc <rpc_url>` with `plan` on stdin. A report on stdout is
 /// [`ToolRun::Ran`] (whatever it says); a failure to start, a non-zero exit, a timeout or an
-/// oversized report is [`ToolRun::Error`].
+/// oversized report is [`ToolRun::Error`]. Everything, including writing the plan, is inside
+/// the time bound: the plan is written from its own thread, so a binary that never reads its
+/// stdin cannot block the caller.
 pub fn run_fork(bin: &Path, plan: &Value, rpc_url: &str, timeout: Duration) -> ToolRun {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
 
-    let version = Command::new(bin)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let started = Instant::now();
     let mut child = match Command::new(bin)
         .args(["run", "--plan", "-", "--rpc", rpc_url])
@@ -182,8 +217,12 @@ pub fn run_fork(bin: &Path, plan: &Value, rpc_url: &str, timeout: Duration) -> T
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
-        // A write error shows up as the child's own failure below.
-        let _ = stdin.write_all(plan.to_string().as_bytes());
+        let body = plan.to_string();
+        // A write error shows up as the child's own failure below. The thread ends when the
+        // child reads the plan, exits, or is killed (the pipe then closes).
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(body.as_bytes());
+        });
     }
     fn drain<R: std::io::Read + Send + 'static>(r: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
@@ -243,11 +282,14 @@ pub fn run_fork(bin: &Path, plan: &Value, rpc_url: &str, timeout: Duration) -> T
         n if n > MAX_REPORT_BYTES => ToolRun::Error {
             message: "the citrate-fork report is larger than 8 MiB".into(),
         },
-        _ => ToolRun::Ran {
-            output: String::from_utf8_lossy(&out).into_owned(),
-            duration_ms,
-            tool_version: version,
-        },
+        _ => {
+            let output = String::from_utf8_lossy(&out).into_owned();
+            ToolRun::Ran {
+                tool_version: report_version(&output),
+                output,
+                duration_ms,
+            }
+        }
     }
 }
 
@@ -396,14 +438,7 @@ pub async fn deploy_gate_fork_dry_run(
     request: ForkDryRunRequest,
 ) -> Result<ForkDryRunInput, String> {
     crate::blocking::off_main(move || {
-        use tauri::Manager as _;
-        let components = app_h
-            .path()
-            .app_data_dir()
-            .ok()
-            .map(|d| d.join("components"));
-        let env = std::env::var(FORK_BIN_ENV).ok();
-        let bin = resolve_fork_bin(env.as_deref(), components.as_deref());
+        let bin = resolve_fork_bin_for_app(&app_h);
         dry_run(&request, bin.as_deref(), FORK_TIMEOUT)
     })
     .await

@@ -6,7 +6,8 @@
 // the real binary against anvil when scripts/e2e-postdeploy-reader.sh provides one.
 use super::*;
 use crate::deploy_gate::{
-    evaluate, CompilerSettings, GateInputs, GateItemId, GateRecord, MedusaInput, Verdict,
+    evaluate, evaluate_submission, evaluate_with_fork, CompilerSettings, ForkProvenance,
+    GateInputs, GateItemId, GateRecord, MedusaInput, Verdict,
 };
 
 const BELNAP: &str = include_str!("../tests/fixtures/deploygate/citrate-fork-belnap.json");
@@ -40,9 +41,9 @@ fn initcode_bytes(hex_s: &str) -> Vec<u8> {
     hex::decode(hex_s.trim_start_matches("0x")).expect("hex")
 }
 
-/// Every other gate item green; the fork item is what the test supplies.
-fn gate(bytecode_hex: &str, fork: ForkDryRunInput) -> GateRecord {
-    let inputs = GateInputs {
+/// Every other gate item green; no fork input yet.
+fn inputs_for(bytecode_hex: &str) -> GateInputs {
+    GateInputs {
         bytecode_hex: bytecode_hex.to_string(),
         constructor_args_hex: None,
         compiler: CompilerSettings {
@@ -59,8 +60,21 @@ fn gate(bytecode_hex: &str, fork: ForkDryRunInput) -> GateRecord {
             run: ran(MEDUSA_PASS),
             call_budget: 50_000,
         },
-        fork_dry_run: fork,
-    };
+        fork_dry_run: None,
+        fork_in_core: None,
+    }
+}
+
+/// The gate with a fork run core made itself (what `forkInCore` produces).
+fn gate(bytecode_hex: &str, fork: ForkDryRunInput) -> GateRecord {
+    evaluate_with_fork(&inputs_for(bytecode_hex), Some(&fork), ForkProvenance::Core, 1)
+        .expect("evaluates")
+}
+
+/// The gate with the same fork run handed in by a caller (`forkDryRun`).
+fn gate_from_caller(bytecode_hex: &str, fork: ForkDryRunInput) -> GateRecord {
+    let mut inputs = inputs_for(bytecode_hex);
+    inputs.fork_dry_run = Some(fork);
     evaluate(&inputs, 1).expect("evaluates")
 }
 
@@ -189,17 +203,21 @@ fn a_report_on_stdout_is_a_run_with_the_tool_version() {
     let bin = script(
         "ok",
         &format!(
-            "if [ \"$1\" = --version ]; then echo 'citrate-fork 0.4.0'; exit 0; fi\n\
+            "if [ \"$1\" = --version ]; then sleep 30; exit 0; fi\n\
              [ \"$1\" = run ] && [ \"$4\" = --rpc ] || exit 9\ncat >/dev/null\ncat '{}'",
             report_file.display()
         ),
     );
+    let t = Instant::now();
     match run_fork(&bin, &json!({}), "http://127.0.0.1:1", Duration::from_secs(10)) {
         ToolRun::Ran {
             output,
             tool_version,
             ..
         } => {
+            // The version comes from the report itself; a second `--version` run (which
+            // this script would hang on) is never made.
+            assert!(t.elapsed() < Duration::from_secs(8), "no --version run");
             assert_eq!(tool_version.as_deref(), Some("citrate-fork 0.4.0"));
             let v: Value = serde_json::from_str(&output).expect("json");
             assert_eq!(v["engine"], "citrate-fork");
@@ -370,11 +388,11 @@ fn e2e_citrate_fork_dry_run_of_hello_mint_with_a_test_mint() {
     let req = ForkDryRunRequest {
         bytecode_hex: initcode.clone(),
         constructor_args_hex: None,
-        state_rpc: Some(rpc),
+        state_rpc: Some(rpc.clone()),
         from: None,
         test_mint: Some(TestMint {
             quantity: 2,
-            price_wei: price,
+            price_wei: price.clone(),
         }),
     };
     let input = dry_run(&req, Some(Path::new(&bin)), FORK_TIMEOUT).expect("dry run");
@@ -387,4 +405,170 @@ fn e2e_citrate_fork_dry_run_of_hello_mint_with_a_test_mint() {
     let rec = gate(&initcode, input);
     let (pass, reason) = fork_item(&rec);
     assert!(pass, "{reason}");
+
+    // The wired path: deploy_gate_submit with forkInCore runs the same fork step in core.
+    let mut inputs = inputs_for(&initcode);
+    inputs.fork_in_core = Some(ForkInCore {
+        state_rpc: Some(rpc),
+        from: None,
+        test_mint: Some(TestMint {
+            quantity: 2,
+            price_wei: price,
+        }),
+    });
+    let rec = evaluate_submission(&inputs, Some(Path::new(&bin)), FORK_TIMEOUT, 1)
+        .expect("submission evaluates");
+    let (pass, reason) = fork_item(&rec);
+    assert!(pass, "forkInCore: {reason}");
+    assert!(reason.contains("Citrate-aware fork"), "{reason}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_binary_that_never_reads_its_plan_is_still_bounded_by_the_timeout() {
+    // A plan far larger than a pipe buffer, and a binary that never reads stdin: writing the
+    // plan must not block past the time bound.
+    let bin = script("noread", "sleep 5");
+    let big = json!({ "steps": [{ "kind": "create", "data": format!("0x{}", "60".repeat(512 * 1024)) }] });
+    let t = Instant::now();
+    match run_fork(&bin, &big, "http://127.0.0.1:1", Duration::from_millis(300)) {
+        ToolRun::Error { message } => assert!(message.contains("did not finish"), "{message}"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+    assert!(t.elapsed() < Duration::from_secs(4), "bounded by the timeout");
+}
+
+// ------------------------------------------------------------- provenance (forkInCore)
+
+#[test]
+fn a_caller_supplied_report_cannot_vouch_for_precompiles() {
+    // The same real report that passes when core ran the fork fails when a caller hands it
+    // in: its coverage list is the caller's word.
+    let (ic, report) = fixture(BELNAP);
+    let input = fork_input(ran(&report), &initcode_bytes(&ic));
+    let rec = gate_from_caller(&ic, input);
+    let (pass, reason) = fork_item(&rec);
+    assert!(!pass);
+    assert!(reason.contains("forkInCore"), "{reason}");
+    assert_eq!(rec.verdict, Verdict::NotReady);
+}
+
+#[test]
+fn a_caller_supplied_report_that_claims_every_precompile_is_real_still_fails() {
+    // A forged report listing an unrunnable call site as real.
+    let (ic, report) = fixture(BELNAP);
+    let mut v: Value = serde_json::from_str(&report).expect("json");
+    let code = format!("{ic}6101005afa"); // PUSH2 0x0100 GAS STATICCALL (inference family)
+    v["steps"][0]["input"] = json!(code.clone());
+    v["precompiles"]["real"] = json!(["0x0100", "0x0110"]);
+    v["precompiles"]["touched"] = json!([]);
+    let input = fork_input(ran(&v.to_string()), &initcode_bytes(&code));
+    let (pass, reason) = fork_item(&gate_from_caller(&code, input));
+    assert!(!pass);
+    assert!(reason.contains("forkInCore"), "{reason}");
+}
+
+#[test]
+fn no_fork_input_at_all_fails_the_fork_item() {
+    let (ic, _) = fixture(BELNAP);
+    let rec = evaluate(&inputs_for(&ic), 1).expect("evaluates");
+    let (pass, reason) = fork_item(&rec);
+    assert!(!pass);
+    assert!(reason.contains("no fork dry run was supplied"), "{reason}");
+}
+
+#[test]
+fn fork_in_core_and_a_caller_fork_together_are_refused() {
+    let (ic, report) = fixture(BELNAP);
+    let mut inputs = inputs_for(&ic);
+    inputs.fork_dry_run = Some(fork_input(ran(&report), &initcode_bytes(&ic)));
+    inputs.fork_in_core = Some(ForkInCore {
+        state_rpc: None,
+        from: None,
+        test_mint: None,
+    });
+    let e = evaluate_submission(&inputs, None, FORK_TIMEOUT, 1).expect_err("refused");
+    assert!(e.contains("not both"), "{e}");
+}
+
+#[test]
+fn fork_in_core_without_the_binary_is_not_installed() {
+    let (ic, _) = fixture(BELNAP);
+    let mut inputs = inputs_for(&ic);
+    inputs.fork_in_core = Some(ForkInCore {
+        state_rpc: None,
+        from: None,
+        test_mint: None,
+    });
+    let rec = evaluate_submission(&inputs, None, FORK_TIMEOUT, 1).expect("evaluates");
+    let (pass, reason) = fork_item(&rec);
+    assert!(!pass);
+    assert!(reason.contains("citrate-fork is not installed"), "{reason}");
+}
+
+#[test]
+fn fork_in_core_refuses_a_state_rpc_that_is_not_40204_or_loopback() {
+    let (ic, _) = fixture(BELNAP);
+    let mut inputs = inputs_for(&ic);
+    inputs.fork_in_core = Some(ForkInCore {
+        state_rpc: Some("https://evil.example".into()),
+        from: None,
+        test_mint: None,
+    });
+    assert!(evaluate_submission(&inputs, None, FORK_TIMEOUT, 1).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn fork_in_core_runs_the_binary_on_the_gated_init_code_and_can_be_ready() {
+    let (ic, report) = fixture(BELNAP);
+    let dir = std::env::temp_dir().join(format!("citrate-fork-core-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let report_file = dir.join("report.json");
+    let plan_file = dir.join("plan.json");
+    std::fs::write(&report_file, &report).expect("write");
+    let bin = script(
+        "core",
+        &format!(
+            "[ \"$1\" = run ] || exit 9\ncat > '{}'\ncat '{}'",
+            plan_file.display(),
+            report_file.display()
+        ),
+    );
+    let mut inputs = inputs_for(&ic);
+    inputs.fork_in_core = Some(ForkInCore {
+        state_rpc: Some("http://127.0.0.1:18545".into()),
+        from: None,
+        test_mint: None,
+    });
+    let rec =
+        evaluate_submission(&inputs, Some(&bin), Duration::from_secs(10), 1).expect("evaluates");
+    let (pass, reason) = fork_item(&rec);
+    assert!(pass, "{reason}");
+    assert_eq!(rec.verdict, Verdict::Ready);
+    // Core built the plan from the submitted init code, not from anything the caller sent.
+    let plan: Value =
+        serde_json::from_str(&std::fs::read_to_string(&plan_file).expect("plan")).expect("json");
+    assert_eq!(plan["steps"][0]["data"], json!(ic));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fork_in_core_deserializes_from_the_wire_shape() {
+    let j = json!({
+        "bytecodeHex": "0x6000",
+        "compiler": { "solcVersion": "0.8.36", "optimizer": true, "optimizerRuns": 200, "evmVersion": "cancun" },
+        "forgeTests": { "state": "notInstalled" },
+        "slither": { "state": "notInstalled" },
+        "aderyn": { "state": "notInstalled" },
+        "medusa": { "run": { "state": "notInstalled" }, "callBudget": 50000 },
+        "forkInCore": { "stateRpc": "citrate", "testMint": { "quantity": 2, "priceWei": "5" } }
+    });
+    let inp: GateInputs = serde_json::from_value(j).expect("deserializes");
+    assert_eq!(inp.fork_dry_run, None);
+    let f = inp.fork_in_core.expect("forkInCore");
+    assert_eq!(f.state_rpc.as_deref(), Some("citrate"));
+    assert_eq!(f.test_mint.map(|m| m.quantity), Some(2));
+    let bad = json!({ "stateRpc": "citrate", "bytecodeHex": "0x60" });
+    assert!(serde_json::from_value::<ForkInCore>(bad).is_err(), "bytecode comes from the gate inputs only");
 }

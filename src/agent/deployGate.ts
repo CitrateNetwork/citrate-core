@@ -75,7 +75,20 @@ export interface DeployGateInputs {
   slither: ToolRun;
   aderyn: ToolRun;
   medusa: { run: ToolRun; callBudget: number };
-  forkDryRun: ForkDryRunInput;
+  /** A fork dry run the caller ran (send this or `forkInCore`, not both; neither FAILs the
+   *  fork item). A caller-supplied run cannot vouch for Citrate precompiles. */
+  forkDryRun?: ForkDryRunInput;
+  /** HUP-S6.10: core runs the fork step itself on the Citrate-aware fork, on exactly this
+   *  init code. Required for a contract that uses Citrate precompiles. */
+  forkInCore?: ForkInCore;
+}
+
+/** `deploy_gate_submit`'s `forkInCore`: the fork-step options; the bytecode comes from the
+ *  gate inputs. */
+export interface ForkInCore {
+  stateRpc?: string | null;
+  from?: string | null;
+  testMint?: { quantity: number; priceWei: string } | null;
 }
 
 /** The fork item's input: the fork's output, the init code it executed, and precompile use. */
