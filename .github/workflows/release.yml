@@ -71,11 +71,28 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # ── HUP-S3.2: the reviewed third-party skills (src-tauri/skills-bundle/). Built from the
+      #    source checkouts with `node scripts/stage-skills-bundle.mjs build`, packed as
+      #    skills-bundle.tar.gz in the `runtime-deps` prerelease and pinned in
+      #    src-tauri/runtime-deps.sha256 like every other asset. The stager then refuses an asset
+      #    that does not match this repo's skills.lock file for file (no extra file, no script,
+      #    no symlink), so only reviewed, pinned skills ship.
+      - name: Stage reviewed third-party skills (skills.lock)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/skills-bundle-dl"
+          rm -rf "$DL" && mkdir -p "$DL"
+          gh release download runtime-deps -p skills-bundle.tar.gz -D "$DL" --clobber
+          scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz
+          node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+
       # ── Stage the runtime artifacts the bundle needs but git does not carry:
       #    the three sidecars (target-triple suffixed), the llama runtime dylibs,
       #    and the Gemma model. Pulled from the `runtime-deps` prerelease so a
       #    build is reproducible and does not rebuild 4 cross-repo binaries here.
-      - name: Stage runtime deps (sidecars · llama · models · BGE embedder)
+      - name: Stage runtime deps (sidecars · llama · models · BGE embedder · knowledge corpus)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -93,6 +110,7 @@ jobs:
             llama-runtime-arm64.tar.gz
             gemma-4-E4B-it-Q4_0.gguf
             bge-base-en-v1.5.tar.gz
+            knowledge-corpus.tar.gz
           )
           for a in "${ASSETS[@]}"; do
             gh release download runtime-deps -p "$a" -D "$DL" --clobber
@@ -126,7 +144,17 @@ jobs:
             test -s "src-tauri/models/bge-base-en-v1.5/$f" \
               || { echo "::error::BGE embedder missing $f" && exit 1; }
           done
-          echo "staged:" && ls -la src-tauri/binaries src-tauri/llama src-tauri/models src-tauri/models/bge-base-en-v1.5
+          # HUP-S3.1: the Hermes knowledge corpus (built in citrate-memories, format
+          # citrate-corpus/2). The stager re-checks it against its own manifest (digest,
+          # tenant hashes, exact file set) and refuses a mem-mcp without `import-corpus`,
+          # so a corpus never ships beside a memory binary that cannot import it. It also
+          # binds the corpus to the BGE model staged above: offline import needs that model
+          # (else it is skipped as not-semantic), and every tenant's precomputed vectors must
+          # come from exactly those weights (else members embed ~21k nodes on their CPU).
+          node scripts/stage-knowledge-corpus.mjs "$DL/knowledge-corpus.tar.gz" \
+            --bge-dir src-tauri/models/bge-base-en-v1.5 \
+            --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
+          echo "staged:" && ls -la src-tauri/binaries src-tauri/llama src-tauri/models src-tauri/models/bge-base-en-v1.5 src-tauri/knowledge-corpus
 
       - name: Build · sign · notarize · publish updater artifacts
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0

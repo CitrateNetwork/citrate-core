@@ -341,6 +341,71 @@ fn the_sidecar_gets_the_learn_and_skills_folders() {
     assert!(plain.spec_env_for_test().iter().all(|(n, _)| !n.contains("LEARN")), "no folders, no learning");
 }
 
+// ---- HUP-S3.2: every skill source reaches the one loader --------------------------------------
+
+fn skills_fixture(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("hskills-env-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("res/skills/citrate-precompiles")).unwrap();
+    std::fs::create_dir_all(dir.join("res/skills-bundle/trailofbits")).unwrap();
+    std::fs::write(dir.join("res/skills-bundle/skills.lock"), "version = 1\n").unwrap();
+    dir
+}
+
+fn sources(dir: &Path) -> SkillSources {
+    SkillSources {
+        authored: dir.join("data/agent-skills"),
+        first_party: Some(dir.join("res/skills")),
+        third_party: Some((
+            dir.join("res/skills-bundle/skills.lock"),
+            dir.join("res/skills-bundle"),
+        )),
+    }
+}
+
+#[test]
+fn the_sidecar_gets_learned_authored_first_party_and_reviewed_skills_in_order() {
+    let dir = skills_fixture("all");
+    let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"))
+        .with_learn_dirs(dir.join("learn"), dir.join("skills"))
+        .with_skill_sources(sources(&dir));
+    let env = m.spec_env_for_test();
+    let all = |k: &str| env.iter().filter(|(n, _)| n == k).map(|(_, v)| v.clone()).collect::<Vec<_>>();
+    let skills = all(SKILLS_ENV);
+    assert_eq!(skills.len(), 1, "one CITRATE_HERMES_SKILLS, not two: {skills:?}");
+    let paths: Vec<PathBuf> = std::env::split_paths(&skills[0]).collect();
+    assert_eq!(
+        paths,
+        vec![dir.join("skills"), dir.join("data/agent-skills"), dir.join("res/skills")],
+        "the member's learned and saved skills first, then Citrate's own"
+    );
+    assert_eq!(all(SKILLS_LOCK_ENV), vec![dir.join("res/skills-bundle/skills.lock").to_string_lossy().to_string()]);
+    assert_eq!(all(SKILLS_THIRD_PARTY_ENV), vec![dir.join("res/skills-bundle").to_string_lossy().to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundled_skill_sources_that_are_not_staged_are_left_out() {
+    let dir = skills_fixture("absent");
+    std::fs::remove_dir_all(dir.join("res")).unwrap();
+    let env = skills_env(None, &sources(&dir));
+    let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    assert_eq!(get(SKILLS_ENV), Some(dir.join("data/agent-skills").to_string_lossy().to_string()));
+    assert_eq!(get(SKILLS_LOCK_ENV), None, "no staged bundle, no reviewed skills");
+    assert_eq!(get(SKILLS_THIRD_PARTY_ENV), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_lock_without_its_staged_tree_offers_no_reviewed_skills() {
+    let dir = skills_fixture("lockonly");
+    std::fs::remove_dir_all(dir.join("res/skills-bundle/trailofbits")).unwrap();
+    std::fs::remove_file(dir.join("res/skills-bundle/skills.lock")).unwrap();
+    let env = skills_env(None, &sources(&dir));
+    assert!(env.iter().all(|(n, _)| n != SKILLS_LOCK_ENV));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- resolving a contradiction (US-3.4 AC4; formal/ContradictionResolve.tla in the runtime) ----
 
 const P3: &str = "lp-000000000000000000000003";
