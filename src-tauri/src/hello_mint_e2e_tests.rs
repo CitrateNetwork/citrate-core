@@ -903,7 +903,9 @@ fn when_gate_runs(w: &mut World) -> Result<(), String> {
             run: medusa,
             call_budget,
         },
-        fork_dry_run: dry,
+        // The e2e's own anvil fork run, handed over (it calls no Citrate precompile).
+        fork_dry_run: Some(dry),
+        fork_in_core: None,
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
