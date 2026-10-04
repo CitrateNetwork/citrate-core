@@ -75,6 +75,41 @@ describe("HUP-S6.4 — the D-4 deploy gate seam", () => {
     expect(invokeMock).toHaveBeenCalledWith("deploy_gate_submit", { inputs });
   });
 
+  it("gateSubmit carries forkInCore so core runs the Citrate-aware fork itself (HUP-S6.10)", async () => {
+    invokeMock.mockResolvedValueOnce({ verdict: "NOT_READY" });
+    const inputs = {
+      bytecodeHex: "0x6000",
+      compiler: { solcVersion: "0.8.36", optimizer: true, optimizerRuns: 200, evmVersion: "cancun", viaIr: false },
+      forgeTests: { state: "notInstalled" as const },
+      slither: { state: "notInstalled" as const },
+      aderyn: { state: "notInstalled" as const },
+      medusa: { run: { state: "notInstalled" as const }, callBudget: 50_000 },
+      forkInCore: { stateRpc: "citrate", testMint: { quantity: 2, priceWei: "5000000000000000000" } },
+    };
+    await tauriContracts.gateSubmit(inputs);
+    expect(invokeMock).toHaveBeenCalledWith("deploy_gate_submit", { inputs });
+    const sent = invokeMock.mock.calls.at(-1)?.[1] as { inputs: Record<string, unknown> };
+    expect(sent.inputs.forkDryRun).toBeUndefined();
+  });
+
+  it("gateForkDryRun → deploy_gate_fork_dry_run with the request (HUP-S6.10)", async () => {
+    invokeMock.mockResolvedValueOnce({ run: { state: "notInstalled" }, txInputHex: "0x6000", citratePrecompiles: "unknown" });
+    const request = {
+      bytecodeHex: "0x6000",
+      stateRpc: "http://127.0.0.1:8545",
+      testMint: { quantity: 1, priceWei: "0" },
+    };
+    const r = await tauriContracts.gateForkDryRun(request);
+    expect(invokeMock).toHaveBeenCalledWith("deploy_gate_fork_dry_run", { request });
+    expect(r.run.state).toBe("notInstalled");
+  });
+
+  it("sim is honest — the fork dry run needs the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.gateForkDryRun({ bytecodeHex: "0x6000" })).rejects.toThrow(/desktop node/i);
+    }
+  });
+
   it("sim is honest — no gate runs without the desktop node", async () => {
     if (bridge.mode === "sim") {
       await expect(bridge.contracts.gateLookup("0x6080")).rejects.toThrow(/desktop node/i);
@@ -136,6 +171,29 @@ describe("HUP-S6.6 / S6.7 — the Contract reader and post-deploy seams", () => 
       await expect(bridge.contracts.source(ADDR)).rejects.toThrow(/desktop node/i);
       await expect(bridge.contracts.proposeWrite(ADDR, "0xa0712d68", "0")).rejects.toThrow(/desktop node/i);
       await expect(bridge.contracts.postdeployPinSite("/p")).rejects.toThrow(/desktop node/i);
+    }
+  });
+  it("forge calls map to their commands (HUP-S6.2 / S6.3)", async () => {
+    invokeMock.mockResolvedValue(null);
+    await tauriContracts.templateList();
+    expect(invokeMock).toHaveBeenLastCalledWith("template_list");
+    const input = { template: "erc20", params: { name: "Lemon Drops" }, outDir: "/p/lemon" };
+    await tauriContracts.templateRender(input);
+    expect(invokeMock).toHaveBeenLastCalledWith("template_render", { input });
+    await tauriContracts.toolchainSettings();
+    expect(invokeMock).toHaveBeenLastCalledWith("toolchain_settings_get");
+    await tauriContracts.toolchainSetEnabled(true);
+    expect(invokeMock).toHaveBeenLastCalledWith("toolchain_settings_set", { settings: { enabled: true } });
+    const request = { sessionId: "s1-ab", project: "/p/lemon", artifact: "Token.sol/LemonDrops.json" };
+    await tauriContracts.gateFromToolchain(request);
+    expect(invokeMock).toHaveBeenLastCalledWith("deploy_gate_submit_toolchain", { request });
+  });
+
+  it("sim is honest — templates, the toolchain and the gate need the desktop node", async () => {
+    if (bridge.mode === "sim") {
+      await expect(bridge.contracts.templateList()).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.toolchainSetEnabled(true)).rejects.toThrow(/desktop node/i);
+      await expect(bridge.contracts.gateFromToolchain({ sessionId: "s", project: "/p", artifact: "A.sol/A.json" })).rejects.toThrow(/desktop node/i);
     }
   });
 });

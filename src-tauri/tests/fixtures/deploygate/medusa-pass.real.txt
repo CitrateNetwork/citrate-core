@@ -1,0 +1,51 @@
+[1m[32m⇾[0m[0m [1mReading the configuration file at: [1m/work/hello-mint/contracts/medusa.json[0m[0m
+⇾ Compiling targets with crytic-compile
+⇾ Running command:
+/work/bin/crytic-compile . --export-format solc --foundry-compile-all
+⇾ Finished compiling targets in 24s
+⇾ artifacts: Medusa is running against a new set of build artifacts
+⇾ No Slither cached results found at slither_results.json
+⇾ Running Slither:
+/work/bin/slither . --ignore-compile --print echidna --json -
+⇾ Finished running Slither in 40s
+⇾ Running with a timeout of 900 seconds
+⇾ Setting up test chain
+⇾ Finished setting up test chain
+⇾ Creating corpus...
+⇾ Fuzzing with 4 workers
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_only_owner_withdraws()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_payments_are_accounted()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_price_is_fixed()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_supply_never_exceeds_cap()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_minted_tokens_are_held()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_owner_is_stable()
+⇾ [NOT STARTED] Property Test: LemonDropsProperties.property_wrong_payment_never_accepted()
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.transferOwnershipAsStranger(address)
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.withdrawAsOwner()
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.withdrawAsStranger()
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.mintPastTheCap()
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.onERC721Received(address,address,uint256,bytes)
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.mint(uint256)
+⇾ [NOT STARTED] Assertion Test: LemonDropsProperties.mintWithWrongValue(uint256,uint256)
+⇾ fuzz: elapsed:       0s, calls:          0 (     0/sec), seq/s:      0, branches:     35, corpus:     0, failures: 0/0, gas/s:            0
+⇾ fuzz: elapsed:       3s, calls:      38441 ( 12805/sec), seq/s:    255, branches:    345, corpus:    15, failures: 0/767, gas/s:    796087942
+⇾ fuzz: elapsed:       6s, calls:      81117 ( 14223/sec), seq/s:    284, branches:    345, corpus:    15, failures: 0/1621, gas/s:    874044872
+⇾ Transaction test limit reached, halting now...
+⇾ Fuzzer stopped, test results follow below ...
+⇾ [PASSED] Assertion Test: LemonDropsProperties.mint(uint256)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.mintPastTheCap()
+⇾ [PASSED] Assertion Test: LemonDropsProperties.mintWithWrongValue(uint256,uint256)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.onERC721Received(address,address,uint256,bytes)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.transferOwnershipAsStranger(address)
+⇾ [PASSED] Assertion Test: LemonDropsProperties.withdrawAsOwner()
+⇾ [PASSED] Assertion Test: LemonDropsProperties.withdrawAsStranger()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_minted_tokens_are_held()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_only_owner_withdraws()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_owner_is_stable()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_payments_are_accounted()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_price_is_fixed()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_supply_never_exceeds_cap()
+⇾ [PASSED] Property Test: LemonDropsProperties.property_wrong_payment_never_accepted()
+⇾ Test summary: 14 test(s) passed, 0 test(s) failed
+⇾ html report(s) saved to: medusa-corpus/coverage/coverage_report.html
+⇾ lcov report(s) saved to: medusa-corpus/coverage/lcov.info

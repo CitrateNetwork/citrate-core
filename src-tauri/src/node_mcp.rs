@@ -28,6 +28,10 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// HUP-S4.1: the label of the built-in Hermes entry's token (shown on its approval requests). It
+/// is reserved ([`RESERVED_TOKEN_LABELS`]): members cannot issue a token with it.
+pub const HERMES_TOKEN_LABEL: &str = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
+
 /// The persisted switch (`<app data>/node-mcp/config.json`). Off unless the member turns it on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeMcpConfig {
@@ -197,7 +201,57 @@ impl NodeMcpState {
         }
     }
 
+    /// Whether the member turned the server on (it listens while on).
+    pub fn enabled(&self) -> bool {
+        self.config().enabled
+    }
+
+    /// The port the server listens on now (or would).
+    pub fn bound_port(&self) -> u16 {
+        self.server
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.addr.port())
+            .unwrap_or_else(|| self.port())
+    }
+
+    /// HUP-S4.1: the connect token for the built-in Hermes entry. `current` (the token in the
+    /// allowlist file Hermes was last given) is kept while it is still a live in-memory token;
+    /// otherwise every earlier Hermes token is revoked (its sessions and pending requests close)
+    /// and a new one is minted. Only its hash is held, in memory.
+    pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> {
+        if let Some(t) = current.filter(|t| self.shared.tokens.is_live_ephemeral(t)) {
+            return Ok(t.to_string());
+        }
+        self.revoke_hermes_tokens();
+        self.shared
+            .tokens
+            .issue_ephemeral(
+                HERMES_TOKEN_LABEL,
+                !crate::hermes_mcp::HERMES_NODE_WRITE_TOOLS,
+                now_ms(),
+            )
+            .map(|t| t.connect_token)
+    }
+
+    /// HUP-S4.1: revoke every in-memory (Hermes) token.
+    pub fn revoke_hermes_tokens(&self) {
+        for id in self.shared.tokens.ephemeral_ids() {
+            let _ = self.revoke_token(&id);
+        }
+    }
+
+    /// Issue a token from Settings (a full token: read and write tools). Labels core reserves for
+    /// its own tokens are refused, so no client can be labelled as Hermes on an approval card and
+    /// no member token is ever revoked by Hermes's re-issue.
     pub fn create_token(&self, label: &str) -> Result<TokenIssued, String> {
+        if is_reserved_label(label) {
+            return Err(format!(
+                "\"{}\" is reserved for the token Citrate Core issues for Hermes. Pick another label.",
+                label.trim()
+            ));
+        }
         self.shared.tokens.issue(label, now_ms())
     }
 
@@ -218,6 +272,17 @@ impl NodeMcpState {
         }
         v
     }
+}
+
+/// Token labels core keeps for the tokens it issues itself (compared trimmed, ignoring case).
+pub const RESERVED_TOKEN_LABELS: &[&str] = &[crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL];
+
+/// Whether `label` is one of [`RESERVED_TOKEN_LABELS`].
+pub fn is_reserved_label(label: &str) -> bool {
+    let t = label.trim();
+    RESERVED_TOKEN_LABELS
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(t))
 }
 
 /// Build the managed state for the app: tokens + config under `<app data>/node-mcp/`, the live
@@ -275,6 +340,32 @@ async fn run_action(app: &tauri::AppHandle, action: McpAction) -> Result<Value, 
             .await?;
             crate::invites::group_invite_revoke(app.clone(), group.clone(), token).await?;
             Ok(json!({"revoked": invite_id, "group": group}))
+        }
+        McpAction::PinAdd { cid } => {
+            let app2 = app.clone();
+            let cid2 = cid.clone();
+            crate::blocking::off_main(move || crate::storage::storage_pin_local_sync(app2, &cid2))
+                .await?;
+            Ok(json!({"pinned": cid, "bond": "none (local pin only)"}))
+        }
+        McpAction::AnchorPropose => {
+            let app2 = app.clone();
+            let report =
+                crate::blocking::off_main(move || crate::chain_agent::anchor_now(&app2)).await?;
+            Ok(json!({
+                "approvalCardsRaised": report.raised.len(),
+                "skipped": report.skipped.iter().map(|(day, why)| json!({"day": day, "why": why})).collect::<Vec<_>>(),
+                "next": "Each raised card waits for the member's approval in Citrate Core before anything is signed.",
+            }))
+        }
+        // HUP-S1.1: the member approved it; the app's Hermes client carries it to the session.
+        a @ (McpAction::HermesSessionSend { .. } | McpAction::HermesSessionStop { .. }) => {
+            let app2 = app.clone();
+            crate::blocking::off_main(move || {
+                let mgr = crate::hermes::manager_for(&app2)?;
+                crate::node_mcp_hermes::run_action(mgr, &a)
+            })
+            .await
         }
     }
 }

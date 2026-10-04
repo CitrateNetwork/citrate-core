@@ -253,6 +253,11 @@ export function NodeMcpPanel({ io, now = () => Date.now(), pollMs = 2500 }: Node
         {status?.tokens.map((tk) => (
           <div key={tk.id} data-testid={`nodemcp-token-${tk.id}`} style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid var(--line-1)", paddingBottom: 6 }}>
             <span style={{ fontSize: 12.5, color: "var(--tx-1)", flex: 1 }}>{tk.label}</span>
+            {tk.readOnly && (
+              <span data-testid={`nodemcp-readonly-${tk.id}`} style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
+                read tools only
+              </span>
+            )}
             <span style={{ ...mono, color: "var(--tx-3)" }}>{tk.id}</span>
             <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>used {ago(tk.lastUsedMs, t)}</span>
             <button className="btn btn-sm btn-ghost" data-testid={`nodemcp-revoke-${tk.id}`} disabled={busy !== null} onClick={() => void revoke(tk.id)}>

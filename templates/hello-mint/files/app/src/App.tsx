@@ -13,7 +13,7 @@ export function App({ deployment }: { deployment: Deployment }) {
         {deployment.target === "fork" && (
           <p className="hint">
             The fork uses the same chain id as Citrate. Point your wallet&apos;s Citrate network at {deployment.rpcUrl}{" "}
-            before minting, or the transaction goes to the live chain.
+            before minting. The page checks this before every mint and refuses to send one while the wallet points at the live chain.
           </p>
         )}
       </header>

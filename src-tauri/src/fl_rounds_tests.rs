@@ -1301,3 +1301,18 @@ fn only_a_base_switch_with_an_adapter_set_drops_it() {
     assert!(!base_switch_drops_adapter(Some(l), a, a));
     assert!(!base_switch_drops_adapter(None, a, b));
 }
+
+/// HUP-S9.4 hardening: gate decisions, loads and unloads are serialized, and a load names the base
+/// model it was authorized for, so a reject or a model switch in between cannot leave an adapter on.
+#[test]
+fn adapter_gate_load_and_unload_run_one_at_a_time_and_loads_are_bound_to_the_base() {
+    let src = include_str!("fl_rounds.rs");
+    for cmd in ["pub async fn fl_adapter_gate(", "pub async fn fl_adapter_load(", "pub async fn fl_adapter_unload("] {
+        let i = src.find(cmd).expect(cmd);
+        let body = &src[i..i + src[i..].find("\n}\n").expect("end")];
+        assert!(body.contains("adapter_lock()"), "{cmd} must hold the adapter lock");
+    }
+    let i = src.find("pub async fn fl_adapter_load(").expect("load");
+    let body = &src[i..i + src[i..].find("\n}\n").expect("end")];
+    assert!(body.contains("LoraChoice::For"), "a load names its base model");
+}

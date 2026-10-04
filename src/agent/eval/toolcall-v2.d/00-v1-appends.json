@@ -1,0 +1,94 @@
+{
+  "added": "2026-10-01",
+  "by": "HUP-S4.3, HUP-S9.4, HUP-S10.3 (appended to toolcall-v1 after its scorecards; moved here by A50 on 2026-10-04)",
+  "note": "These six tasks were appended to toolcall-v1 in place on 2026-10-01. Every v1 scorecard is n=80 on the 57-task set, so v1 is restored to that set and these move to v2 unchanged.",
+  "tasks": [
+    {
+      "id": "tc-verified-source",
+      "prompt": "Is the contract at 0x1111111111111111111111111111111111111111 verified? Show me its source.",
+      "expect": {
+        "tool": "get_verified_source",
+        "argsMatch": {
+          "address": "re:^0x1{40}$"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read"
+      ]
+    },
+    {
+      "id": "tc-widget-create-explicit",
+      "prompt": "Make me a widget for my home that shows my node's block height.",
+      "expect": {
+        "tool": "widget_create",
+        "argsMatch": {
+          "html": "re:node\\.status|height"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write-explicit",
+        "added-hup-s10.3"
+      ]
+    },
+    {
+      "id": "tc-fl-plan-explain",
+      "prompt": "What would joining a federated training round involve for this device? Data, reward, privacy, all of it.",
+      "expect": {
+        "tool": "fl_round_plan"
+      },
+      "tags": [
+        "tool-choice",
+        "read"
+      ]
+    },
+    {
+      "id": "tc-fl-plan-probe",
+      "prompt": "Plan a probe round for this machine so I can see what it would do.",
+      "expect": {
+        "tool": "fl_round_plan",
+        "argsMatch": {
+          "requires": "probe"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "read"
+      ]
+    },
+    {
+      "id": "tc-fl-start-explicit",
+      "prompt": "I read the plan and I want in. Join the round for plan 3f2a000000000000000000000000000000000000000000000000000000009b1c.",
+      "expect": {
+        "tool": "fl_round_start",
+        "argsMatch": {
+          "planHash": "3f2a000000000000000000000000000000000000000000000000000000009b1c"
+        }
+      },
+      "tags": [
+        "tool-choice",
+        "args",
+        "write-explicit"
+      ]
+    },
+    {
+      "id": "nw-fl-howto",
+      "prompt": "How do federated rounds work on Citrate in general?",
+      "expect": {
+        "tool": null,
+        "alsoAccept": [
+          "memory_search",
+          "fl_round_plan"
+        ]
+      },
+      "tags": [
+        "no-write"
+      ],
+      "note": "A question about rounds is not a request to join one (no fl_round_start)."
+    }
+  ]
+}
