@@ -24,6 +24,7 @@ fn env_map(v: &[(String, String)]) -> std::collections::BTreeMap<String, String>
 #[test]
 fn the_default_changes_nothing() {
     let s = HermesWebSettings::default();
+    assert!(!s.browser_enabled, "Hermes's browser is off by default");
     assert!(!s.search_enabled);
     assert_eq!(s.reader, ReaderChoice::Local);
     assert!(!s.jev_enabled);
@@ -108,6 +109,7 @@ fn jev_passes_its_opt_ins_and_nothing_else() {
 #[test]
 fn every_emitted_key_is_on_the_allowlist() {
     let s = HermesWebSettings {
+        browser_enabled: true,
         search_enabled: true,
         searxng_path: Some("/a".into()),
         reader: ReaderChoice::Jina,
@@ -117,7 +119,9 @@ fn every_emitted_key_is_on_the_allowlist() {
         jev_origins: vec!["https://x.example".into()],
         jev_non_web: true,
     };
-    for (k, _) in sidecar_env(&s, Path::new("/d")) {
+    let emitted = sidecar_env_with(&s, Path::new("/d"), Some(Path::new("/c/chrome")));
+    assert!(emitted.iter().any(|(k, _)| k == "CITRATE_BROWSER_CHROMIUM"));
+    for (k, _) in emitted {
         assert!(SIDECAR_ENV_KEYS.contains(&k.as_str()), "{k}");
     }
     for reserved in [
@@ -299,4 +303,98 @@ fn an_env_source_cannot_override_the_control_bind_or_token() {
         .all(|(k, v)| !(k == "CITRATE_HERMES_ADDR" && v == "0.0.0.0:1")));
     assert!(env.iter().all(|(_, v)| v != "/evil"));
     assert!(env.iter().any(|(k, _)| k == "CITRATE_HERMES_SEARCH"));
+}
+
+#[test]
+fn the_browser_switch_passes_only_its_own_variables() {
+    let on = HermesWebSettings {
+        browser_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let env = env_map(&sidecar_env(&on, Path::new("/d")));
+    assert_eq!(env["CITRATE_HERMES_BROWSER"], "1");
+    assert!(
+        !env.contains_key("CITRATE_BROWSER_CHROMIUM"),
+        "no managed Chromium installed: the sidecar looks for a system one"
+    );
+    assert!(!env.contains_key("CITRATE_HERMES_SEARCH"));
+    assert!(!env.contains_key("CITRATE_HERMES_DECIDE_LOG"));
+    assert_eq!(env.len(), 1);
+    // With the managed Chromium installed, the sidecar is pointed at it.
+    let managed = Path::new("/data/components/chromium/154/chrome");
+    let env = env_map(&sidecar_env_with(&on, Path::new("/d"), Some(managed)));
+    assert_eq!(
+        env["CITRATE_BROWSER_CHROMIUM"],
+        "/data/components/chromium/154/chrome"
+    );
+    // A relative path is never passed.
+    let env = env_map(&sidecar_env_with(
+        &on,
+        Path::new("/d"),
+        Some(Path::new("chrome")),
+    ));
+    assert!(!env.contains_key("CITRATE_BROWSER_CHROMIUM"));
+    // With the switch off, an installed managed Chromium changes nothing.
+    assert!(sidecar_env_with(&HermesWebSettings::default(), Path::new("/d"), Some(managed)).is_empty());
+}
+
+#[test]
+fn an_old_settings_file_without_the_browser_switch_loads_with_it_off() {
+    let dir = tmp("old");
+    std::fs::write(
+        dir.join(SETTINGS_FILE),
+        r#"{"searchEnabled": true, "reader": "local"}"#,
+    )
+    .expect("write");
+    let s = load(&dir).expect("load");
+    assert!(s.search_enabled);
+    assert!(!s.browser_enabled);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_status_says_where_the_browser_comes_from() {
+    let on = HermesWebSettings {
+        browser_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let st = status_with(on.clone(), None, None);
+    assert_eq!(st.managed_chromium, None);
+    assert!(st
+        .notices
+        .iter()
+        .any(|n| n.contains("not installed yet") && n.contains("fresh private profile")));
+    assert!(st
+        .notices
+        .iter()
+        .any(|n| n.contains("untrusted") && n.contains("each session")));
+    let st = status_with(on, None, Some(Path::new("/c/chrome")));
+    assert_eq!(st.managed_chromium.as_deref(), Some("/c/chrome"));
+    assert!(st.notices.iter().any(|n| n.contains("managed Chromium with a fresh")));
+    assert!(status_for(HermesWebSettings::default(), None).notices.is_empty());
+}
+
+#[test]
+fn the_file_env_source_reads_the_browser_switch_at_each_start() {
+    let dir = tmp("file-src");
+    let components = tmp("file-src-components");
+    let src = file_env_source(dir.clone(), Some(components.clone()));
+    assert!(src().is_empty(), "no settings file: nothing is passed");
+    save(
+        &dir,
+        &HermesWebSettings {
+            browser_enabled: true,
+            ..HermesWebSettings::default()
+        },
+    )
+    .expect("save");
+    let env = env_map(&src());
+    assert_eq!(env["CITRATE_HERMES_BROWSER"], "1");
+    assert!(
+        !env.contains_key("CITRATE_BROWSER_CHROMIUM"),
+        "no chromium component installed"
+    );
+    assert!(env_map(&file_env_source(dir.clone(), None)()).contains_key("CITRATE_HERMES_BROWSER"));
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(components);
 }

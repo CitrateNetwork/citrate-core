@@ -58,10 +58,11 @@ fn assert_host_accepts(cfg: &Value) {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'));
         assert!(names.insert(name.to_string()), "duplicate {name}");
-        // Only the node entry allows write tools: its writes are approval requests in the app.
+        // Only the node entry may allow write tools (its writes are approval requests in the
+        // app), and only while HERMES_NODE_WRITE_TOOLS is on (pending owner sign-off; off today).
         assert_eq!(
             s["allow_write_tools"],
-            Value::Bool(name == NODE_SERVER_NAME),
+            Value::Bool(name == NODE_SERVER_NAME && HERMES_NODE_WRITE_TOOLS),
             "{name}: allow_write_tools"
         );
         if let Some(env) = s.get("env") {
@@ -291,7 +292,9 @@ fn the_node_entry_runs_the_stdio_shim_with_a_minted_token() {
     assert_eq!(n["args"][0], "--mcp-stdio");
     assert_eq!(n["env"][NODE_TOKEN_ENV], node_target().token);
     assert_eq!(n["env"][NODE_PORT_ENV], "47204");
-    assert_eq!(n["allow_write_tools"], true);
+    // One switch (pending owner sign-off) drives the entry and the token scope; today read only.
+    assert_eq!(n["allow_write_tools"], HERMES_NODE_WRITE_TOOLS);
+    assert!(!HERMES_NODE_WRITE_TOOLS);
 }
 
 #[test]
@@ -361,17 +364,18 @@ fn the_view_says_the_node_server_must_be_on_first() {
         .find(|x| x.name == NODE_SERVER_NAME)
         .expect("node row");
     assert!(n.available);
-    assert!(n.detail.contains("approval"), "{}", n.detail);
+    let says = if HERMES_NODE_WRITE_TOOLS { "approval" } else { "read-only" };
+    assert!(n.detail.contains(says), "{}", n.detail);
 }
 
-/// HUP-S4.1: the MCP eval items (`src/agent/eval/toolcall-v2.d/mcp.json`) name only real tools of
+/// HUP-S4.1: the MCP eval items (`src/agent/eval/toolcall-v2-mcp.json`) name only real tools of
 /// this node's MCP server, as Hermes sees them through the built-in entry (`mcp__node__<tool>`),
 /// and expect a write tool only where the task asks for one explicitly.
 #[test]
 fn eval_items_name_real_node_tools() {
     use crate::node_mcp_tools::{tool, ToolKind};
     let ds: Value =
-        serde_json::from_str(include_str!("../../src/agent/eval/toolcall-v2.d/mcp.json"))
+        serde_json::from_str(include_str!("../../src/agent/eval/toolcall-v2-mcp.json"))
             .expect("mcp.json parses");
     assert_eq!(ds["version"], "toolcall-v2-mcp");
     assert_eq!(ds["server"], NODE_SERVER_NAME);
@@ -420,4 +424,74 @@ fn eval_items_name_real_node_tools() {
             assert!(matches!(def.kind, ToolKind::Read), "{id}: alsoAccept must be a read tool");
         }
     }
+}
+
+// ---- HUP-S4.2 / S8.5 (node MCP lane): the same built-in entry, checked from the server side ----
+
+#[test]
+fn node_is_off_by_default_and_left_out_without_a_running_server() {
+    assert!(!McpSettings::default().node);
+    let s = McpSettings {
+        mem: false,
+        scan: false,
+        node: true,
+    };
+    assert!(render_config(&s, None, None).is_none());
+    let off = McpSettings::default();
+    assert!(render_config(&off, None, Some(&node_target())).is_none());
+}
+
+#[test]
+fn node_renders_the_stdio_shim_with_its_own_token_read_only() {
+    let s = McpSettings {
+        mem: false,
+        scan: true,
+        node: true,
+    };
+    let t = node_target();
+    let cfg = render_config(&s, None, Some(&t)).expect("two servers");
+    assert_host_accepts(&cfg);
+    let n = cfg["servers"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["name"] == "node"))
+        .cloned()
+        .expect("node entry");
+    assert_eq!(n["transport"], "stdio");
+    assert_eq!(n["args"], serde_json::json!(["--mcp-stdio"]));
+    assert_eq!(n["env"]["CITRATE_NODE_MCP_TOKEN"], serde_json::json!(t.token));
+    assert_eq!(n["env"]["CITRATE_NODE_MCP_PORT"], "47204");
+    assert_eq!(n["allow_write_tools"], serde_json::json!(false));
+    assert!(!format!("{t:?}").contains(&t.token));
+}
+
+#[test]
+fn the_node_row_is_available_only_while_the_node_server_is_on() {
+    let s = McpSettings {
+        mem: false,
+        scan: false,
+        node: true,
+    };
+    let off = build_view(&s, None, false, false, false);
+    let row = off.servers.iter().find(|x| x.name == "node").expect("node row");
+    assert!(row.enabled && !row.available);
+    let on = build_view(&s, None, true, false, false);
+    let row = on.servers.iter().find(|x| x.name == "node").expect("node row");
+    assert!(row.available);
+    assert!(row.detail.contains("read-only"), "{}", row.detail);
+}
+
+#[test]
+fn node_settings_round_trip_and_old_files_read_as_off() {
+    let dir = tmp_dir("node-settings");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(settings_path(&dir), r#"{"mem":true,"scan":false}"#).expect("write");
+    let old = load_settings(&dir);
+    assert!(old.mem && !old.node, "a file from before the node switch reads as node off");
+    let s = McpSettings {
+        mem: false,
+        scan: false,
+        node: true,
+    };
+    save_settings(&dir, &s).expect("save");
+    assert_eq!(load_settings(&dir), s);
 }

@@ -1,0 +1,14 @@
+{
+  "version": "toolcall-v2",
+  "provenance": {
+    "author": "Larry Klosowski + Claude Opus 5.5",
+    "created": "2026-10-04",
+    "purpose": "HUP-S1.7 tool-call eval suite v2 (A50: freeze v1, cut v2): toolcall-v1 unchanged plus fragment files for tools added after the v1 scorecards. Single-turn synthetic tasks over the real AGENT_TOOLS, scored deterministically. Hand-authored, not generated from a model.",
+    "disjointFromTraining": true,
+    "note": "Eval provenance (planset 05 'Eval provenance'): this set MUST stay disjoint from any E9 training trajectories. Never copy these prompts into a training set. v2 = every v1 item unchanged (via includes) plus the fragment files in the .d directory; a lane that adds a tool adds a NEW fragment file. Never edit v1 (its bytes are pinned) and never edit a fragment another lane owns: changing an item means a new version."
+  },
+  "includes": [
+    "toolcall-v1.json"
+  ],
+  "fragments": "toolcall-v2.d"
+}

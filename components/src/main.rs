@@ -115,16 +115,16 @@ fn run(args: &[String]) -> Result<String, String> {
             };
             let vm = verify_manifest(&bytes, &sig, &root, None, at).map_err(|e| e.to_string())?;
             let names: Vec<String> = vm
-                .manifest
+                .manifest()
                 .components
                 .iter()
                 .map(|c| format!("{} {}", c.name, c.version))
                 .collect();
             Ok(format!(
                 "manifest ok: sequence {}, key {}, sha256 {}\n{}",
-                vm.manifest.sequence,
+                vm.manifest().sequence,
                 root.fingerprint(),
-                vm.digest_hex,
+                vm.digest_hex(),
                 names.join("\n")
             ))
         }

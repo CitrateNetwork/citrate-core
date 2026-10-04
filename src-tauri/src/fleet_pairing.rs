@@ -230,6 +230,60 @@ pub fn verify_link(link: &str, now: u64) -> Result<PairClaim, PairError> {
     Ok(claim)
 }
 
+/// Domain separation for the issuer's signed join reply.
+const REPLY_DOMAIN: &[u8] = b"citrate/fleet-pair-reply/v1\0";
+/// Domain separation for the confirmation code both screens show.
+const CODE_DOMAIN: &[u8] = b"citrate/fleet-pair-code/v1\0";
+
+/// What the issuer signs when it accepts a join: the token, who joined, and who it is.
+pub fn reply_bytes(
+    nonce: &str,
+    joiner_id: &str,
+    issuer_id: &str,
+    issuer_label: &str,
+    issuer_tier: Option<&str>,
+) -> Vec<u8> {
+    let body = serde_json::json!([nonce, joiner_id, issuer_id, issuer_label, issuer_tier]);
+    let mut v = REPLY_DOMAIN.to_vec();
+    v.extend_from_slice(body.to_string().as_bytes());
+    v
+}
+
+/// The joiner's check that a reply came from the holder of the link's pairing key.
+pub fn verify_reply(issuer_pub_hex: &str, proof_hex: &str, bytes: &[u8]) -> bool {
+    let Some(pub_bytes) = hex::decode(issuer_pub_hex)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+    else {
+        return false;
+    };
+    let Some(sig) = hex::decode(proof_hex)
+        .ok()
+        .and_then(|b| <[u8; 64]>::try_from(b).ok())
+    else {
+        return false;
+    };
+    VerifyingKey::from_bytes(&pub_bytes)
+        .map(|k| k.verify_strict(bytes, &Signature::from_bytes(&sig)).is_ok())
+        .unwrap_or(false)
+}
+
+/// Six digits both machines compute for one pairing (token, issuer key, joining device) and show,
+/// so the member can see the two screens are talking to each other.
+pub fn confirmation_code(nonce: &str, issuer_pub: &str, joiner_id: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(CODE_DOMAIN);
+    h.update(nonce.as_bytes());
+    h.update(b"\0");
+    h.update(issuer_pub.as_bytes());
+    h.update(b"\0");
+    h.update(joiner_id.as_bytes());
+    let d = h.finalize();
+    let n = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) % 1_000_000;
+    format!("{n:06}")
+}
+
 /// Render a link as a QR module matrix.
 pub fn qr_matrix(link: &str) -> Result<QrMatrix, String> {
     let code = qrcode::QrCode::new(link.as_bytes()).map_err(|e| e.to_string())?;
@@ -320,6 +374,11 @@ impl PairIssuer {
             .insert(claim.nonce.clone(), claim.expires_at);
         let link = encode_link(&json, &sig.to_bytes());
         Ok((claim, link))
+    }
+
+    /// Sign the join reply for a redeemed token (see [`reply_bytes`]), hex.
+    pub fn sign_reply(&self, bytes: &[u8]) -> String {
+        hex::encode(self.key.sign(bytes).to_bytes())
     }
 
     /// **Authoritative redeem on the issuer:** the link must be signed by THIS issuer's key,

@@ -77,3 +77,81 @@ fn store_writes_are_serialized_and_a_second_one_is_refused_while_one_runs() {
     assert_eq!(first.as_deref(), Ok("first"));
     assert_eq!(with_store_lock(|| Ok("again".to_string())).as_deref(), Ok("again"));
 }
+
+// HUP-S5.1: the managed Chromium is found only when the signed `chromium` component is installed
+// and its executable for this platform exists; otherwise "not installed" (None).
+#[test]
+fn the_managed_chromium_is_found_only_when_installed() {
+    use citrate_components::install::{InstalledComponent, InstalledVersion, StoreState};
+    let root = tmp("chromium");
+    assert_eq!(managed_chromium(&root), None, "no store");
+    assert!(!root.exists(), "looking must not create the store");
+    let Some(platform) = Platform::current() else {
+        return;
+    };
+    std::fs::create_dir_all(&root).expect("root");
+    let mut st = StoreState::default();
+    let write = |st: &StoreState| {
+        std::fs::write(
+            root.join("state.json"),
+            serde_json::to_vec_pretty(st).expect("json"),
+        )
+        .expect("state")
+    };
+    write(&st);
+    assert_eq!(managed_chromium(&root), None, "nothing installed");
+    st.components.insert(
+        CHROMIUM_COMPONENT.to_string(),
+        InstalledComponent {
+            current: InstalledVersion {
+                version: "154.0.8037.92".into(),
+                sha256: "ab".repeat(32),
+                dir: "154.0.8037.92-ab".into(),
+                platform,
+                installed_at: 1_790_000_000,
+                manifest_sequence: 1,
+            },
+            previous: None,
+        },
+    );
+    write(&st);
+    assert_eq!(
+        managed_chromium(&root),
+        None,
+        "recorded but the executable is missing"
+    );
+    let bundle = Bundle::parse(BUNDLE_JSON).expect("bundle");
+    let tool = bundle
+        .tools
+        .iter()
+        .find(|t| t.name == CHROMIUM_COMPONENT)
+        .expect("chromium is in the bundle");
+    let ep = tool
+        .artifacts
+        .get(platform.as_str())
+        .and_then(|a| a.entrypoints.clone())
+        .unwrap_or_else(|| tool.entrypoints.clone());
+    let exe = root
+        .join(CHROMIUM_COMPONENT)
+        .join("154.0.8037.92-ab")
+        .join(&ep[0]);
+    std::fs::create_dir_all(exe.parent().expect("parent")).expect("dirs");
+    std::fs::write(&exe, b"#!/bin/sh\n").expect("exe");
+    assert_eq!(managed_chromium(&root), Some(exe));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_bundle_lists_the_browser_and_search_components_honestly() {
+    let st = components_status_sync(&tmp("web"), 1_790_000_000).expect("status");
+    let chromium = st
+        .bundle
+        .iter()
+        .find(|t| t.name == "chromium")
+        .expect("chromium");
+    assert_eq!(chromium.version, "154.0.8037.92");
+    assert_eq!(chromium.measured_platforms, vec!["macos-arm64".to_string()]);
+    let searxng = st.bundle.iter().find(|t| t.name == "searxng").expect("searxng");
+    assert_eq!(searxng.license, "AGPL-3.0-or-later");
+    assert!(searxng.measured_platforms.is_empty(), "packed by the release step");
+}

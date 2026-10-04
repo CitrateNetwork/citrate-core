@@ -884,3 +884,111 @@ fn a_live_budget_is_found_only_for_its_origin_principal_and_wallet() {
     g.revoke(b.id, NOW).expect("revoke");
     assert_eq!(g.live_budget_for(ORIGIN, DEFAULT_PRINCIPAL, Some(WALLET), NOW), None);
 }
+
+// ---------------------------------------------------------------------------------------------
+// HUP-S1.5: the pinned x402 authorization template (D3 "core builds the bytes it signs").
+// ---------------------------------------------------------------------------------------------
+
+const TEST_ASSET: X402Asset = X402Asset {
+    chain_id: 40204,
+    verifying_contract: "0x1111111111111111111111111111111111111111",
+    name: "Wrapped SALT",
+    version: "1",
+};
+const TEST_PAYEE: &str = "0x3333333333333333333333333333333333333333";
+const TEST_FROM: &str = "0x2222222222222222222222222222222222222222";
+
+fn x402_req(amount: &str) -> X402Request {
+    X402Request {
+        recipient: TEST_PAYEE.to_string(),
+        asset: TEST_ASSET.verifying_contract.to_uppercase().replacen("0X", "0x", 1),
+        amount: amount.to_string(),
+    }
+}
+
+#[test]
+fn x402_template_binds_asset_payee_wallet_window_and_core_nonce() {
+    let nonce = [0xab; 32];
+    let a = build_x402_authorization(
+        &TEST_ASSET,
+        TEST_PAYEE,
+        &x402_req("1500000000000000000"),
+        TEST_FROM,
+        1_000_000,
+        300,
+        nonce,
+    )
+    .unwrap_or_else(|e| panic!("build: {e:?}"));
+    assert_eq!(a.from, [0x22; 20]);
+    assert_eq!(a.to, [0x33; 20]);
+    assert_eq!(a.nonce, nonce);
+    assert_eq!(a.valid_after, 1_000_000 - X402_VALID_AFTER_SKEW_S);
+    assert_eq!(a.valid_before, 1_000_300);
+    assert_eq!(crate::eip712::u256_to_dec(&a.value), "1500000000000000000");
+    let d = TEST_ASSET.domain().unwrap_or_else(|e| panic!("domain: {e:?}"));
+    assert_eq!(d.chain_id, 40204);
+    assert_eq!(a.view(&d, 18).amount, "1.5");
+}
+
+#[test]
+fn x402_template_refuses_every_binding_mismatch() {
+    let b = |asset: &X402Asset, payee: &str, req: &X402Request, from: &str, validity: u64| {
+        build_x402_authorization(asset, payee, req, from, 1_000_000, validity, [1; 32]).err()
+    };
+    let ok = x402_req("1");
+    let other_asset = X402Request {
+        asset: "0x4444444444444444444444444444444444444444".into(),
+        ..ok.clone()
+    };
+    assert_eq!(
+        b(&TEST_ASSET, TEST_PAYEE, &other_asset, TEST_FROM, 60),
+        Some(X402BuildError::AssetMismatch)
+    );
+    assert_eq!(
+        b(&TEST_ASSET, "0x5555555555555555555555555555555555555555", &ok, TEST_FROM, 60),
+        Some(X402BuildError::RecipientMismatch)
+    );
+    assert_eq!(b(&TEST_ASSET, TEST_PAYEE, &ok, TEST_FROM, 0), Some(X402BuildError::Validity));
+    assert_eq!(
+        b(&TEST_ASSET, TEST_PAYEE, &ok, TEST_FROM, X402_VALIDITY_MAX_S + 1),
+        Some(X402BuildError::Validity)
+    );
+    assert_eq!(b(&TEST_ASSET, TEST_PAYEE, &ok, TEST_FROM, X402_VALIDITY_MAX_S), None);
+    assert_eq!(
+        b(&TEST_ASSET, TEST_PAYEE, &x402_req("0"), TEST_FROM, 60),
+        Some(X402BuildError::ZeroAmount)
+    );
+    assert!(matches!(
+        b(&TEST_ASSET, TEST_PAYEE, &x402_req("1.5"), TEST_FROM, 60),
+        Some(X402BuildError::Malformed(_))
+    ));
+    assert!(matches!(
+        b(&TEST_ASSET, TEST_PAYEE, &ok, "0x22", 60),
+        Some(X402BuildError::Malformed(_))
+    ));
+}
+
+#[test]
+fn x402_nonces_come_from_the_os_csprng_and_do_not_repeat() {
+    let a = fresh_x402_nonce();
+    let b = fresh_x402_nonce();
+    assert_ne!(a, b);
+    assert_ne!(a, [0u8; 32]);
+}
+
+#[test]
+fn the_x402_allowlist_stays_empty_so_b2_stays_inert() {
+    // O-1 is open: no allowlisted asset, so even a well-formed request falls through to HIC-1.
+    assert!(X402_ASSET_ALLOWLIST.is_empty());
+    assert_eq!(
+        x402_budgetable(
+            &X402Request {
+                recipient: TEST_PAYEE.into(),
+                asset: TEST_ASSET.verifying_contract.into(),
+                amount: "1".into()
+            },
+            &TaskTaint::Clean
+        ),
+        Err(FallThrough::X402Inert)
+    );
+}

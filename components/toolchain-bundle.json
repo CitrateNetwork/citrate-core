@@ -412,6 +412,129 @@
           ]
         }
       }
+    },
+    {
+      "name": "chromium",
+      "version": "154.0.8037.92",
+      "kind": "browser",
+      "license": "LicenseRef-Google-Chrome-for-Testing",
+      "homepage": "https://googlechromelabs.github.io/chrome-for-testing/",
+      "entrypoints": [
+        "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+      ],
+      "note": "HUP-S5.1: the managed Chromium for Hermes's browser, Chrome for Testing (Stable channel, revision 1689415). Licence: these are Google builds of Chromium; the archive's ABOUT file points to the Google Chrome Terms of Service, the Chromium source is BSD-3-Clause, and the bundled third-party licences are listed at chrome://credits. Whether the release mirror may re-host these archives, or the updater must fetch them from Google's storage URL as recorded here, is pending owner and legal sign-off. Signing the component is the @rule8 component-key ceremony (external); until a signed manifest is published the managed Chromium is not installed and the sidecar uses a Chrome already on the computer, or reports not installed.",
+      "artifacts": {
+        "macos-arm64": {
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/mac-arm64/chrome-mac-arm64.zip",
+          "format": "zip",
+          "status": "measured",
+          "sha256": "b62e904b6571c5ff5108ed7812cf93ac6d1c4027f10ae47ac34d8e229ed88001",
+          "size": 191153086,
+          "note": "Downloaded and hashed on 2026-10-04 (365 MB unpacked, 5 symbolic links inside the .app, ad-hoc signed). --version printed Google Chrome for Testing 154.0.8037.92, and the agent-browser live tests (navigate, snapshot, act, screencast, approvals, attach, the sign-in bridge, console and network tools, web-subset-v2) passed with it as the managed browser. The updater does not unpack zip in this version (extract.rs), so before this can install the release step must either add zip unpacking with symbolic-link checks or repack the tree as tar.xz.",
+          "entrypoints": [
+            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+          ]
+        },
+        "macos-x64": {
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/mac-x64/chrome-mac-x64.zip",
+          "format": "zip",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "entrypoints": [
+            "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+          ]
+        },
+        "linux-x64": {
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/linux64/chrome-linux64.zip",
+          "format": "zip",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "entrypoints": [
+            "chrome-linux64/chrome"
+          ]
+        },
+        "linux-arm64": {
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/linux-arm64/chrome-linux-arm64.zip",
+          "format": "zip",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "entrypoints": [
+            "chrome-linux-arm64/chrome"
+          ]
+        },
+        "windows-x64": {
+          "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/win64/chrome-win64.zip",
+          "format": "zip",
+          "status": "to_be_measured",
+          "sha256": null,
+          "size": null,
+          "entrypoints": [
+            "chrome-win64/chrome.exe"
+          ]
+        }
+      }
+    },
+    {
+      "name": "searxng",
+      "version": "2026.10.4+d48c4b555",
+      "kind": "search",
+      "license": "AGPL-3.0-or-later",
+      "homepage": "https://github.com/searxng/searxng",
+      "entrypoints": [
+        "bin/searxng-run"
+      ],
+      "note": "HUP-S5.2: the local metasearch engine behind web_search. It ships as Python source plus wheels, not a binary: the release step packs a hash-locked environment (status to_be_built), like slither. AGPL-3.0-or-later obligations for g3-licence: Hermes runs SearXNG unmodified, bound to 127.0.0.1 for this machine only, so no network users are served; a distributed bundle must still carry the AGPL text and offer the corresponding source (the pinned upstream archive below), and any modification would have to be published under the AGPL. The licence page itself is lane L-sizelicence's (g3-licence); it should list this entry. On 2026-10-04 this commit was installed in a venv on macOS arm64 and web_search and read_url ran live through the sidecar with it (HUP-S5.2 evidence).",
+      "upstream": {
+        "url": "https://api.github.com/repos/searxng/searxng/tarball/d48c4b555421e824342c51d68482dd0898e54d0f",
+        "sha256": "681cb893d7f413a818e3e7f22976f243ae965198e20bac604d6ef97059fe975e",
+        "size": 6493259
+      },
+      "artifacts": {
+        "macos-arm64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "build_from": "components/locks/searxng-2026.10.4-macos-arm64-cp312.txt",
+          "note": "30 runtime wheels (25.9 MB) and 3 build-only wheels, hashed on 2026-10-04; a fresh venv built from them with --require-hashes ran searxng-run and answered /healthz."
+        },
+        "macos-x64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "Lock to be resolved on this platform (native wheels differ)."
+        },
+        "linux-x64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "Lock to be resolved on this platform (native wheels differ)."
+        },
+        "linux-arm64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "Lock to be resolved on this platform (native wheels differ)."
+        },
+        "windows-x64": {
+          "url": null,
+          "format": "tar.gz",
+          "status": "to_be_built",
+          "sha256": null,
+          "size": null,
+          "note": "SearXNG does not support Windows as a server platform upstream; a Windows build is a release-pipeline decision."
+        }
+      }
     }
   ],
   "libraries": {

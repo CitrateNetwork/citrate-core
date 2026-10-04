@@ -67,12 +67,12 @@ export function Agent({ store, s }: SurfaceProps) {
   const uskName = useRef<HTMLInputElement>(null);
   const uskInstr = useRef<HTMLTextAreaElement>(null);
   const addUserSkill = () => {
-    const ok = store.addUserSkill(uskName.current?.value ?? "", uskInstr.current?.value ?? "");
-    if (ok) {
+    void store.addUserSkill(uskName.current?.value ?? "", uskInstr.current?.value ?? "").then((ok) => {
+      if (!ok) return;
       if (uskName.current) uskName.current.value = "";
       if (uskInstr.current) uskInstr.current.value = "";
       setAddSkillOpen(false);
-    }
+    });
   };
 
   useEffect(() => {
@@ -304,7 +304,7 @@ export function Agent({ store, s }: SurfaceProps) {
                 )}
               </div>
 
-              {/* HUP-S4.3 — MCP servers Hermes may use (memory graph, CitrateScan); both off by default. */}
+              {/* HUP-S4.3 + S4.2 — MCP servers Hermes may use (memory graph, CitrateScan, this node); all off by default. */}
               <HermesMcpPanel />
 
               {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
@@ -349,7 +349,7 @@ export function Agent({ store, s }: SurfaceProps) {
                 <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                   <span style={{ fontSize: 13.5, fontWeight: 500 }}>Your skills</span>
                   <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)", marginRight: 10 }}>
-                    {s.userSkills.length} yours
+                    {s.localSkills.length} yours
                   </span>
                   <button className="btn btn-ghost btn-sm" onClick={() => setAddSkillOpen((v) => !v)}>
                     {addSkillOpen ? "Close" : "Add skill"}
@@ -367,19 +367,19 @@ export function Agent({ store, s }: SurfaceProps) {
                     </div>
                   </div>
                 )}
-                {s.userSkills.length === 0 && !addSkillOpen ? (
+                {s.localSkills.length === 0 && !addSkillOpen ? (
                   <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
                     None yet. Add a prompt-skill — a named instruction you run against your active model. It's saved on this device and lists here.
                   </p>
                 ) : (
-                  s.userSkills.map((sk) => (
-                    <div key={sk.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  s.localSkills.map((sk) => (
+                    <div key={sk.slug} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{sk.name}</span>
-                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sk.description || sk.instruction}</span>
+                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sk.description}</span>
                       </span>
-                      <button className="btn btn-primary btn-sm" onClick={() => store.runUserSkill(sk.id)}>Run</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => store.removeUserSkill(sk.id)} title="Remove skill">✕</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => void store.runUserSkill(sk.slug)}>Run</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => void store.removeUserSkill(sk.slug)} title="Remove skill">✕</button>
                     </div>
                   ))
                 )}

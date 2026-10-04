@@ -1,7 +1,8 @@
 // =====================================================================
-// HUP-S5.2 / S5.3: Settings › "Web search & decisions".
+// HUP-S5.1 / S5.2 / S5.3: Settings › "Web search & decisions".
 //
-// The member's opt-ins for Hermes's web tools: private search over a local SearXNG, page reading
+// The member's opt-ins for Hermes's web tools: its own headless browser (the managed Chromium),
+// private search over a local SearXNG, page reading
 // (local by default, the Jina Reader only by explicit choice), and the TypeSafe Jev backend for
 // fast decisions on listed sites. Core stores them (hermes_web.rs) and passes them to the Hermes
 // sidecar when it starts. Everything is off or local until the member changes it, and every choice
@@ -125,6 +126,23 @@ export function WebSearchSettings({ io = defaultIo }: { io?: WebSettingsIo }) {
           <span style={hint}>{status.loadError}</span>
         </div>
       )}
+
+      {/* ---------- Hermes's browser ---------- */}
+      <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>
+        <span className="eyebrow">Hermes's browser</span>
+        <label style={{ display: "flex", gap: 8, alignItems: "center", ...label }}>
+          <input type="checkbox" data-testid="browser-toggle" checked={draft.browserEnabled} disabled={disabled} onChange={(e) => set({ browserEnabled: e.target.checked })} />
+          Let Hermes open and use web pages in its own browser
+        </label>
+        <span style={hint}>
+          Off by default. Hermes uses a separate headless browser with a fresh private profile each time, never your own profile, and you can watch it in the Browser pop-out. Pages it reads are untrusted: after it reads one, every click, entry or new address needs your approval. Attaching to your own Chrome is asked for each session in the pop-out, never set here.
+        </span>
+        <span style={hint} data-testid="browser-state">
+          {status?.managedChromium
+            ? "The managed Chromium is installed and will be used."
+            : "The managed Chromium is not installed yet (it comes with the signed component updater). Until then Hermes uses a Chrome already on this computer, or says it is not installed."}
+        </span>
+      </div>
 
       {/* ---------- search + reading ---------- */}
       <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 10 }}>

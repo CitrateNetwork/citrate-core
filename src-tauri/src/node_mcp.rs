@@ -28,8 +28,9 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// HUP-S4.1: the label of the built-in Hermes entry's token (shown on its approval requests).
-pub const HERMES_TOKEN_LABEL: &str = "Hermes in this app";
+/// HUP-S4.1: the label of the built-in Hermes entry's token (shown on its approval requests). It
+/// is reserved ([`RESERVED_TOKEN_LABELS`]): members cannot issue a token with it.
+pub const HERMES_TOKEN_LABEL: &str = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
 
 /// The persisted switch (`<app data>/node-mcp/config.json`). Off unless the member turns it on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -226,7 +227,11 @@ impl NodeMcpState {
         self.revoke_hermes_tokens();
         self.shared
             .tokens
-            .issue_ephemeral(HERMES_TOKEN_LABEL, now_ms())
+            .issue_ephemeral(
+                HERMES_TOKEN_LABEL,
+                !crate::hermes_mcp::HERMES_NODE_WRITE_TOOLS,
+                now_ms(),
+            )
             .map(|t| t.connect_token)
     }
 
@@ -237,7 +242,16 @@ impl NodeMcpState {
         }
     }
 
+    /// Issue a token from Settings (a full token: read and write tools). Labels core reserves for
+    /// its own tokens are refused, so no client can be labelled as Hermes on an approval card and
+    /// no member token is ever revoked by Hermes's re-issue.
     pub fn create_token(&self, label: &str) -> Result<TokenIssued, String> {
+        if is_reserved_label(label) {
+            return Err(format!(
+                "\"{}\" is reserved for the token Citrate Core issues for Hermes. Pick another label.",
+                label.trim()
+            ));
+        }
         self.shared.tokens.issue(label, now_ms())
     }
 
@@ -258,6 +272,17 @@ impl NodeMcpState {
         }
         v
     }
+}
+
+/// Token labels core keeps for the tokens it issues itself (compared trimmed, ignoring case).
+pub const RESERVED_TOKEN_LABELS: &[&str] = &[crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL];
+
+/// Whether `label` is one of [`RESERVED_TOKEN_LABELS`].
+pub fn is_reserved_label(label: &str) -> bool {
+    let t = label.trim();
+    RESERVED_TOKEN_LABELS
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(t))
 }
 
 /// Build the managed state for the app: tokens + config under `<app data>/node-mcp/`, the live
@@ -315,6 +340,32 @@ async fn run_action(app: &tauri::AppHandle, action: McpAction) -> Result<Value, 
             .await?;
             crate::invites::group_invite_revoke(app.clone(), group.clone(), token).await?;
             Ok(json!({"revoked": invite_id, "group": group}))
+        }
+        McpAction::PinAdd { cid } => {
+            let app2 = app.clone();
+            let cid2 = cid.clone();
+            crate::blocking::off_main(move || crate::storage::storage_pin_local_sync(app2, &cid2))
+                .await?;
+            Ok(json!({"pinned": cid, "bond": "none (local pin only)"}))
+        }
+        McpAction::AnchorPropose => {
+            let app2 = app.clone();
+            let report =
+                crate::blocking::off_main(move || crate::chain_agent::anchor_now(&app2)).await?;
+            Ok(json!({
+                "approvalCardsRaised": report.raised.len(),
+                "skipped": report.skipped.iter().map(|(day, why)| json!({"day": day, "why": why})).collect::<Vec<_>>(),
+                "next": "Each raised card waits for the member's approval in Citrate Core before anything is signed.",
+            }))
+        }
+        // HUP-S1.1: the member approved it; the app's Hermes client carries it to the session.
+        a @ (McpAction::HermesSessionSend { .. } | McpAction::HermesSessionStop { .. }) => {
+            let app2 = app.clone();
+            crate::blocking::off_main(move || {
+                let mgr = crate::hermes::manager_for(&app2)?;
+                crate::node_mcp_hermes::run_action(mgr, &a)
+            })
+            .await
         }
     }
 }

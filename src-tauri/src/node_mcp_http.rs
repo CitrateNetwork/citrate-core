@@ -10,12 +10,21 @@
 //! connection (`Connection: close`). Bounded: 16 KiB of headers, 1 MiB body, 32 concurrent
 //! connections, 15 s socket timeouts and a 15 s whole-request deadline.
 //!
+//! **Stateless era (MCP 2026-07-28).** A request whose `params._meta` names protocol version
+//! `2026-07-28` needs no session: the token is checked on every request, and the
+//! `MCP-Protocol-Version`, `Mcp-Method` and (for `tools/call` / `resources/read`) `Mcp-Name`
+//! headers must be present and match the body (400 + `HeaderMismatch` otherwise). An unsupported
+//! version is 400 + `UnsupportedProtocolVersion`; an unknown method is 404 + `-32601`.
+//!
 //! **stdio shim.** `citrate-core --mcp-stdio` (see `main.rs`) reads newline-delimited JSON-RPC on
 //! stdin, forwards each message to the loopback endpoint with the token from
 //! `CITRATE_NODE_MCP_TOKEN`, and writes each answer as one line on stdout. Clients that only speak
 //! stdio (or that cannot set headers) connect through it.
 
-use crate::node_mcp_protocol::{CallerCtx, McpCore, INVALID_REQUEST, PARSE_ERROR};
+use crate::node_mcp_protocol::{
+    meta_client_name, meta_protocol_version, CallerCtx, McpCore, HEADER_MISMATCH, INVALID_REQUEST,
+    METHOD_NOT_FOUND, PARSE_ERROR, STATELESS_PROTOCOL_VERSION, UNSUPPORTED_PROTOCOL_VERSION,
+};
 use crate::node_mcp_token::TokenStore;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -33,10 +42,16 @@ pub const MCP_PATH: &str = "/mcp";
 /// The flag that runs this executable as the stdio shim (also what core writes into Hermes's
 /// allowlist for its built-in `node` entry).
 pub const STDIO_FLAG: &str = "--mcp-stdio";
+/// Request header carrying the stdio shim's 32-byte challenge (hex), sent with no token.
+pub const IDENTITY_CHALLENGE_HEADER: &str = "x-citrate-identity-challenge";
+/// Response header with the server's proofs for that challenge (comma-separated hex).
+pub const IDENTITY_HEADER: &str = "x-citrate-identity";
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 const MAX_SESSIONS: usize = 64;
+/// Sessions one connect token may hold; its oldest goes first when it opens another.
+pub const MAX_SESSIONS_PER_TOKEN: usize = 8;
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(15);
 /// The whole request (headers and body) must arrive within this time, so a client that trickles
 /// bytes cannot hold a connection slot for longer than this plus one socket timeout.
@@ -89,14 +104,12 @@ impl ServerShared {
         let mut g = self.lock_sessions();
         g.0 += 1;
         let seq = g.0;
-        if g.1.len() >= MAX_SESSIONS {
-            if let Some(oldest) =
-                g.1.iter()
-                    .min_by_key(|(_, s)| s.opened_seq)
-                    .map(|(k, _)| k.clone())
-            {
-                g.1.remove(&oldest);
-            }
+        let all: Vec<(String, String, u64)> =
+            g.1.iter()
+                .map(|(k, s)| (k.clone(), s.token_id.clone(), s.opened_seq))
+                .collect();
+        if let Some(victim) = pick_eviction(&all, token_id) {
+            g.1.remove(&victim);
         }
         g.1.insert(
             id.clone(),
@@ -108,6 +121,32 @@ impl ServerShared {
         );
         id
     }
+}
+
+/// Which session (if any) gives way when `opener` opens one: its own oldest once it holds
+/// [`MAX_SESSIONS_PER_TOKEN`]; when the table is full, the oldest session of whichever token holds
+/// the most. One client can therefore never push out another client's sessions while it holds as
+/// many or more itself. `sessions` is (session id, token id, opened sequence).
+pub(crate) fn pick_eviction(sessions: &[(String, String, u64)], opener: &str) -> Option<String> {
+    let oldest_of = |tok: &str| {
+        sessions
+            .iter()
+            .filter(|(_, t, _)| t == tok)
+            .min_by_key(|(_, _, seq)| *seq)
+            .map(|(id, _, _)| id.clone())
+    };
+    let count = |tok: &str| sessions.iter().filter(|(_, t, _)| t == tok).count();
+    if count(opener) >= MAX_SESSIONS_PER_TOKEN {
+        return oldest_of(opener);
+    }
+    if sessions.len() < MAX_SESSIONS {
+        return None;
+    }
+    let busiest = sessions
+        .iter()
+        .map(|(_, t, _)| t.as_str())
+        .max_by_key(|t| (count(t), *t == opener))?;
+    oldest_of(busiest)
 }
 
 /// A running loopback server.
@@ -394,6 +433,25 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
             return simple(403, "cross-origin requests are not allowed");
         }
     }
+    // Server identity, before any token is sent: prove this is Core by showing, for the shim's
+    // challenge, a proof keyed by each token Core holds. Nothing else happens on this request.
+    if let (Some(ch), None) = (
+        req.headers.get(IDENTITY_CHALLENGE_HEADER),
+        req.headers.get("authorization"),
+    ) {
+        let mut nonce = [0u8; 32];
+        if hex::decode_to_slice(ch.trim(), &mut nonce).is_err() {
+            return simple(400, "the identity challenge must be 32 bytes of hex");
+        }
+        return HttpResponse {
+            status: 204,
+            headers: vec![(
+                IDENTITY_HEADER.to_string(),
+                shared.tokens.identity_proofs(&nonce).join(","),
+            )],
+            body: vec![],
+        };
+    }
     let token = req
         .headers
         .get("authorization")
@@ -413,15 +471,19 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
         ));
         return r;
     };
-    if let Some(v) = req.headers.get("mcp-protocol-version") {
-        if !crate::node_mcp_protocol::SUPPORTED_PROTOCOL_VERSIONS.contains(&v.as_str()) {
-            return simple(400, "unsupported MCP-Protocol-Version");
-        }
-    }
+    // An unknown version header is refused below: as a JSON-RPC UnsupportedProtocolVersion error
+    // for a stateless-era body, as plain 400 for a session-era one.
+    let unknown_version_header = req.headers.get("mcp-protocol-version").is_some_and(|v| {
+        v != STATELESS_PROTOCOL_VERSION
+            && !crate::node_mcp_protocol::SUPPORTED_PROTOCOL_VERSIONS.contains(&v.as_str())
+    });
     let session_id = req.headers.get("mcp-session-id").cloned();
     match req.method.as_str() {
         "POST" => {}
         "DELETE" => {
+            if unknown_version_header {
+                return simple(400, "unsupported MCP-Protocol-Version");
+            }
             let Some(sid) = session_id else {
                 return simple(400, "Mcp-Session-Id required");
             };
@@ -474,6 +536,47 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let is_request = msg.get("id").is_some() && !method.is_empty();
 
+    // The stateless era: no session, headers mirror the body.
+    let empty = json!({});
+    let params = msg.get("params").unwrap_or(&empty);
+    if let Some(version) = meta_protocol_version(params) {
+        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        if let Err(e) = stateless_headers_ok(req, &msg, version) {
+            return json_response(
+                400,
+                &json!({"jsonrpc": "2.0", "id": id, "error": {"code": HEADER_MISMATCH, "message": e}}),
+            );
+        }
+        let ctx = CallerCtx {
+            token_id: auth.id.clone(),
+            token_label: auth.label.clone(),
+            read_only: auth.read_only,
+            client_name: meta_client_name(params),
+        };
+        return match shared.core.dispatch(&ctx, &msg) {
+            None => HttpResponse {
+                status: 202,
+                headers: vec![],
+                body: vec![],
+            },
+            Some(reply) => {
+                let code = reply
+                    .get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(Value::as_i64);
+                let status = match code {
+                    Some(METHOD_NOT_FOUND) => 404,
+                    Some(UNSUPPORTED_PROTOCOL_VERSION) | Some(HEADER_MISMATCH) => 400,
+                    _ => 200,
+                };
+                json_response(status, &reply)
+            }
+        };
+    }
+
+    if unknown_version_header {
+        return simple(400, "unsupported MCP-Protocol-Version");
+    }
     let mut new_session: Option<String> = None;
     let ctx = if method == "initialize" && is_request {
         let client_name = msg
@@ -487,6 +590,7 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
         CallerCtx {
             token_id: auth.id.clone(),
             token_label: auth.label.clone(),
+            read_only: auth.read_only,
             client_name,
         }
     } else {
@@ -501,6 +605,7 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
             Some(s) if s.token_id == auth.id => CallerCtx {
                 token_id: auth.id.clone(),
                 token_label: auth.label.clone(),
+                read_only: auth.read_only,
                 client_name: s.client_name,
             },
             _ => return simple(404, "unknown or expired session; initialize again"),
@@ -521,6 +626,105 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
             r
         }
     }
+}
+
+/// The Base64 sentinel form of a header value (`=?base64?...?=`, MCP 2026-07-28).
+const B64_PREFIX: &str = "=?base64?";
+const B64_SUFFIX: &str = "?=";
+
+/// Decode a mirrored header value (plain, or the Base64 sentinel form).
+pub fn decode_header_value(v: &str) -> Option<String> {
+    use base64::Engine as _;
+    match v
+        .strip_prefix(B64_PREFIX)
+        .and_then(|r| r.strip_suffix(B64_SUFFIX))
+    {
+        Some(b) => base64::engine::general_purpose::STANDARD
+            .decode(b)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok()),
+        None => Some(v.to_string()),
+    }
+}
+
+/// Encode a value for a mirrored header: plain when it is visible ASCII with no surrounding
+/// spaces and does not look like the sentinel, else the Base64 sentinel form.
+pub fn encode_header_value(v: &str) -> String {
+    use base64::Engine as _;
+    let plain = !v.is_empty()
+        && v.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+        && !v.starts_with(' ')
+        && !v.ends_with(' ')
+        && !(v.starts_with(B64_PREFIX) && v.ends_with(B64_SUFFIX));
+    if plain {
+        v.to_string()
+    } else {
+        format!(
+            "{B64_PREFIX}{}{B64_SUFFIX}",
+            base64::engine::general_purpose::STANDARD.encode(v.as_bytes())
+        )
+    }
+}
+
+/// The body field `Mcp-Name` mirrors for a method, if any.
+fn mirrored_name<'a>(method: &str, msg: &'a Value) -> Option<&'a str> {
+    let key = match method {
+        "tools/call" | "prompts/get" => "name",
+        "resources/read" => "uri",
+        _ => return None,
+    };
+    msg.get("params")
+        .and_then(|p| p.get(key))
+        .and_then(Value::as_str)
+}
+
+/// The stateless-era header checks: `MCP-Protocol-Version` equals the body's version, and
+/// `Mcp-Method` / `Mcp-Name` equal the body's method / name. A mismatch is the caller's
+/// `HeaderMismatch`; an unsupported (but consistent) version is answered by the dispatcher.
+fn stateless_headers_ok(req: &HttpRequest, msg: &Value, version: &str) -> Result<(), String> {
+    match req.headers.get("mcp-protocol-version") {
+        Some(h) if h == version => {}
+        Some(h) => {
+            return Err(format!(
+                "Header mismatch: MCP-Protocol-Version header value '{h}' does not match body value '{version}'"
+            ))
+        }
+        None => return Err("Header mismatch: the MCP-Protocol-Version header is required".into()),
+    }
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    match req.headers.get("mcp-method") {
+        Some(h) if h == method => {}
+        Some(_) => {
+            return Err("Header mismatch: Mcp-Method header value does not match the body".into())
+        }
+        None => return Err("Header mismatch: the Mcp-Method header is required".into()),
+    }
+    if let Some(name) = mirrored_name(method, msg) {
+        match req.headers.get("mcp-name").map(|h| decode_header_value(h)) {
+            Some(Some(h)) if h == name => {}
+            Some(_) => {
+                return Err("Header mismatch: Mcp-Name header value does not match the body".into())
+            }
+            None => return Err("Header mismatch: the Mcp-Name header is required".into()),
+        }
+    }
+    Ok(())
+}
+
+/// The headers a stateless-era message needs on the wire (the shim adds them for its client).
+pub fn stateless_headers_for(msg: &Value) -> Vec<(String, String)> {
+    let Some(version) = msg.get("params").and_then(|p| meta_protocol_version(p)) else {
+        return Vec::new();
+    };
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    let mut h = vec![
+        ("MCP-Protocol-Version".to_string(), version.to_string()),
+        ("Mcp-Method".to_string(), encode_header_value(method)),
+    ];
+    if let Some(name) = mirrored_name(method, msg) {
+        h.push(("Mcp-Name".to_string(), encode_header_value(name)));
+    }
+    h
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +790,9 @@ pub fn run_stdio_shim(
     token: &str,
 ) -> i32 {
     let mut session: Option<String> = None;
+    // The token goes only to a server that has just proved it is Core (holds this token). The
+    // check runs before every request, not once: Core can quit mid-run and another program can
+    // take the port.
     for line in input.lines() {
         let Ok(line) = line else {
             return 1;
@@ -596,10 +803,27 @@ pub fn run_stdio_shim(
         }
         let parsed: Option<Value> = serde_json::from_str(line).ok();
         let id = parsed.as_ref().and_then(|v| v.get("id").cloned());
-        let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
-        if let Some(s) = &session {
-            headers.push(("Mcp-Session-Id".to_string(), s.clone()));
+        if let Err(msg) = server_proves_identity(transport, token) {
+            if let Some(id) = id {
+                let a =
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": msg}});
+                if writeln!(output, "{a}").is_err() || output.flush().is_err() {
+                    return 1;
+                }
+            }
+            continue;
         }
+        let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+        let stateless = parsed
+            .as_ref()
+            .map(stateless_headers_for)
+            .unwrap_or_default();
+        if stateless.is_empty() {
+            if let Some(s) = &session {
+                headers.push(("Mcp-Session-Id".to_string(), s.clone()));
+            }
+        }
+        headers.extend(stateless);
         let answer: Option<Value> = match transport.post(line, &headers) {
             Ok((200, h, body)) => {
                 if let Some(s) = h.get("mcp-session-id") {
@@ -608,6 +832,15 @@ pub fn run_stdio_shim(
                 serde_json::from_str::<Value>(&body).ok()
             }
             Ok((202, _, _)) => None,
+            // A JSON-RPC error the server answered with an HTTP error status (stateless era:
+            // 400 HeaderMismatch / UnsupportedProtocolVersion, 404 method not found): pass it on.
+            Ok((_, _, body))
+                if serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .is_some_and(|v| v.get("jsonrpc").is_some() && v.get("error").is_some() && v.get("id") == id.as_ref()) =>
+            {
+                serde_json::from_str::<Value>(&body).ok()
+            }
             Ok((status, _, body)) => id.map(|id| {
                 let detail: String = body.chars().take(300).collect();
                 json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000,
@@ -625,6 +858,29 @@ pub fn run_stdio_shim(
         }
     }
     0
+}
+
+/// Ask the server to prove it holds `token` (a fresh challenge, no token sent). `Err` is the
+/// message the client sees.
+fn server_proves_identity(transport: &dyn ShimTransport, token: &str) -> Result<(), String> {
+    use rand::RngCore;
+    let mut nonce = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let headers = vec![(IDENTITY_CHALLENGE_HEADER.to_string(), hex::encode(nonce))];
+    let mine = crate::node_mcp_token::identity_proof_for(token, &nonce);
+    match transport.post("", &headers) {
+        Err(e) => Err(format!(
+            "Citrate Core is not running or its MCP server is off ({e})"
+        )),
+        Ok((status, h, _))
+            if (status == 204 || status == 200)
+                && h.get(IDENTITY_HEADER)
+                    .is_some_and(|p| crate::node_mcp_token::proofs_contain(p, &mine)) =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err("the MCP server on this port did not prove it is Citrate Core for this connect token (the token may be revoked or wrong, or another program holds the port); the token was not sent".to_string()),
+    }
 }
 
 /// The shim only ever sends the connect token to this machine's loopback endpoint.

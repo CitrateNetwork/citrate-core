@@ -12,6 +12,8 @@ export interface NodeMcpToken {
   label: string;
   createdMs: number;
   lastUsedMs: number | null;
+  /** Limited to the read tools (the token Citrate Core issues for Hermes). */
+  readOnly?: boolean;
 }
 
 export interface NodeMcpCall {

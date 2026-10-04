@@ -8,9 +8,10 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView, McpPendingView, McpRuntimeView } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView, McpPendingView, McpRuntimeView } from "../domains";
 import type { CeremonyView } from "../types";
 import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
+import type { StepDiff } from "../../popout/diffModel";
 import type { LearnAcceptResult, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView } from "../../agent/learn";
 
 // The sidecar's run_skill takes a serde_json::Value. The domain hands us a string: JSON if it
@@ -107,6 +108,10 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   undoSession(id) {
     return invoke<UndoOutcome>("hermes_undo_session", { id });
   },
+  // HUP-S5.4 — one step's diff for the Code and diff pop-out (read-only).
+  checkpointDiff(id, seq) {
+    return invoke<StepDiff>("hermes_checkpoint_diff", { id, seq });
+  },
   // HUP-S2.6 — the member's answer on a card, into core's HIC outbox (src-tauri/src/hic_records.rs).
   recordDecision(kind, decision, subject, reason) {
     return invoke<number>("hic_record_decision", { kind, decision, subject, reason });
@@ -187,5 +192,8 @@ export const tauriAgentSkills: AgentSkillsDomain = {
   },
   async remove(name) {
     await invoke("skills_local_delete", { name });
+  },
+  migrate(): Promise<SkillMigrationReport> {
+    return invoke<SkillMigrationReport>("skills_local_migrate");
   },
 };

@@ -10,21 +10,25 @@
 //! - `scan`: CitrateScan's MCP endpoint (`{EXPLORER_BASE}/api/mcp`), HTTP, read-only tools.
 //! - `mem`: the citrate-core executable itself run as [`crate::mem_mcp_bridge`] (stdio), which
 //!   relays to the local mem-mcp socket and offers only the read tools.
-//! - `node` (HUP-S4.1, US-4.1 AC1): this node's own MCP server ([`crate::node_mcp`]) through the
-//!   stdio shim (`citrate-core --mcp-stdio`), with a connect token core mints for Hermes at each
-//!   start. The token is held only as a hash, in memory ([`crate::node_mcp::NodeMcpState::hermes_token`]);
-//!   its plaintext reaches the sidecar only through this 0600 file, which is rewritten at every
-//!   start. Offered only while the node's MCP server is on.
+//! - `node` (HUP-S4.1 / S4.2 / S8.5, US-4.1 AC1): this node's own MCP server ([`crate::node_mcp`])
+//!   through the stdio shim (`citrate-core --mcp-stdio`), with a connect token core mints for
+//!   Hermes at each start under the reserved label [`HERMES_NODE_TOKEN_LABEL`]. The token is held
+//!   only as a hash, in memory ([`crate::node_mcp::NodeMcpState::hermes_token`]); its plaintext
+//!   reaches the sidecar only through this 0600 file, which is rewritten at every start. Offered
+//!   only while the node's MCP server is on.
 //!
-//! `mem` and `scan` set `allow_write_tools = false`. `node` sets it true (PENDING OWNER SIGN-OFF,
-//! A24): its write tools never act on their own; each becomes a request the member approves in
-//! the app, and a transaction goes through the SignatureCeremony. MCP output is always untrusted to
-//! the loop, so the first MCP result taints the session and every effectful call after it also
-//! needs the member's decision on the sidecar's MCP approval card first.
+//! `mem` and `scan` set `allow_write_tools = false`. `node` follows [`HERMES_NODE_WRITE_TOOLS`]
+//! (PENDING OWNER SIGN-OFF, A24; today `false`, read tools only), which also sets the scope of
+//! Hermes's connect token on the server, so a read-only token is neither offered nor allowed a
+//! write tool whatever the sidecar does. Were it turned on, its write tools would still never act
+//! on their own: each becomes a request the member approves in the app, and a transaction goes
+//! through the SignatureCeremony. MCP output is always untrusted to the loop, so the first MCP
+//! result taints the session and every effectful call after it also needs the member's decision on
+//! the sidecar's MCP approval card first.
 //!
 //! PENDING OWNER SIGN-OFF: every server defaults to OFF ([`McpSettings::default`]), so members see
-//! no change until they (or a later default) turn them on. Turning them on by default is the
-//! owner's call.
+//! no change until they (or a later default) turn them on. Turning them on by default, and whether
+//! Hermes may be offered the node server's write tools, is the owner's call.
 //!
 //! Keyless (Rule 3): nothing here holds a key or signs.
 
@@ -57,6 +61,16 @@ pub struct McpSettings {
     #[serde(default)]
     pub node: bool,
 }
+
+/// The label of the connect token core mints for Hermes's own use of the node MCP server. Members
+/// cannot issue a token with this label, so no other client can appear as Hermes on a card.
+pub const HERMES_NODE_TOKEN_LABEL: &str = "Hermes (built-in)";
+
+/// Whether Hermes is offered the node server's write tools. PENDING OWNER SIGN-OFF: `false`, so
+/// Hermes gets the read tools only. This one switch drives both sides: the sidecar's allowlist
+/// entry (`allow_write_tools`) and the scope of Hermes's connect token (a read-only token is not
+/// offered, and may not call, any write tool, whatever the sidecar does).
+pub const HERMES_NODE_WRITE_TOOLS: bool = false;
 
 /// The name of the built-in node entry (reserved for user-added servers in agent-mcp-host).
 pub const NODE_SERVER_NAME: &str = "node";
@@ -137,8 +151,9 @@ pub fn render_config(
                 "args": [crate::node_mcp_http::STDIO_FLAG],
                 "env": { NODE_TOKEN_ENV: t.token, NODE_PORT_ENV: t.port.to_string() },
                 "timeout_ms": CALL_TIMEOUT_MS,
-                // PENDING OWNER SIGN-OFF (A24): writes only create requests the member approves.
-                "allow_write_tools": true,
+                // PENDING OWNER SIGN-OFF (A24): read tools only today. Writes would only create
+                // requests the member approves, but offering them to Hermes is the owner's call.
+                "allow_write_tools": HERMES_NODE_WRITE_TOOLS,
             }));
         }
     }
@@ -336,7 +351,11 @@ pub fn build_view(
                 enabled: settings.node,
                 available: node_available,
                 detail: if node_available {
-                    "Your node's MCP server: chain, wallet and cluster reads answer at once. A transaction, a cluster or invite change waits for your approval in the app, and a transaction is signed only through the signature ceremony. Hermes gets its own connect token, renewed at each start.".into()
+                    if HERMES_NODE_WRITE_TOOLS {
+                        "Your node's MCP server: chain, wallet and cluster reads answer at once. A transaction, a cluster or invite change waits for your approval in the app, and a transaction is signed only through the signature ceremony. Hermes gets its own connect token, renewed at each start.".into()
+                    } else {
+                        "Read-only tools from your node's MCP server: chain and DAG status, contract reads, precompiles, your devices, groups and clusters. Hermes gets its own read-only connect token, renewed at each start.".into()
+                    }
                 } else {
                     "Turn on the node's MCP server first (Settings, API endpoints & keys).".into()
                 },

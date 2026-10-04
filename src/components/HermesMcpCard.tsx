@@ -2,11 +2,12 @@
 // HUP-S4.3 — "Connected tools (MCP)": which MCP servers Hermes may use.
 //
 // The member's local memory graph (mem-mcp through core's read-only bridge), the CitrateScan
-// explorer (read-only), and (HUP-S4.1) this node's own MCP server, whose writes wait for the
-// member's approval in the app. Core writes the sidecar's allowlist file from these switches; the
-// sidecar reads it when Hermes starts. All are OFF by default (the default is pending owner
-// sign-off). HUP-S4.1: each row also shows the server's live state from the running sidecar.
-// Presentational: the container passes the view, the runtime view and a toggle handler.
+// explorer (read-only), and (HUP-S4.1 / S4.2 / S8.5) this node's own MCP server, offered to Hermes
+// with read tools only while its write switch is off (pending owner sign-off). Core writes the
+// sidecar's allowlist file from these switches; the sidecar reads it when Hermes starts. All are
+// OFF by default (the default is pending owner sign-off). HUP-S4.1: each row also shows the
+// server's live state from the running sidecar. Presentational: the container passes the view,
+// the runtime view and a toggle handler.
 // =====================================================================
 import { useEffect, useState } from "react";
 import type { HermesMcpSettings, HermesMcpView, McpRuntimeView } from "../bridge/domains";
