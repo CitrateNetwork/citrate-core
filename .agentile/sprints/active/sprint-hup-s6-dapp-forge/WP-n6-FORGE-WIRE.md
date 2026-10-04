@@ -136,3 +136,18 @@ covered by the runtime's session and route tests with stand-in programs.
 - Medusa needs `crytic-compile` on its PATH. On this Mac it lives only in slither's pipx
   environment, which the toolchain search path now includes; the slither component (S6.1) must
   ship it beside `slither`.
+
+## Review (2026-10-04, adversarial reviewer)
+
+- Fixed on both branches: `forge_test` now runs `forge test --json --force`. Without `--force`,
+  forge skips an unchanged build and leaves `out/` as it is, so an artifact written into `out/`
+  by hand (the source digest skips `out/`) was recorded as built by the run and passed the
+  bytecode binding. Reproduced with forge 1.5.1: a rewritten `out/A.sol/A.json` survived
+  `forge test --json` and was cleared by `--force`. Runtime test
+  `forge_test_always_rebuilds_so_out_cannot_be_planted` pins the argv; reverting the flag fails
+  it and two existing argv tests. The proof script uses the same argv.
+- US-6.4 is wired, not runtime-proven: on a member machine the library cache is empty until the
+  S6.1 installer ships, so a rendered template does not compile and cannot reach READY there.
+- A Medusa `corpusDirectory` other than `medusa-corpus` is not skipped by the source digest, so
+  such a campaign is reported as "ran on different sources" (fails closed; the templates use the
+  default).

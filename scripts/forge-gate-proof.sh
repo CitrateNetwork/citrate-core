@@ -94,7 +94,7 @@ run_tool() {
   e=$(now_ms)
   echo "$name rc=$rc ms=$((e - s))" | tee -a "$RUN/timings.txt"
 }
-run_tool forge forge test --json
+run_tool forge forge test --json --force
 run_tool slither slither . --sarif - --exclude-dependencies --disable-color --compile-force-framework foundry
 run_tool aderyn aderyn . --output aderyn-report.sarif --stdout --skip-update-check
 rm -rf medusa-corpus
