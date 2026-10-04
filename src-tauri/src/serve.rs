@@ -598,8 +598,17 @@ fn resolve_llama_bin<R: tauri::Runtime>(
         .resource_dir()
         .map_err(|e| e.to_string())?
         .join("llama")
-        .join("llama-server");
+        .join(llama_server_file_name(std::env::consts::EXE_SUFFIX));
     Ok(resource)
+}
+
+/// The bundled llama-server's file name inside `llama/` for a platform `exe_suffix`
+/// (`std::env::consts::EXE_SUFFIX`). On Windows the binary is `llama-server.exe`; on
+/// macOS/Linux the suffix is "" and the existing `llama/llama-server` path is unchanged.
+/// Without the suffix the packaged Windows app reports "llama-server binary not bundled"
+/// even though it ships in `llama/` (main #178).
+fn llama_server_file_name(exe_suffix: &str) -> String {
+    format!("llama-server{exe_suffix}")
 }
 
 /// Build the managed serve state from a live app handle: the bundled

@@ -506,3 +506,17 @@ fn an_adapter_is_set_only_while_its_base_model_is_selected() {
     mgr.set_lora_for_model(adapter.clone(), "base-a.gguf").expect("same base");
     assert_eq!(mgr.lora(), Some(adapter));
 }
+
+// main #178: the bundled llama-server is `llama-server.exe` on Windows and the bare
+// `llama-server` on macOS/Linux, so resolution must carry the platform EXE_SUFFIX.
+#[test]
+fn llama_server_file_name_carries_the_platform_exe_suffix() {
+    assert_eq!(llama_server_file_name(".exe"), "llama-server.exe");
+    assert_eq!(llama_server_file_name(""), "llama-server");
+    let here = llama_server_file_name(std::env::consts::EXE_SUFFIX);
+    if cfg!(windows) {
+        assert_eq!(here, "llama-server.exe");
+    } else {
+        assert_eq!(here, "llama-server");
+    }
+}
