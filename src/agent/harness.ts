@@ -18,7 +18,7 @@
 import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
-import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch";
+import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch.ts";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
 
