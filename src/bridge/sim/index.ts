@@ -24,7 +24,7 @@ import type {
   BroadcastResult,
   DecodedAction,
 } from "../types";
-import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
+import type { BridgeContract, ClaimResult, MemoryResult, MemoryNeighbor, PendingWithdrawal, LinkedWallet, AiProviderStatus, GrantStatus, ModelStatus, NodeLogLine, ConnectionInfo } from "../domains";
 import { SIGNED_OUT_AUTH, UNRECOGNIZED_ACTION, Unavailable } from "../types";
 import { assertSimAllowed } from "../mode";
 import { GRAPH, NODE_LOG_TEMPLATES } from "../../data/seed";
@@ -388,6 +388,15 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
       },
       async linkReject(): Promise<void> {
         assertSimAllowed("wallet.linkReject");
+      },
+      async linkedList(): Promise<LinkedWallet[]> {
+        // No authority session in web-dev: refuse rather than claim "no links".
+        assertSimAllowed("wallet.linkedList");
+        throw new Error("Linked wallets are read from the identity authority in the desktop app.");
+      },
+      async unlink(): Promise<void> {
+        assertSimAllowed("wallet.unlink");
+        throw new Error("Wallet unlinking runs in the desktop app (it needs a signed-in session).");
       },
       async pendingWithdrawals(): Promise<PendingWithdrawal[]> {
         // The web shim reaches no chain — there is no real pending queue to read.
