@@ -113,20 +113,46 @@ pub fn contract_deploy_sync(
     value_wei: Option<String>,
     gas: Option<u64>,
 ) -> std::result::Result<DeployProposal, String> {
-    let bytecode = parse_hex(&bytecode_hex, "bytecode")?;
-    if bytecode.is_empty() {
-        return Err("contract bytecode is required to deploy".into());
-    }
-    let args = match &constructor_args_hex {
-        Some(a) => parse_hex(a, "constructor args")?,
-        None => Vec::new(),
-    };
     let value: u128 = match value_wei.as_deref() {
         None | Some("") => 0,
         Some(v) => v
             .trim()
             .parse()
             .map_err(|_| "value must be a decimal wei amount".to_string())?,
+    };
+    propose_deploy(
+        custody,
+        ceremony,
+        gate,
+        "local-user",
+        &bytecode_hex,
+        constructor_args_hex.as_deref(),
+        value,
+        gas,
+    )
+}
+
+/// The one deploy-proposal path, shared by the app (`contract_deploy`, origin `local-user`) and
+/// the citrate-node MCP server (`deploy_propose`, origin `mcp:<token> via <client>`). Refused
+/// unless the D-4 gate is READY for exactly this init code; opens a PENDING ceremony; signs nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn propose_deploy(
+    custody: &crate::custody::CustodyVault,
+    ceremony: &crate::ceremony::SignatureCeremony,
+    gate: &crate::deploy_gate::GateStore,
+    origin: &str,
+    bytecode_hex: &str,
+    constructor_args_hex: Option<&str>,
+    value: u128,
+    gas: Option<u64>,
+) -> std::result::Result<DeployProposal, String> {
+    let bytecode = parse_hex(bytecode_hex, "bytecode")?;
+    if bytecode.is_empty() {
+        return Err("contract bytecode is required to deploy".into());
+    }
+    let args = match constructor_args_hex {
+        Some(a) => parse_hex(a, "constructor args")?,
+        None => Vec::new(),
     };
     let initcode = deploy_initcode(&bytecode, &args);
     // D-4: no READY gate for exactly these bytes → refuse, naming what fails, before touching
@@ -141,7 +167,7 @@ pub fn contract_deploy_sync(
         gas.unwrap_or(DEFAULT_DEPLOY_GAS),
     );
     let intent = crate::ceremony::SignatureIntent {
-        origin: "local-user".to_string(),
+        origin: origin.to_string(),
         kind: crate::ceremony::IntentKind::Transaction,
         chain_id: 40204,
         raw,

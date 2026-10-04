@@ -440,7 +440,7 @@ impl Ledger {
         Ok(Ledger { entries: f.entries })
     }
 
-    /// Write the ledger atomically (temporary file, flush, rename).
+    /// Write the ledger atomically (owner-only temporary file, flush, rename).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let body = serde_json::to_vec_pretty(&LedgerFile {
             schema: LEDGER_SCHEMA.into(),
@@ -454,17 +454,10 @@ impl Ledger {
         let tmp = dir.join(".learned-memories.json.tmp");
         let res = (|| -> std::io::Result<()> {
             use std::io::Write as _;
-            // Owner-only: a temporary file left by an interrupted save is replaced, never reused
-            // with its old permissions.
+            // Owner-only from creation: the ledger holds the member's learned memories.
+            // A leftover temporary file could carry a looser mode; start from a new one.
             let _ = std::fs::remove_file(&tmp);
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            let mut f = opts.open(&tmp)?;
+            let mut f = citrate_core_kit::fsutil::create_secret_file(&tmp)?;
             f.write_all(&body)?;
             f.sync_all()?;
             std::fs::rename(&tmp, path)
@@ -967,6 +960,62 @@ fn lower_addr(v: &Value, k: &str) -> Result<String, String> {
     }
 }
 
+/// Longest skill name, version, manifest CID or description accepted for publishing (bytes).
+const MAX_PUBLISH_FIELD: usize = 2_000;
+/// Most tags accepted for publishing.
+const MAX_PUBLISH_TAGS: usize = 16;
+
+fn abi_word(n: usize) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[24..].copy_from_slice(&(n as u64).to_be_bytes());
+    w
+}
+
+fn abi_string(s: &str) -> Vec<u8> {
+    let mut out = abi_word(s.len()).to_vec();
+    out.extend_from_slice(s.as_bytes());
+    out.resize(32 + s.len().div_ceil(32) * 32, 0);
+    out
+}
+
+/// The canonical ABI encoding of `registerSkill(name, version, manifestCID, description, tags)`,
+/// selector included.
+pub fn encode_register_skill(
+    name: &str,
+    version: &str,
+    manifest_cid: &str,
+    description: &str,
+    tags: &[String],
+) -> Vec<u8> {
+    let mut arr = abi_word(tags.len()).to_vec();
+    let encoded: Vec<Vec<u8>> = tags.iter().map(|t| abi_string(t)).collect();
+    let mut off = tags.len() * 32;
+    for e in &encoded {
+        arr.extend_from_slice(&abi_word(off));
+        off += e.len();
+    }
+    for e in &encoded {
+        arr.extend_from_slice(e);
+    }
+    let parts = [
+        abi_string(name),
+        abi_string(version),
+        abi_string(manifest_cid),
+        abi_string(description),
+        arr,
+    ];
+    let mut out = hex::decode(REGISTER_SKILL_SELECTOR).unwrap_or_default();
+    let mut off = parts.len() * 32;
+    for p in &parts {
+        out.extend_from_slice(&abi_word(off));
+        off += p.len();
+    }
+    for p in &parts {
+        out.extend_from_slice(p);
+    }
+    out
+}
+
 /// Check the sidecar's publish payload and turn it into a PENDING ceremony intent. Refuses a
 /// payload for another target, owner or chain, one that moves value, asks to broadcast, or is not
 /// a `registerSkill` call.
@@ -997,6 +1046,49 @@ pub fn publish_intent(
         || !data[2..].bytes().all(|b| b.is_ascii_hexdigit())
     {
         return Err("the publish payload is not a registerSkill call".into());
+    }
+    // The calldata must be exactly the canonical encoding of the fields the member is shown: no
+    // other strings, no extra bytes, no unusual offsets.
+    let field = |k: &str| -> Result<&str, String> {
+        let v = payload
+            .get(k)
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| format!("the publish payload has no {k}"))?;
+        if v.len() > MAX_PUBLISH_FIELD {
+            return Err(format!("the publish payload's {k} is too long"));
+        }
+        Ok(v)
+    };
+    let name = field("name")?;
+    if name.is_empty() {
+        return Err("the publish payload has no skill name".into());
+    }
+    let tags: Vec<String> = payload
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .ok_or("the publish payload has no tags")?
+        .iter()
+        .map(|t| {
+            t.as_str()
+                .filter(|s| s.len() <= MAX_PUBLISH_FIELD)
+                .map(str::to_string)
+                .ok_or_else(|| "the publish payload has a tag that is not text".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if tags.len() > MAX_PUBLISH_TAGS {
+        return Err("the publish payload has too many tags".into());
+    }
+    let expected = encode_register_skill(
+        name,
+        field("version")?,
+        field("manifest_cid")?,
+        field("description")?,
+        &tags,
+    );
+    if data[2..] != hex::encode(expected) {
+        return Err(
+            "the publish calldata does not encode the skill shown; nothing was prepared".into(),
+        );
     }
     let raw = json!({
         "from": owner,

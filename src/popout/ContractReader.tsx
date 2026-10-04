@@ -9,7 +9,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { parseEther } from "viem";
 import { decodeResult, encodeCall, parseAbi, parseArg, type ReaderFunction } from "../contractReader/abi";
-import { describeFunction, explainPrompt } from "../contractReader/explain";
+import { describeFunction } from "../contractReader/explain";
 import type { ContractClient, ReaderSource } from "./contractChannel";
 
 const DEFAULT_FORK = "http://127.0.0.1:8545";
@@ -244,14 +244,8 @@ export function ContractReader({ client }: { client: ContractClient }) {
     },
     async explain(fn: ReaderFunction): Promise<Outcome> {
       if (!loaded) throw new Error("load an address first");
-      const prompt = explainPrompt({
-        address: loaded.address,
-        contractName: loaded.source?.contractName ?? null,
-        verified: origin ?? "pasted",
-        fn,
-        source: origin === "pasted" ? null : loaded.source?.source ?? null,
-      });
-      const r = await client.call("explain", { prompt });
+      // The main window builds the prompt from this ABI entry and its own CitrateScan read.
+      const r = await client.call("explain", { address: loaded.address, target: loaded.target, fn: fn.item as unknown as Record<string, unknown> });
       return { kind: "ok", text: `Hermes (${r.by}): ${r.text}` };
     },
   };

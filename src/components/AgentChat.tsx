@@ -15,7 +15,7 @@ import { InterviewCard, looksLikeBuildAsk } from "./InterviewCard";
 import { FileChangeCard } from "./FileChangeCard";
 import { agentUndo, undoChange } from "../shell/slices/agentUndo";
 import { bridge } from "../bridge";
-import { openPopout } from "../popout/appHost";
+import { openDiff, openPopout } from "../popout/appHost";
 import { BrowserControls } from "./BrowserControls";
 import { tauriBrowserApi } from "../popout/browserApi";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -179,7 +179,12 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             {undo.cards
               .filter((c) => c.msgId === m.id)
               .map((c) => (
-                <FileChangeCard key={c.session + ":" + c.seq} card={c} onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)} />
+                <FileChangeCard
+                  key={c.session + ":" + c.seq}
+                  card={c}
+                  onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)}
+                  onDiff={BRIDGE_MODE === "tauri" ? (session, seq) => void openDiff(session, seq) : undefined}
+                />
               ))}
             {/* HUP-S3.3: a saved brief's workflow runs from its card (sidecar loop; its checks decide). */}
             {m.brief && (

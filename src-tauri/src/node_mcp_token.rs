@@ -23,6 +23,9 @@ pub const TOKEN_PREFIX: &str = "cnmcp_";
 const TOKEN_BYTES: usize = 32;
 /// The most live tokens a member can hold at once (one per client is the expected shape).
 pub const MAX_TOKENS: usize = 16;
+/// The most in-memory tokens live at once (HUP-S4.1: one per Hermes start; earlier ones are
+/// revoked when a new one is minted).
+pub const MAX_EPHEMERAL_TOKENS: usize = 4;
 /// The longest label accepted (labels are shown in the approval UI and in ceremony origins).
 pub const MAX_LABEL_CHARS: usize = 48;
 
@@ -38,6 +41,10 @@ pub struct TokenRecord {
     pub sha256: String,
     /// Creation time (Unix ms).
     pub created_ms: u64,
+    /// A token limited to the read tools: it is not offered, and may not call, any write tool.
+    /// Core issues one for Hermes's own use of the server; member-issued tokens are full.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 /// The webview view of a token: no hash, no plaintext.
@@ -49,6 +56,8 @@ pub struct TokenView {
     pub created_ms: u64,
     /// Last successful use this app session (Unix ms), if any. Not persisted.
     pub last_used_ms: Option<u64>,
+    /// Limited to the read tools (see [`TokenRecord::read_only`]).
+    pub read_only: bool,
 }
 
 /// The result of issuing a token: the ONLY time the plaintext exists outside the client.
@@ -67,10 +76,15 @@ pub struct TokenIssued {
 pub struct Authorized {
     pub id: String,
     pub label: String,
+    /// The token is limited to the read tools.
+    pub read_only: bool,
 }
 
 struct Inner {
     records: Vec<TokenRecord>,
+    /// HUP-S4.1: tokens that live only in memory (the built-in Hermes entry's, minted at each
+    /// Hermes start). Only their hash is held, and never on disk; an app restart ends them.
+    ephemeral: Vec<TokenRecord>,
     /// id → last use (Unix ms), this session only.
     last_used: std::collections::BTreeMap<String, u64>,
 }
@@ -83,6 +97,34 @@ pub struct TokenStore {
 
 fn sha256_hex(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
+}
+
+/// Domain tag for the server identity proof.
+const IDENTITY_DOMAIN: &[u8] = b"citrate-node-mcp/identity/v1";
+
+/// HMAC-SHA256 keyed by a token's SHA-256 (which only Core's owner-only token file and the token
+/// holder know) over the domain tag and the challenge, hex.
+fn identity_proof(token_sha256_hex: &str, nonce: &[u8; 32]) -> Option<String> {
+    use hmac::Mac as _;
+    let key = hex::decode(token_sha256_hex).ok()?;
+    let mut m = <hmac::Hmac<Sha256> as hmac::Mac>::new_from_slice(&key).ok()?;
+    m.update(IDENTITY_DOMAIN);
+    m.update(nonce);
+    Some(hex::encode(m.finalize().into_bytes()))
+}
+
+/// The proof a server holding `token` gives for `nonce` (computed by the stdio shim).
+pub fn identity_proof_for(token: &str, nonce: &[u8; 32]) -> String {
+    identity_proof(&sha256_hex(token), nonce).unwrap_or_default()
+}
+
+/// Whether `proofs` (comma-separated) contains `mine`, comparing each in constant time.
+pub fn proofs_contain(proofs: &str, mine: &str) -> bool {
+    let mut hit = false;
+    for p in proofs.split(',') {
+        hit |= ct_eq(p.trim().as_bytes(), mine.as_bytes());
+    }
+    hit && !mine.is_empty()
 }
 
 /// Constant-time equality for two equal-length byte strings (length is public: always 64 hex).
@@ -119,6 +161,7 @@ impl TokenStore {
             path: None,
             inner: Mutex::new(Inner {
                 records: Vec::new(),
+                ephemeral: Vec::new(),
                 last_used: Default::default(),
             }),
         }
@@ -136,6 +179,7 @@ impl TokenStore {
             path: Some(path),
             inner: Mutex::new(Inner {
                 records,
+                ephemeral: Vec::new(),
                 last_used: Default::default(),
             }),
         }
@@ -153,15 +197,8 @@ impl TokenStore {
         write_private(path, body.as_bytes())
     }
 
-    /// Issue a new token for `label`. Returns the plaintext once.
-    pub fn issue(&self, label: &str, now_ms: u64) -> Result<TokenIssued, String> {
-        let label = normalize_label(label)?;
-        let mut inner = self.lock();
-        if inner.records.len() >= MAX_TOKENS {
-            return Err(format!(
-                "You already have {MAX_TOKENS} connect tokens. Revoke one you no longer use first."
-            ));
-        }
+    /// A fresh token and an id unused by any live record.
+    fn mint(inner: &Inner, label: &str, read_only: bool, now_ms: u64) -> (TokenRecord, String) {
         let mut secret = [0u8; TOKEN_BYTES];
         OsRng.fill_bytes(&mut secret);
         let token = format!("{TOKEN_PREFIX}{}", hex::encode(secret));
@@ -170,16 +207,46 @@ impl TokenStore {
         let id = loop {
             OsRng.fill_bytes(&mut id_bytes);
             let candidate = hex::encode(id_bytes);
-            if !inner.records.iter().any(|r| r.id == candidate) {
+            if !inner
+                .records
+                .iter()
+                .chain(inner.ephemeral.iter())
+                .any(|r| r.id == candidate)
+            {
                 break candidate;
             }
         };
         let record = TokenRecord {
-            id: id.clone(),
-            label: label.clone(),
+            id,
+            label: label.to_string(),
             sha256: sha256_hex(&token),
             created_ms: now_ms,
+            read_only,
         };
+        (record, token)
+    }
+
+    /// Issue a new token for `label`. Returns the plaintext once.
+    pub fn issue(&self, label: &str, now_ms: u64) -> Result<TokenIssued, String> {
+        self.issue_scoped(label, false, now_ms)
+    }
+
+    /// Issue a new token limited to the read tools (`read_only`) or a full one.
+    pub fn issue_scoped(
+        &self,
+        label: &str,
+        read_only: bool,
+        now_ms: u64,
+    ) -> Result<TokenIssued, String> {
+        let label = normalize_label(label)?;
+        let mut inner = self.lock();
+        if inner.records.len() >= MAX_TOKENS {
+            return Err(format!(
+                "You already have {MAX_TOKENS} connect tokens. Revoke one you no longer use first."
+            ));
+        }
+        let (record, token) = Self::mint(&inner, &label, read_only, now_ms);
+        let id = record.id.clone();
         let mut next = inner.records.clone();
         next.push(record);
         self.persist(&next)?;
@@ -192,6 +259,47 @@ impl TokenStore {
         })
     }
 
+    /// HUP-S4.1: issue a token held in memory only (its hash; nothing is written to disk), for a
+    /// client inside this app (limited to the read tools when `read_only`). It ends when it is
+    /// revoked or the app exits.
+    pub fn issue_ephemeral(
+        &self,
+        label: &str,
+        read_only: bool,
+        now_ms: u64,
+    ) -> Result<TokenIssued, String> {
+        let label = normalize_label(label)?;
+        let mut inner = self.lock();
+        if inner.ephemeral.len() >= MAX_EPHEMERAL_TOKENS {
+            return Err("too many in-app connect tokens are live".to_string());
+        }
+        let (record, token) = Self::mint(&inner, &label, read_only, now_ms);
+        let id = record.id.clone();
+        inner.ephemeral.push(record);
+        Ok(TokenIssued {
+            id,
+            label,
+            created_ms: now_ms,
+            connect_token: token,
+        })
+    }
+
+    /// HUP-S4.1: the ids of the in-memory tokens.
+    pub fn ephemeral_ids(&self) -> Vec<String> {
+        self.lock().ephemeral.iter().map(|r| r.id.clone()).collect()
+    }
+
+    /// HUP-S4.1: whether `presented` is a live in-memory token (does not mark it used).
+    pub fn is_live_ephemeral(&self, presented: &str) -> bool {
+        let digest = sha256_hex(presented);
+        let inner = self.lock();
+        let mut hit = false;
+        for r in &inner.ephemeral {
+            hit |= ct_eq(r.sha256.as_bytes(), digest.as_bytes());
+        }
+        hit
+    }
+
     /// Check a presented token. Returns the matching record's id + label, or `None`. Every live
     /// record is compared (no early exit), each in constant time.
     pub fn verify(&self, presented: &str, now_ms: u64) -> Option<Authorized> {
@@ -202,11 +310,12 @@ impl TokenStore {
         let digest = sha256_hex(presented);
         let mut inner = self.lock();
         let mut hit: Option<Authorized> = None;
-        for r in &inner.records {
+        for r in inner.records.iter().chain(inner.ephemeral.iter()) {
             if ct_eq(r.sha256.as_bytes(), digest.as_bytes()) && hit.is_none() {
                 hit = Some(Authorized {
                     id: r.id.clone(),
                     label: r.label.clone(),
+                    read_only: r.read_only,
                 });
             }
         }
@@ -216,9 +325,27 @@ impl TokenStore {
         hit
     }
 
+    /// One identity proof per live token for `nonce`: the server shows it holds the token a client
+    /// is about to send, before the client sends it (see `node_mcp_http::run_stdio_shim`).
+    /// In-memory tokens (Hermes's) are included: their holder checks the server the same way.
+    pub fn identity_proofs(&self, nonce: &[u8; 32]) -> Vec<String> {
+        let inner = self.lock();
+        inner
+            .records
+            .iter()
+            .chain(inner.ephemeral.iter())
+            .filter_map(|r| identity_proof(&r.sha256, nonce))
+            .collect()
+    }
+
     /// Revoke (delete) the token `id`. Returns whether a token was removed.
     pub fn revoke(&self, id: &str) -> Result<bool, String> {
         let mut inner = self.lock();
+        if let Some(i) = inner.ephemeral.iter().position(|r| r.id == id) {
+            inner.ephemeral.remove(i);
+            inner.last_used.remove(id);
+            return Ok(true);
+        }
         let before = inner.records.len();
         let next: Vec<TokenRecord> = inner
             .records
@@ -241,11 +368,13 @@ impl TokenStore {
         inner
             .records
             .iter()
+            .chain(inner.ephemeral.iter())
             .map(|r| TokenView {
                 id: r.id.clone(),
                 label: r.label.clone(),
                 created_ms: r.created_ms,
                 last_used_ms: inner.last_used.get(&r.id).copied(),
+                read_only: r.read_only,
             })
             .collect()
     }

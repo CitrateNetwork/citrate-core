@@ -10,6 +10,7 @@ import { WebSearchSettings } from "./WebSearchSettings";
 function status(over: Partial<HermesWebStatus> = {}): HermesWebStatus {
   return {
     settings: DEFAULT_WEB_SETTINGS,
+    managedChromium: null,
     searxngFound: false,
     jinaKeyFileFound: false,
     jevKeyFileFound: false,
@@ -74,6 +75,8 @@ describe("WebSearchSettings", () => {
     const { io } = tauriIo(status());
     const { host, root } = await mount(io);
     expect(q<HTMLInputElement>(host, "web-search-toggle")?.checked).toBe(false);
+    expect(q<HTMLInputElement>(host, "browser-toggle")?.checked).toBe(false);
+    expect(q(host, "browser-state")?.textContent).toContain("not installed yet");
     expect(q(host, "web-local-only")).toBeTruthy();
     expect(q(host, "searxng-state")?.textContent).toContain("not installed");
     expect(q(host, "jina-notice")).toBeNull();
@@ -114,6 +117,38 @@ describe("WebSearchSettings", () => {
     act(() => root.unmount());
   });
 
+  it("the browser switch is saved on its own and says where the browser comes from", async () => {
+    const { io, calls } = tauriIo(status());
+    const { host, root } = await mount(io);
+    const toggle = q<HTMLInputElement>(host, "browser-toggle");
+    expect(toggle?.disabled).toBe(false);
+    expect(toggle?.getAttribute("type")).toBe("checkbox");
+    expect(toggle?.closest("label")?.textContent).toContain("its own browser");
+    await click(toggle);
+    expect(calls.filter((c) => c.cmd === "hermes_web_settings_set")).toHaveLength(0);
+    expect(q(host, "web-local-only")).toBeTruthy();
+    await click(q(host, "web-save"));
+    const set = calls.filter((c) => c.cmd === "hermes_web_settings_set");
+    expect(set).toHaveLength(1);
+    const sent = set[0].args?.settings as HermesWebStatus["settings"];
+    expect(sent.browserEnabled).toBe(true);
+    expect(sent.searchEnabled).toBe(false);
+    expect(sent.jevEnabled).toBe(false);
+    act(() => root.unmount());
+    const installed = tauriIo(status({ managedChromium: "/data/components/chromium/154/chrome" }));
+    const m = await mount(installed.io);
+    expect(q(m.host, "browser-state")?.textContent).toContain("installed and will be used");
+    act(() => m.root.unmount());
+  });
+
+  it("the browser switch is disabled in the browser preview", async () => {
+    const invoke = vi.fn();
+    const { host, root } = await mount({ mode: "sim", invoke: invoke as WebSettingsIo["invoke"] });
+    expect(q<HTMLInputElement>(host, "browser-toggle")?.disabled).toBe(true);
+    expect(q<HTMLInputElement>(host, "browser-toggle")?.checked).toBe(false);
+    act(() => root.unmount());
+  });
+
   it("flags a relative SearXNG path and reports a load error honestly", async () => {
     const { io } = tauriIo(status({ loadError: "the web settings file is not valid; defaults are in use" }));
     const { host, root } = await mount(io);
@@ -126,6 +161,7 @@ describe("WebSearchSettings", () => {
   it("uses no em-dashes in member-facing text", async () => {
     const { io } = tauriIo(status());
     const { host, root } = await mount(io);
+    await click(q(host, "browser-toggle"));
     await click(q(host, "web-search-toggle"));
     await click(q(host, "reader-jina"));
     await click(q(host, "jev-toggle"));

@@ -12,6 +12,7 @@ import type {
   ClusterPeer,
   ClusterStatus,
   DeviceLinks,
+  DeviceRevokePrepared,
 } from "../domains";
 import type { CeremonyView } from "../types";
 
@@ -48,8 +49,11 @@ export const tauriCluster: ClusterDomain = {
   async linkDeviceReject(id) {
     await invoke("device_link_reject", { id });
   },
-  revokeDevice(device): Promise<DeviceLinks> {
-    return invoke<DeviceLinks>("device_link_revoke", { device });
+  revokeDevicePrepare(device): Promise<DeviceRevokePrepared> {
+    return invoke<DeviceRevokePrepared>("device_link_revoke_prepare", { device });
+  },
+  revokeDevice(confirmId): Promise<DeviceLinks> {
+    return invoke<DeviceLinks>("device_link_revoke", { confirmId });
   },
   exportDeviceLink(): Promise<string> {
     return invoke<string>("device_link_export");

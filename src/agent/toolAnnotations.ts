@@ -13,7 +13,7 @@
 // that other people can author (on-chain registries, group names and rosters, the opt-in
 // directory, a saved skill body that may have been written from untrusted content) is untrusted.
 // =====================================================================
-import { AGENT_TOOLS } from "./harness";
+import { AGENT_TOOLS } from "./harness.ts";
 
 export type ToolEffect = "none" | "write" | "spend" | "sign";
 export type ToolTrust = "trusted" | "untrusted";
@@ -42,6 +42,7 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   skills_list: { effect: "none", trust: "untrusted" }, // permissionless on-chain SkillRegistry
   skill_write: { effect: "write", trust: "trusted" },
   skill_run: { effect: "none", trust: "untrusted" }, // returns stored instructions into the loop
+  belnap_codec: { effect: "none", trust: "trusted" }, // US-9.2 AC2: pure local Q16 byte math over the member's own arguments
   widget_create: { effect: "write", trust: "trusted" }, // HUP-S10.3: saves a sandboxed tile, after approval
   models_list: { effect: "none", trust: "untrusted" }, // permissionless on-chain ModelRegistry
   contract_deploy: { effect: "sign", trust: "trusted" }, // opens a SignatureCeremony for a creation tx

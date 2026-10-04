@@ -15,8 +15,8 @@
 //!   ceremony, which signs and broadcasts. Writes target 40204 only. A failed estimate is a
 //!   refusal with the node's reason, never a guessed gas limit.
 //!
-//! The pop-out window itself holds no app commands (least privilege, `capabilities/popout.json`).
-//! It asks the main window over the typed bridge, and the main window calls these commands.
+//! The pop-out window itself holds none of these commands (least privilege). It hands requests to
+//! Rust (`popout_contract.rs`, which checks the sender), and the main window calls these commands.
 use serde::Serialize;
 use sha3::{Digest as _, Keccak256};
 

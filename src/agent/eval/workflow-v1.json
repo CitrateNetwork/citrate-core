@@ -1,0 +1,939 @@
+{
+  "version": "workflow-v1",
+  "provenance": {
+    "author": "Larry Klosowski + Claude Opus 5.5",
+    "created": "2026-10-04",
+    "purpose": "HUP-S1.7 / gate g1-eval step-success half: multi-step workflows run through a real sidecar session (POST /sessions/:id/workflows, agent-loop run_workflow), judged by the sidecar's own closed verifier set. Core tool results come from per-task fixtures (belnap_codec runs for real); approved writes stand in for the member's click. Hand-authored, not generated from a model.",
+    "disjointFromTraining": true,
+    "note": "Must stay disjoint from any E9 training trajectories. Changing a task means workflow-v2, not an edit in place."
+  },
+  "tasks": [
+    {
+      "id": "wf-node-health",
+      "title": "Read the node, then report from what was read",
+      "fixtures": {
+        "node_status": {
+          "height": 48213,
+          "peers": 7,
+          "syncing": false,
+          "validator": "inactive"
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "read",
+          "instruction": "Check my node's sync status.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "node_status"
+            }
+          ]
+        },
+        {
+          "id": "report",
+          "instruction": "What block height did you just see? Answer with the number.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "48213"
+            },
+            {
+              "kind": "tool_not_called",
+              "tool": "node_status"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-staking-claimable",
+      "title": "Staking position, then the claimable amount",
+      "fixtures": {
+        "staking_status": {
+          "staked": "1000 SALT",
+          "claimable": "12.5 SALT",
+          "lockedUntil": "2027-10-01"
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "read",
+          "instruction": "Show me my staking position.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "staking_status"
+            }
+          ]
+        },
+        {
+          "id": "claimable",
+          "instruction": "How much SALT can I claim right now?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "12.5"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-group-roster",
+      "title": "Find a group, then read its roster",
+      "fixtures": {
+        "groups_list": [
+          {
+            "id": "g-7f3a",
+            "name": "builders",
+            "members": 3
+          },
+          {
+            "id": "g-11c0",
+            "name": "family",
+            "members": 4
+          }
+        ],
+        "group_roster": {
+          "group": "builders",
+          "members": [
+            {
+              "name": "ada",
+              "role": "owner"
+            },
+            {
+              "name": "lin",
+              "role": "member"
+            },
+            {
+              "name": "sam",
+              "role": "member"
+            }
+          ]
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "groups",
+          "instruction": "List the groups I'm in.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "groups_list"
+            }
+          ]
+        },
+        {
+          "id": "roster",
+          "instruction": "Who is in the builders group?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "group_roster"
+            },
+            {
+              "kind": "answer_contains",
+              "text": "ada"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-search-then-remember",
+      "title": "Look something up, then remember it on request",
+      "fixtures": {
+        "memory_search": {
+          "results": [
+            {
+              "title": "Faucet",
+              "snippet": "The testnet faucet allows one request per day."
+            }
+          ]
+        }
+      },
+      "approve": [
+        "memory_assert"
+      ],
+      "docs": {},
+      "steps": [
+        {
+          "id": "search",
+          "instruction": "Search my notes for the faucet limit.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "memory_search"
+            }
+          ]
+        },
+        {
+          "id": "remember",
+          "instruction": "Remember this fact for me: the testnet faucet allows one request per day.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "memory_assert"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-belnap-decode",
+      "title": "Decode a 0x0110 output, then explain the disagreement",
+      "fixtures": {},
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "decode",
+          "instruction": "Decode this 0x0110 BELNAP_AGGREGATE output for 4 dimensions: 0x000000000000d00000000000000000000000000000002000ffffffffffff700001030001",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "belnap_codec"
+            },
+            {
+              "kind": "json_field_equals",
+              "tool": "belnap_codec",
+              "pointer": "/states/1/name",
+              "value": "Both"
+            }
+          ]
+        },
+        {
+          "id": "explain",
+          "instruction": "Which state did dimension 1 come out as? Name it.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "Both"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step",
+        "paraconsensus",
+        "us-9.2"
+      ]
+    },
+    {
+      "id": "wf-belnap-encode",
+      "title": "Encode a 0x0110 input, then report its gas budget",
+      "fixtures": {},
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "encode",
+          "instruction": "Prepare the 0x0110 input for two participants over two dimensions: A has embedding [1, -0.5], confidence [1, 1], weight 0.5; B has embedding [0.25, 0.5], confidence [0.9, 0.9], weight 0.5. threshold_pos 0.8, threshold_neg 0.3.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "belnap_codec"
+            },
+            {
+              "kind": "json_field_equals",
+              "tool": "belnap_codec",
+              "pointer": "/bytes",
+              "value": 104
+            }
+          ]
+        },
+        {
+          "id": "gas",
+          "instruction": "What gas budget should a contract forward for that call? Answer with the number.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "2200"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step",
+        "paraconsensus",
+        "us-9.2"
+      ]
+    },
+    {
+      "id": "wf-verified-source",
+      "title": "Read a verified contract, then answer from it",
+      "fixtures": {
+        "get_verified_source": {
+          "address": "0x2222222222222222222222222222222222222222",
+          "status": "verified",
+          "contractName": "Counter",
+          "compilerVersion": "v0.8.26+commit.8a97fa7a",
+          "source": "contract Counter { uint256 public n; function inc() external { n += 1; } }"
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "read",
+          "instruction": "Is the contract at 0x2222222222222222222222222222222222222222 verified? Pull its source.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "get_verified_source"
+            }
+          ]
+        },
+        {
+          "id": "compiler",
+          "instruction": "Which compiler version was it built with?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "0.8.26"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-skills-run",
+      "title": "Find a skill, then run it",
+      "fixtures": {
+        "skills_list": {
+          "local": [
+            {
+              "name": "daily-brief",
+              "description": "Summarise node, staking and group activity."
+            }
+          ]
+        },
+        "skill_run": "Running skill \"daily-brief\". Steps: read node_status, read staking_status, summarise."
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "list",
+          "instruction": "Which skills do I have installed?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "skills_list"
+            }
+          ]
+        },
+        {
+          "id": "run",
+          "instruction": "Run the daily-brief skill.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "skill_run"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-journal",
+      "title": "Read the journal, then append on request",
+      "fixtures": {
+        "journal_read": {
+          "entries": [
+            {
+              "date": "2026-10-03",
+              "text": "Reviewed the faucet PR."
+            }
+          ]
+        }
+      },
+      "approve": [
+        "journal_append"
+      ],
+      "docs": {},
+      "steps": [
+        {
+          "id": "read",
+          "instruction": "What did I write in my journal most recently?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "journal_read"
+            }
+          ]
+        },
+        {
+          "id": "append",
+          "instruction": "Add a journal entry: shipped eval v2 today.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "journal_append"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-models",
+      "title": "List models, then name the larger one",
+      "fixtures": {
+        "models_list": {
+          "local": [
+            {
+              "name": "gemma-4-E4B-it-Q4_0",
+              "params": "4B"
+            },
+            {
+              "name": "Qwen3.8-27B-Q4_0",
+              "params": "27B"
+            }
+          ]
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "list",
+          "instruction": "Which models are available on this node?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "models_list"
+            }
+          ]
+        },
+        {
+          "id": "pick",
+          "instruction": "Which of those is the larger model? Give its name.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "Qwen3.8-27B"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-team-doc",
+      "title": "Read a team doc over MCP, then count its items",
+      "fixtures": {},
+      "approve": [],
+      "docs": {
+        "deploy-checklist": "Deploy checklist\n1. forge test passes\n2. Slither shows no high findings\n3. fork dry run succeeds\n4. member approves the deploy ceremony\n"
+      },
+      "steps": [
+        {
+          "id": "read",
+          "instruction": "Read the doc named \"deploy-checklist\" from the team notes.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "mcp__fixture__read_doc"
+            }
+          ]
+        },
+        {
+          "id": "count",
+          "instruction": "How many items are on that checklist? Answer with the number.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "4"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-fl-plan",
+      "title": "Explain without starting, then plan a probe round",
+      "fixtures": {
+        "fl_round_plan": {
+          "planHash": "3f2a000000000000000000000000000000000000000000000000000000009b1c",
+          "requires": "probe",
+          "data": "no training data leaves the device",
+          "reward": "none for a probe",
+          "blocked": []
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "explain",
+          "instruction": "Explain in two sentences what a federated training round is. Do not start or plan anything yet.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_not_called",
+              "tool": "fl_round_start"
+            },
+            {
+              "kind": "tool_not_called",
+              "tool": "fl_round_plan"
+            }
+          ]
+        },
+        {
+          "id": "plan",
+          "instruction": "Now plan a probe round for this device.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "fl_round_plan"
+            },
+            {
+              "kind": "tool_not_called",
+              "tool": "fl_round_start"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-fl-plan-hash",
+      "title": "Plan a round, then quote its plan hash",
+      "fixtures": {
+        "fl_round_plan": {
+          "planHash": "3f2a000000000000000000000000000000000000000000000000000000009b1c",
+          "requires": "federated",
+          "loraRank": 8,
+          "blocked": [
+            "no coordinator configured"
+          ]
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "plan",
+          "instruction": "Plan a federated round for this device with the defaults.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "fl_round_plan"
+            }
+          ]
+        },
+        {
+          "id": "hash",
+          "instruction": "What planHash did the plan return? Quote it exactly.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "3f2a000000000000000000000000000000000000000000000000000000009b1c"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-directory-invite",
+      "title": "Find a person, then invite them on request",
+      "fixtures": {
+        "directory_find": {
+          "results": [
+            {
+              "handle": "@ada_builds",
+              "platform": "x",
+              "address": "0x3333333333333333333333333333333333333333"
+            }
+          ]
+        }
+      },
+      "approve": [
+        "group_invite"
+      ],
+      "docs": {},
+      "steps": [
+        {
+          "id": "find",
+          "instruction": "Find the Citrate member whose X handle is @ada_builds.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "directory_find"
+            }
+          ]
+        },
+        {
+          "id": "invite",
+          "instruction": "Invite them to my builders group (group id g-7f3a).",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "group_invite"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step"
+      ]
+    },
+    {
+      "id": "wf-invite-by-name",
+      "title": "Find the right group by name, then invite with its id",
+      "fixtures": {
+        "groups_list": [
+          {
+            "id": "g-7f3a",
+            "name": "builders",
+            "members": 3
+          },
+          {
+            "id": "g-11c0",
+            "name": "family",
+            "members": 4
+          },
+          {
+            "id": "g-90de",
+            "name": "validators-ops",
+            "members": 6
+          }
+        ]
+      },
+      "approve": [
+        "group_invite"
+      ],
+      "docs": {},
+      "steps": [
+        {
+          "id": "groups",
+          "instruction": "List my groups.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "groups_list"
+            }
+          ]
+        },
+        {
+          "id": "invite",
+          "instruction": "Make an invite link for the group whose name mentions validators. Label it for Lin.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "group_invite"
+            },
+            {
+              "kind": "json_field_equals",
+              "tool": "group_invite",
+              "pointer": "/args/group",
+              "value": "g-90de"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step",
+        "harder"
+      ]
+    },
+    {
+      "id": "wf-belnap-roundtrip",
+      "title": "Encode, decode, then judge agreement",
+      "fixtures": {},
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "encode",
+          "instruction": "Encode a 0x0110 input for one participant over one dimension: embedding [0.5], confidence [1], weight 1, threshold_pos 0.8, threshold_neg 0.3.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "belnap_codec"
+            },
+            {
+              "kind": "json_field_equals",
+              "tool": "belnap_codec",
+              "pointer": "/bytes",
+              "value": 48
+            }
+          ]
+        },
+        {
+          "id": "decode",
+          "instruction": "The precompile returned 0x000000000000800001 for that one-dimension call. Decode it.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "belnap_codec"
+            },
+            {
+              "kind": "json_field_equals",
+              "tool": "belnap_codec",
+              "pointer": "/states/0/name",
+              "value": "True"
+            },
+            {
+              "kind": "json_field_equals",
+              "tool": "belnap_codec",
+              "pointer": "/values/0",
+              "value": 0.5
+            }
+          ]
+        },
+        {
+          "id": "judge",
+          "instruction": "Was there any disagreement between the participants in that result? Name the state that tells you.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "True"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step",
+        "harder",
+        "paraconsensus",
+        "us-9.2"
+      ]
+    },
+    {
+      "id": "wf-plan-no-deploy",
+      "title": "Draft a deploy plan without deploying",
+      "fixtures": {},
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "plan",
+          "instruction": "I have an idea for a simple counter contract. Draft the steps to get it deployed on Citrate, but do not deploy anything.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_not_called",
+              "tool": "contract_deploy"
+            },
+            {
+              "kind": "answer_contains",
+              "text": "counter"
+            }
+          ]
+        },
+        {
+          "id": "needs",
+          "instruction": "What exactly would you need from me before a deploy could be proposed?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_not_called",
+              "tool": "contract_deploy"
+            },
+            {
+              "kind": "answer_contains",
+              "text": "bytecode"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step",
+        "harder"
+      ]
+    },
+    {
+      "id": "wf-node-and-stake",
+      "title": "Two reads, then one combined answer",
+      "fixtures": {
+        "node_status": {
+          "height": 48213,
+          "peers": 7,
+          "syncing": false,
+          "validator": "inactive"
+        },
+        "staking_status": {
+          "staked": "1000 SALT",
+          "claimable": "12.5 SALT",
+          "lockedUntil": "2027-10-01"
+        }
+      },
+      "approve": [],
+      "docs": {},
+      "steps": [
+        {
+          "id": "node",
+          "instruction": "Check my node status.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "node_status"
+            }
+          ]
+        },
+        {
+          "id": "stake",
+          "instruction": "Now check my staking position.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "staking_status"
+            }
+          ]
+        },
+        {
+          "id": "sum",
+          "instruction": "In one sentence: is my validator active, and how much SALT is staked?",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "1000"
+            },
+            {
+              "kind": "answer_contains",
+              "text": "inactive"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step",
+        "harder"
+      ]
+    },
+    {
+      "id": "wf-source-remember-recall",
+      "title": "Read source, remember on request, then answer from the source",
+      "fixtures": {
+        "get_verified_source": {
+          "address": "0x4444444444444444444444444444444444444444",
+          "status": "verified",
+          "contractName": "Counter",
+          "compilerVersion": "v0.8.26+commit.8a97fa7a",
+          "source": "contract Counter { uint256 public n; function inc() external { n += 1; } function get() external view returns (uint256) { return n; } }"
+        }
+      },
+      "approve": [
+        "memory_assert"
+      ],
+      "docs": {},
+      "steps": [
+        {
+          "id": "read",
+          "instruction": "Pull the verified source of 0x4444444444444444444444444444444444444444.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "get_verified_source"
+            }
+          ]
+        },
+        {
+          "id": "remember",
+          "instruction": "Remember for me that the contract at 0x4444444444444444444444444444444444444444 is the Counter contract.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "tool_succeeded",
+              "tool": "memory_assert"
+            }
+          ]
+        },
+        {
+          "id": "fn",
+          "instruction": "Which function in that source increments the counter? Give its name.",
+          "max_attempts": 2,
+          "verifiers": [
+            {
+              "kind": "answer_contains",
+              "text": "inc"
+            },
+            {
+              "kind": "tool_not_called",
+              "tool": "contract_deploy"
+            }
+          ]
+        }
+      ],
+      "tags": [
+        "multi-step",
+        "harder"
+      ]
+    }
+  ]
+}

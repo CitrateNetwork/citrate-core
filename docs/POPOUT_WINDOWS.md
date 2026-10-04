@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01T09:00:00Z
-branch: hup/n3-popouts-monitor
+branch: hup/n3-popouts-monitor (updated on hup/n6-web-browse, 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
 status: draft
 wp: HUP-S5.4, HUP-S7.6
@@ -10,9 +10,9 @@ wp: HUP-S5.4, HUP-S7.6
 
 Pop-outs are separate Tauri windows that show one view of the app (planset D-36). The framework
 landed with HUP-S5.4; the first pop-out is the Activity monitor (HUP-S7.6, US-7.4). The Browser
-pop-out followed with HUP-S5.1 (see [HERMES_BROWSER.md](HERMES_BROWSER.md)). The Contract reader,
-Code and diff, and Media player pop-outs are on the allowlist but have no view yet, so the app
-refuses to open them and says "not built yet".
+pop-out followed with HUP-S5.1 (see [HERMES_BROWSER.md](HERMES_BROWSER.md)), the Contract reader
+with HUP-S6.7, the Media player with HUP-S10.1, and Code and diff with HUP-S5.4 (below). Every kind
+on the allowlist now has a view; a kind added later without one is refused with "not built yet".
 
 ## Rules the framework keeps
 
@@ -21,7 +21,8 @@ refuses to open them and says "not built yet".
 | Closed allowlist: `browser`, `contract`, `monitor`, `diff`, `media`, labels `popout-<kind>` | `src-tauri/src/popout.rs` (`PopoutKind`), `src/popout/kinds.ts`, `capabilities/popout.json`; a Rust test keeps all three in step |
 | Only the main window opens a pop-out | `check_open_request` in `popout.rs` |
 | One window per kind; opening again focuses it | `open_sync` in `popout.rs` |
-| Least privilege: no app commands, no shell, no fs, no opener | `capabilities/popout.json` grants only `core:event:allow-listen`, `allow-unlisten`, `allow-emit-to`; the app commands are allowed for the main window only (below) |
+| Least privilege: no app commands, no shell, no fs, no opener | `capabilities/popout.json` grants only `core:event:allow-listen`, `allow-unlisten`, `allow-emit-to`; the app commands are allowed for the main window only (below). One exception, below: the Contract reader's relay |
+| A request is run only if its sender is the window that may send it | Tauri events carry no sender and every pop-out may emit to the main window, so the Contract reader's requests go through Rust instead: `popout_contract_send` (granted to `popout-contract` only by `capabilities/popout-contract.json`, and checked against the caller's label in `popout_contract.rs`) queues them, and the main window drains the queue with `popout_contract_take`. A request sent over the event bus is ignored, and the explanation prompt is built in the main window from the function's ABI entry |
 | Only the app's own pages load in a pop-out | `navigation_allowed` (`tauri://localhost`, `http(s)://tauri.localhost`, the Vite dev server in debug builds) |
 | Size and position persist per kind | `popouts.json` in the app config dir; a saved spot that is no longer on any screen is dropped and the window centres |
 | Closing never kills work | a pop-out's close only saves its geometry; when the main window closes, the pop-outs close with it, so quitting behaves as before |
@@ -36,7 +37,11 @@ window keeps exactly the commands it had.
 
 **When you add a command, add it to `generate_handler!` in `lib.rs` and to
 `permissions/main-window.toml`.** `popout_tests.rs` fails if the two lists differ, and it also
-resolves the ACL with Tauri's own resolver to prove no pop-out label can call any app command.
+resolves the ACL with Tauri's own resolver to prove no pop-out label can call any app command,
+except `popout_contract_send` from `popout-contract` (`permissions/contract-reader.toml`).
+On 2026-10-04 (branch `hup/n6-web-browse`) the list holds 331 commands, the newest being
+`hermes_checkpoint_diff`; recount with `grep -c '^  "' src-tauri/permissions/main-window.toml`
+rather than trusting this number.
 
 ## The message bridge
 
@@ -54,6 +59,9 @@ Every message has `v: 1` and is validated on receipt; anything malformed is drop
 | pop-out to main | `monitor.undo.request {session, seq}` | undo one agent file change (`seq`), or the whole session (`seq: null`) (HUP-S2.9) |
 | main to monitor | `monitor.undo {panel}` | the agent session's recent file changes, sent with each snapshot (HUP-S2.9) |
 | main to browser | `browser.view {view}` | the browser status and latest screencast frame, re-checked on receipt (`src/popout/browserView.ts`) |
+| pop-out to main | `diff.request {id, op, args}` | HUP-S5.4, Code and diff: `initial`, `steps {session}` or `diff {session, seq}`; read-only (`src/popout/diffChannel.ts`) |
+| main to diff | `diff.response {id, ok, result or error}` | the answer, checked again by the pop-out before it renders |
+| main to diff | `diff.focus {session, seq}` | a "Diff" button was pressed while the window is open |
 
 ## Activity monitor: data sources (Rule 7)
 
@@ -102,8 +110,33 @@ local data) but neither the file-tools switch nor a grants file, so the agent ma
 until a Grants screen exists and turning agent writes on is signed off. The runtime side is
 documented in `agent-sidecar/src/files.rs` (citrate-agent-runtime).
 
+## Code and diff (HUP-S5.4, over the S2.9 checkpoints)
+
+Each agent file change card in the chat has a Diff button (desktop app). It opens the Code and diff
+pop-out on that change; opened from nowhere in particular, the pop-out starts on the latest agent
+session. The pop-out lists the session's checkpointed changes (newest first, `aria-pressed` toggle
+buttons) and, for the selected one, each path it touched: a line diff with three lines of context
+when both sides are text (a new or removed file counts as text on one side), otherwise one sentence
+per side.
+
+| Field | Source | When it is not known |
+|---|---|---|
+| Changes | `hermes_checkpoints` (the sidecar's `GET /checkpoints/:session`) | "not enabled" with the sidecar's reason |
+| Before | the step's own snapshot in the checkpoint store, hash-checked (`GET /checkpoints/:session/steps/:seq/diff` through `hermes_checkpoint_diff`) | "missing" or "does not match its checksum" |
+| After | the file on disk, only while it still holds exactly what the step left there | "this step was undone", "the file changed after this step (now ...)", or "still being written" |
+| Binary or large content | described with its size, never sent (256 KiB per side) | n/a |
+
+Read-only: the pop-out cannot undo; undo stays on the card and in the Activity monitor. A refusal
+from the sidecar (pruned, not found, undo not enabled, an older sidecar) is shown as an alert with
+its reason. Accessibility: a main landmark named by its heading, each file a region named by its
+path, added and removed lines said in text as well as colour, and axe-core finds nothing in the
+connecting and loaded states (`src/a11y/popouts.a11y.test.tsx`).
+
 ## Not done
 
+- Code and diff has not been clicked through in the packaged app (the agent file tools are off by
+  default, so no member session produces a change yet). Covered by sidecar and checkpoint-store
+  tests on a real filesystem and by core unit, component and accessibility tests.
 - Not run in the packaged app: covered by unit and component tests, the capability and ACL tests,
   and Tauri's ACL resolver in a test. No manual click-through on a real machine yet.
 - Token usage, tokens per second, and gateway spend are shown as unknown: no source exists yet.
