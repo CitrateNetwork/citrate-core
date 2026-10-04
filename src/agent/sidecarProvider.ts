@@ -590,6 +590,15 @@ export function createSidecarProvider(
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
     const fresh = page.events.filter((e) => e.seq > saved.lastSeq);
+    // The sidecar keeps a bounded event log: if events after the saved point were dropped while
+    // the view was away, say so instead of skipping them silently.
+    const lost = fresh.length > 0 ? fresh[0].seq - saved.lastSeq - 1 : 0;
+    if (lost > 0) {
+      opts.callbacks.onActivity?.({
+        kind: "notice",
+        text: `${lost === 1 ? "1 event" : `${lost} events`} from Hermes while the app was away ${lost === 1 ? "is" : "are"} no longer kept, so part of that activity cannot be shown.`,
+      });
+    }
     let interrupted = 0;
     for (const callId of saved.inFlight) {
       if (fresh.some((e) => e.event.type === "tool_result" && e.event.call_id === callId)) continue;

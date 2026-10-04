@@ -247,6 +247,28 @@ describe("HUP-S1.1 the view picks its session back up after a reload", () => {
     expect(sc.posted).toEqual([]);
   });
 
+  it("events the sidecar no longer keeps (its log is bounded) are reported as a gap, not skipped silently", async () => {
+    const sc = fakeSidecar();
+    const store = memoryStore();
+    store.save({ v: 1, id: "s1-18f0a", lastSeq: 1, inFlight: [] });
+    sc.run({
+      before: [
+        { type: "step_start", step: 1 },
+        { type: "assistant_delta", step: 1, text: "lost " },
+        { type: "assistant_delta", step: 1, text: "text " },
+        { type: "final", content: "lost text and the rest" },
+        { type: "done", outcome: "answered" },
+      ],
+      after: [],
+    });
+    // The sidecar dropped seq 2..3 from its kept log while the view was away.
+    sc.log.splice(1, 2);
+    const b = callbacks();
+    const r = await createSidecarProvider(sc.api, () => "p", () => [], () => null, { store }).reattach!({ callbacks: b.cb });
+    expect(r).toMatchObject({ kind: "resumed", content: "lost text and the rest" });
+    expect(b.notices.some((n) => /2 events/.test(n) && /no longer kept/.test(n))).toBe(true);
+  });
+
   it("an idle saved session is adopted: the next message continues it without opening another", async () => {
     const sc = fakeSidecar();
     const store = memoryStore();
