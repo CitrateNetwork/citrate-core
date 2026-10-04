@@ -33,7 +33,7 @@ use tauri::Manager;
 
 /// The commands this module registers (kept in step with lib.rs and main-window.toml by a test).
 #[cfg(test)]
-pub(crate) const COMMANDS: [&str; 7] = [
+pub(crate) const COMMANDS: [&str; 8] = [
     "daemons_list",
     "daemon_save",
     "daemon_set_paused",
@@ -41,6 +41,7 @@ pub(crate) const COMMANDS: [&str; 7] = [
     "daemon_delete",
     "daemons_claim_due",
     "daemons_finish_run",
+    "daemon_runs_between",
 ];
 
 /// The file the book lives in, under the app's local data dir.
@@ -377,6 +378,26 @@ pub(crate) struct DaemonInput {
     pub budget: Option<BudgetInput>,
 }
 
+/// HUP-S10.3 — where a run's token count came from: the model server's own usage report for every
+/// model call of the run (`measured`), or the character estimate (`estimated`) when any call had
+/// none. Older runners that do not say are `estimated`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenSource {
+    Measured,
+    #[default]
+    Estimated,
+}
+
+impl TokenSource {
+    fn label(self) -> &'static str {
+        match self {
+            TokenSource::Measured => "measured",
+            TokenSource::Estimated => "estimated",
+        }
+    }
+}
+
 /// How a run ended, as the runner reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -427,6 +448,9 @@ struct Record {
     last_run_ms: Option<u64>,
     last_outcome: Option<String>,
     last_note: Option<String>,
+    /// HUP-S10.3: "measured" or "estimated" for the last run's tokens (absent in older files).
+    #[serde(default)]
+    last_token_source: Option<String>,
     running: Option<Running>,
 }
 
@@ -463,6 +487,8 @@ pub(crate) struct DaemonView {
     pub last_run_ms: Option<u64>,
     pub last_outcome: Option<String>,
     pub last_note: Option<String>,
+    /// "measured" | "estimated" for the last run's tokens; None before the first reported run.
+    pub last_token_source: Option<String>,
 }
 
 /// The whole list plus the global pause switch.
@@ -578,6 +604,7 @@ impl Record {
             last_run_ms: self.last_run_ms,
             last_outcome: self.last_outcome.clone(),
             last_note: self.last_note.clone(),
+            last_token_source: self.last_token_source.clone(),
         }
     }
 }
@@ -667,6 +694,7 @@ impl DaemonBook {
                     last_run_ms: None,
                     last_outcome: None,
                     last_note: None,
+                    last_token_source: None,
                     running: None,
                 });
                 id
@@ -763,7 +791,9 @@ impl DaemonBook {
     }
 
     /// Record the end of a claimed run: its outcome, the tokens it used (charged as reported, even
-    /// past its allowance) and a one-line note.
+    /// past its allowance) and a one-line note. Tokens count as estimated. (Tests; the command
+    /// uses [`Self::finish_run_with`].)
+    #[cfg(test)]
     pub(crate) fn finish_run(
         &mut self,
         id: &str,
@@ -773,18 +803,53 @@ impl DaemonBook {
         note: &str,
         now_ms: u64,
     ) -> Result<(), String> {
+        self.finish_run_with(
+            id,
+            run_id,
+            tokens_used,
+            TokenSource::Estimated,
+            outcome,
+            note,
+            now_ms,
+        )
+        .map(|_| ())
+    }
+
+    /// [`Self::finish_run`] with the token source, returning the run's metering-log entry.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finish_run_with(
+        &mut self,
+        id: &str,
+        run_id: &str,
+        tokens_used: u32,
+        source: TokenSource,
+        outcome: RunOutcome,
+        note: &str,
+        now_ms: u64,
+    ) -> Result<RunLogEntry, String> {
         let r = self.find_mut(id)?;
-        match &r.running {
-            Some(run) if run.run_id == run_id => {}
+        let started_ms = match &r.running {
+            Some(run) if run.run_id == run_id => run.started_ms,
             _ => return Err("that run is not in flight (it finished, or was released)".into()),
-        }
+        };
         r.running = None;
         r.tokens_today = r.tokens_today.saturating_add(u64::from(tokens_used));
         r.last_outcome = Some(outcome.label().into());
+        r.last_token_source = Some(source.label().into());
         r.last_run_ms = Some(r.last_run_ms.map_or(now_ms, |t| t.max(now_ms)));
         let note = one_line(note, NOTE_MAX);
         r.last_note = if note.is_empty() { None } else { Some(note) };
-        Ok(())
+        Ok(RunLogEntry {
+            schema: RUN_LOG_SCHEMA,
+            daemon_id: r.id.clone(),
+            run_id: run_id.to_string(),
+            name: r.name.clone(),
+            started_ms,
+            ended_ms: now_ms.max(started_ms),
+            tokens: tokens_used,
+            token_source: source,
+            outcome,
+        })
     }
 
     pub(crate) fn to_json(&self) -> Result<String, String> {
@@ -821,6 +886,108 @@ impl DaemonBook {
             records: body.daemons,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// The daemon run log (HUP-S10.3: every finished run, in the metering folder)
+// ---------------------------------------------------------------------------
+
+/// The run log, inside the metering folder core gives the Hermes sidecar
+/// (`<app_local_data>/hermes/metering`). Core is its only writer; the sidecar writes only its own
+/// `metering.jsonl` there.
+pub(crate) const RUN_LOG_FILE: &str = "daemon-runs.jsonl";
+/// Run log line format version.
+pub(crate) const RUN_LOG_SCHEMA: u32 = 1;
+/// The most entries one read returns (the newest ones in the window).
+pub(crate) const RUN_LOG_READ_MAX: usize = 500;
+/// A run log larger than this is not read (a damaged or runaway file is reported, never parsed).
+pub(crate) const RUN_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One finished daemon run. No conversation content: the daemon's name (the member's own
+/// words), times, the token count and its source, and the outcome. The run's reply and note
+/// are never written here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunLogEntry {
+    pub schema: u32,
+    pub daemon_id: String,
+    pub run_id: String,
+    pub name: String,
+    pub started_ms: u64,
+    pub ended_ms: u64,
+    pub tokens: u32,
+    pub token_source: TokenSource,
+    pub outcome: RunOutcome,
+}
+
+static RUN_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Append one entry as a JSON line (the folder is created if needed).
+pub(crate) fn append_run_log(path: &Path, entry: &RunLogEntry) -> Result<(), String> {
+    use std::io::Write;
+    let line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+    let _guard = RUN_LOG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("could not create the metering folder: {e}"))?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("could not open the daemon run log: {e}"))?;
+    f.write_all(format!("{line}\n").as_bytes())
+        .map_err(|e| format!("could not write the daemon run log: {e}"))
+}
+
+/// The entries that ended in `[from_ms, to_ms)`, oldest first, at most [`RUN_LOG_READ_MAX`]
+/// (the newest). A missing log is an empty list; a line that does not parse is skipped and
+/// counted in the second value, never guessed at.
+pub(crate) fn read_run_log(
+    path: &Path,
+    from_ms: u64,
+    to_ms: u64,
+) -> Result<(Vec<RunLogEntry>, u32), String> {
+    let _guard = RUN_LOG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    match std::fs::metadata(path) {
+        Ok(m) if m.len() > RUN_LOG_MAX_BYTES => {
+            return Err("the daemon run log is larger than this app reads".into())
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+        Err(e) => return Err(format!("the daemon run log could not be read: {e}")),
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("the daemon run log could not be read: {e}"))?;
+    let mut out = Vec::new();
+    let mut unreadable = 0u32;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        match serde_json::from_str::<RunLogEntry>(line) {
+            Ok(e) if e.schema == RUN_LOG_SCHEMA => {
+                if e.ended_ms >= from_ms && e.ended_ms < to_ms {
+                    out.push(e);
+                }
+            }
+            _ => unreadable = unreadable.saturating_add(1),
+        }
+    }
+    if out.len() > RUN_LOG_READ_MAX {
+        out.drain(..out.len() - RUN_LOG_READ_MAX);
+    }
+    Ok((out, unreadable))
+}
+
+/// The runs in a window plus how many log lines could not be read.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunLogView {
+    pub runs: Vec<RunLogEntry>,
+    pub unreadable: u32,
+}
+
+fn run_log_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("hermes").join("metering").join(RUN_LOG_FILE))
 }
 
 // ---------------------------------------------------------------------------
@@ -950,21 +1117,53 @@ pub async fn daemons_claim_due(
         .await
 }
 
-/// **daemons_finish_run** — the runner reports a claimed run's end.
+/// **daemons_finish_run** — the runner reports a claimed run's end. The run is charged to the
+/// daemon's ledger and appended to the daemon run log in the metering folder. `token_source`
+/// absent (an older runner) counts as estimated.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn daemons_finish_run(
     app: tauri::AppHandle,
     id: String,
     run_id: String,
     tokens_used: u32,
+    token_source: Option<TokenSource>,
     outcome: RunOutcome,
     note: String,
     now_ms: u64,
 ) -> Result<(), String> {
     crate::blocking::off_main(move || {
-        with_book(&app, true, |b| {
-            b.finish_run(&id, &run_id, tokens_used, outcome, &note, now_ms)
-        })
+        let entry = with_book(&app, true, |b| {
+            b.finish_run_with(
+                &id,
+                &run_id,
+                tokens_used,
+                token_source.unwrap_or_default(),
+                outcome,
+                &note,
+                now_ms,
+            )
+        })?;
+        // The ledger already holds the charge; a log write that fails is reported, not retried.
+        append_run_log(&run_log_path(&app)?, &entry)
+    })
+    .await
+}
+
+/// **daemon_runs_between** — the daemon runs that ended in `[from_ms, to_ms)` (unix ms), from the
+/// run log. Read by the journal's daily entry.
+#[tauri::command]
+pub async fn daemon_runs_between(
+    app: tauri::AppHandle,
+    from_ms: u64,
+    to_ms: u64,
+) -> Result<RunLogView, String> {
+    crate::blocking::off_main(move || {
+        if to_ms <= from_ms || to_ms - from_ms > 8 * 24 * 60 * 60_000 {
+            return Err("the window must end after it starts and span at most 8 days".into());
+        }
+        let (runs, unreadable) = read_run_log(&run_log_path(&app)?, from_ms, to_ms)?;
+        Ok(RunLogView { runs, unreadable })
     })
     .await
 }

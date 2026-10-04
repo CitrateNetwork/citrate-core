@@ -260,6 +260,7 @@ commands.allow = [
   "daemon_delete",
   "daemons_claim_due",
   "daemons_finish_run",
+  "daemon_runs_between",
   "widgets_list",
   "widget_save",
   "widget_delete",

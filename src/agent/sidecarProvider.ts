@@ -7,7 +7,7 @@
 // and posts the result back. It never talks to the model and never decides an approval.
 // =====================================================================
 import { parseFileChange, isFileTool } from "./fileChanges";
-import { TurnStopped, untilStopped, type ChatProvider, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
+import { TurnStopped, untilStopped, usageEventOf, type ChatProvider, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
 import type { SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import type { WorkflowRunView } from "./learn";
 
@@ -200,6 +200,8 @@ export function createSidecarProvider(
         await sleep(shellPollMs);
       }
       let allow = false;
+      // HUP-S7.6: the held command is an approval the member is asked for.
+      callbacks.onActivity?.({ kind: "approval", callId, tool: pending.tool, state: "pending" });
       if (callbacks.onCommandApproval) {
         try {
           allow = (await untilStopped(callbacks.onCommandApproval(pending), signal)) === true;
@@ -211,7 +213,9 @@ export function createSidecarProvider(
       if (stopping) allow = false;
       try {
         await api.shellDecide(id, pending.id, allow, pending.argv, pending.cwd);
+        callbacks.onActivity?.({ kind: "approval", callId, tool: pending.tool, state: allow ? "approved" : "declined" });
       } catch (e) {
+        callbacks.onActivity?.({ kind: "approval", callId, tool: pending.tool, state: "failed" });
         callbacks.onActivity?.({
           kind: "notice",
           text: `Your decision on the command ${pending.argv[0]} did not reach Hermes (${e instanceof Error ? e.message : String(e)}). It was not run.`,
@@ -278,6 +282,14 @@ export function createSidecarProvider(
             callbacks.onStatus("thinking");
             const step = Number(ev.step);
             if (Number.isFinite(step)) callbacks.onActivity?.({ kind: "step", step });
+          } else if (type === "usage") {
+            // HUP-S7.6 (US-7.4 AC1): the model server's own usage for one model call.
+            const usage = usageEventOf(ev);
+            if (usage) callbacks.onActivity?.(usage);
+          } else if (type === "plan") {
+            // HUP-S7.6: a workflow run's step ids, once before its first step.
+            const steps = Array.isArray(ev.steps) ? ev.steps.filter((x): x is string => typeof x === "string") : [];
+            callbacks.onActivity?.({ kind: "plan", steps });
           } else if (type === "verifier") {
             // HUP-S1.3 / S3.3: one verifier's verdict on a workflow step attempt.
             callbacks.onActivity?.({

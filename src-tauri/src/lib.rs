@@ -813,6 +813,7 @@ pub fn run() {
             daemons::daemon_delete,
             daemons::daemons_claim_due,
             daemons::daemons_finish_run,
+            daemons::daemon_runs_between,
             // HUP-S10.3 — widgets: sandboxed tiles with a read-only bridge.
             widgets::widgets_list,
             widgets::widget_save,

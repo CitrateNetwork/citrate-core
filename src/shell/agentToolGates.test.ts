@@ -126,7 +126,26 @@ describe("PBA-L7b-002 — state-changing chat tools wait for the member", () => 
       vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1" } as never);
       // HUP-S9.4: fl_round_start asks only about a plan core built, so give it one that can start.
       vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
-      await store.handleTool(call(name, { group: "g", name: "n", bytecodeHex: "0x00", fact: "f", entry: "e", html: "<p>x</p>" }), "m1", noop);
+      // HUP-S10.2: the everyday writes run in the desktop app against a connected Google account.
+      vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
+        cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
+      await store.handleTool(
+        call(name, {
+          group: "g",
+          name: "n",
+          bytecodeHex: "0x00",
+          fact: "f",
+          entry: "e",
+          html: "<p>x</p>",
+          spreadsheetId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+          range: "Sheet1!A:B",
+          rows: [["a", 1]],
+          title: "Weekly review",
+          start: "2099-01-05T09:00",
+        }),
+        "m1",
+        noop,
+      );
       expect(sig.mock.calls.length + review.mock.calls.length, `tool ${name} must stop at a member approval`).toBeGreaterThan(0);
     }
   });

@@ -8,15 +8,31 @@
 //   - context window: the local llama-server's --ctx-size, read from Rust (popout_monitor_facts)
 //   - spend: local inference is free; gateway metering is not wired into the app yet
 //   - daemons (HUP-S10.3): Rust daemons.rs via daemons_list (status, today's ledger, next run) and
-//     the runner's state (why runs are held). Daemon tokens are estimated (characters / 4).
+//     the runner's state (why runs are held). Daemon tokens are measured from the model server's
+//     usage when every call of a run reported it, otherwise estimated (characters / 4).
 //   - runs (HUP-S2.2): command runs (shell_run and the toolchain tools) from their tool results,
 //     recorded by the sidecar provider into the turn activity slice
 //   - workers (HUP-S1.9): the agent sidecar's worker processes, read from Rust (hermes_workers →
 //     the sidecar's GET /workers, i.e. its own process supervisor)
+//   - usage (HUP-S7.6, US-7.4 AC1): the model server's own report for the latest model call of the
+//     turn (core's `citrate_usage` on the in-app loop, the sidecar's `usage` event), giving context
+//     used (prompt + completion tokens) and tokens per second (llama-server `timings.predicted_ms`)
+//   - plan, approvals, verifier verdicts (HUP-S7.6): the turn activity slice, from the sidecar's
+//     `plan` and `verifier` events, the store's approval cards and the sidecar's held commands
 // Where the app has no real number the field is null and the monitor says "unknown" with the
-// reason. Token usage is null for every provider today: no provider reports usage to the app.
+// reason. Usage is null until the model server reports it for this turn; it is never estimated.
 // =====================================================================
-import { type RunRow, type ToolRow, type TurnActivity, type TurnPhase } from "../shell/slices/turnActivity";
+import {
+  planStepStates,
+  tokensPerSecond,
+  type ApprovalRow,
+  type RunRow,
+  type ToolRow,
+  type TurnActivity,
+  type TurnPhase,
+  type UsageReport,
+  type VerifierRow,
+} from "../shell/slices/turnActivity";
 import type { DaemonsView } from "../daemons/api";
 
 export type ProviderClass = "local" | "gateway" | "demo" | "unknown";
@@ -55,8 +71,17 @@ export interface MonitorSnapshot {
     tools: ToolRow[];
     /** HUP-S2.2: this turn's command runs. Absent from an older sender = none. */
     runs?: RunRow[];
+    /** HUP-S7.6: a workflow run's steps with their verifier state; null = a chat turn (no plan).
+     *  Absent from an older sender = no plan. */
+    plan?: { step: string; state: "not checked yet" | "passed" | "failed" }[] | null;
+    /** HUP-S7.6: approvals asked this turn. Absent from an older sender = none. */
+    approvals?: ApprovalRow[];
+    /** HUP-S7.6: verifier verdicts this turn. Absent from an older sender = none. */
+    verifiers?: VerifierRow[];
     why: string;
   };
+  /** HUP-S7.6: generation speed of the latest model call. Absent from an older sender = unknown. */
+  speed?: { tokensPerSecond: number | null; note: string };
   spend: { amount: number | null; unit: string; note: string };
   /** HUP-S1.9: null rows = could not be read (unknown); [] = Hermes is not running. */
   workers: { rows: WorkerRow[] | null; note: string };
@@ -73,8 +98,12 @@ export interface DaemonRow {
   running: boolean;
   runsToday: number;
   maxRuns: number;
-  /** Estimated (characters / 4): no provider reports usage yet. */
+  /** Tokens charged today: measured from the model server when every call of a run reported
+   *  usage, otherwise estimated (characters / 4). */
   tokensToday: number;
+  /** HUP-S10.3: "measured" | "estimated" for the last run; null before any run (absent from an
+   *  older sender = unknown). */
+  lastTokenSource?: string | null;
   maxTokens: number;
   nextRunAt: number | null;
   lastOutcome: string | null;
@@ -110,6 +139,7 @@ export function daemonsSection(view: DaemonsView | null, runner: { blocked: stri
       nextRunAt: d.nextRunMs,
       lastOutcome: d.lastOutcome,
       lastNote: d.lastNote,
+      lastTokenSource: d.lastTokenSource ?? null,
     })),
   };
 }
@@ -152,17 +182,34 @@ export function spendFor(kind: string): MonitorSnapshot["spend"] {
   }
 }
 
-export function contextFor(kind: string, localCtxTokens: number | null): MonitorSnapshot["context"] {
-  const usedNote = "the model server does not report token usage to the app yet";
+/** The context used by the latest model call: prompt plus completion, as the server reported. */
+export function usedFrom(usage: UsageReport | null | undefined): { usedTokens: number | null; usedNote: string } {
+  if (!usage) return { usedTokens: null, usedNote: "the model server has not reported token usage for this turn" };
+  return {
+    usedTokens: usage.promptTokens + usage.completionTokens,
+    usedNote: `measured: the model server's report for its last call (${usage.promptTokens} prompt + ${usage.completionTokens} written)`,
+  };
+}
+
+export function contextFor(kind: string, localCtxTokens: number | null, usage: UsageReport | null = null): MonitorSnapshot["context"] {
+  const { usedTokens, usedNote } = usedFrom(usage);
   if (providerClass(kind) === "local") {
     return localCtxTokens !== null
-      ? { usedTokens: null, windowTokens: localCtxTokens, usedNote, windowNote: "local llama-server context window" }
-      : { usedTokens: null, windowTokens: null, usedNote, windowNote: "the local context window could not be read" };
+      ? { usedTokens, windowTokens: localCtxTokens, usedNote, windowNote: "local llama-server context window" }
+      : { usedTokens, windowTokens: null, usedNote, windowNote: "the local context window could not be read" };
   }
   if (providerClass(kind) === "gateway") {
-    return { usedTokens: null, windowTokens: null, usedNote, windowNote: "the gateway does not report its context window" };
+    return { usedTokens, windowTokens: null, usedNote, windowNote: "the gateway does not report its context window" };
   }
-  return { usedTokens: null, windowTokens: null, usedNote, windowNote: "no model context for this provider" };
+  return { usedTokens, windowTokens: null, usedNote, windowNote: "no model context for this provider" };
+}
+
+/** HUP-S7.6 — tokens per second of the latest model call, or why it is unknown. */
+export function speedFor(usage: UsageReport | null | undefined): NonNullable<MonitorSnapshot["speed"]> {
+  const tps = tokensPerSecond(usage);
+  if (tps !== null) return { tokensPerSecond: tps, note: "measured: written tokens over the model server's generation time" };
+  if (usage) return { tokensPerSecond: null, note: "the model server reported tokens but not its generation time" };
+  return { tokensPerSecond: null, note: "the model server has not reported a generation time for this turn" };
 }
 
 const WORKER_STATE_TEXT: Record<string, string> = {
@@ -239,7 +286,8 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
     model: { label: i.modelLabel, id: i.modelId },
     provider: { kind, class: providerClass(kind), label },
     tier: i.tier,
-    context: contextFor(kind, i.localCtxTokens),
+    context: contextFor(kind, i.localCtxTokens, a.usage ?? null),
+    speed: speedFor(a.usage),
     turn: {
       state: a.state,
       phase: a.phase,
@@ -250,6 +298,9 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
       outcome: a.outcome,
       tools: a.tools,
       runs: a.runs ?? [],
+      plan: a.plan ? planStepStates(a.plan, a.verifiers ?? []) : null,
+      approvals: a.approvals ?? [],
+      verifiers: a.verifiers ?? [],
       why: waitingReason(a),
     },
     spend: spendFor(kind),
@@ -292,6 +343,24 @@ function isRunRow(v: unknown): v is RunRow {
   );
 }
 
+function isApprovalRow(v: unknown): v is ApprovalRow {
+  return (
+    isObj(v) &&
+    typeof v.callId === "string" &&
+    typeof v.tool === "string" &&
+    ["pending", "approved", "declined", "failed"].includes(v.state as string) &&
+    typeof v.at === "number"
+  );
+}
+
+function isVerifierRow(v: unknown): v is VerifierRow {
+  return isObj(v) && typeof v.step === "string" && typeof v.name === "string" && typeof v.passed === "boolean" && typeof v.detail === "string" && typeof v.at === "number";
+}
+
+function isPlanRow(v: unknown): boolean {
+  return isObj(v) && typeof v.step === "string" && ["not checked yet", "passed", "failed"].includes(v.state as string);
+}
+
 function isWorkerRow(v: unknown): v is WorkerRow {
   return (
     isObj(v) &&
@@ -322,6 +391,11 @@ export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   if (!(turn.outcome === null || ["answered", "failed", "stopped"].includes(turn.outcome as string))) return false;
   if (!Array.isArray(turn.tools) || !turn.tools.every(isToolRow) || typeof turn.why !== "string") return false;
   if (!(turn.runs === undefined || (Array.isArray(turn.runs) && turn.runs.every(isRunRow)))) return false;
+  if (!(turn.plan === undefined || turn.plan === null || (Array.isArray(turn.plan) && turn.plan.every(isPlanRow)))) return false;
+  if (!(turn.approvals === undefined || (Array.isArray(turn.approvals) && turn.approvals.every(isApprovalRow)))) return false;
+  if (!(turn.verifiers === undefined || (Array.isArray(turn.verifiers) && turn.verifiers.every(isVerifierRow)))) return false;
+  const { speed } = v;
+  if (!(speed === undefined || (isObj(speed) && numOrNull(speed.tokensPerSecond) && typeof speed.note === "string"))) return false;
   if (!isObj(spend) || !numOrNull(spend.amount) || typeof spend.unit !== "string" || typeof spend.note !== "string") return false;
   const { workers } = v;
   if (!isObj(workers) || typeof workers.note !== "string") return false;
@@ -345,7 +419,8 @@ function isDaemonRow(v: unknown): v is DaemonRow {
     num(v.maxTokens) &&
     numOrNull(v.nextRunAt) &&
     strOrNull(v.lastOutcome) &&
-    strOrNull(v.lastNote)
+    strOrNull(v.lastNote) &&
+    (v.lastTokenSource === undefined || strOrNull(v.lastTokenSource))
   );
 }
 

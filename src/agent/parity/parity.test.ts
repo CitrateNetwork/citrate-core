@@ -14,7 +14,7 @@ import { resolve } from "node:path";
 import { createAgentProvider, AGENT_MAX_TURNS, AGENT_TOOLS, READ_ONLY_AGENT_TOOLS, type AgentContext, type ChatStatus, type ToolCall } from "../harness";
 
 /** sha256 of parity-v1.json. Changing the fixture means bumping this here AND in the runtime. */
-export const PARITY_V1_SHA256 = "769a1809b656bfc1ab755926d3e41f4779521dfdff25bd2d63ec960cc889a71a";
+export const PARITY_V1_SHA256 = "a5bdab77f5a5e86b7f1abebfa9d694e5d2144a0c6e9ec11fe0a537c21a969ee6";
 
 // vitest runs from the package root (jsdom gives import.meta.url a non-file scheme).
 const FIXTURE_PATH = resolve(process.cwd(), "src/agent/parity/parity-v1.json");

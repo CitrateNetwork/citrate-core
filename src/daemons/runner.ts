@@ -17,7 +17,7 @@
 // =====================================================================
 import { TurnStopped } from "../agent/harness";
 import { TokenMeter } from "./tokenMeter";
-import type { Claim, DaemonsApi, RunOutcome } from "./api";
+import type { Claim, DaemonRunEntry, DaemonsApi, RunOutcome } from "./api";
 
 /** Run one claimed turn; resolve with the reply text. Must stop when `signal` aborts. */
 export type DaemonTurn = (claim: Claim, signal: AbortSignal, meter: TokenMeter) => Promise<string>;
@@ -33,6 +33,9 @@ export interface RunnerDeps {
   onChange(): void;
   /** Longest a run may take. PENDING OWNER SIGN-OFF (placeholder: 10 minutes in the app). */
   runTimeoutMs: number;
+  /** HUP-S10.3: a run that started and ended (charged in Rust and in the run log). The app writes
+   *  it into the journal. Not called for a claim held back before it started. */
+  onFinished?(run: Pick<DaemonRunEntry, "daemonId" | "runId" | "name" | "outcome" | "tokens" | "tokenSource" | "endedMs">): void;
 }
 
 export interface RunnerState {
@@ -118,10 +121,18 @@ export function createDaemonRunner(deps: RunnerDeps): DaemonRunner {
     } finally {
       clearTimeout(timer);
     }
+    const tokens = meter.tokens();
+    const tokenSource = meter.source();
+    const endedMs = deps.now();
     try {
-      await deps.api.finishRun(claim.daemonId, claim.runId, meter.tokens(), outcome, note, deps.now());
+      await deps.api.finishRun(claim.daemonId, claim.runId, tokens, outcome, note, endedMs, tokenSource);
     } catch (e) {
       st.error = "could not record a daemon run's end: " + (e instanceof Error ? e.message : String(e));
+    }
+    try {
+      deps.onFinished?.({ daemonId: claim.daemonId, runId: claim.runId, name: claim.name, outcome, tokens, tokenSource, endedMs });
+    } catch (e) {
+      st.error = "could not write a daemon run to the journal: " + (e instanceof Error ? e.message : String(e));
     }
     current = null;
     st.running = null;

@@ -59,9 +59,15 @@ export function startDaemonRunner(): void {
     runTurn: (claim, signal, meter) => store.runDaemonTurn(claim, signal, meter),
     onChange: publish,
     runTimeoutMs: DAEMON_RUN_TIMEOUT_MS,
+    // HUP-S10.3: each finished run also goes into its day's journal entry.
+    onFinished: (run) => store.recordDaemonRunInJournal(run),
   });
   void refreshDaemons();
-  const tick = () => void runner?.tick().catch((e) => daemonsSlice.set({ error: message(e) }));
+  const tick = () => {
+    void runner?.tick().catch((e) => daemonsSlice.set({ error: message(e) }));
+    // HUP-S10.4: the once-a-day journal summary, when the member turned it on (off by default).
+    void store.maybeAutoDailySummary().catch((e) => daemonsSlice.set({ error: "the daily journal summary could not be written: " + message(e) }));
+  };
   setInterval(tick, DAEMON_TICK_MS);
 }
 

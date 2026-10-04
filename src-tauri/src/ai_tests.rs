@@ -770,3 +770,62 @@ fn a_system_message_in_the_history_is_folded_into_the_leading_one() {
         assert_eq!(roles, ["system", "user", "assistant"]);
     }
 }
+
+// ===========================================================================
+// HUP-S7.6 (US-7.4 AC1) — the server's reported usage rides on the returned message
+// ===========================================================================
+
+#[test]
+fn reported_usage_and_generation_time_ride_on_the_returned_message() {
+    let resp = json!({
+        "choices": [{ "message": { "role": "assistant", "content": "hi" } }],
+        "usage": { "prompt_tokens": 812, "completion_tokens": 40, "total_tokens": 852 },
+        "timings": { "prompt_n": 12, "predicted_n": 40, "predicted_ms": 1333.4, "predicted_per_second": 30.0 }
+    })
+    .to_string();
+    let msg: Value = serde_json::from_str(&parse_chat_message(&resp).unwrap()).unwrap();
+    assert_eq!(msg["content"], "hi");
+    assert_eq!(
+        msg[USAGE_KEY],
+        json!({ "prompt_tokens": 812, "completion_tokens": 40, "generation_ms": 1333 })
+    );
+}
+
+#[test]
+fn usage_without_timings_has_no_generation_time_and_missing_usage_adds_nothing() {
+    let resp = json!({
+        "choices": [{ "message": { "role": "assistant", "content": "hi" } }],
+        "usage": { "prompt_tokens": 5, "completion_tokens": 2 }
+    })
+    .to_string();
+    let msg: Value = serde_json::from_str(&parse_chat_message(&resp).unwrap()).unwrap();
+    assert_eq!(msg[USAGE_KEY], json!({ "prompt_tokens": 5, "completion_tokens": 2 }));
+    for bad in [
+        json!({ "choices": [{ "message": { "content": "hi" } }] }),
+        json!({ "choices": [{ "message": { "content": "hi" } }], "usage": { "prompt_tokens": 5 } }),
+        json!({ "choices": [{ "message": { "content": "hi" } }], "usage": { "prompt_tokens": -1, "completion_tokens": 2 } }),
+        json!({ "choices": [{ "message": { "content": "hi" } }], "usage": { "prompt_tokens": "5", "completion_tokens": 2 } }),
+    ] {
+        let msg: Value = serde_json::from_str(&parse_chat_message(&bad.to_string()).unwrap()).unwrap();
+        assert!(msg.get(USAGE_KEY).is_none(), "{bad}");
+    }
+    let odd = json!({
+        "choices": [{ "message": { "content": "hi" } }],
+        "usage": { "prompt_tokens": 1, "completion_tokens": 1 },
+        "timings": { "predicted_ms": -3.0 }
+    });
+    let msg: Value = serde_json::from_str(&parse_chat_message(&odd.to_string()).unwrap()).unwrap();
+    assert!(msg[USAGE_KEY].get("generation_ms").is_none());
+}
+
+#[test]
+fn the_usage_key_is_never_sent_back_to_the_model() {
+    let history = json!([
+        { "role": "user", "content": "q" },
+        { "role": "assistant", "content": null, "tool_calls": [], (USAGE_KEY): { "prompt_tokens": 1, "completion_tokens": 1 } },
+        { "role": "assistant", "content": "a", (USAGE_KEY): { "prompt_tokens": 1, "completion_tokens": 1 } }
+    ])
+    .to_string();
+    let body = build_chat_body_with_tools("m", &history, "[]", "{}").unwrap();
+    assert!(!body.to_string().contains(USAGE_KEY));
+}

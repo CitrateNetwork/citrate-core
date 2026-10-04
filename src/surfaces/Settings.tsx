@@ -118,7 +118,7 @@ let aiModelEl: HTMLInputElement | null = null;
 
 const CONN: [string, string, string][] = [
   ["gcal", "Google Calendar", "events · read + add events you confirm"],
-  ["gsheets", "Google Sheets", "spreadsheets · connect only for now; no in-app sheet view yet"],
+  ["gsheets", "Google Sheets", "spreadsheets · Journal > Sheets, and Hermes's sheet tools (adding rows asks you first)"],
   ["gdrive", "Google Drive", "files · read"],
   ["notion", "Notion", "pages · read + draft"],
   ["linear", "Linear", "issues · read + draft"],

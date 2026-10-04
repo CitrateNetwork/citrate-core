@@ -2,7 +2,7 @@
 // citrate-core — Daemons card on the Hermes home (HUP-S10.3, US-10.3 AC2)
 //
 // Create a recurring Hermes task: a name, the task, a schedule (local time) and a budget. Each row
-// shows its status, today's runs and estimated tokens against the budget, spend (always 0), the
+// shows its status, today's runs and tokens (measured or estimated) against the budget, spend (always 0), the
 // next run and the last outcome, with Pause / Resume and Remove. "Pause all" stops every daemon.
 // The budget defaults are conservative placeholders, pending owner sign-off.
 // =====================================================================
@@ -145,7 +145,7 @@ export function DaemonsPanel({ actions = appDaemonActions() }: { actions?: Daemo
               <input aria-label="Tokens a run" type="number" min={1} value={budget.maxTokensPerRun} onChange={(e) => setBudget({ ...budget, maxTokensPerRun: Number(e.target.value) })} style={input} />
             </label>
           </div>
-          <span style={small}>Spend: 0 SALT (daemons cannot spend). Default limits are placeholders, pending owner sign-off. Tokens are estimated.</span>
+          <span style={small}>Spend: 0 SALT (daemons cannot spend). Default limits are placeholders, pending owner sign-off. Tokens are measured from the model server when it reports usage, otherwise estimated.</span>
           <button className="btn btn-sm" type="submit" data-testid="daemons-save">
             Save daemon
           </button>
@@ -168,7 +168,7 @@ export function DaemonsPanel({ actions = appDaemonActions() }: { actions?: Daemo
               {d.schedule} · next {when(d.nextRunMs)}
             </span>
             <span className="mono" data-testid="daemon-budget" style={{ fontSize: 10, color: "var(--tx-3)" }}>
-              {d.runsToday} of {d.budget.maxRunsPerDay} runs · {fmt(d.tokensToday)} of {fmt(d.budget.maxTokensPerDay)} tokens (estimated) · spend {d.spendTodaySalt} SALT
+              {d.runsToday} of {d.budget.maxRunsPerDay} runs · {fmt(d.tokensToday)} of {fmt(d.budget.maxTokensPerDay)} tokens ({d.lastTokenSource === "measured" ? "last run measured" : "estimated"}) · spend {d.spendTodaySalt} SALT
               {d.skippedToday > 0 ? ` · ${d.skippedToday} skipped (budget)` : ""}
             </span>
             {d.lastOutcome ? (

@@ -1,11 +1,13 @@
 // =====================================================================
 // citrate-core — daemon token meter (HUP-S10.3)
 //
-// No provider reports token usage to the app yet, so a daemon run's tokens are ESTIMATED from
-// characters (about 4 characters per token), and every screen that shows them says "estimated".
-// Each model round re-reads the system prompt, the tool list and the conversation so far, so a
-// round costs `base + context`; the answer costs its own length. The meter calls `onExceed` once,
-// as soon as the estimate passes the run's allowance; the runner then stops the run.
+// A daemon run's tokens are MEASURED when the model server reports usage for every model call of
+// the run (llama-server's `usage`, carried as core's `citrate_usage` or the sidecar's `usage`
+// event): the sum of each call's prompt and written tokens. While any call has no report, the run
+// is ESTIMATED from characters (about 4 characters per token), and every screen says which.
+// Each model round re-reads the system prompt, the tool list and the conversation so far, so an
+// estimated round costs `base + context`; the answer costs its own length. The meter calls
+// `onExceed` once, as soon as the count passes the run's allowance; the runner then stops the run.
 // =====================================================================
 export const CHARS_PER_TOKEN = 4;
 
@@ -16,6 +18,8 @@ export class TokenMeter {
   private out = 0;
   private rounds = 0;
   private fired = false;
+  private measuredTotal = 0;
+  private measuredCalls = 0;
 
   constructor(
     private readonly allowance: number,
@@ -48,7 +52,21 @@ export class TokenMeter {
     this.check();
   }
 
+  /** The model server's usage for one model call (prompt tokens + written tokens). */
+  measured(promptTokens: number, completionTokens: number): void {
+    if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens) || promptTokens < 0 || completionTokens < 0) return;
+    this.measuredCalls++;
+    this.measuredTotal += promptTokens + completionTokens;
+    this.check();
+  }
+
+  /** "measured" once every model call so far reported usage; "estimated" otherwise. */
+  source(): "measured" | "estimated" {
+    return this.measuredCalls > 0 && this.measuredCalls >= this.rounds ? "measured" : "estimated";
+  }
+
   tokens(): number {
+    if (this.source() === "measured") return this.measuredTotal;
     const input = this.rounds === 0 ? this.base + this.ctx - this.out : this.input;
     return Math.ceil((input + this.out) / CHARS_PER_TOKEN);
   }

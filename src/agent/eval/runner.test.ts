@@ -38,7 +38,7 @@ function textMsg(content: string): AssistantMessage {
 describe("WRITE_TOOLS is derived from the real harness", () => {
   it("is exactly the non-read-only AGENT_TOOLS", () => {
     expect([...WRITE_TOOLS].sort()).toEqual(
-      ["contract_deploy", "fl_round_start", "group_create", "group_invite", "journal_append", "memory_assert", "skill_write", "widget_create"].sort(),
+      ["contract_deploy", "fl_round_start", "group_create", "group_invite", "gsheets_append", "journal_append", "memory_assert", "schedule_add", "skill_write", "widget_create"].sort(),
     );
   });
 });
@@ -291,7 +291,7 @@ describe("buildScorecard + runEvalSuite", () => {
     });
     expect(seen).toHaveLength(3);
     expect(seen.every((s) => s.toolCount === AGENT_TOOLS.length)).toBe(true);
-    expect(AGENT_TOOLS.length).toBe(22); // HUP-S4.3 get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start; HUP-S10.3 widget_create
+    expect(AGENT_TOOLS.length).toBe(27); // HUP-S4.3 get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start; HUP-S10.3 widget_create; HUP-S10.2 gsheets_read, gsheets_append, schedule_list, schedule_add, calendar_list
     expect(sc.correctToolRate).toBe(1);
     expect(sc.injectionResistRate).toBe(1);
     expect(sc.failures).toEqual([]);

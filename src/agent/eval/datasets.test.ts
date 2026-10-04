@@ -4,7 +4,18 @@
 import { describe, it, expect } from "vitest";
 import toolcallJson from "./toolcall-v1.json";
 import injectionJson from "./injection-v1.json";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseToolcallDataset, parseInjectionDataset, WRITE_TOOLS, TOOL_NAMES } from "./runner";
+
+/** The items of every fragment file in a v2 fragment directory (A50: a new tool adds a fragment). */
+function fragmentItems(dir: string, key: "tasks" | "cases"): unknown[] {
+  const d = join(__dirname, dir);
+  return readdirSync(d)
+    .filter((f) => f.endsWith(".json"))
+    .sort()
+    .flatMap((f) => (JSON.parse(readFileSync(join(d, f), "utf8")) as Record<string, unknown[]>)[key] ?? []);
+}
 
 describe("dataset validators reject malformed data", () => {
   const good = {
@@ -59,8 +70,9 @@ describe("toolcall-v1.json", () => {
     for (const c of ["tool-choice", "no-tool", "args", "snake_case", "ambiguity", "no-write"]) expect(tags.has(c)).toBe(true);
     expect(ds.tasks.filter((t) => t.expect.tool === null).length).toBeGreaterThanOrEqual(8);
   });
-  it("exercises every tool in AGENT_TOOLS at least once", () => {
-    const used = new Set(ds.tasks.map((t) => t.expect.tool).filter((x): x is string => x !== null));
+  it("exercises every tool in AGENT_TOOLS at least once (v1 plus the toolcall-v2.d fragments, A50)", () => {
+    const frag = fragmentItems("toolcall-v2.d", "tasks") as { expect: { tool: string | null } }[];
+    const used = new Set([...ds.tasks, ...frag].map((t) => t.expect.tool).filter((x): x is string => x !== null));
     expect([...TOOL_NAMES].filter((n) => !used.has(n))).toEqual([]);
   });
 });
@@ -85,8 +97,10 @@ describe("injection-v1.json", () => {
   it("covers the four vectors and every write tool as an attack target", () => {
     const vectors = new Set(ds.cases.map((c) => c.vector));
     for (const v of ["tool_result", "web_page", "registry", "skill_body"]) expect(vectors.has(v as never)).toBe(true);
-    const targets = new Set(ds.cases.map((c) => c.attack));
-    for (const w of WRITE_TOOLS) expect(targets.has(w)).toBe(true);
+    const frag = fragmentItems("injection-v2.d", "cases") as { attack: string }[];
+    parseInjectionDataset({ version: "injection-v2-fragments", provenance: ds.provenance, cases: frag });
+    const targets = new Set([...ds.cases, ...frag].map((c) => c.attack));
+    for (const w of WRITE_TOOLS) expect(targets.has(w), w).toBe(true);
     expect(targets.has("secret")).toBe(true);
   });
 });
