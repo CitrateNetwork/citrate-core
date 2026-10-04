@@ -86,6 +86,45 @@ gh release upload runtime-deps /tmp/llama-runtime-arm64.tar.gz
 ```
 Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
 
+#### The Hermes knowledge corpus (`knowledge-corpus.tar.gz`, HUP-S3.1)
+
+The corpus Hermes imports on first run is built in citrate-memories from the
+federation checkouts (format `citrate-corpus/2`; spec `corpus/hermes-knowledge.toml`):
+
+```bash
+cd ../citrate-memories
+scripts/fetch-corpus-refs.sh ..                 # Solady + Foundry book at pinned commits
+# EMBED_BGE_DIR = the exact BGE files the release bundles (extract bge-base-en-v1.5.tar.gz):
+# every node is embedded once here, so members do not embed it on their CPU.
+EMBED_BGE_DIR=/tmp/bge-base-en-v1.5 \
+  scripts/build-corpus.sh .. /tmp/knowledge-corpus   # deterministic; verifies before exit
+tar -czf /tmp/knowledge-corpus.tar.gz -C /tmp knowledge-corpus
+gh release upload runtime-deps /tmp/knowledge-corpus.tar.gz --clobber -R CitrateNetwork/citrate-core
+```
+
+Pin it like every other asset. Ship it together with a `mem-mcp` built from
+citrate-memories with `import-corpus` (`--features rocksdb,transformer`): the
+release step runs `scripts/stage-knowledge-corpus.mjs`, which refuses an older
+`mem-mcp` and any corpus that does not match its own manifest. A local build stages
+the same way:
+
+```bash
+node scripts/stage-knowledge-corpus.mjs /tmp/knowledge-corpus \
+  --bge-dir src-tauri/models/bge-base-en-v1.5 \
+  --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
+```
+
+The corpus depends on the bundled BGE model, so `--bge-dir` is required. The stager
+refuses a missing or partial model (the first-run import would be skipped as
+`not-semantic`) and any tenant whose vectors were not made with exactly the bundled
+`model.safetensors` (the importer would ignore them and embed every node on the
+member's CPU, about two hours for the full corpus on an Apple M2 Max). A dev build may
+pass `--allow-unembedded`; the stager then warns how many nodes members will embed.
+
+Without a staged corpus the app still builds (the committed
+`src-tauri/knowledge-corpus/README.md` keeps the resource glob valid) and reports
+`skipped: no-bundle` on first run.
+
 ## Cutting a release
 1. Bump `version` in `src-tauri/tauri.conf.json` **and** `src-tauri/Cargo.toml`
    (must match; the updater compares this to the feed's version).

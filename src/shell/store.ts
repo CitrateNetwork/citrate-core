@@ -34,16 +34,19 @@ import { createSidecarProvider } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import type { FlRoundPlan } from "../bridge/domains";
-import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
-import { validateNewSkill, runPrompt } from "../agent/userSkills";
+import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult } from "../bridge/domains";
+import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
+import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -56,8 +59,9 @@ import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
 import { widgetsApi, refreshWidgets } from "../widgets/api";
 import { isWidgetQuery, WIDGET_QUERIES } from "../widgets/catalog";
-import { beginTurn, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
+import { beginTurn, commandRan, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
+import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
 /** Q-E.1 — plain-language labels for the sim "settles only in desktop" toast. */
 /**
@@ -81,6 +85,7 @@ const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   "directory-publish": "Publish to directory",
   "directory-revoke": "Remove from directory",
   "contract-call": "Contract call",
+  "web-sign-in": "Sign in",
 };
 
 type Updater = Partial<AppState> | ((s: AppState) => Partial<AppState>);
@@ -275,12 +280,8 @@ export function entitlementSafeguardFromChain(
  * rather than being left to invent Citrate facts). The hit `title` carries the
  * authored content (the `Title › Section` breadcrumb + body from docs_ingest).
  */
-export function formatMemoryHits(res: MemoryResult): string {
-  if (!res.hits.length) {
-    return `No results in the ${res.tenant} memory (${res.totalInTenant} nodes total). Do not fabricate; tell the member nothing was found.`;
-  }
-  return res.hits.map((h, i) => `[${i + 1}] ${h.title}`).join("\n\n");
-}
+// HUP-S3.1: passages + citations for knowledge tenants (src/agent/knowledgeSearch.ts).
+export { formatMemoryHits };
 
 /**
  * Derive a display name + initials from an email local-part. The authority
@@ -504,7 +505,6 @@ export class Store {
   private snap: AppState;
   private cid = 0;
   private mid = 0;
-  private uskSeq = 0;
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
@@ -586,6 +586,9 @@ export class Store {
     // Tauri build this reads the real /userinfo-derived status (silent if signed
     // out); in web-dev it reads the sim persona. Honest no-op on failure.
     void this.refreshAuth();
+    // HUP-S3.2: the member's saved skills are SKILL.md files the sidecar also loads; move any
+    // older-format skills there once, then list them.
+    void this.syncLocalSkills();
     // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
     // the default id is configured (key sealed in the OS keyring), else the honest
     // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
@@ -894,7 +897,16 @@ export class Store {
       const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
-      if (kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri") {
+      // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
+      // (same local model, same approvals), so chat never depends on the sidecar being up.
+      const sidecarUp =
+        kind === "local" && this.state.hermesSidecarLoop && BRIDGE_MODE === "tauri"
+          ? await bridge.agentHarness
+              .status()
+              .then((st) => st.running)
+              .catch(() => false)
+          : false;
+      if (sidecarUp) {
         const h = bridge.agentHarness;
         // HUP-S1.5: escalate_plan is offered only when the member has added an escalation endpoint.
         const escalationReady = await bridge.escalation
@@ -903,15 +915,24 @@ export class Store {
           .catch(() => false);
         this.provider = createSidecarProvider(
           {
-            open: (p, t) => h.sessionOpen(p, t),
+            // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
+            // skill allowlist and tool emphasis. None = the session body is unchanged.
+            open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
+            // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
+            trackWorkflowRun: (id, workflowId) => h.trackWorkflowRun(id, workflowId),
+            workflowStatus: (id, runId) => h.workflowStatus(id, runId),
+            // HUP-S2.2: shell_run commands the sidecar holds, and the member's bound decision.
+            shellPending: (id) => h.shellPending(id),
+            shellDecide: (id, approvalId, allow, argv, cwd) => h.shellDecide(id, approvalId, allow, argv, cwd),
           },
           // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
           () => this.sidecarSystemPrompt(),
           () => withEscalationTool(annotatedAgentTools(), escalationReady),
+          () => this.sidecarPersonaChoice(),
         );
         this.reflectProvider();
         return;
@@ -1975,7 +1996,27 @@ export class Store {
     const res = this.resolvers[head.id!];
     delete this.resolvers[head.id!];
     this.setState({ queue: s.queue.slice(1), cerPhase: "review", cerStep: 0 });
+    // HUP-S2.6 — the member's answer on this card is a HIC-1 decision: record it.
+    this.recordDecision(
+      head.card ? "agent.tool_approval" : "ceremony.approval",
+      result === "approved",
+      head.title + " · " + head.requester,
+      head.hic?.reason ?? "the member's answer on the approval card",
+    );
     if (res) res(result);
+  }
+
+  /** HUP-S2.6 — record an approval-card or wallet-review answer in the decision records. The
+   *  decision stands either way; a record that could not be written is said out loud, after any
+   *  notice already on screen (the outcome of the action itself is never covered up). */
+  recordDecision(kind: "ceremony.approval" | "agent.tool_approval", approved: boolean, subject: string, reason: string): void {
+    bridge.agentHarness
+      .recordDecision(kind, approved ? "approved" : "denied", subject.slice(0, 300), reason.slice(0, 400))
+      .catch((err) => {
+        const text = "This decision was not recorded: " + String((err as Error)?.message ?? err);
+        if (this.state.toast) setTimeout(() => this.toast(text), 3100);
+        else this.toast(text);
+      });
   }
   approveCer(): void {
     const head = this.state.queue[0];
@@ -2005,13 +2046,13 @@ export class Store {
 
   // ---------- chat ----------
   /** HUP-S1.4 — keep a brief the sidecar accepted: a card in the thread + persisted state. This
-   *  starts nothing (no turn, no workflow); building from a brief arrives with the workflows. */
+   *  starts nothing; the card's button runs its workflow (HUP-S3.3, `runBriefWorkflow`). */
   acceptBrief(brief: Brief, markdown: string): void {
     const msg: ChatMsg = {
       id: "m" + ++this.mid,
       who: "Brief",
       text: markdown,
-      chips: [{ label: brief.workflow_available ? "brief saved · nothing built yet" : "brief saved · nothing is built until the workflow ships", status: "approved" }],
+      chips: [{ label: brief.workflow_available ? "brief saved · run its workflow from this card" : "brief saved · nothing is built until the workflow ships", status: "approved" }],
       streaming: false,
       brief,
     };
@@ -2027,6 +2068,114 @@ export class Store {
       AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
       this.state.hermesPersona,
     );
+  }
+
+  /** HUP-S3.3 — what the sidecar session applies for the chosen persona (null = none). */
+  sidecarPersonaChoice(): SessionPersonaChoice | null {
+    return personaChoice(this.state.hermesPersona);
+  }
+
+  /** HUP-S3.7 — the system speech engine (replaced in tests). */
+  speech: SpeechEngine | null = null;
+
+  /** HUP-S3.7 — read replies aloud (off by default). Turning it off stops what is being read. */
+  setHermesReadAloud(on: boolean): void {
+    this.setState({ hermesReadAloud: on });
+    if (!on) this.speech?.cancel();
+    this.save();
+  }
+
+  /** HUP-S3.7 — speak a finished answer with the persona's voice when reading aloud is on. */
+  private readAloud(text: string): void {
+    if (!this.state.hermesReadAloud) return;
+    if (!this.speech) this.speech = browserSpeech();
+    speakReply(this.speech, text, this.state.hermesPersona?.tts_voice ?? null);
+  }
+
+  /** HUP-S3.3 — run a saved brief's workflow (the brief card's button). */
+  runBriefWorkflow(brief: Brief): Promise<void> {
+    return this.runTrackWorkflow(brief.workflow);
+  }
+
+  /**
+   * HUP-S3.3 (US-3.3 AC2) — run a track's catalog workflow from chat. The sidecar loop runs it in
+   * the chat's session; core-hosted calls go through `handleTool` (the same gates as a turn); each
+   * verifier verdict becomes a chip; the result says "Verified" only for a run the sidecar's
+   * verifiers passed. Without the sidecar loop the chat says how to turn it on and runs nothing.
+   */
+  async runTrackWorkflow(workflowId: string): Promise<void> {
+    if (this.state.chatStatus !== "ready") return;
+    const msgId = "m" + ++this.mid;
+    const add = (m: Partial<ChatMsg>) =>
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: msgId, who: "Workflow", text: "", chips: [], streaming: false, ...m }]) }));
+    const patch = (fn: (m: ChatMsg) => ChatMsg) => this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? fn(m) : m)) }));
+    const provider = this.provider;
+    if (!provider || !provider.runWorkflow) {
+      add({ text: sidecarLoopNeeded(workflowId) });
+      this.scrollChat();
+      return;
+    }
+    const ac = new AbortController();
+    this.turnAbort = ac;
+    beginTurn(provider.kind, `${provider.label} · workflow ${workflowId}`);
+    add({ text: `Running \`${workflowId}\`. Only its checks decide the result.`, streaming: true });
+    this.setState({ chatStatus: "thinking" });
+    this.scrollChat();
+    try {
+      const view = await provider.runWorkflow(workflowId, {
+        signal: ac.signal,
+        callbacks: {
+          onStatus: (st) => {
+            if (ac.signal.aborted) return;
+            notePhase(st);
+            this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : st === "streaming" ? "thinking" : (st as AppState["chatStatus"]) });
+          },
+          onToken: () => undefined,
+          onToolCall: async (call, meta) => {
+            if (ac.signal.aborted) return "stopped by the member before this ran; nothing was done.";
+            toolStarted(call.id, call.name);
+            try {
+              const result = await this.handleTool(call, msgId, () => undefined, meta);
+              toolFinished(call.id, true);
+              return result;
+            } catch (e) {
+              toolFinished(call.id, false);
+              throw e;
+            }
+          },
+          // HUP-S2.2: every held shell_run is decided by the member on its card.
+          onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
+          onActivity: (ev) => {
+            if (ev.kind === "file_change") {
+              recordFileChange(ev.change, msgId);
+              void refreshUndoPanel(bridge.agentHarness);
+            } else if (ev.kind === "command_run") {
+              commandRan(ev);
+            } else if (ev.kind === "notice") {
+              this.toast(ev.text);
+            } else if (ev.kind === "verifier") {
+              patch((m) => ({ ...m, chips: m.chips.concat([verifierChip(ev)]) }));
+            } else if (!ac.signal.aborted) noteStep(ev.step);
+          },
+        },
+      });
+      patch((m) => ({ ...m, text: workflowSummary(workflowId, view) }));
+      endTurn(view.state === "verified" ? "answered" : "failed");
+      if (view.state === "verified") this.readAloud(workflowSummary(workflowId, view));
+    } catch (e) {
+      if (e instanceof TurnStopped || ac.signal.aborted) {
+        patch((m) => ({ ...m, error: "stopped by you" }));
+        endTurn("stopped");
+      } else {
+        patch((m) => ({ ...m, error: workflowRefusal(e) }));
+        endTurn("failed");
+      }
+    }
+    if (this.turnAbort === ac) this.turnAbort = null;
+    patch((m) => ({ ...m, streaming: false }));
+    this.setState({ chatStatus: "ready" });
+    this.scrollChat();
+    this.save();
   }
 
   /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for
@@ -2118,7 +2267,20 @@ export class Store {
 
   async sendChat(text: string): Promise<void> {
     text = (text || "").trim();
-    if (!text || this.state.chatStatus !== "ready" || !this.provider) return;
+    if (!text || this.state.chatStatus !== "ready") return;
+    // HUP-S3.3: `/run <workflow>` runs a track workflow instead of a chat turn.
+    const cmd = parseRunCommand(text);
+    if (cmd.kind !== "none") {
+      if (this.chatInputEl) this.chatInputEl.value = "";
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false }]) }));
+      if (cmd.kind === "usage") {
+        this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: "m" + ++this.mid, who: "Workflow", text: RUN_USAGE, chips: [], streaming: false }]) }));
+        this.scrollChat();
+        return;
+      }
+      return this.runTrackWorkflow(cmd.id);
+    }
+    if (!this.provider) return;
     const provider = this.provider;
     const ac = new AbortController();
     this.turnAbort = ac;
@@ -2195,12 +2357,23 @@ export class Store {
               throw e;
             }
           },
+          // HUP-S2.2: every held shell_run is decided by the member on its card.
+          onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
               ensure();
               recordFileChange(ev.change, asstId);
               void refreshUndoPanel(bridge.agentHarness);
+              return;
+            }
+            // HUP-S2.2 (US-2.2 AC3): a command run that happened is logged even if the turn stopped.
+            if (ev.kind === "command_run") {
+              commandRan(ev);
+              return;
+            }
+            if (ev.kind === "notice") {
+              this.toast(ev.text);
               return;
             }
             if (!stopped() && ev.kind === "step") noteStep(ev.step);
@@ -2213,6 +2386,8 @@ export class Store {
       if (winner === "stopped") throw new TurnStopped();
       flush();
       endTurn("answered");
+      // HUP-S3.7: read the answer aloud with the persona's voice (off by default).
+      this.readAloud(this.state.chatMsgs.find((m) => m.id === asstId)?.text ?? "");
     } catch (e) {
       flush();
       ensure();
@@ -2238,6 +2413,27 @@ export class Store {
       if (this.chatScrollEl) this.chatScrollEl.scrollTop = this.chatScrollEl.scrollHeight;
       if (this.jChatScrollEl) this.jChatScrollEl.scrollTop = this.jChatScrollEl.scrollHeight;
     });
+  }
+
+  /**
+   * HUP-S2.2 (US-2.2 AC2) — put a held shell_run command in front of the member on the approval
+   * card (exact argv, folder, program, timeout, OS sandbox) with the HIC banner. True only when the
+   * member pressed Approve; the caller sends that decision bound to this command's id.
+   */
+  async approveShellRun(p: ShellPendingView): Promise<boolean> {
+    const r = await this.requestSig({
+      origin: "chat agent",
+      requester: "Hermes · tool " + p.tool,
+      title: "Approve a command",
+      chainless: true,
+      rows: [],
+      cost: "none, no chain transaction",
+      sponsor: "explicit decision required",
+      sponsorColor: "var(--tx-3)",
+      card: shellRunCard(p),
+      hic: { reason: SHELL_RUN_HIC_REASON },
+    });
+    return r === "approved";
   }
 
   async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta): Promise<string> {
@@ -2376,9 +2572,10 @@ export class Store {
     } else if (call.name === "memory_search") {
       // W3.3 — REAL semantic search over the mem graph (docs or personal). Returns
       // real hits or honest emptiness (Rule 1 — never a fabricated Citrate fact).
-      const tenant = args.tenant === "personal" ? "personal" : "citrate-docs";
+      // HUP-S3.1: knowledge tenants (the bundled corpus) answer with passages + citations.
+      const { tenant, passages } = memorySearchTarget(args.tenant);
       try {
-        const res = await bridge.memory.search(tenant, args.query || "", 6);
+        const res = await bridge.memory.search(tenant, args.query || "", memorySearchBudget(passages), passages ? { passages } : undefined);
         result = formatMemoryHits(res);
       } catch (e) {
         result = "memory search unavailable: " + (e instanceof Error ? e.message : String(e));
@@ -2535,6 +2732,7 @@ export class Store {
           try {
             const skill = await bridge.agentSkills.write(name, description, instructions, before !== "");
             result = `Saved the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+            void this.refreshLocalSkills();
           } catch (e) {
             result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
           }
@@ -2543,6 +2741,7 @@ export class Store {
         try {
           const skill = await bridge.agentSkills.write(name, description, instructions, false);
           result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
+          void this.refreshLocalSkills();
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (!msg.startsWith("SKILL_EXISTS")) {
@@ -2570,6 +2769,7 @@ export class Store {
               try {
                 const skill = await bridge.agentSkills.write(name, description, instructions, true);
                 result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+                void this.refreshLocalSkills();
               } catch (e2) {
                 result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
               }
@@ -2726,42 +2926,88 @@ export class Store {
 
   // ---------- Hermes P5 — user skills (prompt-skills) ----------
   /**
-   * Add a member-authored prompt-skill (validated + normalized by the pure core).
-   * Persists in local state (PERSIST_KEYS) like the journal — no chain, no key. On a
-   * validation failure it toasts the honest reason and adds nothing (Rule 1).
-   * Returns whether it was added, so a form can clear itself only on success.
+   * HUP-S3.2 (US-3.2 AC2): one format, one loader. Convert skills saved in older formats (flat
+   * files, and the prompt-skills earlier builds kept in app state) to SKILL.md files, then read the
+   * member's skills from those files. Whatever cannot move stays where it was and the member is
+   * told why. Called on launch and after any change.
    */
-  addUserSkill(name: string, instruction: string, description = ""): boolean {
-    const r = validateNewSkill(name, instruction, description, this.state.userSkills);
+  async syncLocalSkills(): Promise<void> {
+    const notes: string[] = [];
+    const report = await bridge.agentSkills.migrate().catch(() => null);
+    if (report && report.failed.length) {
+      notes.push(...report.failed.map((f) => `${f.file}: ${f.reason}`));
+    }
+    const legacy = this.state.userSkills;
+    if (legacy.length) {
+      const r = await migrateLegacyUserSkills(legacy, bridge.agentSkills);
+      const kept = new Set(r.kept.map((k) => k.skill.id));
+      this.setState((s) => ({ userSkills: s.userSkills.filter((k) => kept.has(k.id)) }));
+      this.save();
+      notes.push(...r.kept.map((k) => `"${k.skill.name}": ${k.reason}`));
+    }
+    await this.refreshLocalSkills();
+    if (notes.length) {
+      this.toast(`${notes.length === 1 ? "One saved skill" : notes.length + " saved skills"} could not move to the shared skill format: ${notes.join("; ")}`);
+    }
+  }
+
+  /** Read the member's saved skills from their SKILL.md files. An unreadable folder lists none. */
+  async refreshLocalSkills(): Promise<void> {
+    const list = await bridge.agentSkills.list().catch(() => []);
+    this.setState(() => ({ localSkills: list }));
+  }
+
+  /**
+   * Save a member-authored skill as a SKILL.md file (validated + normalized by the pure core). The
+   * sidecar's loader reads the same file, so it is offered in Hermes sessions too. On a validation
+   * failure it toasts the honest reason and saves nothing (Rule 1). Resolves to whether it was
+   * saved, so a form can clear itself only on success.
+   */
+  async addUserSkill(name: string, instruction: string, description = ""): Promise<boolean> {
+    const r = validateNewSkill(name, instruction, description, this.state.localSkills);
     if (!r.ok) {
       this.toast(r.error);
       return false;
     }
-    const id = "usk-" + ++this.uskSeq + "-" + this.state.userSkills.length;
-    this.setState((s) => ({ userSkills: s.userSkills.concat([{ id, ...r.skill }]) }));
-    this.save();
+    try {
+      await bridge.agentSkills.write(r.skill.name, r.skill.description, r.skill.instruction, false);
+    } catch (e) {
+      this.toast("Couldn't save the skill: " + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    await this.refreshLocalSkills();
     this.toast(`Added your "${r.skill.name}" skill.`);
     return true;
   }
 
-  /** Remove a user skill by id. */
-  removeUserSkill(id: string): void {
-    this.setState((s) => ({ userSkills: s.userSkills.filter((k) => k.id !== id) }));
-    this.save();
+  /** Remove a saved skill by its slug. */
+  async removeUserSkill(slug: string): Promise<void> {
+    try {
+      await bridge.agentSkills.remove(slug);
+    } catch (e) {
+      this.toast("Couldn't remove the skill: " + (e instanceof Error ? e.message : String(e)));
+    }
+    await this.refreshLocalSkills();
   }
 
   /**
-   * Run a user skill: send its instruction to the chat against the ACTIVE model
-   * (the router's Gemma / gateway / local backend). It is a prompt, not code — any
-   * chain action the model then proposes still stops at the SignatureCeremony
-   * (Rule 3 holds by construction; nothing here signs). Navigates to the dashboard
-   * chat so the member sees the run.
+   * Run a saved skill: send its instructions (read from its SKILL.md) to the chat against the
+   * ACTIVE model. It is a prompt, not code: any chain action the model then proposes still stops
+   * at the SignatureCeremony (Rule 3 holds by construction; nothing here signs). Navigates to the
+   * dashboard chat so the member sees the run.
    */
-  runUserSkill(id: string): void {
-    const skill = this.state.userSkills.find((k) => k.id === id);
+  async runUserSkill(slug: string): Promise<void> {
+    const skill = this.state.localSkills.find((k) => k.slug === slug);
     if (!skill) return;
+    let instruction: string;
+    try {
+      instruction = (await bridge.agentSkills.read(slug)).trim();
+    } catch (e) {
+      this.toast(`Couldn't read the "${skill.name}" skill: ` + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
     if (this.state.route !== "dashboard") this.go("dashboard");
-    void this.sendChat(runPrompt(skill));
+    void this.sendChat(runPrompt({ name: skill.name, instruction }));
   }
 
   // ---------- journal capture ----------
@@ -3683,6 +3929,42 @@ export class Store {
     }
   }
 
+  // ---------- HUP-S2.3: sign-in requests from Hermes's managed browser ----------
+  /**
+   * Hand one waiting sign-in request to core by id. Core reads everything else itself, decides
+   * through the Signature Ceremony and answers the page. Inside a live budget it is signed for the
+   * member (the "Signed for you" notice announces it); otherwise the ordinary review opens here,
+   * with core's reason. Nothing is signed in the webview.
+   */
+  async handleWebSignIn(requestId: string): Promise<void> {
+    const api = signInApi.current;
+    if (!api) return;
+    let out: SignInOutcome;
+    try {
+      out = await api.request(requestId);
+    } catch (err) {
+      this.toast("A sign-in request could not be handled: " + String((err as Error).message ?? err));
+      return;
+    }
+    if (out.outcome === "pending") {
+      if (this.state.walletReview) {
+        // One review at a time: decline rather than queue behind an open approval.
+        try {
+          await api.reject(out.ceremony.id);
+        } catch {
+          /* best-effort */
+        }
+        this.toast("A site asked Hermes to sign in while another approval was open, so it was declined. Try again when you are ready.");
+        return;
+      }
+      this.openWalletReview("web-sign-in", "Sign in to " + out.ceremony.origin, out.ceremony, "no funds move", undefined, { hic: { reason: out.reason } });
+    } else if (out.outcome === "address_shared") {
+      this.toast(`Shared your wallet address with ${out.origin}, which has a sign-in budget.`);
+    } else if (out.outcome === "refused") {
+      this.toast(out.reason);
+    }
+  }
+
   // ---------- Q-E.1 (@rule8, P0) — wallet review gate ----------
   /**
    * Set the pending wallet-review state from a freshly-built ceremony view and
@@ -3814,6 +4096,8 @@ export class Store {
     // as signing so Reject / Escape cannot report "nothing was signed" for a signature that may
     // still complete; every branch below clears the review with the REAL outcome.
     this.setState({ walletReview: { ...r, approving: true } });
+    // HUP-S2.6 — the member approved this review (HIC-1): record it.
+    this.recordDecision("ceremony.approval", true, r.kind + ": " + r.label, r.spendSummary ?? r.hic?.reason ?? "the member approved the wallet review");
     // A wallet LINK is not a transaction: it is a personal_sign whose proof is
     // POSTed to the authority. It must never reach signing.broadcast, which would
     // try to send a tx. Route it to the dedicated command, which signs, submits,
@@ -3849,6 +4133,27 @@ export class Store {
         }
         this.setState({ walletReview: null });
         this.toast("Wallet not linked — " + String((err as Error).message ?? err));
+      }
+      return;
+    }
+    // HUP-S2.3: a SIGN-IN card from Hermes's managed browser: core signs it through the ceremony
+    // and delivers the signature to the page that asked. Never a broadcast.
+    if (r.kind === "web-sign-in") {
+      try {
+        const api = signInApi.current;
+        if (!api) throw new Error("sign-in works only in the desktop app");
+        const delivered = await api.approve(r.view.id, ack);
+        this.setState({ walletReview: null });
+        this.toast(
+          delivered
+            ? "Signed in. The site received your signature."
+            : "Signed, but the page had already closed or moved, so it did not receive the signature.",
+        );
+        await r.onResolved?.(true);
+      } catch (err) {
+        this.setState({ walletReview: null });
+        this.toast("Sign-in not completed: " + String((err as Error).message ?? err));
+        await r.onResolved?.(false);
       }
       return;
     }
@@ -3985,11 +4290,15 @@ export class Store {
     const r = this.state.walletReview;
     if (!r || r.approving) return;
     this.setState({ walletReview: null });
+    // HUP-S2.6 — the member declined this review (HIC-1): record it.
+    this.recordDecision("ceremony.approval", false, r.kind + ": " + r.label, r.spendSummary ?? r.hic?.reason ?? "the member declined the wallet review");
     try {
       // The link path has its own reject: it also drops the one-time challenge
       // nonce, so a declined link cannot be resumed with a stale nonce.
       if (r.kind === "wallet-link") await bridge.wallet.linkReject(r.view.id);
       else if (r.kind === "device-link") await bridge.cluster.linkDeviceReject(r.view.id);
+      // HUP-S2.3: a declined sign-in also tells the page that asked.
+      else if (r.kind === "web-sign-in") await signInApi.current?.reject(r.view.id);
       else await bridge.signing.reject(r.view.id);
       // A declined social verification also drops its pending-bind entry (nonce is one-time).
       if (r.kind === "social") await bridge.social.verifyForget(r.view.id);

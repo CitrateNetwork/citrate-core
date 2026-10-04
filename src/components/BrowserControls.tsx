@@ -11,7 +11,8 @@
 // - stops the browser (latched) or resumes it, and opens the Browser pop-out to watch.
 // Every call goes through the main-window-only Rust commands; errors are shown, never swallowed.
 // =====================================================================
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { newSignInIds } from "../budgets/signIn";
 import { BROWSER_OFF, parseBrowserStatus, type BrowserState } from "../popout/browserView";
 import type { BrowserApi } from "../popout/browserApi";
 
@@ -30,7 +31,7 @@ const chip: CSSProperties = { fontSize: 10, letterSpacing: ".06em", textTransfor
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function BrowserControls({ api, onOpen }: { api: BrowserApi; onOpen: () => void }) {
+export function BrowserControls({ api, onOpen, onSignInRequest }: { api: BrowserApi; onOpen: () => void; onSignInRequest?: (id: string) => void }) {
   const [state, setState] = useState<BrowserState>(BROWSER_OFF);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,6 +64,16 @@ export function BrowserControls({ api, onOpen }: { api: BrowserApi; onOpen: () =
       if (timer !== null) clearTimeout(timer);
     };
   }, [refresh]);
+
+  // HUP-S2.3: hand each new sign-in request to core exactly once (core reads the request itself).
+  const seenSignIns = useRef<Set<string>>(new Set());
+  const signInIds = state.signInRequests.map((r) => r.id).join(",");
+  useEffect(() => {
+    if (!onSignInRequest || !signInIds) return;
+    const { fresh, seen } = newSignInIds(signInIds.split(","), seenSignIns.current);
+    seenSignIns.current = seen;
+    for (const id of fresh) onSignInRequest(id);
+  }, [signInIds, onSignInRequest]);
 
   // A new consent request starts with the include box cleared.
   const consentOrigin = state.consentNeeded?.origin ?? null;
@@ -114,6 +125,13 @@ export function BrowserControls({ api, onOpen }: { api: BrowserApi; onOpen: () =
 
       {state.chromium?.state === "not_installed" && state.mode === "off" ? (
         <div style={note}>No Chromium is installed. The managed browser arrives with the component updater; until then Hermes uses Chrome, Chromium, Edge or Brave if one is installed.</div>
+      ) : null}
+
+      {state.signInRequests.length > 0 ? (
+        <div data-testid="browser-sign-in" style={note}>
+          {state.signInRequests[0].raiseOrigin || "A site"} is asking to{" "}
+          {state.signInRequests[0].kind === "accounts" ? "see your wallet address" : "sign in with your wallet"}. Citrate Core checks it; anything outside a sign-in budget asks you.
+        </div>
       ) : null}
 
       {pending ? (

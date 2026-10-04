@@ -494,6 +494,29 @@ pub fn is_eip55(addr: &str) -> bool {
     })
 }
 
+/// The EIP-55 checksummed form of a hex address in any case; `None` if it is not `0x` + 40 hex.
+pub fn to_eip55(addr: &str) -> Option<String> {
+    if !is_hex_address(addr) {
+        return None;
+    }
+    let lower = addr[2..].to_ascii_lowercase();
+    let hash = Keccak256::digest(lower.as_bytes());
+    let body: String = lower
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let byte = hash[i / 2];
+            let nibble = if i % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+            if c.is_ascii_alphabetic() && nibble >= 8 {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            }
+        })
+        .collect();
+    Some(format!("0x{body}"))
+}
+
 fn is_hex_address(a: &str) -> bool {
     a.len() == 42 && a.starts_with("0x") && a[2..].chars().all(|c| c.is_ascii_hexdigit())
 }
