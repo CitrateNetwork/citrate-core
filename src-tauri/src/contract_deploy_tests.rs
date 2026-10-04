@@ -61,10 +61,20 @@ fn value_defaults_to_zero_and_encodes_as_hex() {
 #[test]
 fn contract_deploy_requires_a_ready_gate_before_any_ceremony() {
     let src = include_str!("contract_deploy.rs");
-    let body = src
+    // The command body delegates to `propose_deploy` (the one deploy body, also driven by the
+    // hello-mint end-to-end run), and holds no deploy logic of its own.
+    let command = src
         .split("pub fn contract_deploy_sync(")
         .nth(1)
+        .and_then(|b| b.split("pub fn propose_deploy(").next())
         .expect("contract_deploy_sync exists");
+    assert!(command.contains("propose_deploy("), "the command delegates");
+    assert!(!command.contains(".request("), "no second ceremony path in the command");
+    let body = src
+        .split("pub fn propose_deploy(")
+        .nth(1)
+        .and_then(|b| b.split("#[cfg(test)]").next())
+        .expect("propose_deploy exists");
     let gate_at = body
         .find(".require_ready(&initcode)")
         .expect("the deploy body checks the D-4 gate on the initcode");

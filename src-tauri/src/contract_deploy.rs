@@ -111,15 +111,39 @@ pub fn contract_deploy_sync(
     value_wei: Option<String>,
     gas: Option<u64>,
 ) -> std::result::Result<DeployProposal, String> {
-    let bytecode = parse_hex(&bytecode_hex, "bytecode")?;
+    propose_deploy(
+        &custody.0,
+        &ceremony.0,
+        &gate.0,
+        &bytecode_hex,
+        constructor_args_hex.as_deref(),
+        value_wei.as_deref(),
+        gas,
+    )
+}
+
+/// The deploy proposal itself, over plain references so the same body serves the command and
+/// the hello-mint end-to-end run (HUP-S6 g3-e2e, `scripts/e2e-hello-mint.sh`), which drives it
+/// against a local anvil fork. D-4 first: no READY gate record for exactly this init code means
+/// a refusal naming what fails, before the wallet is read or a ceremony exists.
+pub fn propose_deploy(
+    vault: &crate::custody::CustodyVault,
+    ceremony: &crate::ceremony::SignatureCeremony,
+    gate: &crate::deploy_gate::GateStore,
+    bytecode_hex: &str,
+    constructor_args_hex: Option<&str>,
+    value_wei: Option<&str>,
+    gas: Option<u64>,
+) -> std::result::Result<DeployProposal, String> {
+    let bytecode = parse_hex(bytecode_hex, "bytecode")?;
     if bytecode.is_empty() {
         return Err("contract bytecode is required to deploy".into());
     }
-    let args = match &constructor_args_hex {
+    let args = match constructor_args_hex {
         Some(a) => parse_hex(a, "constructor args")?,
         None => Vec::new(),
     };
-    let value: u128 = match value_wei.as_deref() {
+    let value: u128 = match value_wei {
         None | Some("") => 0,
         Some(v) => v
             .trim()
@@ -130,8 +154,8 @@ pub fn contract_deploy_sync(
     // D-4: no READY gate for exactly these bytes → refuse, naming what fails, before touching
     // the wallet. The ceremony below carries this same `initcode`, so what was gated is what
     // gets signed; `open_ceremony` re-checks under the store lock.
-    gate.0.require_ready(&initcode)?;
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    gate.require_ready(&initcode)?;
+    let wallet = crate::wallet::address_auto_unlocked(vault).map_err(|e| e.to_string())?;
     let raw = encode_deploy_tx_json(
         &wallet.address,
         &initcode,
@@ -147,11 +171,11 @@ pub fn contract_deploy_sync(
     // Return the decoded view so the UI drives signing.broadcast(view.id) (the money-path
     // pattern) — nothing signs here (Rule 3). The gate record rides along for the review card.
     // An already-decided ceremony cannot be rejected again; that error is expected and moot.
-    let (gate_record, view) = gate.0.open_ceremony(
+    let (gate_record, view) = gate.open_ceremony(
         &initcode,
-        || Ok(ceremony.0.request(intent)),
+        || Ok(ceremony.request(intent)),
         |id| {
-            let _ = ceremony.0.reject(id);
+            let _ = ceremony.reject(id);
         },
     )?;
     Ok(DeployProposal {
@@ -164,3 +188,9 @@ pub fn contract_deploy_sync(
 mod tests {
     include!("contract_deploy_tests.rs");
 }
+
+// HUP-S6 g3-e2e: the hello-mint end-to-end run (env-gated; see scripts/e2e-hello-mint.sh) and
+// the propose_deploy contract it relies on.
+#[cfg(test)]
+#[path = "hello_mint_e2e_tests.rs"]
+mod hello_mint_e2e_tests;

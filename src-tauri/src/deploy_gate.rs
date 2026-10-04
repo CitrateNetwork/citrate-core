@@ -398,22 +398,46 @@ fn eval_tool(
     }
 }
 
+/// How many failing forge tests a reason names.
+const MAX_NAMED_FAILURES: usize = 3;
+/// A test name in a reason, in chars (forge names come from project code).
+const MAX_TEST_NAME_CHARS: usize = 80;
+
+/// `name` with control characters dropped, cut to [`MAX_TEST_NAME_CHARS`] chars.
+fn bounded_name(name: &str) -> String {
+    let clean: String = name.chars().filter(|c| !c.is_control()).collect();
+    if clean.chars().count() <= MAX_TEST_NAME_CHARS {
+        return clean;
+    }
+    let mut out: String = clean.chars().take(MAX_TEST_NAME_CHARS).collect();
+    out.push('…');
+    out
+}
+
 fn parse_forge(out: &str) -> Parsed {
     let Ok(serde_json::Value::Object(suites)) = serde_json::from_str::<serde_json::Value>(out)
     else {
         return fail("forge output is not a `forge test --json` report");
     };
     let (mut passed, mut failed, mut skipped, mut unknown) = (0u64, 0u64, 0u64, 0u64);
-    for suite in suites.values() {
+    // The first failing tests, named so the finding is actionable (US-6.1 AC2).
+    let mut failing: Vec<String> = Vec::new();
+    for (suite_id, suite) in &suites {
         let Some(results) = suite.get("test_results").and_then(|r| r.as_object()) else {
             return fail(
                 "forge output is not a `forge test --json` report (a suite has no test_results)",
             );
         };
-        for t in results.values() {
+        let contract = suite_id.rsplit(':').next().unwrap_or(suite_id.as_str());
+        for (test, t) in results {
             match t.get("status").and_then(|s| s.as_str()) {
                 Some("Success") => passed += 1,
-                Some("Failure") => failed += 1,
+                Some("Failure") => {
+                    failed += 1;
+                    if failing.len() < MAX_NAMED_FAILURES {
+                        failing.push(bounded_name(&format!("{contract}.{test}")));
+                    }
+                }
                 Some("Skipped") => skipped += 1,
                 _ => unknown += 1,
             }
@@ -427,7 +451,14 @@ fn parse_forge(out: &str) -> Parsed {
         ("unrecognized".to_string(), unknown),
     ]);
     let (pass, reason) = if failed > 0 {
-        (false, format!("{failed} failed, {passed} passed"))
+        let more = if failed > failing.len() as u64 { ", …" } else { "" };
+        (
+            false,
+            format!(
+                "{failed} failed ({}{more}), {passed} passed",
+                failing.join(", ")
+            ),
+        )
     } else if unknown > 0 {
         (
             false,

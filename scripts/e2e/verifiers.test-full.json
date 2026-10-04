@@ -1,0 +1,9 @@
+{
+  "name": "test-full",
+  "testOnly": true,
+  "note": "TEST ONLY, never shipped (scripts/ is not an app resource; a core test checks that). Used by scripts/e2e-hello-mint.sh to prove the READY path on a developer machine that lacks aderyn and medusa: both are fetched from the upstream release named in components/toolchain-bundle.json for this platform into a scratch tools directory, the sha256 is checked against the measured value there, and the real binaries are run. Nothing about the gate changes: the same parsers judge the same raw outputs.",
+  "tools": {
+    "aderyn": { "source": "bundle" },
+    "medusa": { "source": "bundle" }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "default",
+  "testOnly": false,
+  "note": "HUP-S6 hello-mint e2e. Every tool is looked up on PATH only. A tool that is not installed is reported as not installed, which the D-4 deploy gate always treats as a FAIL, so a machine without aderyn or medusa ends NOT READY. This is the configuration that matches what a member's machine does today.",
+  "tools": {
+    "aderyn": { "source": "path" },
+    "medusa": { "source": "path" }
+  }
+}
