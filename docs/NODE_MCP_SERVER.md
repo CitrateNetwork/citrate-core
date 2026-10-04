@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01
-branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest, 2026-10-01)
+branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest, 2026-10-01 and 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
 status: implemented (HUP-S4.2 + S8.5); off by default; port, personal-memory scope, Hermes write tools and task TTL pending owner sign-off
 ---
@@ -56,13 +56,19 @@ Check it from Claude Code with `/mcp`, or ask it to "use citrate-node to show th
 
 **Resources:** `citrate://node/status`, `citrate://chain/head`, `citrate://wallet` (public
 address and balance), `citrate://addresses` (the address book this build ships with),
-`citrate://precompiles`, and the template `citrate://memory/{tenant}/search?q={query}`.
+`citrate://precompiles`, and two templates: `citrate://memory/{tenant}/search?q={query}` and
+`citrate://contract/{address}/abi` (the ABI registry: a 40204 contract's ABI from CitrateScan's
+verified sources, the same source as the Contract reader, with its match status: verified,
+partial match, or not verified. The source text is left out; no ABI is ever guessed).
 
 **Read tools** (`readOnlyHint: true`): `node_status`, `chain_head`, `dag_stats`, `get_balance`,
 `chain_call` (eth_call), `estimate_gas`, `get_logs` (one contract, at most 5,000 blocks),
 `precompile_table`,
 `precompile_call` (read-only eth_call to a precompile in the table: 0x0107-0x0109, 0x0110,
-0x0111, 0x0120, 0x0130, 0x0200-0x0202), `wallet_info`, `address_book`, `memory_search`,
+0x0111, 0x0120, 0x0130, 0x0200-0x0202), `ed25519_verify` (a typed helper for ED25519_VERIFY
+at 0x0120: it encodes `public key (32 bytes) || signature (64 bytes) || message (at most 8 KiB)`,
+calls the precompile read-only and returns `valid`; an answer that is not a 32-byte word is an
+error, never "valid"), `wallet_info`, `address_book`, `memory_search`,
 `groups_list`, `cluster_status`, `cluster_peers`, `invites_list` (ids only, never links or
 tokens), `devices_list` (linked devices and revoked device addresses; no signatures), `pins_list`
 (the files this node keeps), `request_status`.
@@ -106,6 +112,14 @@ request, so `tasks/get` follows the member's decision:
 | rejected by the member, failed, expired | `completed`, `result` is an `isError` tool result saying why |
 | withdrawn with `tasks/cancel` while pending | `cancelled` (its ceremony is closed) |
 
+**Deploy-and-confirm.** For an approved `tx_propose` or `deploy_propose`, the task does not stop
+at the transaction hash. `tasks/get` reads the receipt (`eth_getTransactionReceipt`, a read) and
+the task stays `working` ("sent; waiting for the chain to include it") until the transaction is in
+a block. It then completes with the tool result plus a `receipt` (status, block number, gas used,
+and for a deploy the new contract's address), or with an `isError` result if it reverted.
+`request_status` adds the same information as `confirmation` (`waiting`, `included`, `reverted`,
+or `unknown` when the receipt cannot be read). A malformed receipt is never reported as included.
+
 `tasks/cancel` on a request the member already approved is acknowledged and changes nothing
 (cancellation is cooperative). `tasks/update` is acknowledged; this server never asks a client for
 input, because the member decides in the app. A client can see and cancel only its own tasks.
@@ -133,7 +147,14 @@ only available while the Node MCP server is on). Core then issues a connect toke
 `Hermes (built-in)` (revoking any earlier one), writes a `node` entry into the sidecar's MCP
 allowlist that runs `citrate-core --mcp-stdio` with that token and port, and revokes the token
 when the switch is off. The token sits in the allowlist file (0600), like other MCP credentials.
-Hermes is offered the read tools only (`allow_write_tools = false`, pending owner sign-off).
+Hermes is offered the read tools only (pending owner sign-off), and this is enforced on both
+sides from one switch (`HERMES_NODE_WRITE_TOOLS` in `hermes_mcp.rs`): the sidecar entry says
+`allow_write_tools = false`, and Hermes's connect token itself is **read-only**. The server does
+not list write tools to a read-only token and refuses a call to one before anything is queued, so
+a sidecar that ignored its allowlist still could not raise an approval card. The label
+`Hermes (built-in)` is reserved: a member cannot issue a token with it (so no client can appear as
+Hermes on an approval card), and core's re-issue only ever touches that label. Settings marks the
+token "read tools only".
 
 ## Rules the server enforces
 
@@ -156,9 +177,12 @@ Hermes is offered the read tools only (`allow_write_tools = false`, pending owne
 
 - `faucet_request` from the planset's tool list: the faucet ADR is proposed and waits on owner
   decisions O-1 to O-4.
-- The planset's other long-running tasks: "sync" and "FL round" as MCP tasks, and the
-  "confirm" half of deploy-and-confirm (a deploy task completes with the transaction hash; the
-  receipt is not awaited).
+- The planset's other long-running tasks: "sync" and "FL round" as MCP tasks. Neither has a
+  write behind it on this server today (node sync runs by itself; FL rounds are not exposed over
+  MCP), so there is nothing for a task to track yet.
+- Typed helpers for the other precompiles (tensor commit, Merkle, Belnap Q16, routing, CommD
+  fold, x402): their input formats need the chain-side precompile work (HUP-S7.2) to settle.
+  `precompile_call` reaches them with raw calldata.
 - Server-initiated messages (SSE streams, `subscriptions/listen`, elicitation). Approvals happen in
   the app, and the client polls.
 - An end-to-end approval of a real `tx_propose` or `deploy_propose` in the packaged app (needs a
@@ -282,6 +306,52 @@ tools/call chain_head with Mcp-Name: node_status
                                -> 400 {"error":{"code":-32020,"message":"Header mismatch: Mcp-Name header value does not match the body"}}
 stdio shim, one stateless line -> {"result":{"resultType":"complete","structuredContent":{"chainId":40204,"height":93879,"source":"public-rpc"}, ...}}
 ```
+
+## Demo transcript, part 3 (fan-out 6 review, 2026-10-04)
+
+Recorded 2026-10-04 on branch `hup/n5-nodemcp-rest` after the merge of `hup/m2-core`, macOS
+arm64. Same setup as part 2: the real server code (`node_mcp_demo`, from a snapshot of the built
+test binary) on port 47299, chain reads from the live public 40204 RPC (height 132335 at the
+time), and no app behind it (no wallet, ceremony, daemons or deploy gate). The harness also issued
+the read-only token core gives Hermes (`NODE_MCP_DEMO_RO_TOKEN_FILE`). Tokens are elided.
+
+**Claude Code 2.1.281 as the client** (HTTP transport, bearer header):
+
+```text
+$ claude -p "Use only the citrate-node MCP server. 1) Read the MCP resource
+    citrate://contract/0xBa4aBd4f3fcA5365b2451b4E9662e4Cfd22b3ad5/abi ... 2) Call ed25519_verify
+    once ... 3) Call tx_propose once ..." --strict-mcp-config --mcp-config citrate-node.json \
+    --allowedTools "ListMcpResourcesTool,ReadMcpResourceTool,mcp__citrate-node__ed25519_verify,mcp__citrate-node__tx_propose"
+1. The ABI resource came back with status `unverified`, contractName `null` and 0 ABI entries
+   (`abi` is `null`). It does report a contract with 13,026 bytes of code, and says to submit the
+   source at `POST /api/verify` to get it verified.
+2. `ed25519_verify` didn't return a valid/invalid answer. It returned this error: `the precompile
+   returned "0x", not a 32-byte word (is ED25519_VERIFY active on this chain?)`
+3. `tx_propose` also failed, with the error `demo harness: no ceremony`. No request id came back,
+   so no signature request was opened and nothing was proposed or sent.
+```
+
+Both "failures" are the honest answers: CitrateScan has no verified source for the rerolled 40204
+contracts yet (ModelRegistry, SkillRegistry, AgentSBT, CitrateMemberSBT and CitratePaymaster read
+the same), live 40204 answers `0x` at 0x0120 (ED25519_VERIFY is not active there), and the harness
+has no ceremony.
+
+**The read-only token core gives Hermes** (curl, stateless era):
+
+```text
+read-only token, tools/list       -> 200, 20 tools, write tools listed: []
+read-only token, tools/call pin_add
+                                  -> 200 {"isError":true,"content":[{"text":"pin_add is a write tool,
+                                     and this connect token is limited to the read tools."}], ...}
+member token, tools/list          -> 28 tools
+member token, resources/templates/list
+                                  -> [citrate://memory/{tenant}/search?q={query},
+                                      citrate://contract/{address}/abi]
+```
+
+Deploy-and-confirm (a task that stays `working` until the receipt is in a block) is covered by
+the unit tests against fixture receipts; it needs a member to approve a real transaction in the
+app before it can be recorded live.
 
 Still to record: the same flows against the packaged app with a member approving a request in
 Settings (the approval UI, a signed `tx_propose`, and a `deploy_propose` behind a READY gate).

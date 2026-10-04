@@ -26,6 +26,12 @@ struct Fixture {
     deploys: Mutex<Vec<DeployCall>>,
     /// `Some(reason)` = anchoring is not ready (the reason is returned verbatim).
     anchor_not_ready: Mutex<Option<String>>,
+    /// The `eth_getTransactionReceipt` answer (`None` = no receipt yet, JSON null).
+    receipt: Mutex<Option<Value>>,
+    /// The ED25519_VERIFY precompile's answer word (`None` = the generic eth_call answer).
+    ed25519_word: Mutex<Option<String>>,
+    /// Addresses asked for an ABI registry entry.
+    abi_lookups: Mutex<Vec<String>>,
 }
 
 /// (origin, bytecode, constructor args, value, gas) of one deploy proposal.
@@ -42,12 +48,29 @@ impl NodeBackend for Fixture {
         self.rpc_calls
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push((method.to_string(), params));
+            .push((method.to_string(), params.clone()));
         let value = match method {
             "eth_blockNumber" => json!("0x10"),
             "eth_chainId" => json!("0x9d0c"),
             "eth_getBalance" => json!("0xde0b6b3a7640000"),
-            "eth_call" => json!("0x01"),
+            "eth_call" => {
+                let to = params[0]["to"].as_str().unwrap_or_default().to_string();
+                match self
+                    .ed25519_word
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                {
+                    Some(w) if to == crate::node_mcp_tools::precompile_address(0x0120) => json!(w),
+                    _ => json!("0x01"),
+                }
+            }
+            "eth_getTransactionReceipt" => self
+                .receipt
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or(Value::Null),
             "eth_estimateGas" => json!("0x5208"),
             "eth_getLogs" => json!([]),
             "net_peerCount" => json!("0x3"),
@@ -135,6 +158,15 @@ impl NodeBackend for Fixture {
                 "requiresRawAck": false, "gate": {"initcodeHash": "0x1234", "verdict": "ready"}}),
         })
     }
+    fn contract_abi(&self, address: &str) -> Result<Value, String> {
+        self.abi_lookups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(address.to_string());
+        Ok(json!({"address": address, "status": "verified", "contractName": "Fixture",
+            "abi": [{"type": "function", "name": "ping", "inputs": [], "outputs": []}],
+            "sourceAvailable": true, "from": "CitrateScan verified sources"}))
+    }
     fn anchor_ready(&self) -> Result<(), String> {
         match self
             .anchor_not_ready
@@ -153,6 +185,7 @@ fn ctx(token: &str) -> CallerCtx {
         token_id: token.into(),
         token_label: "Claude Code".into(),
         client_name: Some("claude-code".into()),
+        read_only: false,
     }
 }
 
@@ -941,6 +974,7 @@ fn the_ceremony_origin_strips_control_characters() {
         token_id: "t".into(),
         token_label: "Claude Code".into(),
         client_name: Some("evil\u{1b}[2Jname\nApproved".into()),
+        read_only: false,
     };
     let o = c.origin();
     assert!(!o.chars().any(|ch| ch.is_control()), "{o:?}");
@@ -1497,6 +1531,10 @@ impl NodeBackend for PublicChainOnly {
     fn anchor_ready(&self) -> Result<(), String> {
         Err("demo harness: AnchorRegistry is not in this build's address book".into())
     }
+    fn contract_abi(&self, address: &str) -> Result<Value, String> {
+        // The same public source as the app (CitrateScan's verified sources).
+        crate::node_mcp_live::abi_registry_entry(address)
+    }
 }
 
 /// Run with `cargo test --lib node_mcp_demo -- --ignored --nocapture`. Prints a real
@@ -1539,6 +1577,19 @@ fn node_mcp_demo() {
     ) {
         crate::node_mcp_token::write_private(std::path::Path::new(&file), sv.token.as_bytes())
             .expect("token file");
+        // With NODE_MCP_DEMO_RO_TOKEN_FILE, also issue the read-only token core gives Hermes.
+        if let Ok(ro_file) = std::env::var("NODE_MCP_DEMO_RO_TOKEN_FILE") {
+            let ro = sv
+                .state
+                .reissue_token(crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL, true, true)
+                .expect("issue")
+                .expect("a token");
+            crate::node_mcp_token::write_private(
+                std::path::Path::new(&ro_file),
+                ro.connect_token.as_bytes(),
+            )
+            .expect("read-only token file");
+        }
         println!(
             "serving on {} for {secs}s",
             crate::node_mcp_http::endpoint_url(sv.port)
@@ -1652,6 +1703,7 @@ fn bidi_controls_never_reach_approval_text() {
         token_id: "t".into(),
         token_label: "Claude Code".into(),
         client_name: Some("x\u{202E}\u{2067}\u{200F}y".into()),
+        read_only: false,
     };
     assert_eq!(c.origin(), "mcp:Claude Code via xy");
 }
@@ -2297,12 +2349,12 @@ fn hermes_gets_at_most_one_live_token_and_losing_the_switch_revokes_it() {
     let label = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
     let first = sv
         .state
-        .reissue_token(label, true)
+        .reissue_token(label, true, true)
         .expect("issue")
         .expect("a token");
     let second = sv
         .state
-        .reissue_token(label, true)
+        .reissue_token(label, true, true)
         .expect("issue")
         .expect("a token");
     let hermes: Vec<_> = sv
@@ -2321,7 +2373,368 @@ fn hermes_gets_at_most_one_live_token_and_losing_the_switch_revokes_it() {
     assert_eq!(st, 200);
     assert!(sv.state.status().tokens.iter().any(|t| t.label == "Claude Code"));
     // Switch off: no Hermes token remains.
-    assert!(sv.state.reissue_token(label, false).expect("revoke").is_none());
+    assert!(sv
+        .state
+        .reissue_token(label, false, true)
+        .expect("revoke")
+        .is_none());
     assert!(!sv.state.status().tokens.iter().any(|t| t.label == label));
     sv.state.stop();
+}
+
+// ---------------------------------------------------------------------------
+// fan-out 6: read-only token scope, deploy-and-confirm, ABI registry, Ed25519 helper
+// ---------------------------------------------------------------------------
+
+fn read_only_ctx(token: &str) -> CallerCtx {
+    CallerCtx {
+        token_id: token.into(),
+        token_label: crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL.into(),
+        client_name: Some("agent-mcp-host".into()),
+        read_only: true,
+    }
+}
+
+#[test]
+fn a_read_only_token_is_offered_only_read_tools() {
+    let core = core_with(Arc::new(Fixture::default()));
+    let r = rpc(&core, &read_only_ctx("h"), "tools/list", json!({}));
+    let tools = r["result"]["tools"].as_array().cloned().unwrap_or_default();
+    assert!(!tools.is_empty());
+    for t in &tools {
+        assert_eq!(
+            t["annotations"]["readOnlyHint"],
+            json!(true),
+            "a write tool was listed for a read-only token: {}",
+            t["name"]
+        );
+    }
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    for w in ["tx_propose", "deploy_propose", "pin_add", "anchor_propose", "cluster_join", "invite_create"] {
+        assert!(!names.contains(&w), "{w} listed");
+    }
+    // A full token still sees every tool.
+    let full = rpc(&core, &ctx("m"), "tools/list", json!({}));
+    assert_eq!(
+        full["result"]["tools"].as_array().map(Vec::len),
+        Some(crate::node_mcp_tools::TOOLS.len())
+    );
+}
+
+#[test]
+fn a_read_only_token_cannot_call_a_write_tool_and_nothing_is_queued() {
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = read_only_ctx("h");
+    let tx = call(
+        &core,
+        &c,
+        "tx_propose",
+        json!({"to": "0x0000000000000000000000000000000000000002"}),
+    );
+    assert!(is_tool_error(&tx), "{tx}");
+    assert!(tx["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("limited to the read tools"));
+    let pin = call_meta(&core, &c, "pin_add", json!({"cid": "bafyabc"}), tasks_meta());
+    assert!(is_tool_error(&pin), "{pin}");
+    assert!(pin["result"].get("taskId").is_none());
+    let dep = call(&core, &c, "deploy_propose", json!({"bytecode": "0x6000"}));
+    assert!(is_tool_error(&dep));
+    assert!(f.proposals.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+    assert!(f.deploys.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+    assert!(core.inbox().list(1).0.is_empty(), "no request was queued");
+    // Read tools still answer.
+    let head = call(&core, &c, "chain_head", json!({}));
+    assert!(!is_tool_error(&head), "{head}");
+}
+
+#[test]
+fn a_read_only_scope_persists_and_older_records_load_as_full_tokens() {
+    let dir = std::env::temp_dir().join(format!("n6-node-mcp-scope-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("tokens.json");
+    let s = TokenStore::load(path.clone());
+    let ro = s.issue_scoped("Hermes (built-in)", true, 1).expect("issue");
+    let full = s.issue("Cursor", 2).expect("issue");
+    let again = TokenStore::load(path.clone());
+    assert!(again.verify(&ro.connect_token, 3).map(|a| a.read_only) == Some(true));
+    assert!(again.verify(&full.connect_token, 3).map(|a| a.read_only) == Some(false));
+    let views = again.list();
+    assert!(views.iter().any(|v| v.label == "Hermes (built-in)" && v.read_only));
+    // A record written before scopes existed (no readOnly field) is a full token.
+    let legacy = r#"[{"id":"0011aabb","label":"Old","sha256":"00","createdMs":1}]"#;
+    std::fs::write(&path, legacy).expect("write");
+    let old = TokenStore::load(path.clone());
+    assert_eq!(old.list().len(), 1);
+    assert!(!old.list()[0].read_only);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn members_cannot_issue_the_reserved_hermes_label_and_core_reissues_only_reserved_ones() {
+    let sv = serve();
+    for l in ["Hermes (built-in)", "  hermes (BUILT-IN) "] {
+        let e = sv.state.create_token(l).expect_err("reserved");
+        assert!(e.contains("reserved"), "{e}");
+    }
+    assert!(sv.state.reissue_token("Claude Code", true, true).is_err());
+    // The member's "Claude Code" token survives that refused call.
+    assert!(sv.state.status().tokens.iter().any(|t| t.label == "Claude Code"));
+    sv.state.stop();
+}
+
+#[test]
+fn hermes_token_over_http_is_read_only_whatever_the_client_asks() {
+    let sv = serve();
+    let label = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
+    let h = sv
+        .state
+        .reissue_token(label, true, true)
+        .expect("issue")
+        .expect("a token");
+    assert!(sv
+        .state
+        .status()
+        .tokens
+        .iter()
+        .any(|t| t.label == label && t.read_only));
+    let (st, hdrs, _) = http(sv.port, "POST", &[auth(&h.connect_token), json_ct()], &init_body());
+    assert_eq!(st, 200);
+    let sid = hdrs.get("mcp-session-id").cloned().unwrap_or_default();
+    let (st, _, body) = http(
+        sv.port,
+        "POST",
+        &[auth(&h.connect_token), json_ct(), ("Mcp-Session-Id", sid.clone())],
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "pin_add", "arguments": {"cid": "bafyabc"}}}).to_string(),
+    );
+    assert_eq!(st, 200);
+    assert!(body.contains("limited to the read tools"), "{body}");
+    assert_eq!(sv.state.status().pending_requests, 0);
+    let (_, _, list) = http(
+        sv.port,
+        "POST",
+        &[auth(&h.connect_token), json_ct(), ("Mcp-Session-Id", sid)],
+        &json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}).to_string(),
+    );
+    assert!(!list.contains("\"tx_propose\"") && list.contains("\"chain_head\""), "{list}");
+    sv.state.stop();
+}
+
+/// An approved tx_propose whose ceremony returned `tx_hash`.
+fn approved_tx(core: &McpCore, c: &CallerCtx, tx_hash: &str) -> String {
+    let r = call_meta(
+        core,
+        c,
+        "tx_propose",
+        json!({"to": "0x0000000000000000000000000000000000000002"}),
+        tasks_meta(),
+    );
+    let id = r["result"]["taskId"].as_str().unwrap_or_default().to_string();
+    core.inbox().begin_decision(&id, true, 2).expect("approve");
+    core.inbox()
+        .finish(&id, Ok(json!({"txHash": tx_hash, "blockNumber": null})), 3);
+    id
+}
+
+const TX_HASH: &str = "0x8f1c1b6a1f5d3b0d6a7a6ab8a5d0f0f2b8e8f1d3c3b2a1908172635445362718";
+
+#[test]
+fn an_approved_transaction_task_completes_only_once_it_is_in_a_block() {
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = ctx("t");
+    let id = approved_tx(&core, &c, TX_HASH);
+    // Sent, no receipt yet: still working, no result.
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": id}));
+    assert_eq!(g["result"]["status"], json!("working"), "{g}");
+    assert!(g["result"].get("result").is_none());
+    assert!(g["result"]["statusMessage"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("waiting for the chain"));
+    let st = call(&core, &c, "request_status", json!({"id": id}));
+    assert_eq!(
+        st["result"]["structuredContent"]["confirmation"]["state"],
+        json!("waiting")
+    );
+    // Included (a deploy: the receipt names the new contract).
+    *f.receipt.lock().unwrap_or_else(|e| e.into_inner()) = Some(json!({
+        "transactionHash": TX_HASH, "status": "0x1", "blockNumber": "0x11",
+        "contractAddress": "0x00000000000000000000000000000000000000C0", "gasUsed": "0x5208"
+    }));
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": id}));
+    assert_eq!(g["result"]["status"], json!("completed"), "{g}");
+    let sc = &g["result"]["result"]["structuredContent"];
+    assert_eq!(sc["txHash"], json!(TX_HASH));
+    assert_eq!(sc["receipt"]["blockNumber"], json!(17));
+    assert_eq!(sc["receipt"]["status"], json!("success"));
+    assert_eq!(
+        sc["receipt"]["contractAddress"],
+        json!("0x00000000000000000000000000000000000000c0")
+    );
+    // The receipt was read with the read-only method, for exactly this hash.
+    let calls = f.rpc_calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(calls
+        .iter()
+        .any(|(m, p)| m == "eth_getTransactionReceipt" && p == &json!([TX_HASH])));
+}
+
+#[test]
+fn a_reverted_transaction_task_completes_as_a_tool_error() {
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = ctx("t");
+    let id = approved_tx(&core, &c, TX_HASH);
+    *f.receipt.lock().unwrap_or_else(|e| e.into_inner()) = Some(json!({
+        "transactionHash": TX_HASH, "status": "0x0", "blockNumber": "0x12", "gasUsed": "0x1"
+    }));
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": id}));
+    assert_eq!(g["result"]["status"], json!("completed"));
+    assert_eq!(g["result"]["result"]["isError"], json!(true));
+    assert!(g["result"]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("reverted"));
+    let st = call(&core, &c, "request_status", json!({"id": id}));
+    assert_eq!(
+        st["result"]["structuredContent"]["confirmation"]["state"],
+        json!("reverted")
+    );
+}
+
+#[test]
+fn a_malformed_receipt_or_hash_is_never_reported_as_included() {
+    assert!(crate::node_mcp_protocol::receipt_view(&json!({"status": "0x1"}), "x").is_none());
+    assert!(crate::node_mcp_protocol::receipt_view(
+        &json!({"transactionHash": TX_HASH, "status": "0x7", "blockNumber": "0x1"}),
+        "x"
+    )
+    .is_none());
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = ctx("t");
+    *f.receipt.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(json!({"transactionHash": TX_HASH, "status": "0x1"}));
+    let id = approved_tx(&core, &c, TX_HASH);
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": id}));
+    assert_eq!(g["result"]["status"], json!("working"));
+    // A result with no usable hash is left as the plain approved result (no chain read).
+    let id2 = approved_tx(&core, &c, "not-a-hash");
+    let before = f.rpc_calls.lock().unwrap_or_else(|e| e.into_inner()).len();
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": id2}));
+    assert_eq!(g["result"]["status"], json!("completed"));
+    assert_eq!(f.rpc_calls.lock().unwrap_or_else(|e| e.into_inner()).len(), before);
+    // Action requests are never confirmed against the chain.
+    let p = call_meta(&core, &c, "pin_add", json!({"cid": "bafyabc"}), tasks_meta());
+    let pid = p["result"]["taskId"].as_str().unwrap_or_default().to_string();
+    core.inbox().begin_decision(&pid, true, 2).expect("approve");
+    core.inbox()
+        .finish(&pid, Ok(json!({"txHash": TX_HASH})), 3);
+    let g = rpc(&core, &c, "tasks/get", json!({"taskId": pid}));
+    assert_eq!(g["result"]["status"], json!("completed"));
+    assert!(g["result"]["result"]["structuredContent"].get("receipt").is_none());
+}
+
+#[test]
+fn the_abi_registry_resource_reads_verified_sources_for_a_valid_address_only() {
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = ctx("t");
+    let t = rpc(&core, &c, "resources/templates/list", json!({}));
+    let templates: Vec<String> = t["result"]["resourceTemplates"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|x| x["uriTemplate"].as_str().map(str::to_string))
+        .collect();
+    assert!(templates.contains(&"citrate://contract/{address}/abi".to_string()));
+    let r = rpc(
+        &core,
+        &c,
+        "resources/read",
+        json!({"uri": "citrate://contract/0x00000000000000000000000000000000000000AB/abi"}),
+    );
+    let text = r["result"]["contents"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("\"ping\"") && text.contains("verified"), "{r}");
+    assert_eq!(
+        f.abi_lookups.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        vec!["0x00000000000000000000000000000000000000ab".to_string()]
+    );
+    for bad in [
+        "citrate://contract/0x1234/abi",
+        "citrate://contract/0x00000000000000000000000000000000000000AB/source",
+        "citrate://contract//abi",
+    ] {
+        let r = rpc(&core, &c, "resources/read", json!({"uri": bad}));
+        assert_eq!(r["error"]["code"], json!(crate::node_mcp_protocol::RESOURCE_NOT_FOUND), "{bad}");
+    }
+    assert_eq!(f.abi_lookups.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
+}
+
+#[test]
+fn the_abi_registry_entry_drops_the_source_text() {
+    let vs = crate::contract_reader::VerifiedSource {
+        status: crate::contract_reader::SourceStatus::Partial,
+        is_contract: true,
+        code_size: Some(10),
+        contract_name: Some("Thing".into()),
+        compiler_version: Some("0.8.30".into()),
+        abi: Some(json!([])),
+        source: Some("contract Thing {}".into()),
+        note: Some("partial match".into()),
+    };
+    let v = crate::node_mcp_live::abi_entry_view("0xab", &vs);
+    assert!(v.get("source").is_none());
+    assert_eq!(v["sourceAvailable"], json!(true));
+    assert_eq!(v["status"], json!("partial"));
+    assert_eq!(v["address"], json!("0xab"));
+}
+
+#[test]
+fn ed25519_verify_encodes_the_precompile_input_exactly() {
+    let pk = format!("0x{}", "AB".repeat(32));
+    let sig = format!("0x{}", "cd".repeat(64));
+    let input = crate::node_mcp_tools::ed25519_verify_input(&pk, &sig, "0x68656C6C6F").expect("ok");
+    assert_eq!(
+        input,
+        format!("0x{}{}68656c6c6f", "ab".repeat(32), "cd".repeat(64))
+    );
+    // Empty message is allowed (the precompile's minimum input is pubkey + signature).
+    assert!(crate::node_mcp_tools::ed25519_verify_input(&pk, &sig, "0x").is_ok());
+    // Wrong lengths and too-long messages are refused before any call.
+    assert!(crate::node_mcp_tools::ed25519_verify_input("0xab", &sig, "0x").is_err());
+    assert!(crate::node_mcp_tools::ed25519_verify_input(&pk, &format!("0x{}", "cd".repeat(63)), "0x").is_err());
+    let long = format!("0x{}", "00".repeat(crate::node_mcp_tools::ED25519_MAX_MESSAGE_BYTES + 1));
+    assert!(crate::node_mcp_tools::ed25519_verify_input(&pk, &sig, &long).is_err());
+    let max = format!("0x{}", "00".repeat(crate::node_mcp_tools::ED25519_MAX_MESSAGE_BYTES));
+    assert!(crate::node_mcp_tools::ed25519_verify_input(&pk, &sig, &max).is_ok());
+}
+
+#[test]
+fn ed25519_verify_calls_0x0120_and_reads_its_answer_word() {
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = ctx("t");
+    let args = json!({"public_key": format!("0x{}", "11".repeat(32)), "signature": format!("0x{}", "22".repeat(64)), "message": "0x01"});
+    *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("0x{}1", "0".repeat(63)));
+    let ok = call(&core, &c, "ed25519_verify", args.clone());
+    assert_eq!(ok["result"]["structuredContent"]["valid"], json!(true), "{ok}");
+    let calls = f.rpc_calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (m, p) = calls.last().cloned().unwrap_or_default();
+    assert_eq!(m, "eth_call");
+    assert_eq!(p[0]["to"], json!(crate::node_mcp_tools::precompile_address(0x0120)));
+    assert_eq!(
+        p[0]["data"],
+        json!(format!("0x{}{}01", "11".repeat(32), "22".repeat(64)))
+    );
+    *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("0x{}", "0".repeat(64)));
+    let no = call(&core, &c, "ed25519_verify", args.clone());
+    assert_eq!(no["result"]["structuredContent"]["valid"], json!(false));
+    // Not a 32-byte word (precompile inactive or a different answer): an error, never "valid".
+    *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some("0x01".into());
+    let bad = call(&core, &c, "ed25519_verify", args);
+    assert!(is_tool_error(&bad), "{bad}");
 }

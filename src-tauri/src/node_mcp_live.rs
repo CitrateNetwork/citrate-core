@@ -257,6 +257,30 @@ impl NodeBackend for LiveBackend {
     fn anchor_ready(&self) -> Result<(), String> {
         crate::chain_agent::anchor_ready(&self.app)
     }
+
+    fn contract_abi(&self, address: &str) -> Result<Value, String> {
+        abi_registry_entry(address)
+    }
+}
+
+/// The ABI registry entry for `address` (resource `citrate://contract/{address}/abi`): the
+/// Contract reader's source, CitrateScan's public contract endpoint on its pinned host. The
+/// interface only: the source text is dropped and `sourceAvailable` says whether it exists.
+pub fn abi_registry_entry(address: &str) -> Result<Value, String> {
+    let vs = crate::contract_reader::contract_source_sync(address.to_string())?;
+    Ok(abi_entry_view(address, &vs))
+}
+
+/// [`abi_registry_entry`]'s shape for one verified-source record.
+pub fn abi_entry_view(address: &str, vs: &crate::contract_reader::VerifiedSource) -> Value {
+    let mut v = serde_json::to_value(vs).unwrap_or_else(|_| json!({}));
+    if let Some(o) = v.as_object_mut() {
+        let has_source = o.remove("source").is_some_and(|s| !s.is_null());
+        o.insert("sourceAvailable".into(), json!(has_source));
+        o.insert("address".into(), json!(address));
+        o.insert("from".into(), json!("CitrateScan verified sources"));
+    }
+    v
 }
 
 /// The public id of an invite: the first 16 hex chars of `BLAKE3(token)` (the same hash the relay

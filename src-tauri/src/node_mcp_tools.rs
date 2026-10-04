@@ -146,6 +146,17 @@ fn tx_schema() -> Value {
     )
 }
 
+fn ed25519_schema() -> Value {
+    obj(
+        json!({
+            "public_key": {"type": "string", "description": "0x-prefixed 32-byte Ed25519 public key (64 hex characters)"},
+            "signature": {"type": "string", "description": "0x-prefixed 64-byte Ed25519 signature (128 hex characters)"},
+            "message": {"type": "string", "description": "0x-prefixed message bytes that were signed (at most 8 KiB)"},
+        }),
+        &["public_key", "signature", "message"],
+    )
+}
+
 fn pin_schema() -> Value {
     obj(
         json!({"cid": {"type": "string", "description": "IPFS CID to keep on this node"}}),
@@ -197,6 +208,8 @@ pub const TOOLS: &[ToolDef] = &[
         description: "The Citrate precompiles a client may call read-only with precompile_call, with their addresses and what they do." },
     ToolDef { name: "precompile_call", title: "Precompile call", kind: ToolKind::Read, input_schema: precompile_schema,
         description: "Call a Citrate precompile read-only (eth_call) and return its output bytes. Only addresses in the precompile table are accepted." },
+    ToolDef { name: "ed25519_verify", title: "Verify an Ed25519 signature", kind: ToolKind::Read, input_schema: ed25519_schema,
+        description: "Check an Ed25519 signature with the chain's ED25519_VERIFY precompile (0x0120), read-only. Encodes public key, signature and message for the precompile and returns whether the chain accepts the signature." },
     ToolDef { name: "wallet_info", title: "Wallet (public)", kind: ToolKind::Read, input_schema: no_args,
         description: "This member's public wallet address and SALT balance. Never returns key material." },
     ToolDef { name: "address_book", title: "Address book", kind: ToolKind::Read, input_schema: no_args,
@@ -428,6 +441,41 @@ pub fn parse_data(s: &str) -> Result<String, String> {
         return Err("data is larger than 64 KiB".to_string());
     }
     Ok(format!("0x{}", h.to_ascii_lowercase()))
+}
+
+/// The ED25519_VERIFY precompile's longest message (citrate-chain
+/// `core/execution/src/precompiles/ed25519.rs`, `MAX_MESSAGE_LEN`): a longer one reads as invalid.
+pub const ED25519_MAX_MESSAGE_BYTES: usize = 8 * 1024;
+
+/// Fixed-length hex bytes (`0x` + exactly `2 * len` hex characters), lowercased.
+pub fn parse_fixed_hex(s: &str, len: usize, what: &str) -> Result<String, String> {
+    let h = s
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("{what} must be 0x-prefixed hex"))?;
+    if h.len() != len * 2 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{what} must be exactly {len} bytes ({} hex characters)",
+            len * 2
+        ));
+    }
+    Ok(h.to_ascii_lowercase())
+}
+
+/// The ED25519_VERIFY (0x0120) input: `pubkey (32) || signature (64) || message`.
+pub fn ed25519_verify_input(
+    public_key: &str,
+    signature: &str,
+    message: &str,
+) -> Result<String, String> {
+    let pk = parse_fixed_hex(public_key, 32, "public_key")?;
+    let sig = parse_fixed_hex(signature, 64, "signature")?;
+    let msg = parse_data(message)?;
+    if (msg.len() - 2) / 2 > ED25519_MAX_MESSAGE_BYTES {
+        return Err(format!(
+            "message is longer than the precompile accepts ({ED25519_MAX_MESSAGE_BYTES} bytes)"
+        ));
+    }
+    Ok(format!("0x{pk}{sig}{}", &msg[2..]))
 }
 
 /// A decimal wei amount.

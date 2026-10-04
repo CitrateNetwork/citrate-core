@@ -78,6 +78,7 @@ pub const READ_RPC_METHODS: &[&str] = &[
     "eth_call",
     "eth_estimateGas",
     "eth_getLogs",
+    "eth_getTransactionReceipt",
     "citrate_getDagStats",
 ];
 
@@ -140,6 +141,9 @@ pub trait NodeBackend: Send + Sync {
     /// `Ok` when an anchor pass could raise approval cards now (AnchorRegistry in the address
     /// book and nightly anchoring on); otherwise the honest reason.
     fn anchor_ready(&self) -> Result<(), String>;
+    /// The ABI registry entry for a contract on 40204: CitrateScan's verified-source record
+    /// (match status, name, compiler, ABI), without the source text. Never a guessed ABI.
+    fn contract_abi(&self, address: &str) -> Result<Value, String>;
 }
 
 /// Who is calling (resolved by the transport from the connect token + the session).
@@ -149,6 +153,9 @@ pub struct CallerCtx {
     pub token_label: String,
     /// `clientInfo.name` from `initialize`, if the client sent one (shown as-is, never trusted).
     pub client_name: Option<String>,
+    /// The connect token is limited to the read tools (Hermes's own token): write tools are not
+    /// listed and a call to one is refused before anything is queued.
+    pub read_only: bool,
 }
 
 impl CallerCtx {
@@ -372,7 +379,11 @@ impl McpCore {
             "server/discover" => rpc_result(&id, Self::discover_result()),
             "tools/list" => rpc_result(
                 &id,
-                json!({"tools": tools::TOOLS.iter().map(tools::tool_json).collect::<Vec<_>>()}),
+                json!({"tools": tools::TOOLS
+                    .iter()
+                    .filter(|t| !ctx.read_only || t.kind == ToolKind::Read)
+                    .map(tools::tool_json)
+                    .collect::<Vec<_>>()}),
             ),
             "tools/call" => {
                 // tools_call logs the call itself (with the tool name).
@@ -456,7 +467,7 @@ impl McpCore {
                 self.close(close);
                 match found {
                     Some(r) => {
-                        let mut v = task_view(&r);
+                        let mut v = self.task_view_confirmed(&r);
                         v["resultType"] = json!("complete");
                         rpc_result(id, v)
                     }
@@ -495,6 +506,15 @@ impl McpCore {
             self.log_call(ctx, "tools/call", Some(name), false);
             return rpc_error(id, INVALID_PARAMS, &format!("unknown tool: {name}"));
         };
+        if ctx.read_only && def.kind != ToolKind::Read {
+            self.log_call(ctx, "tools/call", Some(name), false);
+            return rpc_result(
+                id,
+                tool_err(&format!(
+                    "{name} is a write tool, and this connect token is limited to the read tools."
+                )),
+            );
+        }
         let args = params
             .get("arguments")
             .cloned()
@@ -633,6 +653,30 @@ impl McpCore {
                 let r = self.rpc("eth_call", json!([{"to": address, "data": data}, "latest"]))?;
                 Ok(json!({"precompile": p.name, "result": r.value, "source": r.source}))
             }
+            "ed25519_verify" => {
+                let data = tools::ed25519_verify_input(
+                    tools::arg_str(args, "public_key")?,
+                    tools::arg_str(args, "signature")?,
+                    tools::arg_str(args, "message")?,
+                )?;
+                let address = tools::precompile_address(0x0120);
+                let r = self.rpc("eth_call", json!([{"to": address, "data": data}, "latest"]))?;
+                // The precompile answers a 32-byte word: ...01 valid, all zero invalid.
+                let word = r.value.as_str().unwrap_or("");
+                let valid = match word.strip_prefix("0x") {
+                    Some(h) if h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()) => {
+                        h[..63].chars().all(|c| c == '0') && h.ends_with('1')
+                    }
+                    _ => {
+                        return Err(format!(
+                            "the precompile returned {word:?}, not a 32-byte word (is ED25519_VERIFY active on this chain?)"
+                        ))
+                    }
+                };
+                Ok(
+                    json!({"precompile": "ED25519_VERIFY", "address": address, "valid": valid, "source": r.source}),
+                )
+            }
             "wallet_info" => {
                 let a = self.backend.wallet_address()?;
                 let mut v = self.balance_of(&a)?;
@@ -677,12 +721,97 @@ impl McpCore {
                 let id = tools::arg_str(args, "id")?;
                 let (found, close) = self.inbox.status_for(id, &ctx.token_id, self.now());
                 self.close(close);
-                found
-                    .map(|r| request_view(&r))
-                    .ok_or_else(|| format!("no request {id} for this client"))
+                let r = found.ok_or_else(|| format!("no request {id} for this client"))?;
+                let mut v = request_view(&r);
+                if let Some(c) = self.confirmation(&r) {
+                    v["confirmation"] = c.view();
+                }
+                Ok(v)
             }
             other => Err(format!("unknown read tool {other}")),
         }
+    }
+
+    /// Deploy-and-confirm (and tx-and-confirm): for an APPROVED signature request whose result
+    /// carries a transaction hash, what the chain says about it now (`eth_getTransactionReceipt`,
+    /// a read). `None` for every other request.
+    fn confirmation(&self, r: &McpRequest) -> Option<Confirmation> {
+        let (
+            RequestKind::Signature { .. },
+            crate::node_mcp_approvals::RequestState::Approved { result },
+        ) = (&r.kind, &r.state)
+        else {
+            return None;
+        };
+        let hash = result
+            .get("txHash")
+            .and_then(Value::as_str)
+            .and_then(|h| tools::parse_topic(h).ok())?;
+        Some(match self.rpc("eth_getTransactionReceipt", json!([hash])) {
+            Err(e) => Confirmation::Unreadable { hash, error: e },
+            Ok(read) if read.value.is_null() => Confirmation::Waiting { hash },
+            Ok(read) => match receipt_view(&read.value, &read.source) {
+                Some(rc) if rc["status"] == json!("reverted") => Confirmation::Reverted(rc),
+                Some(rc) => Confirmation::Included(rc),
+                None => Confirmation::Unreadable {
+                    hash,
+                    error: "the node returned a malformed receipt".to_string(),
+                },
+            },
+        })
+    }
+
+    /// [`task_view`], with an approved transaction confirmed against the chain: the task stays
+    /// `working` until the transaction is in a block, then completes with its receipt (or with an
+    /// `isError` result when it reverted).
+    fn task_view_confirmed(&self, r: &McpRequest) -> Value {
+        let mut v = task_view(r);
+        let Some(c) = self.confirmation(r) else {
+            return v;
+        };
+        let approved = match &r.state {
+            crate::node_mcp_approvals::RequestState::Approved { result } => result.clone(),
+            _ => return v,
+        };
+        match c {
+            Confirmation::Waiting { hash } => {
+                v["status"] = json!("working");
+                v["statusMessage"] = json!(format!(
+                    "Approved by the member and sent ({hash}); waiting for the chain to include it."
+                ));
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("result");
+                }
+            }
+            Confirmation::Unreadable { hash, error } => {
+                v["status"] = json!("working");
+                v["statusMessage"] = json!(format!(
+                    "Approved by the member and sent ({hash}); its receipt could not be read yet ({error})."
+                ));
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("result");
+                }
+            }
+            Confirmation::Included(rc) => {
+                let block = rc.get("blockNumber").cloned().unwrap_or(Value::Null);
+                v["statusMessage"] = json!(format!(
+                    "Approved by the member, sent, and included in block {block}."
+                ));
+                let mut out = approved;
+                out["receipt"] = rc;
+                v["result"] = with_complete(tool_ok(out));
+            }
+            Confirmation::Reverted(rc) => {
+                let block = rc.get("blockNumber").cloned().unwrap_or(Value::Null);
+                v["statusMessage"] = json!(format!(
+                    "Approved by the member and sent, but it reverted in block {block}."
+                ));
+                v["result"] = with_complete(tool_err(&format!(
+                    "The transaction was included in block {block} but reverted, so nothing changed on chain."
+                )));
+            }
+        }
+        v
     }
 
     fn pending_reply(req: &McpRequest) -> Value {
@@ -880,15 +1009,72 @@ impl McpCore {
                 .and_then(|a| self.balance_of(&a)),
             "citrate://addresses" => address_book(),
             "citrate://precompiles" => Ok(tools::precompile_table()),
-            _ => match parse_memory_uri(uri) {
-                Some((tenant, q)) => self.backend.memory_search(&tenant, &q, 10),
-                None => return Err((RESOURCE_NOT_FOUND, format!("resource not found: {uri}"))),
+            _ => match (parse_memory_uri(uri), parse_abi_uri(uri)) {
+                (Some((tenant, q)), _) => self.backend.memory_search(&tenant, &q, 10),
+                (None, Some(address)) => self.backend.contract_abi(&address),
+                (None, None) => {
+                    return Err((RESOURCE_NOT_FOUND, format!("resource not found: {uri}")))
+                }
             },
         }
         .map_err(|m| (INVALID_PARAMS, m))?;
         let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
         Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": text}]}))
     }
+}
+
+/// What the chain says about an approved transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Confirmation {
+    /// Sent; no receipt yet.
+    Waiting { hash: String },
+    /// In a block and succeeded (the receipt view).
+    Included(Value),
+    /// In a block and reverted (the receipt view).
+    Reverted(Value),
+    /// The receipt could not be read (node and public RPC both failed, or a malformed answer).
+    Unreadable { hash: String, error: String },
+}
+
+impl Confirmation {
+    /// The `confirmation` field `request_status` adds to an approved transaction.
+    pub fn view(&self) -> Value {
+        match self {
+            Confirmation::Waiting { hash } => json!({"state": "waiting", "txHash": hash}),
+            Confirmation::Included(rc) => json!({"state": "included", "receipt": rc}),
+            Confirmation::Reverted(rc) => json!({"state": "reverted", "receipt": rc}),
+            Confirmation::Unreadable { hash, error } => {
+                json!({"state": "unknown", "txHash": hash, "error": error})
+            }
+        }
+    }
+}
+
+/// The parts of a transaction receipt a client needs: status, block, created contract (a
+/// deploy), gas used. `None` when the receipt is malformed.
+pub fn receipt_view(rc: &Value, source: &str) -> Option<Value> {
+    let hash = rc
+        .get("transactionHash")
+        .and_then(Value::as_str)
+        .and_then(|h| tools::parse_topic(h).ok())?;
+    let status = match rc.get("status").and_then(Value::as_str) {
+        Some("0x1") => "success",
+        Some("0x0") => "reverted",
+        _ => return None,
+    };
+    let block = rc.get("blockNumber").and_then(hex_u64)?;
+    let contract = rc
+        .get("contractAddress")
+        .and_then(Value::as_str)
+        .and_then(|a| tools::parse_address(a).ok());
+    Some(json!({
+        "transactionHash": hash,
+        "status": status,
+        "blockNumber": block,
+        "contractAddress": contract,
+        "gasUsed": rc.get("gasUsed").and_then(hex_u64),
+        "source": source,
+    }))
 }
 
 /// What a tool call produced: an immediate value (read tools) or a queued request (write tools).
@@ -1097,7 +1283,17 @@ pub fn resource_templates() -> Value {
         {"uriTemplate": "citrate://memory/{tenant}/search?q={query}", "name": "memory-search", "title": "Memory search",
          "mimeType": "application/json",
          "description": "Search a shared knowledge graph: tenant is citrate-docs or chain-state."},
+        {"uriTemplate": "citrate://contract/{address}/abi", "name": "contract-abi", "title": "Contract ABI (ABI registry)",
+         "mimeType": "application/json",
+         "description": "A 40204 contract's ABI from CitrateScan's verified sources, with the match status (verified, partial match, or not verified). No ABI is guessed."},
     ])
+}
+
+/// Parse `citrate://contract/<0x address>/abi` into the lowercased address.
+pub fn parse_abi_uri(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("citrate://contract/")?;
+    let address = rest.strip_suffix("/abi")?;
+    tools::parse_address(address).ok()
 }
 
 /// Parse `citrate://memory/<tenant>/search?q=<urlencoded query>`; only shared tenants.

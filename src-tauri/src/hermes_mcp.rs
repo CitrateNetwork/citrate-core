@@ -60,6 +60,12 @@ pub struct McpSettings {
 /// The label of the connect token core issues for Hermes's own use of the node MCP server.
 pub const HERMES_NODE_TOKEN_LABEL: &str = "Hermes (built-in)";
 
+/// Whether Hermes is offered the node server's write tools. PENDING OWNER SIGN-OFF: `false`, so
+/// Hermes gets the read tools only. This one switch drives both sides: the sidecar's allowlist
+/// entry (`allow_write_tools`) and the scope of Hermes's connect token (a read-only token is not
+/// offered, and may not call, any write tool, whatever the sidecar does).
+pub const HERMES_NODE_WRITE_TOOLS: bool = false;
+
 /// Where the node MCP stdio shim runs: this executable, pointed at the running server's port, with
 /// Hermes's connect token.
 #[derive(Clone, PartialEq, Eq)]
@@ -145,7 +151,7 @@ pub fn render_config_with_node(
                 "timeout_ms": CALL_TIMEOUT_MS,
                 // PENDING OWNER SIGN-OFF: read tools only. The write tools would only create
                 // approval requests, but offering them to Hermes is the owner's call.
-                "allow_write_tools": false,
+                "allow_write_tools": HERMES_NODE_WRITE_TOOLS,
             }));
         }
     }
@@ -406,7 +412,7 @@ fn node_target<R: tauri::Runtime>(
     use tauri::Manager;
     let state = app.try_state::<crate::node_mcp::NodeMcpState>()?;
     let wanted = settings.node && state.is_running();
-    let issued = state.reissue_token(HERMES_NODE_TOKEN_LABEL, wanted);
+    let issued = state.reissue_token(HERMES_NODE_TOKEN_LABEL, wanted, !HERMES_NODE_WRITE_TOOLS);
     let token = match issued {
         Ok(Some(t)) => t.connect_token,
         Ok(None) => return None,

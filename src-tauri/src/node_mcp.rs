@@ -197,7 +197,16 @@ impl NodeMcpState {
         }
     }
 
+    /// Issue a token from Settings (a full token: read and write tools). Labels core reserves for
+    /// its own tokens are refused, so no client can be labelled as Hermes on an approval card and
+    /// no member token is ever revoked by Hermes's re-issue.
     pub fn create_token(&self, label: &str) -> Result<TokenIssued, String> {
+        if is_reserved_label(label) {
+            return Err(format!(
+                "\"{}\" is reserved for the token Citrate Core issues for Hermes. Pick another label.",
+                label.trim()
+            ));
+        }
         self.shared.tokens.issue(label, now_ms())
     }
 
@@ -212,16 +221,30 @@ impl NodeMcpState {
     }
 
     /// Revoke every token labelled `label` (its sessions and pending requests end with it), then,
-    /// when `issue` is set, issue a fresh one. Used for the token core holds for Hermes's own use
-    /// of this server (`hermes_mcp`), so at most one such token is ever live.
-    pub fn reissue_token(&self, label: &str, issue: bool) -> Result<Option<TokenIssued>, String> {
+    /// when `issue` is set, issue a fresh one (limited to the read tools when `read_only`). Used
+    /// for the token core holds for Hermes's own use of this server (`hermes_mcp`), so at most one
+    /// such token is ever live. `label` must be a reserved label: members cannot issue those.
+    pub fn reissue_token(
+        &self,
+        label: &str,
+        issue: bool,
+        read_only: bool,
+    ) -> Result<Option<TokenIssued>, String> {
+        if !is_reserved_label(label) {
+            return Err(format!(
+                "{label} is not a label core reserves for its own tokens"
+            ));
+        }
         for t in self.shared.tokens.list() {
             if t.label == label {
                 self.revoke_token(&t.id)?;
             }
         }
         if issue {
-            self.create_token(label).map(Some)
+            self.shared
+                .tokens
+                .issue_scoped(label, read_only, now_ms())
+                .map(Some)
         } else {
             Ok(None)
         }
@@ -234,6 +257,17 @@ impl NodeMcpState {
         }
         v
     }
+}
+
+/// Token labels core keeps for the tokens it issues itself (compared trimmed, ignoring case).
+pub const RESERVED_TOKEN_LABELS: &[&str] = &[crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL];
+
+/// Whether `label` is one of [`RESERVED_TOKEN_LABELS`].
+pub fn is_reserved_label(label: &str) -> bool {
+    let t = label.trim();
+    RESERVED_TOKEN_LABELS
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(t))
 }
 
 /// Build the managed state for the app: tokens + config under `<app data>/node-mcp/`, the live

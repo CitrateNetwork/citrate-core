@@ -498,6 +498,7 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
         let ctx = CallerCtx {
             token_id: auth.id.clone(),
             token_label: auth.label.clone(),
+            read_only: auth.read_only,
             client_name: meta_client_name(params),
         };
         return match shared.core.dispatch(&ctx, &msg) {
@@ -537,6 +538,7 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
         CallerCtx {
             token_id: auth.id.clone(),
             token_label: auth.label.clone(),
+            read_only: auth.read_only,
             client_name,
         }
     } else {
@@ -551,6 +553,7 @@ pub fn handle_request(shared: &ServerShared, req: &HttpRequest) -> HttpResponse 
             Some(s) if s.token_id == auth.id => CallerCtx {
                 token_id: auth.id.clone(),
                 token_label: auth.label.clone(),
+                read_only: auth.read_only,
                 client_name: s.client_name,
             },
             _ => return simple(404, "unknown or expired session; initialize again"),
