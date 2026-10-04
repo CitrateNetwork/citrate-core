@@ -72,3 +72,46 @@ already the runtime's `X402PaymentRequest`.
 - Vitest: +35 (tool 15, bridge contract 7, store `handleTool` 4, Settings 9); TS guard mutants
   (budget check, shown price, HIC path) each fail the suite.
 - TLC: see `src-tauri/formal/README.md` (SpendBudget section).
+
+## Fan-out 6 follow-up (branch `hup/n6-escalation-rest`, 2026-10-04)
+
+Closes the buildable registry-route gaps from the M1 verification. Runtime half: citrate-agent-runtime
+branch `hup/n6-escalation-rest`.
+
+| Item | Where | State |
+|---|---|---|
+| EIP-712 hasher (ADR D3 precondition): typeHash, hashStruct, domain separator, `\x19\x01` digest, the pinned EIP-3009 `TransferWithAuthorization`, an approval-card view, and low-S `(v, r, s)` | `kit/src/eip712.rs` | implemented; EIP-712 "Ether Mail" spec vectors, EIP-3009 type hash, a `cast`-computed digest, and the deployed WrappedSALT's `DOMAIN_SEPARATOR()` all match |
+| Pinned x402 template: asset, approved payee, active wallet, validity at most 10 min, OS CSPRNG nonce (never the caller's) | `kit/src/web_budget.rs` `build_x402_authorization`, `fresh_x402_nonce` | implemented and tested; B-2 stays **inert** (allowlist empty, O-1). The ceremony's `TypedData` refusal is unchanged. |
+| InferenceRouter route: `requestInference` calldata, `getRequest` / `providers(address)` / `getProviders` / `getUserRequests` / `refundOwed` decoders, a read client, quote from the live route, gas from `eth_estimateGas` + 25 %, the HIC-1 ceremony tx | `src-tauri/src/inference_router.rs` | implemented; commands `escalation_registry_quote/request/result/mine` refuse with no network call while 40204 has no router pin |
+| The ceremony shows a registry request legibly and says the input is stored publicly on chain | `kit/src/txdecode.rs` (`requestInference`, `claimRefund`) | implemented, tested (malformed encodings fall back to the generic label) |
+| Anvil dry run against citrate-chain source: deploy InferenceRouter + WrappedSALT on chain id 40204, register a provider, quote, estimate, send the exact ceremony tx JSON, complete as the provider, read answer/price/refund, claim the refund; WrappedSALT accepts a `TransferWithAuthorization` signed over the kit digest and refuses its replay | `scripts/anvil-registry-dryrun.sh`, ignored test `inference_router::tests::anvil_dry_run_inference_router_and_wsalt_authorization` | green locally (forge/anvil 1.5.1); never touches 40204 or a real key |
+| Registry status reports the real payment model (`native-salt-hic1`, `x402Enabled: false`) and no longer lists the EIP-712 hasher as missing | `escalation.rs` `registry_status`; runtime `DisabledRegistry` | implemented |
+| Escalation receipts in metering (AC3, member-endpoint route): one content-free receipt per escalation that may have cost money; `/metering/daily` sums them | runtime `agent-metering` `EscalationReceipt`/`EscalationLog`/`EscalationSummary`; sidecar `POST /escalations` | implemented, tested |
+
+### What the chain actually offers (finding for the owner)
+
+- The deployed `InferenceRouter` takes **native SALT** only. A registry escalation is therefore a
+  plain transaction (HIC-1 every time), never a budgetable B-2 authorization. Budgeted x402 for
+  registry escalation needs either an x402/wSALT entry point on the router (a chain change) or an
+  ADR amendment.
+- `X402Facilitator.settlePayment` consumes `TransferWithFeeAuthorization` (fee bound into the
+  digest), not the ADR-pinned `TransferWithAuthorization`. Pinning the facilitator path would need
+  an ADR D3 amendment to add that type.
+- The router stores `inputData` in contract storage, so a registry prompt is public. The approval
+  card says so, and the input is capped at 4 KiB.
+
+### Placeholders (pending owner sign-off)
+
+- Highest registry price ceiling per request: **10 SALT** (`MAX_REGISTRY_PRICE_WEI`).
+- Registry input limit: **4096 bytes**.
+- Registry escalations are not counted against the USD daily cap (different unit; each one is
+  HIC-1 anyway).
+
+### Still not done
+
+- 40204 has no InferenceRouter pin (F-4); no providers are registered there.
+- Registry receipts in metering: the registry route runs in core, not the sidecar, so its spend is
+  the on-chain request record (`escalation_registry_mine`), not an agent-metering receipt.
+- No settings surface for the registry route beyond its status; the commands are reachable through
+  the bridge only.
+- Ledger MAC (owner decision, unchanged).

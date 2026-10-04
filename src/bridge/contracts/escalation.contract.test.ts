@@ -8,7 +8,7 @@ import { tauriEscalation } from "../tauri/escalation";
 
 describe("bridge contract — escalation (HUP-S1.5)", () => {
   it("exposes the escalation domain", () => {
-    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "run", "registryStatus"] as const) {
+    for (const k of ["endpoints", "addEndpoint", "removeEndpoint", "budget", "setBudget", "quote", "run", "registryStatus", "registryQuote", "registryRequest", "registryResult", "registryMine"] as const) {
       expect(typeof bridge.escalation[k]).toBe("function");
     }
   });
@@ -18,7 +18,14 @@ describe("bridge contract — escalation (HUP-S1.5)", () => {
     expect(await bridge.escalation.endpoints()).toEqual([]);
     await expect(bridge.escalation.addEndpoint({ label: "x", baseUrl: "https://x.example/v1", model: "m", inputMicrosPerMtok: 1, outputMicrosPerMtok: 1 }, "k")).rejects.toThrow(/desktop app/);
     await expect(bridge.escalation.run("q", 1, false, false)).rejects.toThrow(/desktop app/);
-    expect((await bridge.escalation.registryStatus()).enabled).toBe(false);
+    const st = await bridge.escalation.registryStatus();
+    expect(st.enabled).toBe(false);
+    expect(st.x402Enabled).toBe(false);
+    expect(st.router).toBeNull();
+    await expect(bridge.escalation.registryQuote("0x" + "5a".repeat(32), "hi", "1000")).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.registryRequest("0x" + "5a".repeat(32), "hi", "1000", "1000")).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.registryResult(0)).rejects.toThrow(/desktop app/);
+    await expect(bridge.escalation.registryMine()).rejects.toThrow(/desktop app/);
   });
 });
 
@@ -60,5 +67,18 @@ describe("tauri escalation invokes the registered commands", () => {
     invokeMock.mockResolvedValueOnce({});
     await tauriEscalation.run("q-1", 1234, true, false);
     expect(invokeMock).toHaveBeenCalledWith("escalation_run", { quoteId: "q-1", shownCostMicros: 1234, confirmed: true, tainted: false });
+  });
+
+  it("registry commands carry their arguments by name", async () => {
+    const hash = "0x" + "5a".repeat(32);
+    invokeMock.mockResolvedValue({});
+    await tauriEscalation.registryQuote(hash, "plan it", "1000");
+    expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_quote", { modelHash: hash, input: "plan it", maxPriceWei: "1000" });
+    await tauriEscalation.registryRequest(hash, "plan it", "1000", "1000");
+    expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_request", { modelHash: hash, input: "plan it", maxPriceWei: "1000", shownMaxPriceWei: "1000" });
+    await tauriEscalation.registryResult(4);
+    expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_result", { requestId: 4 });
+    await tauriEscalation.registryMine();
+    expect(invokeMock).toHaveBeenLastCalledWith("escalation_registry_mine");
   });
 });

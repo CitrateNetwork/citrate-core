@@ -136,6 +136,13 @@ const KNOWN_CALL_SIGNATURES: &[(&str, &str)] = &[
     ("activate(bytes32,bytes)", "activate"),
     ("transfer(address,uint256)", "transfer"),
     ("approve(address,uint256)", "approve"),
+    // HUP-S1.5: the registry escalation route (InferenceRouter). Paid in native SALT, so every
+    // request is a transaction the member approves (HIC-1).
+    (
+        "requestInference(bytes32,bytes,uint256)",
+        "requestInference",
+    ),
+    ("claimRefund()", "claimRefund"),
 ];
 
 /// The 4-byte selector for a canonical function signature: `keccak256(sig)[..4]`.
@@ -192,6 +199,48 @@ fn decode_erc20_transfer_or_approve(label: &str, dest: &str, data: &[u8]) -> Opt
     }
 }
 
+/// HUP-S1.5: `requestInference(bytes32 modelHash, bytes inputData, uint256 maxPrice)`. Surfaces the
+/// model, the input size, the price ceiling, and that the input is stored **publicly** on chain (the
+/// router keeps `inputData` in contract storage). `None` unless the calldata is the exact canonical
+/// encoding (offset 0x60, in-bounds length, zero padding), so a malformed call falls back to the
+/// generic label.
+fn decode_request_inference(label: &str, dest: &str, value: u128, data: &[u8]) -> Option<String> {
+    if label != "requestInference" || data.len() < 4 + 32 * 4 {
+        return None;
+    }
+    let args = &data[4..];
+    let word_usize = |w: &[u8]| -> Option<usize> {
+        if w[..24].iter().any(|b| *b != 0) {
+            return None;
+        }
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&w[24..32]);
+        usize::try_from(u64::from_be_bytes(b)).ok()
+    };
+    if word_usize(&args[32..64])? != 0x60 {
+        return None;
+    }
+    let len = word_usize(&args[96..128])?;
+    let padded = len.checked_add(31)? / 32 * 32;
+    if args.len() != 128usize.checked_add(padded)? {
+        return None;
+    }
+    if args[128 + len..].iter().any(|b| *b != 0) {
+        return None;
+    }
+    let max_word = &args[64..96];
+    if max_word[..16].iter().any(|b| *b != 0) {
+        return None;
+    }
+    let mut buf = [0u8; 16];
+    buf.copy_from_slice(&max_word[16..]);
+    let max_price = u128::from_be_bytes(buf);
+    let model = hex::encode(&args[0..32]);
+    Some(format!(
+        "Request inference from registry model 0x{model} via router {dest}: {len} bytes of input, stored publicly on chain; price ceiling {max_price} wei (paying {value} wei now, the unused part is credited back to claim later)"
+    ))
+}
+
 /// Build the human-readable action/cost/destination for the approval UI.
 ///
 /// CORE-B-003: a contract call is surfaced as a legible one-click action ONLY when
@@ -212,6 +261,7 @@ fn build_display(to: &Option<[u8; 20]>, value: u128, data: &[u8]) -> TxDisplay {
         Some(_) if data.is_empty() => format!("Send {value} wei to {destination}"),
         Some(_) => match known_call_label(data) {
             Some(label) => decode_erc20_transfer_or_approve(label, &destination, data)
+                .or_else(|| decode_request_inference(label, &destination, value, data))
                 .unwrap_or_else(|| {
                     format!(
                         "Call {label}() on {destination} — {} bytes calldata (value {value} wei)",
