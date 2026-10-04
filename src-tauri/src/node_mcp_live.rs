@@ -222,6 +222,11 @@ impl NodeBackend for LiveBackend {
         })
     }
 
+    fn faucet_request(&self, origin: &str, initcode_hash: &str) -> Result<Value, String> {
+        let r = crate::faucet::request_for_app(&self.app, initcode_hash, origin)?;
+        serde_json::to_value(r).map_err(|e| e.to_string())
+    }
+
     fn hermes_sessions(&self) -> Result<Value, String> {
         use crate::node_mcp_hermes::HermesSessions;
         crate::node_mcp_hermes::ManagerSessions(crate::hermes::manager_for(&self.app)?).list()

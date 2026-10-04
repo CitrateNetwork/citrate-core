@@ -41,6 +41,7 @@ import type { GoogleServiceStatus } from "../agent/schedule/schedule";
 import { invoke } from "../bridge/tauri/invoke";
 import { EscalationSettings } from "./EscalationSettings";
 import { BudgetsPanel } from "../budgets/BudgetsPanel";
+import { FaucetPanel } from "../faucet/FaucetPanel";
 import { McpServersPanel } from "./McpServersPanel";
 import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
@@ -1029,7 +1030,13 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
 
         {/* ---------- Memberships & billing ---------- */}
         {/* ---------- Budgets (HUP-S2.3) ---------- */}
-        {s.sSec === "budgets" && <BudgetsPanel />}
+        {s.sSec === "budgets" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <BudgetsPanel />
+            {/* HUP-S6.5: deploy-gas top-ups from the faucet, off by default. */}
+            <FaucetPanel />
+          </div>
+        )}
 
         {s.sSec === "billing" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

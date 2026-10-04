@@ -30,7 +30,7 @@ pub struct DeployProposal {
 /// Default gas for a contract creation when the caller does not supply an estimate.
 /// A calldata/creation tx MUST carry explicit gas; a fork-sim estimate is preferred,
 /// this is a generous fallback so a modest contract does not run out of gas.
-const DEFAULT_DEPLOY_GAS: u64 = 2_000_000;
+pub(crate) const DEFAULT_DEPLOY_GAS: u64 = 2_000_000;
 
 /// Assemble the deployment init code: the compiled deploy bytecode followed by the
 /// ABI-encoded constructor arguments (empty when the constructor takes none). This is
