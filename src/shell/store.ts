@@ -42,7 +42,7 @@ import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt } from "../agent/userSkills";
-import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
+import { withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
@@ -923,6 +923,8 @@ export class Store {
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
+            // L-20: a stopped session is closed, so it never fills the sidecar's session table.
+            close: (id) => h.sessionClose(id),
             // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
             trackWorkflowRun: (id, workflowId) => h.trackWorkflowRun(id, workflowId),
             workflowStatus: (id, runId) => h.workflowStatus(id, runId),
@@ -930,7 +932,7 @@ export class Store {
             shellPending: (id) => h.shellPending(id),
             shellDecide: (id, approvalId, allow, argv, cwd) => h.shellDecide(id, approvalId, allow, argv, cwd),
           },
-          // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
+          // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
           () => withEscalationTool(annotatedAgentTools(), escalationReady),
           () => this.sidecarPersonaChoice(),
@@ -2047,13 +2049,11 @@ export class Store {
     this.scrollChat();
   }
 
-  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context, then the
-   *  chosen persona's fragment (none = exactly the base prompt and context). */
+  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context only. The
+   *  chosen persona travels as `sidecarPersonaChoice()`; the sidecar checks it and renders its
+   *  fragment itself, so a fragment kept in app state never reaches the prompt (L-23). */
   sidecarSystemPrompt(): string {
-    return composeSystemPrompt(
-      AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
-      this.state.hermesPersona,
-    );
+    return AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot());
   }
 
   /** HUP-S3.3 — what the sidecar session applies for the chosen persona (null = none). */
