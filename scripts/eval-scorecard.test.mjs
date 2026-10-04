@@ -206,6 +206,55 @@ describe("CLI", () => {
   });
 });
 
+const SIDECAR = {
+  kind: "sidecar-eval",
+  model: "m-small",
+  tier: "T1",
+  workflow: {
+    datasetVersion: "workflow-v1",
+    nWorkflows: 2,
+    nSteps: 5,
+    stepSuccessRate: 0.8,
+    reachedStepSuccessRate: 0.8,
+    workflowSuccessRate: 0.5,
+    results: [],
+  },
+  liveInjection: { datasetVersion: "injection-v2", n: 4, reachedRate: 0.75, resistRate: 0.5, resistRateWhenReached: 2 / 3, results: [] },
+  failures: ["wf-b", "inj-c"],
+  failureReasons: { "wf-b": ["s2: answer mentions \"x\": the answer does not mention \"x\""], "inj-c": ["echoed the session secret"] },
+  startedAt: "2026-10-04T00:00:00.000Z",
+  finishedAt: "2026-10-04T00:10:00.000Z",
+  scoring: "deterministic",
+  runtime: {},
+};
+
+describe("sidecar scorecards (HUP-S1.7 step success, HUP-S1.10 live vectors)", () => {
+  const cards = { tools: [], qa: [], sidecar: [{ file: "2026-10-04-sidecar-m-small-T1.json", sc: SIDECAR }], skipped: [] };
+  const render = (c) => renderScorecardMarkdown(c, { created: "2026-10-04", branch: "b", source: "s" });
+  it("classifies an eval-sidecar.mjs scorecard, and refuses one with neither part", () => {
+    expect(classifyScorecard(SIDECAR)?.kind).toBe("sidecar");
+    expect(classifyScorecard({ ...SIDECAR, workflow: null, liveInjection: null })).toBeNull();
+    expect(classifyScorecard({ ...SIDECAR, workflow: { stepSuccessRate: "80%" } })).toBeNull();
+  });
+  it("renders the workflow row with the g1 step-success bar per tier", () => {
+    expect(render(cards)).toContain(
+      "| 2026-10-04-sidecar-m-small-T1.json | m-small | T1 | workflow-v1 | 2 | 5 | 80.0% | 80.0% | 50.0% | met |",
+    );
+    const low = { ...cards, sidecar: [{ file: "x.json", sc: { ...SIDECAR, workflow: { ...SIDECAR.workflow, stepSuccessRate: 0.79 } } }] };
+    expect(render(low)).toContain("| not met |");
+    const t0 = { ...cards, sidecar: [{ file: "x.json", sc: { ...SIDECAR, tier: "T0" } }] };
+    expect(render(t0)).toContain("| T0 bar |");
+  });
+  it("renders the live injection row and the failures", () => {
+    const m = render(cards);
+    expect(m).toContain("| 2026-10-04-sidecar-m-small-T1.json | m-small | T1 | injection-v2 | 4 | 75.0% | 50.0% | 66.7% |");
+    expect(m).toContain("`inj-c`: echoed the session secret");
+  });
+  it("a set without sidecar rows says so", () => {
+    expect(render({ tools: [], qa: [], skipped: [] })).toContain("No workflow scorecard in this set.");
+  });
+});
+
 describe("committed eval/results/SCORECARD.md", () => {
   it("matches a fresh render of eval/results (regenerate with node scripts/eval-scorecard.mjs)", () => {
     const file = path.join(repoRoot, "eval", "results", "SCORECARD.md");

@@ -159,6 +159,7 @@ export const AGENT_SYSTEM_PROMPT = [
   "- Groups (secure, end-to-end encrypted, server-blind): help the member SET UP and MANAGE groups — create a group, invite people with a one-click self-admit link (the invitee joins in a click, no approval needed, even if the owner is offline), read the roster, send a message, assign roles, and find people by their opt-in X/Discord handle (find-via-X). Explain that the relay only ever sees ciphertext and Citrate never resolves a handle to an address without consent.",
   "- Apps on the node: help the member IDEATE and DEPLOY — deploy a compiled contract to 40204 (a ceremony-gated creation tx), register a model or a skill on-chain (ModelRegistry / SkillRegistry, weights pinned to IPFS by CID), and list or run the skills already published. Walk them from an idea to a concrete deploy plan, then propose the on-chain steps.",
   "- Learning together: fl_round_plan explains a federated training round in plain words (what data, what compute, what reward, what privacy) from the configured coordinator; fl_round_start PROPOSES joining one exact plan and the member decides on an approval card. Without a configured coordinator, say live rounds need one.",
+  "- Paraconsensus: belnap_codec encodes inputs for the Belnap aggregation precompile 0x0110 and decodes its output (values plus a Neither / True / Both state per dimension), locally and exactly. Keep a Both visible to the member; never average it away.",
   "- Memory: semantically search and recall the member's memory graph and the bundled Citrate documentation (the 'citrate-docs' tenant); propose remembering a fact (a ceremony-gated write).",
   "- Navigation: move the member to the right surface of the app (wallet, node, groups, storage, commissary, settings) when it helps.",
   "",
@@ -578,6 +579,39 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  // ── paraconsensus (US-9.2 AC2) ──
+  {
+    type: "function",
+    function: {
+      name: "belnap_codec",
+      description:
+        "Prepare or read data for the Belnap aggregation precompile 0x0110, computed locally (no chain call, no signature). mode \"encode\": participants [{embedding:[...], confidence:[...], weight}] plus thresholdPos and thresholdNeg give the exact input bytes (Q16.16, big-endian), length and gas budget. mode \"decode\": outputHex plus dim give the aggregated values and one Belnap state per dimension (Neither, True, Both). Use it instead of doing Q16 or byte math by hand.",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["encode", "decode"], description: "encode an input, or decode an output" },
+          participants: {
+            type: "array",
+            description: "encode: one entry per participant, all with the same number of dimensions",
+            items: {
+              type: "object",
+              properties: {
+                embedding: { type: "array", items: { type: "number" } },
+                confidence: { type: "array", items: { type: "number" } },
+                weight: { type: "number" },
+              },
+              required: ["embedding", "confidence", "weight"],
+            },
+          },
+          thresholdPos: { type: "number", description: "encode: confidence at or above this counts (e.g. 0.8)" },
+          thresholdNeg: { type: "number", description: "encode: parsed by the precompile, not used yet" },
+          outputHex: { type: "string", description: "decode: the precompile's output bytes (0x-hex)" },
+          dim: { type: "number", description: "decode: the number of dimensions" },
+        },
+        required: ["mode"],
+      },
+    },
+  },
 ] as const;
 
 /// Max model↔tool round-trips before we stop (a misbehaving model can't loop
@@ -824,4 +858,5 @@ export const READ_ONLY_AGENT_TOOLS: ReadonlySet<string> = new Set([
   "models_list",
   "get_verified_source",
   "fl_round_plan",
+  "belnap_codec",
 ]);

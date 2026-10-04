@@ -40,6 +40,7 @@ import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter
 import { formatJournalForAgent } from "../agent/journalRead";
 import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
+import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
@@ -2846,6 +2847,9 @@ export class Store {
           result = "verified-source lookup unavailable: " + (e instanceof Error ? e.message : String(e));
         }
         }
+    } else if (call.name === "belnap_codec") {
+      // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
+      result = belnapCodecTool(args as Record<string, unknown>);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
