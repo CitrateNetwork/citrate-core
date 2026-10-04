@@ -49,6 +49,10 @@ pub mod chain;
 #[path = "hermes_workers.rs"]
 pub mod workers;
 
+// HUP-S5.3 — the decide() slot's per-backend metering (GET /decide/stats), for the Activity monitor.
+#[path = "hermes_decide.rs"]
+pub mod decide;
+
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
 pub const HERMES_CONTROL_ADDR: &str = "127.0.0.1:19700";

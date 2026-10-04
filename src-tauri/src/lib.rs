@@ -714,6 +714,7 @@ pub fn run() {
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,
             hermes::workers::hermes_workers,
+            hermes::decide::hermes_decide_stats,
             hermes_learn::hermes_workflow_run,
             hermes_learn::hermes_workflow_status,
             hermes_learn::hermes_learn_status,

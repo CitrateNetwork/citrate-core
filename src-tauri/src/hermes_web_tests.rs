@@ -398,3 +398,44 @@ fn the_file_env_source_reads_the_browser_switch_at_each_start() {
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(components);
 }
+
+// HUP-S5.5: the component updater's open-web rule reaches the managed browser.
+#[test]
+fn an_expired_manifest_keeps_the_managed_browser_off_the_open_web() {
+    let on = HermesWebSettings {
+        browser_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let managed = Path::new("/data/components/chromium/154/chrome");
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), Some(managed), false));
+    assert_eq!(env["CITRATE_BROWSER_OPEN_WEB"], "0");
+    assert_eq!(env["CITRATE_BROWSER_CHROMIUM"], "/data/components/chromium/154/chrome");
+    assert!(SIDECAR_ENV_KEYS.contains(&"CITRATE_BROWSER_OPEN_WEB"), "the manager passes it");
+    // Current updates: nothing extra, the sidecar's default (open) applies.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), Some(managed), true));
+    assert!(!env.contains_key("CITRATE_BROWSER_OPEN_WEB"));
+    // The rule follows the managed Chromium only: a system Chrome (no managed one installed,
+    // every machine while the component key slot is empty) is not affected.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), None, false));
+    assert!(!env.contains_key("CITRATE_BROWSER_OPEN_WEB"));
+    // A relative path is never passed, and neither is the rule without it.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), Some(Path::new("chrome")), false));
+    assert!(!env.contains_key("CITRATE_BROWSER_OPEN_WEB"));
+    // With the switch off, nothing at all.
+    assert!(sidecar_env_managed(&HermesWebSettings::default(), Path::new("/d"), Some(managed), false).is_empty());
+}
+
+#[test]
+fn the_status_says_when_the_managed_browser_is_kept_off_the_open_web() {
+    let on = HermesWebSettings {
+        browser_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let off_web = |n: &String| n.contains("stays off the open web");
+    let st = status_managed(on.clone(), None, Some(Path::new("/c/chrome")), false);
+    assert!(st.notices.iter().any(off_web));
+    let st = status_managed(on.clone(), None, Some(Path::new("/c/chrome")), true);
+    assert!(!st.notices.iter().any(off_web));
+    let st = status_managed(on, None, None, false);
+    assert!(!st.notices.iter().any(off_web), "no managed Chromium: nothing is held back");
+}
