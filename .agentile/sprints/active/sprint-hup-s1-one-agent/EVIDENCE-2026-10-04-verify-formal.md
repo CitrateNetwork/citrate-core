@@ -31,7 +31,7 @@ Command shape: `java -XX:+UseParallelGC -cp ~/.tla/tla2tools.jar tlc2.TLC -worke
 | Spec | Path | Result | Distinct states | Generated | Depth | Duration |
 |---|---|---|---|---|---|---|
 | FolderGrant | runtime `agent-grants/formal/FolderGrant.{tla,cfg}` | no error, temporal `FullAccessExpires` checked | 153,484 | 270,585 | 8 | 1 min 06 s |
-| SpendBudget | core `src-tauri/formal/SpendBudget.{tla,cfg}` | no error | 6,926,616 | 51,284,760 | 25 | 41 s |
+| SpendBudget | core `src-tauri/formal/SpendBudget.{tla,cfg}` | no error | 6,926,616 | 51,284,760 | 26 | 41 s |
 | WebSigningBudget | core `src-tauri/formal/WebSigningBudget.{tla,cfg}` | no error | 7,828,872 | 37,916,870 | 21 | 3 min 39 s |
 | DeviceLink | cluster `formal/DeviceLink.{tla,cfg}` | no error | 8,248 | 80,876 | 11 | under 1 s |
 | AgentLoop | core `src-tauri/formal/AgentLoop.{tla,cfg}` | no error, `StopIsLive` and `Terminates` checked | 1,258 | 2,342 | 27 | under 1 s |
@@ -149,6 +149,31 @@ addition was needed. Sidecar-hosted tools (`shell_run`, `fs_*`, `browser_*`, cap
 | `g1-no-block` | Tripwire scans every `src/*.rs` (and the kit crate) at test time; green on the release head. | `src-tauri/src/main_thread_tripwire.rs`, this file |
 | `g1-sidebar` | D-34 nav tests green on the release head (7). Screenshots are part of the S0.8 proof and are not re-taken here. | `src/shell/sidebarIa.test.tsx`, this file |
 | US-1.3 AC2 / WP S1.3 | Self-review recorded as a labelled opinion; HTTP and hash verifiers; model planner (section 3). Merges with the M1/M2 integration of runtime `hup/n6-verify-formal`. | runtime `agent-loop/src/{lib,planner,workflows}.rs`, `agent-sidecar/src/verify_probes.rs` |
+
+## 6. Review addendum (adversarial review, 2026-10-04)
+
+An independent re-run on the same heads reproduced every figure in section 1 (FolderGrant,
+SpendBudget, WebSigningBudget, DeviceLink, AgentLoop), the SpendBudget M01 kill, and the 34 core
+vitest gate tests (21 + 6 + 7). The SpendBudget depth above was corrected from 25 to 26: TLC's
+final line reads "The depth of the complete state graph search is 26."
+
+Two fixes went onto runtime `hup/n6-verify-formal` (`e9ecad8`):
+
+- `TrajectoryRecorder` opened a turn for `Event::SelfReview`. Because the opinion follows the
+  attempt's `done`, every later verdict was filed under the next attempt whenever a reviewer and
+  the recorder shared a sink, so a failed attempt could be exported as verified. It now ignores
+  the opinion, as the metering sink does (red test first in `agent-trajectory/tests/export_tests.rs`).
+  Sidecar workflow runs today emit only into the session event log, so no shipped path hit it.
+- The probe refusal test passed even with the allow check removed from `SessionHttpProbe::status`
+  (a 1 ms timeout also errs). It now asserts the scope refusal itself.
+
+Scope limits, stated plainly:
+
+- `ModelPlanner` is implemented and tested but not wired: no sidecar route, CLI command or chat
+  path calls it yet. Posted and catalog workflows still come from members or the catalog.
+- The opinion is stored in the sidecar's in-memory session event log (ring of 2,000 events, not
+  persisted across a sidecar restart) and is not part of the run record (`VerifiedRun`). The app
+  does not show it yet: `sidecarProvider.ts` ignores `self_review` events.
 
 Open items that stay open: `metering.rs` still lists "self-review" under NOT_MEASURED, because
 metering does not count opinions (they are in the session's event log, not the turn record). The
