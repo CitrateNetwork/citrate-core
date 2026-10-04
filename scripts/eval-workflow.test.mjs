@@ -1,6 +1,7 @@
 // @vitest-environment node
 //
-// HUP-S11.2: guard rails for .github/workflows/eval.yml.
+// HUP-S11.2: guard rails for .github/workflows/eval.yml (manual model runs) and
+// .github/workflows/eval-check.yml (the no-model pull-request check).
 //
 // The eval workflow calls a model endpoint and can take an hour, so it must never run on its
 // own: manual dispatch only, no push / pull_request / schedule / workflow_run triggers. These
@@ -16,6 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadScorecards } from "./eval-scorecard.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -100,7 +102,7 @@ describe("eval.yml hygiene", () => {
 
   it("uploads the scorecard as an artifact", () => {
     expect(src).toMatch(/uses:\s*actions\/upload-artifact@/);
-    expect(src).toContain("SCORECARD.md");
+    expect(src).toContain("SCORECARD-$EVAL_TIER.md");
   });
 });
 
@@ -110,6 +112,11 @@ describe("eval.yml parses as YAML", () => {
     expect(Object.keys(parsed.on)).toEqual(["workflow_dispatch"]);
     const inputs = parsed.on.workflow_dispatch.inputs;
     expect(inputs.model.required).toBe(true);
+    // HUP-S11.2: v2 is the default dataset generation; the sidecar suite is selectable.
+    expect(inputs.datasets.default).toBe("v2");
+    expect(inputs.datasets.options).toEqual(["v2", "v1"]);
+    expect(inputs.suites.options).toEqual(["all", "tools", "qa", "sidecar"]);
+    expect(inputs.tier.options).toEqual(["none", "T0", "T1", "T2"]);
     expect(Object.keys(parsed.jobs)).toEqual(["eval"]);
     expect(Array.isArray(parsed.jobs.eval.steps)).toBe(true);
     expect(parsed.permissions).toEqual({ contents: "read" });
@@ -122,14 +129,128 @@ describe("eval.yml parses as YAML", () => {
 });
 
 describe("no other workflow runs the eval", () => {
-  it("only eval.yml invokes the eval CLIs", () => {
+  it("only eval.yml invokes the eval CLIs that call a model", () => {
     const dir = path.join(repoRoot, ".github", "workflows");
     for (const f of fs.readdirSync(dir)) {
       if (f === "eval.yml") continue;
       const body = fs.readFileSync(path.join(dir, f), "utf8");
-      expect(body, f).not.toMatch(/eval-tools\.mjs|eval-qa\.mjs/);
+      expect(body, f).not.toMatch(/eval-tools\.mjs|eval-qa\.mjs|eval-sidecar\.mjs/);
     }
   });
+});
+
+describe("eval.yml suites (HUP-S11.2)", () => {
+  it("scores the v2 datasets by default and passes the choice through env", () => {
+    expect(src).toContain("EVAL_DATASETS: ${{ inputs.datasets }}");
+    expect(src).toContain('--datasets "$EVAL_DATASETS"');
+  });
+
+  it("runs the sidecar suite on binaries built from the pinned runtime commit, never an input", () => {
+    expect(src).toContain("node scripts/eval-sidecar.mjs");
+    expect(src).toContain("eval/sidecar-runtime.rev");
+    expect(src).toMatch(/repository: \$\{\{ steps\.runtime\.outputs\.repo \}\}/);
+    expect(src).toMatch(/ref: \$\{\{ steps\.runtime\.outputs\.rev \}\}/);
+    expect(src).not.toMatch(/ref: \$\{\{ inputs\./);
+    expect(src).toContain("cargo build --locked -p agent-sidecar -p citrate-agent-mcp-host");
+    expect(src).toContain('--runtime-rev "$RUNTIME_REV"');
+    // A remote endpoint is passed with --allow-remote to every model-calling CLI.
+    for (const cli of ["eval-tools.mjs", "eval-qa.mjs", "eval-sidecar.mjs"]) expect(src).toContain(`node scripts/${cli}`);
+    expect(src.match(/--allow-remote/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("checks datasets and pins before any model call, and gates the later suites on it", () => {
+    const check = src.indexOf("node scripts/eval-check.mjs");
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(src.indexOf("node scripts/eval-tools.mjs"));
+    expect(src).toMatch(/steps\.check\.outcome == 'success' && \(inputs\.suites == 'all' \|\| inputs\.suites == 'qa'\)/);
+    expect(src).toMatch(/steps\.check\.outcome == 'success' && \(inputs\.suites == 'all' \|\| inputs\.suites == 'sidecar'\)/);
+  });
+
+  it("reads per-tier secrets with a single-secret fallback", () => {
+    expect(src).toContain("secrets[format('EVAL_BASE_URL_{0}', inputs.tier)] || secrets.EVAL_BASE_URL");
+    expect(src).toContain("secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY");
+  });
+
+  it("renders and uploads one SCORECARD-<tier>.md per run", () => {
+    expect(src).toContain('--tier "$EVAL_TIER"');
+    expect(src).toContain("SCORECARD-$EVAL_TIER.md");
+    expect(src).toContain("name: eval-scorecard-${{ inputs.tier }}-${{ github.run_id }}");
+  });
+});
+
+// ── eval-check.yml: the deterministic pull-request job ─────────────────────────────────────────
+
+const CHECK_FILE = path.join(repoRoot, ".github", "workflows", "eval-check.yml");
+const checkSrc = fs.readFileSync(CHECK_FILE, "utf8");
+const checkLines = checkSrc.split("\n");
+
+function stepScript(srcLines, name) {
+  const i = srcLines.findIndex((l) => l.includes(`- name: ${name}`));
+  expect(i, name).toBeGreaterThan(-1);
+  const r = srcLines.findIndex((l, j) => j > i && /^\s+run: \|\s*$/.test(l));
+  const ind = /^(\s*)/.exec(srcLines[r + 1])[1].length;
+  const body = [];
+  for (let j = r + 1; j < srcLines.length; j++) {
+    const l = srcLines[j];
+    if (l.trim() !== "" && /^(\s*)/.exec(l)[1].length < ind) break;
+    body.push(l.slice(ind));
+  }
+  return body.join("\n");
+}
+
+describe("eval-check.yml (HUP-S11.2 PR job)", () => {
+  it("runs on pull requests into main and release branches, plus manual dispatch", () => {
+    const start = checkLines.findIndex((l) => /^on:\s*$/.test(l));
+    const keys = [];
+    for (let i = start + 1; i < checkLines.length && !/^\S/.test(checkLines[i]); i++) {
+      const m = /^ {2}([A-Za-z_]+):/.exec(checkLines[i]);
+      if (m) keys.push(m[1]);
+    }
+    expect(keys).toEqual(["pull_request", "workflow_dispatch"]);
+    expect(checkSrc).toContain('branches: [main, "release/**"]');
+    expect(checkSrc).not.toMatch(/pull_request_target/);
+  });
+
+  it("calls no model, reads no secret and asks for a read-only token", () => {
+    expect(checkSrc).not.toMatch(/secrets\./);
+    expect(checkSrc).not.toMatch(/eval-tools\.mjs|eval-qa\.mjs|eval-sidecar\.mjs|EVAL_BASE_URL/);
+    expect(checkSrc).toMatch(/^permissions:\n {2}contents: read\s*$/m);
+    expect(checkSrc).not.toMatch(/npm (ci|install)/);
+  });
+
+  it("pins every action to a full commit SHA and checks out without persisted credentials", () => {
+    const uses = checkLines.filter((l) => /^\s*-?\s*uses:/.test(l));
+    expect(uses.length).toBeGreaterThan(0);
+    for (const u of uses) expect(u).toMatch(/uses:\s*[\w.-]+\/[\w.-]+@[0-9a-f]{40}\b/);
+    expect(checkSrc).toContain("persist-credentials: false");
+  });
+
+  it("runs the full check against the fetched skill sources", () => {
+    expect(checkSrc).toContain('node scripts/eval-check.mjs --fetch-skill-sources "$RUNNER_TEMP/skill-sources"');
+    expect(checkSrc).toContain('node scripts/eval-check.mjs --skills-sources "$RUNNER_TEMP/skill-sources"');
+  });
+
+  it("the per-tier render step renders every tier with results from the committed tree", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "eval-check-render-"));
+    const summary = path.join(dir, "summary.md");
+    fs.writeFileSync(summary, "");
+    const r = spawnSync("bash", ["-e", "-c", stepScript(checkLines, "Render SCORECARD-<tier>.md from the committed results")], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: summary, GITHUB_REF_NAME: "test" },
+      timeout: 120_000,
+    });
+    const files = fs.existsSync(path.join(dir, "scorecards")) ? fs.readdirSync(path.join(dir, "scorecards")).sort() : [];
+    const text = fs.readFileSync(summary, "utf8");
+    fs.rmSync(dir, { recursive: true, force: true });
+    expect(r.status, r.stderr).toBe(0);
+    // One file per tier that has results (T2 has none until DGX runs it), none for an empty tier.
+    const cards = loadScorecards(path.join(repoRoot, "eval", "results"));
+    const tiers = new Set([...cards.tools, ...cards.qa, ...cards.sidecar].map((e) => e.sc.tier ?? "none"));
+    expect(files).toEqual([...tiers].map((t) => `SCORECARD-${t}.md`).sort());
+    expect(files).toContain("SCORECARD-T0.md");
+    expect(text).toContain("Tier: **T0** only.");
+  }, 120_000);
 });
 
 describe("eval.yml endpoint check", () => {

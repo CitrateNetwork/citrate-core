@@ -1,25 +1,34 @@
-# created: 2026-10-01 | branch: hup/n3-release-gates
+# created: 2026-10-01 | branch: hup/n3-release-gates (extended on hup/n7-eval-ci, 2026-10-04)
 # author: Larry Klosowski + Claude Opus 5.5
 # status: active
 #
-# HUP-S11.2: the deterministic agent eval suites, run on demand against a model endpoint.
+# HUP-S11.2 (US-11.2): the agent eval suites, run on demand against a model endpoint.
 #
 # MANUAL ONLY. There is no push, pull_request or schedule trigger: this workflow costs
 # nothing unless someone presses "Run workflow" (Actions tab, or
-# `gh workflow run eval.yml -f model=<name> [-f base_url=<url>] [-f tier=T1] [-f suites=all]`).
-# A run can take a long time (up to 180 s per request, ~80 tool-call items plus the QA set).
+# `gh workflow run eval.yml --ref <branch> -f model=<name> -f tier=T1 [-f base_url=<url>] [-f suites=all]`).
+# The deterministic no-model checks run on every pull request in eval-check.yml instead.
+# A run can take hours (up to 180 s per request; tool calls, QA and the sidecar workflows).
 #
-# What it does: runs scripts/eval-tools.mjs (tool-call + injection, HUP-S1.7/S1.10) and
-# scripts/eval-qa.mjs (Citrate QA, HUP-S3.5) against an OpenAI-compatible /chat/completions
-# endpoint, renders SCORECARD.md with scripts/eval-scorecard.mjs, writes it to the job summary
-# and uploads the JSON scorecards + SCORECARD.md as the `eval-scorecard-<run id>` artifact.
-# Scoring is deterministic (no model-as-judge). A transport error aborts that suite and writes
-# no scorecard for it (Rule 1).
+# Suites (input `suites`):
+#   tools    scripts/eval-tools.mjs, tool-call + injection (HUP-S1.7/S1.10), `--datasets` v2 by default
+#   qa       scripts/eval-qa.mjs, Citrate QA (HUP-S3.5)
+#   sidecar  scripts/eval-sidecar.mjs through a REAL Hermes sidecar: workflow-v1 step success and the
+#            live injection-v2 cases (MCP output, browser pages). The sidecar and the MCP fixture
+#            server are built from the citrate-agent-runtime commit pinned in eval/sidecar-runtime.rev;
+#            the browser cases use the runner's Google Chrome.
+#   all      all three.
+# Then SCORECARD-<tier>.md is rendered with scripts/eval-scorecard.mjs --tier, written to the job
+# summary, and uploaded with the JSON scorecards as the `eval-scorecard-<tier>-<run id>` artifact.
+# Scoring is deterministic (no model-as-judge). A transport error aborts that suite and writes no
+# scorecard for it (Rule 1).
 #
-# Endpoint: the `base_url` input, or the repo secret EVAL_BASE_URL when the input is blank.
-# Optional repo secret EVAL_API_KEY is passed to the CLIs by env var NAME, never on argv.
-# The endpoint must be reachable from a GitHub-hosted runner. A run sends the Hermes system
-# prompt, every tool schema and per-case canary strings to that endpoint (--allow-remote).
+# Endpoint: the `base_url` input; when blank, the repo secret EVAL_BASE_URL_<tier> (EVAL_BASE_URL_T0,
+# _T1, _T2), else EVAL_BASE_URL. Key: EVAL_API_KEY_<tier>, else EVAL_API_KEY, passed to the CLIs by
+# env var NAME, never on argv. The endpoint must be reachable from a GitHub-hosted runner, and must
+# be https for the sidecar suite (the sidecar refuses plain http off loopback). A run sends the Hermes
+# system prompt, every tool schema and per-case canary strings to that endpoint (--allow-remote).
+# Secret setup: eval/README.md "Running in CI".
 
 name: eval
 
@@ -31,12 +40,12 @@ on:
         required: true
         type: string
       base_url:
-        description: "OpenAI-compatible base URL ending in /v1. Blank = repo secret EVAL_BASE_URL"
+        description: "OpenAI-compatible base URL ending in /v1. Blank = secret EVAL_BASE_URL_<tier>, else EVAL_BASE_URL"
         required: false
         type: string
         default: ""
       tier:
-        description: "Sizeup tier label for the scorecard"
+        description: "Sizeup tier: labels the scorecard and picks the per-tier secrets"
         required: false
         type: choice
         options: [none, T0, T1, T2]
@@ -45,25 +54,40 @@ on:
         description: "Which suites to run"
         required: false
         type: choice
-        options: [all, tools, qa]
+        options: [all, tools, qa, sidecar]
         default: all
+      datasets:
+        description: "Tool-call + injection dataset generation (v2 = v1 + fragments; v1 = frozen A50 set)"
+        required: false
+        type: choice
+        options: [v2, v1]
+        default: v2
+      context_tokens:
+        description: "Sidecar suite: the endpoint's context size (core passes the llama-server --ctx-size)"
+        required: false
+        type: string
+        default: "16384"
 
 permissions:
   contents: read
 
 concurrency:
-  group: eval-${{ github.ref }}
+  group: eval-${{ github.ref }}-${{ inputs.tier }}
   cancel-in-progress: false
 
 jobs:
   eval:
-    name: eval (${{ inputs.model }}, ${{ inputs.suites }})
+    name: eval (${{ inputs.model }}, ${{ inputs.tier }}, ${{ inputs.suites }})
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     env:
       EVAL_MODEL: ${{ inputs.model }}
       EVAL_TIER: ${{ inputs.tier }}
+      EVAL_DATASETS: ${{ inputs.datasets }}
+      EVAL_CTX: ${{ inputs.context_tokens }}
       EVAL_OUT: eval-ci-out
+      RUNTIME_DIR: ${{ github.workspace }}/.eval-runtime
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -78,11 +102,11 @@ jobs:
       - name: Resolve endpoint
         env:
           INPUT_BASE_URL: ${{ inputs.base_url }}
-          SECRET_BASE_URL: ${{ secrets.EVAL_BASE_URL }}
+          SECRET_BASE_URL: ${{ secrets[format('EVAL_BASE_URL_{0}', inputs.tier)] || secrets.EVAL_BASE_URL }}
         run: |
           url="${INPUT_BASE_URL:-$SECRET_BASE_URL}"
           if [ -z "$url" ]; then
-            echo "::error::no endpoint: set the base_url input or the EVAL_BASE_URL repo secret"
+            echo "::error::no endpoint: set the base_url input or the EVAL_BASE_URL_<tier> / EVAL_BASE_URL repo secret"
             exit 2
           fi
           # Whole-string match: [^[:space:]] also excludes CR/LF, so nothing extra reaches GITHUB_ENV.
@@ -93,20 +117,26 @@ jobs:
           echo "EVAL_BASE_URL=$url" >> "$GITHUB_ENV"
           mkdir -p "$EVAL_OUT"
 
+      # The same no-model check the pull-request job runs: datasets, pins and the renderer are
+      # sound before any model time is spent.
+      - name: Dataset and pin check (no model)
+        id: check
+        run: node scripts/eval-check.mjs
+
       - name: Tool-call + injection eval
         if: ${{ inputs.suites == 'all' || inputs.suites == 'tools' }}
         env:
-          EVAL_API_KEY: ${{ secrets.EVAL_API_KEY }}
+          EVAL_API_KEY: ${{ secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY }}
         run: |
-          args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --allow-remote)
+          args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --datasets "$EVAL_DATASETS" --allow-remote)
           if [ "$EVAL_TIER" != "none" ]; then args+=(--tier "$EVAL_TIER"); fi
           if [ -n "$EVAL_API_KEY" ]; then args+=(--api-key-env EVAL_API_KEY); fi
           node scripts/eval-tools.mjs "${args[@]}"
 
       - name: Citrate QA eval
-        if: ${{ !cancelled() && (inputs.suites == 'all' || inputs.suites == 'qa') }}
+        if: ${{ !cancelled() && steps.check.outcome == 'success' && (inputs.suites == 'all' || inputs.suites == 'qa') }}
         env:
-          EVAL_API_KEY: ${{ secrets.EVAL_API_KEY }}
+          EVAL_API_KEY: ${{ secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY }}
         run: |
           [ -n "${EVAL_BASE_URL:-}" ] || { echo "::error::endpoint not resolved"; exit 2; }
           args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --allow-remote)
@@ -114,12 +144,86 @@ jobs:
           if [ -n "$EVAL_API_KEY" ]; then args+=(--api-key-env EVAL_API_KEY); fi
           node scripts/eval-qa.mjs "${args[@]}"
 
-      - name: Render SCORECARD.md
+      # ── Sidecar suite: build the runtime at the pinned commit, never a branch or an input. ──
+      - name: Read the pinned runtime commit
+        id: runtime
+        if: ${{ !cancelled() && steps.check.outcome == 'success' && (inputs.suites == 'all' || inputs.suites == 'sidecar') }}
+        run: |
+          repo="$(sed -n 's/^repo = //p' eval/sidecar-runtime.rev)"
+          rev="$(sed -n 's/^rev = //p' eval/sidecar-runtime.rev)"
+          if [ "$repo" != "CitrateNetwork/citrate-agent-runtime" ] || [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::eval/sidecar-runtime.rev must name CitrateNetwork/citrate-agent-runtime and a 40-hex commit"
+            exit 2
+          fi
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Check out citrate-agent-runtime at the pinned commit
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ steps.runtime.outputs.repo }}
+          ref: ${{ steps.runtime.outputs.rev }}
+          path: .eval-runtime
+          persist-credentials: false
+          # The runtime repo is public today; a read token keeps this working if it goes private.
+          token: ${{ secrets.CITRATE_RUNTIME_READ_TOKEN || github.token }}
+
+      - name: Install Rust
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        with:
+          workspaces: .eval-runtime
+
+      - name: Build the sidecar and the MCP fixture server
+        id: build
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev cmake libssl-dev pkg-config
+          cd "$RUNTIME_DIR"
+          cargo build --locked -p agent-sidecar -p citrate-agent-mcp-host \
+            --bin citrate-agent-sidecar --bin citrate-mcp-fixture-server
+          test -x target/debug/citrate-agent-sidecar
+          test -x target/debug/citrate-mcp-fixture-server
+
+      - name: Sidecar eval (workflow-v1 step success, live injection-v2)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          EVAL_API_KEY: ${{ secrets[format('EVAL_API_KEY_{0}', inputs.tier)] || secrets.EVAL_API_KEY }}
+          RUNTIME_REV: ${{ steps.runtime.outputs.rev }}
+        run: |
+          [ -n "${EVAL_BASE_URL:-}" ] || { echo "::error::endpoint not resolved"; exit 2; }
+          chrome="$(command -v google-chrome || command -v google-chrome-stable || true)"
+          if [ -z "$chrome" ]; then
+            echo "::error::no Google Chrome on the runner for the browser injection cases"
+            exit 2
+          fi
+          # Ubuntu 24.04 restricts unprivileged user namespaces, which Chrome's sandbox needs.
+          # The eval keeps the sandbox on (no --no-sandbox) and lifts the restriction on this
+          # throwaway runner only.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || echo "sysctl not available; Chrome may refuse to start"
+          args=(--base-url "$EVAL_BASE_URL" --model "$EVAL_MODEL" --out-dir "$EVAL_OUT" --allow-remote
+            --context-tokens "$EVAL_CTX"
+            --sidecar-bin "$RUNTIME_DIR/target/debug/citrate-agent-sidecar"
+            --mcp-fixture-bin "$RUNTIME_DIR/target/debug/citrate-mcp-fixture-server"
+            --chromium "$chrome" --runtime-rev "$RUNTIME_REV")
+          if [ "$EVAL_TIER" != "none" ]; then args+=(--tier "$EVAL_TIER"); fi
+          if [ -n "$EVAL_API_KEY" ]; then args+=(--api-key-env EVAL_API_KEY); fi
+          node scripts/eval-sidecar.mjs "${args[@]}"
+
+      - name: Render SCORECARD-<tier>.md
         if: ${{ !cancelled() }}
         run: |
           if ls "$EVAL_OUT"/*.json >/dev/null 2>&1; then
-            node scripts/eval-scorecard.mjs --in "$EVAL_OUT" --out "$EVAL_OUT/SCORECARD.md" --branch "$GITHUB_REF_NAME"
-            cat "$EVAL_OUT/SCORECARD.md" >> "$GITHUB_STEP_SUMMARY"
+            node scripts/eval-scorecard.mjs --in "$EVAL_OUT" --out "$EVAL_OUT/SCORECARD-$EVAL_TIER.md" \
+              --branch "$GITHUB_REF_NAME" --tier "$EVAL_TIER"
+            cat "$EVAL_OUT/SCORECARD-$EVAL_TIER.md" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No scorecard was written (every suite that ran aborted). See the step logs." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -128,7 +232,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: eval-scorecard-${{ github.run_id }}
+          name: eval-scorecard-${{ inputs.tier }}-${{ github.run_id }}
           path: eval-ci-out/
           if-no-files-found: warn
           retention-days: 30

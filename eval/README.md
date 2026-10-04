@@ -1,6 +1,6 @@
 ---
 created: 2026-09-30
-branch: hup/s1-eval-suite (v2 datasets and the sidecar eval added on hup/n6-eval-v2, 2026-10-04)
+branch: hup/s1-eval-suite (v2 datasets and the sidecar eval added on hup/n6-eval-v2, 2026-10-04; CI on hup/n7-eval-ci, 2026-10-04)
 author: Claude Opus 5.5 for Larry Klosowski
 status: active
 ---
@@ -37,7 +37,10 @@ A v2 dataset is a header (`version`, `provenance`, `includes: ["toolcall-v1.json
 new fragment file** (`{added, by, note?, tasks}` or `cases`); it never edits v1 or another lane's
 fragment. The merge refuses a duplicate id (naming both files), unknown keys and malformed
 fragments, and the merged set goes through the same validators as v1, so a renamed tool still fails
-CI. Score v2 with `--datasets v2`; the default stays v1 so old and new runs compare at equal n.
+CI. Since HUP-S11.2, v2 is the default (`scripts/eval-tools.mjs` and eval.yml); pass `--datasets v1`
+to compare against the frozen v1 scorecards at equal n. Every dataset file is also pinned by sha256
+in `src/agent/eval/datasets.sha256`: a dataset change regenerates it with
+`node scripts/eval-check.mjs --write-pins` in the same commit, and the two v1 pins can never move.
 
 ## Through a real sidecar: workflows and live injection (HUP-S1.7, HUP-S1.10)
 
@@ -117,7 +120,8 @@ EVAL_API_KEY=... node scripts/eval-tools.mjs --base-url http://127.0.0.1:18080/v
   --model <name> --api-key-env EVAL_API_KEY
 ```
 
-The result is written to `eval/results/<YYYY-MM-DD>-<model>.json` (`--out-dir` overrides).
+The result is written to `eval/results/<YYYY-MM-DD>-v2-<model>.json` (`<YYYY-MM-DD>-<model>.json` with
+`--datasets v1`; `--out-dir` overrides).
 Requests use `temperature: 0` and `tool_choice: "auto"`, run sequentially, and time out after
 180 s each.
 
@@ -138,26 +142,82 @@ node scripts/eval-scorecard.mjs --in <dir> --out <file>
 
 Renders every tool-call and QA scorecard JSON in the directory into one markdown table set, with
 the gate g1-eval valid-tool-call bar marked per tier and each failure's recorded reason. It
-reformats; it computes no new score. With no scorecard in the directory it exits 2 and writes
+reformats; it computes no new score. `--tier T0|T1|T2|none` renders one tier's rows only (CI writes
+`SCORECARD-<tier>.md` this way). With no scorecard in the directory (or the tier) it exits 2 and writes
 nothing. A test fails when the committed `eval/results/SCORECARD.md` drifts from its JSON, so
 regenerate it in the same commit as a new result.
 
-## Running in CI (manual only)
+## Running in CI (HUP-S11.2)
 
-`.github/workflows/eval.yml` runs both suites on a GitHub-hosted runner, **only** when someone
-dispatches it; it has no push, pull_request or schedule trigger (a test enforces this):
+Two workflows. Neither commits anything.
+
+### eval-check: every pull request, no model
+
+`.github/workflows/eval-check.yml` runs on each pull request into `main` or a `release/**` branch.
+It calls no model, reads no secret and installs no package; it is `scripts/eval-check.mjs`, which
+you can run locally the same way:
 
 ```sh
-gh workflow run eval.yml -f model=<name> [-f base_url=https://host/v1] [-f tier=T1] [-f suites=all|tools|qa]
+node scripts/eval-check.mjs                                   # everything except the skills.lock recompute
+node scripts/eval-check.mjs --fetch-skill-sources /tmp/skills  # shallow-fetch the sources skills.lock pins
+node scripts/eval-check.mjs --skills-sources /tmp/skills       # ... and recompute the lock from them
 ```
 
-- Endpoint: the `base_url` input, or the repo secret `EVAL_BASE_URL` when blank. It must be
-  reachable from the runner. The run passes `--allow-remote`, so the system prompt, tool schemas
-  and canary strings go to that endpoint.
-- Key: optional repo secret `EVAL_API_KEY`, passed by env var name (`--api-key-env`).
-- Output: the JSON scorecards plus `SCORECARD.md`, uploaded as the `eval-scorecard-<run id>`
-  artifact and shown in the job summary. Nothing is committed by the workflow; to keep a result,
-  download it into `eval/results/` and regenerate `SCORECARD.md`.
+| Check | Fails when |
+|---|---|
+| datasets | toolcall v1/v2, injection v1/v2, workflow-v1 or a `qa-*` set does not pass the validators the CLIs use (real `AGENT_TOOLS`), or a QA citation is missing from its anchor index |
+| dataset versions | a dataset file's `version` is not its own file name |
+| dataset pins | a file under `src/agent/eval` is unpinned, missing or changed against `datasets.sha256`, or a v1 pin moved (A50) |
+| skills.lock | the lock does not parse, a skill names another commit than its source, a hash is malformed, the sources disagree with `.agentile/skill-intake/intake.json`, or (with `--skills-sources`) the lock does not match a recompute from the pinned sources |
+| scorecard | a JSON in `eval/results` is not a scorecard, `SCORECARD.md` differs from a fresh render, or a tier fails to render |
+| sidecar runtime pin | `eval/sidecar-runtime.rev` does not name `CitrateNetwork/citrate-agent-runtime` and a full commit |
+
+The job uploads the per-tier renders of the committed results as `eval-check-scorecards-<run id>`.
+
+### eval: model runs, manual only
+
+`.github/workflows/eval.yml` runs the suites against a model endpoint, **only** when someone
+dispatches it; it has no push, pull_request or schedule trigger (a test enforces this). GitHub only
+offers "Run workflow" for a workflow that exists on the default branch, so the first dispatch is
+possible once eval.yml is on `main`; `--ref` then picks the branch whose code runs.
+
+```sh
+gh workflow run eval.yml --ref release/0.5.0-hermes-upskill -f model=<name> -f tier=T1 \
+  [-f base_url=https://host/v1] [-f suites=all|tools|qa|sidecar] [-f datasets=v2|v1] [-f context_tokens=16384]
+```
+
+- `tools`: `eval-tools.mjs --datasets <v2 default>`. `qa`: `eval-qa.mjs`. `sidecar`: `eval-sidecar.mjs`
+  (workflow-v1 step success and the live injection-v2 cases) on `citrate-agent-sidecar` and
+  `citrate-mcp-fixture-server` built from the runtime commit in `eval/sidecar-runtime.rev` (never a
+  branch or an input; bump the pin in a reviewed change), with the runner's Google Chrome for the
+  browser cases. The scorecard records that commit in `runtime.runtimeRev`.
+- The job first runs `scripts/eval-check.mjs`; the suites do not start on a tree that fails it.
+- Output: the JSON scorecards plus `SCORECARD-<tier>.md`, uploaded as the
+  `eval-scorecard-<tier>-<run id>` artifact and shown in the job summary. To keep a result, download
+  it into `eval/results/` and regenerate `SCORECARD.md`.
+- The run passes `--allow-remote`, so the system prompt, tool schemas and canary strings go to the
+  endpoint. The sidecar suite needs an `https` endpoint (the sidecar refuses plain http off
+  loopback).
+
+#### Repo secrets, per tier
+
+Set these in the citrate-core repo (Settings, Secrets and variables, Actions). A dispatch with
+`tier=T1` and a blank `base_url` uses `EVAL_BASE_URL_T1`, falling back to `EVAL_BASE_URL`; the key
+works the same way. Values are never printed or put on argv (the key goes by env var name).
+
+| Secret | Holds | Who provides it |
+|---|---|---|
+| `EVAL_BASE_URL_T0` | OpenAI-compatible base URL ending in `/v1`, serving the T0 model (Gemma 4 E4B Q4_0) with the app's serve flags (`--jinja`, tier context) | DGX team |
+| `EVAL_BASE_URL_T1` | the same for the T1 model | DGX team |
+| `EVAL_BASE_URL_T2` | the same for the T2 model (no T2 run exists yet) | DGX team |
+| `EVAL_BASE_URL` | fallback when the tier secret is unset | optional |
+| `EVAL_API_KEY_T0` / `_T1` / `_T2` | bearer for that endpoint, if it needs one | DGX team |
+| `EVAL_API_KEY` | fallback key | optional |
+| `CITRATE_RUNTIME_READ_TOKEN` | read token for citrate-agent-runtime; needed only if that repo goes private | optional |
+
+Each endpoint must be reachable from a GitHub-hosted runner, use `https`, and serve the exact model
+file the tier ships, at temperature 0 for the single-turn suites. Pass `-f context_tokens=` the
+server's context size for the sidecar suite.
 
 ## Scope and limits
 
