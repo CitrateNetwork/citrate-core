@@ -335,7 +335,20 @@ describe("committed release/budgets.json", () => {
     expect(() => loadBudgets(file)).not.toThrow();
   });
 
-  it("gates the macOS installer and updater at or above the shipped v0.4.2 sizes", () => {
+  // HUP-S11.0, 2026-10-04: a local bundle-lite build of the 0.5.0 line (core hup/m2-core with the
+  // knowledge corpus, the reviewed skills, the M2 Hermes sidecar and the licence texts). The
+  // updater row is a `tar -czf` of the .app (the build ran without the updater key), so it is an
+  // estimate of Tauri's own tarball. Budgets set from these: pending owner sign-off.
+  const MEASURED_2026_10_04 = {
+    dmg: 431_684_435,
+    appTarGz: 435_081_567,
+    app: 852_410_676,
+    hermes: 29_442_128,
+    citrateCore: 35_851_840,
+    licenses: 142_493,
+  };
+
+  it("gates the macOS installer and updater at or above both the shipped v0.4.2 and the measured 0.5.0 sizes", () => {
     const b = loadBudgets(file);
     const dmg = b.artifacts["macos-aarch64/dmg"];
     const tgz = b.artifacts["macos-aarch64/app.tar.gz"];
@@ -343,11 +356,40 @@ describe("committed release/budgets.json", () => {
     expect(V042_SHIPPED.appTarGz).toBe(366_205_330);
     expect(dmg.maxBytes).toBeGreaterThanOrEqual(V042_SHIPPED.dmg);
     expect(tgz.maxBytes).toBeGreaterThanOrEqual(V042_SHIPPED.appTarGz);
+    expect(dmg.maxBytes).toBeGreaterThanOrEqual(MEASURED_2026_10_04.dmg);
+    expect(tgz.maxBytes).toBeGreaterThanOrEqual(MEASURED_2026_10_04.appTarGz);
     // headroom stays tight: a budget is a tripwire, not a ceiling nobody reaches
-    expect(dmg.maxBytes).toBeLessThanOrEqual(Math.ceil(V042_SHIPPED.dmg * 1.1));
-    expect(tgz.maxBytes).toBeLessThanOrEqual(Math.ceil(V042_SHIPPED.appTarGz * 1.1));
-    expect(dmg.baselineBytes).toBe(V042_SHIPPED.dmg);
-    expect(tgz.baselineBytes).toBe(V042_SHIPPED.appTarGz);
+    expect(dmg.maxBytes).toBeLessThanOrEqual(Math.ceil(MEASURED_2026_10_04.dmg * 1.1));
+    expect(tgz.maxBytes).toBeLessThanOrEqual(Math.ceil(MEASURED_2026_10_04.appTarGz * 1.1));
+    expect(dmg.baselineBytes).toBe(MEASURED_2026_10_04.dmg);
+    expect(tgz.baselineBytes).toBe(MEASURED_2026_10_04.appTarGz);
+  });
+
+  it("budgets every component the measured 0.5.0 build reported, with tight headroom on the re-measured rows", () => {
+    const b = loadBudgets(file);
+    const ids = [
+      "bin/citrate", "bin/citrate-core", "bin/cluster-daemon", "bin/comms-member-daemon", "bin/hermes",
+      "bin/ipfs", "bin/llama-server", "bin/mem-mcp", "bin/node-agent", "resources/capsules",
+      "resources/docs-corpus", "resources/icon.icns", "resources/knowledge-corpus", "resources/licenses",
+      "resources/llama", "resources/models", "resources/skills", "resources/skills-bundle", "app",
+    ];
+    for (const id of ids) {
+      const row = b.components[`macos-aarch64/${id}`];
+      expect(row, id).toBeDefined();
+      expect(Number.isInteger(row.maxBytes), id).toBe(true);
+    }
+    const tight = [
+      ["app", MEASURED_2026_10_04.app],
+      ["bin/hermes", MEASURED_2026_10_04.hermes],
+      ["bin/citrate-core", MEASURED_2026_10_04.citrateCore],
+    ];
+    for (const [id, bytes] of tight) {
+      const row = b.components[`macos-aarch64/${id}`];
+      expect(row.baselineBytes, id).toBe(bytes);
+      expect(row.maxBytes, id).toBeGreaterThanOrEqual(bytes);
+      expect(row.maxBytes, id).toBeLessThanOrEqual(Math.ceil(bytes * 1.1) + 1_000_000);
+    }
+    expect(b.components["macos-aarch64/resources/licenses"].baselineBytes).toBe(MEASURED_2026_10_04.licenses);
   });
 
   it("names a budget row for every OS the release plan ships (macOS, Linux, Windows)", () => {

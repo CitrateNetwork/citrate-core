@@ -115,7 +115,7 @@ gates:
     status: pending
     exit_criteria:
       - {id: g3-updater, desc: "Signed component updater live w/ CVE SLA before the browser ships (@rule8)", met: false}
-      - {id: g3-licence, desc: "Licence review for bundled/first-run tools complete; source offer published", met: false}
+      - {id: g3-licence, desc: "Licence review for bundled/first-run tools complete; source offer published", met: false, evidence: "docs/LICENCE_REVIEW.md + release/licences.json (review drafted, check green; pending owner sign-off and source offer publication)"}
       - {id: g3-browser, desc: "Browser pop-out + search + decide() slot scored", met: false}
       - id: g3-gate
         desc: "DeployGate TLC-green; injected-bug run yields NOT READY"
@@ -151,7 +151,7 @@ gates:
     status: pending
     exit_criteria:
       - {id: g5-everyday, desc: "Media, office, widgets, daemons, journal export pass BDD", met: false}
-      - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false}
+      - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false, evidence: "release/README.md (macOS arm64 0.5.0-line build PASS 2026-10-04 at budgets pending owner sign-off; Linux and Windows not measured)"}
       - {id: g5-os, desc: "hello-mint e2e on macOS arm64, Linux x64, Windows x64 clean installs", met: false}
       - {id: g5-redteam, desc: "Red-team pass: no open High", met: false}
       - {id: g5-docs, desc: "Document pass + retro + essay", met: false}

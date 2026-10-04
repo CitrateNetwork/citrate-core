@@ -34,6 +34,14 @@ on:
       tag:
         description: "Version tag to build (e.g. v0.2.0)"
         required: true
+      size_gate:
+        # HUP-S11.0 (gate g5-size), manual only: tag pushes never run it. When true, the release
+        # is created as a DRAFT, scripts/size-budget.mjs checks the bundle against
+        # release/budgets.json, and the draft is published only if that passes.
+        description: "Run the installer size gate; publish only if within budget"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -183,8 +191,22 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "Citrate Core ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: "See CHANGELOG. Installs update in-app via the signed release feed."
-          releaseDraft: false
+          # A manual run with size_gate drafts the release; the size gate below publishes it.
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate == true }}
           prerelease: true
           # Generate + upload latest.json (the feed the app polls). Default true;
           # explicit here because it is the whole point of W2.
           includeUpdaterJson: true
+
+      # HUP-S11.0 size gate: manual dispatch with size_gate only (see release/README.md).
+      # Exit 1 (over budget) fails the job and leaves the release a draft for review.
+      - name: Size gate (manual, size_gate input)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+        run: node scripts/size-budget.mjs --bundle-dir target/aarch64-apple-darwin/release/bundle --arch aarch64 --markdown "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the draft release (size gate passed)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.size_gate }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: gh release edit "$TAG" --draft=false

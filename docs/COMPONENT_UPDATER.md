@@ -154,4 +154,6 @@ advisory database, and the Chromium release blog for the browser.
 - Whether to mirror upstream artifacts on the Citrate CDN (today the bundle points at upstream
   URLs; the signed manifest pins the bytes either way).
 - Licence review of the bundled tools (slither and medusa are AGPL-3.0, aderyn and solc are
-  GPL-3.0) and the source offer: gate `g3-licence`, a separate WP.
+  GPL-3.0) and the source offer: gate `g3-licence`. The review, the draft source offer and the
+  sign-off checklist are in [`LICENCE_REVIEW.md`](LICENCE_REVIEW.md); the inventory is
+  `release/licences.json`, checked by `scripts/licence-inventory.mjs`.
