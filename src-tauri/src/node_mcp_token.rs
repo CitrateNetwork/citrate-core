@@ -23,6 +23,9 @@ pub const TOKEN_PREFIX: &str = "cnmcp_";
 const TOKEN_BYTES: usize = 32;
 /// The most live tokens a member can hold at once (one per client is the expected shape).
 pub const MAX_TOKENS: usize = 16;
+/// The most in-memory tokens live at once (HUP-S4.1: one per Hermes start; earlier ones are
+/// revoked when a new one is minted).
+pub const MAX_EPHEMERAL_TOKENS: usize = 4;
 /// The longest label accepted (labels are shown in the approval UI and in ceremony origins).
 pub const MAX_LABEL_CHARS: usize = 48;
 
@@ -79,6 +82,9 @@ pub struct Authorized {
 
 struct Inner {
     records: Vec<TokenRecord>,
+    /// HUP-S4.1: tokens that live only in memory (the built-in Hermes entry's, minted at each
+    /// Hermes start). Only their hash is held, and never on disk; an app restart ends them.
+    ephemeral: Vec<TokenRecord>,
     /// id → last use (Unix ms), this session only.
     last_used: std::collections::BTreeMap<String, u64>,
 }
@@ -155,6 +161,7 @@ impl TokenStore {
             path: None,
             inner: Mutex::new(Inner {
                 records: Vec::new(),
+                ephemeral: Vec::new(),
                 last_used: Default::default(),
             }),
         }
@@ -172,6 +179,7 @@ impl TokenStore {
             path: Some(path),
             inner: Mutex::new(Inner {
                 records,
+                ephemeral: Vec::new(),
                 last_used: Default::default(),
             }),
         }
@@ -187,6 +195,35 @@ impl TokenStore {
         };
         let body = serde_json::to_string_pretty(records).map_err(|e| e.to_string())?;
         write_private(path, body.as_bytes())
+    }
+
+    /// A fresh token and an id unused by any live record.
+    fn mint(inner: &Inner, label: &str, read_only: bool, now_ms: u64) -> (TokenRecord, String) {
+        let mut secret = [0u8; TOKEN_BYTES];
+        OsRng.fill_bytes(&mut secret);
+        let token = format!("{TOKEN_PREFIX}{}", hex::encode(secret));
+        secret.iter_mut().for_each(|b| *b = 0);
+        let mut id_bytes = [0u8; 4];
+        let id = loop {
+            OsRng.fill_bytes(&mut id_bytes);
+            let candidate = hex::encode(id_bytes);
+            if !inner
+                .records
+                .iter()
+                .chain(inner.ephemeral.iter())
+                .any(|r| r.id == candidate)
+            {
+                break candidate;
+            }
+        };
+        let record = TokenRecord {
+            id,
+            label: label.to_string(),
+            sha256: sha256_hex(&token),
+            created_ms: now_ms,
+            read_only,
+        };
+        (record, token)
     }
 
     /// Issue a new token for `label`. Returns the plaintext once.
@@ -208,25 +245,8 @@ impl TokenStore {
                 "You already have {MAX_TOKENS} connect tokens. Revoke one you no longer use first."
             ));
         }
-        let mut secret = [0u8; TOKEN_BYTES];
-        OsRng.fill_bytes(&mut secret);
-        let token = format!("{TOKEN_PREFIX}{}", hex::encode(secret));
-        secret.iter_mut().for_each(|b| *b = 0);
-        let mut id_bytes = [0u8; 4];
-        let id = loop {
-            OsRng.fill_bytes(&mut id_bytes);
-            let candidate = hex::encode(id_bytes);
-            if !inner.records.iter().any(|r| r.id == candidate) {
-                break candidate;
-            }
-        };
-        let record = TokenRecord {
-            id: id.clone(),
-            label: label.clone(),
-            sha256: sha256_hex(&token),
-            created_ms: now_ms,
-            read_only,
-        };
+        let (record, token) = Self::mint(&inner, &label, read_only, now_ms);
+        let id = record.id.clone();
         let mut next = inner.records.clone();
         next.push(record);
         self.persist(&next)?;
@@ -239,6 +259,47 @@ impl TokenStore {
         })
     }
 
+    /// HUP-S4.1: issue a token held in memory only (its hash; nothing is written to disk), for a
+    /// client inside this app (limited to the read tools when `read_only`). It ends when it is
+    /// revoked or the app exits.
+    pub fn issue_ephemeral(
+        &self,
+        label: &str,
+        read_only: bool,
+        now_ms: u64,
+    ) -> Result<TokenIssued, String> {
+        let label = normalize_label(label)?;
+        let mut inner = self.lock();
+        if inner.ephemeral.len() >= MAX_EPHEMERAL_TOKENS {
+            return Err("too many in-app connect tokens are live".to_string());
+        }
+        let (record, token) = Self::mint(&inner, &label, read_only, now_ms);
+        let id = record.id.clone();
+        inner.ephemeral.push(record);
+        Ok(TokenIssued {
+            id,
+            label,
+            created_ms: now_ms,
+            connect_token: token,
+        })
+    }
+
+    /// HUP-S4.1: the ids of the in-memory tokens.
+    pub fn ephemeral_ids(&self) -> Vec<String> {
+        self.lock().ephemeral.iter().map(|r| r.id.clone()).collect()
+    }
+
+    /// HUP-S4.1: whether `presented` is a live in-memory token (does not mark it used).
+    pub fn is_live_ephemeral(&self, presented: &str) -> bool {
+        let digest = sha256_hex(presented);
+        let inner = self.lock();
+        let mut hit = false;
+        for r in &inner.ephemeral {
+            hit |= ct_eq(r.sha256.as_bytes(), digest.as_bytes());
+        }
+        hit
+    }
+
     /// Check a presented token. Returns the matching record's id + label, or `None`. Every live
     /// record is compared (no early exit), each in constant time.
     pub fn verify(&self, presented: &str, now_ms: u64) -> Option<Authorized> {
@@ -249,7 +310,7 @@ impl TokenStore {
         let digest = sha256_hex(presented);
         let mut inner = self.lock();
         let mut hit: Option<Authorized> = None;
-        for r in &inner.records {
+        for r in inner.records.iter().chain(inner.ephemeral.iter()) {
             if ct_eq(r.sha256.as_bytes(), digest.as_bytes()) && hit.is_none() {
                 hit = Some(Authorized {
                     id: r.id.clone(),
@@ -266,10 +327,13 @@ impl TokenStore {
 
     /// One identity proof per live token for `nonce`: the server shows it holds the token a client
     /// is about to send, before the client sends it (see `node_mcp_http::run_stdio_shim`).
+    /// In-memory tokens (Hermes's) are included: their holder checks the server the same way.
     pub fn identity_proofs(&self, nonce: &[u8; 32]) -> Vec<String> {
-        self.lock()
+        let inner = self.lock();
+        inner
             .records
             .iter()
+            .chain(inner.ephemeral.iter())
             .filter_map(|r| identity_proof(&r.sha256, nonce))
             .collect()
     }
@@ -277,6 +341,11 @@ impl TokenStore {
     /// Revoke (delete) the token `id`. Returns whether a token was removed.
     pub fn revoke(&self, id: &str) -> Result<bool, String> {
         let mut inner = self.lock();
+        if let Some(i) = inner.ephemeral.iter().position(|r| r.id == id) {
+            inner.ephemeral.remove(i);
+            inner.last_used.remove(id);
+            return Ok(true);
+        }
         let before = inner.records.len();
         let next: Vec<TokenRecord> = inner
             .records
@@ -299,6 +368,7 @@ impl TokenStore {
         inner
             .records
             .iter()
+            .chain(inner.ephemeral.iter())
             .map(|r| TokenView {
                 id: r.id.clone(),
                 label: r.label.clone(),

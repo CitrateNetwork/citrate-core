@@ -17,7 +17,7 @@
 
 import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
-import type { ShellPendingView } from "../bridge/domains";
+import type { ShellPendingView, McpPendingView } from "../bridge/domains";
 import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
@@ -93,6 +93,10 @@ export interface SendOpts {
     /** HUP-S2.2 (US-2.2 AC2): ask the member about a held shell_run command (exact argv, folder,
      *  sandbox). Resolves true only on an explicit approval. Absent = every command is declined. */
     onCommandApproval?: (pending: ShellPendingView) => Promise<boolean>;
+    /** HUP-S4.1 (US-4.1 AC2): ask the member about a held MCP request: an effectful MCP call after
+     *  the session read untrusted content, or a server asking to open a page. Resolves true only on
+     *  an explicit approval. Absent = every such request is declined. */
+    onMcpApproval?: (pending: McpPendingView) => Promise<boolean>;
   };
 }
 

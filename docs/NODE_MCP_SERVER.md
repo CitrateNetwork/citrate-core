@@ -1,8 +1,8 @@
 ---
 created: 2026-10-01
-branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest, 2026-10-01 and 2026-10-04)
+branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest and hup/n6-mcp-host, 2026-10-01 and 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
-status: implemented (HUP-S4.2 + S8.5); off by default; port, personal-memory scope, Hermes write tools and task TTL pending owner sign-off
+status: implemented (HUP-S4.2 + S8.5; HUP-S4.1 Hermes entry); off by default; port, personal-memory scope, Hermes write tools and task TTL pending owner sign-off
 ---
 
 # The citrate-node MCP server
@@ -56,6 +56,39 @@ the token was not sent. The check runs before every request, so another program 
 port while Core is off, or after Core quits mid-session, never sees a token.
 
 Check it from Claude Code with `/mcp`, or ask it to "use citrate-node to show the chain head".
+
+## Hermes in this app (HUP-S4.1, S4.2, S8.5)
+
+Hermes reaches this server through a built-in entry, **Your node**, in the Agent surface's
+**Connected tools (MCP)** card. It is off by default, and it can be turned on only while the node
+MCP server is on. When it is on, at every Hermes start core:
+
+1. keeps Hermes's current connect token if it is still live, or else revokes every earlier one
+   (their sessions and pending requests close) and mints a new token labelled
+   `Hermes (built-in)`. That token is held only as its SHA-256, **in memory**: it is never
+   written to `tokens.json`, and it ends when the app exits;
+2. writes the `node` entry into Hermes's MCP allowlist (`hermes/mcp.json`, 0600): this
+   executable run as the stdio shim (`--mcp-stdio`), with `CITRATE_NODE_MCP_TOKEN` and
+   `CITRATE_NODE_MCP_PORT` in the entry's explicit environment. The plaintext token is in this
+   file (owner-only) because the sidecar hands it to the shim it starts; the server itself keeps
+   only the hash, and the token stops working when it is replaced, revoked, or the app exits.
+
+Hermes is offered the read tools only (pending owner sign-off, A24), and this is enforced on both
+sides from one switch (`HERMES_NODE_WRITE_TOOLS` in `hermes_mcp.rs`): the sidecar entry says
+`allow_write_tools = false`, and Hermes's connect token itself is **read-only**. The server does
+not list write tools to a read-only token and refuses a call to one before anything is queued, so
+a sidecar that ignored its allowlist still could not raise an approval card. The shim checks the
+server's identity with the in-memory token exactly as it does with a member's token. The label
+`Hermes (built-in)` is reserved: a member cannot issue a token with it, so no client can appear as
+Hermes on an approval card, and revoking Hermes's tokens never touches a member's. Settings marks
+the token "read tools only".
+
+Were the switch turned on, write tools would still never act on their own: each would become a
+request in this server's approval inbox (shown in the app, labelled with the token), and a
+transaction is signed only through the SignatureCeremony. Once a Hermes session has read MCP output
+(always untrusted), an effectful MCP call also waits for the member on the sidecar's MCP approval
+card before it is even sent. The names `node` and `citrate-node` stay reserved, so a member-added
+server cannot take them.
 
 ## What it offers
 
@@ -144,22 +177,6 @@ stdio shim adds the stateless headers itself and passes the server's JSON-RPC er
 
 Not used: `subscriptions/listen` and `notifications/tasks` (clients poll), multi round-trip
 input requests, and `x-mcp-header` parameters.
-
-## Hermes as a client
-
-Hermes can use this server too (Agent, Connected tools (MCP), **Your node**; off by default, and
-only available while the Node MCP server is on). Core then issues a connect token labelled
-`Hermes (built-in)` (revoking any earlier one), writes a `node` entry into the sidecar's MCP
-allowlist that runs `citrate-core --mcp-stdio` with that token and port, and revokes the token
-when the switch is off. The token sits in the allowlist file (0600), like other MCP credentials.
-Hermes is offered the read tools only (pending owner sign-off), and this is enforced on both
-sides from one switch (`HERMES_NODE_WRITE_TOOLS` in `hermes_mcp.rs`): the sidecar entry says
-`allow_write_tools = false`, and Hermes's connect token itself is **read-only**. The server does
-not list write tools to a read-only token and refuses a call to one before anything is queued, so
-a sidecar that ignored its allowlist still could not raise an approval card. The label
-`Hermes (built-in)` is reserved: a member cannot issue a token with it (so no client can appear as
-Hermes on an approval card), and core's re-issue only ever touches that label. Settings marks the
-token "read tools only".
 
 ## Rules the server enforces
 
@@ -360,3 +377,43 @@ app before it can be recorded live.
 
 Still to record: the same flows against the packaged app with a member approving a request in
 Settings (the approval UI, a signed `tx_propose`, and a `deploy_propose` behind a READY gate).
+
+## Hermes demo transcript (HUP-S4.1)
+
+Recorded on `hup/n6-mcp-host` before that branch was stacked on the node MCP lane. At the time the
+`node` entry offered Hermes the write tools and its token was labelled "Hermes in this app"; on the
+stacked branch the entry and the token are read only and the label is `Hermes (built-in)` (see
+"Hermes in this app" above), so the `tx_propose` step below is no longer offered to Hermes.
+
+Recorded 2026-10-04. citrate-core's `hermes_node_entry_demo` (ignored test) ran the real node
+MCP server on port 47298 with live 40204 chain reads, minted Hermes's in-memory token and wrote
+the allowlist core gives Hermes; citrate-agent-runtime's `node_demo` (ignored test) then loaded
+that allowlist into Hermes's MCP host, which started the release `citrate-core --mcp-stdio` shim
+as the `node` stdio server. The harness backend records a proposed transaction instead of opening
+the SignatureCeremony (nothing is signed; in the app the ceremony opens and the member decides).
+
+Core side:
+
+```text
+allowlist core wrote for Hermes: {"servers":[{"allow_write_tools":true,"args":["--mcp-stdio"],"command":".../citrate-core/target/release/citrate-core","env":{"CITRATE_NODE_MCP_PORT":"47298","CITRATE_NODE_MCP_TOKEN":"cnmcp_<minted for Hermes, elided>"},"name":"node","timeout_ms":30000,"transport":"stdio"}]}
+serving http://127.0.0.1:47298/mcp ; tokens: ["Hermes in this app"]
+approval inbox: {"id":"mcpr-1","tokenId":"4836092d","origin":"mcp:Hermes in this app via citrate-hermes","summary":"Sign and send a transaction: Transfer","kind":"signature","ceremony_id":"harness-ceremony-1",...,"state":"pending","decidedMs":null}
+recent calls: initialize, tools/list, tools/call chain_head, tools/call tx_propose (all by token 4836092d)
+```
+
+Hermes's MCP host side:
+
+```text
+server node (stdio): Ready, protocol Some("2025-06-18"), era Some(Legacy), 21 tools offered, skipped []
+tools Hermes is offered: [mcp__node__node_status, mcp__node__chain_head, ... mcp__node__tx_propose, mcp__node__cluster_join, mcp__node__cluster_share, mcp__node__invite_create, mcp__node__invite_revoke]
+>>> mcp__node__chain_head {}
+<<< untrusted: {"chainId": 40204, "height": 132335, "source": "public-rpc"}
+>>> mcp__node__tx_propose {"to":"0x52908400098527886E0F7030069857D2E4169EE7","value_wei":"1"}
+<<< untrusted: {"requestId": "mcpr-1", "state": "pending", "summary": "Sign and send a transaction: Transfer",
+    "next": "The member must approve this in Citrate Core (Settings, API endpoints & keys, Node MCP server). Nothing happens until they do. ..."}
+```
+
+The node server speaks the handshake protocol, so the host's `server/discover` probe was refused
+and it fell back to `initialize` (era legacy). In a real session the chain_head result taints
+the session, so the tx_propose call would first wait on the sidecar's MCP approval card, and
+then on the member's approval of request `mcpr-1` in the app.

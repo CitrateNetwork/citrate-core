@@ -1,6 +1,5 @@
-//! HUP-S4.3 — the MCP servers Hermes may use: mem-mcp (the member's local memory graph),
-//! CitrateScan (the public explorer) and (HUP-S4.2 / S8.5) this member's own citrate-node MCP
-//! server, configured through the S4.1 MCP host's allowlist file.
+//! HUP-S4.3 — the MCP servers Hermes may use: mem-mcp (the member's local memory graph) and
+//! CitrateScan (the public explorer), configured through the S4.1 MCP host's allowlist file.
 //!
 //! citrate-agent-runtime's `agent-mcp-host` reads the file named by `CITRATE_HERMES_MCP` once, at
 //! sidecar start; unset means no MCP at all. Core owns that file: it renders it from the member's
@@ -11,19 +10,25 @@
 //! - `scan`: CitrateScan's MCP endpoint (`{EXPLORER_BASE}/api/mcp`), HTTP, read-only tools.
 //! - `mem`: the citrate-core executable itself run as [`crate::mem_mcp_bridge`] (stdio), which
 //!   relays to the local mem-mcp socket and offers only the read tools.
-//! - `node`: the citrate-core executable run as the node MCP stdio shim (`--mcp-stdio`), with a
-//!   connect token core issues for Hermes alone (label [`HERMES_NODE_TOKEN_LABEL`]). The token is
-//!   re-issued at every sync (the previous one is revoked first) and revoked when the switch is
-//!   off. Only offered while the member has the node MCP server turned on. A connect token is not
-//!   a key: everything it can change still waits for the member's approval in the app.
+//! - `node` (HUP-S4.1 / S4.2 / S8.5, US-4.1 AC1): this node's own MCP server ([`crate::node_mcp`])
+//!   through the stdio shim (`citrate-core --mcp-stdio`), with a connect token core mints for
+//!   Hermes at each start under the reserved label [`HERMES_NODE_TOKEN_LABEL`]. The token is held
+//!   only as a hash, in memory ([`crate::node_mcp::NodeMcpState::hermes_token`]); its plaintext
+//!   reaches the sidecar only through this 0600 file, which is rewritten at every start. Offered
+//!   only while the node's MCP server is on.
 //!
-//! Both entries set `allow_write_tools = false`. MCP output is always untrusted to the loop, so the
-//! first MCP result taints the session and every effectful call after it needs the member.
+//! `mem` and `scan` set `allow_write_tools = false`. `node` follows [`HERMES_NODE_WRITE_TOOLS`]
+//! (PENDING OWNER SIGN-OFF, A24; today `false`, read tools only), which also sets the scope of
+//! Hermes's connect token on the server, so a read-only token is neither offered nor allowed a
+//! write tool whatever the sidecar does. Were it turned on, its write tools would still never act
+//! on their own: each becomes a request the member approves in the app, and a transaction goes
+//! through the SignatureCeremony. MCP output is always untrusted to the loop, so the first MCP
+//! result taints the session and every effectful call after it also needs the member's decision on
+//! the sidecar's MCP approval card first.
 //!
-//! PENDING OWNER SIGN-OFF: all three servers default to OFF ([`McpSettings::default`]), so members
-//! see no change until they (or a later default) turn them on. Turning them on by default, and
-//! whether Hermes may be offered the node server's write tools (today: no, read tools only), is
-//! the owner's call.
+//! PENDING OWNER SIGN-OFF: every server defaults to OFF ([`McpSettings::default`]), so members see
+//! no change until they (or a later default) turn them on. Turning them on by default, and whether
+//! Hermes may be offered the node server's write tools, is the owner's call.
 //!
 //! Keyless (Rule 3): nothing here holds a key or signs.
 
@@ -51,13 +56,14 @@ pub struct McpSettings {
     /// Offer CitrateScan's read-only explorer tools to Hermes over MCP.
     #[serde(default)]
     pub scan: bool,
-    /// Offer this node's citrate-node MCP read tools to Hermes (chain, DAG, precompiles, devices,
-    /// cluster). Needs the node MCP server on.
+    /// HUP-S4.1: offer this node's own MCP server to Hermes (reads, and writes that wait for the
+    /// member's approval in the app).
     #[serde(default)]
     pub node: bool,
 }
 
-/// The label of the connect token core issues for Hermes's own use of the node MCP server.
+/// The label of the connect token core mints for Hermes's own use of the node MCP server. Members
+/// cannot issue a token with this label, so no other client can appear as Hermes on a card.
 pub const HERMES_NODE_TOKEN_LABEL: &str = "Hermes (built-in)";
 
 /// Whether Hermes is offered the node server's write tools. PENDING OWNER SIGN-OFF: `false`, so
@@ -66,19 +72,25 @@ pub const HERMES_NODE_TOKEN_LABEL: &str = "Hermes (built-in)";
 /// offered, and may not call, any write tool, whatever the sidecar does).
 pub const HERMES_NODE_WRITE_TOOLS: bool = false;
 
-/// Where the node MCP stdio shim runs: this executable, pointed at the running server's port, with
-/// Hermes's connect token.
+/// The name of the built-in node entry (reserved for user-added servers in agent-mcp-host).
+pub const NODE_SERVER_NAME: &str = "node";
+/// The environment the stdio shim reads its connect token and port from.
+pub const NODE_TOKEN_ENV: &str = "CITRATE_NODE_MCP_TOKEN";
+pub const NODE_PORT_ENV: &str = "CITRATE_NODE_MCP_PORT";
+
+/// Where the node entry runs: this executable as the stdio shim, the node server's loopback port,
+/// and the connect token minted for Hermes.
 #[derive(Clone, PartialEq, Eq)]
-pub struct NodeShimTarget {
+pub struct NodeTarget {
     pub exe: PathBuf,
     pub port: u16,
     pub token: String,
 }
 
-impl std::fmt::Debug for NodeShimTarget {
+impl std::fmt::Debug for NodeTarget {
     // Never print the token.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeShimTarget")
+        f.debug_struct("NodeTarget")
             .field("exe", &self.exe)
             .field("port", &self.port)
             .finish_non_exhaustive()
@@ -103,17 +115,10 @@ pub fn settings_path(dir: &Path) -> PathBuf {
 }
 
 /// Render the allowlist (agent-mcp-host JSON shape) or `None` when no server is configured.
-#[cfg(test)]
-pub fn render_config(settings: &McpSettings, mem: Option<&MemBridgeTarget>) -> Option<Value> {
-    render_config_with_node(settings, mem, None)
-}
-
-/// [`render_config`] with the node MCP shim target (`None` = the node server is not available, so
-/// the `node` entry is left out rather than guessed).
-pub fn render_config_with_node(
+pub fn render_config(
     settings: &McpSettings,
     mem: Option<&MemBridgeTarget>,
-    node: Option<&NodeShimTarget>,
+    node: Option<&NodeTarget>,
 ) -> Option<Value> {
     let mut servers: Vec<Value> = Vec::new();
     if settings.mem {
@@ -140,17 +145,14 @@ pub fn render_config_with_node(
     if settings.node {
         if let Some(t) = node.filter(|t| t.exe.is_absolute() && !t.token.is_empty()) {
             servers.push(json!({
-                "name": "node",
+                "name": NODE_SERVER_NAME,
                 "transport": "stdio",
                 "command": t.exe.to_string_lossy(),
-                "args": ["--mcp-stdio"],
-                "env": {
-                    "CITRATE_NODE_MCP_TOKEN": t.token,
-                    "CITRATE_NODE_MCP_PORT": t.port.to_string(),
-                },
+                "args": [crate::node_mcp_http::STDIO_FLAG],
+                "env": { NODE_TOKEN_ENV: t.token, NODE_PORT_ENV: t.port.to_string() },
                 "timeout_ms": CALL_TIMEOUT_MS,
-                // PENDING OWNER SIGN-OFF: read tools only. The write tools would only create
-                // approval requests, but offering them to Hermes is the owner's call.
+                // PENDING OWNER SIGN-OFF (A24): read tools only today. Writes would only create
+                // requests the member approves, but offering them to Hermes is the owner's call.
                 "allow_write_tools": HERMES_NODE_WRITE_TOOLS,
             }));
         }
@@ -234,24 +236,14 @@ pub fn effective_allowlist(builtin: Option<&Path>, user: Option<&Path>) -> Optio
 }
 
 /// Write (or remove) the allowlist so it matches `settings`. Returns the path when a file exists.
-#[cfg(test)]
 pub fn sync_config_file(
     dir: &Path,
     settings: &McpSettings,
     mem: Option<&MemBridgeTarget>,
-) -> std::io::Result<Option<PathBuf>> {
-    sync_config_file_with_node(dir, settings, mem, None)
-}
-
-/// [`sync_config_file`] with the node MCP shim target.
-pub fn sync_config_file_with_node(
-    dir: &Path,
-    settings: &McpSettings,
-    mem: Option<&MemBridgeTarget>,
-    node: Option<&NodeShimTarget>,
+    node: Option<&NodeTarget>,
 ) -> std::io::Result<Option<PathBuf>> {
     let path = config_path(dir);
-    match render_config_with_node(settings, mem, node) {
+    match render_config(settings, mem, node) {
         Some(cfg) => {
             std::fs::create_dir_all(dir)?;
             let text = serde_json::to_vec_pretty(&cfg).map_err(std::io::Error::other)?;
@@ -308,22 +300,23 @@ pub struct McpView {
     pub restart_required: bool,
 }
 
-#[cfg(test)]
+/// The node token in the allowlist file Hermes was last given, if any (so a still-live token is
+/// kept instead of cutting a running Hermes off).
+pub fn current_node_token(dir: &Path) -> Option<String> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(config_path(dir)).ok()?).ok()?;
+    v.get("servers")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("name").and_then(Value::as_str) == Some(NODE_SERVER_NAME))?
+        .pointer(&format!("/env/{NODE_TOKEN_ENV}"))?
+        .as_str()
+        .map(str::to_string)
+}
+
 pub fn build_view(
     settings: &McpSettings,
     mem: Option<&MemBridgeTarget>,
-    config_written: bool,
-    running: bool,
-) -> McpView {
-    build_view_with_node(settings, mem, false, config_written, running)
-}
-
-/// [`build_view`] with whether the node MCP server is running (the `node` row is available only
-/// then).
-pub fn build_view_with_node(
-    settings: &McpSettings,
-    mem: Option<&MemBridgeTarget>,
-    node_server_on: bool,
+    node_available: bool,
     config_written: bool,
     running: bool,
 ) -> McpView {
@@ -352,15 +345,19 @@ pub fn build_view_with_node(
                 detail: "Read-only public chain tools from explorer.citrate.ai, including verified contract source. Addresses Hermes looks up are sent to the explorer.".into(),
             },
             McpServerView {
-                name: "node".into(),
-                label: "Your node".into(),
+                name: NODE_SERVER_NAME.into(),
+                label: "This node".into(),
                 transport: "stdio".into(),
                 enabled: settings.node,
-                available: node_server_on,
-                detail: if node_server_on {
-                    "Read-only tools from this node's MCP server: chain and DAG status, contract reads, precompiles, your devices, groups and clusters. Hermes gets its own connect token, listed under Node MCP server.".into()
+                available: node_available,
+                detail: if node_available {
+                    if HERMES_NODE_WRITE_TOOLS {
+                        "Your node's MCP server: chain, wallet and cluster reads answer at once. A transaction, a cluster or invite change waits for your approval in the app, and a transaction is signed only through the signature ceremony. Hermes gets its own connect token, renewed at each start.".into()
+                    } else {
+                        "Read-only tools from your node's MCP server: chain and DAG status, contract reads, precompiles, your devices, groups and clusters. Hermes gets its own read-only connect token, renewed at each start.".into()
+                    }
                 } else {
-                    "Turn on the Node MCP server (Settings, API endpoints & keys) to offer this to Hermes.".into()
+                    "Turn on the node's MCP server first (Settings, API endpoints & keys).".into()
                 },
             },
         ],
@@ -395,38 +392,38 @@ fn mem_target<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<MemBridgeT
     Some(MemBridgeTarget { exe, socket })
 }
 
-/// Whether the node MCP server is listening in this app.
-fn node_server_on<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    use tauri::Manager;
-    app.try_state::<crate::node_mcp::NodeMcpState>()
-        .is_some_and(|s| s.is_running())
-}
-
-/// Hermes's node MCP target: a freshly issued connect token (any earlier Hermes token revoked
-/// first) when the switch is on and the server is running; otherwise every Hermes token is revoked
-/// and `None` is returned.
+/// HUP-S4.1: the node entry's target when the member turned it on and the node's MCP server is
+/// on; otherwise every Hermes token is revoked and there is none.
 fn node_target<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    dir: &Path,
     settings: &McpSettings,
-) -> Option<NodeShimTarget> {
+) -> Option<NodeTarget> {
     use tauri::Manager;
-    let state = app.try_state::<crate::node_mcp::NodeMcpState>()?;
-    let wanted = settings.node && state.is_running();
-    let issued = state.reissue_token(HERMES_NODE_TOKEN_LABEL, wanted, !HERMES_NODE_WRITE_TOOLS);
-    let token = match issued {
-        Ok(Some(t)) => t.connect_token,
-        Ok(None) => return None,
-        Err(e) => {
-            eprintln!("hermes: no node MCP token for Hermes ({e}); the node server is left out");
-            return None;
-        }
-    };
+    let node = app.try_state::<crate::node_mcp::NodeMcpState>()?;
+    if !(settings.node && node.enabled()) {
+        node.revoke_hermes_tokens();
+        return None;
+    }
     let exe = std::env::current_exe().ok()?;
-    Some(NodeShimTarget {
-        exe,
-        port: state.status().port,
-        token,
-    })
+    let current = current_node_token(dir);
+    match node.hermes_token(current.as_deref()) {
+        Ok(token) => Some(NodeTarget {
+            exe,
+            port: node.bound_port(),
+            token,
+        }),
+        Err(e) => {
+            eprintln!("hermes: no connect token for the node entry ({e}); it is left out");
+            None
+        }
+    }
+}
+
+fn node_available<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    use tauri::Manager;
+    app.try_state::<crate::node_mcp::NodeMcpState>()
+        .is_some_and(|n| n.enabled())
 }
 
 /// Bring the allowlist file in line with the saved settings. Called before every Hermes start.
@@ -435,8 +432,8 @@ pub fn sync_for_app<R: tauri::Runtime>(
 ) -> Result<Option<PathBuf>, String> {
     let dir = hermes_dir(app)?;
     let settings = load_settings(&dir);
-    let node = node_target(app, &settings);
-    sync_config_file_with_node(&dir, &settings, mem_target(app).as_ref(), node.as_ref())
+    let node = node_target(app, &dir, &settings);
+    sync_config_file(&dir, &settings, mem_target(app).as_ref(), node.as_ref())
         .map_err(|e| e.to_string())
 }
 
@@ -444,10 +441,10 @@ fn view_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<McpView,
     let dir = hermes_dir(app)?;
     let settings = load_settings(&dir);
     let target = mem_target(app);
-    Ok(build_view_with_node(
+    Ok(build_view(
         &settings,
         target.as_ref(),
-        node_server_on(app),
+        node_available(app),
         config_path(&dir).is_file(),
         crate::hermes::sidecar_running(),
     ))

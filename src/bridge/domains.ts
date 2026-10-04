@@ -1082,13 +1082,63 @@ export interface RegistrySkill {
 }
 
 /** HUP-S4.3 — which MCP servers Hermes may use (core writes the sidecar's allowlist). Mirrors the
- *  Rust `McpSettings`. All default off (default pending owner sign-off). */
+ *  Rust `McpSettings`. All default off (default pending owner sign-off). HUP-S4.1 adds `node`: this
+ *  node's own MCP server, through the stdio bridge with a connect token minted for Hermes. */
 export interface HermesMcpSettings {
   mem: boolean;
   scan: boolean;
-  /** HUP-S4.2 / S8.5 — this node's own MCP server (read tools; needs the Node MCP server on).
-   *  Optional so a view from an older core still type-checks. */
-  node?: boolean;
+  node: boolean;
+}
+
+/** HUP-S4.1: one MCP server as the running sidecar reports it (`GET /mcp/servers`). Never carries
+ *  a URL, an environment value or the server's instructions text. */
+export interface McpRuntimeServer {
+  name: string;
+  transport: string;
+  /** "ready" | "failed" | "exited". */
+  state: string;
+  protocolVersion?: string;
+  /** "modern" (2026-07-28) | "legacy". */
+  era?: string;
+  serverName?: string;
+  tasks?: boolean;
+  /** Tools offered to Hermes. */
+  tools: number;
+  skipped: string[];
+  error?: string;
+  reconnects?: number;
+  relists?: number;
+  nextRetryMs?: number;
+}
+
+/** HUP-S4.1: the running sidecar's MCP servers, or `{running: false}`. */
+export interface McpRuntimeView {
+  running: boolean;
+  configured?: boolean;
+  servers?: McpRuntimeServer[];
+}
+
+/** HUP-S4.1: one MCP request the sidecar holds for the member (`GET /sessions/:id/mcp/pending`):
+ *  an effectful MCP call after the session read untrusted content (`tool_call`), or a server asking
+ *  the member to open a page (`open_url`, URL-mode elicitation; core opens it only on Allow). */
+export interface McpPendingView {
+  id: string;
+  kind: "tool_call" | "open_url";
+  callId: string;
+  server: string;
+  remoteTool: string;
+  tool: string;
+  hic: string;
+  /** What the decision must carry back: the exact arguments, or the URL. */
+  subject: string;
+  arguments?: string;
+  hints?: { readOnly: boolean; destructive: boolean; idempotent: boolean; openWorld: boolean };
+  /** Why the member is asked (tool_call), or the server's own message (open_url, untrusted). */
+  reason: string;
+  url?: string;
+  urlHost?: string;
+  warnings: string[];
+  expiresInSecs: number;
 }
 
 /** HUP-S4.3 — one server row (Rust `McpServerView`). */
@@ -1226,6 +1276,14 @@ export interface AgentHarnessDomain {
    *  the member was shown; the sidecar refuses it (rejects with `SHELL_DECISION_REFUSED: `) when
    *  they differ from what is waiting or nothing with that id waits any more. */
   shellDecide(sessionId: string, id: string, allow: boolean, argv: string[], cwd: string): Promise<void>;
+  /** HUP-S4.1: the MCP requests the sidecar holds for the member's decision in a session. */
+  mcpPending(sessionId: string): Promise<McpPendingView[]>;
+  /** HUP-S4.1: allow or decline one held MCP request, bound to the subject shown. Rejects with
+   *  `MCP_DECISION_REFUSED: ` when it no longer matches what is waiting. On Allow of an `open_url`
+   *  request, core opens the address the sidecar holds in the system browser. */
+  mcpDecide(sessionId: string, id: string, allow: boolean, subject: string): Promise<void>;
+  /** HUP-S4.1: the running sidecar's MCP servers (connected / failed / tools). */
+  mcpRuntime(): Promise<McpRuntimeView>;
 }
 
 /** HUP-S2.2 — the OS sandbox a held command would run in, as the sidecar describes it. */

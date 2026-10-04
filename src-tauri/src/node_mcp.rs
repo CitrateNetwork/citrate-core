@@ -28,6 +28,10 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// HUP-S4.1: the label of the built-in Hermes entry's token (shown on its approval requests). It
+/// is reserved ([`RESERVED_TOKEN_LABELS`]): members cannot issue a token with it.
+pub const HERMES_TOKEN_LABEL: &str = crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL;
+
 /// The persisted switch (`<app data>/node-mcp/config.json`). Off unless the member turns it on.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeMcpConfig {
@@ -197,6 +201,47 @@ impl NodeMcpState {
         }
     }
 
+    /// Whether the member turned the server on (it listens while on).
+    pub fn enabled(&self) -> bool {
+        self.config().enabled
+    }
+
+    /// The port the server listens on now (or would).
+    pub fn bound_port(&self) -> u16 {
+        self.server
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|s| s.addr.port())
+            .unwrap_or_else(|| self.port())
+    }
+
+    /// HUP-S4.1: the connect token for the built-in Hermes entry. `current` (the token in the
+    /// allowlist file Hermes was last given) is kept while it is still a live in-memory token;
+    /// otherwise every earlier Hermes token is revoked (its sessions and pending requests close)
+    /// and a new one is minted. Only its hash is held, in memory.
+    pub fn hermes_token(&self, current: Option<&str>) -> Result<String, String> {
+        if let Some(t) = current.filter(|t| self.shared.tokens.is_live_ephemeral(t)) {
+            return Ok(t.to_string());
+        }
+        self.revoke_hermes_tokens();
+        self.shared
+            .tokens
+            .issue_ephemeral(
+                HERMES_TOKEN_LABEL,
+                !crate::hermes_mcp::HERMES_NODE_WRITE_TOOLS,
+                now_ms(),
+            )
+            .map(|t| t.connect_token)
+    }
+
+    /// HUP-S4.1: revoke every in-memory (Hermes) token.
+    pub fn revoke_hermes_tokens(&self) {
+        for id in self.shared.tokens.ephemeral_ids() {
+            let _ = self.revoke_token(&id);
+        }
+    }
+
     /// Issue a token from Settings (a full token: read and write tools). Labels core reserves for
     /// its own tokens are refused, so no client can be labelled as Hermes on an approval card and
     /// no member token is ever revoked by Hermes's re-issue.
@@ -218,36 +263,6 @@ impl NodeMcpState {
             self.shared.core.backend().close_ceremony(&c.0);
         }
         Ok(removed)
-    }
-
-    /// Revoke every token labelled `label` (its sessions and pending requests end with it), then,
-    /// when `issue` is set, issue a fresh one (limited to the read tools when `read_only`). Used
-    /// for the token core holds for Hermes's own use of this server (`hermes_mcp`), so at most one
-    /// such token is ever live. `label` must be a reserved label: members cannot issue those.
-    pub fn reissue_token(
-        &self,
-        label: &str,
-        issue: bool,
-        read_only: bool,
-    ) -> Result<Option<TokenIssued>, String> {
-        if !is_reserved_label(label) {
-            return Err(format!(
-                "{label} is not a label core reserves for its own tokens"
-            ));
-        }
-        for t in self.shared.tokens.list() {
-            if t.label == label {
-                self.revoke_token(&t.id)?;
-            }
-        }
-        if issue {
-            self.shared
-                .tokens
-                .issue_scoped(label, read_only, now_ms())
-                .map(Some)
-        } else {
-            Ok(None)
-        }
     }
 
     pub fn requests(&self) -> Vec<McpRequest> {

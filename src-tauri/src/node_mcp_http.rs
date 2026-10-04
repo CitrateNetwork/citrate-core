@@ -39,6 +39,9 @@ use std::time::Duration;
 pub const DEFAULT_PORT: u16 = 47204;
 /// The MCP endpoint path.
 pub const MCP_PATH: &str = "/mcp";
+/// The flag that runs this executable as the stdio shim (also what core writes into Hermes's
+/// allowlist for its built-in `node` entry).
+pub const STDIO_FLAG: &str = "--mcp-stdio";
 /// Request header carrying the stdio shim's 32-byte challenge (hex), sent with no token.
 pub const IDENTITY_CHALLENGE_HEADER: &str = "x-citrate-identity-challenge";
 /// Response header with the server's proofs for that challenge (comma-separated hex).

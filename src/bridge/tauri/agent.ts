@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView, McpPendingView, McpRuntimeView } from "../domains";
 import type { CeremonyView } from "../types";
 import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 import type { StepDiff } from "../../popout/diffModel";
@@ -168,6 +168,15 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   async shellDecide(sessionId, id, allow, argv, cwd) {
     await invoke("hermes_shell_decide", { sessionId, id, allow, argv, cwd });
+  },
+  mcpPending(sessionId) {
+    return invoke<McpPendingView[]>("hermes_mcp_pending", { sessionId });
+  },
+  async mcpDecide(sessionId, id, allow, subject) {
+    await invoke("hermes_mcp_decide", { sessionId, id, allow, subject });
+  },
+  mcpRuntime() {
+    return invoke<McpRuntimeView>("mcp_servers_runtime");
   },
 };
 

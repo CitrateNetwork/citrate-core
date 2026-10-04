@@ -163,6 +163,16 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async shellDecide() {
       throw new Error("SHELL_DECISION_REFUSED: commands run in the Hermes sidecar in the desktop app");
     },
+    // HUP-S4.1: MCP servers run in the Hermes sidecar; nothing is held or connected here.
+    async mcpPending() {
+      return [];
+    },
+    async mcpDecide() {
+      throw new Error("MCP_DECISION_REFUSED: MCP requests are held by the Hermes sidecar in the desktop app");
+    },
+    async mcpRuntime() {
+      return { running: false };
+    },
   };
 }
 
