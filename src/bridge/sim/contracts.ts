@@ -16,6 +16,9 @@ export function simContracts(_host: SimHost): ContractsDomain {
     async gateSubmit() {
       throw new Error("the deploy gate runs in the desktop node (no gate records in web/dev)");
     },
+    async gateForkDryRun() {
+      throw new Error("the fork dry run runs in the desktop node (no chain in web/dev)");
+    },
     async verifiedSource() {
       throw new Error("the verified-source lookup runs in the desktop node (not in web/dev)");
     },
@@ -49,6 +52,21 @@ export function simContracts(_host: SimHost): ContractsDomain {
     },
     async postdeployVercelExport() {
       throw new Error("the post-deploy steps need the desktop node (no project files in web/dev)");
+    },
+    async templateList() {
+      throw new Error("the contract templates are bundled with the desktop node (not in web/dev)");
+    },
+    async templateRender() {
+      throw new Error("rendering a template writes files, which needs the desktop node (not in web/dev)");
+    },
+    async toolchainSettings() {
+      throw new Error("the toolchain runs beside the desktop node (not in web/dev)");
+    },
+    async toolchainSetEnabled() {
+      throw new Error("the toolchain runs beside the desktop node (not in web/dev)");
+    },
+    async gateFromToolchain() {
+      throw new Error("the deploy gate runs in the desktop node (no gate records in web/dev)");
     },
   };
 }

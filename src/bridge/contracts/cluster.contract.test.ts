@@ -17,6 +17,7 @@ describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
       "linkDeviceRequest",
       "linkDeviceApprove",
       "linkDeviceReject",
+      "revokeDevicePrepare",
       "revokeDevice",
       "exportDeviceLink",
       "importDeviceLink",
@@ -42,7 +43,8 @@ describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
       expect(await bridge.cluster.devices("g")).toEqual([]);
       expect(await bridge.cluster.myDevices()).toEqual({ thisDevice: null, links: [], revoked: [] });
       await expect(bridge.cluster.linkDeviceRequest("laptop")).rejects.toThrow(/desktop app/);
-      await expect(bridge.cluster.revokeDevice("aa")).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.revokeDevicePrepare("aa")).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.revokeDevice("c-1")).rejects.toThrow(/desktop app/);
       await expect(bridge.cluster.exportDeviceLink()).rejects.toThrow(/desktop app/);
       await expect(bridge.cluster.importDeviceLink("{}")).rejects.toThrow(/desktop app/);
       // Nothing to share and nothing accepted in the sim: no fabricated links.

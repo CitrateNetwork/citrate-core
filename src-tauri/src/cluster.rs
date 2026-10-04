@@ -642,6 +642,12 @@ fn libp2p_opts(listen: Option<String>, seed_hex: Zeroizing<String>) -> Option<Li
     })
 }
 
+/// Whether the cluster daemon is already running (never starts it). For callers that must not start
+/// a daemon as a side effect of a read, such as the node MCP server.
+pub fn is_daemon_running() -> bool {
+    MANAGER.get().is_some_and(|m| m.is_running())
+}
+
 /// Ensure the daemon is built + started; returns the process-wide manager. Lazy singleton.
 fn ensure_started(
     app: &tauri::AppHandle,
@@ -658,12 +664,6 @@ fn ensure_started(
             Ok(())
         },
     )
-}
-
-/// Whether the cluster daemon is already running (never starts it). For callers that must not start
-/// a daemon as a side effect of a read, such as the node MCP server.
-pub fn is_daemon_running() -> bool {
-    MANAGER.get().is_some_and(|m| m.is_running())
 }
 
 /// Build the manager for this machine's current mesh identity and start its daemon.

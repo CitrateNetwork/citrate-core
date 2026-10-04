@@ -15,6 +15,7 @@ import type {
   ClusterPeer,
   ClusterStatus,
   DeviceLinks,
+  DeviceRevokePrepared,
   Group,
   MeshStatus,
   PinRow,
@@ -51,6 +52,8 @@ export interface ClusterState {
   revoking: string | null;
   /** HUP-S8.4 prep: whether the cross-machine mesh transport is on, and why (null until loaded). */
   mesh: MeshStatus | null;
+  /** A removal core prepared and the member has not confirmed yet. */
+  revokePrepared: DeviceRevokePrepared | null;
 }
 
 const initial: ClusterState = {
@@ -68,6 +71,7 @@ const initial: ClusterState = {
   memberDevices: [],
   revoking: null,
   mesh: null,
+  revokePrepared: null,
 };
 
 export const clusterSlice = createSlice<ClusterState>(initial);
@@ -130,11 +134,29 @@ export async function loadMemberDevices(groupId: string): Promise<void> {
   }
 }
 
-/** HUP-S8.1 — revoke one of your devices (permanent for that device key), then refresh. */
-export async function revokeMyDevice(device: string): Promise<void> {
-  clusterSlice.set({ revoking: device, error: null });
+/** HUP-S8.1 — step 1 of removing one of your devices: core mints the confirmation for it. */
+export async function prepareRevokeDevice(device: string): Promise<void> {
+  clusterSlice.set({ error: null, revokePrepared: null });
   try {
-    const myDevices = await bridge.cluster.revokeDevice(device);
+    const revokePrepared = await bridge.cluster.revokeDevicePrepare(device);
+    clusterSlice.set({ revokePrepared });
+  } catch (e) {
+    clusterSlice.set({ error: message(e) });
+  }
+}
+
+/** Drop a prepared removal without revoking anything. */
+export function cancelRevokeDevice(): void {
+  clusterSlice.set({ revokePrepared: null });
+}
+
+/** HUP-S8.1 — you confirmed: revoke the prepared device (permanent for that device key), then refresh. */
+export async function revokeMyDevice(): Promise<void> {
+  const prepared = clusterSlice.get().revokePrepared;
+  if (!prepared) return;
+  clusterSlice.set({ revoking: prepared.device, error: null, revokePrepared: null });
+  try {
+    const myDevices = await bridge.cluster.revokeDevice(prepared.confirmId);
     clusterSlice.set({ myDevices, revoking: null });
     // Tell the other members of your groups, so their nodes drop the device too.
     void shareMyDeviceLinks();

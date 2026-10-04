@@ -34,6 +34,8 @@ export interface FleetDevice {
   via: "issued" | "joined";
   /** HUP-S8.1: absent when no link code came with the pairing. */
   deviceLink?: PairedLink;
+  /** Six digits both machines show for this pairing (absent for older entries). */
+  code?: string | null;
 }
 
 export interface FleetAdvert {

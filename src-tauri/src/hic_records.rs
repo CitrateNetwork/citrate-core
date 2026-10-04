@@ -2,7 +2,8 @@
 //! nightly anchor batches.
 //!
 //! Some HIC events are decided in core, not in the agent sidecar: folder-grant changes and the
-//! full-access confirmation (`agent_grants`), escalation spend (`escalation`), and the member's
+//! full-access confirmation (`agent_grants`), escalation spend (`escalation`), the in-app faucet
+//! switch and its calls (`faucet`, HUP-S6.5), and the member's
 //! answer on an approval card (a ceremony or an agent tool call, decided in the webview's
 //! ceremony sheet). Each becomes one record in core's **outbox**, a hash-chained, append-only
 //! JSONL file under `<app_local_data>/hermes/hic-outbox/` (the agent's default-deny list covers
@@ -68,7 +69,8 @@ pub struct HicEvidence {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HicEvent {
     /// `grant.folder_added`, `grant.revoked`, `grant.reset`, `grant.full_access_confirmed`,
-    /// `escalation.spend`, `ceremony.approval`, `agent.tool_approval`.
+    /// `escalation.spend`, `ceremony.approval`, `agent.tool_approval`, `faucet.budget_granted`,
+    /// `faucet.budget_revoked`, `faucet.topup` (HUP-S6.5).
     pub kind: String,
     /// `approved`, `denied`, `auto_within_budget`.
     pub decision: String,
@@ -157,6 +159,9 @@ pub fn validate(ev: &HicEvent) -> Result<(), String> {
         }
         "ceremony.approval" | "agent.tool_approval" => &["approved", "denied"],
         "escalation.spend" => &["approved", "auto_within_budget"],
+        // HUP-S6.5 (faucet ADR D4.3): the member's faucet switch, and each faucet call.
+        "faucet.budget_granted" | "faucet.budget_revoked" => &["approved"],
+        "faucet.topup" => &["approved", "auto_within_budget"],
         other => return Err(format!("unknown decision kind {other:?}")),
     };
     if !allowed.contains(&ev.decision.as_str()) {

@@ -153,6 +153,12 @@ describe("fleet wizard: device list shows tier and role", () => {
     expect(rows[2].addr).toBe("192.168.1.30");
   });
 
+  it("a paired machine shows the confirmation code both screens share", () => {
+    const s = run({ type: "roster", devices: [{ ...paired, code: "042917" }] });
+    expect(deviceRows(s)[0].where).toBe("paired");
+    expect(deviceRows(s)[0].code).toBe("042917");
+  });
+
   it("role labels are plain language and unknown stays unknown", () => {
     expect(roleLabel("heavy")).toMatch(/larger models/);
     expect(roleLabel("light")).toMatch(/chat/);

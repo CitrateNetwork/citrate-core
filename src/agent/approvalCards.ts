@@ -14,7 +14,7 @@
 // =====================================================================
 import type { CeremonyView } from "../bridge/types";
 import type { ToolAnnotation } from "./toolAnnotations";
-import type { ShellPendingView } from "../bridge/domains";
+import type { McpPendingView, ShellPendingView } from "../bridge/domains";
 
 export interface CardRow {
   k: string;
@@ -191,4 +191,54 @@ export function shellRunCard(p: ShellPendingView): ApprovalCard {
     { k: "Can write", v: clip(p.sandbox.writable.join("; ")) },
   ];
   return base.kind === "command" ? { ...base, rows } : base;
+}
+
+/** HUP-S4.1: why an effectful MCP call after taint needs the member (fallback banner text). */
+export const MCP_CALL_HIC_REASON =
+  "Hermes read content from an outside source in this chat, so this action on an MCP server needs your explicit decision (HIC). It is sent only with the arguments shown.";
+
+/** HUP-S4.1: why a page an MCP server asks to open needs the member. */
+export const MCP_OPEN_URL_HIC_REASON =
+  "An MCP server asks you to open a page (for example to sign in). Check the address: the app opens it in your browser only if you approve, and nothing you enter there passes through Hermes.";
+
+function hintsText(h: NonNullable<McpPendingView["hints"]>): string {
+  const parts = [
+    h.readOnly ? "read-only" : "changes something",
+    h.destructive ? "may delete or overwrite" : "additive",
+    h.idempotent ? "repeatable" : "not repeatable",
+    h.openWorld ? "reaches outside services" : "closed",
+  ];
+  return parts.join(", ") + " (as the server describes it; not verified)";
+}
+
+/**
+ * HUP-S4.1 (US-4.1 AC2): the card for a held MCP request. A tool call lists the server, the tool
+ * and the exact arguments (by name) that will be sent, with the server's hints. A page request
+ * shows the host first, then the full address, the server's message and any warnings.
+ */
+export function mcpRequestCard(p: McpPendingView): ApprovalCard {
+  if (p.kind === "open_url") {
+    const rows: CardRow[] = [
+      { k: "Opens", v: p.urlHost ?? "" },
+      { k: "Full address", v: clip(p.url ?? p.subject) },
+      { k: "Server", v: p.server },
+      { k: "Message", v: clip(p.reason) },
+    ];
+    for (const w of p.warnings) rows.push({ k: "Warning", v: w });
+    return { kind: "fields", tool: p.tool, summary: `MCP server ${p.server} asks you to open a page on ${p.urlHost ?? "an unknown host"}`, rows };
+  }
+  let args: Record<string, unknown> = {};
+  try {
+    const v: unknown = JSON.parse(p.arguments ?? p.subject);
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) args = v as Record<string, unknown>;
+  } catch {
+    args = { arguments: p.arguments ?? p.subject };
+  }
+  const rows: CardRow[] = [
+    { k: "Server", v: p.server },
+    { k: "Tool", v: p.remoteTool },
+    ...Object.entries(args).map(([k, v]) => ({ k: `Argument ${k}`, v: clip(typeof v === "string" ? v : JSON.stringify(v)) })),
+  ];
+  if (p.hints) rows.push({ k: "Hints", v: hintsText(p.hints) });
+  return { kind: "fields", tool: p.tool, summary: summaryLine({ effect: "write", trust: "untrusted" }, `use ${p.remoteTool} on MCP server ${p.server}`), rows };
 }

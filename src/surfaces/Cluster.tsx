@@ -20,6 +20,8 @@ import {
   loadMyDevices,
   loadMemberDevices,
   revokeMyDevice,
+  prepareRevokeDevice,
+  cancelRevokeDevice,
   importDeviceCode,
   exportDeviceCode,
   shareMyDeviceLinks,
@@ -37,6 +39,9 @@ function shortAddr(a: string): string {
   return a.length > 14 ? `${a.slice(0, 8)}…${a.slice(-4)}` : a;
 }
 
+/** Device addresses compare without `0x` and case. */
+const sameDevice = (a: string, b: string) => a.replace(/^0x/i, "").toLowerCase() === b.replace(/^0x/i, "").toLowerCase();
+
 /**
  * HUP-S8.1 — "Your devices": this machine's own device key and the DeviceLinks you made. Linking
  * opens the wallet ceremony (the review gate shows the exact text; nothing signs until you approve).
@@ -45,7 +50,6 @@ function shortAddr(a: string): string {
 function YourDevices({ store }: { store: Store }) {
   const st = clusterSlice.use();
   const [name, setName] = useState("");
-  const [confirming, setConfirming] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [copied, setCopied] = useState(false);
   const model = devicePanelModel(st.myDevices);
@@ -63,10 +67,11 @@ function YourDevices({ store }: { store: Store }) {
       </div>
       <p style={{ padding: "0 16px", margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
         Linking gives this machine its own key, tied to you by a link your wallet signs. The mesh can
-        then tell your machines apart and stop meshing with one you remove. No funds move. Link each of
-        your machines: your links are shared with your groups so other members' nodes admit them.
-        Removing a machine is not a lock-out for a machine that still holds your wallet (it could link
-        itself again); for a lost or stolen machine, move to a new wallet.
+        then tell your machines apart, and you can remove one without the others. No funds move. Link
+        each of your machines: your links are shared with your groups so other members' nodes admit
+        them. Removing a machine revokes its device key; a machine that still holds your wallet can
+        still join your groups as you, so for a lost or stolen machine also move your funds to a new
+        wallet.
       </p>
       <p data-testid="cluster-mesh-note" style={{ padding: "6px 16px 0", margin: 0, fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.55 }}>
         {st.mesh?.note ?? "Linked devices use their own key once the cross-machine mesh is on."}
@@ -144,20 +149,21 @@ function YourDevices({ store }: { store: Store }) {
             {row.thisDevice ? " (this device)" : ""}
           </span>
           <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>{shortAddr(row.device)}</span>
-          {confirming === row.device ? (
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={st.revoking !== null}
-              onClick={() => {
-                setConfirming(null);
-                void revokeMyDevice(row.device);
-              }}
-            >
-              {st.revoking === row.device ? "Removing…" : "Confirm: remove for good"}
-            </button>
+          {st.revokePrepared && sameDevice(st.revokePrepared.device, row.device) ? (
+            <>
+              <span role="note" style={{ fontSize: 11, color: "var(--tx-2)", maxWidth: 320 }}>
+                {st.revokePrepared.statement}
+              </span>
+              <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => cancelRevokeDevice()}>
+                Keep
+              </button>
+              <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => void revokeMyDevice()}>
+                Confirm: remove for good
+              </button>
+            </>
           ) : (
-            <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => setConfirming(row.device)}>
-              Remove
+            <button className="btn btn-ghost btn-sm" disabled={st.revoking !== null} onClick={() => void prepareRevokeDevice(row.device)}>
+              {st.revoking === row.device ? "Removing…" : "Remove"}
             </button>
           )}
         </div>

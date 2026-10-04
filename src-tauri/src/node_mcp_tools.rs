@@ -9,6 +9,9 @@
 //! - **action**: a change that needs no signature (join a cluster, share a file, create or revoke
 //!   an invite). Queued for the member's approval in the app, then run by core. Annotated
 //!   `destructiveHint: true`.
+//! - **budgeted** (HUP-S6.5): runs at once, but only inside a budget the member granted in the app
+//!   (HIC-2), and core decides everything that matters. Today: `faucet_request`. Annotated
+//!   `readOnlyHint: false`, `destructiveHint: false`.
 //!
 //! Write tools never return a result directly: they return a request id the client polls with
 //! `request_status`.
@@ -21,6 +24,8 @@ pub enum ToolKind {
     Read,
     Signature,
     Action,
+    /// HUP-S6.5: runs inside a member-granted budget (HIC-2); see `crate::faucet`.
+    Budgeted,
 }
 
 /// One tool in the catalog.
@@ -146,6 +151,45 @@ fn tx_schema() -> Value {
     )
 }
 
+/// HUP-S6.5: the faucet tool names the deploy it is for, and nothing that chooses a recipient,
+/// an amount or a time (faucet ADR D3).
+fn faucet_schema() -> Value {
+    obj(
+        json!({"initcode_hash": {"type": "string", "description": "0x keccak256 of the init code of a deploy the deploy gate marked READY"}}),
+        &["initcode_hash"],
+    )
+}
+
+fn ed25519_schema() -> Value {
+    obj(
+        json!({
+            "public_key": {"type": "string", "description": "0x-prefixed 32-byte Ed25519 public key (64 hex characters)"},
+            "signature": {"type": "string", "description": "0x-prefixed 64-byte Ed25519 signature (128 hex characters)"},
+            "message": {"type": "string", "description": "0x-prefixed message bytes that were signed (at most 8 KiB)"},
+        }),
+        &["public_key", "signature", "message"],
+    )
+}
+
+fn pin_schema() -> Value {
+    obj(
+        json!({"cid": {"type": "string", "description": "IPFS CID to keep on this node"}}),
+        &["cid"],
+    )
+}
+
+fn deploy_schema() -> Value {
+    obj(
+        json!({
+            "bytecode": {"type": "string", "description": "0x-prefixed compiled deploy bytecode (the exact bytes the deploy gate checked)"},
+            "constructor_args": {"type": "string", "description": "0x-prefixed ABI-encoded constructor arguments (default none)"},
+            "value_wei": {"type": "string", "description": "value sent with the creation, in wei (decimal string, default 0)"},
+            "gas": {"type": "integer", "minimum": 21000, "maximum": MAX_DEPLOY_GAS, "description": "gas limit for the creation (default 2,000,000)"},
+        }),
+        &["bytecode"],
+    )
+}
+
 fn status_schema() -> Value {
     obj(
         json!({"id": {"type": "string", "description": "request id returned by a write tool"}}),
@@ -156,6 +200,9 @@ fn status_schema() -> Value {
 /// The memory tenants an MCP client may search. The member's `personal` tenant is deliberately
 /// absent (pending owner sign-off on a per-token scope for personal memory).
 pub const MEMORY_TENANTS: &[&str] = &["citrate-docs", "chain-state"];
+
+/// The highest gas limit a `deploy_propose` may ask for (the member still sees it in the ceremony).
+pub const MAX_DEPLOY_GAS: u64 = 30_000_000;
 
 /// The full tool catalog, in the order `tools/list` returns it.
 pub const TOOLS: &[ToolDef] = &[
@@ -175,10 +222,12 @@ pub const TOOLS: &[ToolDef] = &[
         description: "The Citrate precompiles a client may call read-only with precompile_call, with their addresses and what they do." },
     ToolDef { name: "precompile_call", title: "Precompile call", kind: ToolKind::Read, input_schema: precompile_schema,
         description: "Call a Citrate precompile read-only (eth_call) and return its output bytes. Only addresses in the precompile table are accepted." },
+    ToolDef { name: "ed25519_verify", title: "Verify an Ed25519 signature", kind: ToolKind::Read, input_schema: ed25519_schema,
+        description: "Check an Ed25519 signature with the chain's ED25519_VERIFY precompile (0x0120), read-only. Encodes public key, signature and message for the precompile and returns whether the chain accepts the signature." },
     ToolDef { name: "wallet_info", title: "Wallet (public)", kind: ToolKind::Read, input_schema: no_args,
         description: "This member's public wallet address and SALT balance. Never returns key material." },
     ToolDef { name: "address_book", title: "Address book", kind: ToolKind::Read, input_schema: no_args,
-        description: "The deployed 40204 contract addresses this build was shipped with. A registry missing here is not deployed yet." },
+        description: "The 40204 contract addresses this build was shipped with (the contracts this app reads, each checked to have code when the book was generated). A contract missing here is not in this app's book." },
     ToolDef { name: "memory_search", title: "Memory search", kind: ToolKind::Read, input_schema: memory_schema,
         description: "Search the node's shared knowledge graphs (Citrate docs and chain-state facts). The member's personal memory is not available over MCP." },
     ToolDef { name: "groups_list", title: "Groups", kind: ToolKind::Read, input_schema: no_args,
@@ -191,10 +240,22 @@ pub const TOOLS: &[ToolDef] = &[
         description: "The group's members with each member's linked machines (label, index, when linked) and whether each machine is connected. Addresses only; no keys or signatures." },
     ToolDef { name: "invites_list", title: "Invites", kind: ToolKind::Read, input_schema: group_schema,
         description: "Outstanding invites this member created for a group (id, who it is for, when). Links and tokens are not returned." },
+    ToolDef { name: "dag_stats", title: "DAG statistics", kind: ToolKind::Read, input_schema: no_args,
+        description: "The BlockDAG's current tips, height, highest blue score and GhostDAG parameters, from this node (or the public RPC; the answer says which)." },
+    ToolDef { name: "devices_list", title: "My devices", kind: ToolKind::Read, input_schema: no_args,
+        description: "The member's linked devices (address, name, link index, when linked, whether it is this machine) and revoked device addresses. Public information only; no signatures or keys." },
+    ToolDef { name: "pins_list", title: "Pinned files", kind: ToolKind::Read, input_schema: no_args,
+        description: "The files this node keeps (IPFS CIDs), with size and whether the local IPFS daemon still holds each one." },
     ToolDef { name: "request_status", title: "Request status", kind: ToolKind::Read, input_schema: status_schema,
         description: "The state of a write request this client made: pending member approval, approved (with its result), rejected, failed, or expired." },
     ToolDef { name: "tx_propose", title: "Propose a transaction", kind: ToolKind::Signature, input_schema: tx_schema,
         description: "Propose a transaction from this member's wallet. It opens a signature request in Citrate Core; nothing is signed or sent unless the member approves it there. Returns a request id for request_status." },
+    ToolDef { name: "deploy_propose", title: "Propose a contract deploy", kind: ToolKind::Signature, input_schema: deploy_schema,
+        description: "Propose deploying compiled contract bytecode from this member's wallet. Refused at once unless the deploy gate (tests, static analysis, fuzzing, fork dry run) is READY for exactly these bytes. Otherwise it opens a signature request in Citrate Core; nothing is signed or sent unless the member approves it there. Returns a request id for request_status." },
+    ToolDef { name: "pin_add", title: "Keep a file on this node", kind: ToolKind::Action, input_schema: pin_schema,
+        description: "Ask to pin an IPFS CID on this node (a local pin: no storage bond and no transaction). Runs only after the member approves it in Citrate Core." },
+    ToolDef { name: "anchor_propose", title: "Prepare anchor approvals", kind: ToolKind::Action, input_schema: no_args,
+        description: "Ask to run the decision-record anchor pass now instead of waiting for the nightly schedule. After the member approves this request, each closed day still gets its own approval card before anything is signed. Refused at once while anchoring is off or AnchorRegistry is not in this build's address book." },
     ToolDef { name: "cluster_join", title: "Join a cluster", kind: ToolKind::Action, input_schema: group_schema,
         description: "Ask to join this node to a group's cluster mesh. Runs only after the member approves it in Citrate Core." },
     ToolDef { name: "cluster_share", title: "Share a file with a cluster", kind: ToolKind::Action, input_schema: share_schema,
@@ -203,11 +264,20 @@ pub const TOOLS: &[ToolDef] = &[
         description: "Ask to create a one-time invite link for a group. Runs only after the member approves it in Citrate Core; the approved result carries the link." },
     ToolDef { name: "invite_revoke", title: "Revoke an invite", kind: ToolKind::Action, input_schema: invite_revoke_schema,
         description: "Ask to revoke an outstanding invite. Runs only after the member approves it in Citrate Core." },
+    ToolDef { name: "faucet_request", title: "Faucet top-up for deploy gas", kind: ToolKind::Budgeted, input_schema: faucet_schema,
+        description: "Ask the Citrate faucet for SALT to pay the gas of a deploy the member started (the deploy gate must be READY for this init code). Always for the member's own wallet; only when the balance is short; at most once per 24 hours; only if the member turned the in-app faucet on in Settings. The answer says plainly what happened, including when nothing was sent." },
 ];
 
 /// Look a tool up by name.
 pub fn tool(name: &str) -> Option<&'static ToolDef> {
-    TOOLS.iter().find(|t| t.name == name)
+    all_tools().find(|t| t.name == name)
+}
+
+/// Every tool `tools/list` returns: the node catalog, then the Hermes session tools (HUP-S1.1).
+pub fn all_tools() -> impl Iterator<Item = &'static ToolDef> {
+    TOOLS
+        .iter()
+        .chain(crate::node_mcp_hermes::HERMES_TOOLS.iter())
 }
 
 /// The MCP `tools/list` entry for a tool, with its annotations.
@@ -222,6 +292,13 @@ pub fn tool_json(t: &ToolDef) -> Value {
             "title": t.title,
             "readOnlyHint": false,
             "destructiveHint": true,
+            "idempotentHint": false,
+            "openWorldHint": true,
+        }),
+        ToolKind::Budgeted => json!({
+            "title": t.title,
+            "readOnlyHint": false,
+            "destructiveHint": false,
             "idempotentHint": false,
             "openWorldHint": true,
         }),
@@ -396,6 +473,41 @@ pub fn parse_data(s: &str) -> Result<String, String> {
         return Err("data is larger than 64 KiB".to_string());
     }
     Ok(format!("0x{}", h.to_ascii_lowercase()))
+}
+
+/// The ED25519_VERIFY precompile's longest message (citrate-chain
+/// `core/execution/src/precompiles/ed25519.rs`, `MAX_MESSAGE_LEN`): a longer one reads as invalid.
+pub const ED25519_MAX_MESSAGE_BYTES: usize = 8 * 1024;
+
+/// Fixed-length hex bytes (`0x` + exactly `2 * len` hex characters), lowercased.
+pub fn parse_fixed_hex(s: &str, len: usize, what: &str) -> Result<String, String> {
+    let h = s
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("{what} must be 0x-prefixed hex"))?;
+    if h.len() != len * 2 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{what} must be exactly {len} bytes ({} hex characters)",
+            len * 2
+        ));
+    }
+    Ok(h.to_ascii_lowercase())
+}
+
+/// The ED25519_VERIFY (0x0120) input: `pubkey (32) || signature (64) || message`.
+pub fn ed25519_verify_input(
+    public_key: &str,
+    signature: &str,
+    message: &str,
+) -> Result<String, String> {
+    let pk = parse_fixed_hex(public_key, 32, "public_key")?;
+    let sig = parse_fixed_hex(signature, 64, "signature")?;
+    let msg = parse_data(message)?;
+    if (msg.len() - 2) / 2 > ED25519_MAX_MESSAGE_BYTES {
+        return Err(format!(
+            "message is longer than the precompile accepts ({ED25519_MAX_MESSAGE_BYTES} bytes)"
+        ));
+    }
+    Ok(format!("0x{pk}{sig}{}", &msg[2..]))
 }
 
 /// A decimal wei amount.

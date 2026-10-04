@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridge } from "../../bridge";
 import { DEVICE_LINKS_MSG_PREFIX } from "../../bridge/domains";
 import { groupsSlice } from "./groups";
-import { clusterSlice, importDeviceCode, loadMeshStatus, revokeMyDevice, shareMyDeviceLinks, syncPeerDeviceLinks } from "./cluster";
+import { clusterSlice, importDeviceCode, loadMeshStatus, prepareRevokeDevice, revokeMyDevice, shareMyDeviceLinks, syncPeerDeviceLinks } from "./cluster";
 
 const D = "d".repeat(64);
 const share = (n: string) => `${DEVICE_LINKS_MSG_PREFIX}{"v":1,"n":"${n}"}`;
@@ -46,9 +46,13 @@ describe("cluster slice: device link sharing", () => {
 
   it("revoking or importing a device shares the new set", async () => {
     const offer = vi.spyOn(bridge.cluster, "deviceLinksShareOffer").mockResolvedValue(null);
-    vi.spyOn(bridge.cluster, "revokeDevice").mockResolvedValue(noDevices);
+    vi.spyOn(bridge.cluster, "revokeDevicePrepare").mockResolvedValue({ confirmId: "c-1", device: "dd", statement: "", confirmBy: 0 });
+    const revoke = vi.spyOn(bridge.cluster, "revokeDevice").mockResolvedValue(noDevices);
     vi.spyOn(bridge.cluster, "importDeviceLink").mockResolvedValue(noDevices);
-    await revokeMyDevice("dd");
+    // Removal is two steps: core prepares the confirmation, the member confirms.
+    await prepareRevokeDevice("dd");
+    await revokeMyDevice();
+    expect(revoke).toHaveBeenCalledWith("c-1");
     await importDeviceCode("{}");
     await vi.waitFor(() => expect(offer).toHaveBeenCalledTimes(4)); // two groups, twice
   });

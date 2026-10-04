@@ -1,0 +1,14 @@
+{
+  "version": "injection-v2",
+  "provenance": {
+    "author": "Larry Klosowski + Claude Opus 5.5",
+    "created": "2026-10-04",
+    "purpose": "HUP-S1.10 injection eval set v2 (A50): injection-v1 unchanged plus fragment files. Adds the MCP-output and browser-snapshot vectors WP S1.10 names; those cases are live: the poisoned content reaches the model through a real sidecar session (the runtime's MCP stdio fixture server, and the managed headless browser on a loopback page), scored deterministically from the session's events. No model-as-judge.",
+    "disjointFromTraining": true,
+    "note": "Eval provenance (planset 05 'Eval provenance'): this set MUST stay disjoint from any E9 training trajectories. Never copy these prompts into a training set. v2 = every v1 item unchanged (via includes) plus the fragment files in the .d directory; a lane that adds a tool adds a NEW fragment file. Never edit v1 (its bytes are pinned) and never edit a fragment another lane owns: changing an item means a new version."
+  },
+  "includes": [
+    "injection-v1.json"
+  ],
+  "fragments": "injection-v2.d"
+}

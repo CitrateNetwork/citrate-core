@@ -6,6 +6,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { act } from "react";
 import { ActivityMonitor } from "../popout/ActivityMonitor";
 import { PopoutRoot } from "../popout/PopoutRoot";
+import { DiffViewer } from "../popout/DiffViewer";
+import type { DiffClient } from "../popout/diffChannel";
 import { buildMonitorSnapshot, type MonitorInputs } from "../popout/monitorSnapshot";
 import type { BridgeTransport } from "../popout/bridge";
 import { IDLE_ACTIVITY } from "../shell/slices/turnActivity";
@@ -158,14 +160,35 @@ describe("HUP-S10.6 pop-out framework (PopoutRoot)", () => {
     expect(await axeFindings(m.host)).toEqual([]);
   });
 
-  it("a kind without a view: a main landmark with a heading, no axe violations", async () => {
+  it("HUP-S5.4 Code and diff while it connects: a main landmark with a heading, no axe violations", async () => {
     const f = fake();
-    // "diff" is the kind no lane has built yet (browser, contract and media now have views).
+    // Every kind has a view now; the diff window asks the main window where to start.
     const m = mount(<PopoutRoot kind="diff" transport={async () => f.t} />);
     await settle();
     expect(m.host.querySelector("main h1")?.textContent).toBe("Code and diff");
-    expect(m.host.textContent).toMatch(/not built yet/i);
+    expect(m.host.textContent).not.toMatch(/not built yet/i);
+    expect(m.host.querySelector('[role="status"]')).not.toBeNull();
     expect(document.title).toBe("Code and diff");
+    expect(await axeFindings(m.host)).toEqual([]);
+  });
+
+  it("HUP-S5.4 Code and diff with a change open: no axe violations, keyboard-reachable change list", async () => {
+    const list = { session: "s3-ab", enabled: true, steps: [{ seq: 2, status: "committed", paths: ["src/a.ts"], root: "/w" }, { seq: 1, status: "undone", paths: ["b.md"], root: "/w" }], note: null };
+    const diff = {
+      ok: true, session: "s3-ab", seq: 2, status: "committed", kind: null, reason: null,
+      files: [
+        { path: "src/a.ts", before: { kind: "text", text: "a\nb\n" }, after: { kind: "text", text: "a\nc\n" } },
+        { path: "img.png", before: { kind: "absent" }, after: { kind: "binary", size: 10 } },
+      ],
+    };
+    const impl: Record<string, () => Promise<unknown>> = { initial: async () => ({ session: "s3-ab", seq: null }), steps: async () => list, diff: async () => diff };
+    const client = { call: (op: string) => impl[op](), close: () => undefined } as unknown as DiffClient;
+    const m = mount(<DiffViewer client={client} focus={null} />);
+    for (let i = 0; i < 4; i++) await settle();
+    expect(m.host.querySelectorAll('[data-testid="diff-file"]')).toHaveLength(2);
+    const buttons = Array.from(m.host.querySelectorAll("nav button"));
+    expect(buttons).toHaveLength(2);
+    expect(buttons.every((b) => b.getAttribute("tabindex") !== "-1")).toBe(true);
     expect(await axeFindings(m.host)).toEqual([]);
   });
 

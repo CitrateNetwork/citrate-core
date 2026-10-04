@@ -13,6 +13,13 @@ renamed from the script's UTC-dated default (`2026-10-01-<model>.json`) to
 in the scorecard: they come from the `llama-server` per-request `print_timing` log lines for the
 same run (80 requests each).
 
+## 2026-10-04 runs (HUP-S1.7, HUP-S1.10: eval v2 and the sidecar eval)
+
+[2026-10-04-eval-v2.run.md](2026-10-04-eval-v2.run.md): `toolcall-v2` + `injection-v2` single-turn on
+T0 and T1, and `scripts/eval-sidecar.mjs` (workflow-v1 step success, live MCP and browser
+injection) on T0 and T1, all with the app's real serve flags and the app's server stopped. The
+`-sidecar-` files are written by `eval-sidecar.mjs` and keep its file name.
+
 ## 2026-10-01 runs (HUP-S3.5)
 
 Each run has a record with YAML frontmatter (model, quant, tier, ctx, date, hardware, commands):

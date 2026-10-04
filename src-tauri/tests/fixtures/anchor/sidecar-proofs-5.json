@@ -1,0 +1,271 @@
+{
+ "plan": {
+  "call": {
+   "chain_id": 40204,
+   "data": "0x9e621f4c0000000000000000000000000000000000000000000000000000000000000002e2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+   "kind": "nightly_merkle",
+   "root": "e2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+   "to": "0x00000000000000000000000000000000000000a1",
+   "value": 0
+  },
+  "commitment": "0xe2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+  "date": "2026-10-01",
+  "day": 20727,
+  "header": {
+   "count": 5,
+   "day": 20727,
+   "first_seq": 0,
+   "last_seq": 4,
+   "tree_root": "f319892c8f06c80517c45151f7995ad2abe873147bf7fa897aeede94fb5f2124",
+   "v": 1
+  },
+  "newlyRecorded": true,
+  "plan": "ready",
+  "sent": false
+ },
+ "proofs": [
+  {
+   "anchored": null,
+   "commitment": "0xe2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+   "date": "2026-10-01",
+   "day": 20727,
+   "proof": {
+    "header": {
+     "count": 5,
+     "day": 20727,
+     "first_seq": 0,
+     "last_seq": 4,
+     "tree_root": "f319892c8f06c80517c45151f7995ad2abe873147bf7fa897aeede94fb5f2124",
+     "v": 1
+    },
+    "leaf_index": 0,
+    "path": [
+     "d3ec5d6f8ef894013f07eceebab79ae73de283acaf417099acb68957cea6b2f4",
+     "e2af94504d893d6884faa1893a053a3e7119bc857a52dfa33df4b738de0cb0ae",
+     "b8bec50aa2de3f054bc8389d4de5c234e3bf3432d43ea0852b4a5f1af8435069"
+    ],
+    "record_hash": "4b8a9474e0b0538b2d080c6207cff326225ed9b0d490a976454c3b0603c6b9ac",
+    "seq": 0
+   },
+   "record": {
+    "actor": {
+     "id": "member",
+     "kind": "member"
+    },
+    "entry": {
+     "decision": {
+      "decision": "approved",
+      "evidence": [
+       {
+        "kind": "ceremony",
+        "uri": "ceremony:1"
+       }
+      ],
+      "kind": "tx",
+      "reason": "approved on the card",
+      "subject": "send 1 SALT to 0x00000000000000000000000000000000000000b2",
+      "tier": "hic-1"
+     }
+    },
+    "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+    "seq": 0,
+    "ts_ms": 1790856000000,
+    "v": 1
+   },
+   "recordCanonical": "{\"v\":1,\"seq\":0,\"ts_ms\":1790856000000,\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"actor\":{\"kind\":\"member\",\"id\":\"member\"},\"entry\":{\"decision\":{\"tier\":\"hic-1\",\"kind\":\"tx\",\"subject\":\"send 1 SALT to 0x00000000000000000000000000000000000000b2\",\"decision\":\"approved\",\"reason\":\"approved on the card\",\"evidence\":[{\"kind\":\"ceremony\",\"uri\":\"ceremony:1\"}]}}}",
+   "recordHash": "4b8a9474e0b0538b2d080c6207cff326225ed9b0d490a976454c3b0603c6b9ac",
+   "recordMatches": true,
+   "seq": 0,
+   "verifies": true
+  },
+  {
+   "anchored": null,
+   "commitment": "0xe2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+   "date": "2026-10-01",
+   "day": 20727,
+   "proof": {
+    "header": {
+     "count": 5,
+     "day": 20727,
+     "first_seq": 0,
+     "last_seq": 4,
+     "tree_root": "f319892c8f06c80517c45151f7995ad2abe873147bf7fa897aeede94fb5f2124",
+     "v": 1
+    },
+    "leaf_index": 1,
+    "path": [
+     "f0184f582d03cc935992c73b4746361cfddd64e3d1e8c5d7b6d1976e07e1eb42",
+     "e2af94504d893d6884faa1893a053a3e7119bc857a52dfa33df4b738de0cb0ae",
+     "b8bec50aa2de3f054bc8389d4de5c234e3bf3432d43ea0852b4a5f1af8435069"
+    ],
+    "record_hash": "9ca6faf945b7423f64f71287deb362bea260693ebf280e808f269578c2e064db",
+    "seq": 1
+   },
+   "record": {
+    "actor": {
+     "id": "hermes",
+     "kind": "agent"
+    },
+    "entry": {
+     "outcome": {
+      "decision_seq": 0,
+      "detail": "mined",
+      "outcome": "completed"
+     }
+    },
+    "prev": "4b8a9474e0b0538b2d080c6207cff326225ed9b0d490a976454c3b0603c6b9ac",
+    "seq": 1,
+    "ts_ms": 1790856001000,
+    "v": 1
+   },
+   "recordCanonical": "{\"v\":1,\"seq\":1,\"ts_ms\":1790856001000,\"prev\":\"4b8a9474e0b0538b2d080c6207cff326225ed9b0d490a976454c3b0603c6b9ac\",\"actor\":{\"kind\":\"agent\",\"id\":\"hermes\"},\"entry\":{\"outcome\":{\"decision_seq\":0,\"outcome\":\"completed\",\"detail\":\"mined\"}}}",
+   "recordHash": "9ca6faf945b7423f64f71287deb362bea260693ebf280e808f269578c2e064db",
+   "recordMatches": true,
+   "seq": 1,
+   "verifies": true
+  },
+  {
+   "anchored": null,
+   "commitment": "0xe2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+   "date": "2026-10-01",
+   "day": 20727,
+   "proof": {
+    "header": {
+     "count": 5,
+     "day": 20727,
+     "first_seq": 0,
+     "last_seq": 4,
+     "tree_root": "f319892c8f06c80517c45151f7995ad2abe873147bf7fa897aeede94fb5f2124",
+     "v": 1
+    },
+    "leaf_index": 2,
+    "path": [
+     "627b994dd472534cb59b9de901e7f51921d171c851b4e7eda4a329d16e717af7",
+     "1756e237636a04d4fc97b73209ba8026413d566ae8ca3fa9b683ae74562eba72",
+     "b8bec50aa2de3f054bc8389d4de5c234e3bf3432d43ea0852b4a5f1af8435069"
+    ],
+    "record_hash": "8910b5e5ae3d142945c7379601c1e6bcf13920743000b1297529612b8a014cef",
+    "seq": 2
+   },
+   "record": {
+    "actor": {
+     "id": "hermes",
+     "kind": "agent"
+    },
+    "entry": {
+     "decision": {
+      "decision": "auto_within_budget",
+      "evidence": [],
+      "kind": "siwe",
+      "reason": "inside the member's sign-in budget",
+      "subject": "https://app.example sign-in",
+      "tier": "hic-2"
+     }
+    },
+    "prev": "9ca6faf945b7423f64f71287deb362bea260693ebf280e808f269578c2e064db",
+    "seq": 2,
+    "ts_ms": 1790856002000,
+    "v": 1
+   },
+   "recordCanonical": "{\"v\":1,\"seq\":2,\"ts_ms\":1790856002000,\"prev\":\"9ca6faf945b7423f64f71287deb362bea260693ebf280e808f269578c2e064db\",\"actor\":{\"kind\":\"agent\",\"id\":\"hermes\"},\"entry\":{\"decision\":{\"tier\":\"hic-2\",\"kind\":\"siwe\",\"subject\":\"https://app.example sign-in\",\"decision\":\"auto_within_budget\",\"reason\":\"inside the member's sign-in budget\",\"evidence\":[]}}}",
+   "recordHash": "8910b5e5ae3d142945c7379601c1e6bcf13920743000b1297529612b8a014cef",
+   "recordMatches": true,
+   "seq": 2,
+   "verifies": true
+  },
+  {
+   "anchored": null,
+   "commitment": "0xe2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+   "date": "2026-10-01",
+   "day": 20727,
+   "proof": {
+    "header": {
+     "count": 5,
+     "day": 20727,
+     "first_seq": 0,
+     "last_seq": 4,
+     "tree_root": "f319892c8f06c80517c45151f7995ad2abe873147bf7fa897aeede94fb5f2124",
+     "v": 1
+    },
+    "leaf_index": 3,
+    "path": [
+     "3b1eaeb43ed27da1fedc58d1816cb05b12c34b6fa00016f34cca7386412526cc",
+     "1756e237636a04d4fc97b73209ba8026413d566ae8ca3fa9b683ae74562eba72",
+     "b8bec50aa2de3f054bc8389d4de5c234e3bf3432d43ea0852b4a5f1af8435069"
+    ],
+    "record_hash": "d1cde2cb9dd202ff6cbca5e2f5401510babf98e816cbf01a524af2eafd58f0c5",
+    "seq": 3
+   },
+   "record": {
+    "actor": {
+     "id": "hermes",
+     "kind": "agent"
+    },
+    "entry": {
+     "outcome": {
+      "decision_seq": 2,
+      "detail": "signed",
+      "outcome": "completed"
+     }
+    },
+    "prev": "8910b5e5ae3d142945c7379601c1e6bcf13920743000b1297529612b8a014cef",
+    "seq": 3,
+    "ts_ms": 1790856003000,
+    "v": 1
+   },
+   "recordCanonical": "{\"v\":1,\"seq\":3,\"ts_ms\":1790856003000,\"prev\":\"8910b5e5ae3d142945c7379601c1e6bcf13920743000b1297529612b8a014cef\",\"actor\":{\"kind\":\"agent\",\"id\":\"hermes\"},\"entry\":{\"outcome\":{\"decision_seq\":2,\"outcome\":\"completed\",\"detail\":\"signed\"}}}",
+   "recordHash": "d1cde2cb9dd202ff6cbca5e2f5401510babf98e816cbf01a524af2eafd58f0c5",
+   "recordMatches": true,
+   "seq": 3,
+   "verifies": true
+  },
+  {
+   "anchored": null,
+   "commitment": "0xe2c307791f74d08d7987f5fc58ad8a86068334ed819eba989967b2db5694b431",
+   "date": "2026-10-01",
+   "day": 20727,
+   "proof": {
+    "header": {
+     "count": 5,
+     "day": 20727,
+     "first_seq": 0,
+     "last_seq": 4,
+     "tree_root": "f319892c8f06c80517c45151f7995ad2abe873147bf7fa897aeede94fb5f2124",
+     "v": 1
+    },
+    "leaf_index": 4,
+    "path": [
+     "c546de2f8a54a7495129df0caeeff73565841eccd773402b468d85b2fa961c3d"
+    ],
+    "record_hash": "33ec43747e25cbb23cd7fc7579b0edd9663dd2a9b44717f19b00867b0e5a77b5",
+    "seq": 4
+   },
+   "record": {
+    "actor": {
+     "id": "member",
+     "kind": "member"
+    },
+    "entry": {
+     "decision": {
+      "decision": "denied",
+      "evidence": [],
+      "kind": "deploy",
+      "reason": "rejected on the card",
+      "subject": "deploy HelloMint",
+      "tier": "hic-1"
+     }
+    },
+    "prev": "d1cde2cb9dd202ff6cbca5e2f5401510babf98e816cbf01a524af2eafd58f0c5",
+    "seq": 4,
+    "ts_ms": 1790856004000,
+    "v": 1
+   },
+   "recordCanonical": "{\"v\":1,\"seq\":4,\"ts_ms\":1790856004000,\"prev\":\"d1cde2cb9dd202ff6cbca5e2f5401510babf98e816cbf01a524af2eafd58f0c5\",\"actor\":{\"kind\":\"member\",\"id\":\"member\"},\"entry\":{\"decision\":{\"tier\":\"hic-1\",\"kind\":\"deploy\",\"subject\":\"deploy HelloMint\",\"decision\":\"denied\",\"reason\":\"rejected on the card\",\"evidence\":[]}}}",
+   "recordHash": "33ec43747e25cbb23cd7fc7579b0edd9663dd2a9b44717f19b00867b0e5a77b5",
+   "recordMatches": true,
+   "seq": 4,
+   "verifies": true
+  }
+ ],
+ "source": "citrate-agent-runtime hup/n5-anchor-rest: the real sidecar's /anchor/plan and /anchor/proof over decision records written by agent-sidecar/tests/anchor_e2e_seed.rs (2026-10-01)"
+}

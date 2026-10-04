@@ -95,6 +95,7 @@ function DeviceList({ state }: { state: WizardState }) {
             {r.where}
             {r.addr ? ` · ${r.addr}` : ""}
             {r.where === "paired" ? ` · ${linkNote(r.link)}` : ""}
+            {r.code ? ` · code ${r.code}` : ""}
           </span>
         </div>
       ))}

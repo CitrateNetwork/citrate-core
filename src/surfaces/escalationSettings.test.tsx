@@ -20,7 +20,7 @@ const base: EscalationViewProps = {
     unreadable: false,
     history: [],
   },
-  registry: { enabled: false, reason: "Registry escalation is not deployed yet. Escalations use your own endpoints.", missing: ["InferenceRouter is not deployed on chain 40204 yet"] },
+  registry: { enabled: false, reason: "Registry escalation is not deployed yet. Escalations use your own endpoints.", missing: ["InferenceRouter is not deployed on chain 40204 yet"], router: null, payment: "native-salt-hic1", x402Enabled: false },
   form: EMPTY_FORM,
   capInput: "",
   busy: false,

@@ -38,7 +38,8 @@ use serde::{Deserialize, Serialize};
 use crate::device_link::PairedLink;
 use crate::fleet_mdns::{Advert, Discovery, Seen};
 use crate::fleet_pairing::{
-    qr_matrix, verify_link, PairClaim, PairError, PairIssuer, QrMatrix, MAX_LABEL_LEN,
+    confirmation_code, qr_matrix, reply_bytes, verify_link, verify_reply, PairClaim, PairError,
+    PairIssuer, QrMatrix, MAX_LABEL_LEN,
 };
 use crate::fleet_tailscale::{GuidanceStep, Reach, TailscaleReport};
 
@@ -117,6 +118,9 @@ pub struct FleetDevice {
     /// (absent in rosters written before links travelled with pairings).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_link: Option<PairedLink>,
+    /// The six-digit code both screens showed for this pairing (absent for older entries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// `fleet.json`.
@@ -234,6 +238,10 @@ pub struct JoinReply {
     /// HUP-S8.1: the issuer's DeviceLink code, when it is linked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_link: Option<String>,
+    /// The issuer's pairing-key signature over [`reply_bytes`]: the joiner checks it against the
+    /// key in the link, so only the machine that minted the link can complete the pairing.
+    #[serde(default)]
+    pub proof: Option<String>,
 }
 
 impl JoinReply {
@@ -245,6 +253,7 @@ impl JoinReply {
             label: None,
             tier: None,
             device_link: None,
+            proof: None,
         }
     }
 }
@@ -252,6 +261,30 @@ impl JoinReply {
 /// What the issuer does with the joiner's DeviceLink code (production: verify + store through
 /// `device_link::store_paired_code`). Never signs.
 pub type LinkHook = Arc<dyn Fn(Option<&str>) -> PairedLink + Send + Sync>;
+/// Addresses a pairing link may point the joiner at: private (RFC 1918), CGNAT / tailnet
+/// (100.64.0.0/10), link-local, and IPv6 unique-local or link-local. Never this machine's loopback,
+/// a public address, or the cloud metadata address, so a pasted link cannot make Core probe them.
+pub fn hint_ip_allowed(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            if v == std::net::Ipv4Addr::new(169, 254, 169, 254) {
+                return false;
+            }
+            v.is_private() || v.is_link_local() || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v) => {
+            let seg = v.segments()[0];
+            (seg & 0xfe00) == 0xfc00 || (seg & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Peers the pairing port answers: this machine and the local networks [`hint_ip_allowed`] covers.
+/// The listener binds every interface (LAN and tailnet), so anything else is dropped unanswered.
+pub fn peer_allowed(ip: IpAddr) -> bool {
+    ip.is_loopback() || hint_ip_allowed(ip)
+}
 
 /// Shared state of a running pairing server.
 pub struct PairCtx {
@@ -293,12 +326,22 @@ fn answer(line: &str, peer_ip: Option<String>, ctx: &PairCtx) -> JoinReply {
         return JoinReply::refuse(PairError::Malformed);
     };
     let redeemed = match ctx.issuer.lock() {
-        Ok(mut iss) => iss.redeem(&req.link, now_secs()),
+        Ok(mut iss) => iss.redeem(&req.link, now_secs()).map(|claim| {
+            let proof = iss.sign_reply(&reply_bytes(
+                &claim.nonce,
+                &req.device_id,
+                &me.device_id,
+                &me.label,
+                me.tier.as_deref(),
+            ));
+            (claim, proof)
+        }),
         Err(_) => Err(PairError::Malformed),
     };
-    if let Err(e) = redeemed {
-        return JoinReply::refuse(e);
-    }
+    let (claim, proof) = match redeemed {
+        Ok(x) => x,
+        Err(e) => return JoinReply::refuse(e),
+    };
     let device_link = match (&ctx.link_hook, req.device_link.as_deref()) {
         (Some(hook), code) => Some(hook(code)).filter(|r| *r != PairedLink::None),
         (None, _) => None,
@@ -314,6 +357,11 @@ fn answer(line: &str, peer_ip: Option<String>, ctx: &PairCtx) -> JoinReply {
             paired_at: now_secs(),
             via: PairVia::Issued,
             device_link,
+            code: Some(confirmation_code(
+                &claim.nonce,
+                &claim.issuer_pub,
+                &req.device_id,
+            )),
         },
     );
     // The roster file lives beside the issuer's; keep its own id/label.
@@ -326,6 +374,7 @@ fn answer(line: &str, peer_ip: Option<String>, ctx: &PairCtx) -> JoinReply {
         label: Some(me.label),
         tier: me.tier,
         device_link: me.link_code,
+        proof: Some(proof),
     }
 }
 
@@ -339,8 +388,10 @@ pub fn serve_pairing<F: Fn(u64) -> bool>(listener: TcpListener, ctx: Arc<PairCtx
             return;
         }
         match listener.accept() {
-            Ok((s, _)) => {
-                let _ = handle_conn(s, &ctx);
+            Ok((s, peer)) => {
+                if peer_allowed(peer.ip()) {
+                    let _ = handle_conn(s, &ctx);
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(150));
@@ -371,6 +422,8 @@ pub struct JoinOutcome {
     /// HUP-S8.1: the issuer's DeviceLink code, for core to verify and store.
     #[serde(skip)]
     pub peer_link_code: Option<String>,
+    /// The six-digit code this screen shows; the other machine shows the same one.
+    pub code: String,
 }
 
 fn exchange(addr: SocketAddr, req: &JoinRequest) -> Result<JoinReply, JoinError> {
@@ -390,8 +443,19 @@ fn exchange(addr: SocketAddr, req: &JoinRequest) -> Result<JoinReply, JoinError>
 }
 
 /// **Join** another machine's link: verify it offline, then present it at each hint in turn.
-/// Blocking (network): call off the main thread.
+/// Only local-network hints are tried ([`hint_ip_allowed`]). Blocking (network): call off the
+/// main thread.
 pub fn join_link(link: &str, me: &DeviceSelf, now: u64) -> Result<JoinOutcome, JoinError> {
+    join_link_with(link, me, now, &hint_ip_allowed)
+}
+
+/// [`join_link`] with the address rule given (tests run both ends on loopback).
+pub fn join_link_with(
+    link: &str,
+    me: &DeviceSelf,
+    now: u64,
+    allowed: &dyn Fn(IpAddr) -> bool,
+) -> Result<JoinOutcome, JoinError> {
     let claim = verify_link(link, now).map_err(JoinError::Link)?;
     let req = JoinRequest {
         v: 1,
@@ -406,6 +470,9 @@ pub fn join_link(link: &str, me: &DeviceSelf, now: u64) -> Result<JoinOutcome, J
         let Ok(addr) = hint.parse::<SocketAddr>() else {
             continue;
         };
+        if !allowed(addr.ip()) {
+            continue;
+        }
         match exchange(addr, &req) {
             Err(JoinError::Unreachable(_)) => tried.push(hint.clone()),
             Err(e) => return Err(e),
@@ -416,8 +483,25 @@ pub fn join_link(link: &str, me: &DeviceSelf, now: u64) -> Result<JoinOutcome, J
                 if !id_ok(&id) || !label_ok(&label) || !tier_ok(&reply.tier) {
                     return Err(JoinError::Protocol);
                 }
+                // Only the holder of the link's pairing key can answer for it.
+                let signed = reply_bytes(
+                    &claim.nonce,
+                    &me.device_id,
+                    &id,
+                    &label,
+                    reply.tier.as_deref(),
+                );
+                let proven = reply
+                    .proof
+                    .as_deref()
+                    .is_some_and(|p| verify_reply(&claim.issuer_pub, p, &signed));
+                if !proven {
+                    return Err(JoinError::Protocol);
+                }
                 let peer_link_code = reply.device_link.filter(|c| c.len() <= MAX_LINK_CODE);
+                let code = confirmation_code(&claim.nonce, &claim.issuer_pub, &me.device_id);
                 return Ok(JoinOutcome {
+                    code: code.clone(),
                     device: FleetDevice {
                         role: role_for(reply.tier.as_deref()).to_string(),
                         id,
@@ -427,6 +511,7 @@ pub fn join_link(link: &str, me: &DeviceSelf, now: u64) -> Result<JoinOutcome, J
                         paired_at: now,
                         via: PairVia::Joined,
                         device_link: None,
+                        code: Some(code),
                     },
                     peer_link_code,
                 });
