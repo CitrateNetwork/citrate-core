@@ -60,6 +60,37 @@ describe("FleetWizardView", () => {
     expect(html).toContain("pending owner sign-off");
   });
 
+  // HUP F-10 / WP-S8.2: the tier and role now come from the citrate-sizeup library
+  // (`library::recommend` + `Role::for_tier`); the machine step must render every outcome it returns,
+  // including the dedicated-GPU lift and the unknown-memory T0, with the rationale lines tier.rs emits.
+  it.each([
+    { tier: "T0", role: "light", label: "Light: chat and small jobs", line: "Under 12 GB usable → T0" },
+    { tier: "T1", role: "worker", label: "Worker: mid-size models and background jobs", line: "12–24 GB usable → T1" },
+    { tier: "T2", role: "heavy", label: "Heavy: serves the larger models", line: "16 GB or more of dedicated GPU memory → T2" },
+    {
+      tier: "T0",
+      role: "light",
+      label: "Light: chat and small jobs",
+      line: "Memory size could not be read on this machine, so the smallest tier is used to stay safe",
+    },
+  ] as const)("machine step renders the sizeup outcome $tier/$role: $line", ({ tier, role, label, line }) => {
+    const report = sampleReport({ effective: tier });
+    report.recommendation = { ...report.recommendation, tier, rationale: [line], guided: tier === "T0" };
+    const p: FleetProbe = { device: { ...probe.device, label: "This PC", tier, role }, tier: report };
+    const html = render(st({ type: "probed", probe: p }));
+    expect(html).toContain(tier);
+    expect(html).toContain(label);
+    expect(html).toContain(line);
+    expect(html).toContain("pending owner sign-off");
+  });
+
+  it("machine step without a tier says the tier and role are unknown, never a guess", () => {
+    const p: FleetProbe = { device: { ...probe.device, tier: null, role: "unknown" }, tier: sampleReport() };
+    const html = render(st({ type: "probed", probe: p }));
+    expect(html).toContain("tier unknown");
+    expect(html).toContain("Role unknown");
+  });
+
   it("discovery is off by default, browsing disabled, and says what would be shared", () => {
     const html = render(st({ type: "probed", probe }, { type: "goto", step: "discover" }));
     expect(html).toContain('data-testid="fleet-discovery-toggle"');
