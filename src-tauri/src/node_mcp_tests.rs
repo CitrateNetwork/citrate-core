@@ -319,6 +319,8 @@ fn tools_list_carries_annotations_and_strict_schemas() {
             "cluster_share",
             "invite_create",
             "invite_revoke",
+            "hermes_session_send",
+            "hermes_session_stop",
         ]
         .contains(&name);
         assert_eq!(

@@ -276,6 +276,15 @@ async fn run_action(app: &tauri::AppHandle, action: McpAction) -> Result<Value, 
             crate::invites::group_invite_revoke(app.clone(), group.clone(), token).await?;
             Ok(json!({"revoked": invite_id, "group": group}))
         }
+        // HUP-S1.1: the member approved it; the app's Hermes client carries it to the session.
+        a @ (McpAction::HermesSessionSend { .. } | McpAction::HermesSessionStop { .. }) => {
+            let app2 = app.clone();
+            crate::blocking::off_main(move || {
+                let mgr = crate::hermes::manager_for(&app2)?;
+                crate::node_mcp_hermes::run_action(mgr, &a)
+            })
+            .await
+        }
     }
 }
 

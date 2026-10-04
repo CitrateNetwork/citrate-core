@@ -205,7 +205,14 @@ pub const TOOLS: &[ToolDef] = &[
 
 /// Look a tool up by name.
 pub fn tool(name: &str) -> Option<&'static ToolDef> {
-    TOOLS.iter().find(|t| t.name == name)
+    all_tools().find(|t| t.name == name)
+}
+
+/// Every tool `tools/list` returns: the node catalog, then the Hermes session tools (HUP-S1.1).
+pub fn all_tools() -> impl Iterator<Item = &'static ToolDef> {
+    TOOLS
+        .iter()
+        .chain(crate::node_mcp_hermes::HERMES_TOOLS.iter())
 }
 
 /// The MCP `tools/list` entry for a tool, with its annotations.

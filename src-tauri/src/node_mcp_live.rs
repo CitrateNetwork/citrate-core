@@ -205,6 +205,17 @@ impl NodeBackend for LiveBackend {
         })
     }
 
+    fn hermes_sessions(&self) -> Result<Value, String> {
+        use crate::node_mcp_hermes::HermesSessions;
+        crate::node_mcp_hermes::ManagerSessions(crate::hermes::manager_for(&self.app)?).list()
+    }
+
+    fn hermes_events(&self, session: &str, after: u64, wait_ms: u64) -> Result<Value, String> {
+        use crate::node_mcp_hermes::HermesSessions;
+        crate::node_mcp_hermes::ManagerSessions(crate::hermes::manager_for(&self.app)?)
+            .events(session, after, wait_ms)
+    }
+
     fn close_ceremony(&self, ceremony_id: &str) {
         if let Some(c) = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&self.app) {
             let _ = c.0.reject(ceremony_id);

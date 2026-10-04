@@ -26,10 +26,30 @@ pub const MAX_KEPT: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum McpAction {
-    ClusterJoin { group: String },
-    ClusterShare { group: String, cid: String },
-    InviteCreate { group: String, for_handle: String },
-    InviteRevoke { group: String, invite_id: String },
+    ClusterJoin {
+        group: String,
+    },
+    ClusterShare {
+        group: String,
+        cid: String,
+    },
+    InviteCreate {
+        group: String,
+        for_handle: String,
+    },
+    InviteRevoke {
+        group: String,
+        invite_id: String,
+    },
+    /// HUP-S1.1: send a message to a Hermes session (starts a turn).
+    HermesSessionSend {
+        session: String,
+        text: String,
+    },
+    /// HUP-S1.1: stop the turn a Hermes session is running.
+    HermesSessionStop {
+        session: String,
+    },
 }
 
 impl McpAction {
@@ -45,6 +65,13 @@ impl McpAction {
             ),
             McpAction::InviteRevoke { group, invite_id } => {
                 format!("Revoke invite {invite_id} for group {group}")
+            }
+            McpAction::HermesSessionSend { session, text } => format!(
+                "Send this message to Hermes session {session}, which starts a turn there: \"{}\"",
+                crate::node_mcp_hermes::summary_text(text)
+            ),
+            McpAction::HermesSessionStop { session } => {
+                format!("Stop the turn Hermes session {session} is running")
             }
         }
     }
