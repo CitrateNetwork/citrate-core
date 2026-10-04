@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Mutation check for FlRoundGate.tla (HUP-S9.4, federated round start + LoRA eval gate).
+"""Mutation check for FlRoundGate.tla (HUP-S9.4, federated round start + LoRA eval gate;
+n5: re-apply after a restart and the in-app eval run).
 
 Each mutant breaks one guard of the spec, then runs TLC with only the target invariant (plus
 TypeOK) and expects TLC to report a violation. The spec in this directory is never modified:
@@ -52,7 +53,7 @@ M = [
   [("    /\\ IF loaded = v /\\ (verdict = \"REJECT\" \\/ b # base)\n", "    /\\ IF loaded = v /\\ verdict = \"REJECT\"\n")]),
  # Switching the base model keeps the adapter.
  ("M10", "LoadedIsAccepted",
-  [("    /\\ loaded' = IF b # base THEN NoAdapter ELSE loaded\n", "    /\\ loaded' = loaded\n")]),
+  [("    /\\ loaded' = IF b # base THEN Reapplied(b) ELSE loaded\n", "    /\\ loaded' = loaded\n")]),
  # An existing copy is reused without re-hashing it.
  ("M11", "ServedIsLoaded",
   [("Refreshed(v) == IF copy[v] = v THEN v", "Refreshed(v) == IF copy[v] # \"none\" THEN v"),
@@ -65,6 +66,28 @@ M = [
  ("M13", "ServedIsLoaded",
   [("    /\\ IF Refreshed(v) = v\n", "    /\\ IF TRUE\n"),
    ("          THEN /\\ copy' = [copy EXCEPT ![v] = v]\n", "          THEN /\\ copy' = [copy EXCEPT ![v] = Refreshed(v)]\n")]),
+ # n5: a new gate record never forgets the remembered adapter.
+ ("M14", "RememberedIsAccepted",
+  [("    /\\ IF active = v /\\ (verdict = \"REJECT\" \\/ b # activeBase)\n", "    /\\ IF FALSE\n")]),
+ # n5: re-apply ignores which base the adapter belongs to.
+ ("M15", "LoadedIsAccepted",
+  [("    /\\ activeBase = b\n    /\\ gateVerdict[active] = \"ACCEPT\" /\\ gateBase[active] = b\n",
+    "    /\\ gateVerdict[active] = \"ACCEPT\"\n")]),
+ # n5: re-apply serves the stored copy without re-hashing it.
+ ("M16", "ServedIsLoaded",
+  [("    /\\ Refreshed(active) = active\n", "    /\\ TRUE\n"),
+   ("ReapplyCopy(b) == IF ReapplyOk(b) THEN [copy EXCEPT ![active] = active] ELSE copy", "ReapplyCopy(b) == copy")]),
+ # n5: the eval candidate answers chats (what --lora-init-without-apply does on build 10909).
+ ("M17", "ChatOnlyAccepted",
+  [("ChatBytes(l, c, e) == IF e # NoAdapter \\/ l = NoAdapter THEN NoAdapter ELSE c[l]",
+    "ChatBytes(l, c, e) == IF e # NoAdapter THEN e ELSE IF l = NoAdapter THEN NoAdapter ELSE c[l]")]),
+ # n5: a crash restart during an eval run comes back with the candidate applied.
+ ("M18", "ChatOnlyAccepted",
+  [("    /\\ served' = IF evalCand # NoAdapter \\/ loaded = NoAdapter THEN NoAdapter ELSE copy[loaded]\n",
+    "    /\\ served' = IF evalCand # NoAdapter THEN evalCand ELSE IF loaded = NoAdapter THEN NoAdapter ELSE copy[loaded]\n")]),
+ # n5: an app restart serves the remembered adapter without the load check.
+ ("M19", "LoadedIsAccepted",
+  [("    /\\ loaded' = Reapplied(b)\n", "    /\\ loaded' = active\n")]),
 ]
 
 def run(name, target, patches):

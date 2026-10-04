@@ -2,13 +2,17 @@
 // citrate-core: federated rounds panel (HUP-S9.4), on the Train surface
 //
 // Coordinator setting, plan + plain-words explanation, HIC-1 start, and the LoRA eval gate.
+// n5: get a round's adapter (its FL_ROUND_V1 bundle + merged adapter, from files or https), run
+// the eval in the app on the local model, and an accepted adapter that was loaded comes back
+// after a restart (core checks it again first).
 // Everything shown comes from core (fl_rounds.rs). Without a configured coordinator it says so;
 // a start records the member's approval and says plainly that no training runs in this build.
 // =====================================================================
 import { useEffect, useState } from "react";
-import type { FlAdapterGateRecord, FlOverview, FlRoundPlan, FlRoundsDomain, FlStartReceipt } from "../bridge/domains";
+import type { FlAdapterGateRecord, FlOverview, FlRoundPlan, FlRoundProvenance, FlRoundsDomain, FlStartReceipt } from "../bridge/domains";
 import type { CerSpec } from "../shell/state";
-import { approveAndStartRound, gateSummary } from "./flRounds";
+import { approveAndStartRound, gateSummary, roundSummary } from "./flRounds";
+import { runInAppEval, type EvalProgress } from "./flEval";
 
 export interface FlRoundsPanelProps {
   fl: FlRoundsDomain;
@@ -30,6 +34,10 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
   const [busy, setBusy] = useState(false);
   const [gate, setGate] = useState({ adapter: "", sha: "", baseTools: "", candTools: "", baseQa: "", candQa: "" });
   const [gateRec, setGateRec] = useState<FlAdapterGateRecord | null>(null);
+  const [round, setRound] = useState({ bundle: "", adapter: "" });
+  const [roundRec, setRoundRec] = useState<FlRoundProvenance | null>(null);
+  const [adapterUrl, setAdapterUrl] = useState("");
+  const [evalProgress, setEvalProgress] = useState<EvalProgress | null>(null);
 
   const refresh = async () => {
     try {
@@ -107,6 +115,67 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
     }
   };
 
+  const isUrl = (v: string) => /^https?:\/\//i.test(v.trim());
+
+  const getRound = async () => {
+    setErr(null);
+    setRoundRec(null);
+    const b = round.bundle.trim();
+    const a = round.adapter.trim();
+    if (!b || !a) {
+      setErr("Give both the round bundle and the round's adapter (two file paths, or two https links).");
+      return;
+    }
+    if (isUrl(b) !== isUrl(a)) {
+      setErr("Give two file paths or two links, not one of each.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const rec = isUrl(b) ? await fl.fetchRound(b, a) : await fl.importRound(b, a);
+      setRoundRec(rec);
+      setGate((g) => ({ ...g, adapter: rec.adapterPath, sha: rec.adapterSha256 }));
+      await refresh();
+    } catch (e) {
+      setErr(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const getAdapter = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      const path = await fl.fetchAdapter(adapterUrl.trim(), gate.sha.trim());
+      setGate((g) => ({ ...g, adapter: path }));
+      toast("Adapter downloaded and its sha256 checked.");
+    } catch (e) {
+      setErr(msg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runEvalInApp = async () => {
+    setErr(null);
+    setGateRec(null);
+    setBusy(true);
+    setEvalProgress(null);
+    try {
+      const rec = await runInAppEval(fl, gate.adapter.trim(), gate.sha.trim(), setEvalProgress);
+      setGateRec(rec);
+      await refresh();
+    } catch (e) {
+      // Refresh first (the run in core is over), then show why: refresh resets the error line.
+      await refresh();
+      setErr(msg(e));
+    } finally {
+      setBusy(false);
+      setEvalProgress(null);
+    }
+  };
+
   const load = async (sha: string) => {
     setErr(null);
     try {
@@ -141,6 +210,7 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
     />
   );
   const summary = gateRec ? gateSummary(gateRec) : null;
+  const roundLines = roundRec ? roundSummary(roundRec) : null;
 
   return (
     <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
@@ -226,10 +296,62 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <span className="mono" style={label}>Round adapter and the eval gate</span>
+          <span className="mono" style={label}>A round's adapter</span>
           <p style={para}>
-            Downloading a round's adapter from LoRAFactory is not deployed yet. Give the adapter file and its published sha256, plus the eval scorecards for the base model and for the
-            base model with this adapter (scripts/eval-tools.mjs, optionally scripts/eval-qa.mjs, with --model set to the base model's file name and --adapter-sha256). The adapter loads only if nothing got worse and the score improved.
+            A finished round publishes its bundle (who took part and how the adapter was built) and the merged adapter. Give both, as files or as https links: the app checks the adapter
+            against the bundle and against the model you serve. Looking the adapter up in LoRAFactory is not deployed yet, and the round's on-chain record is not checked by this build.
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              className="input"
+              data-testid="fl-round-bundle"
+              value={round.bundle}
+              placeholder="round bundle .json (path or https link)"
+              onInput={(e) => setRound((r) => ({ ...r, bundle: (e.target as HTMLInputElement).value }))}
+              onChange={(e) => setRound((r) => ({ ...r, bundle: e.target.value }))}
+              style={{ flex: 1 }}
+            />
+            <input
+              className="input"
+              data-testid="fl-round-adapter"
+              value={round.adapter}
+              placeholder="merged adapter .gguf (path or https link)"
+              onInput={(e) => setRound((r) => ({ ...r, adapter: (e.target as HTMLInputElement).value }))}
+              onChange={(e) => setRound((r) => ({ ...r, adapter: e.target.value }))}
+              style={{ flex: 1 }}
+            />
+            <button className="btn btn-secondary" data-testid="fl-round-get" onClick={() => void getRound()} disabled={busy}>
+              Check round
+            </button>
+          </div>
+          {roundRec && roundLines && (
+            <div data-testid="fl-round-summary" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {roundLines.map((l) => (
+                <span key={l} style={{ ...para, fontSize: 11.5 }}>
+                  {l}
+                </span>
+              ))}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              className="input"
+              data-testid="fl-adapter-url"
+              value={adapterUrl}
+              placeholder="or only an adapter link (https), with its published sha256 below"
+              onInput={(e) => setAdapterUrl((e.target as HTMLInputElement).value)}
+              onChange={(e) => setAdapterUrl(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <button className="btn btn-secondary" data-testid="fl-adapter-fetch" onClick={() => void getAdapter()} disabled={busy || !adapterUrl.trim()}>
+              Download
+            </button>
+          </div>
+          <span className="mono" style={label}>The eval gate</span>
+          <p style={para}>
+            Run the eval in the app: the local model answers the tool-call and injection sets once without the adapter and once with it (your chats keep using the model without it while
+            this runs), and the adapter can load only if nothing got worse and the score improved. Or give scorecards from the eval CLIs (scripts/eval-tools.mjs, optionally
+            scripts/eval-qa.mjs, with --model set to the base model's file name and --adapter-sha256).
           </p>
           {field("adapter", "fl-gate-adapter", "adapter .gguf path")}
           {field("sha", "fl-gate-sha", "expected sha256")}
@@ -237,11 +359,19 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
           {field("candTools", "fl-gate-cand-tools", "candidate tool-call scorecard .json")}
           {field("baseQa", "fl-gate-base-qa", "base QA scorecard .json (optional)")}
           {field("candQa", "fl-gate-cand-qa", "candidate QA scorecard .json (optional)")}
-          <div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn btn-primary" data-testid="fl-eval-run" onClick={() => void runEvalInApp()} disabled={busy || !gate.adapter.trim() || !gate.sha.trim()}>
+              Run the eval in the app
+            </button>
             <button className="btn btn-secondary" data-testid="fl-gate-run" onClick={() => void runGate()} disabled={busy}>
-              Run the eval gate
+              Use these scorecards
             </button>
           </div>
+          {evalProgress && (
+            <p data-testid="fl-eval-progress" role="status" style={para}>
+              {evalProgress.arm === "base" ? "Without the adapter" : "With the adapter"}: {evalProgress.done} of {evalProgress.total}
+            </p>
+          )}
           {gateRec && summary && (
             <div data-testid="fl-gate-verdict" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span style={{ fontSize: 13, fontWeight: 500, color: gateRec.decision.verdict === "ACCEPT" ? "var(--ok)" : "var(--warn)" }}>{summary.headline}</span>
@@ -263,6 +393,7 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span data-testid="fl-active-adapter" className="mono" style={{ fontSize: 10.5, color: "var(--tx-2)" }}>
                 Loaded adapter: {ov.activeAdapter}
+                {ov.remembered ? " (comes back after a restart, checked again first)" : ""}
               </span>
               <button className="btn btn-secondary" data-testid="fl-unload" onClick={() => void unload()}>
                 Unload

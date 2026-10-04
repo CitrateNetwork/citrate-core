@@ -925,3 +925,136 @@ fn a_new_gate_record_unloads_the_served_adapter_unless_it_still_fits() {
     rec.decision.verdict = GateVerdict::Reject;
     assert!(must_unload_after_gate(&rec, Some(&served), store, "m.gguf"));
 }
+
+// ---------------------------------------------------------------------------
+// n5: re-apply the loaded adapter after a restart, and the eval-only adapter in the argv
+// ---------------------------------------------------------------------------
+
+fn active(sha: &str, base: &str) -> ActiveAdapter {
+    ActiveAdapter {
+        sha256: sha.to_string(),
+        base_model: base.to_string(),
+        loaded_at_ms: NOW,
+    }
+}
+
+#[test]
+fn a_loaded_adapter_is_remembered_and_reapplied_after_a_restart() {
+    let d = tmpdir("reapply");
+    let store = tmpdir("reapply-adapters");
+    let fl = fl_with_store("reapply-store");
+    let (p, h) = write_adapter(&d, b"GGUF\x03\x00\x00\x00adapter-r");
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW).unwrap()).unwrap();
+    let served = authorize_load(&fl, &h, "m.gguf", &store).unwrap();
+    fl.set_active(Some(active(&h, "m.gguf"))).unwrap();
+    // A new process reads the same store file: the adapter comes back for its base only.
+    let again = FlRounds::with_store(fl.store_path().unwrap().to_path_buf());
+    assert_eq!(again.active().map(|a| a.sha256), Some(h.clone()));
+    assert_eq!(reapply_for(&again, "m.gguf", &store), Some(served.clone()));
+    assert_eq!(reapply_for(&again, "M.GGUF", &store), Some(served));
+    assert_eq!(reapply_for(&again, "other.gguf", &store), None);
+    // An explicit unload is remembered too: nothing comes back.
+    again.set_active(None).unwrap();
+    let third = FlRounds::with_store(fl.store_path().unwrap().to_path_buf());
+    assert_eq!(reapply_for(&third, "m.gguf", &store), None);
+}
+
+#[test]
+fn reapply_rechecks_the_gate_and_the_bytes() {
+    let d = tmpdir("reapply-check");
+    let store = tmpdir("reapply-check-adapters");
+    let fl = FlRounds::default();
+    let (p, h) = write_adapter(&d, b"GGUF\x03\x00\x00\x00adapter-s");
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW).unwrap()).unwrap();
+    let served = authorize_load(&fl, &h, "m.gguf", &store).unwrap();
+    fl.set_active(Some(active(&h, "m.gguf"))).unwrap();
+    // The stored copy and the source are both damaged while the app was closed: not re-applied.
+    std::fs::write(&served, b"GGUF\x03\x00\x00\x00tampered").unwrap();
+    std::fs::write(&p, b"GGUF\x03\x00\x00\x00swapped").unwrap();
+    assert_eq!(reapply_for(&fl, "m.gguf", &store), None);
+    // Good bytes again: re-applied from a fresh, re-hashed copy.
+    std::fs::write(&p, b"GGUF\x03\x00\x00\x00adapter-s").unwrap();
+    assert_eq!(reapply_for(&fl, "m.gguf", &store), Some(served));
+}
+
+#[test]
+fn a_new_gate_record_that_no_longer_allows_the_remembered_adapter_forgets_it() {
+    let d = tmpdir("forget");
+    let fl = FlRounds::default();
+    let (p, h) = write_adapter(&d, b"GGUF\x03\x00\x00\x00adapter-t");
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW).unwrap()).unwrap();
+    fl.set_active(Some(active(&h, "m.gguf"))).unwrap();
+    // Accepted again for the same base: kept.
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, true), NOW + 1).unwrap()).unwrap();
+    assert!(fl.active().is_some());
+    // Another adapter's record: kept.
+    let (p2, h2) = write_adapter(&tmpdir("forget-2"), b"GGUF\x03\x00\x00\x00adapter-u");
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p2, &h2, false), NOW + 2).unwrap()).unwrap();
+    assert!(fl.active().is_some());
+    // Rejected: forgotten, so a restart cannot bring it back.
+    fl.record_gate(evaluate_adapter(&gate_request(&d, &p, &h, false), NOW + 3).unwrap()).unwrap();
+    assert!(fl.active().is_none());
+}
+
+#[test]
+fn set_active_refuses_a_bad_hash() {
+    let fl = FlRounds::default();
+    assert!(fl.set_active(Some(active("xyz", "m.gguf"))).is_err());
+}
+
+#[test]
+fn a_model_switch_asks_the_resolver_for_the_new_bases_adapter() {
+    let dir = tmpdir("resolver");
+    let m = crate::serve::LlamaServerManager::new(
+        dir.join("no-such-bin"),
+        dir.join("a.gguf"),
+        dir.join("crash.jsonl"),
+        18098,
+    );
+    let adapter = dir.join("adapters").join("x.gguf");
+    let a2 = adapter.clone();
+    m.set_lora_resolver(std::sync::Arc::new(move |model: &std::path::Path| {
+        (model.file_name().and_then(|f| f.to_str()) == Some("b.gguf")).then(|| a2.clone())
+    }));
+    // The binary is missing so each restart fails, but the adapter choice is made first.
+    let _ = m.select_model(dir.join("b.gguf"), true);
+    assert_eq!(m.lora(), Some(adapter.clone()));
+    // Same model again: the adapter stays as it is.
+    let _ = m.select_model(dir.join("b.gguf"), true);
+    assert_eq!(m.lora(), Some(adapter));
+    let _ = m.select_model(dir.join("c.gguf"), true);
+    assert_eq!(m.lora(), None);
+}
+
+#[test]
+fn the_eval_adapter_is_loaded_at_scale_zero_by_file_name_and_suspends_the_loaded_one() {
+    let dir = tmpdir("eval-argv");
+    let m = crate::serve::LlamaServerManager::new(
+        dir.join("no-such-bin"),
+        dir.join("m.gguf"),
+        dir.join("crash.jsonl"),
+        18097,
+    );
+    let accepted = dir.join("adapters").join("acc.gguf");
+    m.set_lora(Some(accepted.clone()));
+    let eval_dir = dir.join("C:odd,dir").join("eval");
+    let cand = eval_dir.join(format!("{SHA}.gguf"));
+    m.set_eval_lora(Some(cand.clone()));
+    let args = m.spawn_args_for_test();
+    let i = args.iter().position(|a| a == "--lora-scaled").unwrap();
+    // A file name only (llama.cpp splits FNAME:SCALE on ':' and ','), resolved in the eval dir.
+    assert_eq!(args[i + 1], format!("{SHA}.gguf:0"));
+    assert!(!args.iter().any(|a| a == "--lora"), "the loaded adapter is suspended during an eval run");
+    assert_eq!(m.spawn_workdir_for_test(), Some(eval_dir));
+    assert_eq!(m.eval_lora(), Some(cand));
+    // Ending the eval run puts the loaded adapter back.
+    m.set_eval_lora(None);
+    let args = m.spawn_args_for_test();
+    assert!(!args.iter().any(|a| a == "--lora-scaled"));
+    assert!(args.iter().any(|a| a == "--lora"));
+    assert_eq!(m.spawn_workdir_for_test(), None);
+    // Switching the base model also ends an eval run's adapter.
+    m.set_eval_lora(Some(dir.join("eval").join(format!("{SHA}.gguf"))));
+    let _ = m.select_model(dir.join("other.gguf"), true);
+    assert_eq!(m.eval_lora(), None);
+}

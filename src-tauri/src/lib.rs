@@ -42,6 +42,8 @@ mod daemons;
 // HUP-S6.7 — the Contract reader backend (verified source, view calls, ceremony-only writes).
 mod contract_reader;
 mod deploy_gate;
+mod fl_eval;
+mod fl_intake;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod web_budgets;
@@ -339,6 +341,8 @@ pub fn run() {
             app.manage(deploy_gate::DeployGateState::default());
             // HUP-S9.4 — federated rounds: coordinator setting, start authorizations, eval-gate records.
             app.manage(fl_rounds::build_state(app.handle()));
+            // HUP-S9.4 (n5) — the in-app eval run (at most one; memory only).
+            app.manage(fl_eval::FlEval::default());
             // HUP-S1.5 — the escalation router's endpoints + daily spend ledger (lazily loaded).
             app.manage(escalation::EscalationState::default());
             // HUP-S2.3 — web-signing budgets (no budgets by default; the store opens on first use).
@@ -400,6 +404,8 @@ pub fn run() {
             // provider when the model is ready + the server healthy, else the
             // gateway (if a cgk_ key is configured), else the demo.
             app.manage(serve::build_serve_state(&app.handle().clone())?);
+            // HUP-S9.4 (n5) — serve the remembered eval-gated adapter again (re-checked first).
+            fl_rounds::install_reapply(app.handle());
             // W4 — MCP connections (Google Drive / Notion / GitHub OAuth). The
             // loopback-PKCE flow + fixed-port callback + vaulted token custody. No
             // command returns a token; secrets are sealed in the custody vault.
@@ -557,6 +563,13 @@ pub fn run() {
             fl_rounds::fl_adapter_gate,
             fl_rounds::fl_adapter_load,
             fl_rounds::fl_adapter_unload,
+            fl_intake::fl_round_import,
+            fl_intake::fl_round_fetch,
+            fl_intake::fl_adapter_fetch,
+            fl_eval::fl_eval_begin,
+            fl_eval::fl_eval_complete,
+            fl_eval::fl_eval_finish,
+            fl_eval::fl_eval_end,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,

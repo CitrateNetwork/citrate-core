@@ -16,6 +16,11 @@
 (* its --lora file on every restart. Assumption: the app-owned copy is not *)
 (* modified while it is being served (same trust as the model files); it   *)
 (* may be damaged while not served, and a load re-hashes it.               *)
+(*                                                                         *)
+(* n5: the loaded adapter is remembered (active, activeBase) and re-applied *)
+(* after an app restart and on a switch back to its base, only through the *)
+(* same check a load makes. An eval run loads a candidate at scale 0: chats *)
+(* (served) stay on the base model, the loaded adapter is suspended.       *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -35,12 +40,17 @@ VARIABLES
     copy,                            \* copy[v]: the version stored at adapters/<v>.gguf, or "none"
     base,                            \* the served base model
     loaded,                          \* the adapter (version) llama-server is configured with
-    served                           \* the bytes the running llama-server read at its last spawn
+    served,                          \* what a chat (a request naming no adapter) is answered with
+    active, activeBase,              \* the remembered adapter and the base it was loaded on
+    evalCand,                        \* the candidate of an eval run (scale 0), or NoAdapter
+    restarted                        \* the app has restarted at least once (non-vacuity only)
 
 vars == <<coord, settle, made, seenCoord, seenSettle, approved, started, startCoord,
-          startSettle, content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served>>
+          startSettle, content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served,
+          active, activeBase, evalCand, restarted>>
 startVars == <<made, seenCoord, seenSettle, approved, started, startCoord, startSettle>>
-loadVars == <<content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served>>
+memVars == <<active, activeBase, evalCand, restarted>>
+loadVars == <<content, gateVerdict, gateBase, gateSrc, copy, base, loaded, served, memVars>>
 
 TypeOK ==
     /\ coord \in Phases /\ settle \in Settles
@@ -56,6 +66,9 @@ TypeOK ==
     /\ base \in Bases
     /\ loaded \in Versions \cup {NoAdapter}
     /\ served \in Versions \cup {"none", NoAdapter}
+    /\ active \in Versions \cup {NoAdapter} /\ activeBase \in Bases
+    /\ evalCand \in Versions \cup {NoAdapter}
+    /\ restarted \in BOOLEAN
 
 Init ==
     /\ coord \in Phases /\ settle \in Settles
@@ -72,6 +85,13 @@ Init ==
     /\ base \in Bases
     /\ loaded = NoAdapter
     /\ served = NoAdapter
+    /\ active = NoAdapter /\ activeBase = CHOOSE b \in Bases : TRUE
+    /\ evalCand = NoAdapter
+    /\ restarted = FALSE
+
+\* What a chat is answered with, given the configured adapter: nothing while an eval run holds
+\* the candidate at scale 0 (the loaded adapter is suspended), else the bytes of the loaded copy.
+ChatBytes(l, c, e) == IF e # NoAdapter \/ l = NoAdapter THEN NoAdapter ELSE c[l]
 
 (* ---- environment ---- *)
 CoordChange(c, s) ==
@@ -80,12 +100,12 @@ CoordChange(c, s) ==
 
 Swap(f, v) ==
     /\ content' = [content EXCEPT ![f] = v]
-    /\ UNCHANGED <<coord, settle, startVars, gateVerdict, gateBase, gateSrc, copy, base, loaded, served>>
+    /\ UNCHANGED <<coord, settle, startVars, gateVerdict, gateBase, gateSrc, copy, base, loaded, served, memVars>>
 
 DamageCopy(v, w) ==
     /\ copy[v] # "none" /\ loaded # v
     /\ copy' = [copy EXCEPT ![v] = w]
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base, loaded, served>>
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base, loaded, served, memVars>>
 
 (* ---- start ---- *)
 Plan(p) ==
@@ -122,37 +142,85 @@ Gate(f, verdict, b) ==
     /\ IF loaded = v /\ (verdict = "REJECT" \/ b # base)
           THEN /\ loaded' = NoAdapter /\ served' = NoAdapter
           ELSE UNCHANGED <<loaded, served>>
-    /\ UNCHANGED <<coord, settle, startVars, content, copy, base>>
+    \* FlRounds::record_gate: the remembered adapter is forgotten when its new record no longer
+    \* allows it on the base it was loaded on.
+    /\ IF active = v /\ (verdict = "REJECT" \/ b # activeBase)
+          THEN active' = NoAdapter
+          ELSE UNCHANGED active
+    /\ UNCHANGED <<coord, settle, startVars, content, copy, base, activeBase, evalCand, restarted>>
 
 \* The copy load would serve after refreshing it: a good copy is reused, a bad one is replaced from
 \* the source, and the result is accepted only if it hashes to v.
 Refreshed(v) == IF copy[v] = v THEN v ELSE content[gateSrc[v]]
 
 Load(v) ==
+    /\ evalCand = NoAdapter            \* fl_adapter_load refuses during an eval run
     /\ gateVerdict[v] = "ACCEPT"
     /\ gateBase[v] = base
     /\ IF Refreshed(v) = v
           THEN /\ copy' = [copy EXCEPT ![v] = v]
                /\ loaded' = v
                /\ served' = copy'[v]
+               /\ active' = v /\ activeBase' = base
           ELSE /\ copy' = [copy EXCEPT ![v] = "none"]
-               /\ UNCHANGED <<loaded, served>>
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base>>
+               /\ UNCHANGED <<loaded, served, active, activeBase>>
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, base, evalCand, restarted>>
 
 Unload ==
     /\ loaded' = NoAdapter /\ served' = NoAdapter
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base>>
+    /\ active' = NoAdapter
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base,
+                   activeBase, evalCand, restarted>>
 
+\* fl_rounds::reapply_for: the remembered adapter, on its own base, only if a load would pass now.
+ReapplyOk(b) ==
+    /\ active # NoAdapter
+    /\ activeBase = b
+    /\ gateVerdict[active] = "ACCEPT" /\ gateBase[active] = b
+    /\ Refreshed(active) = active
+Reapplied(b) == IF ReapplyOk(b) THEN active ELSE NoAdapter
+ReapplyCopy(b) == IF ReapplyOk(b) THEN [copy EXCEPT ![active] = active] ELSE copy
+
+\* serve::select_inner: a different base asks the resolver; an eval run's candidate is dropped.
 SelectBase(b) ==
     /\ base' = b
-    /\ loaded' = IF b # base THEN NoAdapter ELSE loaded
-    /\ served' = IF b # base THEN NoAdapter ELSE served
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy>>
+    /\ loaded' = IF b # base THEN Reapplied(b) ELSE loaded
+    /\ copy' = IF b # base THEN ReapplyCopy(b) ELSE copy
+    /\ evalCand' = IF b # base THEN NoAdapter ELSE evalCand
+    /\ served' = ChatBytes(loaded', copy', evalCand')
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, active, activeBase, restarted>>
+
+\* The app quits and launches again on some base model: fl_rounds::install_reapply.
+AppRestart(b) ==
+    /\ base' = b
+    /\ loaded' = Reapplied(b)
+    /\ copy' = ReapplyCopy(b)
+    /\ evalCand' = NoAdapter          \* an eval run lives in memory only
+    /\ served' = ChatBytes(loaded', copy', NoAdapter)
+    /\ restarted' = TRUE
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, active, activeBase>>
+
+\* fl_eval_begin: any staged version (hashed from a source file), loaded at scale 0.
+EvalBegin(f) ==
+    /\ evalCand = NoAdapter
+    /\ evalCand' = content[f]
+    /\ served' = ChatBytes(loaded, copy, content[f])
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, loaded,
+                   active, activeBase, restarted>>
+
+\* fl_eval_finish / fl_eval_end: the candidate is taken out, the loaded adapter comes back. (The
+\* finish's gate record is the Gate action.)
+EvalEnd ==
+    /\ evalCand # NoAdapter
+    /\ evalCand' = NoAdapter
+    /\ served' = ChatBytes(loaded, copy, NoAdapter)
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, loaded,
+                   active, activeBase, restarted>>
 
 \* The supervisor restarts llama-server after a crash with the same argv: it re-reads --lora.
 CrashRestart ==
-    /\ served' = IF loaded = NoAdapter THEN NoAdapter ELSE copy[loaded]
-    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, loaded>>
+    /\ served' = IF evalCand # NoAdapter \/ loaded = NoAdapter THEN NoAdapter ELSE copy[loaded]
+    /\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, loaded, memVars>>
 
 Next ==
     \/ \E c \in Phases, s \in Settles : CoordChange(c, s)
@@ -163,6 +231,9 @@ Next ==
     \/ \E v \in Versions : Load(v)
     \/ Unload
     \/ \E b \in Bases : SelectBase(b)
+    \/ \E b \in Bases : AppRestart(b)
+    \/ \E f \in Files : EvalBegin(f)
+    \/ EvalEnd
     \/ CrashRestart
 
 Spec == Init /\ [][Next]_vars
@@ -183,10 +254,20 @@ AtMostOneStart == \A p \in Plans : started[p] <= 1
 LoadedIsAccepted ==
     loaded # NoAdapter => gateVerdict[loaded] = "ACCEPT" /\ gateBase[loaded] = base
 
-\* What llama-server actually read is exactly the gated version, across swaps and crash restarts.
-ServedIsLoaded == served = loaded
+\* A chat is answered with exactly the gated version, across swaps, crash restarts, app restarts
+\* and eval runs (during which it is the base model alone).
+ServedIsLoaded == served = IF evalCand # NoAdapter THEN NoAdapter ELSE loaded
+
+\* The goal: nothing that has not passed the gate for the served base ever answers a chat.
+ChatOnlyAccepted == served # NoAdapter => gateVerdict[served] = "ACCEPT" /\ gateBase[served] = base
+
+\* What a restart would bring back is still accepted for the base it was loaded on.
+RememberedIsAccepted ==
+    active # NoAdapter => gateVerdict[active] = "ACCEPT" /\ gateBase[active] = activeBase
 
 (* ---- non-vacuity (expected to be VIOLATED, see FlRoundGate_Reach.cfg) ---- *)
 NeverStarts == \A p \in Plans : started[p] = 0
 NeverLoads == loaded = NoAdapter
+NeverReappliedAfterRestart == ~(restarted /\ loaded # NoAdapter)
+NeverEvals == evalCand = NoAdapter
 =============================================================================

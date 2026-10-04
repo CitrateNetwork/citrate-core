@@ -2,7 +2,7 @@
 // the full system prompt + tool schemas (and, for injection cases, a canary secret) to the
 // endpoint, so a non-loopback URL is refused unless --allow-remote is explicit.
 import { describe, it, expect } from "vitest";
-import { isLoopbackUrl, parseEvalCliArgs, resultFileName } from "./cliArgs";
+import { isLoopbackUrl, parseEvalCliArgs, resultFileName, loraRequestField } from "./cliArgs";
 
 describe("isLoopbackUrl", () => {
   it("accepts 127.0.0.0/8, localhost and ::1 over http(s)", () => {
@@ -105,5 +105,31 @@ describe("HUP-S9.4 --adapter-sha256 (eval a LoRA candidate for the gate)", () =>
   it("names the candidate's result file so it never overwrites the base run", () => {
     expect(resultFileName("2026-10-01T00:00:00Z", "m", "ab".repeat(32))).toBe("2026-10-01-m-lora-abababababab.json");
     expect(resultFileName("2026-10-01T00:00:00Z", "m")).toBe("2026-10-01-m.json");
+  });
+});
+
+describe("HUP-S9.4 --lora-scale (both arms on one server started with --lora-scaled <file>:0)", () => {
+  const base = ["--base-url", "http://127.0.0.1:18080/v1", "--model", "m"];
+  const sha = "cd".repeat(32);
+  it("is absent by default", () => {
+    expect(parseEvalCliArgs(base).loraScale).toBeUndefined();
+  });
+  it("a candidate arm needs the adapter's sha256", () => {
+    expect(() => parseEvalCliArgs([...base, "--lora-scale", "1"])).toThrow(/--adapter-sha256/);
+    expect(parseEvalCliArgs([...base, "--lora-scale", "1", "--adapter-sha256", sha]).loraScale).toBe(1);
+  });
+  it("a base arm (scale 0) must not be stamped with an adapter", () => {
+    expect(parseEvalCliArgs([...base, "--lora-scale", "0"]).loraScale).toBe(0);
+    expect(() => parseEvalCliArgs([...base, "--lora-scale", "0", "--adapter-sha256", sha])).toThrow(/base run/);
+  });
+  it("refuses a scale that is not a number from 0 to 1", () => {
+    for (const bad of ["-1", "1.5", "abc", "NaN", "Infinity"]) {
+      expect(() => parseEvalCliArgs([...base, "--lora-scale", bad, "--adapter-sha256", sha])).toThrow(/--lora-scale/);
+    }
+  });
+  it("the request field addresses adapter id 0 at the given scale", () => {
+    expect(loraRequestField(0)).toEqual({ lora: [{ id: 0, scale: 0 }] });
+    expect(loraRequestField(1)).toEqual({ lora: [{ id: 0, scale: 1 }] });
+    expect(loraRequestField(undefined)).toEqual({});
   });
 });

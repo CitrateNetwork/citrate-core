@@ -8,7 +8,7 @@
 // core (src-tauri/src/fl_rounds.rs); nothing here invents a number.
 // =====================================================================
 import type { CerSpec } from "../shell/state";
-import type { FlAdapterGateRecord, FlCapability, FlRoundPlan, FlRoundProposal, FlStartReceipt } from "../bridge/domains";
+import type { FlAdapterGateRecord, FlCapability, FlRoundPlan, FlRoundProposal, FlRoundProvenance, FlStartReceipt } from "../bridge/domains";
 
 /** Conservative defaults, pending owner sign-off. Must match RoundProposal::default in core. */
 export const DEFAULT_PROPOSAL: FlRoundProposal = {
@@ -138,4 +138,18 @@ export function gateSummary(rec: FlAdapterGateRecord): { headline: string; lines
     return `${m.metric} ${f3(m.base)} to ${f3(m.candidate)}${delta}`;
   });
   return { headline, lines: [...lines, ...d.reasons] };
+}
+
+/** A checked round in plain words: who took part, how they agreed, and what was not checked. */
+export function roundSummary(r: FlRoundProvenance): string[] {
+  const [neither, agreed, , disputed] = r.stateCounts;
+  const total = neither + agreed + r.stateCounts[2] + disputed;
+  const pct = (n: number) => (total === 0 ? "0%" : `${((n / total) * 100).toFixed(1)}%`);
+  return [
+    `Round ${r.roundId.slice(0, 12)}… (number ${r.ordinal}): ${r.participants} devices took part (the round needed ${r.minParticipants}).`,
+    `Of the adapter's ${total} values, ${pct(agreed)} moved the same way on every device that changed them, ${pct(disputed)} were disputed and ${pct(neither)} were not changed.`,
+    `The adapter matches the round and was trained for the model you serve (sha256 ${r.adapterSha256.slice(0, 12)}…).`,
+    ...r.notes,
+    r.chainRecord,
+  ];
 }

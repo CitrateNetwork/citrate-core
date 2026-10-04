@@ -29,6 +29,13 @@
 //!
 //! Gate thresholds are conservative placeholders, **pending owner sign-off**: no metric may get
 //! worse at all, and the mean of the shared metrics must strictly improve.
+//!
+//! Across restarts (n5): the adapter the member loaded is remembered in `fl_rounds.json` as
+//! `{sha256, baseModel}`. At launch, and whenever the base model changes, core re-runs the same
+//! load check (latest gate record ACCEPT for that base, stored copy re-hashed) and only then
+//! serves it again. An unload, or a gate record that no longer allows it, forgets it. A round's
+//! adapter can also be fetched and checked against its round bundle (`fl_intake`), and evaluated
+//! inside the app (`fl_eval`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
@@ -518,6 +525,16 @@ pub struct StartReceipt {
     pub note: String,
 }
 
+/// The adapter the member loaded, remembered so it is served again after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveAdapter {
+    pub sha256: String,
+    /// The served model file it was loaded on.
+    pub base_model: String,
+    pub loaded_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoreFile {
@@ -527,6 +544,11 @@ struct StoreFile {
     starts: Vec<StartRecord>,
     #[serde(default)]
     gates: BTreeMap<String, AdapterGateRecord>,
+    #[serde(default)]
+    active: Option<ActiveAdapter>,
+    /// Round bundles checked on this device, keyed by the merged adapter's sha256.
+    #[serde(default)]
+    rounds: BTreeMap<String, crate::fl_intake::RoundProvenance>,
 }
 
 #[derive(Default)]
@@ -629,12 +651,51 @@ impl FlRounds {
     }
 
     /// Record a gate decision. The latest decision for a hash replaces the earlier one, so a
-    /// later REJECT revokes an earlier ACCEPT.
+    /// later REJECT revokes an earlier ACCEPT. If the remembered adapter is this one and the new
+    /// record no longer allows it on the base it was loaded on, it is forgotten too.
     pub fn record_gate(&self, rec: AdapterGateRecord) -> Result<(), String> {
         self.mutate(|f| {
+            let forget = f.active.as_ref().is_some_and(|a| {
+                a.sha256 == rec.adapter_sha256
+                    && (rec.decision.verdict != GateVerdict::Accept
+                        || model_stem(&rec.base_model) != model_stem(&a.base_model))
+            });
+            if forget {
+                f.active = None;
+            }
             f.gates.insert(rec.adapter_sha256.clone(), rec);
             Ok(())
         })
+    }
+
+    /// The adapter to serve again after a restart, if any.
+    pub fn active(&self) -> Option<ActiveAdapter> {
+        self.lock().file.active.clone()
+    }
+
+    /// Remember (or, with `None`, forget) the loaded adapter.
+    pub fn set_active(&self, a: Option<ActiveAdapter>) -> Result<(), String> {
+        if let Some(x) = &a {
+            if !is_sha256_hex(&x.sha256) {
+                return Err("the adapter hash must be a sha256 hex string (64 characters)".into());
+            }
+        }
+        self.mutate(|f| {
+            f.active = a;
+            Ok(())
+        })
+    }
+
+    /// Keep a checked round bundle's provenance for its adapter.
+    pub fn record_round(&self, r: crate::fl_intake::RoundProvenance) -> Result<(), String> {
+        self.mutate(|f| {
+            f.rounds.insert(r.adapter_sha256.clone(), r);
+            Ok(())
+        })
+    }
+
+    pub fn rounds(&self) -> Vec<crate::fl_intake::RoundProvenance> {
+        self.lock().file.rounds.values().cloned().collect()
     }
 
     pub fn gate(&self, sha: &str) -> Option<AdapterGateRecord> {
@@ -1260,6 +1321,43 @@ pub fn authorize_load(
     Ok(dest)
 }
 
+/// The adapter to serve with `model_file` after a restart or a base switch: the remembered one,
+/// only if it was loaded on this base and [`authorize_load`] passes again (latest record ACCEPT
+/// for this base, stored copy re-hashed or rebuilt from a source that still hashes right).
+pub fn reapply_for(fl: &FlRounds, model_file: &str, store: &Path) -> Option<PathBuf> {
+    let a = fl.active()?;
+    if model_stem(&a.base_model) != model_stem(model_file) {
+        return None;
+    }
+    authorize_load(fl, &a.sha256, model_file, store).ok()
+}
+
+/// At launch: let the serve manager re-apply the remembered adapter whenever the base model
+/// changes, and set it now for the model the app starts with. Takes effect at the next spawn.
+pub fn install_reapply(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let (Some(serve), Ok(store)) = (
+        app.try_state::<crate::serve::ServeState>(),
+        adapter_store(app),
+    ) else {
+        return;
+    };
+    let handle = app.clone();
+    let store2 = store.clone();
+    serve
+        .0
+        .set_lora_resolver(std::sync::Arc::new(move |model: &Path| {
+            let fl = handle.try_state::<FlRounds>()?;
+            let file = model.file_name()?.to_string_lossy().to_string();
+            reapply_for(&fl, &file, &store2)
+        }));
+    if let Some(fl) = app.try_state::<FlRounds>() {
+        if let Some(p) = reapply_for(&fl, &serve.0.current_model_file(), &store) {
+            serve.0.set_lora(Some(p));
+        }
+    }
+}
+
 /// After a new gate record for an adapter: must the served adapter be dropped? Yes when it is this
 /// adapter and the new record no longer allows it on the served base (a REJECT, or an ACCEPT
 /// measured on a different base). Found by TLC (`FlRoundGate.tla`, LoadedIsAccepted).
@@ -1277,7 +1375,7 @@ pub fn must_unload_after_gate(
 }
 
 /// `<app data>/adapters`.
-fn adapter_store(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn adapter_store(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
     Ok(app
         .path()
@@ -1290,14 +1388,14 @@ fn adapter_store(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 // Tauri commands (async, off the main thread)
 // ---------------------------------------------------------------------------
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
-fn state(app: &tauri::AppHandle) -> Result<tauri::State<'_, FlRounds>, String> {
+pub(crate) fn state(app: &tauri::AppHandle) -> Result<tauri::State<'_, FlRounds>, String> {
     tauri::Manager::try_state::<FlRounds>(app)
         .ok_or_else(|| "internal: managed state unavailable".to_string())
 }
@@ -1323,6 +1421,12 @@ pub struct FlOverview {
     pub gates: Vec<AdapterGateRecord>,
     /// The adapter llama-server is (or will be) started with, if any.
     pub active_adapter: Option<String>,
+    /// The loaded adapter remembered for the next launch, if any.
+    pub remembered: Option<ActiveAdapter>,
+    /// Round bundles checked on this device.
+    pub rounds: Vec<crate::fl_intake::RoundProvenance>,
+    /// The in-app eval run in progress, if any.
+    pub eval: Option<crate::fl_eval::EvalSessionInfo>,
     pub store_error: Option<String>,
 }
 
@@ -1339,6 +1443,9 @@ pub async fn fl_overview(app_h: tauri::AppHandle) -> Result<FlOverview, String> 
             starts: fl.starts(),
             gates: fl.gates(),
             active_adapter: serve.0.lora().map(|p| p.to_string_lossy().to_string()),
+            remembered: fl.active(),
+            rounds: fl.rounds(),
+            eval: crate::fl_eval::current_session(&app_h),
             store_error: fl.load_error(),
         })
     })
@@ -1459,6 +1566,19 @@ fn restart_with_lora(
 ) -> Result<(), String> {
     let previous = serve.0.lora();
     serve.0.set_lora(lora);
+    if let Err(e) = restart_serving(app, serve) {
+        serve.0.set_lora(previous);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Restart llama-server on the same base model so a changed adapter setting takes effect. Not
+/// running: nothing to do (the next start reads the setting). A refused restart stops nothing.
+pub(crate) fn restart_serving(
+    app: &tauri::AppHandle,
+    serve: &tauri::State<'_, crate::serve::ServeState>,
+) -> Result<(), String> {
     if !serve.0.is_running() {
         return Ok(());
     }
@@ -1468,13 +1588,11 @@ fn restart_with_lora(
         _ => false,
     };
     let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(app, &path));
-    // Same base model path, so the restart keeps the adapter just set. A refused restart (model
-    // not ready) stops nothing, and the previous adapter setting is put back.
-    if let Err(e) = serve.0.select_model_planned(path, ready, plan) {
-        serve.0.set_lora(previous);
-        return Err(e.to_string());
-    }
-    Ok(())
+    // Same base model path, so the restart keeps the adapter settings just made.
+    serve
+        .0
+        .select_model_planned(path, ready, plan)
+        .map_err(|e| e.to_string())
 }
 
 /// **Command — fl_adapter_load.** Load an ACCEPTED adapter into llama-server (`--lora`),
@@ -1485,9 +1603,18 @@ pub async fn fl_adapter_load(app_h: tauri::AppHandle, sha256: String) -> Result<
         let fl = state(&app_h)?;
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        if serve.0.eval_lora().is_some() {
+            return Err("an eval run is in progress; finish or end it first".into());
+        }
         let store = adapter_store(&app_h)?;
-        let path = authorize_load(&fl, &sha256, &serve.0.current_model_file(), &store)?;
+        let model_file = serve.0.current_model_file();
+        let path = authorize_load(&fl, &sha256, &model_file, &store)?;
         restart_with_lora(&app_h, &serve, Some(path.clone()))?;
+        fl.set_active(Some(ActiveAdapter {
+            sha256: sha256.trim().to_ascii_lowercase(),
+            base_model: model_file,
+            loaded_at_ms: now_ms(),
+        }))?;
         Ok(path.to_string_lossy().to_string())
     })
     .await
@@ -1499,7 +1626,9 @@ pub async fn fl_adapter_unload(app_h: tauri::AppHandle) -> Result<(), String> {
     crate::blocking::off_main(move || {
         let serve = tauri::Manager::try_state::<crate::serve::ServeState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        restart_with_lora(&app_h, &serve, None)
+        let fl = state(&app_h)?;
+        restart_with_lora(&app_h, &serve, None)?;
+        fl.set_active(None)
     })
     .await
 }

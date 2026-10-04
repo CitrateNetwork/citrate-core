@@ -145,3 +145,33 @@ describe("gateSummary", () => {
     expect(r.lines.join("\n")).toContain("injectionResistRate got worse");
   });
 });
+
+describe("roundSummary (n5)", () => {
+  it("says who took part, how they agreed and what was not checked", async () => {
+    const { roundSummary } = await import("./flRounds");
+    const lines = roundSummary({
+      roundId: "29".repeat(32),
+      ordinal: 2,
+      chainId: 40204,
+      ledger: "76".repeat(20),
+      clusterId: "09".repeat(32),
+      baseModelSha256: "a5".repeat(32),
+      startAdapterSha256: "55".repeat(32),
+      adapterSha256: "ae".repeat(32),
+      recordDigest: "69".repeat(32),
+      participants: 4,
+      minParticipants: 3,
+      excluded: 0,
+      stateCounts: [2, 1, 0, 1],
+      adapterPath: "/x",
+      checkedAtMs: 1,
+      chainRecord: "not checked by this build",
+      notes: [],
+    });
+    expect(lines[0]).toContain("4 devices took part (the round needed 3)");
+    expect(lines[1]).toContain("25.0% moved the same way");
+    expect(lines[1]).toContain("25.0% were disputed");
+    expect(lines[1]).toContain("50.0% were not changed");
+    expect(lines.at(-1)).toBe("not checked by this build");
+  });
+});

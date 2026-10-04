@@ -1002,11 +1002,52 @@ export interface FlAdapterGateRecord {
     compositeCandidate: number;
   };
 }
+/** The loaded adapter remembered across restarts (re-checked at launch before it is served). */
+export interface FlActiveAdapter {
+  sha256: string;
+  baseModel: string;
+  loadedAtMs: number;
+}
+/** A round bundle (FL_ROUND_V1) and its merged adapter, checked on this device. */
+export interface FlRoundProvenance {
+  roundId: string;
+  ordinal: number;
+  chainId: number;
+  ledger: string;
+  clusterId: string;
+  baseModelSha256: string;
+  startAdapterSha256: string;
+  adapterSha256: string;
+  recordDigest: string;
+  participants: number;
+  minParticipants: number;
+  excluded: number;
+  /** Belnap state counts over the round: [neither, true, false, both]. */
+  stateCounts: [number, number, number, number];
+  adapterPath: string;
+  checkedAtMs: number;
+  /** What this build did not verify about the on-chain record, in plain words. */
+  chainRecord: string;
+  notes: string[];
+}
+/** An in-app eval run of a candidate adapter (both arms on the app's llama-server). */
+export interface FlEvalSession {
+  sessionId: string;
+  adapterSha256: string;
+  model: string;
+  startedAtMs: number;
+  baseCalls: number;
+  candidateCalls: number;
+}
+export type FlEvalArm = "base" | "candidate";
 export interface FlOverview {
   config: FlCoordinatorConfig;
   starts: FlStartRecord[];
   gates: FlAdapterGateRecord[];
   activeAdapter: string | null;
+  remembered: FlActiveAdapter | null;
+  rounds: FlRoundProvenance[];
+  eval: FlEvalSession | null;
   storeError: string | null;
 }
 export interface FlRoundsDomain {
@@ -1022,6 +1063,19 @@ export interface FlRoundsDomain {
   /** Load an ACCEPTED adapter into llama-server (`--lora`). Returns the served copy's path. */
   loadAdapter(sha256: string): Promise<string>;
   unloadAdapter(): Promise<void>;
+  /** Check a round bundle and its merged adapter (local files) against the served base model. */
+  importRound(bundlePath: string, adapterPath: string): Promise<FlRoundProvenance>;
+  /** Download a round bundle and the adapter it names (https), then check them. */
+  fetchRound(bundleUrl: string, adapterUrl: string): Promise<FlRoundProvenance>;
+  /** Download an adapter whose sha256 was published (https); kept only if it hashes to it. */
+  fetchAdapter(url: string, expectedSha256: string): Promise<string>;
+  /** Restart the local model with the candidate loaded at scale 0 (chats stay on the base). */
+  evalBegin(adapterPath: string, expectedSha256: string): Promise<FlEvalSession>;
+  /** One eval request on an arm; returns the assistant message JSON. */
+  evalComplete(sessionId: string, arm: FlEvalArm, messagesJson: string, toolsJson: string): Promise<string>;
+  /** Decide from the two scorecards; core checks it answered exactly that many requests per arm. */
+  evalFinish(sessionId: string, baseScorecardJson: string, candidateScorecardJson: string): Promise<FlAdapterGateRecord>;
+  evalEnd(sessionId: string): Promise<void>;
 }
 
 // ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──

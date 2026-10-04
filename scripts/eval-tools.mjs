@@ -6,6 +6,9 @@
 //        [--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--allow-remote]
 //        [--adapter-sha256 <hex>]   (HUP-S9.4: the endpoint serves this LoRA; stamped into the
 //                                    scorecard so the app's eval gate can bind it to the file)
+//        [--lora-scale 0..1]        (HUP-S9.4: per-request scale for adapter id 0; with a server
+//                                    started as --lora-scaled <adapter>:0, 0 is the base arm and
+//                                    1 the candidate arm, one server for both)
 //
 // Runs src/agent/eval/{toolcall-v1,injection-v1}.json against a LIVE OpenAI-compatible
 // /chat/completions endpoint (llama-server --jinja, or a user endpoint) and writes the
@@ -19,7 +22,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEvalCliArgs, resultFileName } from "../src/agent/eval/cliArgs.ts";
+import { loraRequestField, parseEvalCliArgs, resultFileName } from "../src/agent/eval/cliArgs.ts";
 import { parseToolcallDataset, parseInjectionDataset, runEvalSuite } from "../src/agent/eval/runner.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,7 +41,7 @@ function makeComplete(args, apiKey) {
       res = await fetch(`${args.baseUrl}/chat/completions`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ model: args.model, messages, tools, tool_choice: "auto", temperature: 0 }),
+        body: JSON.stringify({ model: args.model, messages, tools, tool_choice: "auto", temperature: 0, ...loraRequestField(args.loraScale) }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {

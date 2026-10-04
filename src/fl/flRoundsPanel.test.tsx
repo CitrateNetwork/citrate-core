@@ -3,7 +3,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { FlAdapterGateRecord, FlOverview, FlRoundsDomain } from "../bridge/domains";
+import type { FlAdapterGateRecord, FlOverview, FlRoundProvenance, FlRoundsDomain } from "../bridge/domains";
 import { FlRoundsPanel } from "./FlRoundsPanel";
 import { livePlan, PLAN_HASH } from "./fixtures/plan";
 
@@ -15,6 +15,9 @@ function overview(over: Partial<FlOverview> = {}): FlOverview {
     starts: [],
     gates: [],
     activeAdapter: null,
+    remembered: null,
+    rounds: [],
+    eval: null,
     storeError: null,
     ...over,
   };
@@ -46,7 +49,36 @@ function domain(over: Partial<FlRoundsDomain> = {}): FlRoundsDomain {
     gateAdapter: vi.fn(async () => gateRec("ACCEPT")),
     loadAdapter: vi.fn(async () => "/data/adapters/" + "c".repeat(64) + ".gguf"),
     unloadAdapter: vi.fn(async () => {}),
+    importRound: vi.fn(async () => provenance()),
+    fetchRound: vi.fn(async () => provenance()),
+    fetchAdapter: vi.fn(async (_u: string, sha: string) => "/data/adapters/incoming/" + sha + ".gguf"),
+    evalBegin: vi.fn(async (_p: string, sha: string) => ({ sessionId: "s1", adapterSha256: sha, model: "m", startedAtMs: 1, baseCalls: 0, candidateCalls: 0 })),
+    evalComplete: vi.fn(async () => JSON.stringify({ role: "assistant", content: "ok", tool_calls: [] })),
+    evalFinish: vi.fn(async () => gateRec("ACCEPT")),
+    evalEnd: vi.fn(async () => {}),
     ...over,
+  };
+}
+
+function provenance(): FlRoundProvenance {
+  return {
+    roundId: "29".repeat(32),
+    ordinal: 0,
+    chainId: 1337,
+    ledger: "76".repeat(20),
+    clusterId: "09".repeat(32),
+    baseModelSha256: "a5".repeat(32),
+    startAdapterSha256: "55".repeat(32),
+    adapterSha256: "ae".repeat(32),
+    recordDigest: "69".repeat(32),
+    participants: 3,
+    minParticipants: 3,
+    excluded: 0,
+    stateCounts: [50, 25, 0, 25],
+    adapterPath: "/data/adapters/incoming/" + "ae".repeat(32) + ".gguf",
+    checkedAtMs: 1,
+    chainRecord: "The round's on-chain record is not checked by this build.",
+    notes: ["This round was recorded on chain 1337, not the Citrate network (40204): a local or test round."],
   };
 }
 
@@ -203,5 +235,98 @@ describe("FlRoundsPanel — web preview", () => {
     // it matches the served GGUF file name, so a short alias passed as --model would make every load fail.
     const { host } = await mount(<FlRoundsPanel fl={domain()} requestSig={vi.fn()} toast={vi.fn()} />);
     expect(host.textContent).toContain("--model set to the base model's file name");
+  });
+});
+
+describe("FlRoundsPanel — a round's adapter (n5)", () => {
+  it("checks two local files through core and fills the gate with the round's adapter", async () => {
+    const fl = domain();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-round-bundle"), "/x/bundle.json");
+    await type(q(host, "fl-round-adapter"), "/x/merged.gguf");
+    await click(q(host, "fl-round-get"));
+    expect(fl.importRound).toHaveBeenCalledWith("/x/bundle.json", "/x/merged.gguf");
+    expect(fl.fetchRound).not.toHaveBeenCalled();
+    const sum = q(host, "fl-round-summary")!.textContent ?? "";
+    expect(sum).toContain("3 devices took part");
+    expect(sum).toContain("not the Citrate network");
+    expect(sum).toContain("not checked");
+    expect((q<HTMLInputElement>(host, "fl-gate-sha"))!.value).toBe("ae".repeat(32));
+    expect((q<HTMLInputElement>(host, "fl-gate-adapter"))!.value).toContain("incoming");
+  });
+
+  it("downloads when both are links, and refuses a mix of a path and a link", async () => {
+    const fl = domain();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-round-bundle"), "https://mirror.example.org/round.json");
+    await type(q(host, "fl-round-adapter"), "/x/merged.gguf");
+    await click(q(host, "fl-round-get"));
+    expect(q(host, "fl-error")!.textContent).toContain("not one of each");
+    expect(fl.fetchRound).not.toHaveBeenCalled();
+    await type(q(host, "fl-round-adapter"), "https://mirror.example.org/merged.gguf");
+    await click(q(host, "fl-round-get"));
+    expect(fl.fetchRound).toHaveBeenCalledWith("https://mirror.example.org/round.json", "https://mirror.example.org/merged.gguf");
+  });
+
+  it("downloads an adapter by its published sha256 and fills the gate's path", async () => {
+    const fl = domain();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-gate-sha"), "d".repeat(64));
+    await type(q(host, "fl-adapter-url"), "https://mirror.example.org/a.gguf");
+    await click(q(host, "fl-adapter-fetch"));
+    expect(fl.fetchAdapter).toHaveBeenCalledWith("https://mirror.example.org/a.gguf", "d".repeat(64));
+    expect((q<HTMLInputElement>(host, "fl-gate-adapter"))!.value).toBe("/data/adapters/incoming/" + "d".repeat(64) + ".gguf");
+  });
+
+  it("shows core's refusal of a round that does not match", async () => {
+    const fl = domain({ importRound: vi.fn(async () => Promise.reject(new Error("this round trained an adapter for base model sha256 00, but the model this app serves has sha256 a5"))) });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-round-bundle"), "/x/bundle.json");
+    await type(q(host, "fl-round-adapter"), "/x/merged.gguf");
+    await click(q(host, "fl-round-get"));
+    expect(q(host, "fl-error")!.textContent).toContain("trained an adapter for base model");
+    expect(q(host, "fl-round-summary")).toBeNull();
+  });
+});
+
+describe("FlRoundsPanel — the eval in the app (n5)", () => {
+  it("runs both arms through core and shows core's verdict with Load on ACCEPT", async () => {
+    const fl = domain();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-gate-adapter"), "/x/a.gguf");
+    await type(q(host, "fl-gate-sha"), "c".repeat(64));
+    await act(async () => {
+      (q(host, "fl-eval-run") as HTMLElement).click();
+    });
+    await vi.waitFor(() => expect(fl.evalFinish).toHaveBeenCalled(), { timeout: 5000 });
+    await act(async () => {});
+    expect(fl.evalBegin).toHaveBeenCalledWith("/x/a.gguf", "c".repeat(64));
+    // 88 items per arm: the shipped tool-call + injection sets.
+    expect((fl.evalComplete as ReturnType<typeof vi.fn>).mock.calls.length).toBe(176);
+    expect(q(host, "fl-gate-verdict")!.textContent).toMatch(/passed/i);
+    expect(q(host, "fl-gate-load")).toBeTruthy();
+  });
+
+  it("is disabled until an adapter and its sha256 are given", async () => {
+    const { host } = await mount(<FlRoundsPanel fl={domain()} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect((q<HTMLButtonElement>(host, "fl-eval-run"))!.disabled).toBe(true);
+  });
+
+  it("shows core's refusal and ends the run", async () => {
+    const fl = domain({ evalBegin: vi.fn(async () => Promise.reject(new Error("start the local model first; the eval runs on it"))) });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-gate-adapter"), "/x/a.gguf");
+    await type(q(host, "fl-gate-sha"), "c".repeat(64));
+    await click(q(host, "fl-eval-run"));
+    await vi.waitFor(() => expect(q(host, "fl-error")?.textContent ?? "").toContain("start the local model first"), { timeout: 5000 });
+    expect(fl.evalComplete).not.toHaveBeenCalled();
+  });
+
+  it("says a remembered adapter comes back after a restart", async () => {
+    const fl = domain({
+      overview: vi.fn(async () => overview({ activeAdapter: "/data/adapters/x.gguf", remembered: { sha256: "c".repeat(64), baseModel: "m.gguf", loadedAtMs: 1 } })),
+    });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(q(host, "fl-active-adapter")!.textContent).toContain("comes back after a restart");
   });
 });

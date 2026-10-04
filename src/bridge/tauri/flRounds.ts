@@ -5,9 +5,12 @@ import type {
   FlAdapterGateRecord,
   FlAdapterGateRequest,
   FlCoordinatorConfig,
+  FlEvalArm,
+  FlEvalSession,
   FlOverview,
   FlRoundPlan,
   FlRoundProposal,
+  FlRoundProvenance,
   FlRoundsDomain,
   FlStartReceipt,
 } from "../domains";
@@ -36,5 +39,26 @@ export const tauriFlRounds: FlRoundsDomain = {
   },
   async unloadAdapter() {
     await invoke("fl_adapter_unload");
+  },
+  importRound(bundlePath: string, adapterPath: string) {
+    return invoke<FlRoundProvenance>("fl_round_import", { bundlePath, adapterPath });
+  },
+  fetchRound(bundleUrl: string, adapterUrl: string) {
+    return invoke<FlRoundProvenance>("fl_round_fetch", { bundleUrl, adapterUrl });
+  },
+  fetchAdapter(url: string, expectedSha256: string) {
+    return invoke<string>("fl_adapter_fetch", { url, expectedSha256 });
+  },
+  evalBegin(adapterPath: string, expectedSha256: string) {
+    return invoke<FlEvalSession>("fl_eval_begin", { adapterPath, expectedSha256 });
+  },
+  evalComplete(sessionId: string, arm: FlEvalArm, messagesJson: string, toolsJson: string) {
+    return invoke<string>("fl_eval_complete", { sessionId, arm, messagesJson, toolsJson });
+  },
+  evalFinish(sessionId: string, baseScorecardJson: string, candidateScorecardJson: string) {
+    return invoke<FlAdapterGateRecord>("fl_eval_finish", { sessionId, baseScorecardJson, candidateScorecardJson });
+  },
+  async evalEnd(sessionId: string) {
+    await invoke("fl_eval_end", { sessionId });
   },
 };

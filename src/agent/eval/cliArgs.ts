@@ -16,11 +16,17 @@ export interface EvalCliArgs {
   outDir: string;
   /** HUP-S9.4: the LoRA adapter the endpoint serves for this run (a candidate run for the eval gate). */
   adapterSha256?: string;
+  /**
+   * HUP-S9.4: the per-request scale for LoRA adapter id 0. With a server started as
+   * `llama-server --lora-scaled <adapter>:0`, scale 0 is the base arm and scale 1 the candidate
+   * arm, so both runs use one server. A candidate arm (scale > 0) needs --adapter-sha256.
+   */
+  loraScale?: number;
 }
 
 export const EVAL_CLI_USAGE =
   "usage: node scripts/eval-tools.mjs --base-url <http://127.0.0.1:18080/v1> --model <name> " +
-  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--adapter-sha256 <hex>] [--allow-remote]";
+  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--adapter-sha256 <hex>] [--lora-scale 0..1] [--allow-remote]";
 
 function parseHttpUrl(raw: string): URL | null {
   let u: URL;
@@ -44,7 +50,7 @@ export function isLoopbackUrl(raw: string): boolean {
   return octets.every((o) => o <= 255) && octets[0] === 127;
 }
 
-const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--adapter-sha256"]);
+const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--adapter-sha256", "--lora-scale"]);
 
 /** Parse argv (without the node + script entries). Throws with a readable message on error. */
 export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
@@ -86,6 +92,21 @@ export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
   if (adapterRaw !== undefined && !/^[0-9a-fA-F]{64}$/.test(adapterRaw)) {
     throw new Error(`--adapter-sha256 takes the adapter file's sha256 as 64 hex characters (got ${adapterRaw})`);
   }
+  const scaleRaw = vals["--lora-scale"];
+  let loraScale: number | undefined;
+  if (scaleRaw !== undefined) {
+    const n = /^\d+(\.\d+)?$/.test(scaleRaw) ? Number(scaleRaw) : NaN;
+    if (!Number.isFinite(n) || n < 0 || n > 1) {
+      throw new Error(`--lora-scale takes a number from 0 to 1 (got ${scaleRaw})`);
+    }
+    if (n > 0 && adapterRaw === undefined) {
+      throw new Error("--lora-scale above 0 is a candidate run: pass --adapter-sha256 with the adapter's sha256");
+    }
+    if (n === 0 && adapterRaw !== undefined) {
+      throw new Error("--lora-scale 0 is a base run: do not pass --adapter-sha256 with it");
+    }
+    loraScale = n;
+  }
   const out: EvalCliArgs = {
     baseUrl: baseUrl.replace(/\/+$/, ""),
     model,
@@ -95,7 +116,13 @@ export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
   if (apiKeyEnv !== undefined) out.apiKeyEnv = apiKeyEnv;
   if (tier !== undefined) out.tier = tier;
   if (adapterRaw !== undefined) out.adapterSha256 = adapterRaw.toLowerCase();
+  if (loraScale !== undefined) out.loraScale = loraScale;
   return out;
+}
+
+/** The llama-server request field that sets adapter id 0's scale for one request. */
+export function loraRequestField(scale: number | undefined): { lora?: { id: number; scale: number }[] } {
+  return scale === undefined ? {} : { lora: [{ id: 0, scale }] };
 }
 
 /**

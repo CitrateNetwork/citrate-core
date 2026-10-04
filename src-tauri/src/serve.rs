@@ -36,8 +36,8 @@
 // the onboarding wiring + tests until then, mirroring node.rs/memory.rs.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -119,6 +119,11 @@ impl std::error::Error for ServeError {}
 
 type Result<T> = std::result::Result<T, ServeError>;
 
+/// HUP-S9.4: picks the adapter (if any) to serve with a base model when the model changes. Set by
+/// `fl_rounds` so an eval-gated adapter the member loaded comes back on its own base model; the
+/// resolver re-checks the gate record and re-hashes the stored copy each time.
+pub type LoraResolver = Arc<dyn Fn(&Path) -> Option<PathBuf> + Send + Sync>;
+
 /// The bridge status shape for the llama-server sidecar. Public facts only —
 /// supervisor state + the local baseURL + whether it is health-probed alive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -197,6 +202,12 @@ pub struct LlamaServerManager {
     /// HUP-S9.4: a LoRA adapter passed as `--lora`. Set only through `fl_rounds` after the eval
     /// gate accepted that exact file; cleared whenever the base model changes.
     lora: Mutex<Option<PathBuf>>,
+    /// HUP-S9.4: re-applies an eval-gated adapter when the base model changes (see [`LoraResolver`]).
+    lora_resolver: Mutex<Option<LoraResolver>>,
+    /// HUP-S9.4: a candidate adapter under evaluation, loaded with `--lora-scaled <file>:0` so a
+    /// request that does not name it (every chat) is served by the base model alone. Only the eval
+    /// runner's requests set its scale. While set, the loaded `lora` is suspended.
+    eval_lora: Mutex<Option<PathBuf>>,
 }
 
 impl LlamaServerManager {
@@ -216,6 +227,8 @@ impl LlamaServerManager {
             api_key: mint_api_key(),
             plan: Mutex::new(crate::serve_plan::ServePlan::not_sized()),
             lora: Mutex::new(None),
+            lora_resolver: Mutex::new(None),
+            eval_lora: Mutex::new(None),
         }
     }
 
@@ -276,6 +289,33 @@ impl LlamaServerManager {
         self.lora.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// HUP-S9.4: install the resolver consulted when the base model changes.
+    pub fn set_lora_resolver(&self, resolver: LoraResolver) {
+        *self.lora_resolver.lock().unwrap_or_else(|e| e.into_inner()) = Some(resolver);
+    }
+
+    fn resolve_lora(&self, model: &Path) -> Option<PathBuf> {
+        let resolver = self
+            .lora_resolver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        resolver.and_then(|f| f(model))
+    }
+
+    /// HUP-S9.4: set (or clear) the adapter under evaluation. Takes effect at the next (re)spawn.
+    pub fn set_eval_lora(&self, path: Option<PathBuf>) {
+        *self.eval_lora.lock().unwrap_or_else(|e| e.into_inner()) = path;
+    }
+
+    /// HUP-S9.4: the adapter under evaluation, if an eval run is in progress.
+    pub fn eval_lora(&self) -> Option<PathBuf> {
+        self.eval_lora
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// HUP-S1.6: the `--ctx-size` of the current plan: the real context window of the server.
     pub fn ctx_size(&self) -> u32 {
         self.plan.lock().unwrap_or_else(|e| e.into_inner()).ctx_size
@@ -311,12 +351,30 @@ impl LlamaServerManager {
             args.push("-ngl".to_string());
             args.push(n.to_string());
         }
-        // HUP-S9.4: an eval-gated LoRA adapter, when one is loaded.
-        if let Some(lora) = self.lora() {
+        // HUP-S9.4: during an eval run, only the candidate, at scale 0, named by file name (the
+        // child runs in its directory, because llama.cpp splits `FNAME:SCALE` on ':' and ',', which
+        // a Windows path contains). Otherwise the eval-gated adapter, when one is loaded.
+        if let Some(file) = self
+            .eval_lora()
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|f| f.to_string_lossy().to_string())
+        {
+            args.push("--lora-scaled".to_string());
+            args.push(format!("{file}:0"));
+        } else if let Some(lora) = self.lora() {
             args.push("--lora".to_string());
             args.push(lora.to_string_lossy().to_string());
         }
         args
+    }
+
+    /// The child's working directory: the eval adapter's directory during an eval run.
+    fn spawn_workdir(&self) -> Option<PathBuf> {
+        self.eval_lora()
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
     }
 
     /// The argv actually handed to the supervisor. Production is always the
@@ -335,6 +393,12 @@ impl LlamaServerManager {
         self.spawn_args()
     }
 
+    /// Test hook: the working directory the child would be spawned in.
+    #[cfg(test)]
+    pub fn spawn_workdir_for_test(&self) -> Option<PathBuf> {
+        self.spawn_workdir()
+    }
+
     /// Build the [`SidecarSpec`] + a `/health` liveness probe. A failing probe is
     /// treated as a crash by the supervisor (restart under the bounded backoff),
     /// so a wedged server recovers. No env / no secret (the local model needs no
@@ -350,6 +414,7 @@ impl LlamaServerManager {
         // the liveness probe needs no key.
         spec.env
             .push((LLAMA_API_KEY_ENV.to_string(), self.api_key.to_string()));
+        spec.workdir = self.spawn_workdir();
         let health_url = format!("http://127.0.0.1:{}/health", self.port);
         spec.health_check = Some(HealthCheck {
             interval: self.health_interval,
@@ -456,12 +521,15 @@ impl LlamaServerManager {
             return Err(ServeError::ModelNotReady);
         }
         self.stop();
+        // HUP-S9.4: an adapter belongs to the base model it was trained on. Resolved before the
+        // model lock is taken (the resolver reads the fl store and hashes the stored copy).
+        let changed = *self.model_path.lock().unwrap_or_else(|e| e.into_inner()) != new_path;
+        if changed {
+            self.set_lora(self.resolve_lora(&new_path));
+            self.set_eval_lora(None);
+        }
         {
             let mut guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
-            // HUP-S9.4: an adapter belongs to the base model it was trained on.
-            if *guard != new_path {
-                self.set_lora(None);
-            }
             *guard = new_path;
         }
         // Already gated on readiness above; start re-checks the binary + idempotency.
