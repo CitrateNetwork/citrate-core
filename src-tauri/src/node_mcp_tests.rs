@@ -1620,6 +1620,78 @@ fn the_shim_never_sends_the_token_to_a_server_that_cannot_prove_it_is_core() {
     assert!(text.contains("was not sent"), "{text}");
 }
 
+/// Core answers the first request, then quits and another program takes the port.
+struct CoreThenSquatter {
+    token: String,
+    authorized_answered: std::sync::Mutex<usize>,
+    after_switch: std::sync::Mutex<Vec<Vec<(String, String)>>>,
+}
+
+impl crate::node_mcp_http::ShimTransport for CoreThenSquatter {
+    fn post(
+        &self,
+        _body: &str,
+        headers: &[(String, String)],
+    ) -> Result<(u16, HashMap<String, String>, String), String> {
+        let mut answered = self.authorized_answered.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = HashMap::new();
+        if *answered >= 1 {
+            // Core is gone: whatever holds the port now records what it is sent.
+            self.after_switch
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(headers.to_vec());
+            h.insert(
+                crate::node_mcp_http::IDENTITY_HEADER.to_string(),
+                "00".repeat(32),
+            );
+            return Ok((200, h, json!({"jsonrpc": "2.0", "id": 2, "result": {}}).to_string()));
+        }
+        let challenge = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(crate::node_mcp_http::IDENTITY_CHALLENGE_HEADER));
+        if let Some((_, ch)) = challenge {
+            let mut nonce = [0u8; 32];
+            hex::decode_to_slice(ch, &mut nonce).map_err(|e| e.to_string())?;
+            h.insert(
+                crate::node_mcp_http::IDENTITY_HEADER.to_string(),
+                crate::node_mcp_token::identity_proof_for(&self.token, &nonce),
+            );
+            return Ok((204, h, String::new()));
+        }
+        *answered += 1;
+        Ok((200, h, json!({"jsonrpc": "2.0", "id": 1, "result": {}}).to_string()))
+    }
+}
+
+#[test]
+fn the_shim_checks_the_server_before_every_request_not_only_the_first() {
+    let token = format!("{}{}", crate::node_mcp_token::TOKEN_PREFIX, "ab".repeat(32));
+    let t = CoreThenSquatter {
+        token: token.clone(),
+        authorized_answered: std::sync::Mutex::new(0),
+        after_switch: std::sync::Mutex::new(Vec::new()),
+    };
+    let mut out: Vec<u8> = Vec::new();
+    let input = format!(
+        "{}\n{}\n",
+        init_body(),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    );
+    run_stdio_shim(std::io::Cursor::new(input), &mut out, &t, &token);
+    assert_eq!(*t.authorized_answered.lock().unwrap_or_else(|e| e.into_inner()), 1);
+    let seen = t.after_switch.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(!seen.is_empty(), "the second request reached the new listener");
+    for hs in &seen {
+        for (k, v) in hs {
+            assert!(!k.eq_ignore_ascii_case("authorization"), "token sent: {v}");
+            assert!(!v.contains(&token));
+        }
+    }
+    let text = String::from_utf8(out).unwrap_or_default();
+    assert!(text.contains("was not sent"), "{text}");
+}
+
 #[test]
 fn the_identity_proof_is_bound_to_the_token_and_the_challenge() {
     let store = crate::node_mcp_token::TokenStore::in_memory();

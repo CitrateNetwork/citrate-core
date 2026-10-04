@@ -52,8 +52,8 @@ The shim only ever sends the token to a loopback address. `CITRATE_NODE_MCP_PORT
 fresh 32-byte challenge with no token, and the server answers with an HMAC of that challenge keyed
 by the SHA-256 of each token it holds (`X-Citrate-Identity`). Only if one of those matches the
 shim's own token does the token go out; otherwise each request is answered with an error that says
-the token was not sent. Another program holding the port while Core is off therefore never sees a
-token.
+the token was not sent. The check runs before every request, so another program that takes the
+port while Core is off, or after Core quits mid-session, never sees a token.
 
 Check it from Claude Code with `/mcp`, or ask it to "use citrate-node to show the chain head".
 

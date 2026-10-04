@@ -632,8 +632,9 @@ pub fn run_stdio_shim(
     token: &str,
 ) -> i32 {
     let mut session: Option<String> = None;
-    // The token goes only to a server that first proves it is Core (holds this token).
-    let mut identified = false;
+    // The token goes only to a server that has just proved it is Core (holds this token). The
+    // check runs before every request, not once: Core can quit mid-run and another program can
+    // take the port.
     for line in input.lines() {
         let Ok(line) = line else {
             return 1;
@@ -644,17 +645,15 @@ pub fn run_stdio_shim(
         }
         let parsed: Option<Value> = serde_json::from_str(line).ok();
         let id = parsed.as_ref().and_then(|v| v.get("id").cloned());
-        if !identified {
-            if let Err(msg) = server_proves_identity(transport, token) {
-                if let Some(id) = id {
-                    let a = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": msg}});
-                    if writeln!(output, "{a}").is_err() || output.flush().is_err() {
-                        return 1;
-                    }
+        if let Err(msg) = server_proves_identity(transport, token) {
+            if let Some(id) = id {
+                let a =
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": msg}});
+                if writeln!(output, "{a}").is_err() || output.flush().is_err() {
+                    return 1;
                 }
-                continue;
             }
-            identified = true;
+            continue;
         }
         let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
         if let Some(s) = &session {
