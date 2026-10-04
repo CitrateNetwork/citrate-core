@@ -554,12 +554,26 @@ impl<T> Slot<T> {
     }
 
     /// The current value, or the one `init` builds (run at most once per empty slot, under the lock).
+    #[cfg(test)]
     pub(crate) fn get_or_try_insert(
         &self,
         init: impl FnOnce() -> std::result::Result<T, String>,
     ) -> std::result::Result<Arc<T>, String> {
+        self.get_or_try_insert_ensured(init, |_| Ok(()))
+    }
+
+    /// Like [`get_or_try_insert`](Self::get_or_try_insert), and `ensure` runs on the existing value
+    /// under the same lock (e.g. restart a daemon that died). A value [`take_if`](Self::take_if) has
+    /// taken out is therefore never handed to `ensure` again: a reload cannot race a restart of the
+    /// old manager.
+    pub(crate) fn get_or_try_insert_ensured(
+        &self,
+        init: impl FnOnce() -> std::result::Result<T, String>,
+        ensure: impl FnOnce(&T) -> std::result::Result<(), String>,
+    ) -> std::result::Result<Arc<T>, String> {
         let mut g = self.lock();
         if let Some(v) = g.as_ref() {
+            ensure(v)?;
             return Ok(Arc::clone(v));
         }
         let v = Arc::new(init()?);
@@ -632,25 +646,28 @@ fn libp2p_opts(listen: Option<String>, seed_hex: Zeroizing<String>) -> Option<Li
 fn ensure_started(
     app: &tauri::AppHandle,
 ) -> std::result::Result<Arc<ClusterDaemonManager>, String> {
-    if let Some(m) = MANAGER.get() {
-        if !m.is_running() {
-            m.start().map_err(|e| e.to_string())?;
-        }
-        return Ok(m);
-    }
-    // First-time init runs under the slot's lock: only ONE thread builds + starts + commits the
-    // manager, so the surviving daemon's bearer always matches the committed manager's.
-    let m = MANAGER.get_or_try_insert(|| build_and_start(app))?;
-    if !m.is_running() {
-        m.start().map_err(|e| e.to_string())?;
-    }
-    Ok(m)
+    // First-time init and any restart run under the slot's lock: only ONE thread builds + starts +
+    // commits the manager (the surviving daemon's bearer always matches the committed manager's), and
+    // a manager a mesh-identity reload took out is never restarted behind it.
+    MANAGER.get_or_try_insert_ensured(
+        || build_and_start(app),
+        |m| {
+            if !m.is_running() {
+                m.start().map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Whether the cluster daemon is already running (never starts it). For callers that must not start
+/// a daemon as a side effect of a read, such as the node MCP server.
+pub fn is_daemon_running() -> bool {
+    MANAGER.get().is_some_and(|m| m.is_running())
 }
 
 /// Build the manager for this machine's current mesh identity and start its daemon.
-fn build_and_start(
-    app: &tauri::AppHandle,
-) -> std::result::Result<ClusterDaemonManager, String> {
+fn build_and_start(app: &tauri::AppHandle) -> std::result::Result<ClusterDaemonManager, String> {
     use tauri::Manager;
     let data_root = app
         .path()

@@ -379,3 +379,69 @@ fn a_failed_build_leaves_the_slot_empty() {
     assert!(slot.get().is_none());
     assert!(slot.get_or_try_insert(|| Ok("ok".to_string())).is_ok());
 }
+
+// Review fix (fan-out 6): restarting a stopped manager happens under the slot's lock and only for the
+// value still in the slot. Before, `ensure_started` read the manager, released the lock, and then
+// restarted it if it was not running; a mesh-identity reload in between took that manager out and
+// stopped it, and the restart brought the old daemon back while the next call built a second one
+// (two daemons, the bearer file overwritten, "unauthorized"). The fake below records a start of a
+// value that was already taken out.
+#[test]
+fn a_manager_taken_out_of_the_slot_is_never_restarted() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct Fake {
+        running: AtomicBool,
+        taken: AtomicBool,
+    }
+    let slot: Arc<Slot<Fake>> = Arc::new(Slot::new());
+    let revived = Arc::new(AtomicUsize::new(0));
+    let fresh = || {
+        Ok(Fake {
+            running: AtomicBool::new(true),
+            taken: AtomicBool::new(false),
+        })
+    };
+    let mut users = Vec::new();
+    for _ in 0..4 {
+        let (slot, revived) = (slot.clone(), revived.clone());
+        users.push(std::thread::spawn(move || {
+            for _ in 0..500 {
+                let _ = slot.get_or_try_insert_ensured(fresh, |m| {
+                    // `is_running` asks the OS about the child process: it takes time.
+                    std::thread::sleep(std::time::Duration::from_micros(50));
+                    if !m.running.load(Ordering::SeqCst) {
+                        if m.taken.load(Ordering::SeqCst) {
+                            revived.fetch_add(1, Ordering::SeqCst);
+                        }
+                        std::thread::yield_now();
+                        m.running.store(true, Ordering::SeqCst);
+                    }
+                    Ok(())
+                });
+            }
+        }));
+    }
+    let done = Arc::new(AtomicBool::new(false));
+    let reloader = {
+        let (slot, done) = (slot.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                if let Some(old) = slot.take_if(|_| true) {
+                    old.taken.store(true, Ordering::SeqCst);
+                    old.running.store(false, Ordering::SeqCst);
+                }
+                // A daemon that died on its own (not taken) is restarted in place.
+                if let Some(cur) = slot.get() {
+                    cur.running.store(false, Ordering::SeqCst);
+                }
+                std::thread::yield_now();
+            }
+        })
+    };
+    for u in users {
+        u.join().expect("user thread");
+    }
+    done.store(true, Ordering::SeqCst);
+    reloader.join().expect("reloader thread");
+    assert_eq!(revived.load(Ordering::SeqCst), 0, "a taken-out manager was restarted");
+}

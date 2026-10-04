@@ -181,9 +181,9 @@ pub async fn cluster_mesh_set_enabled(
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.kind().to_string())?;
         }
-        let json =
-            serde_json::to_vec(&MemberMesh { off: !enabled }).map_err(|e| e.to_string())?;
-        std::fs::write(&path, json).map_err(|e| format!("saving the mesh setting: {}", e.kind()))?;
+        let json = serde_json::to_vec(&MemberMesh { off: !enabled }).map_err(|e| e.to_string())?;
+        std::fs::write(&path, json)
+            .map_err(|e| format!("saving the mesh setting: {}", e.kind()))?;
         let d = current(&app);
         Ok(status_for(
             &d,
@@ -201,8 +201,13 @@ mod tests {
 
     #[test]
     fn todays_build_changes_nothing_the_operator_env_or_off() {
-        // The shipped constants: neither precondition is met.
-        assert!(!TRANSPORT_SIGNED_OFF && !MULTI_GROUP_DAEMON);
+        // The shipped constants: neither precondition is met (a tripwire: flipping either one is an
+        // owner + security decision and must update this test on purpose).
+        assert_eq!(
+            [TRANSPORT_SIGNED_OFF, MULTI_GROUP_DAEMON],
+            [false, false],
+            "the mesh default changed"
+        );
         let off = decide(None, TRANSPORT_SIGNED_OFF, MULTI_GROUP_DAEMON, false);
         assert_eq!(off.source, MeshSource::Off);
         assert_eq!(off.listen, None);
@@ -215,7 +220,10 @@ mod tests {
         assert_eq!(op.source, MeshSource::Operator);
         assert_eq!(op.listen.as_deref(), Some("/ip4/0.0.0.0/tcp/0"));
         // A blank env value is not an operator setting.
-        assert_eq!(decide(Some("  "), false, false, false).source, MeshSource::Off);
+        assert_eq!(
+            decide(Some("  "), false, false, false).source,
+            MeshSource::Off
+        );
     }
 
     #[test]
@@ -243,7 +251,12 @@ mod tests {
         assert!(s.note.contains("every group"), "{}", s.note);
         let s = status_for(&decide(None, true, true, true), true, true, true);
         assert!(s.note.contains("You turned"), "{}", s.note);
-        let s = status_for(&decide(Some("/ip4/0.0.0.0/tcp/0"), false, false, false), false, false, false);
+        let s = status_for(
+            &decide(Some("/ip4/0.0.0.0/tcp/0"), false, false, false),
+            false,
+            false,
+            false,
+        );
         assert!(s.on && s.note.contains("operator"));
     }
 }

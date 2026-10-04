@@ -144,6 +144,12 @@ impl NodeBackend for LiveBackend {
     }
 
     fn cluster_devices(&self, group: &str) -> Result<Value, String> {
+        // A read never starts the group daemon (or anything else) as a side effect.
+        if !crate::cluster::is_daemon_running() {
+            return Err(
+                "the group daemon is not running; open Groups in Citrate Core to start it".into(),
+            );
+        }
         let m = tauri::async_runtime::block_on(crate::cluster::cluster_devices(
             self.app.clone(),
             group.to_string(),

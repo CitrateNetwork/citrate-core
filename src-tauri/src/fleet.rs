@@ -416,9 +416,7 @@ pub fn join_link(link: &str, me: &DeviceSelf, now: u64) -> Result<JoinOutcome, J
                 if !id_ok(&id) || !label_ok(&label) || !tier_ok(&reply.tier) {
                     return Err(JoinError::Protocol);
                 }
-                let peer_link_code = reply
-                    .device_link
-                    .filter(|c| c.len() <= MAX_LINK_CODE);
+                let peer_link_code = reply.device_link.filter(|c| c.len() <= MAX_LINK_CODE);
                 return Ok(JoinOutcome {
                     device: FleetDevice {
                         role: role_for(reply.tier.as_deref()).to_string(),

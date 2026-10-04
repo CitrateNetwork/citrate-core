@@ -23,8 +23,10 @@
 //! ## Into the daemon
 //!
 //! [`roster_update`] builds what `cluster.rs` sends with every roster: this machine's own links first,
-//! then peers' links of members on the group roster, never a revoked one, newest revocations first,
-//! all within the daemon's per-update caps and its 64 KiB IPC line.
+//! then peers' links of members on the group roster, one member at a time, never a revoked one; own
+//! revocations first, then members' in turn; all within the daemon's per-update caps and its 64 KiB
+//! IPC line. Every member has its own share of the store (64 links, 128 revocations), so one member
+//! cannot crowd out another.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -49,6 +51,10 @@ pub(crate) const MAX_PEER_LINKS: usize = 1024;
 
 /// Most peer revocations this machine keeps across all members.
 pub(crate) const MAX_PEER_REVOCATIONS: usize = 2048;
+
+/// Most revocations kept per member (two links' worth of the daemon's per-update cap), so one member
+/// cannot fill the shared store and crowd out another member's revocation. PENDING OWNER SIGN-OFF.
+pub(crate) const MAX_PEER_REVOCATIONS_PER_MEMBER: usize = 2 * MAX_LINKS;
 
 /// Budget for one `setRoster` line (the daemon reads at most 64 KiB; keep headroom).
 pub(crate) const MAX_UPDATE_LINE: usize = 60 * 1024;
@@ -124,7 +130,10 @@ impl PeerLinkStore {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|_| "the shared device link store is corrupt".to_string()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(format!("reading the shared device link store: {}", e.kind())),
+            Err(e) => Err(format!(
+                "reading the shared device link store: {}",
+                e.kind()
+            )),
         }
     }
 
@@ -162,7 +171,11 @@ pub(crate) struct IngestReport {
 }
 
 fn revocation_verifies(r: &RevocationWire) -> bool {
-    recover_eip191(&revocation_message(&r.member, &r.device, r.revoked_at), &r.member_sig).as_deref()
+    recover_eip191(
+        &revocation_message(&r.member, &r.device, r.revoked_at),
+        &r.member_sig,
+    )
+    .as_deref()
         == Some(r.member.as_str())
 }
 
@@ -198,13 +211,18 @@ pub(crate) fn ingest(
 
     // 1. Revocations first, so a link and its revocation in one message never admit.
     for r in payload.revocations {
-        let (Some(member), Some(device)) = (canonical_address(&r.member), canonical_address(&r.device))
+        let (Some(member), Some(device)) =
+            (canonical_address(&r.member), canonical_address(&r.device))
         else {
-            report.refused.push("a revocation with a malformed address".into());
+            report
+                .refused
+                .push("a revocation with a malformed address".into());
             continue;
         };
         if member != sender {
-            report.refused.push(format!("{device}: revocation not from its member"));
+            report
+                .refused
+                .push(format!("{device}: revocation not from its member"));
             continue;
         }
         let r = RevocationWire {
@@ -213,14 +231,25 @@ pub(crate) fn ingest(
             ..r
         };
         if !revocation_verifies(&r) {
-            report.refused.push(format!("{}: revocation signature", r.device));
+            report
+                .refused
+                .push(format!("{}: revocation signature", r.device));
             continue;
         }
         if store.is_revoked(&r.member, &r.device) {
             continue;
         }
-        if store.revocations.len() >= MAX_PEER_REVOCATIONS {
-            report.refused.push(format!("{}: revocation store full", r.device));
+        let of_member = store
+            .revocations
+            .iter()
+            .filter(|x| x.member == r.member)
+            .count();
+        if of_member >= MAX_PEER_REVOCATIONS_PER_MEMBER
+            || store.revocations.len() >= MAX_PEER_REVOCATIONS
+        {
+            report
+                .refused
+                .push(format!("{}: revocation store full", r.device));
             continue;
         }
         store
@@ -233,7 +262,9 @@ pub(crate) fn ingest(
     // 2. Links: from the sender, fully verified, not revoked, within the caps.
     for l in payload.links {
         if verify_link(&l).is_err() {
-            report.refused.push(format!("{}: link does not verify", l.device));
+            report
+                .refused
+                .push(format!("{}: link does not verify", l.device));
             continue;
         }
         // `verify_link` validated the addresses; store the canonical form.
@@ -245,7 +276,9 @@ pub(crate) fn ingest(
             continue;
         };
         if member != sender {
-            report.refused.push(format!("{device}: link not from its member"));
+            report
+                .refused
+                .push(format!("{device}: link not from its member"));
             continue;
         }
         if store.is_revoked(&member, &device) {
@@ -270,8 +303,10 @@ pub(crate) fn ingest(
             continue;
         }
         let of_member = store.links.iter().filter(|x| x.member == l.member).count();
-        if false || store.links.len() >= MAX_PEER_LINKS {
-            report.refused.push(format!("{}: link store full", l.device));
+        if of_member >= MAX_LINKS || store.links.len() >= MAX_PEER_LINKS {
+            report
+                .refused
+                .push(format!("{}: link store full", l.device));
             continue;
         }
         store.links.push(l);
@@ -281,8 +316,9 @@ pub(crate) fn ingest(
 }
 
 /// The links and revocations `cluster.rs` sends with a group's roster: own links first, then peers'
-/// links of members on `roster` (sorted, never one revoked by either store), newest revocations
-/// first; at most [`MAX_LINKS`] of each, trimmed further (peer links first, then the oldest
+/// links of members on `roster` taken one member at a time (never one revoked by either store); own
+/// revocations first, then roster members' in turn, each member's newest first, one per device; at
+/// most [`MAX_LINKS`] of each, trimmed further (peer links first, then the oldest
 /// revocations) so the whole `setRoster` line stays under [`MAX_UPDATE_LINE`].
 pub(crate) fn roster_update(
     own: &DeviceLinkStore,
@@ -315,26 +351,40 @@ pub(crate) fn roster_update(
         .filter(|l| !revoked.contains(&(l.member.as_str(), l.device.as_str())))
         .collect();
     theirs.sort_by(|a, b| (&a.member, a.index, &a.device).cmp(&(&b.member, b.index, &b.device)));
-    for l in theirs {
+    // Members in turn, so one member with many links cannot push another's out of the update.
+    for l in in_turn(theirs, |l| l.member.as_str()) {
         if seen.insert(l.device.clone()) {
             links.push(l.clone());
         }
     }
     links.truncate(MAX_LINKS);
 
-    let mut revocations: Vec<RevocationWire> = own
+    // Own revocations first (newest first), then other roster members' in turn, each member's newest
+    // first: `revoked_at` is chosen by the signer, so a global newest-first order would let one member
+    // push everyone else's revocations out with late timestamps. One slot per device.
+    let newest_first = |a: &&RevocationWire, b: &&RevocationWire| {
+        b.revoked_at
+            .cmp(&a.revoked_at)
+            .then(a.device.cmp(&b.device))
+    };
+    let mut mine: Vec<&RevocationWire> = own.revocations.iter().collect();
+    mine.sort_by(newest_first);
+    let mut others: Vec<&RevocationWire> = peers
         .revocations
         .iter()
-        .chain(
-            peers
-                .revocations
-                .iter()
-                .filter(|r| members.contains(&r.member)),
-        )
-        .cloned()
+        .filter(|r| members.contains(&r.member))
         .collect();
-    revocations.sort_by(|a, b| b.revoked_at.cmp(&a.revoked_at).then(a.device.cmp(&b.device)));
-    revocations.dedup_by(|a, b| a.member == b.member && a.device == b.device);
+    others.sort_by(|a, b| a.member.cmp(&b.member).then(newest_first(a, b)));
+    let mut sent: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut revocations: Vec<RevocationWire> = Vec::new();
+    for r in mine
+        .into_iter()
+        .chain(in_turn(others, |r| r.member.as_str()))
+    {
+        if sent.insert((r.member.as_str(), r.device.as_str())) {
+            revocations.push(r.clone());
+        }
+    }
     revocations.truncate(MAX_LINKS);
 
     // Fit the IPC line: the roster is fixed, so trim what we add.
@@ -342,8 +392,12 @@ pub(crate) fn roster_update(
     let size = |l: &[DeviceLinkWire], r: &[RevocationWire]| {
         roster_bytes
             + 256
-            + serde_json::to_string(l).map(|s| s.len()).unwrap_or(usize::MAX / 2)
-            + serde_json::to_string(r).map(|s| s.len()).unwrap_or(usize::MAX / 2)
+            + serde_json::to_string(l)
+                .map(|s| s.len())
+                .unwrap_or(usize::MAX / 2)
+            + serde_json::to_string(r)
+                .map(|s| s.len())
+                .unwrap_or(usize::MAX / 2)
     };
     while size(&links, &revocations) > MAX_UPDATE_LINE {
         if links.len() > own_count.min(MAX_LINKS) {
@@ -357,6 +411,28 @@ pub(crate) fn roster_update(
         }
     }
     (links, revocations)
+}
+
+/// Interleave `items` (already grouped by `key`, each group in its own order) one per group per round:
+/// the first of every group, then the second of every group, and so on.
+fn in_turn<'a, T>(items: Vec<&'a T>, key: impl Fn(&T) -> &str) -> Vec<&'a T> {
+    let mut groups: Vec<Vec<&'a T>> = Vec::new();
+    for it in items {
+        match groups.last_mut() {
+            Some(g) if g.first().is_some_and(|f| key(f) == key(it)) => g.push(it),
+            _ => groups.push(vec![it]),
+        }
+    }
+    let longest = groups.iter().map(Vec::len).max().unwrap_or(0);
+    let mut out = Vec::new();
+    for round in 0..longest {
+        for g in &groups {
+            if let Some(it) = g.get(round) {
+                out.push(*it);
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

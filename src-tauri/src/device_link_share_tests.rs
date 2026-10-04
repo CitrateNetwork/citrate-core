@@ -332,3 +332,175 @@ fn a_full_roster_update_fits_the_daemons_ipc_line() {
         line.len()
     );
 }
+
+// ---- review fixes (fan-out 6): one member cannot crowd out another ----
+
+/// A distinct device seed for test item `i` under a one-byte family tag.
+fn dev_seed(tag: u8, i: usize) -> String {
+    let mut b = [tag; 32];
+    b[29] = 0x5a;
+    b[30] = (i >> 8) as u8;
+    b[31] = (i & 0xff) as u8;
+    hex::encode(b)
+}
+
+fn share_body(links: Vec<DeviceLinkWire>, revocations: Vec<RevocationWire>) -> String {
+    format!(
+        "{DEVICE_LINKS_MSG_PREFIX}{}",
+        serde_json::to_string(&SharePayload { v: 1, links, revocations }).expect("json")
+    )
+}
+
+// The per-member link cap holds across messages (one message alone stays under the message cap,
+// so before the fix two messages let one member take 80 of the 1,024 shared slots, and enough
+// messages let it take all of them).
+#[test]
+fn a_member_cannot_hold_more_links_than_its_cap_across_messages() {
+    let me = seed(0x41);
+    let peer = seed(0x51);
+    let wallet = seed(0x0b);
+    let mut store = PeerLinkStore::default();
+    let cap = crate::device_link::MAX_LINKS;
+    let mut refused = 0;
+    for chunk in 0..3 {
+        let links: Vec<DeviceLinkWire> = (0..30)
+            .map(|j| {
+                let i = chunk * 30 + j;
+                link(&peer, &dev_seed(0x90, i), &wallet, i as u32, "Box", 1_790_000_000)
+            })
+            .collect();
+        let r = ingest(&mut store, &addr(&me), &addr(&peer), &share_body(links, vec![]))
+            .expect("a message under the size cap");
+        refused += r.refused.len();
+    }
+    let of_peer = store.links.iter().filter(|l| l.member == addr(&peer)).count();
+    assert_eq!(of_peer, cap, "exactly the per-member cap is kept");
+    assert_eq!(refused, 90 - cap, "the rest is refused, with a reason each");
+}
+
+// The per-member revocation cap: one member's revocations cannot fill the shared store, so another
+// member's revocation is still recorded (a refused revocation would leave a revoked machine in).
+#[test]
+fn one_members_revocations_cannot_crowd_out_another_members_revocation() {
+    let me = seed(0x41);
+    let noisy = seed(0x51);
+    let other = seed(0x61);
+    let mut store = PeerLinkStore::default();
+    let per_member = MAX_PEER_REVOCATIONS_PER_MEMBER;
+    let total = per_member + 20;
+    let mut i = 0;
+    while i < total {
+        let n = (total - i).min(100);
+        let revs: Vec<RevocationWire> = (i..i + n)
+            .map(|k| {
+                sign_revocation(&noisy, &addr(&dev_seed(0x77, k)), 1_790_000_000 + k as u64)
+                    .expect("rev")
+            })
+            .collect();
+        ingest(&mut store, &addr(&me), &addr(&noisy), &share_body(vec![], revs)).expect("ingest");
+        i += n;
+    }
+    assert_eq!(store.revocations.len(), per_member, "the noisy member stops at its cap");
+    let rev = sign_revocation(&other, &addr(&seed(0x62)), 1_790_000_500).expect("rev");
+    let r = ingest(&mut store, &addr(&me), &addr(&other), &share_body(vec![], vec![rev]))
+        .expect("ingest");
+    assert_eq!(r.revocations, 1, "another member's revocation is recorded");
+}
+
+// What reaches the daemon is shared fairly: a member with many links (or many revocations with
+// late timestamps) cannot push another roster member's link or revocation out of the update.
+#[test]
+fn the_update_takes_members_in_turn_so_one_cannot_push_another_out() {
+    let me = seed(0x41);
+    let noisy = seed(0x51);
+    let quiet = seed(0x61);
+    let wallet = seed(0x0b);
+    let cap = crate::device_link::MAX_LINKS;
+    let mut peers = PeerLinkStore::default();
+    for i in 0..cap {
+        peers
+            .links
+            .push(link(&noisy, &dev_seed(0x90, i), &wallet, i as u32, "Box", 1_790_000_000));
+        peers.revocations.push(RevocationWire {
+            member: addr(&noisy),
+            device: addr(&dev_seed(0x77, i)),
+            revoked_at: 4_000_000_000 + i as u64, // claims to be far in the future
+            member_sig: String::new(),
+        });
+    }
+    let quiet_dev = addr(&seed(0x62));
+    peers
+        .links
+        .push(link(&quiet, &seed(0x62), &wallet, 0, "Quiet box", 1_790_000_000));
+    let quiet_revoked = addr(&seed(0x63));
+    peers.revocations.push(RevocationWire {
+        member: addr(&quiet),
+        device: quiet_revoked.clone(),
+        revoked_at: 1_790_000_100,
+        member_sig: String::new(),
+    });
+    let own = own_store(&me, &[(&seed(0x42), 0, "Mine")]);
+    let (links, revs) = roster_update(&own, &peers, &roster_of(&[&me, &noisy, &quiet]));
+    assert_eq!(links[0].member, addr(&me), "own links first");
+    assert!(links.iter().any(|l| l.device == quiet_dev), "the quiet member's link is sent");
+    assert!(
+        revs.iter().any(|r| r.device == quiet_revoked),
+        "the quiet member's revocation is sent"
+    );
+    assert!(links.len() <= cap && revs.len() <= cap);
+}
+
+// A device revoked twice (two timestamps) takes one slot in the update, not two.
+#[test]
+fn a_device_revoked_twice_is_sent_once() {
+    let me = seed(0x41);
+    let peer = seed(0x51);
+    let d = addr(&seed(0x52));
+    let mut own = DeviceLinkStore::default();
+    own.revocations
+        .push(sign_revocation(&peer, &d, 1_790_000_100).expect("rev"));
+    let peers = PeerLinkStore {
+        links: vec![],
+        revocations: vec![
+            sign_revocation(&peer, &d, 1_790_000_300).expect("rev"),
+            sign_revocation(&peer, &addr(&seed(0x53)), 1_790_000_200).expect("rev"),
+        ],
+    };
+    let (_, revs) = roster_update(&own, &peers, &roster_of(&[&me, &peer]));
+    let of_d = revs.iter().filter(|r| r.device == d).count();
+    assert_eq!(of_d, 1, "{revs:?}");
+    assert_eq!(revs.len(), 2);
+}
+
+// Mutation follow-up (fan-out 6): a member's revocation relayed by someone else is refused, even
+// though its signature is valid (a share speaks only for its sender; mutating the sender check on
+// revocations used to survive).
+#[test]
+fn a_valid_revocation_relayed_by_another_member_is_refused() {
+    let me = seed(0x41);
+    let peer = seed(0x51);
+    let mallory = seed(0x71);
+    let rev = sign_revocation(&peer, &addr(&seed(0x52)), 1_790_000_100).expect("rev");
+    let mut store = PeerLinkStore::default();
+    let r = ingest(&mut store, &addr(&me), &addr(&mallory), &share_body(vec![], vec![rev]))
+        .expect("ingest");
+    assert_eq!(r.revocations, 0);
+    assert!(store.revocations.is_empty());
+    assert_eq!(r.refused.len(), 1, "{:?}", r.refused);
+}
+
+// Mutation follow-up (fan-out 6): one of our own links that has a revocation on record (written by
+// an older build, or a store edited by hand) is never sent to the daemon.
+#[test]
+fn an_own_link_with_a_revocation_on_record_is_not_sent() {
+    let me = seed(0x41);
+    let dev = seed(0x42);
+    let mut own = own_store(&me, &[(&dev, 0, "Mine"), (&seed(0x43), 1, "Other")]);
+    own.revocations
+        .push(sign_revocation(&me, &addr(&dev), 1_790_000_100).expect("rev"));
+    assert_eq!(own.links.len(), 2, "precondition: the link is still stored");
+    let (links, revs) = roster_update(&own, &PeerLinkStore::default(), &roster_of(&[&me]));
+    assert!(links.iter().all(|l| l.device != addr(&dev)), "{links:?}");
+    assert_eq!(links.len(), 1);
+    assert_eq!(revs.len(), 1);
+}

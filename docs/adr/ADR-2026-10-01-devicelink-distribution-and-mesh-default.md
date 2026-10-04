@@ -30,10 +30,14 @@ US-8.2 also asks for the mesh to be on by default once that is safe.
    revocations with every group it is in, as a control message on the end-to-end encrypted relay
    (prefix U+0001 `cdlink1:`, hidden from the chat like the social-binding message). Core accepts a
    share only when the relay attributes it to the member it speaks for and every signature
-   verifies, keeps revocations for good (in either order of arrival), caps the store (64 links per
-   member, 1,024 links, 2,048 revocations), and sends the daemon this machine's own links first,
-   then other members' links for members on that group's roster, never a revoked one, within the
-   daemon's 64-per-update caps and its 64 KiB line. A member who never linked a device sends nothing.
+   verifies, keeps revocations for good (in either order of arrival), caps the store per member
+   (64 links, 128 revocations) and overall (1,024 links, 2,048 revocations), and sends the daemon
+   this machine's own links and revocations first, then other roster members' links and revocations
+   one member at a time (each member's newest revocation first, one per device), never a revoked
+   link, within the daemon's 64-per-update caps and its 64 KiB line. Taking members in turn matters
+   because `revoked_at` is chosen by the signer: a global newest-first order would let one member
+   push every other member's revocations out of the update. A member who never linked a device
+   sends nothing.
 3. **No restart.** Core's cluster manager can be replaced: when this machine's mesh identity
    changes (it was linked, or removed), the daemon is stopped and the next cluster call starts it
    under the new identity. The daemon re-dials its bootstrap peers that are not connected every
@@ -60,7 +64,9 @@ so the channel needs no trust.
 
 ## Pending owner sign-off (placeholders)
 
-* The relay as the distribution channel, and the store caps above.
+* The relay as the distribution channel, and the store caps above (per member: 64 links and 128
+  revocations; a member that has revoked more than 128 devices has further revocations refused on
+  other members' machines).
 * The re-dial interval (5 s), per-tick cap (16) and kept addresses (64).
 * The default listen address `/ip4/0.0.0.0/tcp/4211` once the mesh is on by default.
 * Whether a member may turn the default-on mesh off (built: yes, after the sign-off only).
