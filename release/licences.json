@@ -171,6 +171,28 @@
       "review": "ok"
     },
     {
+      "id": "contract-templates",
+      "name": "Contract templates (HUP-S6.2)",
+      "spdx": "MIT",
+      "first_party": true,
+      "ships_as": "installer",
+      "covers": [
+        "resource:../templates/*.json",
+        "resource:../templates/_common",
+        "resource:../templates/erc1155",
+        "resource:../templates/erc20",
+        "resource:../templates/erc721",
+        "resource:../templates/erc721-solady",
+        "resource:../templates/governor",
+        "resource:../templates/hello-mint"
+      ],
+      "copyleft": "none",
+      "licence_texts": [],
+      "source_offer": null,
+      "review": "ok",
+      "note": "Citrate's own contract templates; every Solidity source carries an SPDX MIT header so members may use the rendered contracts freely. Pinned libraries (OpenZeppelin, Solady, forge-std) are separate entries."
+    },
+    {
       "id": "licence-texts",
       "name": "Third-party licence texts (this inventory's texts)",
       "spdx": "LicenseRef-various",
@@ -475,17 +497,17 @@
     },
     {
       "id": "chromium",
-      "name": "Managed Chromium (HUP-S5.5)",
-      "upstream": "https://www.chromium.org",
-      "spdx": "BSD-3-Clause",
+      "name": "Managed Chromium: Chrome for Testing (HUP-S5.1)",
+      "upstream": "https://googlechromelabs.github.io/chrome-for-testing/",
+      "spdx": "LicenseRef-Google-Chrome-for-Testing",
       "first_party": false,
-      "ships_as": "not-shipped",
-      "covers": ["planned:chromium"],
+      "ships_as": "first-run-download",
+      "covers": ["toolchain:chromium"],
       "copyleft": "weak",
       "licence_texts": [],
-      "source_offer": null,
+      "source_offer": "Chromium source: https://chromium.googlesource.com/chromium/src at the revision recorded in components/toolchain-bundle.json; the bundled third-party notices are listed at chrome://credits. Offer text to be added to docs/LICENCE_REVIEW.md.",
       "review": "owner",
-      "gap": "Not shipped: the browser uses a Chromium-family browser already on the machine. A managed download would carry Chromium's third-party notices (some LGPL/MPL components); review it when the component is added."
+      "gap": "A managed first-run download (components/toolchain-bundle.json), not installed until its signed component manifest exists (@rule8 component-key ceremony). These are Google builds whose ABOUT file points to the Google Chrome Terms of Service: whether Citrate may re-host the archives or the updater fetches them from Google's URL, and which notices ship with them, is pending owner and legal sign-off."
     },
     {
       "id": "searxng",
@@ -493,13 +515,13 @@
       "upstream": "https://github.com/searxng/searxng",
       "spdx": "AGPL-3.0-or-later",
       "first_party": false,
-      "ships_as": "not-shipped",
-      "covers": ["planned:searxng"],
+      "ships_as": "first-run-download",
+      "covers": ["toolchain:searxng"],
       "copyleft": "network",
       "licence_texts": [],
-      "source_offer": null,
+      "source_offer": "Corresponding source: the unmodified upstream archive pinned by URL and sha256 in components/toolchain-bundle.json. Offer text to be added to docs/LICENCE_REVIEW.md.",
       "review": "owner",
-      "gap": "Not shipped and not installed. If added as a component, Citrate conveys AGPL code: ship the text and a source offer; section 13 applies only if Citrate modifies it."
+      "gap": "A first-run component (Python source plus a hash-locked wheelhouse, not built or signed yet). Hermes runs it unmodified on 127.0.0.1 only, so no network users are served; a distributed bundle still carries the AGPL text and the source offer, and any modification would have to be published under the AGPL. The distribution approach is pending owner sign-off."
     }
   ]
 }

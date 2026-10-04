@@ -30,8 +30,10 @@ Everything Citrate Core puts on a member's machine, in three groups:
 | Downloaded on first run | `components/toolchain-bundle.json` tools, `templates/deps.lock.json` libraries | `toolchain:`, `library:` |
 | Text the app carries | the reviewed skills (`skills.lock`) and the Hermes knowledge corpus (`manifest.json` of the staged corpus) | `skills:`, `corpus:` |
 
-Two components that are planned but not shipped (managed Chromium, SearXNG) are listed as
-`planned:` so the review is ready when they arrive.
+Two first-run components the web lane added (managed Chromium as Chrome for Testing, and
+SearXNG) are listed as `toolchain:` entries since the stack merge; neither installs until its
+signed component manifest exists. Citrate's own contract templates (MIT-headed Solidity, bundled
+with the installer since the dApp forge lane) have their own entry.
 
 Checked on 2026-10-04 against the staged corpus `9709668…` (15 sources, all included) and the
 240-skill `skills.lock`:
@@ -70,8 +72,9 @@ licence inventory: OK
 | Foundry | MIT OR Apache-2.0 | first-run download | ok |
 | CPython (python-build-standalone) | PSF-2.0 | first-run download | ok |
 | Node.js | MIT | first-run download | ok |
-| Managed Chromium | BSD-3-Clause and others | not shipped | owner, when added |
-| SearXNG | AGPL-3.0-or-later | not shipped | owner, when added |
+| Contract templates | MIT (first party) | installer | ok |
+| **Managed Chromium (Chrome for Testing)** | **Google Chrome for Testing terms; Chromium BSD-3-Clause and others** | first-run download (not installed before the component signing) | owner: re-host or fetch from Google, notices |
+| **SearXNG** | **AGPL-3.0-or-later** | first-run download (not built yet) | owner: distribution approach and source offer |
 
 ## 3. What changed in this review
 
