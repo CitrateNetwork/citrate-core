@@ -106,9 +106,14 @@ impl NodeBackend for LiveBackend {
     fn wallet_address(&self) -> Result<String, String> {
         let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&self.app)
             .ok_or("the wallet is not available")?;
-        crate::wallet::address_auto_unlocked(&custody.0)
+        // A read never unlocks the vault: an MCP client sees the address only while the member
+        // has the wallet open in Core.
+        crate::wallet::address(&custody.0)
             .map(|w| w.address)
-            .map_err(|e| format!("wallet unavailable: {e}"))
+            .map_err(|_| {
+                "the wallet is locked; open Citrate Core and unlock it to share the address"
+                    .to_string()
+            })
     }
 
     fn memory_search(&self, tenant: &str, query: &str, limit: usize) -> Result<Value, String> {
@@ -128,6 +133,12 @@ impl NodeBackend for LiveBackend {
     }
 
     fn cluster_status(&self, group: &str) -> Result<Value, String> {
+        // A read never starts the group daemon (or anything else) as a side effect.
+        if !crate::cluster::is_daemon_running() {
+            return Err(
+                "the group daemon is not running; open Groups in Citrate Core to start it".into(),
+            );
+        }
         let s = tauri::async_runtime::block_on(crate::cluster::cluster_status(
             self.app.clone(),
             group.to_string(),
@@ -136,6 +147,12 @@ impl NodeBackend for LiveBackend {
     }
 
     fn cluster_peers(&self, group: &str) -> Result<Value, String> {
+        // A read never starts the group daemon (or anything else) as a side effect.
+        if !crate::cluster::is_daemon_running() {
+            return Err(
+                "the group daemon is not running; open Groups in Citrate Core to start it".into(),
+            );
+        }
         let p = tauri::async_runtime::block_on(crate::cluster::cluster_peers(
             self.app.clone(),
             group.to_string(),
@@ -205,11 +222,98 @@ impl NodeBackend for LiveBackend {
         })
     }
 
+    fn faucet_request(&self, origin: &str, initcode_hash: &str) -> Result<Value, String> {
+        let r = crate::faucet::request_for_app(&self.app, initcode_hash, origin)?;
+        serde_json::to_value(r).map_err(|e| e.to_string())
+    }
+
+    fn hermes_sessions(&self) -> Result<Value, String> {
+        use crate::node_mcp_hermes::HermesSessions;
+        crate::node_mcp_hermes::ManagerSessions(crate::hermes::manager_for(&self.app)?).list()
+    }
+
+    fn hermes_events(&self, session: &str, after: u64, wait_ms: u64) -> Result<Value, String> {
+        use crate::node_mcp_hermes::HermesSessions;
+        crate::node_mcp_hermes::ManagerSessions(crate::hermes::manager_for(&self.app)?)
+            .events(session, after, wait_ms)
+    }
+
     fn close_ceremony(&self, ceremony_id: &str) {
         if let Some(c) = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&self.app) {
             let _ = c.0.reject(ceremony_id);
         }
     }
+
+    fn devices(&self) -> Result<Value, String> {
+        // The same read the Devices screen uses (never mints a key).
+        let dto =
+            tauri::async_runtime::block_on(crate::device_link::device_links(self.app.clone()))?;
+        serde_json::to_value(dto).map_err(|e| e.to_string())
+    }
+
+    fn pins(&self) -> Result<Value, String> {
+        let rows = crate::storage::storage_list_sync(self.app.clone())?;
+        Ok(json!({ "pins": rows }))
+    }
+
+    fn propose_deploy(
+        &self,
+        origin: &str,
+        bytecode: &str,
+        constructor_args: &str,
+        value_wei: u128,
+        gas: Option<u64>,
+    ) -> Result<ProposedSignature, String> {
+        let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&self.app)
+            .ok_or("the wallet is not available")?;
+        let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&self.app)
+            .ok_or("the signature ceremony is not available")?;
+        let gate = tauri::Manager::try_state::<crate::deploy_gate::DeployGateState>(&self.app)
+            .ok_or("the deploy gate is not available")?;
+        // The one deploy path: refused unless the gate is READY for exactly these bytes.
+        let proposal = crate::contract_deploy::propose_deploy(
+            &custody.0,
+            &ceremony.0,
+            &gate.0,
+            origin,
+            bytecode,
+            Some(constructor_args),
+            value_wei,
+            gas,
+        )?;
+        Ok(ProposedSignature {
+            ceremony_id: proposal.ceremony.id.clone(),
+            ceremony: serde_json::to_value(&proposal).map_err(|e| e.to_string())?,
+        })
+    }
+
+    fn anchor_ready(&self) -> Result<(), String> {
+        crate::chain_agent::anchor_ready(&self.app)
+    }
+
+    fn contract_abi(&self, address: &str) -> Result<Value, String> {
+        abi_registry_entry(address)
+    }
+}
+
+/// The ABI registry entry for `address` (resource `citrate://contract/{address}/abi`): the
+/// Contract reader's source, CitrateScan's public contract endpoint on its pinned host. The
+/// interface only: the source text is dropped and `sourceAvailable` says whether it exists.
+pub fn abi_registry_entry(address: &str) -> Result<Value, String> {
+    let vs = crate::contract_reader::contract_source_sync(address.to_string())?;
+    Ok(abi_entry_view(address, &vs))
+}
+
+/// [`abi_registry_entry`]'s shape for one verified-source record.
+pub fn abi_entry_view(address: &str, vs: &crate::contract_reader::VerifiedSource) -> Value {
+    let mut v = serde_json::to_value(vs).unwrap_or_else(|_| json!({}));
+    if let Some(o) = v.as_object_mut() {
+        let has_source = o.remove("source").is_some_and(|s| !s.is_null());
+        o.insert("sourceAvailable".into(), json!(has_source));
+        o.insert("address".into(), json!(address));
+        o.insert("from".into(), json!("CitrateScan verified sources"));
+    }
+    v
 }
 
 /// The public id of an invite: the first 16 hex chars of `BLAKE3(token)` (the same hash the relay

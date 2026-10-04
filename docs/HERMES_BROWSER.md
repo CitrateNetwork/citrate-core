@@ -1,8 +1,8 @@
 ---
 created: 2026-10-01T14:00:00Z
-branch: hup/n4-browser
+branch: hup/n4-browser (updated on hup/n6-web-browse, 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
-status: implemented behind CITRATE_HERMES_BROWSER (default off); managed Chromium install is HUP-S5.5
+status: implemented behind a Settings switch (default off); the managed Chromium is measured as a component, its install waits for the signed manifest (HUP-S5.5)
 wp: HUP-S5.1, HUP-S5.6
 ---
 
@@ -14,11 +14,20 @@ worker, the tools and the sidecar routes). This page covers citrate-core's side.
 
 ## Off by default
 
-The sidecar offers the browser only when it starts with `CITRATE_HERMES_BROWSER=1` (the sidecar
-inherits citrate-core's environment). Unset, the sidecar answers `enabled: false`, the main
-window's browser controls render nothing, and nothing about a member's app changes. The managed
-Chromium path is `CITRATE_BROWSER_CHROMIUM`; without it the sidecar uses a Chromium-family browser
-already installed, and says "not installed" when there is none.
+The sidecar offers the browser only when it starts with `CITRATE_HERMES_BROWSER=1`. The member
+turns it on in Settings, "Web search & decisions", card "Hermes's browser" (off by default);
+core stores the choice in `<app local data>/hermes/web-settings.json` (`browserEnabled`) and passes
+the variable when it next starts Hermes (`src-tauri/src/hermes_web.rs`, on `SIDECAR_ENV_KEYS`).
+Off, the sidecar answers `enabled: false`, the main window's browser controls render nothing, and
+nothing about a member's app changes. Attaching to the member's own Chrome is never a setting: it
+stays a per-session consent in the Browser pop-out.
+
+The sidecar prefers the managed Chromium: when the signed `chromium` component is installed
+(`components/toolchain-bundle.json`, Chrome for Testing 154.0.8037.92, measured on macOS arm64),
+core passes its executable as `CITRATE_BROWSER_CHROMIUM`. Until then the sidecar uses a
+Chromium-family browser already installed, and says "not installed" when there is none; the
+Settings card says which. Installing it needs the external component-key ceremony and a published
+signed manifest, and the updater does not unpack zip yet (see the bundle entry's note).
 
 ## What the member sees
 
@@ -69,8 +78,11 @@ already installed, and says "not installed" when there is none.
 
 ## Not done here
 
-- Downloading and updating the managed Chromium (HUP-S5.5 component updater).
-- `console` and `network` browser tools. Sign-in with the member's wallet is the sign-in bridge
-  (HUP-S2.3, `docs/WEB_SIGNING_BUDGETS.md`): the managed browser's page provider asks, core decides.
-- The `decide()` element picker (HUP-S5.3) and private search (HUP-S5.2).
-- Turning the browser on from Settings: today it is an environment switch for the sidecar.
+- Installing the managed Chromium: the component entry is measured, but the component-key
+  ceremony, a signed manifest on the CDN, zip unpacking in the updater, and the owner's decision on
+  re-hosting Google's builds are all still open.
+- Sign-in with the member's wallet is the sign-in bridge (HUP-S2.3,
+  `docs/WEB_SIGNING_BUDGETS.md`): the managed browser's page provider asks, core decides.
+- The console and network tools and the `decide()` picker (`browser_pick`) live in the sidecar
+  (citrate-agent-runtime `agent-browser`); this app does not show their output separately yet.
+- A packaged-app run of the Browser pop-out with the switch on (QA).

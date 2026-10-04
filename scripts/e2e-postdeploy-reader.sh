@@ -6,22 +6,27 @@
 #   3. start a throwaway anvil (chain id 40204) and deploy the contract from anvil's unlocked
 #      test account 0 (no key is used or stored; anvil signs for its own dev accounts);
 #   4. optionally start a throwaway kubo (IPFS) node when `ipfs` is installed;
-#   5. run the Rust post-deploy + reader test and the TypeScript reader test against them.
+#   5. run the Rust post-deploy + reader test and the TypeScript reader test against them;
+#   6. HUP-S6.10: when a citrate-fork binary is given (--fork-bin, or CITRATE_FORK_BIN), run the
+#      deploy gate's fork step on the Citrate-aware fork against the same anvil: the rendered
+#      contract's creation plus a 2-token test mint, read-only (state comes from anvil).
 #
 # The page is not npm-built here: a two-file stand-in for app/dist is written so the IPFS pin
 # step has a site to add. Everything is removed on exit except the deps cache.
 #
-# usage: scripts/e2e-postdeploy-reader.sh --work DIR --deps-cache DIR
+# usage: scripts/e2e-postdeploy-reader.sh --work DIR --deps-cache DIR [--fork-bin PATH]
 set -euo pipefail
 
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=""
 CACHE=""
+FORK_BIN="${CITRATE_FORK_BIN:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --work) WORK="$2"; shift 2 ;;
     --deps-cache) CACHE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --fork-bin) FORK_BIN="$2"; shift 2 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -58,7 +63,9 @@ done
 (cd "$WORK/project/contracts" && forge build --offline >/dev/null)
 CONTRACT=$(jq -r '.params.contract' "$WORK/project/citrate-template.lock.json")
 
-anvil --chain-id 40204 --port "$PORT" --silent &
+# Genesis block 100,000: above the chain's CREATE-nonce activation (30,000), which citrate-fork
+# requires before it models a block; below the 40204 hardening pin, like 40204 today.
+anvil --chain-id 40204 --number 100000 --port "$PORT" --silent &
 PIDS+=($!)
 for _ in $(seq 1 50); do cast block-number --rpc-url "$RPC" >/dev/null 2>&1 && break; sleep 0.2; done
 
@@ -91,4 +98,13 @@ export CITRATE_E2E_RPC="$RPC" CITRATE_E2E_PROJECT="$WORK/project" CITRATE_E2E_AD
 [ -n "$KUBO_API" ] && export CITRATE_E2E_KUBO_API="$KUBO_API"
 (cd "$CORE/src-tauri" && cargo test --lib e2e_anvil -- --nocapture)
 (cd "$CORE" && npx vitest run src/contractReader/anvil.e2e.test.ts)
+
+if [ -n "$FORK_BIN" ]; then
+  INITCODE=$(jq -r '.bytecode.object' "$WORK/project/contracts/out/Token.sol/$CONTRACT.json")
+  export CITRATE_E2E_FORK_BIN="$FORK_BIN" CITRATE_E2E_INITCODE="$INITCODE" \
+    CITRATE_E2E_PRICE_WEI=5000000000000000000
+  (cd "$CORE/src-tauri" && cargo test --lib e2e_citrate_fork -- --nocapture)
+else
+  echo "e2e: no citrate-fork binary (--fork-bin); the Citrate-aware fork step is not exercised"
+fi
 echo "e2e: OK"

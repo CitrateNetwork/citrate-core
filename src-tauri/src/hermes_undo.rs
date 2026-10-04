@@ -80,6 +80,54 @@ pub struct UndoOutcome {
     pub conflicts: Vec<UndoConflict>,
 }
 
+/// HUP-S5.4: one side of a path's change, as the sidecar reports it (`kind` plus its fields).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffSide {
+    Absent,
+    Text { text: String },
+    Binary { size: u64 },
+    TooLarge { size: u64 },
+    Symlink { target: String },
+    Unavailable { reason: String },
+}
+
+/// HUP-S5.4: one path a step touched, before and after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub path: String,
+    pub before: DiffSide,
+    pub after: DiffSide,
+}
+
+/// HUP-S5.4: what one checkpointed step changed (the Code and diff pop-out). `ok: false` with
+/// `kind` and `reason` when the sidecar refused (pruned, not found, undo not enabled, an older
+/// sidecar).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepDiff {
+    pub ok: bool,
+    pub session: String,
+    pub seq: u64,
+    /// `prepared` | `committed` | `interrupted` | `undone` (empty on a refusal).
+    pub status: String,
+    pub files: Vec<FileDiff>,
+    pub kind: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// At most this many files are passed on from one step (a step lists the paths it touched).
+pub const MAX_DIFF_FILES: usize = 200;
+
+#[derive(Deserialize)]
+struct DiffBody {
+    session: String,
+    seq: u64,
+    status: String,
+    files: Vec<FileDiff>,
+}
+
 const UNSUPPORTED: &str =
     "this agent sidecar does not support undo yet; update Citrate Core to get it";
 
@@ -215,6 +263,49 @@ impl HermesManager {
         outcome(&self.control.post(&url, &bearer, "{}")?)
     }
 
+    /// HUP-S5.4: `GET /checkpoints/:id/steps/:seq/diff` — what one step changed. Read-only.
+    pub fn checkpoint_diff(&self, id: &str, seq: u64) -> Result<StepDiff> {
+        if seq == 0 {
+            return Err(bad_request("the step must be a positive whole number"));
+        }
+        let url = self.checkpoints_url(id, &format!("/steps/{seq}/diff"))?;
+        let bearer = self.bearer()?;
+        let resp = self.control.get(&url, &bearer)?;
+        if let Some(r) = refusal(&resp) {
+            let reason = if r.kind == "unsupported" {
+                "this agent sidecar cannot show diffs yet; update Citrate Core to get it"
+                    .to_string()
+            } else {
+                r.error
+            };
+            return Ok(StepDiff {
+                ok: false,
+                session: id.to_string(),
+                seq,
+                status: String::new(),
+                files: Vec::new(),
+                kind: Some(r.kind),
+                reason: Some(reason),
+            });
+        }
+        let mut b: DiffBody = decode(&resp)?;
+        if b.session != id || b.seq != seq {
+            return Err(HermesError::Decode(
+                "the sidecar answered for a different step".into(),
+            ));
+        }
+        b.files.truncate(MAX_DIFF_FILES);
+        Ok(StepDiff {
+            ok: true,
+            session: b.session,
+            seq: b.seq,
+            status: b.status,
+            files: b.files,
+            kind: None,
+            reason: None,
+        })
+    }
+
     /// `POST /checkpoints/:id/undo` — undo every step of the session not undone yet (all or nothing).
     pub fn undo_session(&self, id: &str) -> Result<UndoOutcome> {
         let url = self.checkpoints_url(id, "/undo")?;
@@ -247,6 +338,22 @@ pub async fn hermes_undo_step(
     crate::blocking::off_main(move || {
         super::manager(&app)?
             .undo_step(&id, seq)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **hermes_checkpoint_diff** — HUP-S5.4: what one agent file change did, for the Code and
+/// diff pop-out (read-only; the pop-out asks the main window, which calls this).
+#[tauri::command]
+pub async fn hermes_checkpoint_diff(
+    app: tauri::AppHandle,
+    id: String,
+    seq: u64,
+) -> std::result::Result<StepDiff, String> {
+    crate::blocking::off_main(move || {
+        super::manager(&app)?
+            .checkpoint_diff(&id, seq)
             .map_err(|e| e.to_string())
     })
     .await

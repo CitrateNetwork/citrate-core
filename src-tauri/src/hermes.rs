@@ -576,6 +576,17 @@ impl HermesManager {
                 path.to_string_lossy().to_string(),
             ));
         }
+        // HUP-S4.4: the saved server list (next to the allowlist), so the sidecar's dry-run probe
+        // starts only an entry this app saved. The file may not exist yet; the probe then refuses.
+        if let Some(allow) = &self.mcp_allowlist {
+            spec.env.push((
+                crate::mcp_servers::MCP_REGISTRY_ENV.to_string(),
+                allow
+                    .with_file_name(crate::mcp_servers::REGISTRY_FILE)
+                    .to_string_lossy()
+                    .to_string(),
+            ));
+        }
         if let Some(dir) = &self.checkpoints_dir {
             spec.env.push((
                 undo::HERMES_CHECKPOINTS_ENV.to_string(),
@@ -1460,7 +1471,10 @@ pub(crate) fn manager<R: tauri::Runtime>(
         .with_chain_data_dir(base.clone())
         .with_env_source({
             // HUP-S5.2/S5.3 web opt-ins and HUP-S6.3 the toolchain switch, read at each start.
-            let web = crate::hermes_web::file_env_source(base.clone());
+            let web = crate::hermes_web::file_env_source(
+                base.clone(),
+                crate::components::components_root(app).ok(),
+            );
             let toolchain = crate::forge_toolchain::file_env_source(
                 base.clone(),
                 crate::forge_toolchain::places_for(app)?,
@@ -2147,6 +2161,11 @@ pub mod personas;
 // the bearer-authed control).
 #[path = "hermes_shell.rs"]
 pub mod shell;
+
+// HUP-S4.1: the member's decision on an MCP card the sidecar holds (child module: reuses the
+// bearer-authed control).
+#[path = "hermes_mcp_cards.rs"]
+pub mod mcp_cards;
 
 #[cfg(test)]
 mod brief_tests {

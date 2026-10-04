@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import {
   composeSystemPrompt,
   customPersonaId,
+  MAX_PERSONA_FRAGMENT,
   evidenceLabel,
   nameLabel,
   parseRules,
@@ -169,5 +170,20 @@ describe("track workflows", () => {
   it("says how each workflow is judged", () => {
     expect(evidenceLabel("tool-report")).toBe("checked by tool reports");
     expect(evidenceLabel("answer-shape")).toBe("checked by answer shape");
+  });
+});
+
+describe("a saved fragment is bounded again where it is used", () => {
+  const base = { prompt_fragment: "Write plainly." } as unknown as Parameters<typeof personaFragment>[0];
+  it("an over-long fragment, or one with control or text-direction characters, is not used", () => {
+    expect(personaFragment(base)).toBe("Write plainly.");
+    const long = { prompt_fragment: "x".repeat(MAX_PERSONA_FRAGMENT + 1) } as unknown as Parameters<typeof personaFragment>[0];
+    expect(personaFragment(long)).toBe("");
+    for (const bad of ["ok\u0007bell", "ok‮evil", "ok⁦iso", "ok\u0000nul"]) {
+      expect(personaFragment({ prompt_fragment: bad } as unknown as Parameters<typeof personaFragment>[0])).toBe("");
+    }
+    // Ordinary line breaks and tabs stay.
+    expect(personaFragment({ prompt_fragment: "a\n\tb" } as unknown as Parameters<typeof personaFragment>[0])).toBe("a\n\tb");
+    expect(composeSystemPrompt("BASE", long)).toBe("BASE");
   });
 });

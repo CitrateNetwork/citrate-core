@@ -1,0 +1,53 @@
+{
+  "fixture": "hermes-session-body",
+  "version": 1,
+  "purpose": "HUP-S1.9 live parity. The exact POST /sessions body citrate-core's build_session_body (src-tauri/src/hermes.rs) makes for this input. The Rust test hermes_session_tests.rs and the live parity runner (src/agent/parity/live.test.ts) both check against these bytes, so the live runner opens sessions with the body the app sends.",
+  "input": {
+    "systemPrompt": "You are Hermes.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "node_status",
+          "description": "Read the node's sync state.",
+          "parameters": { "type": "object", "properties": {} }
+        },
+        "annotations": { "effect": "none", "trust": "trusted" }
+      },
+      {
+        "name": "deploy_contract",
+        "description": "Deploy a contract.",
+        "annotations": { "effect": "sign", "trust": "trusted" }
+      }
+    ],
+    "baseUrl": "http://127.0.0.1:18080/v1",
+    "bearer": "",
+    "model": "gemma.gguf",
+    "contextTokens": 16384
+  },
+  "body": {
+    "model": "gemma.gguf",
+    "systemPrompt": "You are Hermes.",
+    "llm": { "baseUrl": "http://127.0.0.1:18080/v1", "bearer": "" },
+    "tools": [
+      {
+        "name": "node_status",
+        "description": "Read the node's sync state.",
+        "parameters": { "type": "object", "properties": {} },
+        "host": "core",
+        "annotations": { "effect": "none", "trust": "trusted", "read_only": true }
+      },
+      {
+        "name": "deploy_contract",
+        "description": "Deploy a contract.",
+        "parameters": { "type": "object" },
+        "host": "core",
+        "annotations": { "effect": "sign", "trust": "trusted", "read_only": false }
+      }
+    ],
+    "maxToolsPerRequest": 8,
+    "contextTokens": 16384,
+    "maxTokens": 2048,
+    "hicAware": true
+  }
+}

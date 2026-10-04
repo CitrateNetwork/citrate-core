@@ -4,20 +4,23 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { AGENT_TOOLS } from "../harness";
 import { parseToolcallDataset } from "./runner";
+import { parseFragment } from "./fragments";
 
-const RAW = readFileSync("src/agent/eval/toolcall-v2.d/contract.json", "utf8");
+const FILE = "20-contract-view.json";
+const RAW = readFileSync(`src/agent/eval/toolcall-v2.d/${FILE}`, "utf8");
 const FRAG = JSON.parse(RAW) as {
-  version: string;
+  added: string;
   tasks: { id: string; prompt: string; expect: { tool: string | null; argsMatch?: Record<string, string>; alsoAccept?: string[] }; tags: string[] }[];
 };
 const v1 = JSON.parse(readFileSync("src/agent/eval/toolcall-v1.json", "utf8")) as { tasks: { id: string }[] };
 
 describe("toolcall-v2 fragment: contract", () => {
   it("is a toolcall-v2 fragment the dataset validator accepts", () => {
-    expect(FRAG.version).toBe("toolcall-v2");
-    // The same checks as every dataset: real tools, declared argument names, valid regexes,
-    // no write tool in alsoAccept, the train/eval disjointness flag.
-    expect(parseToolcallDataset(FRAG).tasks).toHaveLength(FRAG.tasks.length);
+    // The v2 loader's fragment rules (added/by, known keys), then the same checks as every
+    // dataset: real tools, declared argument names, valid regexes, no write tool in alsoAccept.
+    expect(parseFragment("toolcall", { file: FILE, data: FRAG })).toHaveLength(FRAG.tasks.length);
+    const v2 = JSON.parse(readFileSync("src/agent/eval/toolcall-v2.json", "utf8")) as { version: string; provenance: unknown };
+    expect(parseToolcallDataset({ version: v2.version, provenance: v2.provenance, tasks: FRAG.tasks }).tasks).toHaveLength(FRAG.tasks.length);
     const ids = FRAG.tasks.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of ids) expect(v1.tasks.map((t) => t.id)).not.toContain(id);

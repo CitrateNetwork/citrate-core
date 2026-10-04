@@ -384,11 +384,12 @@ fn live_write_folder(g: &crate::agent_grants::Grant, now: u64) -> bool {
         && g.expires_at.is_none_or(|t| now < t)
 }
 
-/// The live write folder grants.
+/// The live write folder grants (never one rooted in a protected location).
 pub fn write_targets(st: &GrantState, now: u64) -> Vec<Target> {
     st.grants
         .iter()
         .filter(|g| live_write_folder(g, now))
+        .filter(|g| crate::grant_deny::denied_location(Path::new(&g.root)).is_none())
         .map(|g| Target {
             grant_id: g.id.clone(),
             root: g.root.clone(),
@@ -413,7 +414,79 @@ pub fn target_root(st: &GrantState, grant_id: &str, now: u64) -> Result<PathBuf,
             g.root
         ));
     }
+    if let Some(why) = crate::grant_deny::denied_location(&canon) {
+        return Err(format!(
+            "{} is a protected location ({why}); pick another folder",
+            g.root
+        ));
+    }
     Ok(canon)
+}
+
+/// A gallery image is read back only while a live folder grant still covers it: the grant it was
+/// saved under, unrevoked and unexpired, with the file inside that grant's folder.
+pub fn gallery_read_allowed(st: &GrantState, item: &GalleryItem, now: u64) -> Result<(), String> {
+    let g = st
+        .grants
+        .iter()
+        .find(|g| {
+            g.id == item.grant_id
+                && g.kind == GrantKind::Folder
+                && g.revoked_at.is_none()
+                && g.granted_at <= now
+                && g.expires_at.is_none_or(|t| now < t)
+        })
+        .ok_or("the folder this image was saved in is no longer granted")?;
+    let root = Path::new(&g.root);
+    let path = Path::new(&item.path);
+    let parent = path.parent().ok_or("the image path has no folder")?;
+    let parent =
+        std::fs::canonicalize(parent).map_err(|_| "the image's folder is no longer there")?;
+    if !parent.starts_with(root) || crate::grant_deny::denied_location(&parent).is_some() {
+        return Err("the image is no longer inside a granted folder".into());
+    }
+    Ok(())
+}
+
+/// Read a gallery file without following a link at its name, and only if it is a regular file
+/// with one name (not a hard link to something else) and within the size cap. The checks run on
+/// the opened file, so the file cannot be swapped between the check and the read.
+pub fn read_gallery_file(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    let f = opts
+        .open(path)
+        .map_err(|_| "the file is no longer there, or is a link")?;
+    let meta = f
+        .metadata()
+        .map_err(|e| format!("could not read the file: {}", e.kind()))?;
+    if !meta.is_file() {
+        return Err("the file is no longer a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() > 1 {
+            return Err("the file has another name elsewhere, so it is not shown".into());
+        }
+    }
+    if meta.len() > MAX_IMAGE_BYTES as u64 {
+        return Err("the file is larger than this app shows".into());
+    }
+    let mut bytes = Vec::new();
+    f.take(MAX_IMAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read the file: {}", e.kind()))?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("the file is larger than this app shows".into());
+    }
+    Ok(bytes)
 }
 
 /// A fresh, safe file name: `citrate-<kind>-YYYYMMDD-HHMMSS-<random>.<ext>`.
@@ -554,15 +627,7 @@ impl GalleryStore {
 /// Read a gallery file back for display: a regular file (not a symlink), within the size cap,
 /// whose bytes are still a known image type.
 pub fn data_url_for(path: &Path) -> Result<String, String> {
-    let meta = std::fs::symlink_metadata(path).map_err(|_| "the file is no longer there")?;
-    if !meta.is_file() {
-        return Err("the file is no longer a regular file".into());
-    }
-    if meta.len() > MAX_IMAGE_BYTES as u64 {
-        return Err("the file is larger than this app shows".into());
-    }
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("could not read the file: {}", e.kind()))?;
+    let bytes = read_gallery_file(path)?;
     let (mime, _) = sniff(&bytes).ok_or("the file is no longer a PNG, JPEG or WebP image")?;
     Ok(format!(
         "data:{mime};base64,{}",
@@ -840,6 +905,7 @@ pub async fn media_read(app: tauri::AppHandle, id: String) -> Result<String, Str
         let item = gallery(&app)?
             .find_item(&id)?
             .ok_or("that item is not in the gallery")?;
+        gallery_read_allowed(&grant_state(&app)?, &item, now_secs())?;
         data_url_for(Path::new(&item.path))
     })
     .await
@@ -857,13 +923,9 @@ pub async fn media_save_copy(
             .find_item(&id)?
             .ok_or("that item is not in the gallery")?;
         let st = grant_state(&app)?;
+        gallery_read_allowed(&st, &item, now_secs())?;
         let root = target_root(&st, &grant_id, now_secs())?;
-        let src = Path::new(&item.path);
-        let meta = std::fs::symlink_metadata(src).map_err(|_| "the file is no longer there")?;
-        if !meta.is_file() || meta.len() > MAX_IMAGE_BYTES as u64 {
-            return Err("the file is no longer a regular image file".into());
-        }
-        let bytes = std::fs::read(src).map_err(|e| e.kind().to_string())?;
+        let bytes = read_gallery_file(Path::new(&item.path))?;
         let (_, ext) = sniff(&bytes).ok_or("the file is no longer a PNG, JPEG or WebP image")?;
         let path = write_new_file(&root, &output_name(item.kind, now_secs(), ext), &bytes)?;
         Ok(path.display().to_string())

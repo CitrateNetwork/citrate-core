@@ -271,6 +271,28 @@ impl LlamaServerManager {
         *self.lora.lock().unwrap_or_else(|e| e.into_inner()) = path;
     }
 
+    /// HUP-S9.4: set the adapter only if `expected_model_file` (the base model the eval gate
+    /// authorized it for) is still the selected model, checked under the model lock so a model
+    /// switch cannot slip in between the check and the set.
+    pub fn set_lora_for_model(
+        &self,
+        path: PathBuf,
+        expected_model_file: &str,
+    ) -> std::result::Result<(), String> {
+        let guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+        let current = guard
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if current != expected_model_file {
+            return Err(format!(
+                "the selected model changed to {current} while the adapter was being loaded; nothing was loaded"
+            ));
+        }
+        self.set_lora(Some(path));
+        Ok(())
+    }
+
     /// HUP-S9.4: the LoRA adapter the server is (or will be) started with.
     pub fn lora(&self) -> Option<PathBuf> {
         self.lora.lock().unwrap_or_else(|e| e.into_inner()).clone()

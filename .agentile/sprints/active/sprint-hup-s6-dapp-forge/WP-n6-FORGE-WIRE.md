@@ -58,7 +58,7 @@ wiring that run exercises. Nothing here signs, deploys or touches chain 40204.
    on 40204 or a loopback fork, with the verified ABI or an `abi_fragment`. A function that would
    write is refused before core is asked anything. Annotation, parity fixture (both repos, new
    hash), the read-only tripwire list, the system prompt line, and eval items in
-   `src/agent/eval/toolcall-v2.d/contract.json`.
+   `src/agent/eval/toolcall-v2.d/20-contract-view.json`.
 5. **Fork-mode wallet guard.** The hello-mint page now refuses, in fork mode, to ask the wallet to
    sign a mint unless the wallet's latest block is one the fork mined after it forked, with the
    same hash on the fork RPC (`templates/hello-mint/files/app/src/forkGuard.ts`). Chain 40204

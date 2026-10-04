@@ -16,11 +16,13 @@ export interface EvalCliArgs {
   outDir: string;
   /** HUP-S9.4: the LoRA adapter the endpoint serves for this run (a candidate run for the eval gate). */
   adapterSha256?: string;
+  /** A50: which dataset generation to score (default v1, the frozen set every v1 scorecard used). */
+  datasets: "v1" | "v2";
 }
 
 export const EVAL_CLI_USAGE =
   "usage: node scripts/eval-tools.mjs --base-url <http://127.0.0.1:18080/v1> --model <name> " +
-  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--adapter-sha256 <hex>] [--allow-remote]";
+  "[--api-key-env VAR] [--tier T0|T1|T2] [--datasets v1|v2] [--out-dir eval/results] [--adapter-sha256 <hex>] [--allow-remote]";
 
 function parseHttpUrl(raw: string): URL | null {
   let u: URL;
@@ -44,7 +46,7 @@ export function isLoopbackUrl(raw: string): boolean {
   return octets.every((o) => o <= 255) && octets[0] === 127;
 }
 
-const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--adapter-sha256"]);
+const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--adapter-sha256", "--datasets"]);
 
 /** Parse argv (without the node + script entries). Throws with a readable message on error. */
 export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
@@ -86,11 +88,14 @@ export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
   if (adapterRaw !== undefined && !/^[0-9a-fA-F]{64}$/.test(adapterRaw)) {
     throw new Error(`--adapter-sha256 takes the adapter file's sha256 as 64 hex characters (got ${adapterRaw})`);
   }
+  const datasets = vals["--datasets"] ?? "v1";
+  if (datasets !== "v1" && datasets !== "v2") throw new Error(`--datasets must be v1 or v2 (got ${datasets})`);
   const out: EvalCliArgs = {
     baseUrl: baseUrl.replace(/\/+$/, ""),
     model,
     allowRemote,
     outDir: vals["--out-dir"] ?? "eval/results",
+    datasets,
   };
   if (apiKeyEnv !== undefined) out.apiKeyEnv = apiKeyEnv;
   if (tier !== undefined) out.tier = tier;

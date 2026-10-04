@@ -17,7 +17,13 @@ import type {
   VercelExportView,
   VerifyOutcomeView,
 } from "../domains";
-import type { DeployGateInputs, DeployGateLookup, DeployGateRecord } from "../../agent/deployGate";
+import type {
+  DeployGateInputs,
+  DeployGateLookup,
+  DeployGateRecord,
+  ForkDryRunInput,
+  ForkDryRunRequest,
+} from "../../agent/deployGate";
 import type { VerifiedSourceView } from "../../agent/verifiedSource";
 import type {
   TemplateCatalog,
@@ -44,6 +50,10 @@ export const tauriContracts: ContractsDomain = {
   },
   gateSubmit(inputs: DeployGateInputs) {
     return invoke<DeployGateRecord>("deploy_gate_submit", { inputs });
+  },
+  // HUP-S6.10 — the fork step on the Citrate-aware fork (core runs citrate-fork, read-only).
+  gateForkDryRun(request: ForkDryRunRequest) {
+    return invoke<ForkDryRunInput>("deploy_gate_fork_dry_run", { request });
   },
   // HUP-S4.3 — read-only CitrateScan verified-source lookup (core makes the HTTP call).
   verifiedSource(address: string) {

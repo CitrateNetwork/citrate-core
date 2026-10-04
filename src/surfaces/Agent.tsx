@@ -305,7 +305,7 @@ export function Agent({ store, s }: SurfaceProps) {
                 )}
               </div>
 
-              {/* HUP-S4.3 — MCP servers Hermes may use (memory graph, CitrateScan); both off by default. */}
+              {/* HUP-S4.3 + S4.2 — MCP servers Hermes may use (memory graph, CitrateScan, this node); all off by default. */}
               <HermesMcpPanel />
 
               {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.

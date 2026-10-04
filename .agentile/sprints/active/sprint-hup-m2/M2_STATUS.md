@@ -26,7 +26,7 @@ item and is not repeated per row.
 
 | | met | remaining |
 |---|---:|---:|
-| Gates (4) | 3 (g0-rule3-adr, g2-hic, g2-personas) | 1 (g2-knowledge: owner target) |
+| Gates (4) | 4 (g0-rule3-adr, g2-hic, g2-personas, g2-knowledge) | 0 |
 | Stories (9) | 6 | 3 (US-2.3, US-3.1, US-3.4) |
 | Work packages (17) | 14 | 3 (S2.3, S3.1, S3.4) |
 
@@ -58,7 +58,7 @@ of; two small hardening items found in review were closed here (see "Closed in t
 |---|---|---|---|
 | gate0 g0-rule3-adr | met | ADR-2026-09-30-rule3-budgetable-signatures accepted, 5 of 5 rows; WebSigningBudget TLC green (see below) | Optional independent formal review; A17 ADR amendment |
 | gate2 g2-hic | met | Folder grants: FolderGrant TLC green (153,484 distinct states, 2026-10-04 on the merged runtime), agent-grants and traversal fuzz tests. Shell: agent-shell OS sandbox (Seatbelt on macOS, bubblewrap on Linux; deny-default, no network, writes only in the grant and a scratch HOME), `shell_run` with exact argv + cwd HIC approval, shell_run_tests. SIWE budgets: kit web_budget tests, core web_signin.rs live path with core-side origin and taint, WebSigningBudget TLC green. Capsule sandbox: per-session `SessionSandbox` (agent-sidecar sessions.rs) plus 9 guest-capsule tests on a compiled wasm32-wasip2 probe. Taint: TaintDowngrade TLC green (120 distinct states). | External: Linux and Windows proof runs (DGX team / hardware). Owner: `shell_run` and the toolchain templates stay off by default (`CITRATE_HERMES_SHELL_RUN`, `CITRATE_HERMES_TOOLCHAIN`); no member UI binds capsule mounts or egress consent yet, so capsules get no folder and no address by default |
-| gate2 g2-knowledge | remaining (owner) | Corpus format 2 staged in all five bundle configs and release.yml behind the BGE gate; first-run import tested. QA through the app's memory_search on 2026-10-02: T1 77.3 % pass / 99.7 % citation validity, T0 65.3 % / 98.8 % (SCORECARD.md) | Owner: the AC2 pass-rate target (proposal in eval/results/README.md, pending owner sign-off). External: release-machine upload of the corpus tarball and the import-corpus mem-mcp, pinned in runtime-deps.sha256 (A45, DGX team) |
+| gate2 g2-knowledge | met | Owner target 2026-10-04: T1 pass >= 75 % and citation hit >= 80 % on qa-v1 through memory_search. T1 2026-10-02: 77.3 % pass, 81.5 % citation hit, 99.7 % validity; T0 65.3 % (reported). Corpus format 2 staged in all five bundle configs and release.yml behind the BGE gate; first-run import tested (SCORECARD.md, eval/results/README.md) | Release step: upload of the corpus tarball and the import-corpus mem-mcp, pinned in runtime-deps.sha256 (A45, DGX team) |
 | gate2 g2-personas | met | 6 personas, every name owner-approved 2026-10-01 (Graft, Pith, Zest, Trellis, Sprout, Crew; Operator ships), agent-loop/personas/personas.toml + persona_tests.rs. 5 tracks with 10 workflows, each `workflow_available = true`, run by `POST /sessions/:id/track_workflows` (track_workflow_route_tests.rs) and from chat with `/run <workflow>` (core trackWorkflows.ts, vitest) | Shipped defaults pending owner sign-off: TTS voice unset on every persona (system voice), Guide defaults to full-project and Operator to project-management |
 
 ## Stories

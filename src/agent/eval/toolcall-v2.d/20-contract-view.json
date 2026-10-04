@@ -1,13 +1,7 @@
 {
-  "version": "toolcall-v2",
-  "fragment": "contract",
-  "provenance": {
-    "author": "Claude Opus 5.5 for Larry Klosowski",
-    "created": "2026-10-04",
-    "branch": "hup/n6-forge-wire",
-    "purpose": "HUP-S6.7 / US-6.3 AC2: items for the read-only contract_view tool, as a toolcall-v2 fragment (merged by the v2 loader). Hand-authored, not generated from a model; disjoint from any training trajectory.",
-    "disjointFromTraining": true
-  },
+  "added": "2026-10-04",
+  "by": "HUP-S6.7 / US-6.3 AC2 (contract_view, lane N5-forge)",
+  "note": "Items for the read-only contract_view tool (HUP-S6.7 / US-6.3 AC2). Hand-authored, not generated from a model; disjoint from any training trajectory.",
   "tasks": [
     {
       "id": "tc-contract-view-supply",

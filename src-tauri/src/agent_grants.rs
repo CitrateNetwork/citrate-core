@@ -205,141 +205,10 @@ fn pending() -> &'static Mutex<HashMap<PathBuf, Pending>> {
     P.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Folders a grant may never be rooted in (or under). This mirrors the folder rules of the
-/// sidecar's default-deny list (citrate-agent-guard `RULES` and `PREFIX_RULES`), which stays the
-/// authority and is checked on every agent file operation. Refusing the same folders here keeps
-/// the Grants panel honest: it never lists a grant the sidecar would ignore. Each entry is a run
-/// of lowercase path components that may appear at any depth (`~/.ssh`, `/Volumes/x/.ssh`).
-/// Rules that name single files (`.netrc`, shell histories) are left out: a grant is a folder.
-const DENIED_RUNS: &[&[&str]] = &[
-    // Credentials
-    &[".ssh"],
-    &[".gnupg"],
-    &[".aws"],
-    &[".azure"],
-    &[".kube"],
-    &[".docker"],
-    &[".config", "gcloud"],
-    &[".config", "gh"],
-    &[".config", "hub"],
-    &[".password-store"],
-    // Keychains and secret services
-    &["library", "keychains"],
-    &[".local", "share", "keyrings"],
-    &[".gnome2", "keyrings"],
-    &[".local", "share", "kwalletd"],
-    &[".kde", "share", "apps", "kwallet"],
-    &[".kde4", "share", "apps", "kwallet"],
-    &["appdata", "roaming", "microsoft", "credentials"],
-    &["appdata", "local", "microsoft", "credentials"],
-    &["appdata", "roaming", "microsoft", "protect"],
-    &["appdata", "roaming", "microsoft", "vault"],
-    &["appdata", "local", "microsoft", "vault"],
-    // Browser profiles
-    &["library", "application support", "google", "chrome"],
-    &["library", "application support", "google", "chrome beta"],
-    &["library", "application support", "google", "chrome canary"],
-    &["library", "application support", "chromium"],
-    &["library", "application support", "bravesoftware"],
-    &["library", "application support", "microsoft edge"],
-    &["library", "application support", "firefox"],
-    &["library", "application support", "arc"],
-    &["library", "application support", "vivaldi"],
-    &["library", "application support", "com.operasoftware.opera"],
-    &["library", "safari"],
-    &["library", "containers", "com.apple.safari"],
-    &["library", "cookies"],
-    &[".config", "google-chrome"],
-    &[".config", "google-chrome-beta"],
-    &[".config", "chromium"],
-    &[".config", "bravesoftware"],
-    &[".config", "microsoft-edge"],
-    &[".config", "vivaldi"],
-    &[".config", "opera"],
-    &[".mozilla"],
-    &["snap", "chromium"],
-    &["snap", "firefox"],
-    &[".var", "app", "org.mozilla.firefox"],
-    &[".var", "app", "com.google.chrome"],
-    &[".var", "app", "com.brave.browser"],
-    &["appdata", "local", "google", "chrome"],
-    &["appdata", "local", "chromium"],
-    &["appdata", "local", "bravesoftware"],
-    &["appdata", "local", "microsoft", "edge"],
-    &["appdata", "local", "vivaldi"],
-    &["appdata", "roaming", "opera software"],
-    &["appdata", "roaming", "mozilla"],
-    &["appdata", "local", "mozilla"],
-    // Wallet storage
-    &["local extension settings"],
-    &["sync extension settings"],
-    &["managed extension settings"],
-    &[".ethereum", "keystore"],
-    &["library", "ethereum", "keystore"],
-    &[".foundry", "keystores"],
-    &[".citrate-wallet"],
-    &[".electrum"],
-    &["library", "application support", "exodus"],
-    &[".bitcoin", "wallets"],
-    &["library", "application support", "bitcoin", "wallets"],
-    // Citrate key folders
-    &[".citrate", "noise"],
-    &[".citrate", "proposer"],
-    &[".citrate", "keystore"],
-    &[".citrate", "node"],
-    // Shell session folders
-    &[".zsh_sessions"],
-    &[".bash_sessions"],
-    &["windows", "system32", "config"],
-];
-
-/// Single components denied by prefix (extension storage, Citrate Core's own app folders).
-const DENIED_PREFIXES: &[&str] = &["chrome-extension_", "moz-extension+++", "ai.citrate.core"];
-
-/// System secrets, matched from the filesystem root only.
-const DENIED_FROM_ROOT: &[&[&str]] = &[
-    &["etc", "sudoers.d"],
-    &["etc", "ssh"],
-    &["etc", "ssl", "private"],
-    &["private", "etc", "sudoers.d"],
-    &["private", "etc", "ssh"],
-    &["private", "var", "db"],
-    &["var", "db"],
-    &["root"],
-    &["proc"],
-];
-
-/// Whether a canonical folder is on (or under) the deny list. Components are compared in
-/// lowercase, as the sidecar folds them, so a case-insensitive volume cannot slip past.
-fn on_deny_list(canon: &Path) -> bool {
-    let comps: Vec<String> = canon
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_lowercase()),
-            _ => None,
-        })
-        .collect();
-    let starts_run = |at: usize, run: &[&str]| {
-        comps.len() >= at + run.len() && run.iter().enumerate().all(|(i, r)| comps[at + i] == *r)
-    };
-    let from_root = |comps_from: usize| {
-        DENIED_FROM_ROOT
-            .iter()
-            .any(|run| starts_run(comps_from, run))
-    };
-    // macOS mounts the data volume a second time under /System/Volumes/Data.
-    let data_alias = starts_run(0, &["system", "volumes", "data"]);
-    if from_root(0) || (data_alias && from_root(3)) {
-        return true;
-    }
-    if comps
-        .iter()
-        .any(|c| DENIED_PREFIXES.iter().any(|p| c.starts_with(p)))
-    {
-        return true;
-    }
-    (0..comps.len()).any(|at| DENIED_RUNS.iter().any(|run| starts_run(at, run)))
-}
+/// Folders a grant may never be rooted in (or under): core's copy of the agent's default-deny list
+/// ([`crate::grant_deny`]). The sidecar's list is the authority and is checked on every agent file
+/// operation; this check gives the member a clear refusal and keeps the panel honest.
+pub use crate::grant_deny::denied_location;
 
 /// The member's grant store.
 #[derive(Debug, Clone)]
@@ -485,7 +354,12 @@ impl GrantStore {
                     Access::Write => "write",
                 }
                 .into(),
-                status: g.status(now).into(),
+                // A row the agent would ignore (rooted in a deny location) is shown as blocked.
+                status: if g.revoked_at.is_none() && denied_location(Path::new(&g.root)).is_some() {
+                    "blocked".into()
+                } else {
+                    g.status(now).into()
+                },
                 granted_at: g.granted_at,
                 expires_at: g.expires_at,
                 remaining_secs: g.expires_at.map(|t| t.saturating_sub(now)),
@@ -524,9 +398,9 @@ impl GrantStore {
                 canon.display()
             )));
         }
-        if on_deny_list(&canon) {
+        if let Some(why) = denied_location(&canon) {
             return Err(GrantsError::Invalid(format!(
-                "{} holds credentials, keys, browser or wallet data and cannot be granted",
+                "{} is a protected location ({why}) and cannot be granted",
                 canon.display()
             )));
         }

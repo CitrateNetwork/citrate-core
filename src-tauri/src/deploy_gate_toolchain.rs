@@ -418,7 +418,10 @@ pub fn gate_inputs(
             run: medusa_run,
             call_budget: b.budget.test_limit,
         },
-        fork_dry_run,
+        // A caller-supplied fork run (or the honest "none yet" error above); this path does not
+        // ask core to run citrate-fork itself (`forkInCore`, HUP-S6.10) yet.
+        fork_dry_run: Some(fork_dry_run),
+        fork_in_core: None,
     };
     Ok((inputs, reference, check))
 }

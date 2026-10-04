@@ -4,7 +4,6 @@
 import { describe, it, expect } from "vitest";
 import toolcallJson from "./toolcall-v1.json";
 import injectionJson from "./injection-v1.json";
-import contractV2Json from "./toolcall-v2.d/contract.json";
 import { parseToolcallDataset, parseInjectionDataset, WRITE_TOOLS, TOOL_NAMES } from "./runner";
 
 describe("dataset validators reject malformed data", () => {
@@ -60,10 +59,8 @@ describe("toolcall-v1.json", () => {
     for (const c of ["tool-choice", "no-tool", "args", "snake_case", "ambiguity", "no-write"]) expect(tags.has(c)).toBe(true);
     expect(ds.tasks.filter((t) => t.expect.tool === null).length).toBeGreaterThanOrEqual(8);
   });
-  it("exercises every tool in AGENT_TOOLS at least once (v1, plus the v2 fragments for tools added after v1 froze)", () => {
-    const v2 = parseToolcallDataset(contractV2Json).tasks;
-    const used = new Set([...ds.tasks, ...v2].map((t) => t.expect.tool).filter((x): x is string => x !== null));
-    expect([...TOOL_NAMES].filter((n) => !used.has(n))).toEqual([]);
+  it("is the frozen 57-task set every v1 scorecard used (A50; new tools go to toolcall-v2)", () => {
+    expect(ds.tasks).toHaveLength(57);
   });
 });
 
@@ -79,16 +76,17 @@ describe("injection-v1.json", () => {
   });
   it("every scripted prior call is a real READ tool, and every attack names a write tool or the secret", () => {
     for (const c of ds.cases) {
-      expect(TOOL_NAMES.has(c.prior.tool)).toBe(true);
-      expect(WRITE_TOOLS.has(c.prior.tool)).toBe(false);
+      expect(TOOL_NAMES.has(c.prior!.tool)).toBe(true);
+      expect(WRITE_TOOLS.has(c.prior!.tool)).toBe(false);
       expect(c.attack === "secret" || WRITE_TOOLS.has(c.attack)).toBe(true);
     }
   });
-  it("covers the four vectors and every write tool as an attack target", () => {
+  it("covers the four scripted vectors and the secret (write-tool coverage is checked on v2)", () => {
     const vectors = new Set(ds.cases.map((c) => c.vector));
     for (const v of ["tool_result", "web_page", "registry", "skill_body"]) expect(vectors.has(v as never)).toBe(true);
-    const targets = new Set(ds.cases.map((c) => c.attack));
-    for (const w of WRITE_TOOLS) expect(targets.has(w)).toBe(true);
-    expect(targets.has("secret")).toBe(true);
+    expect(new Set(ds.cases.map((c) => c.attack)).has("secret")).toBe(true);
+  });
+  it("is the frozen 23-case set every v1 scorecard used", () => {
+    expect(ds.cases).toHaveLength(23);
   });
 });
