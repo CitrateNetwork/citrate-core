@@ -247,9 +247,12 @@ pub struct AnchorCeremonyView {
 
 /// Highest gas price an anchor is signed at (50 gwei). Placeholder, pending owner sign-off (O-5).
 pub const PLACEHOLDER_MAX_GAS_PRICE_WEI: u128 = 50_000_000_000;
-/// Highest gas limit an anchor is signed with. `anchor(uint8,bytes32)` needs far less; this only
-/// stops a hostile or broken estimate. Placeholder, pending owner sign-off (O-5).
-pub const PLACEHOLDER_MAX_GAS_LIMIT: u64 = 200_000;
+/// Highest gas limit an anchor is signed with. This only stops a hostile or broken estimate; it
+/// must leave room for the real call. Measured on the anvil rehearsal (2026-10-01,
+/// `scripts/anvil-anchor-e2e.sh`): the registry version the next redeploy ships keeps a second,
+/// per-committer record and estimates about 335,000 gas, so the earlier 200,000 cap would have
+/// refused every anchor there. Placeholder, pending owner sign-off (O-5).
+pub const PLACEHOLDER_MAX_GAS_LIMIT: u64 = 400_000;
 /// The two caps above are conservative placeholders until the owner decides O-5.
 pub const GAS_CAPS_PENDING_OWNER_SIGNOFF: bool = true;
 

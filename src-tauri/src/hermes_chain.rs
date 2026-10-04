@@ -129,6 +129,70 @@ impl HermesManager {
             &body,
         )?)
     }
+
+    /// `GET /anchor/proof?seq=N`: one record's inclusion proof as the sidecar builds it. Core
+    /// checks it itself (`anchor_proof::verdict`); nothing the sidecar says is taken as verified.
+    pub fn anchor_proof(&self, seq: u64) -> Result<crate::anchor_proof::SidecarProof> {
+        let bearer = self.bearer()?;
+        Self::decode(self.control.get(
+            &format!("{}/anchor/proof?seq={seq}", self.control_url()),
+            &bearer,
+        )?)
+    }
+
+    /// `GET /anchor/records?before=&limit=`: retained decision records, newest first.
+    pub fn anchor_records(
+        &self,
+        before: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<serde_json::Value> {
+        let mut q = Vec::new();
+        if let Some(b) = before {
+            q.push(format!("before={b}"));
+        }
+        if let Some(l) = limit {
+            q.push(format!("limit={l}"));
+        }
+        let qs = if q.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", q.join("&"))
+        };
+        let bearer = self.bearer()?;
+        Self::decode(self.control.get(
+            &format!("{}/anchor/records{qs}", self.control_url()),
+            &bearer,
+        )?)
+    }
+
+    /// `POST /metering/benchmark`: the unsigned BenchmarkRegistry calls for one day's
+    /// aggregates. Naming the agent id and the registry is the member's opt-in; core rechecks
+    /// every call before any of it reaches a ceremony (`benchmark_share`).
+    pub fn metering_benchmark(
+        &self,
+        day: &str,
+        agent_id: u128,
+        registry: &str,
+    ) -> Result<serde_json::Value> {
+        if !valid_day(day) {
+            return Err(HermesError::Control {
+                status: 400,
+                msg: "day must be YYYY-MM-DD".into(),
+            });
+        }
+        let bearer = self.bearer()?;
+        let body = serde_json::json!({
+            "day": day,
+            "agentId": agent_id.to_string(),
+            "registry": registry,
+        })
+        .to_string();
+        Self::decode(self.control.post(
+            &format!("{}/metering/benchmark", self.control_url()),
+            &bearer,
+            &body,
+        )?)
+    }
 }
 
 /// The app's Hermes manager (built lazily, like every `hermes_*` command uses it).

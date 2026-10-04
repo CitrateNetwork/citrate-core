@@ -40,7 +40,7 @@ pub const TICK_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 
 /// Decisions this build makes with conservative placeholders, pending owner sign-off.
 pub const PENDING_OWNER_SIGN_OFF: &[&str] = &[
     "How the anchor key pays gas: the EIP-2771 relayer or a capped gas float (ADR O-5). Pending owner sign-off.",
-    "The anchor gas caps (50 gwei, 200,000 gas) are conservative placeholders until O-5 is decided. Pending owner sign-off.",
+    "The anchor gas caps (50 gwei, 400,000 gas) are conservative placeholders until O-5 is decided. Pending owner sign-off.",
     "How the anchor key is bound on chain as the member's anchor delegate. Pending owner sign-off.",
     "Whether the nightly anchor may be approved unattended (HIC-2). Until then each day needs an explicit approval. Pending owner sign-off.",
     "How shared benchmark aggregates reach BenchmarkRegistry (per-metric calls from the member's account, or folded into the nightly batch). Pending owner sign-off.",
@@ -518,7 +518,9 @@ fn keyring() -> citrate_core_kit::custody::OsKeyring {
     citrate_core_kit::custody::OsKeyring::with_service(crate::CUSTODY_KEYRING_SERVICE)
 }
 
-fn settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+pub(crate) fn settings_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
     use tauri::Manager;
     Ok(app
         .path()

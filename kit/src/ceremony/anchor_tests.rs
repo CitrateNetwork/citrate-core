@@ -639,7 +639,17 @@ fn a_locked_vault_keeps_the_anchor_key_unused() {
 
 #[test]
 fn the_gas_caps_are_placeholders_pending_owner_sign_off() {
-    assert!(GAS_CAPS_PENDING_OWNER_SIGNOFF);
-    assert_eq!(PLACEHOLDER_MAX_GAS_LIMIT, 200_000);
+    const { assert!(GAS_CAPS_PENDING_OWNER_SIGNOFF) };
+    assert_eq!(PLACEHOLDER_MAX_GAS_LIMIT, 400_000);
     assert_eq!(PLACEHOLDER_MAX_GAS_PRICE_WEI, 50_000_000_000);
+}
+
+/// The cap must leave room for the registry version the next redeploy ships: on the anvil
+/// rehearsal (scripts/anvil-anchor-e2e.sh, 2026-10-01) its `anchor()` estimated 335,227 gas,
+/// because it keeps a second, per-committer record. A cap below that refuses every anchor.
+#[test]
+fn the_gas_cap_leaves_room_for_the_next_registry_version() {
+    const NEXT_REGISTRY_ANCHOR_GAS: u64 = 335_227;
+    const ROOM: u64 = NEXT_REGISTRY_ANCHOR_GAS + NEXT_REGISTRY_ANCHOR_GAS / 10;
+    const { assert!(PLACEHOLDER_MAX_GAS_LIMIT >= ROOM) };
 }
