@@ -242,6 +242,31 @@ fn a_record_that_is_not_a_learn_memory_is_refused() {
     assert!(ledger.entries.is_empty());
 }
 
+/// The learned-memories ledger is the member's own record: owner-only, also when it replaces a
+/// file an older build wrote readable by others.
+#[cfg(unix)]
+#[test]
+fn the_ledger_file_is_private_to_the_member() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("hlearn-ledger-mode-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("learned-memories.json");
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut ledger = Ledger::default();
+    ledger.accept_record(&record(P1, "k", "v", "true", &[]), &g).unwrap();
+    ledger.save(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let stale_tmp = dir.join(".learned-memories.json.tmp");
+    std::fs::write(&stale_tmp, b"left by an interrupted save").unwrap();
+    std::fs::set_permissions(&stale_tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+    ledger.save(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(Ledger::load(&path).unwrap().entries, ledger.entries);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_ledger_round_trips_through_its_file() {
     let dir = std::env::temp_dir().join(format!("hlearn-ledger-{}-{:?}", std::process::id(), std::thread::current().id()));
