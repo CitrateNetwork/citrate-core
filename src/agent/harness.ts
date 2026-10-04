@@ -15,7 +15,9 @@
 // a later wave. This module is the seam, not a mock of chain data.
 // =====================================================================
 
+import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
+import type { ShellPendingView } from "../bridge/domains";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
 
@@ -50,7 +52,31 @@ export interface ToolCallMeta {
 
 /** HUP-S7.6 — progress a provider reports beyond its status (the Activity monitor shows it). */
 /** HUP-S2.9 adds `file_change`: a sidecar file tool changed files under an undo checkpoint. */
-export type TurnActivityEvent = { kind: "step"; step: number } | { kind: "file_change"; change: FileChange };
+/** HUP-S3.3 adds `verifier`: one verifier's verdict on a workflow step attempt. */
+export type TurnActivityEvent =
+  | { kind: "step"; step: number }
+  | { kind: "file_change"; change: FileChange }
+  | { kind: "verifier"; step: string; name: string; passed: boolean; detail: string }
+  /** HUP-S2.2 (US-2.2 AC3): a command run (shell_run or a toolchain tool) finished or was declined. */
+  | {
+      kind: "command_run";
+      callId: string;
+      tool: string;
+      status: string;
+      summary: string;
+      exitCode: number | null;
+      durationMs: number | null;
+      timedOut: boolean;
+      sandbox: string | null;
+    }
+  /** HUP-S2.2: something the member should know that is not a run (e.g. a decision that failed). */
+  | { kind: "notice"; text: string };
+
+/** HUP-S3.3 — what a track workflow run needs from its caller (the same callbacks as a turn). */
+export interface WorkflowRunOpts {
+  signal?: AbortSignal;
+  callbacks: SendOpts["callbacks"];
+}
 
 export interface SendOpts {
   messages: { role: string; content: string }[];
@@ -63,6 +89,9 @@ export interface SendOpts {
     onToolCall: (call: ToolCall, meta?: ToolCallMeta) => Promise<string>;
     /** HUP-S7.6 — optional progress reports (a provider without steps never calls it). */
     onActivity?: (ev: TurnActivityEvent) => void;
+    /** HUP-S2.2 (US-2.2 AC2): ask the member about a held shell_run command (exact argv, folder,
+     *  sandbox). Resolves true only on an explicit approval. Absent = every command is declined. */
+    onCommandApproval?: (pending: ShellPendingView) => Promise<boolean>;
   };
 }
 
@@ -109,6 +138,8 @@ export interface ChatProvider {
   kind: string;
   label: string;
   send: (opts: SendOpts) => Promise<{ role: string; content: string }>;
+  /** HUP-S3.3 — run a track's catalog workflow (sidecar loop only; other providers omit it). */
+  runWorkflow?: (workflowId: string, opts: WorkflowRunOpts) => Promise<WorkflowRunView>;
 }
 
 export const AGENT_SYSTEM_PROMPT = [

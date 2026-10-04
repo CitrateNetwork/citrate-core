@@ -63,6 +63,20 @@ export function ApprovalCardView({ card, showRows = true }: { card: ApprovalCard
               </li>
             ))}
           </ol>
+          {card.rows && card.rows.length > 0 && (
+            <dl style={{ margin: "6px 0 0", display: "grid", gridTemplateColumns: "max-content 1fr", columnGap: 12, rowGap: 3 }}>
+              {card.rows.map((r, i) => (
+                <div key={i} data-testid="command-row" style={{ display: "contents" }}>
+                  <dt className="mono" style={{ ...label, paddingTop: 2 }}>
+                    {r.k}
+                  </dt>
+                  <dd className="mono" style={{ margin: 0, fontSize: 12, color: "var(--tx-1)", wordBreak: "break-all" }}>
+                    {r.v}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </div>
       )}
       {(card.kind === "fields" || card.kind === "chain") && showRows && card.rows.length > 0 && (

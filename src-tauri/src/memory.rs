@@ -928,6 +928,17 @@ impl MemoryManager {
         )
     }
 
+    /// HUP-S3.4: `memory.confirm_edge` — promote a quarantined edge to load-bearing. A confirmed
+    /// `supersedes` edge retires its target (status transition in the daemon). Used when the
+    /// member resolves a contradiction between learned memories: the kept memory supersedes the
+    /// one set aside.
+    pub fn confirm_edge(&self, from_prefix: &str, to_prefix: &str, kind: &str) -> Result<String> {
+        self.transport.call_tool(
+            "memory.confirm_edge",
+            json!({ "from_prefix": from_prefix, "to_prefix": to_prefix, "kind": kind }),
+        )
+    }
+
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
     pub fn search(&self, tenant: &str, query: &str, budget: usize) -> Result<MemoryResult> {
         let text = self.transport.call_tool(

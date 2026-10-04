@@ -39,7 +39,9 @@ export type LearnState =
   | { state: "rejected"; by: string; reason: string }
   | { state: "persist_failed"; reason: string }
   | { state: "persisted" }
-  | { state: "publish_prepared" };
+  | { state: "publish_prepared" }
+  /** A memory the member set aside when resolving a contradiction; `kept` is the one kept. */
+  | { state: "retracted"; by: string; kept: string };
 
 export interface LearnProposal {
   id: string;
@@ -68,20 +70,28 @@ export interface LearnedMemory {
   proposalId: string;
   key: string;
   value: string;
-  /** "true", or "both": contradicted and unresolved (both memories are kept). */
-  belnap: "true" | "both";
+  /** "true"; "both": contradicted and unresolved (both memories are kept); "false": set aside by
+   *  the member when resolving a contradiction (kept for the record). */
+  belnap: "true" | "both" | "false";
   contradicts: string[];
   contentSha256: string;
   workflowId: string;
   acceptedBy: string;
   acceptedAtMs: number;
   decisionSeq: number;
-  graph: { state: "stored" | "pending" | "failed"; nodeId?: string; detail?: string };
+  graph: { state: "stored" | "pending" | "failed" | "retracted"; nodeId?: string; detail?: string };
+  /** For a retracted memory: the proposal id kept instead. */
+  retractedFor?: string;
+  resolvedSeq?: number;
+  /** Graph nodes still to be marked superseded by this memory's node. */
+  supersedeNodes?: string[];
 }
 
 export interface LearnAcceptResult {
   persisted: { kind: "skill"; name: string; content_sha256: string } | ({ kind: "memory" } & Record<string, unknown>);
   memory?: LearnedMemory;
+  /** For a skill: whether the sidecar offers it to the next session already (no restart). */
+  skillsReloaded?: boolean;
 }
 
 /** A declarative workflow for `hermes_workflow_run` (the sidecar's closed verifier set). */
@@ -178,6 +188,8 @@ function stateLabel(s: LearnState): string {
       return "Saved";
     case "publish_prepared":
       return "Saved, publish prepared";
+    case "retracted":
+      return "Set aside";
   }
 }
 
@@ -242,14 +254,30 @@ export function acknowledgedFor(p: LearnProposal, acked: ReadonlySet<string>): s
   return (p.conflicts ?? []).filter((c) => !c.blocking && acked.has(c.existing_id)).map((c) => c.existing_id);
 }
 
-/** One row of the learned-memories list. */
-export function memoryRowModel(m: LearnedMemory): { title: string; value: string; belnapLabel: string | null; graphLabel: string; tone: "ok" | "warn" | "danger" } {
+/** One row of the learned-memories list. `all` (the whole ledger) names what a retracted memory
+ *  was set aside for. */
+export function memoryRowModel(
+  m: LearnedMemory,
+  all: readonly LearnedMemory[] = [],
+): { title: string; value: string; belnapLabel: string | null; graphLabel: string; tone: "ok" | "warn" | "danger" | "muted" } {
   const graphLabel =
     m.graph.state === "stored"
       ? "In your memory graph"
       : m.graph.state === "pending"
         ? "Waiting for the memory store to start"
-        : "Not stored: " + (m.graph.detail ?? "unknown error");
+        : m.graph.state === "retracted"
+          ? "Not stored: set aside before it reached your memory graph"
+          : "Not stored: " + (m.graph.detail ?? "unknown error");
+  if (m.belnap === "false") {
+    const kept = all.find((x) => x.proposalId === m.retractedFor);
+    return {
+      title: m.key,
+      value: m.value,
+      belnapLabel: kept ? `Set aside: you kept "${kept.value}" instead. Kept for the record.` : "Set aside when you resolved a contradiction. Kept for the record.",
+      graphLabel,
+      tone: "muted",
+    };
+  }
   const tone = m.graph.state === "failed" ? "danger" : m.belnap === "both" || m.graph.state === "pending" ? "warn" : "ok";
   return {
     title: m.key,
@@ -257,5 +285,21 @@ export function memoryRowModel(m: LearnedMemory): { title: string; value: string
     belnapLabel: m.belnap === "both" ? "Contradiction, unresolved: both are kept and linked as contradicting; nothing was merged or overwritten" : null,
     graphLabel,
     tone,
+  };
+}
+
+/** The member's way out of `both`: keep this memory and set aside every learned memory it still
+ *  contradicts. `null` when there is nothing this ledger can resolve. */
+export function resolveChoice(all: readonly LearnedMemory[], m: LearnedMemory): { keep: string; retract: string[]; confirm: string } | null {
+  if (m.belnap !== "both") return null;
+  const others = m.contradicts
+    .map((id) => all.find((x) => x.proposalId === id))
+    .filter((x): x is LearnedMemory => x !== undefined && x.belnap !== "false" && x.proposalId !== m.proposalId);
+  if (others.length === 0) return null;
+  const quoted = others.map((o) => `"${o.value}"`).join(", ");
+  return {
+    keep: m.proposalId,
+    retract: others.map((o) => o.proposalId),
+    confirm: `Keep "${m.value}" for ${m.key} and set aside ${quoted}? What you set aside is kept for the record, not deleted. Each choice is recorded as your decision.`,
   };
 }
