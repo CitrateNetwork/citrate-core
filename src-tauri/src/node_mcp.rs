@@ -197,7 +197,16 @@ impl NodeMcpState {
         }
     }
 
+    /// Issue a token from Settings (a full token: read and write tools). Labels core reserves for
+    /// its own tokens are refused, so no client can be labelled as Hermes on an approval card and
+    /// no member token is ever revoked by Hermes's re-issue.
     pub fn create_token(&self, label: &str) -> Result<TokenIssued, String> {
+        if is_reserved_label(label) {
+            return Err(format!(
+                "\"{}\" is reserved for the token Citrate Core issues for Hermes. Pick another label.",
+                label.trim()
+            ));
+        }
         self.shared.tokens.issue(label, now_ms())
     }
 
@@ -211,6 +220,36 @@ impl NodeMcpState {
         Ok(removed)
     }
 
+    /// Revoke every token labelled `label` (its sessions and pending requests end with it), then,
+    /// when `issue` is set, issue a fresh one (limited to the read tools when `read_only`). Used
+    /// for the token core holds for Hermes's own use of this server (`hermes_mcp`), so at most one
+    /// such token is ever live. `label` must be a reserved label: members cannot issue those.
+    pub fn reissue_token(
+        &self,
+        label: &str,
+        issue: bool,
+        read_only: bool,
+    ) -> Result<Option<TokenIssued>, String> {
+        if !is_reserved_label(label) {
+            return Err(format!(
+                "{label} is not a label core reserves for its own tokens"
+            ));
+        }
+        for t in self.shared.tokens.list() {
+            if t.label == label {
+                self.revoke_token(&t.id)?;
+            }
+        }
+        if issue {
+            self.shared
+                .tokens
+                .issue_scoped(label, read_only, now_ms())
+                .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn requests(&self) -> Vec<McpRequest> {
         let (v, close) = self.shared.core.inbox().list(now_ms());
         for c in close {
@@ -218,6 +257,17 @@ impl NodeMcpState {
         }
         v
     }
+}
+
+/// Token labels core keeps for the tokens it issues itself (compared trimmed, ignoring case).
+pub const RESERVED_TOKEN_LABELS: &[&str] = &[crate::hermes_mcp::HERMES_NODE_TOKEN_LABEL];
+
+/// Whether `label` is one of [`RESERVED_TOKEN_LABELS`].
+pub fn is_reserved_label(label: &str) -> bool {
+    let t = label.trim();
+    RESERVED_TOKEN_LABELS
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(t))
 }
 
 /// Build the managed state for the app: tokens + config under `<app data>/node-mcp/`, the live
@@ -275,6 +325,23 @@ async fn run_action(app: &tauri::AppHandle, action: McpAction) -> Result<Value, 
             .await?;
             crate::invites::group_invite_revoke(app.clone(), group.clone(), token).await?;
             Ok(json!({"revoked": invite_id, "group": group}))
+        }
+        McpAction::PinAdd { cid } => {
+            let app2 = app.clone();
+            let cid2 = cid.clone();
+            crate::blocking::off_main(move || crate::storage::storage_pin_local_sync(app2, &cid2))
+                .await?;
+            Ok(json!({"pinned": cid, "bond": "none (local pin only)"}))
+        }
+        McpAction::AnchorPropose => {
+            let app2 = app.clone();
+            let report =
+                crate::blocking::off_main(move || crate::chain_agent::anchor_now(&app2)).await?;
+            Ok(json!({
+                "approvalCardsRaised": report.raised.len(),
+                "skipped": report.skipped.iter().map(|(day, why)| json!({"day": day, "why": why})).collect::<Vec<_>>(),
+                "next": "Each raised card waits for the member's approval in Citrate Core before anything is signed.",
+            }))
         }
         // HUP-S1.1: the member approved it; the app's Hermes client carries it to the session.
         a @ (McpAction::HermesSessionSend { .. } | McpAction::HermesSessionStop { .. }) => {

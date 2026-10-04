@@ -1082,10 +1082,13 @@ export interface RegistrySkill {
 }
 
 /** HUP-S4.3 — which MCP servers Hermes may use (core writes the sidecar's allowlist). Mirrors the
- *  Rust `McpSettings`. Both default off (default pending owner sign-off). */
+ *  Rust `McpSettings`. All default off (default pending owner sign-off). */
 export interface HermesMcpSettings {
   mem: boolean;
   scan: boolean;
+  /** HUP-S4.2 / S8.5 — this node's own MCP server (read tools; needs the Node MCP server on).
+   *  Optional so a view from an older core still type-checks. */
+  node?: boolean;
 }
 
 /** HUP-S4.3 — one server row (Rust `McpServerView`). */

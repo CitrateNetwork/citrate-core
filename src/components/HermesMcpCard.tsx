@@ -1,10 +1,10 @@
 // =====================================================================
 // HUP-S4.3 — "Connected tools (MCP)": which MCP servers Hermes may use.
 //
-// Two servers, both read-only to Hermes: the member's local memory graph (mem-mcp through core's
-// read-only bridge) and the CitrateScan explorer. Core writes the sidecar's allowlist file from
-// these switches; the sidecar reads it when Hermes starts. Both are OFF by default (the default is
-// pending owner sign-off). Presentational: the container passes the view and a toggle handler.
+// Three servers, all read-only to Hermes: the member's local memory graph (mem-mcp through core's
+// read-only bridge), the CitrateScan explorer, and (HUP-S4.2 / S8.5) this node's own MCP server.
+// Core writes the sidecar's allowlist file from these switches; the sidecar reads it when Hermes
+// starts. All are OFF by default (the default is pending owner sign-off). Presentational: the container passes the view and a toggle handler.
 // =====================================================================
 import { useEffect, useState } from "react";
 import type { HermesMcpSettings, HermesMcpView } from "../bridge/domains";
@@ -61,7 +61,7 @@ export function HermesMcpCard({ view, error, onToggle }: HermesMcpCardProps) {
             {view.restartRequired
               ? "Saved. Restart Hermes to apply: it reads these at start."
               : "Applied the next time Hermes starts."}{" "}
-            Results from these tools are treated as untrusted, so after one is used Hermes asks you before any action that changes something. Both start off (default pending owner sign-off).
+            Results from these tools are treated as untrusted, so after one is used Hermes asks you before any action that changes something. All start off (default pending owner sign-off).
           </p>
         </>
       )}

@@ -109,7 +109,7 @@ gates:
           (owner decision 2026-10-01, Operator ships); five tracks with ten workflows, runnable per
           session and from chat. TTS voices and the Guide/Operator default tracks are shipped
           defaults pending owner sign-off.
-      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: false}
+      - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: true, evidence: "docs/NODE_MCP_SERVER.md (Demo transcript parts 1-3: Claude Code and Hermes agent-mcp-host as clients, 2026-10-01; Claude Code and the read-only Hermes token, 2026-10-04)"}
   - id: gate3
     name: hello mint (S5, S6)
     status: pending

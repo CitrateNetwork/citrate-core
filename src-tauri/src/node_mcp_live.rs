@@ -238,6 +238,77 @@ impl NodeBackend for LiveBackend {
             let _ = c.0.reject(ceremony_id);
         }
     }
+
+    fn devices(&self) -> Result<Value, String> {
+        // The same read the Devices screen uses (never mints a key).
+        let dto =
+            tauri::async_runtime::block_on(crate::device_link::device_links(self.app.clone()))?;
+        serde_json::to_value(dto).map_err(|e| e.to_string())
+    }
+
+    fn pins(&self) -> Result<Value, String> {
+        let rows = crate::storage::storage_list_sync(self.app.clone())?;
+        Ok(json!({ "pins": rows }))
+    }
+
+    fn propose_deploy(
+        &self,
+        origin: &str,
+        bytecode: &str,
+        constructor_args: &str,
+        value_wei: u128,
+        gas: Option<u64>,
+    ) -> Result<ProposedSignature, String> {
+        let custody = tauri::Manager::try_state::<crate::custody::CustodyState>(&self.app)
+            .ok_or("the wallet is not available")?;
+        let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&self.app)
+            .ok_or("the signature ceremony is not available")?;
+        let gate = tauri::Manager::try_state::<crate::deploy_gate::DeployGateState>(&self.app)
+            .ok_or("the deploy gate is not available")?;
+        // The one deploy path: refused unless the gate is READY for exactly these bytes.
+        let proposal = crate::contract_deploy::propose_deploy(
+            &custody,
+            &ceremony,
+            &gate,
+            origin,
+            bytecode,
+            Some(constructor_args),
+            value_wei,
+            gas,
+        )?;
+        Ok(ProposedSignature {
+            ceremony_id: proposal.ceremony.id.clone(),
+            ceremony: serde_json::to_value(&proposal).map_err(|e| e.to_string())?,
+        })
+    }
+
+    fn anchor_ready(&self) -> Result<(), String> {
+        crate::chain_agent::anchor_ready(&self.app)
+    }
+
+    fn contract_abi(&self, address: &str) -> Result<Value, String> {
+        abi_registry_entry(address)
+    }
+}
+
+/// The ABI registry entry for `address` (resource `citrate://contract/{address}/abi`): the
+/// Contract reader's source, CitrateScan's public contract endpoint on its pinned host. The
+/// interface only: the source text is dropped and `sourceAvailable` says whether it exists.
+pub fn abi_registry_entry(address: &str) -> Result<Value, String> {
+    let vs = crate::contract_reader::contract_source_sync(address.to_string())?;
+    Ok(abi_entry_view(address, &vs))
+}
+
+/// [`abi_registry_entry`]'s shape for one verified-source record.
+pub fn abi_entry_view(address: &str, vs: &crate::contract_reader::VerifiedSource) -> Value {
+    let mut v = serde_json::to_value(vs).unwrap_or_else(|_| json!({}));
+    if let Some(o) = v.as_object_mut() {
+        let has_source = o.remove("source").is_some_and(|s| !s.is_null());
+        o.insert("sourceAvailable".into(), json!(has_source));
+        o.insert("address".into(), json!(address));
+        o.insert("from".into(), json!("CitrateScan verified sources"));
+    }
+    v
 }
 
 /// The public id of an invite: the first 16 hex chars of `BLAKE3(token)` (the same hash the relay

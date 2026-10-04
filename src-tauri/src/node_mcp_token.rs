@@ -38,6 +38,10 @@ pub struct TokenRecord {
     pub sha256: String,
     /// Creation time (Unix ms).
     pub created_ms: u64,
+    /// A token limited to the read tools: it is not offered, and may not call, any write tool.
+    /// Core issues one for Hermes's own use of the server; member-issued tokens are full.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 /// The webview view of a token: no hash, no plaintext.
@@ -49,6 +53,8 @@ pub struct TokenView {
     pub created_ms: u64,
     /// Last successful use this app session (Unix ms), if any. Not persisted.
     pub last_used_ms: Option<u64>,
+    /// Limited to the read tools (see [`TokenRecord::read_only`]).
+    pub read_only: bool,
 }
 
 /// The result of issuing a token: the ONLY time the plaintext exists outside the client.
@@ -67,6 +73,8 @@ pub struct TokenIssued {
 pub struct Authorized {
     pub id: String,
     pub label: String,
+    /// The token is limited to the read tools.
+    pub read_only: bool,
 }
 
 struct Inner {
@@ -183,6 +191,16 @@ impl TokenStore {
 
     /// Issue a new token for `label`. Returns the plaintext once.
     pub fn issue(&self, label: &str, now_ms: u64) -> Result<TokenIssued, String> {
+        self.issue_scoped(label, false, now_ms)
+    }
+
+    /// Issue a new token limited to the read tools (`read_only`) or a full one.
+    pub fn issue_scoped(
+        &self,
+        label: &str,
+        read_only: bool,
+        now_ms: u64,
+    ) -> Result<TokenIssued, String> {
         let label = normalize_label(label)?;
         let mut inner = self.lock();
         if inner.records.len() >= MAX_TOKENS {
@@ -207,6 +225,7 @@ impl TokenStore {
             label: label.clone(),
             sha256: sha256_hex(&token),
             created_ms: now_ms,
+            read_only,
         };
         let mut next = inner.records.clone();
         next.push(record);
@@ -235,6 +254,7 @@ impl TokenStore {
                 hit = Some(Authorized {
                     id: r.id.clone(),
                     label: r.label.clone(),
+                    read_only: r.read_only,
                 });
             }
         }
@@ -284,6 +304,7 @@ impl TokenStore {
                 label: r.label.clone(),
                 created_ms: r.created_ms,
                 last_used_ms: inner.last_used.get(&r.id).copied(),
+                read_only: r.read_only,
             })
             .collect()
     }

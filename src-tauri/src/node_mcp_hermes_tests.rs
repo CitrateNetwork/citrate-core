@@ -45,6 +45,21 @@ impl NodeBackend for HermesFixture {
         Err("fixture: absent".into())
     }
     fn close_ceremony(&self, _id: &str) {}
+    fn devices(&self) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
+    fn pins(&self) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
+    fn propose_deploy(&self, _o: &str, _b: &str, _c: &str, _v: u128, _g: Option<u64>) -> Result<ProposedSignature, String> {
+        Err("fixture: absent".into())
+    }
+    fn anchor_ready(&self) -> Result<(), String> {
+        Err("fixture: absent".into())
+    }
+    fn contract_abi(&self, _a: &str) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
     fn hermes_sessions(&self) -> Result<Value, String> {
         self.sessions.clone().ok_or_else(|| HERMES_UNAVAILABLE.to_string())
     }
@@ -85,10 +100,25 @@ impl NodeBackend for NoHermes {
         Err("x".into())
     }
     fn close_ceremony(&self, _id: &str) {}
+    fn devices(&self) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
+    fn pins(&self) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
+    fn propose_deploy(&self, _o: &str, _b: &str, _c: &str, _v: u128, _g: Option<u64>) -> Result<ProposedSignature, String> {
+        Err("fixture: absent".into())
+    }
+    fn anchor_ready(&self) -> Result<(), String> {
+        Err("fixture: absent".into())
+    }
+    fn contract_abi(&self, _a: &str) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
 }
 
 fn ctx() -> CallerCtx {
-    CallerCtx { token_id: "tok1".into(), token_label: "Claude Code".into(), client_name: Some("claude-code".into()) }
+    CallerCtx { token_id: "tok1".into(), token_label: "Claude Code".into(), client_name: Some("claude-code".into()), read_only: false }
 }
 
 fn call(core: &McpCore, name: &str, args: Value) -> Value {
@@ -414,6 +444,21 @@ impl NodeBackend for LiveHermes {
         Err("not part of this proof".into())
     }
     fn close_ceremony(&self, _id: &str) {}
+    fn devices(&self) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
+    fn pins(&self) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
+    fn propose_deploy(&self, _o: &str, _b: &str, _c: &str, _v: u128, _g: Option<u64>) -> Result<ProposedSignature, String> {
+        Err("fixture: absent".into())
+    }
+    fn anchor_ready(&self) -> Result<(), String> {
+        Err("fixture: absent".into())
+    }
+    fn contract_abi(&self, _a: &str) -> Result<Value, String> {
+        Err("fixture: absent".into())
+    }
     fn hermes_sessions(&self) -> Result<Value, String> {
         ManagerSessions(&self.0).list()
     }

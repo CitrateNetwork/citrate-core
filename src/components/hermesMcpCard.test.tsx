@@ -62,3 +62,28 @@ describe("HermesMcpCard — toggle", () => {
     act(() => root.unmount());
   });
 });
+
+describe("HermesMcpCard — the node row (HUP-S4.2 / S8.5)", () => {
+  it("is off, and disabled with its reason while the node MCP server is off", () => {
+    const v = view();
+    v.servers.push({ name: "node", label: "Your node", transport: "stdio", enabled: false, available: false, detail: "Turn on the Node MCP server (Settings, API endpoints & keys) to offer this to Hermes." });
+    const html = renderToStaticMarkup(<HermesMcpCard view={v} onToggle={() => {}} />);
+    expect(html).toContain("Your node");
+    expect(html).toContain("Turn on the Node MCP server");
+    expect(html).toMatch(/aria-label="Your node"[^>]*disabled=""|disabled=""[^>]*aria-label="Your node"/);
+    expect(html).toMatch(/All start off/);
+  });
+
+  it("flips node on and leaves the other switches as they were", () => {
+    const onToggle = vi.fn();
+    const v = view({ settings: { mem: true, scan: false, node: false } });
+    v.servers.push({ name: "node", label: "Your node", transport: "stdio", enabled: false, available: true, detail: "Read-only tools from this node's MCP server." });
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    act(() => root.render(<HermesMcpCard view={v} onToggle={onToggle} />));
+    const node = host.querySelector('[aria-label="Your node"]') as HTMLButtonElement;
+    act(() => node.click());
+    expect(onToggle).toHaveBeenCalledWith({ mem: true, scan: false, node: true });
+    act(() => root.unmount());
+  });
+});

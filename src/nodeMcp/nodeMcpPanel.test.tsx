@@ -156,6 +156,22 @@ describe("NodeMcpPanel", () => {
     expect(invoke).toHaveBeenCalledWith("node_mcp_token_revoke", { id: "abcd1234" });
   });
 
+  it("marks the read-only token Citrate Core issues for Hermes", async () => {
+    const { io } = makeIo({
+      node_mcp_status: () =>
+        baseStatus({
+          tokens: [
+            { id: "aaaa1111", label: "Hermes (built-in)", createdMs: 1, lastUsedMs: null, readOnly: true },
+            { id: "bbbb2222", label: "Cursor", createdMs: 2, lastUsedMs: null },
+          ],
+        }),
+      node_mcp_requests: () => [],
+    });
+    const { host } = await mount(<NodeMcpPanel io={async () => io} pollMs={0} />);
+    expect(q(host, "nodemcp-readonly-aaaa1111")?.textContent).toContain("read tools only");
+    expect(q(host, "nodemcp-readonly-bbbb2222")).toBeNull();
+  });
+
   it("shows a pending transaction with its decoded action and approves it through node_mcp_decide", async () => {
     const { io, invoke } = makeIo({
       node_mcp_status: () => baseStatus({ running: true, pendingRequests: 1 }),
