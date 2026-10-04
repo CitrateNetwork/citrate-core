@@ -946,3 +946,28 @@ fn named_failures_are_bounded() {
     assert!(r.contains("and 37 more"), "{r}");
     assert!(r.chars().count() <= 1_200, "{}", r.chars().count());
 }
+
+#[test]
+fn many_distinct_failed_medusa_lines_parse_in_linear_time() {
+    // Up to MAX_OUTPUT_BYTES of tool output reaches the parser; collecting the names of failed
+    // properties must not compare every new name against every earlier one.
+    let n = 80_000;
+    let mut log = String::from("fuzz: elapsed: 9s, calls: 50000 (5104/sec)\n");
+    for i in 0..n {
+        log.push_str(&format!("[FAILED] Property Test: P.property_{i}()\n"));
+    }
+    log.push_str(&format!("Test summary: 0 test(s) passed, {n} test(s) failed\n"));
+    assert!(log.len() < MAX_OUTPUT_BYTES);
+    let mut inp = green_inputs();
+    inp.medusa.run = ran(&log);
+    let t = std::time::Instant::now();
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(5),
+        "parsing took {:?}",
+        t.elapsed()
+    );
+    let r = &item(&rec, GateItemId::Medusa).reason;
+    assert!(r.starts_with(&format!("{n} failed")), "{r}");
+    assert!(r.contains(&format!("and {} more", n - 3)), "{r}");
+}

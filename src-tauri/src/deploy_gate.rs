@@ -730,6 +730,8 @@ fn parse_medusa(out: &str, budget: u64) -> Parsed {
     let mut elapsed: Option<u64> = None;
     let mut summary: Option<(u64, u64)> = None;
     let mut failures: Vec<String> = Vec::new();
+    // Names already collected: a set, so up to MAX_OUTPUT_BYTES of log stays linear.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for line in text.lines() {
         // `⇾ [FAILED] Property Test: LemonDropsProperties.property_x()` names the finding.
         if let Some(rest) = line.split("[FAILED]").nth(1) {
@@ -738,7 +740,7 @@ fn parse_medusa(out: &str, budget: u64) -> Parsed {
                 .map(|(_, n)| n)
                 .unwrap_or(rest)
                 .trim();
-            if !name.is_empty() && !failures.iter().any(|f| f == name) {
+            if !name.is_empty() && seen.insert(name) {
                 failures.push(name.to_string());
             }
         }
