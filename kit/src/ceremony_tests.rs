@@ -340,21 +340,14 @@ fn adv1_adv7_signer_only_reachable_via_approve() {
     );
 }
 
-/// Return `src` with the terminal `#[cfg(test)] mod ... { ... }` block removed so a
-/// call-site scan sees only non-test code. It cuts at the LAST `#[cfg(test)]` that
-/// introduces a module (our test modules are the terminal `mod tests { include!(...) }`
-/// form); an earlier `#[cfg(test)]` on a helper fn does not end the scan. With no test
-/// module the whole source is scanned.
+/// Return `src` with the terminal `#[cfg(test)] mod tests { ... }` block removed so a
+/// call-site scan sees only non-test code. Our test modules are the terminal
+/// `mod tests { include!(...) }` form, so truncating at the LAST such marker is exact. An inner
+/// `#[cfg(test)]` item (a test-only helper) does not end the scan: everything after it is still
+/// production code (HUP-S2.3: the budgeted path and the command surface follow one).
 fn strip_test_module(src: &str) -> String {
-    let mut cut = None;
-    for (i, _) in src.match_indices("#[cfg(test)]") {
-        let rest = src[i + "#[cfg(test)]".len()..].trim_start();
-        if rest.starts_with("mod ") || rest.starts_with("pub mod ") {
-            cut = Some(i);
-        }
-    }
-    match cut {
-        Some(i) => src[..i].to_string(),
+    match src.rfind("#[cfg(test)]\nmod tests") {
+        Some(idx) => src[..idx].to_string(),
         None => src.to_string(),
     }
 }
@@ -1966,5 +1959,25 @@ fn core_g2_session_budget_is_not_wired_into_the_production_signer() {
         !ceremony_non_test.contains(&consume_call),
         "CORE-G2 tripwire: SessionBudget::consume is CALLED from production ceremony code. \
          Auto-approve must stay unwired until ADR-2026-08-29 + a fresh @rule8 sign-off."
+    );
+}
+
+/// HUP-S2.3: the call-site tripwires above must scan ALL production code in ceremony.rs,
+/// including what follows an inner `#[cfg(test)]` item (the budgeted path, reject, the command
+/// surface). Cutting at the first `#[cfg(test)]` silently skipped them.
+#[test]
+fn the_tripwire_scan_covers_the_whole_production_ceremony_module() {
+    let scanned = strip_test_module(include_str!("ceremony.rs"));
+    for f in [
+        "fn request_siwe_budgeted(",
+        "fn siwe_fall_through(",
+        "fn sign_reject_sync(",
+        "fn approve_and_broadcast",
+    ] {
+        assert!(scanned.contains(f), "the scan must include `{f}`");
+    }
+    assert!(
+        !scanned.contains("include!(\"ceremony_tests.rs\")"),
+        "the terminal test module is still cut off"
     );
 }

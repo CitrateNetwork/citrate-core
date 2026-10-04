@@ -1,10 +1,13 @@
-// HUP-S3.4 — "What Hermes learned": proposals waiting for the member, saved skills, and learned
-// memories with their Belnap state. Reads and decides through bridge.agentHarness; nothing here
-// persists on its own (the sidecar records each decision first, core stores memories).
-import { useCallback, useEffect, useState } from "react";
+// HUP-S3.4 — "What Hermes learned": teach Hermes a task (a verified workflow), proposals waiting
+// for the member, saved skills, and learned memories with their Belnap state, including the
+// member's way to resolve a contradiction (keep one, set the other aside). Reads and decides
+// through bridge.agentHarness; nothing here persists on its own (the sidecar records each decision
+// first, core stores memories).
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { bridge } from "../bridge";
-import { acknowledgedFor, memoryRowModel, type LearnedMemory, type LearnProposal, type LearnStatus } from "../agent/learn";
+import { acknowledgedFor, memoryRowModel, resolveChoice, type LearnedMemory, type LearnProposal, type LearnStatus } from "../agent/learn";
 import { LearnProposalCard } from "./LearnProposalCard";
+import { TeachHermesCard } from "./TeachHermesCard";
 
 interface Toaster {
   toast(msg: string): void;
@@ -30,6 +33,11 @@ export function LearnedPanelView({
   onReject,
   onPublish,
   onStorePending,
+  teach,
+  confirming = null,
+  onKeep,
+  onConfirmKeep,
+  onCancelKeep,
 }: {
   view: LearnedView;
   acked: Record<string, ReadonlySet<string>>;
@@ -39,12 +47,19 @@ export function LearnedPanelView({
   onReject(p: LearnProposal, reason: string): void;
   onPublish(p: LearnProposal): void;
   onStorePending(): void;
+  /** The "Teach Hermes" card (the live panel passes it; static renders may leave it out). */
+  teach?: ReactNode;
+  /** The memory whose "Keep this one" is waiting for the member's confirmation. */
+  confirming?: string | null;
+  onKeep?(m: LearnedMemory): void;
+  onConfirmKeep?(keep: string, retract: string[]): void;
+  onCancelKeep?(): void;
 }) {
   const enabled = view.status?.sidecar.enabled === true;
   const waiting = view.proposals.filter(awaiting);
   const skills = view.proposals.filter(savedSkill);
   const publish = view.status?.publish ?? null;
-  const pendingGraph = view.memories.some((m) => m.graph.state !== "stored");
+  const pendingGraph = view.memories.some((m) => m.belnap !== "false" && (m.graph.state !== "stored" || (m.supersedeNodes?.length ?? 0) > 0));
   return (
     <div data-testid="learned-panel" className="surface" style={{ display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
@@ -64,6 +79,7 @@ export function LearnedPanelView({
             {view.status?.sidecar.error ? `Learning is not available: ${view.status.sidecar.error}.` : "Learning is not available until Hermes is running."}
           </span>
         )}
+        {teach}
         {enabled && waiting.length === 0 && (
           <span data-testid="learned-empty" style={{ fontSize: 12, color: "var(--tx-3)" }}>
             No proposals. Hermes proposes a skill or a memory only after a workflow whose checks all passed.
@@ -104,17 +120,37 @@ export function LearnedPanelView({
               )}
             </div>
             {view.memories.map((mem) => {
-              const r = memoryRowModel(mem);
-              const color = r.tone === "ok" ? "var(--tx-3)" : r.tone === "warn" ? "var(--warn)" : "var(--danger)";
+              const r = memoryRowModel(mem, view.memories);
+              const color = r.tone === "ok" || r.tone === "muted" ? "var(--tx-3)" : r.tone === "warn" ? "var(--warn)" : "var(--danger)";
+              const choice = enabled ? resolveChoice(view.memories, mem) : null;
+              const asking = choice !== null && confirming === mem.proposalId;
               return (
-                <div key={mem.proposalId} data-testid="learned-memory" data-belnap={mem.belnap} style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                  <span style={{ fontSize: 12.5, color: "var(--tx-1)", overflowWrap: "anywhere" }}>
+                <div key={mem.proposalId} data-testid="learned-memory" data-belnap={mem.belnap} style={{ display: "flex", flexDirection: "column", gap: 1, opacity: mem.belnap === "false" ? 0.7 : 1 }}>
+                  <span style={{ fontSize: 12.5, color: "var(--tx-1)", overflowWrap: "anywhere", textDecoration: mem.belnap === "false" ? "line-through" : undefined }}>
                     <strong style={{ fontWeight: 500 }}>{r.title}:</strong> {r.value}
                   </span>
-                  {r.belnapLabel && <span style={{ fontSize: 11, color: "var(--warn)" }}>{r.belnapLabel}</span>}
+                  {r.belnapLabel && <span style={{ fontSize: 11, color: mem.belnap === "false" ? "var(--tx-3)" : "var(--warn)" }}>{r.belnapLabel}</span>}
                   <span className="mono" style={{ fontSize: 10.5, color }}>
                     {r.graphLabel}
                   </span>
+                  {choice && !asking && onKeep && (
+                    <button data-testid="learned-keep" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => onKeep(mem)} style={{ alignSelf: "flex-start" }}>
+                      Keep this one
+                    </button>
+                  )}
+                  {choice && asking && (
+                    <div data-testid="learned-keep-confirm" role="group" aria-label="Resolve the contradiction" style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 8px", border: "1px solid var(--line-2)", borderRadius: "var(--r-1)" }}>
+                      <span style={{ fontSize: 11.5, color: "var(--tx-2)" }}>{choice.confirm}</span>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button data-testid="learned-keep-yes" className="btn btn-sm" disabled={busy} onClick={() => onConfirmKeep?.(choice.keep, choice.retract)}>
+                          Keep it
+                        </button>
+                        <button data-testid="learned-keep-no" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => onCancelKeep?.()}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -130,6 +166,7 @@ export function LearnedPanel({ store, running }: { store: Toaster; running: bool
   const [view, setView] = useState<LearnedView>({ status: null, proposals: [], memories: [], error: null });
   const [acked, setAcked] = useState<Record<string, ReadonlySet<string>>>({});
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -185,7 +222,9 @@ export function LearnedPanel({ store, running }: { store: Toaster; running: bool
                 : "Memory kept in your memory graph."
               : "Memory kept. It goes into your memory graph when the memory store is running.";
           }
-          return "Skill saved to your skills. Hermes can use it from its next start.";
+          return r.skillsReloaded
+            ? "Skill saved to your skills. Hermes can use it in new chats now."
+            : "Skill saved to your skills. Hermes can use it from its next start.";
         })
       }
       onReject={(p, reason) =>
@@ -203,6 +242,18 @@ export function LearnedPanel({ store, running }: { store: Toaster; running: bool
       onStorePending={() =>
         void act(async () => {
           await bridge.agentHarness.learnStorePending();
+        })
+      }
+      teach={<TeachHermesCard enabled={view.status?.sidecar.enabled === true} running={running} onFinished={() => void load()} />}
+      confirming={confirming}
+      onKeep={(m) => setConfirming(m.proposalId)}
+      onCancelKeep={() => setConfirming(null)}
+      onConfirmKeep={(keep, retract) =>
+        void act(async () => {
+          setConfirming(null);
+          // Pairwise: one recorded decision per memory set aside.
+          for (const r of retract) await bridge.agentHarness.learnResolve(keep, r);
+          return retract.length === 1 ? "Resolved. The other memory is set aside and kept for the record." : `Resolved. ${retract.length} memories are set aside and kept for the record.`;
         })
       }
     />

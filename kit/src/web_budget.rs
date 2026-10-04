@@ -63,8 +63,10 @@ pub const DEFAULTS_PENDING_OWNER_SIGNOFF: bool = true;
 pub const DEFAULT_PRINCIPAL: &str = "hermes";
 /// Keychain account for the store's integrity key.
 pub const MAC_KEY_ACCOUNT: &str = "web-signing-budgets-mac-v1";
-/// Keychain account holding the MAC of the last file this app saved (rollback protection).
-pub const HEAD_ACCOUNT: &str = "web-signing-budgets-head-v1";
+/// Keychain account for the generation of the newest budget file this device saved. A file
+/// older than that (a restored copy, still validly MACed) is refused, so spent counts, the nonce
+/// ledger and the rate slots can never be rolled back by replacing the file.
+pub const GENERATION_ACCOUNT: &str = "web-signing-budgets-generation-v1";
 /// The `prev_hash` of the first decision record.
 pub const GENESIS_HASH: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 /// How many records the UI snapshot returns (newest first). The file keeps all of them.
@@ -256,6 +258,14 @@ struct BudgetFile {
     ledger: Vec<LedgerEntry>,
     reservations: Vec<Reservation>,
     records: Vec<DecisionRecord>,
+    /// Bumped on every save and sealed in the keychain (rollback protection). Absent in files
+    /// written before it existed (read as 0).
+    #[serde(default)]
+    generation: u64,
+    /// The newest record id copied into the local decision records the nightly anchor covers
+    /// (US-2.3 AC3). Covered by the MAC like everything else.
+    #[serde(default)]
+    exported_through: u64,
 }
 
 impl Default for BudgetFile {
@@ -268,6 +278,8 @@ impl Default for BudgetFile {
             ledger: Vec::new(),
             reservations: Vec::new(),
             records: Vec::new(),
+            generation: 0,
+            exported_through: 0,
         }
     }
 }
@@ -364,7 +376,7 @@ impl std::fmt::Display for FallThrough {
                 "this session read untrusted content, so this sign-in needs your explicit approval".into()
             }
             FallThrough::NotAttested => {
-                "Citrate Core could not confirm which site asked (the managed browser is not available yet)".into()
+                "Citrate Core could not confirm which site asked, so it asks you".into()
             }
             FallThrough::NotTopFrame => "the request came from an embedded frame, not the page itself".into(),
             FallThrough::AttachMode => "budgets do not apply to an attached browser".into(),
@@ -584,7 +596,7 @@ impl BudgetGate {
             &self.path,
             key_ref(&g.mac_key),
             self.keyring.as_ref(),
-            &next,
+            &mut next,
         )
         .map_err(|_| BudgetError::Persist)?;
         g.file = next;
@@ -625,11 +637,12 @@ impl BudgetGate {
         if g.health != StoreHealth::Ok {
             return Ok(());
         }
+        let inner = &mut *g;
         persist(
             &self.path,
-            key_ref(&g.mac_key),
+            key_ref(&inner.mac_key),
             self.keyring.as_ref(),
-            &g.file,
+            &mut inner.file,
         )
         .map_err(|_| BudgetError::Persist)
     }
@@ -659,11 +672,12 @@ impl BudgetGate {
         if g.health != StoreHealth::Ok {
             return Ok(n);
         }
+        let inner = &mut *g;
         persist(
             &self.path,
-            key_ref(&g.mac_key),
+            key_ref(&inner.mac_key),
             self.keyring.as_ref(),
-            &g.file,
+            &mut inner.file,
         )
         .map_err(|_| BudgetError::Persist)?;
         Ok(n)
@@ -705,12 +719,82 @@ impl BudgetGate {
             &self.path,
             Some(key.as_slice()),
             self.keyring.as_ref(),
-            &file,
+            &mut file,
         )
         .map_err(|_| BudgetError::Persist)?;
         g.file = file;
         g.mac_key = Some(key);
         g.health = StoreHealth::Ok;
+        Ok(())
+    }
+
+    /// The id of a live budget (not revoked, not expired, not used up) for `origin_input` and
+    /// `principal`, granted for `wallet`. Used before sharing the member's address with a page:
+    /// only a site the member gave a sign-in budget learns the address without asking.
+    pub fn live_budget_for(
+        &self,
+        origin_input: &str,
+        principal: &str,
+        wallet: Option<&str>,
+        now_ms: u64,
+    ) -> Option<u64> {
+        let wallet = wallet?;
+        let origin = siwe::normalize_allowlist_origin(origin_input).ok()?;
+        let g = self.lock_inner();
+        if g.health != StoreHealth::Ok {
+            return None;
+        }
+        g.file
+            .budgets
+            .iter()
+            .filter(|b| b.origin == origin && b.principal == principal)
+            .max_by_key(|b| b.id)
+            .filter(|b| status_of(b, now_ms, Some(wallet)) == "active")
+            .map(|b| b.id)
+    }
+
+    /// Up to `limit` records not yet copied into the local decision records, oldest first. The
+    /// list stops before the first record whose outcome is still open (`Reserved`), so a record
+    /// is only ever exported once it is final.
+    pub fn records_to_export(&self, limit: usize) -> Vec<DecisionRecord> {
+        let g = self.lock_inner();
+        if g.health != StoreHealth::Ok {
+            return Vec::new();
+        }
+        let after = g.file.exported_through;
+        g.file
+            .records
+            .iter()
+            .filter(|r| r.record_id > after)
+            .take_while(|r| r.status != RecordStatus::Reserved)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    /// Records up to `through` are in the local decision records. Never moves backwards; an id
+    /// past the newest record is refused.
+    pub fn mark_exported(&self, through: u64) -> Result<(), BudgetError> {
+        let mut g = self.lock_inner();
+        if g.health != StoreHealth::Ok {
+            return Err(BudgetError::StoreUnavailable);
+        }
+        if through > g.file.records.last().map(|r| r.record_id).unwrap_or(0) {
+            return Err(BudgetError::UnknownBudget);
+        }
+        if through <= g.file.exported_through {
+            return Ok(());
+        }
+        let mut next = g.file.clone();
+        next.exported_through = through;
+        persist(
+            &self.path,
+            key_ref(&g.mac_key),
+            self.keyring.as_ref(),
+            &mut next,
+        )
+        .map_err(|_| BudgetError::Persist)?;
+        g.file = next;
         Ok(())
     }
 
@@ -916,7 +1000,7 @@ impl GateGuard<'_> {
             &self.gate.path,
             key_ref(&self.inner.mac_key),
             self.gate.keyring.as_ref(),
-            &next,
+            &mut next,
         )
         .map_err(|_| FallThrough::WriteAheadFailed)?;
         self.inner.file = next;
@@ -965,11 +1049,12 @@ impl GateGuard<'_> {
         {
             r.status = status;
         }
+        let inner = &mut *self.inner;
         let _ = persist(
             &self.gate.path,
-            key_ref(&self.inner.mac_key),
+            key_ref(&inner.mac_key),
             self.gate.keyring.as_ref(),
-            &self.inner.file,
+            &mut inner.file,
         );
     }
 }
@@ -1148,6 +1233,20 @@ fn load(
         Ok(k) => k.map(Zeroizing::new),
         Err(_) => return failed("the OS keychain is unavailable, so budgets are off"),
     };
+    let sealed_generation = match keyring.get(GENERATION_ACCOUNT) {
+        Ok(None) => 0,
+        Ok(Some(raw)) => match std::str::from_utf8(&raw)
+            .ok()
+            .and_then(|t| t.parse::<u64>().ok())
+        {
+            Some(n) => n,
+            None => return failed("the budget file's saved version in the keychain is damaged"),
+        },
+        Err(_) => return failed("the OS keychain is unavailable, so budgets are off"),
+    };
+    if !path.exists() && sealed_generation > 0 {
+        return failed("the budget file is missing although this device saved one before");
+    }
     if !path.exists() {
         let key = match key {
             Some(k) if k.len() == 32 => k,
@@ -1182,37 +1281,19 @@ fn load(
     if !verified || env.v != FILE_VERSION {
         return failed("the budget file failed its integrity check");
     }
-    // Rollback: the file must be the one this app saved last (or, after a crash mid-save, the
-    // one before it). An older copy has a valid MAC under the same key, so the MAC alone cannot
-    // tell; the head kept in the keychain can.
-    let mac_hex = env.mac.to_ascii_lowercase();
-    match keyring.get(HEAD_ACCOUNT) {
-        Err(_) => return failed("the OS keychain is unavailable, so budgets are off"),
-        Ok(None) => {
-            // Saved before the head existed: adopt this file as the head.
-            if keyring.set(HEAD_ACCOUNT, mac_hex.as_bytes()).is_err() {
-                return failed("the OS keychain is unavailable, so budgets are off");
-            }
-        }
-        Ok(Some(head)) => {
-            let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
-            let accepted: Vec<&str> = head.split(',').map(str::trim).collect();
-            if !accepted.contains(&mac_hex.as_str()) {
-                return failed(
-                    "the budget file is older than the last one this app saved (it may have been restored from a backup)",
-                );
-            }
-            if accepted.len() > 1 {
-                // A save was interrupted; settle the head on the file that is actually there.
-                let _ = keyring.set(HEAD_ACCOUNT, mac_hex.as_bytes());
-            }
-        }
-    }
     let Ok(mut file) = serde_json::from_str::<BudgetFile>(&env.body) else {
         return failed("the budget file is damaged");
     };
     if !verify_chain(&file.records) {
         return failed("the budget decision records failed their integrity check");
+    }
+    if file.generation < sealed_generation {
+        return failed(
+            "the budget file is older than the last one saved on this device, so it may have been replaced",
+        );
+    }
+    if file.exported_through > file.records.last().map(|r| r.record_id).unwrap_or(0) {
+        return failed("the budget file is damaged");
     }
     // D8 crash recovery: a reservation whose outcome was never recorded is outcome_unknown.
     let mut changed = false;
@@ -1225,41 +1306,38 @@ fn load(
     if changed {
         // Best effort: if this save fails the in-memory view still says outcome_unknown, and the
         // next successful save writes it.
-        let _ = persist(path, Some(key.as_slice()), keyring, &file);
+        let _ = persist(path, Some(key.as_slice()), keyring, &mut file);
     }
     (file, StoreHealth::Ok, Some(key))
 }
 
-/// Save the file and move the keychain head to it. Order: (1) the head accepts both the current
-/// and the new MAC, (2) the file is replaced, (3) the head accepts only the new MAC. A crash at
-/// any point leaves a file the head accepts; after (3) no earlier copy is accepted again.
+/// Save `file` with the next generation, then seal that generation in the keychain. The file is
+/// written first: a crash before the keychain update leaves the file one generation ahead, which
+/// [`load`] accepts as the newer state. Sealing is best effort (a keychain write failure keeps the
+/// protection at the last generation that was sealed); the save itself is what callers rely on.
 fn persist(
     path: &Path,
     key: Option<&[u8]>,
     keyring: &dyn Keyring,
-    file: &BudgetFile,
+    file: &mut BudgetFile,
 ) -> std::io::Result<()> {
-    use std::io::Write;
     let key = key.ok_or_else(|| std::io::Error::other("no integrity key"))?;
+    let mut next = file.clone();
+    next.generation = file.generation.saturating_add(1);
+    write_file(path, key, &next)?;
+    file.generation = next.generation;
+    let _ = keyring.set(GENERATION_ACCOUNT, next.generation.to_string().as_bytes());
+    Ok(())
+}
+
+fn write_file(path: &Path, key: &[u8], file: &BudgetFile) -> std::io::Result<()> {
+    use std::io::Write;
     let body = serde_json::to_string(file).map_err(std::io::Error::other)?;
     let mac = mac_of(key, &body).ok_or_else(|| std::io::Error::other("mac"))?;
-    let mac_hex = hex::encode(mac);
-    let head_err = |_| std::io::Error::other("keychain head");
-    let current = keyring
-        .get(HEAD_ACCOUNT)
-        .map_err(head_err)?
-        .map(|h| String::from_utf8_lossy(&h).to_string());
-    let both = match current {
-        Some(c) if !c.is_empty() => format!("{c},{mac_hex}"),
-        _ => mac_hex.clone(),
-    };
-    keyring
-        .set(HEAD_ACCOUNT, both.as_bytes())
-        .map_err(head_err)?;
     let env = Envelope {
         v: FILE_VERSION,
         body,
-        mac: mac_hex.clone(),
+        mac: hex::encode(mac),
     };
     let text = serde_json::to_string(&env).map_err(std::io::Error::other)?;
     if let Some(dir) = path.parent() {
@@ -1273,10 +1351,7 @@ fn persist(
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, path)?;
-    keyring
-        .set(HEAD_ACCOUNT, mac_hex.as_bytes())
-        .map_err(head_err)
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]

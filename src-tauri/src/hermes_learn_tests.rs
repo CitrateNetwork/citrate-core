@@ -142,6 +142,8 @@ struct FakeGraph {
     fail_assert: bool,
     asserts: StdMutex<Vec<(String, String)>>,
     edges: StdMutex<Vec<(String, String, String)>>,
+    supersedes: StdMutex<Vec<(String, String)>>,
+    fail_supersede: bool,
     next: StdMutex<u32>,
 }
 impl MemoryGraph for FakeGraph {
@@ -160,6 +162,13 @@ impl MemoryGraph for FakeGraph {
     fn propose_contradicts(&self, from: &str, to: &str, evidence: &str) -> std::result::Result<String, String> {
         self.edges.lock().unwrap().push((from.into(), to.into(), evidence.into()));
         Ok("proposed (quarantined)".into())
+    }
+    fn supersede(&self, from: &str, to: &str, _evidence: &str) -> std::result::Result<String, String> {
+        if self.fail_supersede {
+            return Err("memory tool error: no write scope".into());
+        }
+        self.supersedes.lock().unwrap().push((from.into(), to.into()));
+        Ok("confirmed".into())
     }
 }
 
@@ -402,4 +411,301 @@ fn the_sidecar_gets_the_learn_and_skills_folders() {
     assert_eq!(get("CITRATE_HERMES_SKILLS"), Some(dir.join("skills").to_string_lossy().to_string()), "accepted skills load in later sessions");
     let plain = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"));
     assert!(plain.spec_env_for_test().iter().all(|(n, _)| !n.contains("LEARN")), "no folders, no learning");
+}
+
+// ---- resolving a contradiction (US-3.4 AC4; formal/ContradictionResolve.tla in the runtime) ----
+
+const P3: &str = "lp-000000000000000000000003";
+
+fn resolution(kept: &str, retracted: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema": "citrate.learn.resolve.v1",
+        "kept": kept,
+        "retracted": retracted,
+        "key": "deploy chain",
+        "kept_value": "40204",
+        "retracted_value": "1",
+        "decided_by": "0xm",
+        "decided_at_ms": 5,
+        "decision_seq": 9
+    })
+}
+
+fn entry<'a>(l: &'a Ledger, pid: &str) -> &'a LearnedMemory {
+    l.entries.iter().find(|e| e.proposal_id == pid).unwrap()
+}
+
+/// P1 then P2 on the same key with different values: both `both`, both stored.
+fn two_both(g: &FakeGraph) -> Ledger {
+    let mut l = Ledger::default();
+    l.accept_record(&record(P1, "deploy chain", "1", "true", &[]), g).unwrap();
+    l.accept_record(&record(P2, "deploy chain", "40204", "both", &[&format!("proposal:{P1}")]), g).unwrap();
+    l
+}
+
+#[test]
+fn the_resolve_call_uses_the_sidecar_route_with_validated_ids() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    let m = mgr(rec.clone());
+    rec.reply.lock().unwrap().push((200, serde_json::json!({"ok": true, "resolution": resolution(P2, P1)}).to_string()));
+    let r = learn_resolve(&m, P2, P1, "0xmember").unwrap();
+    assert_eq!(r["kept"], P2);
+    let calls = rec.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.ends_with("/learn/memories/resolve"), "{}", calls[0].1);
+    let body: serde_json::Value = serde_json::from_str(&calls[0].2).unwrap();
+    assert_eq!(body, serde_json::json!({"member": "0xmember", "keep": P2, "retract": P1}));
+    assert!(learn_resolve(&m, "../x", P1, "m").is_err());
+    assert!(learn_resolve(&m, P2, "lp-zz", "m").is_err());
+    assert!(learn_resolve(&m, P2, P2, "m").is_err(), "a memory cannot be kept and retracted at once");
+    assert_eq!(rec.calls.lock().unwrap().len(), 1, "bad ids never reach the sidecar");
+}
+
+#[test]
+fn a_resolution_retracts_one_side_and_settles_the_kept_one() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = two_both(&g);
+    let old_p1 = entry(&l, P1).graph.node_id.clone().unwrap();
+    let old_p2 = entry(&l, P2).graph.node_id.clone().unwrap();
+    assert!(l.apply_resolution(&resolution(P2, P1), &g).unwrap());
+    let d = entry(&l, P1);
+    assert_eq!(d.belnap, "false", "retracted, kept for the record");
+    assert_eq!(d.retracted_for.as_deref(), Some(P2));
+    assert_eq!(d.resolved_seq, Some(9));
+    assert!(d.contradicts.is_empty());
+    let k = entry(&l, P2);
+    assert_eq!(k.belnap, "true");
+    assert!(k.contradicts.is_empty());
+    assert_eq!(k.graph.state, "stored");
+    // The kept memory is stored again as settled, and the new node supersedes both old ones.
+    let new_node = k.graph.node_id.clone().unwrap();
+    assert_ne!(new_node, old_p2);
+    assert!(k.supersede_nodes.is_empty(), "{:?}", k.supersede_nodes);
+    let texts: Vec<String> = g.asserts.lock().unwrap().iter().map(|(_, t)| t.clone()).collect();
+    let last = texts.last().unwrap();
+    assert!(last.contains("deploy chain: 40204") && !last.contains("unresolved"), "{last}");
+    let mut sup = g.supersedes.lock().unwrap().clone();
+    sup.sort();
+    let mut want = vec![(new_node.clone(), old_p1), (new_node, old_p2)];
+    want.sort();
+    assert_eq!(sup, want);
+    // Applying the same resolution again changes nothing.
+    assert!(!l.apply_resolution(&resolution(P2, P1), &g).unwrap());
+    assert_eq!(g.supersedes.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_resolution_that_is_not_one_is_refused() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = two_both(&g);
+    let mut bad = resolution(P2, P1);
+    bad["schema"] = serde_json::json!("citrate.learn.memory.v1");
+    assert!(l.apply_resolution(&bad, &g).is_err());
+    assert!(l.apply_resolution(&resolution("lp-x", P1), &g).is_err());
+    assert!(l.apply_resolution(&resolution(P1, P1), &g).is_err());
+    assert_eq!(entry(&l, P1).belnap, "both");
+    // A resolution for memories this ledger never received changes nothing (honestly).
+    assert!(!l.apply_resolution(&resolution(P9, P3), &g).unwrap());
+}
+
+#[test]
+fn with_three_memories_the_kept_one_stays_both_until_every_contradiction_is_resolved() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = two_both(&g);
+    l.accept_record(&record(P3, "deploy chain", "7", "both", &[&format!("proposal:{P1}"), &format!("proposal:{P2}")]), &g).unwrap();
+    assert!(l.apply_resolution(&resolution(P2, P1), &g).unwrap());
+    let k = entry(&l, P2);
+    assert_eq!(k.belnap, "both", "P3 still disagrees with P2");
+    assert_eq!(k.contradicts, vec![P3.to_string()]);
+    // Not settled, so not stored again: the existing node supersedes the retracted one directly.
+    assert_eq!(g.supersedes.lock().unwrap().len(), 1);
+    assert_eq!(entry(&l, P3).contradicts, vec![P2.to_string()]);
+    assert!(l.apply_resolution(&resolution(P2, P3), &g).unwrap());
+    assert_eq!(entry(&l, P2).belnap, "true");
+    assert_eq!(entry(&l, P3).belnap, "false");
+}
+
+#[test]
+fn a_resolution_applied_out_of_order_never_settles_a_memory_that_is_itself_retracted() {
+    // ContradictionResolve.tla finding 2. The sidecar recorded (keep P2, retract P1) and then
+    // (keep P3, retract P2); core lost the first answer and sees the second first.
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = two_both(&g);
+    l.accept_record(&record(P3, "deploy chain", "7", "both", &[&format!("proposal:{P1}"), &format!("proposal:{P2}")]), &g).unwrap();
+    assert!(l.apply_resolution(&resolution(P3, P2), &g).unwrap());
+    assert_eq!(entry(&l, P2).belnap, "false");
+    assert_eq!(entry(&l, P3).belnap, "both", "P1 still disagrees with P3");
+    let p1 = entry(&l, P1);
+    assert!(p1.contradicts == vec![P3.to_string()]);
+    assert_eq!(p1.belnap, "both", "P1 is not the kept one here; core must not promote it");
+    // The first resolution arrives late: P1 retracted; P2 (kept there) is already false and
+    // stays false; P3 has nothing left to contradict but was not kept here.
+    assert!(l.apply_resolution(&resolution(P2, P1), &g).unwrap());
+    assert_eq!(entry(&l, P1).belnap, "false");
+    assert_eq!(entry(&l, P2).belnap, "false", "a retracted memory is never settled");
+    assert!(entry(&l, P2).supersede_nodes.is_empty(), "a retracted memory takes over nothing in the graph");
+    assert_eq!(entry(&l, P3).belnap, "both");
+    // A sync whose list does not show P3 standing (pruned, or not in the list) leaves it alone.
+    let partial = serde_json::json!({"proposals": [
+        {"id": P1, "kind": "memory", "state": {"state": "retracted", "by": "0xm", "kept": P2}},
+        {"id": P3, "kind": "memory", "state": {"state": "proposed"}}
+    ]});
+    assert_eq!(l.sync_with_sidecar(&partial, &g), 0);
+    assert_eq!(entry(&l, P3).belnap, "both");
+    // The sync settles P3, because the sidecar shows it standing.
+    let list = serde_json::json!({"proposals": [
+        {"id": P1, "kind": "memory", "state": {"state": "retracted", "by": "0xm", "kept": P2}},
+        {"id": P2, "kind": "memory", "state": {"state": "retracted", "by": "0xm", "kept": P3}},
+        {"id": P3, "kind": "memory", "state": {"state": "persisted"}}
+    ]});
+    assert_eq!(l.sync_with_sidecar(&list, &g), 1);
+    assert_eq!(entry(&l, P3).belnap, "true");
+    assert_eq!(entry(&l, P2).belnap, "false");
+}
+
+#[test]
+fn the_sync_applies_a_resolution_whose_answer_was_lost() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = two_both(&g);
+    let list = serde_json::json!({"proposals": [
+        {"id": P1, "kind": "memory", "state": {"state": "retracted", "by": "0xm", "kept": P2}},
+        {"id": P2, "kind": "memory", "state": {"state": "persisted"}},
+        {"id": P9, "kind": "skill", "state": {"state": "persisted"}}
+    ]});
+    assert_eq!(l.sync_with_sidecar(&list, &g), 1, "one resolution applied, which settles the kept memory");
+    assert_eq!(entry(&l, P1).belnap, "false");
+    assert_eq!(entry(&l, P2).belnap, "true");
+    assert_eq!(l.sync_with_sidecar(&list, &g), 0, "idempotent");
+    // A memory the sidecar no longer lists (pruned) or shows undecided is never settled by sync.
+    let mut l2 = two_both(&g);
+    let none = serde_json::json!({"proposals": []});
+    assert_eq!(l2.sync_with_sidecar(&none, &g), 0);
+    assert_eq!(entry(&l2, P2).belnap, "both");
+    let bogus = serde_json::json!({"proposals": [{"id": P1, "kind": "memory", "state": {"state": "retracted", "kept": "../x"}}]});
+    assert_eq!(l2.sync_with_sidecar(&bogus, &g), 0);
+    assert_eq!(entry(&l2, P1).belnap, "both");
+}
+
+#[test]
+fn when_the_memory_store_is_down_the_graph_part_of_a_resolution_waits() {
+    let up = FakeGraph { running: true, ..Default::default() };
+    let mut l = two_both(&up);
+    let down = FakeGraph::default();
+    assert!(l.apply_resolution(&resolution(P2, P1), &down).unwrap());
+    assert_eq!(entry(&l, P1).belnap, "false", "the ledger decision does not wait for the graph");
+    let k = entry(&l, P2);
+    assert_eq!(k.belnap, "true");
+    assert_eq!(k.graph.state, "pending");
+    assert_eq!(k.supersede_nodes.len(), 2);
+    assert_eq!(l.store_pending(&up), 1);
+    let k = entry(&l, P2);
+    assert_eq!(k.graph.state, "stored");
+    assert!(k.supersede_nodes.is_empty());
+    assert_eq!(up.supersedes.lock().unwrap().len(), 2);
+    // A failed supersede keeps the node to retry and says why.
+    let mut l = two_both(&up);
+    let flaky = FakeGraph { running: true, fail_supersede: true, ..Default::default() };
+    l.apply_resolution(&resolution(P2, P1), &flaky).unwrap();
+    let k = entry(&l, P2);
+    assert_eq!(k.graph.state, "stored");
+    assert_eq!(k.supersede_nodes.len(), 2);
+    assert!(k.graph.detail.as_deref().unwrap_or("").contains("no write scope"), "{:?}", k.graph.detail);
+}
+
+#[test]
+fn a_retracted_memory_that_never_reached_the_graph_is_never_stored() {
+    let down = FakeGraph::default();
+    let mut l = Ledger::default();
+    l.accept_record(&record(P1, "deploy chain", "1", "true", &[]), &down).unwrap();
+    l.accept_record(&record(P2, "deploy chain", "40204", "both", &[&format!("proposal:{P1}")]), &down).unwrap();
+    l.apply_resolution(&resolution(P2, P1), &down).unwrap();
+    assert_eq!(entry(&l, P1).graph.state, "retracted");
+    let up = FakeGraph { running: true, ..Default::default() };
+    // The sidecar handing the same record over again (an accept after a lost save) does not
+    // bring a retracted memory into the graph.
+    let again = l.accept_record(&record(P1, "deploy chain", "1", "true", &[]), &up).unwrap();
+    assert_eq!(again.belnap, "false");
+    assert_eq!(again.graph.state, "retracted");
+    assert!(up.asserts.lock().unwrap().is_empty());
+    assert_eq!(l.store_pending(&up), 1, "only the kept memory is stored");
+    let texts: Vec<String> = up.asserts.lock().unwrap().iter().map(|(_, t)| t.clone()).collect();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("40204"));
+    assert!(up.supersedes.lock().unwrap().is_empty(), "nothing old to supersede");
+}
+
+// ---- pinning a skill before publishing --------------------------------------------------------
+
+#[derive(Default)]
+struct FakeKubo {
+    added: StdMutex<Vec<(String, Vec<u8>)>>,
+    pinned: StdMutex<Vec<String>>,
+    serve: StdMutex<Option<Vec<u8>>>,
+    down: bool,
+}
+impl crate::storage::KuboTransport for FakeKubo {
+    fn add(&self, filename: &str, bytes: &[u8]) -> std::result::Result<crate::storage::AddOutcome, crate::storage::StorageError> {
+        if self.down {
+            return Err(crate::storage::StorageError::Transport("connection refused".into()));
+        }
+        self.added.lock().unwrap().push((filename.into(), bytes.to_vec()));
+        Ok(crate::storage::AddOutcome { cid: "bafkreiexampleskillcid".into(), size_bytes: bytes.len() as u64 })
+    }
+    fn pin_add(&self, cid: &str) -> std::result::Result<(), crate::storage::StorageError> {
+        self.pinned.lock().unwrap().push(cid.into());
+        Ok(())
+    }
+    fn pin_rm(&self, _cid: &str) -> std::result::Result<(), crate::storage::StorageError> {
+        Ok(())
+    }
+    fn pin_ls(&self) -> std::result::Result<Vec<String>, crate::storage::StorageError> {
+        Ok(self.pinned.lock().unwrap().clone())
+    }
+    fn cat(&self, _cid: &str) -> std::result::Result<Vec<u8>, crate::storage::StorageError> {
+        let served = self.serve.lock().unwrap().clone();
+        Ok(served.unwrap_or_else(|| self.added.lock().unwrap().last().map(|(_, b)| b.clone()).unwrap_or_default()))
+    }
+}
+
+const SKILL_MD: &str = "---\nname: deploy-checklist\ndescription: Checks a contract before deploy\n---\n\n1. Run the tests.\n";
+
+fn sha(s: &str) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(s.as_bytes()))
+}
+
+#[test]
+fn a_skill_is_pinned_and_read_back_before_its_cid_is_used() {
+    let k = FakeKubo::default();
+    let cid = pin_skill(&k, SKILL_MD, &sha(SKILL_MD)).unwrap();
+    assert_eq!(cid, "bafkreiexampleskillcid");
+    assert_eq!(k.added.lock().unwrap()[0].0, "SKILL.md");
+    assert_eq!(k.added.lock().unwrap()[0].1, SKILL_MD.as_bytes());
+    assert_eq!(k.pinned.lock().unwrap().clone(), vec![cid]);
+}
+
+#[test]
+fn a_skill_pin_is_refused_when_the_bytes_do_not_match() {
+    let k = FakeKubo::default();
+    let e = pin_skill(&k, SKILL_MD, &"00".repeat(32)).unwrap_err();
+    assert!(e.contains("does not match"), "{e}");
+    assert!(k.added.lock().unwrap().is_empty(), "nothing is added for a mismatched skill");
+    let k = FakeKubo { serve: StdMutex::new(Some(b"something else".to_vec())), ..Default::default() };
+    let e = pin_skill(&k, SKILL_MD, &sha(SKILL_MD)).unwrap_err();
+    assert!(e.contains("read back"), "{e}");
+    let k = FakeKubo { down: true, ..Default::default() };
+    let e = pin_skill(&k, SKILL_MD, &sha(SKILL_MD)).unwrap_err();
+    assert!(e.contains("IPFS"), "{e}");
+}
+
+#[test]
+fn the_publish_payload_must_carry_the_pinned_cid() {
+    let reg = "0x2b687899ef4af05a18f4f36ce1fe9d51c017a97c";
+    let me = "0x1111111111111111111111111111111111111111";
+    let mut p = payload(reg, me);
+    p["manifest_cid"] = serde_json::json!("bafkreiexampleskillcid");
+    assert!(check_manifest_cid(&p, "bafkreiexampleskillcid").is_ok());
+    assert!(check_manifest_cid(&p, "bafkreiother").is_err());
+    p["manifest_cid"] = serde_json::json!("");
+    assert!(check_manifest_cid(&p, "bafkreiexampleskillcid").is_err());
 }

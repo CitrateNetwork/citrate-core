@@ -1436,6 +1436,9 @@ fn escalation_run_sync<R: tauri::Runtime>(
     confirm_id: Option<&str>,
     tainted: bool,
 ) -> Result<RunView, String> {
+    // HUP-S2.6: the spend is recorded in core's HIC outbox once it settles; nothing starts when
+    // the outbox could not take that record (fail closed, pending owner sign-off).
+    crate::hic_records::outbox_for_app(app)?.check_writable()?;
     // 1. Authorize and reserve, write-ahead. Nothing leaves until the reservation is on disk.
     let auth = with_book(app, |dir, b| {
         let a = b.authorize(
@@ -1490,6 +1493,17 @@ fn escalation_run_sync<R: tauri::Runtime>(
         save_ledger(dir, b)?;
         Ok((rec, b.ledger.remaining()))
     })?;
+    // HUP-S2.6: the decision and what it cost, into the decision records the anchor covers. The
+    // ledger above is core's own write-ahead record of the spend, so a failure here is reported,
+    // not hidden, and the ledger still holds the spend.
+    if let Err(e) =
+        crate::hic_records::record_for_app(app, crate::hic_records::escalation_spent(&rec))
+    {
+        eprintln!(
+            "citrate-core: escalation {} was not recorded in the decision records: {e}",
+            rec.escalation_id
+        );
+    }
     let content = result?;
     Ok(RunView {
         escalation_id: rec.escalation_id,

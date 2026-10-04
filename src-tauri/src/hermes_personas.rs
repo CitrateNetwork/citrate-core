@@ -7,8 +7,11 @@
 //! system-prompt fragment with the same template as the shipped ones. Core bounds the input before
 //! it leaves the app; the sidecar owns the rules.
 //!
-//! The chosen persona only changes the prompt's voice. It never grants a tool and never changes
-//! approvals, gates or the SignatureCeremony. Nothing here signs, spends or writes.
+//! The chosen persona changes the prompt's voice, and in a sidecar session its skill allowlist
+//! (which skills are offered) and tool emphasis (which of the session's own tools are always
+//! offered). It never grants a tool and never changes approvals, gates or the SignatureCeremony.
+//! Track workflows run in a session by catalog id (`hermes_track_workflow_run`); their verifiers
+//! come from the sidecar's bundled catalog. Nothing here signs, spends or writes.
 
 use super::{manager, HermesError, HermesManager, Result as HResult};
 use serde::{Deserialize, Serialize};
@@ -41,6 +44,10 @@ pub struct HermesPersona {
     pub prompt_fragment: String,
     pub name_pending_sign_off: bool,
     pub custom: bool,
+    /// Allowlisted skills the sidecar has installed (absent from older sidecars and from a
+    /// custom persona's check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills_installed: Option<Vec<String>>,
 }
 
 /// A member-defined persona, as the settings form submits it (agent-loop `CustomPersona`).
@@ -81,6 +88,12 @@ pub struct TrackWorkflow {
     /// "tool-report" or "answer-shape".
     pub evidence: String,
     pub tools: Vec<String>,
+    /// Tools a passing run must call (absent from older sidecars).
+    #[serde(default)]
+    pub needs_tools: Vec<String>,
+    /// Why this sidecar cannot run the workflow (e.g. the toolchain is off); `None` = it can.
+    #[serde(default)]
+    pub unavailable: Option<String>,
     pub verifier_names: Vec<String>,
     pub steps: Vec<TrackWorkflowStep>,
 }
@@ -193,6 +206,101 @@ pub fn persona_check(
         HermesError::Control { status: 422, msg } => format!("PERSONA_REFUSED: {msg}"),
         other => other.to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// HUP-S3.3 rest: the persona in a sidecar session, and track workflows run in a session
+// ---------------------------------------------------------------------------
+
+/// Add the member's persona to a sidecar session body (`POST /sessions`): a shipped persona by id
+/// (`persona`) or a member-defined one (`customPersona`, bounded here first). The sidecar applies
+/// its skill allowlist and tool emphasis; the prompt fragment is composed by the webview. With
+/// neither, the body is returned unchanged, byte for byte.
+pub fn with_session_persona(
+    body: &str,
+    persona: Option<&str>,
+    custom: Option<&CustomPersonaInput>,
+) -> std::result::Result<String, String> {
+    if persona.is_none() && custom.is_none() {
+        return Ok(body.to_string());
+    }
+    let mut v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "internal: the session body is not JSON")?;
+    let o = v
+        .as_object_mut()
+        .ok_or("internal: the session body is not an object")?;
+    match (persona, custom) {
+        (Some(_), Some(_)) => return Err("choose one persona for a conversation".into()),
+        (Some(id), None) => {
+            if !slug(id) || id.starts_with("custom-") {
+                return Err("a shipped persona id is a lowercase slug".into());
+            }
+            o.insert("persona".into(), serde_json::Value::String(id.to_string()));
+        }
+        (None, Some(c)) => {
+            validate_custom_input(c)?;
+            o.insert(
+                "customPersona".into(),
+                serde_json::to_value(c).map_err(|e| e.to_string())?,
+            );
+        }
+        (None, None) => {}
+    }
+    Ok(v.to_string())
+}
+
+/// `POST /sessions/:id/track_workflows`: run a track's catalog workflow (by id) in a session. The
+/// steps and verifiers come from the sidecar's bundled catalog, never from here. Returns
+/// `{run_id, workflow_id, track, evidence}`; read the run with `hermes_workflow_status`. A refusal
+/// reads `WORKFLOW_REFUSED: <reason>` (an unknown workflow, or tools the session does not offer).
+pub fn track_workflow_run(
+    m: &HermesManager,
+    session_id: &str,
+    workflow_id: &str,
+) -> std::result::Result<serde_json::Value, String> {
+    super::valid_session_id(session_id)?;
+    if !slug(workflow_id) {
+        return Err("WORKFLOW_REFUSED: a workflow id is a lowercase slug".into());
+    }
+    let run = || -> HResult<serde_json::Value> {
+        let bearer = m.bearer()?;
+        let body = serde_json::json!({ "workflow": workflow_id }).to_string();
+        let resp = m.control.post(
+            &format!("{}/sessions/{session_id}/track_workflows", m.control_url()),
+            &bearer,
+            &body,
+        )?;
+        if !(200..300).contains(&resp.status) {
+            let reason = serde_json::from_str::<serde_json::Value>(&resp.body)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| format!("the sidecar answered {}", resp.status));
+            return Err(HermesError::Control {
+                status: resp.status,
+                msg: reason.chars().take(300).collect(),
+            });
+        }
+        HermesManager::decode(resp)
+    };
+    let v = run().map_err(|e| match e {
+        HermesError::Control { msg, .. } => format!("WORKFLOW_REFUSED: {msg}"),
+        other => other.to_string(),
+    })?;
+    let run_id = v.get("run_id").and_then(|r| r.as_str()).unwrap_or_default();
+    crate::hermes_learn::valid_run_id(run_id)?;
+    Ok(v)
+}
+
+/// **hermes_track_workflow_run**: run a track workflow in a sidecar session (US-3.3 AC2).
+#[tauri::command]
+pub async fn hermes_track_workflow_run(
+    app: tauri::AppHandle,
+    session_id: String,
+    workflow_id: String,
+) -> std::result::Result<serde_json::Value, String> {
+    crate::blocking::off_main(move || track_workflow_run(manager(&app)?, &session_id, &workflow_id))
+        .await
 }
 
 /// **hermes_personas**: the shipped personas (names pending owner sign-off).

@@ -67,6 +67,9 @@ const LONG: Record<string, number> = {
   hermes_session_events: 45_000,
   hermes_session_tool_result: 45_000,
   hermes_session_stop: 45_000,
+  // HUP-S2.2: the held shell_run commands and the member's decision (loopback control bound).
+  hermes_shell_pending: 45_000,
+  hermes_shell_decide: 45_000,
   // HUP-S1.4: interviewer tracks + briefs (same loopback control bound).
   hermes_tracks: 45_000,
   hermes_brief_create: 45_000,
@@ -87,6 +90,8 @@ const LONG: Record<string, number> = {
   hermes_personas: 45_000,
   hermes_persona_check: 45_000,
   hermes_workflows: 45_000,
+  // HUP-S3.3: starting a track workflow is one loopback control call (the run is polled after).
+  hermes_track_workflow_run: 45_000,
   // HUP-S1.9: the sidecar's worker report (same loopback control bound).
   hermes_workers: 45_000,
   // HUP-S4.4: the MCP dry-run check (probe bounded at 20 s in the sidecar, control call at 30 s).

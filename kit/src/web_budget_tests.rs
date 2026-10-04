@@ -715,66 +715,172 @@ fn every_fall_through_reason_is_plain_language() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rollback: an older, validly signed copy of the file must not be accepted.
+// HUP-S2.3 follow-ups: rollback protection, the anchor export cursor, address sharing.
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn an_older_valid_budget_file_cannot_be_restored() {
+fn a_rolled_back_budget_file_fails_closed() {
+    // BudgetMonotone across an attacker with file access: an older, validly MACed copy of the
+    // file must not bring back spent counts, nonces or rate slots. The keychain holds the
+    // generation of the newest file this device saved.
     let p = tmp_path("rollback");
     let k = MemKeyring::default();
-    let before = {
+    let old;
+    {
         let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
-        grant(&g, 1);
-        let snapshot = std::fs::read(&p).unwrap();
+        grant(&g, 3);
+        old = std::fs::read(&p).unwrap();
         let m = msg_at("abcdef0123456789AA", NOW);
         auto(&g, &m, Some(&top()), &TaskTaint::Clean, NOW).expect("reserve");
-        snapshot
-    };
-    // Put back the copy taken before the sign-in: its MAC is valid under the same key, and it
-    // would hand back the used sign-in and forget the nonce.
-    std::fs::write(&p, &before).unwrap();
+    }
+    std::fs::write(&p, &old).unwrap();
     let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW + MIN);
     assert!(
-        matches!(g.health(), StoreHealth::Failed(ref why) if why.contains("older")),
+        matches!(g.health(), StoreHealth::Failed(ref r) if r.contains("older")),
         "{:?}",
         g.health()
     );
-    let m = msg_at("abcdef0123456789BB", NOW + MIN);
+    let m = msg_at("abcdef0123456789AA", NOW + MIN);
     assert_eq!(
         auto(&g, &m, Some(&top()), &TaskTaint::Clean, NOW + MIN),
-        Err(FallThrough::StoreUnavailable)
+        Err(FallThrough::StoreUnavailable),
+        "the replayed nonce is not signed again"
     );
+    g.reset_after_integrity_failure(NOW + MIN).expect("reset");
+    assert_eq!(g.health(), StoreHealth::Ok);
+    drop(g);
+    let g = BudgetGate::open(p, Box::new(k), NOW + 2 * MIN);
+    assert_eq!(g.health(), StoreHealth::Ok, "a reset store reopens cleanly");
 }
 
 #[test]
-fn a_crash_between_the_file_and_the_head_still_opens() {
-    let p = tmp_path("head-crash");
+fn a_deleted_budget_file_after_a_save_fails_closed() {
+    let p = tmp_path("deleted");
     let k = MemKeyring::default();
     {
         let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
         grant(&g, 3);
     }
-    let head = k.get(HEAD_ACCOUNT).unwrap().expect("head written");
-    // The state a crash leaves after step 1 (both accepted) of a later save.
-    let mut pending = b"00ff,".to_vec();
-    pending.extend_from_slice(&head);
-    k.set(HEAD_ACCOUNT, &pending).unwrap();
-    let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
-    assert_eq!(g.health(), StoreHealth::Ok);
-    assert_eq!(k.get(HEAD_ACCOUNT).unwrap(), Some(head), "head settles");
+    std::fs::remove_file(&p).unwrap();
+    let g = BudgetGate::open(p, Box::new(k), NOW);
+    assert!(matches!(g.health(), StoreHealth::Failed(_)), "{:?}", g.health());
 }
 
 #[test]
-fn an_install_from_before_the_head_adopts_its_current_file() {
-    let p = tmp_path("head-migrate");
+fn a_crash_between_the_file_and_the_keychain_generation_is_accepted() {
+    // The file is written first, then the keychain generation. A crash in between leaves the
+    // file one generation ahead, which is the newer state and must open.
+    let p = tmp_path("gen-crash");
+    let k = MemKeyring::default();
+    {
+        let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
+        grant(&g, 3);
+        grant_other(&g);
+    }
+    let gen: u64 = String::from_utf8(k.get(GENERATION_ACCOUNT).unwrap().unwrap())
+        .unwrap()
+        .parse()
+        .unwrap();
+    k.set(GENERATION_ACCOUNT, (gen - 1).to_string().as_bytes())
+        .unwrap();
+    let g = BudgetGate::open(p, Box::new(k.clone()), NOW);
+    assert_eq!(g.health(), StoreHealth::Ok);
+}
+
+fn grant_other(g: &BudgetGate) {
+    g.grant(
+        "https://other.example.org",
+        DEFAULT_PRINCIPAL,
+        2,
+        DAY,
+        WALLET,
+        NOW,
+    )
+    .expect("grant");
+}
+
+#[test]
+fn a_store_from_before_generations_opens_and_starts_counting() {
+    // Files written before rollback protection have no generation and the keychain has none:
+    // they open, and the next save seals generation 1 or more.
+    let p = tmp_path("legacy");
     let k = MemKeyring::default();
     {
         let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
         grant(&g, 3);
     }
-    k.delete(HEAD_ACCOUNT).unwrap();
+    k.delete(GENERATION_ACCOUNT).unwrap();
     let g = BudgetGate::open(p.clone(), Box::new(k.clone()), NOW);
     assert_eq!(g.health(), StoreHealth::Ok);
-    assert!(k.get(HEAD_ACCOUNT).unwrap().is_some());
-    assert_eq!(g.snapshot(NOW, Some(WALLET)).budgets.len(), 1);
+    grant_other(&g);
+    assert!(k.get(GENERATION_ACCOUNT).unwrap().is_some());
+}
+
+#[test]
+fn records_export_in_order_and_stop_at_an_open_reservation() {
+    // US-2.3 AC3: core sends its records to the decision log the nightly anchor covers. Only
+    // closed records go, oldest first, and never past a reservation whose outcome is not known
+    // yet (it would otherwise be exported before it is final).
+    let (g, p, k) = open("export");
+    let b = grant(&g, 3);
+    let first = g.records_to_export(10);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].kind, RecordKind::BudgetGranted);
+    let rid = {
+        let mut guard = g.lock();
+        let m = msg_at("abcdef0123456789AA", NOW);
+        let plan = guard
+            .evaluate_siwe(&input(&m, Some(&top()), &TaskTaint::Clean), NOW)
+            .expect("plan");
+        guard.reserve(&plan, NOW).expect("reserve")
+    };
+    g.revoke(b.id, NOW + 1).expect("revoke");
+    let pending = g.records_to_export(10);
+    assert_eq!(
+        pending.iter().map(|r| r.record_id).collect::<Vec<_>>(),
+        vec![1],
+        "the open reservation holds back itself and everything after it"
+    );
+    g.lock().close(rid, RecordStatus::Signed);
+    let all = g.records_to_export(10);
+    assert_eq!(all.iter().map(|r| r.record_id).collect::<Vec<_>>(), vec![1, 2, 3]);
+    assert_eq!(g.records_to_export(2).len(), 2, "bounded");
+    g.mark_exported(2).expect("mark");
+    assert_eq!(
+        g.records_to_export(10)
+            .iter()
+            .map(|r| r.record_id)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    assert!(g.mark_exported(1).is_ok(), "never moves backwards, never fails");
+    assert_eq!(g.records_to_export(10).len(), 1);
+    // The cursor is part of the MACed file: it survives a restart.
+    drop(g);
+    let g = BudgetGate::open(p, Box::new(k), NOW);
+    assert_eq!(g.records_to_export(10).len(), 1);
+    assert!(g.mark_exported(99).is_err(), "past the last record");
+}
+
+#[test]
+fn a_live_budget_is_found_only_for_its_origin_principal_and_wallet() {
+    // Sharing the member's address with a page (eth_requestAccounts) is allowed only for a site
+    // with a live budget for the active wallet.
+    let (g, _, _) = open("live");
+    assert_eq!(g.live_budget_for(ORIGIN, DEFAULT_PRINCIPAL, Some(WALLET), NOW), None);
+    let b = grant(&g, 1);
+    assert_eq!(
+        g.live_budget_for("https://APP.example.org/", DEFAULT_PRINCIPAL, Some(WALLET), NOW),
+        Some(b.id)
+    );
+    assert_eq!(g.live_budget_for(ORIGIN, "other", Some(WALLET), NOW), None);
+    assert_eq!(
+        g.live_budget_for(ORIGIN, DEFAULT_PRINCIPAL, Some("0x0000000000000000000000000000000000000001"), NOW),
+        None
+    );
+    assert_eq!(g.live_budget_for(ORIGIN, DEFAULT_PRINCIPAL, None, NOW), None);
+    assert_eq!(g.live_budget_for(ORIGIN, DEFAULT_PRINCIPAL, Some(WALLET), NOW + 8 * DAY), None);
+    assert_eq!(g.live_budget_for("http://app.example.org", DEFAULT_PRINCIPAL, Some(WALLET), NOW), None);
+    g.revoke(b.id, NOW).expect("revoke");
+    assert_eq!(g.live_budget_for(ORIGIN, DEFAULT_PRINCIPAL, Some(WALLET), NOW), None);
 }

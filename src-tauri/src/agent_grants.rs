@@ -16,6 +16,10 @@
 //! The Grants panel says so, nothing is written over it, and the member can set it aside and start
 //! empty ([`GrantStore::reset_corrupted`]). The agent then receives an empty document.
 //!
+//! HUP-S2.6: every change (a folder granted or revoked, the full-access window confirmed, a reset)
+//! is recorded in core's HIC outbox ([`crate::hic_records`]) and from there in the decision records
+//! the nightly anchor covers. A change whose record cannot be written is put back and refused.
+//!
 //! Keyless: nothing here signs or holds a key (Rule 3).
 
 use std::collections::HashMap;
@@ -278,6 +282,33 @@ impl GrantStore {
         citrate_core_kit::fsutil::write_secret_file(&tmp, text.as_bytes())
             .map_err(|e| GrantsError::Io(e.kind().to_string()))?;
         std::fs::rename(&tmp, self.file()).map_err(|e| GrantsError::Io(e.kind().to_string()))
+    }
+
+    /// The stored file as it is (`None` when there is none), so a change can be put back.
+    pub(crate) fn raw(&self) -> Result<Option<Vec<u8>>, GrantsError> {
+        match std::fs::read(self.file()) {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(GrantsError::Io(e.kind().to_string())),
+        }
+    }
+
+    /// Put back what [`Self::raw`] returned.
+    pub(crate) fn restore_raw(&self, raw: Option<Vec<u8>>) -> Result<(), GrantsError> {
+        match raw {
+            Some(bytes) => {
+                let tmp = self.dir.join(format!("{GRANTS_FILE}.tmp"));
+                citrate_core_kit::fsutil::write_secret_file(&tmp, &bytes)
+                    .map_err(|e| GrantsError::Io(e.kind().to_string()))?;
+                std::fs::rename(&tmp, self.file())
+                    .map_err(|e| GrantsError::Io(e.kind().to_string()))
+            }
+            None => match std::fs::remove_file(self.file()) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(GrantsError::Io(e.kind().to_string())),
+            },
+        }
     }
 
     /// The document the agent receives: the stored one, or an empty one (no grants) when the
@@ -644,14 +675,29 @@ fn store_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// Apply `f` to the store, then send the new document with `push`, under [`store_lock`].
+/// Apply `f` to the store, record the member's decision with `record` (HUP-S2.6), then send the
+/// new document with `push`, under [`store_lock`]. Fail closed (pending owner sign-off): when the
+/// decision cannot be recorded, the saved change is undone (the previous file is put back) and
+/// the change is refused, so no grant change goes unrecorded.
 pub(crate) fn apply_change(
     store: &GrantStore,
-    f: impl FnOnce(&GrantStore, u64) -> Result<(), GrantsError>,
+    f: impl FnOnce(&GrantStore, u64) -> Result<crate::hic_records::HicEvent, GrantsError>,
+    record: impl FnOnce(crate::hic_records::HicEvent) -> Result<(), String>,
     push: impl FnOnce(&GrantState) -> crate::hermes::GrantsPushOutcome,
 ) -> Result<GrantsChange, String> {
     let _one_at_a_time = store_lock();
-    f(store, now_secs()).map_err(|e| e.to_string())?;
+    let before = store.raw().map_err(|e| e.to_string())?;
+    let ev = f(store, now_secs()).map_err(|e| e.to_string())?;
+    if let Err(e) = record(ev) {
+        return match store.restore_raw(before) {
+            Ok(()) => Err(format!(
+                "the change was not kept because its decision record could not be written: {e}"
+            )),
+            Err(r) => Err(format!(
+                "the decision record could not be written ({e}) and the change could not be undone ({r})"
+            )),
+        };
+    }
     let sync = push(&store.document_for_agent());
     Ok(GrantsChange {
         view: store.view(now_secs()),
@@ -673,10 +719,43 @@ pub(crate) fn open_with_grants(
 
 fn change<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    f: impl FnOnce(&GrantStore, u64) -> Result<(), GrantsError>,
+    f: impl FnOnce(&GrantStore, u64) -> Result<crate::hic_records::HicEvent, GrantsError>,
 ) -> Result<GrantsChange, String> {
     let store = GrantStore::for_app(app)?;
-    apply_change(&store, f, crate::hermes::push_grants_to_sessions)
+    apply_change(
+        &store,
+        f,
+        |ev| crate::hic_records::record_for_app(app, ev).map(|_| ()),
+        crate::hermes::push_grants_to_sessions,
+    )
+}
+
+/// HUP-S2.6: the decision record for folder grants just added.
+pub(crate) fn added_event(store: &GrantStore, ids: &[String]) -> crate::hic_records::HicEvent {
+    let root = match store.load() {
+        Loaded::Ok(st) => st
+            .grants
+            .iter()
+            .find(|g| ids.first() == Some(&g.id))
+            .map(|g| g.root.clone())
+            .unwrap_or_default(),
+        Loaded::Corrupted(_) => String::new(),
+    };
+    crate::hic_records::grant_added(&root, ids)
+}
+
+/// HUP-S2.6: the decision record for a confirmed full-access window.
+pub(crate) fn full_access_event(store: &GrantStore, gid: &str) -> crate::hic_records::HicEvent {
+    let (root, expires) = match store.load() {
+        Loaded::Ok(st) => st
+            .grants
+            .iter()
+            .find(|g| g.id == gid)
+            .map(|g| (g.root.clone(), g.expires_at.unwrap_or(0)))
+            .unwrap_or_default(),
+        Loaded::Corrupted(_) => (String::new(), 0),
+    };
+    crate::hic_records::full_access_confirmed(gid, &root, expires)
 }
 
 /// **agent_grants_view** — the Grants panel.
@@ -695,7 +774,8 @@ pub async fn agent_grants_add_folder(
 ) -> Result<GrantsChange, String> {
     crate::blocking::off_main(move || {
         change(&app, |s, now| {
-            s.add_folder(Path::new(&path), read, write, now).map(|_| ())
+            let ids = s.add_folder(Path::new(&path), read, write, now)?;
+            Ok(added_event(s, &ids))
         })
     })
     .await
@@ -707,7 +787,13 @@ pub async fn agent_grants_revoke(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<GrantsChange, String> {
-    crate::blocking::off_main(move || change(&app, |s, now| s.revoke(&id, now))).await
+    crate::blocking::off_main(move || {
+        change(&app, |s, now| {
+            s.revoke(&id, now)?;
+            Ok(crate::hic_records::grant_revoked(&id))
+        })
+    })
+    .await
 }
 
 /// **agent_grants_full_access_prepare** — step 1 of the HIC-1 confirmation.
@@ -730,7 +816,10 @@ pub async fn agent_grants_full_access_confirm(
     id: String,
 ) -> Result<GrantsChange, String> {
     crate::blocking::off_main(move || {
-        change(&app, |s, now| s.full_access_confirm(&id, now).map(|_| ()))
+        change(&app, |s, now| {
+            let gid = s.full_access_confirm(&id, now)?;
+            Ok(full_access_event(s, &gid))
+        })
     })
     .await
 }
@@ -738,8 +827,13 @@ pub async fn agent_grants_full_access_confirm(
 /// **agent_grants_reset** — set a corrupted document aside and start with no grants.
 #[tauri::command]
 pub async fn agent_grants_reset(app: tauri::AppHandle) -> Result<GrantsChange, String> {
-    crate::blocking::off_main(move || change(&app, |s, now| s.reset_corrupted(now).map(|_| ())))
-        .await
+    crate::blocking::off_main(move || {
+        change(&app, |s, now| {
+            s.reset_corrupted(now)?;
+            Ok(crate::hic_records::grant_reset())
+        })
+    })
+    .await
 }
 
 #[cfg(test)]

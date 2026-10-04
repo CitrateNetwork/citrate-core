@@ -7,12 +7,14 @@
 //   • diff    — a file write: the line diff between what is on disk and what would be written;
 //   • chain   — a chain call: the SignatureCeremony decoder's own view (action / to / cost / chain /
 //               origin). Undecodable calldata stays raw and is never shown as decoded;
-//   • command — a command: the exact argv, one argument per entry (never re-joined or re-split);
+//   • command — a command: the exact argv, one argument per entry (never re-joined or re-split),
+//               plus, for a held shell_run (HUP-S2.2), the program, timeout and OS sandbox rows;
 //   • fields  — anything else: the call's arguments by name.
 // Cards are pure data; the existing SignatureCeremony and wallet-review modal render them.
 // =====================================================================
 import type { CeremonyView } from "../bridge/types";
 import type { ToolAnnotation } from "./toolAnnotations";
+import type { ShellPendingView } from "../bridge/domains";
 
 export interface CardRow {
   k: string;
@@ -27,7 +29,7 @@ export interface DiffLine {
 export type ApprovalCard =
   | { kind: "diff"; tool: string; summary: string; path: string; created: boolean; lines: DiffLine[] }
   | { kind: "chain"; tool: string; summary: string; raw: boolean; rows: CardRow[] }
-  | { kind: "command"; tool: string; summary: string; argv: string[]; cwd?: string }
+  | { kind: "command"; tool: string; summary: string; argv: string[]; cwd?: string; rows?: CardRow[] }
   | { kind: "fields"; tool: string; summary: string; rows: CardRow[] };
 
 /** A call that needs the member's explicit decision (the sidecar marked it `hic: "required"`). */
@@ -168,4 +170,25 @@ export function cardForCall(tool: string, ann: ToolAnnotation | null, args: Reco
   const argv = argvOf(args);
   if (argv) return commandCard(tool, ann, argv, typeof args.cwd === "string" ? args.cwd : undefined);
   return fieldsCard(tool, ann, args, `call ${tool}`);
+}
+
+/** HUP-S2.2 — why every shell_run needs the member (shown on the HIC banner). */
+export const SHELL_RUN_HIC_REASON =
+  "Hermes wants to run a command on this computer. Every command needs your explicit decision (HIC), and it runs only in the folder and sandbox shown.";
+
+/**
+ * HUP-S2.2 (US-2.2 AC2) — the card for a held shell_run: the exact argv (one entry per argument),
+ * the canonical folder, the program that will run, the timeout and the OS sandbox it runs in.
+ */
+export function shellRunCard(p: ShellPendingView): ApprovalCard {
+  const base = commandCard(p.tool, { effect: "write", trust: "untrusted" }, p.argv, p.cwd);
+  const sandbox = p.sandbox.enforced ? p.sandbox.summary : `not enforced: ${p.sandbox.summary}`;
+  const rows: CardRow[] = [
+    { k: "Program", v: p.resolvedProgram },
+    { k: "Timeout", v: `${p.timeoutSecs} s` },
+    { k: "Sandbox", v: clip(sandbox) },
+    { k: "Network", v: p.sandbox.network },
+    { k: "Can write", v: clip(p.sandbox.writable.join("; ")) },
+  ];
+  return base.kind === "command" ? { ...base, rows } : base;
 }

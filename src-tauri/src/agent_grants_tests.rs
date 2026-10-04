@@ -482,15 +482,30 @@ fn with_no_sidecar_running_a_change_is_stored_and_reported_as_not_sent() {
 fn concurrent_changes_never_lose_a_revocation() {
     let fx = Fx::new();
     let none = |_: &GrantState| crate::hermes::GrantsPushOutcome::default();
+    let kept = |_: crate::hic_records::HicEvent| Ok(());
     for i in 0..60 {
         let ids = fx.store().add_folder(&fx.app(), true, false, T0).unwrap();
         let id = ids[0].clone();
         let (a, b, app, rid) = (fx.store(), fx.store(), fx.app(), id.clone());
-        let t1 = std::thread::spawn(move || apply_change(&a, |s, _| s.revoke(&rid, T0 + 1), none));
+        let t1 = std::thread::spawn(move || {
+            apply_change(
+                &a,
+                |s, _| {
+                    s.revoke(&rid, T0 + 1)?;
+                    Ok(crate::hic_records::grant_revoked(&rid))
+                },
+                kept,
+                none,
+            )
+        });
         let t2 = std::thread::spawn(move || {
             apply_change(
                 &b,
-                |s, _| s.add_folder(&app, false, true, T0 + 1).map(|_| ()),
+                |s, _| {
+                    let ids = s.add_folder(&app, false, true, T0 + 1)?;
+                    Ok(added_event(s, &ids))
+                },
+                kept,
                 none,
             )
         });
@@ -525,7 +540,15 @@ fn a_change_made_while_a_session_opens_still_reaches_it() {
         let s = fx.store();
         let m3 = m2.clone();
         revoker = Some(std::thread::spawn(move || {
-            apply_change(&s, |s, now| s.revoke("g-1", now), |d| m3.push_grants(d))
+            apply_change(
+                &s,
+                |s, now| {
+                    s.revoke("g-1", now)?;
+                    Ok(crate::hic_records::grant_revoked("g-1"))
+                },
+                |_| Ok(()),
+                |d| m3.push_grants(d),
+            )
         }));
         std::thread::sleep(std::time::Duration::from_millis(300));
         m2.session_open(b).map_err(|e| e.to_string())
@@ -623,4 +646,100 @@ fn a_stored_grant_in_a_deny_location_shows_as_blocked() {
     store.save(&st).expect("save");
     let v = store.view(T0 + 1);
     assert_eq!(v.grants[0].status, "blocked");
+}
+
+// --- HUP-S2.6: every grant change is recorded, or it does not happen ------------------------------
+
+#[test]
+fn each_grant_change_is_recorded_with_its_kind() {
+    let fx = Fx::new();
+    let none = |_: &GrantState| crate::hermes::GrantsPushOutcome::default();
+    let seen = std::sync::Mutex::new(Vec::<crate::hic_records::HicEvent>::new());
+    let rec = |ev: crate::hic_records::HicEvent| {
+        crate::hic_records::validate(&ev)?;
+        seen.lock().unwrap().push(ev);
+        Ok(())
+    };
+    let app = fx.app();
+    apply_change(
+        &fx.store(),
+        |s, now| {
+            let ids = s.add_folder(&app, true, true, now)?;
+            Ok(added_event(s, &ids))
+        },
+        rec,
+        none,
+    )
+    .unwrap();
+    let c = fx.store().full_access_prepare(T0).unwrap();
+    let rec2 = |ev: crate::hic_records::HicEvent| {
+        seen.lock().unwrap().push(ev);
+        Ok(())
+    };
+    apply_change(
+        &fx.store(),
+        |s, _| {
+            let gid = s.full_access_confirm(&c.id, T0 + 1)?;
+            Ok(full_access_event(s, &gid))
+        },
+        rec2,
+        none,
+    )
+    .unwrap();
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen[0].kind, "grant.folder_added");
+    assert!(seen[0].subject.contains("g-1, g-2"), "{}", seen[0].subject);
+    assert!(seen[0].subject.contains(app.to_str().unwrap()));
+    assert_eq!(seen[1].kind, "grant.full_access_confirmed");
+    assert!(seen[1].subject.starts_with("g-3"));
+    assert!(seen[1].subject.contains(&(T0 + 1 + FULL_ACCESS_SECS).to_string()));
+    for ev in &seen {
+        crate::hic_records::validate(ev).unwrap();
+    }
+}
+
+#[test]
+fn a_change_whose_record_cannot_be_written_is_put_back() {
+    let fx = Fx::new();
+    let none = |_: &GrantState| crate::hermes::GrantsPushOutcome::default();
+    let refuse = |_: crate::hic_records::HicEvent| Err("the outbox is full".to_string());
+    // No document yet: a refused first grant leaves no document.
+    let app = fx.app();
+    let err = apply_change(
+        &fx.store(),
+        |s, now| {
+            let ids = s.add_folder(&app, true, false, now)?;
+            Ok(added_event(s, &ids))
+        },
+        refuse,
+        none,
+    )
+    .unwrap_err();
+    assert!(err.contains("not kept"), "{err}");
+    assert!(ok(fx.store().load()).grants.is_empty());
+
+    // A live grant whose revocation cannot be recorded stays exactly as it was.
+    fx.store().add_folder(&fx.app(), true, false, T0).unwrap();
+    let before = std::fs::read(fx.base.join("appdata").join(GRANTS_FILE)).unwrap();
+    let pushed = std::sync::atomic::AtomicBool::new(false);
+    let err = apply_change(
+        &fx.store(),
+        |s, now| {
+            s.revoke("g-1", now)?;
+            Ok(crate::hic_records::grant_revoked("g-1"))
+        },
+        refuse,
+        |_| {
+            pushed.store(true, std::sync::atomic::Ordering::SeqCst);
+            crate::hermes::GrantsPushOutcome::default()
+        },
+    )
+    .unwrap_err();
+    assert!(err.contains("not kept"), "{err}");
+    assert_eq!(
+        std::fs::read(fx.base.join("appdata").join(GRANTS_FILE)).unwrap(),
+        before
+    );
+    assert!(!pushed.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(ok(fx.store().load()).grants[0].revoked_at.is_none());
 }

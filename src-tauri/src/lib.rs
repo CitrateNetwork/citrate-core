@@ -44,7 +44,9 @@ mod contract_reader;
 mod deploy_gate;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
+mod hic_records;
 mod web_budgets;
+mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
 mod device_link;
 mod docs_ingest;
@@ -582,6 +584,7 @@ pub fn run() {
             escalation::escalation_quote,
             escalation::escalation_confirm_prepare,
             escalation::escalation_run,
+            hic_records::hic_record_decision,
             escalation::escalation_registry_status,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
@@ -589,6 +592,8 @@ pub fn run() {
             web_budgets::web_budget_revoke_all,
             web_budgets::web_budget_reset,
             web_budgets::web_signing_request,
+            web_budgets::web_signing_approve,
+            web_budgets::web_signing_reject,
             telemetry::diagnostics_bundle,
             telemetry::telemetry_send,
             skill_registry::skills_registry_list,
@@ -650,6 +655,10 @@ pub fn run() {
             hermes::personas::hermes_personas,
             hermes::personas::hermes_workflows,
             hermes::personas::hermes_persona_check,
+            hermes::personas::hermes_track_workflow_run,
+            // HUP-S2.2: the member decides each shell_run command the sidecar holds.
+            hermes::shell::hermes_shell_pending,
+            hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
@@ -665,6 +674,7 @@ pub fn run() {
             hermes_learn::hermes_learn_reject,
             hermes_learn::hermes_learn_memories,
             hermes_learn::hermes_learn_store_pending,
+            hermes_learn::hermes_learn_resolve,
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
