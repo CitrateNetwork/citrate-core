@@ -139,8 +139,14 @@ Without a staged corpus the app still builds (the committed
    restarts into the new version.
 5. Size gate (HUP-S11.0): on the machine that built the bundle, run
    `node scripts/size-budget.mjs` (reads `target/release/bundle`, compares with
-   `release/budgets.json`, exits 1 when anything is over budget). Not wired into
-   `release.yml`; see [`release/README.md`](../release/README.md).
+   `release/budgets.json`, exits 1 when anything is over budget). In CI it is manual only:
+   dispatch `release` with `size_gate: true` and the release stays a draft unless the gate
+   passes; tag pushes never run it. See [`release/README.md`](../release/README.md).
+6. Licence check (gate g3-licence): `node scripts/licence-inventory.mjs --corpus
+   src-tauri/knowledge-corpus` must pass (every sidecar, resource, tool, library, skills and
+   corpus source has a licence entry and its texts ship in `licenses/`). Before the first
+   public 0.5.0 release add `--require-sign-off`, which fails until the owner signs
+   [`LICENCE_REVIEW.md`](LICENCE_REVIEW.md).
 
 ### Distribution — the DO Space is the public origin
 

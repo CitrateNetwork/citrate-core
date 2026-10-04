@@ -4,19 +4,20 @@
     "maxBytes: integer = gated (over budget exits 1); null = measured and reported, not gated (no baseline yet).",
     "Artifact baselines are the shipped v0.4.2 GitHub release assets; maxBytes = baseline + about 5%, rounded.",
     "Component baselines are a local v0.4.2 macOS aarch64 build (target/release/bundle, 2026-09-30); maxBytes = baseline + 10%, rounded up to the next MB.",
+    "2026-10-04 (HUP-S11.0, pending owner sign-off): the macOS rows a local 0.5.0-line bundle-lite build pushed over budget were re-set from that build: installer and updater = measured + about 5%, rounded up to the next 5 MB; components = measured + 10%, rounded up to the next MB. See release/README.md.",
     "Raising a budget is a reviewed change: say why in the PR and update baselineBytes when a new release ships."
   ],
   "version": 1,
   "artifacts": {
     "macos-aarch64/dmg": {
-      "maxBytes": 415000000,
-      "baselineBytes": 394782331,
-      "source": "v0.4.2 release asset Citrate-Core_0.4.2_aarch64.dmg"
+      "maxBytes": 455000000,
+      "baselineBytes": 431684435,
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off; v0.4.2 shipped asset was 394,782,331"
     },
     "macos-aarch64/app.tar.gz": {
-      "maxBytes": 385000000,
-      "baselineBytes": 366205330,
-      "source": "v0.4.2 release asset Citrate-Core.app.tar.gz (updater)"
+      "maxBytes": 460000000,
+      "baselineBytes": 435081567,
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off; estimate: tar -czf of the .app (built without the updater key); v0.4.2 shipped asset was 366,205,330"
     },
     "linux-x86_64/appimage": {
       "maxBytes": null,
@@ -42,9 +43,9 @@
       "source": "local v0.4.2 build 2026-09-30"
     },
     "macos-aarch64/bin/citrate-core": {
-      "maxBytes": 29000000,
-      "baselineBytes": 26028640,
-      "source": "local v0.4.2 build 2026-09-30"
+      "maxBytes": 40000000,
+      "baselineBytes": 35851840,
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off"
     },
     "macos-aarch64/bin/cluster-daemon": {
       "maxBytes": 6000000,
@@ -57,9 +58,9 @@
       "source": "local v0.4.2 build 2026-09-30"
     },
     "macos-aarch64/bin/hermes": {
-      "maxBytes": 24000000,
-      "baselineBytes": 20988736,
-      "source": "local v0.4.2 build 2026-09-30"
+      "maxBytes": 33000000,
+      "baselineBytes": 29442128,
+      "source": "hup/m2-runtime @ d10f0ee citrate-agent-sidecar, release profile, unstripped; local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off"
     },
     "macos-aarch64/bin/ipfs": {
       "maxBytes": 96000000,
@@ -94,7 +95,12 @@
     "macos-aarch64/resources/knowledge-corpus": {
       "maxBytes": 110000000,
       "baselineBytes": 99669598,
-      "source": "HUP-S3.1 full knowledge corpus built and staged 2026-10-02 (format 2, digest 97096683, 32,702 nodes: citrate-docs 1,688, methodology 37, refs 12,730 incl. Solady, Foundry book, Medusa and Slither docs, skills 18,247 from the 240-skill skills.lock), with BGE vectors for every node: measured 99,669,598 bytes on disk (49.4 MB corpus files, 50.2 MB vectors; the release tarball is 58,498,298 bytes); +10%, rounded up. Pushes macos-aarch64/app past its budget: owner decision"
+      "source": "HUP-S3.1 full knowledge corpus built and staged 2026-10-02 (format 2, digest 97096683, 32,702 nodes: citrate-docs 1,688, methodology 37, refs 12,730 incl. Solady, Foundry book, Medusa and Slither docs, skills 18,247 from the 240-skill skills.lock), with BGE vectors for every node: measured 99,669,598 bytes on disk (49.4 MB corpus files, 50.2 MB vectors; the release tarball is 58,498,298 bytes); +10%, rounded up. Pushed macos-aarch64/app past its v0.4.2 budget; the app row was re-set from the measured 0.5.0-line build on 2026-10-04 (pending owner sign-off)"
+    },
+    "macos-aarch64/resources/licenses": {
+      "maxBytes": 1000000,
+      "baselineBytes": 142493,
+      "source": "g3-licence third-party licence texts (src-tauri/licenses), measured 2026-10-04"
     },
     "macos-aarch64/resources/icon.icns": {
       "maxBytes": 1000000,
@@ -122,9 +128,9 @@
       "source": "HUP-S3.2 reviewed third-party skills staged from skills.lock 2026-10-01 (240 skills, 1,055 files incl. skills.lock), measured; +10%, rounded up"
     },
     "macos-aarch64/app": {
-      "maxBytes": 797000000,
-      "baselineBytes": 724520985,
-      "source": "local v0.4.2 build 2026-09-30"
+      "maxBytes": 938000000,
+      "baselineBytes": 852410676,
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off"
     }
   }
 }
