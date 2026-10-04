@@ -143,14 +143,39 @@ pub struct SeenManifest {
 }
 
 /// A manifest whose signature, freshness, sequence and fields all checked out.
+///
+/// Only [`verify_manifest`] makes one: the fields are private, so a value built by hand cannot
+/// skip verification on its way to the installer.
+///
+/// ```compile_fail
+/// use citrate_components::manifest::{Manifest, VerifiedManifest};
+/// fn forge(m: Manifest) -> VerifiedManifest {
+///     VerifiedManifest { manifest: m, digest_hex: String::new(), verified_at: 0 }
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct VerifiedManifest {
-    pub manifest: Manifest,
-    pub digest_hex: String,
-    pub verified_at: u64,
+    manifest: Manifest,
+    digest_hex: String,
+    verified_at: u64,
 }
 
 impl VerifiedManifest {
+    /// The verified manifest.
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    /// SHA-256 of the manifest bytes that verified, hex.
+    pub fn digest_hex(&self) -> &str {
+        &self.digest_hex
+    }
+
+    /// When this machine verified it (unix seconds).
+    pub fn verified_at(&self) -> u64 {
+        self.verified_at
+    }
+
     pub fn seen(&self) -> SeenManifest {
         SeenManifest {
             sequence: self.manifest.sequence,

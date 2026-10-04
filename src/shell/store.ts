@@ -1978,8 +1978,16 @@ export class Store {
   }
 
   // ---------- ceremony ----------
-  requestSig(spec: CerSpec): Promise<string> {
+  /**
+   * Queue an approval card. With `signal` (a daemon run), the card is withdrawn and resolves
+   * "expired" when the run ends, unless the member is already approving it.
+   */
+  requestSig(spec: CerSpec, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve("expired");
+        return;
+      }
       const id = "cer" + ++this.cid;
       this.resolvers[id] = resolve;
       this.setState((s) => ({
@@ -1987,7 +1995,20 @@ export class Store {
         cerPhase: s.queue.length ? s.cerPhase : "review",
         cerStep: 0,
       }));
+      signal?.addEventListener("abort", () => this.withdrawCer(id), { once: true });
     });
+  }
+  /** Remove one pending card and resolve it "expired". A card mid-approval stays. */
+  withdrawCer(id: string): void {
+    const res = this.resolvers[id];
+    if (!res) return;
+    const s = this.state;
+    const at = s.queue.findIndex((q) => q.id === id);
+    if (at < 0) return;
+    if (at === 0 && s.cerPhase !== "review") return;
+    delete this.resolvers[id];
+    this.setState({ queue: s.queue.filter((q) => q.id !== id), ...(at === 0 ? { cerPhase: "review" as const, cerStep: 0 } : {}) });
+    res("expired");
   }
   finishCer(result: string): void {
     const s = this.state;
@@ -2350,7 +2371,7 @@ export class Store {
         stop: (id) => h.sessionStop(id),
         close: (id) => h.sessionClose(id),
       },
-      handleTool: (call, meta) => this.handleTool(call, "daemon-run", () => undefined, meta),
+      handleTool: (call, meta, signal) => this.handleTool(call, "daemon-run", () => undefined, meta, signal),
     });
   }
 
@@ -2525,7 +2546,7 @@ export class Store {
     return r === "approved";
   }
 
-  async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta): Promise<string> {
+  async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta, signal?: AbortSignal): Promise<string> {
     let args: Record<string, string> = {};
     try {
       args = JSON.parse(call.arguments || "{}");
@@ -2541,7 +2562,8 @@ export class Store {
     const ann = annotationFor(call.name);
     const hic: HicRequirement | undefined =
       meta?.hic === "required" ? { reason: meta.hicReason || "this action needs your explicit approval" } : undefined;
-    const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card });
+    // `signal`: a daemon run's; its cards close when the run ends.
+    const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card }, signal);
     let held = false;
     if (hic && !SELF_GATED_TOOLS.has(call.name)) {
       const r = await ask(
@@ -2560,7 +2582,10 @@ export class Store {
       if (r !== "approved") {
         held = true;
         status = r;
-        result = `The member declined ${call.name}; nothing was done.`;
+        result =
+          r === "expired"
+            ? `The approval for ${call.name} expired because the run ended; nothing was done.`
+            : `The member declined ${call.name}; nothing was done.`;
       }
     }
     if (held) {
@@ -2573,7 +2598,8 @@ export class Store {
         {
           endpoints: () => e.endpoints(),
           quote: (id, prompt, system, maxTokens) => e.quote(id, prompt, system, maxTokens),
-          run: (q, shown, confirmed, tainted) => e.run(q, shown, confirmed, tainted),
+          prepareConfirm: async (q, shown) => (await e.confirmPrepare(q, shown)).confirmId,
+          run: (q, shown, confirmId, tainted) => e.run(q, shown, confirmId, tainted),
           confirm: (q, reason, question) => {
             const a = escalationApproval(q, reason, question);
             return ask(
@@ -3005,10 +3031,12 @@ export class Store {
           : "couldn't prepare the deploy: " + msg;
       }
     }
+    // A daemon run's card closed with its run: whatever the branch did with the outcome, nothing ran.
+    if (status === "expired") result = `The approval for ${call.name} expired because the run ended; nothing was done.`;
     const label =
       call.name.replace("_", ".") +
       (args.query ? " · " + args.query : "") +
-      (status === "approved" ? " · approved" : status === "declined" ? " · declined" : " ✓");
+      (status === "approved" ? " · approved" : status === "declined" ? " · declined" : status === "expired" ? " · expired" : " ✓");
     ensure();
     this.setState((s) => ({
       chatMsgs: s.chatMsgs.map((m) => (m.id === asstId ? { ...m, chips: m.chips.concat([{ label, status }]) } : m)),

@@ -17,7 +17,7 @@ import type { MonitorSnapshot } from "./monitorSnapshot";
 import type { UndoPanel } from "./undoPanel";
 import { ActivityMonitor } from "./ActivityMonitor";
 import { ContractReader } from "./ContractReader";
-import { createContractClient, type ContractClient } from "./contractChannel";
+import { createContractClient, tauriContractRelay, type ContractClient, type ContractRelay } from "./contractChannel";
 import { MediaPlayer } from "./MediaPlayer";
 import { mediaTauriTransport } from "./mediaBridge";
 import { BrowserPopout } from "./BrowserPopout";
@@ -55,11 +55,14 @@ export function PopoutRoot({
   kind,
   transport,
   mediaTransport = mediaTauriTransport,
+  contractRelay,
 }: {
   kind: PopoutKind;
   transport: () => Promise<BridgeTransport>;
   /** HUP-S10.1: the Media player's own channel (injected for tests). */
   mediaTransport?: () => Promise<BridgeTransport>;
+  /** HUP-S6.7: how the Contract reader's requests reach Rust (injected for tests). */
+  contractRelay?: () => Promise<ContractRelay>;
 }) {
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [undoPanel, setUndoPanel] = useState<UndoPanel | null>(null);
@@ -116,7 +119,7 @@ export function PopoutRoot({
     return () => clearInterval(t);
   }, [kind]);
 
-  if (kind === "contract") return <ContractReaderWindow transport={transport} />;
+  if (kind === "contract") return <ContractReaderWindow transport={transport} relay={contractRelay ?? tauriContractRelay} />;
   if (kind === "media") return <MediaPlayer transport={mediaTransport} />;
   if (!hasView) {
     return (
@@ -169,7 +172,7 @@ export function PopoutRoot({
 }
 
 /** HUP-S6.7 — the Contract reader window: its requests go to the main window over the channel. */
-function ContractReaderWindow({ transport }: { transport: () => Promise<BridgeTransport> }) {
+function ContractReaderWindow({ transport, relay }: { transport: () => Promise<BridgeTransport>; relay: () => Promise<ContractRelay> }) {
   const [client, setClient] = useState<ContractClient | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -178,7 +181,7 @@ function ContractReaderWindow({ transport }: { transport: () => Promise<BridgeTr
     let made: ContractClient | null = null;
     void (async () => {
       try {
-        const c = await createContractClient(await transport());
+        const c = await createContractClient(await transport(), await relay());
         if (cancelled) {
           c.close();
           return;
@@ -193,7 +196,7 @@ function ContractReaderWindow({ transport }: { transport: () => Promise<BridgeTr
       cancelled = true;
       made?.close();
     };
-  }, [transport]);
+  }, [transport, relay]);
 
   if (failed) {
     return (

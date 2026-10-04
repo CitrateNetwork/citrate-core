@@ -89,6 +89,7 @@ function DeviceList({ state }: { state: WizardState }) {
           <span style={{ fontSize: 10.5, color: "var(--tx-3)", minWidth: 110, textAlign: "right" }}>
             {r.where}
             {r.addr ? ` · ${r.addr}` : ""}
+            {r.code ? ` · code ${r.code}` : ""}
           </span>
         </div>
       ))}

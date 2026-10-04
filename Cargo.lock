@@ -860,6 +860,7 @@ dependencies = [
  "citrate-wallet-core",
  "ed25519-dalek",
  "hex",
+ "hmac",
  "interprocess",
  "jsonwebtoken",
  "k256",

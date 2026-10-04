@@ -43,9 +43,9 @@ fn a_correctly_signed_manifest_verifies() {
         NOW,
     )
     .unwrap();
-    assert_eq!(vm.manifest.sequence, 3);
-    assert_eq!(vm.manifest.components[0].name, "solc");
-    assert_eq!(vm.digest_hex, sha256_hex(json.as_bytes()));
+    assert_eq!(vm.manifest().sequence, 3);
+    assert_eq!(vm.manifest().components[0].name, "solc");
+    assert_eq!(vm.digest_hex(), sha256_hex(json.as_bytes()));
 }
 
 #[test]

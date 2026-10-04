@@ -85,6 +85,34 @@ fn sha256_hex(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
 
+/// Domain tag for the server identity proof.
+const IDENTITY_DOMAIN: &[u8] = b"citrate-node-mcp/identity/v1";
+
+/// HMAC-SHA256 keyed by a token's SHA-256 (which only Core's owner-only token file and the token
+/// holder know) over the domain tag and the challenge, hex.
+fn identity_proof(token_sha256_hex: &str, nonce: &[u8; 32]) -> Option<String> {
+    use hmac::Mac as _;
+    let key = hex::decode(token_sha256_hex).ok()?;
+    let mut m = <hmac::Hmac<Sha256> as hmac::Mac>::new_from_slice(&key).ok()?;
+    m.update(IDENTITY_DOMAIN);
+    m.update(nonce);
+    Some(hex::encode(m.finalize().into_bytes()))
+}
+
+/// The proof a server holding `token` gives for `nonce` (computed by the stdio shim).
+pub fn identity_proof_for(token: &str, nonce: &[u8; 32]) -> String {
+    identity_proof(&sha256_hex(token), nonce).unwrap_or_default()
+}
+
+/// Whether `proofs` (comma-separated) contains `mine`, comparing each in constant time.
+pub fn proofs_contain(proofs: &str, mine: &str) -> bool {
+    let mut hit = false;
+    for p in proofs.split(',') {
+        hit |= ct_eq(p.trim().as_bytes(), mine.as_bytes());
+    }
+    hit && !mine.is_empty()
+}
+
 /// Constant-time equality for two equal-length byte strings (length is public: always 64 hex).
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -214,6 +242,16 @@ impl TokenStore {
             inner.last_used.insert(a.id.clone(), now_ms);
         }
         hit
+    }
+
+    /// One identity proof per live token for `nonce`: the server shows it holds the token a client
+    /// is about to send, before the client sends it (see `node_mcp_http::run_stdio_shim`).
+    pub fn identity_proofs(&self, nonce: &[u8; 32]) -> Vec<String> {
+        self.lock()
+            .records
+            .iter()
+            .filter_map(|r| identity_proof(&r.sha256, nonce))
+            .collect()
     }
 
     /// Revoke (delete) the token `id`. Returns whether a token was removed.

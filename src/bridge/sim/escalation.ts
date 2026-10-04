@@ -37,6 +37,9 @@ export function simEscalation(_host: SimHost): EscalationDomain {
     async quote() {
       throw new Error(NEEDS_APP);
     },
+    async confirmPrepare() {
+      throw new Error(NEEDS_APP);
+    },
     async run() {
       throw new Error(NEEDS_APP);
     },

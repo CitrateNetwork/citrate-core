@@ -25,11 +25,25 @@ export const PERSONA_LIMITS = {
 
 export const DEFAULT_VOICE_LABEL = "Hermes (default voice)";
 
+/**
+ * Longest fragment used. The runtime renders a persona from at most a 40-char name, 200-char
+ * summary, 300-char voice and tone and 12 rules of 300 chars, plus its template: well under this.
+ */
+export const MAX_PERSONA_FRAGMENT = 8000;
+
+/** Control characters other than tab and newline, and the text-direction controls. */
+const UNSAFE_FRAGMENT_CHAR = /[\u0000-\u0008\u000B-\u001F\u007F\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/;
+
 /** The active persona's fragment, trimmed; "" when none. */
 export function personaFragment(p: HermesPersona | null | undefined): string {
-  // Saved state can be stale or hand-edited: anything but a string fragment counts as none.
+  // Saved state can be stale or hand-edited: anything but a string fragment counts as none, and the
+  // fragment is bounded again here, where it enters the prompt (a saved custom persona is checked by
+  // the sidecar when it is made, not each time it is used).
   const f = p && typeof p === "object" ? (p as { prompt_fragment?: unknown }).prompt_fragment : undefined;
-  return typeof f === "string" ? f.trim() : "";
+  if (typeof f !== "string") return "";
+  const t = f.trim();
+  if (t.length > MAX_PERSONA_FRAGMENT || UNSAFE_FRAGMENT_CHAR.test(t)) return "";
+  return t;
 }
 
 /** The sidecar session prompt: the base prompt, then the persona fragment (never before it). */

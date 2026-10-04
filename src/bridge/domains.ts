@@ -861,6 +861,15 @@ export interface DeviceLinkView {
   thisDevice: boolean;
 }
 /** HUP-S8.1: this machine's device address (null before its key exists) + known links. */
+/** HUP-S8.1: a prepared device removal (mirrors Rust `device_link::RevokePrepared`). */
+export interface DeviceRevokePrepared {
+  confirmId: string;
+  /** Canonical device address (lowercase hex, no 0x). */
+  device: string;
+  statement: string;
+  confirmBy: number;
+}
+
 export interface DeviceLinks {
   thisDevice: string | null;
   links: DeviceLinkView[];
@@ -889,8 +898,13 @@ export interface ClusterDomain {
   linkDeviceApprove(id: string, rawAck: boolean): Promise<DeviceLinks>;
   /** HUP-S8.1: the person declined; nothing was signed. */
   linkDeviceReject(id: string): Promise<void>;
-  /** HUP-S8.1: revoke a device of yours (permanent for that device key). */
-  revokeDevice(device: string): Promise<DeviceLinks>;
+  /**
+   * HUP-S8.1: step 1 of removing a device of yours: what you confirm, and a one-shot id core
+   * minted for that device (valid for two minutes). Signs nothing.
+   */
+  revokeDevicePrepare(device: string): Promise<DeviceRevokePrepared>;
+  /** HUP-S8.1: you confirmed: revoke the device that `confirmId` names (permanent for that key). */
+  revokeDevice(confirmId: string): Promise<DeviceLinks>;
   /** HUP-S8.1: this machine's signed link as a code to paste on another of YOUR devices. */
   exportDeviceLink(): Promise<string>;
   /** HUP-S8.1: add another of your own devices from its code (verified before it is stored). */
@@ -1802,6 +1816,14 @@ export interface EscalationQuote {
   expiresMs: number;
 }
 
+/** Core's one-shot confirmation id for one shown quote and price. */
+export interface EscalationConfirmation {
+  confirmId: string;
+  quoteId: string;
+  costMicros: number;
+  expiresMs: number;
+}
+
 export interface EscalationRun {
   escalationId: string;
   content: string;
@@ -1869,8 +1891,16 @@ export interface EscalationDomain {
   budget(): Promise<EscalationBudget>;
   setBudget(capMicros: number): Promise<EscalationBudget>;
   quote(endpointId: string, prompt: string, system?: string | null, maxTokens?: number | null): Promise<EscalationQuote>;
-  /** Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. */
-  run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean): Promise<EscalationRun>;
+  /**
+   * The member's approval card is opening for a shown quote: core mints the one-shot confirmation
+   * id a confirmed run needs. A run cannot be approved by a flag.
+   */
+  confirmPrepare(quoteId: string, shownCostMicros: number): Promise<EscalationConfirmation>;
+  /**
+   * Runs a quote the member was shown. `shownCostMicros` must equal the quote's price. `confirmId`
+   * is the id from `confirmPrepare` once the member approved, else null (within budget only).
+   */
+  run(quoteId: string, shownCostMicros: number, confirmId: string | null, tainted: boolean): Promise<EscalationRun>;
   registryStatus(): Promise<EscalationRegistryStatus>;
   /** Quote a registry request from the model's live route (off until a router is pinned). */
   registryQuote(modelHash: string, input: string, maxPriceWei: string): Promise<EscalationRegistryQuote>;
