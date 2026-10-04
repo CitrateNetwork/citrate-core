@@ -1,4 +1,4 @@
-//! HUP-S2.3 — Settings → Budgets and the budgeted Sign-In with Ethereum entry point.
+//! HUP-S2.3: Settings → Budgets and the budgeted Sign-In with Ethereum entry point.
 //!
 //! ADR-2026-09-30-rule3-budgetable-signatures (accepted). The store and the one budgeted signer
 //! path live in the kit (`citrate_core_kit::web_budget`, `SignatureCeremony::request_siwe_budgeted`);
@@ -10,13 +10,14 @@
 //! | `web_budget_grant` | the member grants a per-origin sign-in budget (HIC-1, no signature, O-4) |
 //! | `web_budget_revoke` / `web_budget_revoke_all` | immediate revocation under the budget lock |
 //! | `web_budget_reset` | after an integrity failure: keep the old file aside, start empty |
-//! | `web_signing_request` | a SIWE request: auto-signed inside a budget, otherwise an HIC-1 card |
+//! | `web_signing_request` | decide one sign-in request waiting in the managed browser ([`crate::web_signin`]) |
+//! | `web_signing_approve` / `web_signing_reject` | the member's decision on a sign-in card |
 //!
-//! **Honest state today.** Auto-signing needs core to attest the page's top-frame origin over its
-//! own session with the managed browser (D2 #1). That browser is HUP-S5.1 and does not exist yet,
-//! so [`attest_origin`] returns `None` and every `web_signing_request` becomes an ordinary HIC-1
-//! card that says why. Budgets can be granted, viewed and revoked now; they start to apply when
-//! the attestation source lands, with no other change.
+//! **Where it applies.** Only in Hermes's managed browser (off unless the sidecar runs with
+//! `CITRATE_HERMES_BROWSER=1`). The webview names a request id and nothing else: the message, the
+//! asking page and the session taint come from the sidecar over core's own channel, and the origin
+//! is attested by core's own read of the browser ([`crate::web_signin::attest`]). After every
+//! decision the records are copied into the local decision records the nightly anchor covers.
 //!
 //! **Defaults change nothing.** There are no budgets until the member grants one. The values the
 //! grant form proposes are placeholders pending owner sign-off (see `web_budget` constants).
@@ -24,20 +25,18 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use citrate_core_kit::ceremony::{BudgetedOutcome, SignatureCeremony, SiweSignRequest};
 use citrate_core_kit::custody::{CustodyVault, OsKeyring};
 use citrate_core_kit::web_budget::{
-    self, BudgetGate, BudgetSnapshot, OriginAttestation, TaskTaint, WebSigningBudget,
-    DEFAULT_PRINCIPAL,
+    self, BudgetGate, BudgetSnapshot, WebSigningBudget, DEFAULT_PRINCIPAL,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+
+use crate::web_signin::{self, SignInOutcome, SignInState};
 
 /// The budget file, in the app data dir.
 pub const BUDGET_FILE_NAME: &str = "web-signing-budgets.json";
-/// Why no origin can be attested yet. Shown in Settings → Budgets.
-pub const ATTESTATION_UNAVAILABLE_REASON: &str = "Automatic sign-in needs the managed browser, which is not in this build yet. Until then every sign-in request asks you, even for sites with a budget.";
-/// The caller's claimed origin is display text only; it is truncated to this many chars.
-pub const MAX_CLAIMED_ORIGIN_CHARS: usize = 200;
+/// Where automatic sign-in applies. Shown in Settings → Budgets.
+pub const ATTESTATION_SCOPE: &str = "Automatic sign-in works only in Hermes's managed browser, which is off unless Hermes's browser is turned on. Everywhere else, and for any site without an active budget, every sign-in asks you.";
 const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Managed state: the budget file path and the store, opened on first use (off the main thread,
@@ -45,6 +44,8 @@ const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 pub struct WebBudgetState {
     path: Option<PathBuf>,
     gate: OnceLock<BudgetGate>,
+    /// Which bridge request each pending sign-in card answers.
+    signin: SignInState,
 }
 
 impl WebBudgetState {
@@ -53,6 +54,7 @@ impl WebBudgetState {
         WebBudgetState {
             path,
             gate: OnceLock::new(),
+            signin: SignInState::default(),
         }
     }
 
@@ -86,22 +88,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// D2 #1: the top-frame origin as core reads it over its OWN session with the managed browser.
-/// The managed browser (HUP-S5.1) is not built yet, so nothing can be attested and this returns
-/// `None` for every tab. The caller's claimed origin is never used here.
-pub fn attest_origin(_tab_id: Option<&str>) -> Option<OriginAttestation> {
-    None
-}
-
-/// `None` (the caller could not say) is treated as tainted; an empty list is clean.
-pub fn taint_from(sources: Option<Vec<String>>) -> TaskTaint {
-    match sources {
-        None => TaskTaint::Unknown,
-        Some(v) if v.is_empty() => TaskTaint::Clean,
-        Some(v) => TaskTaint::Sources(v),
-    }
 }
 
 /// Whole days to ms, inside the O-2 ceiling (1 to 30 days).
@@ -163,8 +149,8 @@ pub fn status_of(gate: &BudgetGate, now: u64, wallet: Option<&str>) -> WebBudget
     WebBudgetStatus {
         snapshot: gate.snapshot(now, wallet),
         attestation: AttestationStatus {
-            available: attest_origin(None).is_some(),
-            reason: ATTESTATION_UNAVAILABLE_REASON.to_string(),
+            available: true,
+            reason: ATTESTATION_SCOPE.to_string(),
         },
         defaults: GrantDefaults {
             max_count: web_budget::PLACEHOLDER_DEFAULT_MAX_COUNT,
@@ -201,43 +187,41 @@ pub fn grant_inner(
         .map_err(|e| e.to_string())
 }
 
-/// The arguments of `web_signing_request`. There is no origin attestation here on purpose: core
-/// attests the origin itself (D2 #1); `claimed_origin` is display text for the card only.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SigningRequestArgs {
-    pub message: String,
-    pub tab_id: Option<String>,
-    pub claimed_origin: String,
-    /// Untrusted sources the current task has read. Omitted means unknown (treated as tainted).
-    pub taint_sources: Option<Vec<String>>,
-    /// The sidecar marked the call `hic: "required"`.
-    #[serde(default)]
-    pub hic_required: bool,
+/// A sign-in request id as the sidecar mints it (`signin-<n>-<m>`).
+pub fn valid_request_id(id: &str) -> Result<(), String> {
+    let ok = id.len() <= 64
+        && id.strip_prefix("signin-").is_some_and(|rest| {
+            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err("that is not a sign-in request id".to_string())
+    }
 }
 
-pub fn request_inner(
-    ceremony: &SignatureCeremony,
-    vault: &CustodyVault,
-    gate: &BudgetGate,
-    args: SigningRequestArgs,
-    clock: &dyn Fn() -> u64,
-) -> BudgetedOutcome {
-    let claimed: String = args
-        .claimed_origin
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(MAX_CLAIMED_ORIGIN_CHARS)
-        .collect();
-    let req = SiweSignRequest {
-        message: args.message,
-        attestation: attest_origin(args.tab_id.as_deref()),
-        taint: taint_from(args.taint_sources),
-        hic_required: args.hic_required,
-        principal: DEFAULT_PRINCIPAL.to_string(),
-        claimed_origin: claimed,
+/// Copy the budget records into the decision records the nightly anchor covers. Best effort:
+/// Hermes may not be running; the next decision or the nightly pass tries again.
+pub fn export_for_app(app_h: &tauri::AppHandle) {
+    let Ok(st) = state::<WebBudgetState>(app_h) else {
+        return;
     };
-    ceremony.request_siwe_budgeted(vault, gate, req, clock)
+    let Ok(m) = crate::hermes::manager_for(app_h) else {
+        return;
+    };
+    if let Err(e) = web_signin::export_records(m, st.gate()) {
+        eprintln!("citrate-core: web-signing records not exported yet: {e}");
+    }
+}
+
+/// What the "Signed for you" notice shows.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoSignedNotice {
+    pub origin: String,
+    pub budget_id: u64,
+    pub record_id: u64,
+    pub remaining: u32,
 }
 
 fn active_wallet(vault: &CustodyVault) -> Option<String> {
@@ -278,14 +262,18 @@ pub async fn web_budget_grant(
         let st = state::<WebBudgetState>(&app_h)?;
         let cu = state::<crate::custody::CustodyState>(&app_h)?;
         let wallet = active_wallet(&cu.0);
-        grant_inner(
+        let out = grant_inner(
             st.gate(),
             wallet.as_deref(),
             &origin,
             max_count,
             ttl_days,
             now_ms(),
-        )
+        );
+        if out.is_ok() {
+            export_for_app(&app_h);
+        }
+        out
     })
     .await
 }
@@ -295,7 +283,9 @@ pub async fn web_budget_grant(
 pub async fn web_budget_revoke(app_h: tauri::AppHandle, id: u64) -> Result<(), String> {
     crate::blocking::off_main(move || {
         let st = state::<WebBudgetState>(&app_h)?;
-        st.gate().revoke(id, now_ms()).map_err(|e| e.to_string())
+        let out = st.gate().revoke(id, now_ms()).map_err(|e| e.to_string());
+        export_for_app(&app_h);
+        out
     })
     .await
 }
@@ -305,9 +295,12 @@ pub async fn web_budget_revoke(app_h: tauri::AppHandle, id: u64) -> Result<(), S
 pub async fn web_budget_revoke_all(app_h: tauri::AppHandle) -> Result<u32, String> {
     crate::blocking::off_main(move || {
         let st = state::<WebBudgetState>(&app_h)?;
-        st.gate()
+        let out = st
+            .gate()
             .revoke_all("the member revoked all budgets in Settings", now_ms())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        export_for_app(&app_h);
+        out
     })
     .await
 }
@@ -319,26 +312,98 @@ pub async fn web_budget_reset(app_h: tauri::AppHandle) -> Result<(), String> {
     crate::blocking::off_main(move || {
         let st = state::<WebBudgetState>(&app_h)?;
         // The kit refuses a healthy store under the budget lock (BudgetError::StoreHealthy).
-        st.gate()
+        let out = st
+            .gate()
             .reset_after_integrity_failure(now_ms())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        if out.is_ok() {
+            export_for_app(&app_h);
+        }
+        out
     })
     .await
 }
 
-/// **Command — web_signing_request.** A Sign-In with Ethereum request. Inside a live budget for
-/// a core-attested origin it is signed and recorded; otherwise it becomes a pending HIC-1 card
-/// (the returned ceremony id), with the reason.
+/// **Command: web_signing_request.** Decide one sign-in request waiting in the managed browser.
+/// The webview names the request only; everything else is read by core itself (see
+/// [`crate::web_signin`]). Inside a live budget for a core-attested origin it is signed,
+/// recorded, delivered and announced (the "Signed for you" notice); otherwise it becomes a pending
+/// HIC-1 card with the reason, or the page is told no.
 #[tauri::command]
 pub async fn web_signing_request(
     app_h: tauri::AppHandle,
-    args: SigningRequestArgs,
-) -> Result<BudgetedOutcome, String> {
+    request_id: String,
+) -> Result<SignInOutcome, String> {
+    crate::blocking::off_main(move || {
+        valid_request_id(&request_id)?;
+        let st = state::<WebBudgetState>(&app_h)?;
+        let cu = state::<crate::custody::CustodyState>(&app_h)?;
+        let ce = state::<crate::ceremony::CeremonyState>(&app_h)?;
+        let m = crate::hermes::manager_for(&app_h)?;
+        let out = web_signin::handle(
+            &web_signin::SignInCtx {
+                link: m,
+                devtools: &web_signin::LoopbackDevtools,
+                ceremony: &ce.0,
+                vault: &cu.0,
+                gate: st.gate(),
+                state: &st.signin,
+                clock: &now_ms,
+            },
+            &request_id,
+        )?;
+        if let SignInOutcome::AutoSigned {
+            origin,
+            remaining,
+            record_id,
+            budget_id,
+            ..
+        } = &out
+        {
+            use tauri::Emitter;
+            let _ = app_h.emit_to(
+                "main",
+                web_signin::AUTO_SIGNED_EVENT,
+                AutoSignedNotice {
+                    origin: origin.clone(),
+                    budget_id: *budget_id,
+                    record_id: *record_id,
+                    remaining: *remaining,
+                },
+            );
+            export_for_app(&app_h);
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// **Command: web_signing_approve.** The member approved a sign-in card at the Signature
+/// Ceremony: sign it and deliver it to the page. Returns whether the page received it.
+#[tauri::command]
+pub async fn web_signing_approve(
+    app_h: tauri::AppHandle,
+    id: String,
+    raw_ack: bool,
+) -> Result<bool, String> {
     crate::blocking::off_main(move || {
         let st = state::<WebBudgetState>(&app_h)?;
         let cu = state::<crate::custody::CustodyState>(&app_h)?;
         let ce = state::<crate::ceremony::CeremonyState>(&app_h)?;
-        Ok(request_inner(&ce.0, &cu.0, st.gate(), args, &now_ms))
+        let m = crate::hermes::manager_for(&app_h)?;
+        web_signin::approve(m, &ce.0, &cu.0, &st.signin, &id, raw_ack)
+    })
+    .await
+}
+
+/// **Command: web_signing_reject.** The member declined a sign-in card: nothing is signed.
+#[tauri::command]
+pub async fn web_signing_reject(app_h: tauri::AppHandle, id: String) -> Result<(), String> {
+    crate::blocking::off_main(move || {
+        let st = state::<WebBudgetState>(&app_h)?;
+        let ce = state::<crate::ceremony::CeremonyState>(&app_h)?;
+        let m = crate::hermes::manager_for(&app_h)?;
+        web_signin::reject(m, &ce.0, &st.signin, &id)
     })
     .await
 }

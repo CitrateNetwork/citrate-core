@@ -46,7 +46,9 @@ mod deploy_gate;
 mod faucet;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
+mod hic_records;
 mod web_budgets;
+mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
 mod device_link;
 mod docs_ingest;
@@ -581,6 +583,7 @@ pub fn run() {
             escalation::escalation_budget_set,
             escalation::escalation_quote,
             escalation::escalation_run,
+            hic_records::hic_record_decision,
             escalation::escalation_registry_status,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
@@ -588,6 +591,8 @@ pub fn run() {
             web_budgets::web_budget_revoke_all,
             web_budgets::web_budget_reset,
             web_budgets::web_signing_request,
+            web_budgets::web_signing_approve,
+            web_budgets::web_signing_reject,
             faucet::faucet_status,
             faucet::faucet_grant,
             faucet::faucet_revoke,
@@ -653,6 +658,10 @@ pub fn run() {
             hermes::personas::hermes_personas,
             hermes::personas::hermes_workflows,
             hermes::personas::hermes_persona_check,
+            hermes::personas::hermes_track_workflow_run,
+            // HUP-S2.2: the member decides each shell_run command the sidecar holds.
+            hermes::shell::hermes_shell_pending,
+            hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
             // HUP-S4.3 — the MCP servers Hermes may use (mem-mcp, CitrateScan); default off.
@@ -668,6 +677,7 @@ pub fn run() {
             hermes_learn::hermes_learn_reject,
             hermes_learn::hermes_learn_memories,
             hermes_learn::hermes_learn_store_pending,
+            hermes_learn::hermes_learn_resolve,
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
@@ -799,6 +809,7 @@ pub fn run() {
             skills_local::skills_local_write,
             skills_local::skills_local_read,
             skills_local::skills_local_delete,
+            skills_local::skills_local_migrate,
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,

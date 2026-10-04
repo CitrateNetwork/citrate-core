@@ -9,12 +9,14 @@
 //   - spend: local inference is free; gateway metering is not wired into the app yet
 //   - daemons (HUP-S10.3): Rust daemons.rs via daemons_list (status, today's ledger, next run) and
 //     the runner's state (why runs are held). Daemon tokens are estimated (characters / 4).
+//   - runs (HUP-S2.2): command runs (shell_run and the toolchain tools) from their tool results,
+//     recorded by the sidecar provider into the turn activity slice
 //   - workers (HUP-S1.9): the agent sidecar's worker processes, read from Rust (hermes_workers →
 //     the sidecar's GET /workers, i.e. its own process supervisor)
 // Where the app has no real number the field is null and the monitor says "unknown" with the
 // reason. Token usage is null for every provider today: no provider reports usage to the app.
 // =====================================================================
-import { type ToolRow, type TurnActivity, type TurnPhase } from "../shell/slices/turnActivity";
+import { type RunRow, type ToolRow, type TurnActivity, type TurnPhase } from "../shell/slices/turnActivity";
 import type { DaemonsView } from "../daemons/api";
 
 export type ProviderClass = "local" | "gateway" | "demo" | "unknown";
@@ -51,6 +53,8 @@ export interface MonitorSnapshot {
     endedAt: number | null;
     outcome: TurnActivity["outcome"];
     tools: ToolRow[];
+    /** HUP-S2.2: this turn's command runs. Absent from an older sender = none. */
+    runs?: RunRow[];
     why: string;
   };
   spend: { amount: number | null; unit: string; note: string };
@@ -245,6 +249,7 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
       endedAt: a.endedAt,
       outcome: a.outcome,
       tools: a.tools,
+      runs: a.runs ?? [],
       why: waitingReason(a),
     },
     spend: spendFor(kind),
@@ -271,6 +276,21 @@ function isToolRow(v: unknown): v is ToolRow {
 }
 
 const boolOrNull = (v: unknown) => v === null || typeof v === "boolean";
+
+function isRunRow(v: unknown): v is RunRow {
+  return (
+    isObj(v) &&
+    typeof v.callId === "string" &&
+    typeof v.tool === "string" &&
+    typeof v.status === "string" &&
+    typeof v.summary === "string" &&
+    numOrNull(v.exitCode) &&
+    numOrNull(v.durationMs) &&
+    typeof v.timedOut === "boolean" &&
+    strOrNull(v.sandbox) &&
+    typeof v.at === "number"
+  );
+}
 
 function isWorkerRow(v: unknown): v is WorkerRow {
   return (
@@ -301,6 +321,7 @@ export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   if (!strOrNull(turn.currentTool) || !numOrNull(turn.step) || !numOrNull(turn.startedAt) || !numOrNull(turn.endedAt)) return false;
   if (!(turn.outcome === null || ["answered", "failed", "stopped"].includes(turn.outcome as string))) return false;
   if (!Array.isArray(turn.tools) || !turn.tools.every(isToolRow) || typeof turn.why !== "string") return false;
+  if (!(turn.runs === undefined || (Array.isArray(turn.runs) && turn.runs.every(isRunRow)))) return false;
   if (!isObj(spend) || !numOrNull(spend.amount) || typeof spend.unit !== "string" || typeof spend.note !== "string") return false;
   const { workers } = v;
   if (!isObj(workers) || typeof workers.note !== "string") return false;

@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView } from "../domains";
 import type { CeremonyView } from "../types";
 import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 import type { LearnAcceptResult, LearnedMemory, LearnProposal, LearnStatus, WorkflowRunView } from "../../agent/learn";
@@ -58,8 +58,10 @@ export const tauriAgentHarness: AgentHarnessDomain = {
     // PBA-L7b-003: the approval is bound to the reviewed call id (never the legacy head-resolve).
     await invoke("hermes_resolve", { approve, id });
   },
-  sessionOpen(systemPrompt, toolsJson) {
-    return invoke<string>("hermes_session_open", { systemPrompt, toolsJson });
+  sessionOpen(systemPrompt, toolsJson, persona) {
+    // HUP-S3.3: the persona travels as `persona` (shipped id) or `customPersona`; none = unchanged.
+    const extra = persona ? ("persona" in persona ? { persona: persona.persona } : { customPersona: persona.customPersona }) : {};
+    return invoke<string>("hermes_session_open", { systemPrompt, toolsJson, ...extra });
   },
   async sessionSend(id, text) {
     await invoke("hermes_session_send", { id, text });
@@ -105,6 +107,10 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   undoSession(id) {
     return invoke<UndoOutcome>("hermes_undo_session", { id });
   },
+  // HUP-S2.6 — the member's answer on a card, into core's HIC outbox (src-tauri/src/hic_records.rs).
+  recordDecision(kind, decision, subject, reason) {
+    return invoke<number>("hic_record_decision", { kind, decision, subject, reason });
+  },
   // HUP-S3.4 — verified workflow runs + verified self-learning (src-tauri/src/hermes_learn.rs).
   workflowRun(sessionId, workflow) {
     return invoke<string>("hermes_workflow_run", { sessionId, workflowJson: JSON.stringify(workflow) });
@@ -134,6 +140,9 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   learnStorePending() {
     return invoke<LearnedMemory[]>("hermes_learn_store_pending");
   },
+  learnResolve(keep, retract) {
+    return invoke<LearnedMemory[]>("hermes_learn_resolve", { keep, retract });
+  },
   async learnPublish(id, version) {
     await invoke("hermes_learn_publish", { id, version });
   },
@@ -145,6 +154,15 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   workflows() {
     return invoke<TrackWorkflow[]>("hermes_workflows");
+  },
+  trackWorkflowRun(sessionId, workflowId) {
+    return invoke<TrackWorkflowStart>("hermes_track_workflow_run", { sessionId, workflowId });
+  },
+  shellPending(sessionId) {
+    return invoke<ShellPendingView[]>("hermes_shell_pending", { sessionId });
+  },
+  async shellDecide(sessionId, id, allow, argv, cwd) {
+    await invoke("hermes_shell_decide", { sessionId, id, allow, argv, cwd });
   },
 };
 
@@ -160,5 +178,8 @@ export const tauriAgentSkills: AgentSkillsDomain = {
   },
   async remove(name) {
     await invoke("skills_local_delete", { name });
+  },
+  migrate(): Promise<SkillMigrationReport> {
+    return invoke<SkillMigrationReport>("skills_local_migrate");
   },
 };

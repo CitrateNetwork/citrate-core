@@ -25,6 +25,7 @@ import {
   resolveSourcesBase,
   VERDICTS,
 } from "./skills-lock.mjs";
+import { flattenFrontmatter } from "./skill-intake-rewrite.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -227,6 +228,68 @@ describe("lock generation on a fixture source", () => {
     expect(res.ok).toBe(false);
     expect(res.diffs.join("\n")).toMatch(/references\/checklist\.md/);
     write("fixture-src/plugins/p/skills/alpha/references/checklist.md", "- check one\n");
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// HUP-S3.2: the intake rewrite for a source whose frontmatter the strict loader refuses
+// ---------------------------------------------------------------------------------------
+
+describe("a source with intake_rewrite = flatten-frontmatter", () => {
+  let base;
+  const NESTED =
+    "---\nname: arxiv\ndescription: Search arXiv papers.\nauthor: Hermes Agent\nplatforms: [linux, macos]\nmetadata:\n  hermes:\n    tags: [Research, Papers]\n---\n# arXiv\nProse.\n";
+  const intake = (rewrite) => ({
+    sources: [
+      {
+        label: "forked",
+        upstream: "https://example.invalid/forked",
+        commit: "89abcdef0123456789abcdef0123456789abcdef",
+        license: "MIT",
+        local: "forked-src",
+        pin_method: "git-checkout",
+        ...(rewrite ? { intake_rewrite: rewrite } : {}),
+      },
+    ],
+    decisions: {},
+  });
+
+  beforeAll(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), "l5intake-rewrite-"));
+    fs.mkdirSync(path.join(base, "forked-src/research/arxiv"), { recursive: true });
+    fs.writeFileSync(path.join(base, "forked-src/research/arxiv/SKILL.md"), NESTED);
+  });
+  afterAll(() => {
+    if (base) fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it("without the rewrite the skill is refused by the strict loader and excluded", () => {
+    const [sk] = buildLock(intake(null), base).skills;
+    expect(sk.verdict).toBe("exclude");
+    expect(sk.reason).toMatch(/nested collections/);
+  });
+
+  it("with the rewrite it is admitted and the lock pins both hashes", () => {
+    const lock = buildLock(intake("flatten-frontmatter"), base);
+    const [sk] = lock.skills;
+    expect(sk.verdict).toBe("include-as-is");
+    expect(sk.skillMdSha256).toBe(sha(NESTED));
+    const shipped = flattenFrontmatter(NESTED);
+    expect(sk.shippedSkillMdSha256).toBe(sha(shipped));
+    const text = renderLock(lock);
+    expect(text).toContain(`skill_md_sha256 = "${sha(NESTED)}"\nintake_rewrite = "flatten-frontmatter"\nshipped_skill_md_sha256 = "${sha(shipped)}"`);
+  });
+
+  it("refuses an unknown rewrite name", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "l5intake-badrw-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".agentile/skill-intake"), { recursive: true });
+      const file = path.join(dir, ".agentile/skill-intake/intake.json");
+      fs.writeFileSync(file, JSON.stringify(intake("guess-frontmatter")));
+      expect(() => loadIntake(file)).toThrow(/intake_rewrite/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

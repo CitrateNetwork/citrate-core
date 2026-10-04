@@ -175,6 +175,14 @@ pub struct MemoryHit {
     /// A non-active lifecycle marker if the daemon flagged one ("SUPERSEDED"/…).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// HUP-S3.1: `<repo>:<path>[#<anchor>]` for a document passage, when the
+    /// search asked for passages (`memory.search {passages: true}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cite: Option<String>,
+    /// HUP-S3.1: the hit's full text (the daemon caps it), when the search
+    /// asked for passages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passage: Option<String>,
 }
 
 /// The result of a recall/search: the tenant, the total node count the daemon
@@ -313,11 +321,34 @@ fn parse_tool_response(line: &str) -> Result<String> {
 /// is `  <id10> [<score> ][<kind><status>] <title>`.
 pub fn parse_result(tenant: &str, text: &str) -> MemoryResult {
     let mut total_in_tenant = 0u64;
-    let mut hits = Vec::new();
+    let mut hits: Vec<MemoryHit> = Vec::new();
     for raw in text.lines() {
         let line = raw.trim_end();
         if let Some(n) = parse_tenant_total(line) {
             total_in_tenant = n;
+            continue;
+        }
+        // HUP-S3.1 passages rendering: `    cite: …` and `    > …` lines belong
+        // to the hit above them.
+        if let Some(cite) = line.strip_prefix("    cite: ") {
+            if let Some(h) = hits.last_mut() {
+                h.cite = Some(cite.trim().to_string());
+            }
+            continue;
+        }
+        if let Some(quoted) = line
+            .strip_prefix("    > ")
+            .or_else(|| (line == "    >").then_some(""))
+        {
+            if let Some(h) = hits.last_mut() {
+                match h.passage.as_mut() {
+                    Some(p) => {
+                        p.push('\n');
+                        p.push_str(quoted);
+                    }
+                    None => h.passage = Some(quoted.to_string()),
+                }
+            }
             continue;
         }
         if let Some(hit) = parse_hit_line(line) {
@@ -382,6 +413,8 @@ fn parse_hit_line(line: &str) -> Option<MemoryHit> {
         kind,
         title,
         status,
+        cite: None,
+        passage: None,
     })
 }
 
@@ -928,12 +961,38 @@ impl MemoryManager {
         )
     }
 
+    /// HUP-S3.4: `memory.confirm_edge` — promote a quarantined edge to load-bearing. A confirmed
+    /// `supersedes` edge retires its target (status transition in the daemon). Used when the
+    /// member resolves a contradiction between learned memories: the kept memory supersedes the
+    /// one set aside.
+    pub fn confirm_edge(&self, from_prefix: &str, to_prefix: &str, kind: &str) -> Result<String> {
+        self.transport.call_tool(
+            "memory.confirm_edge",
+            json!({ "from_prefix": from_prefix, "to_prefix": to_prefix, "kind": kind }),
+        )
+    }
+
     /// `memory.search` over a tenant → a parsed [`MemoryResult`].
     pub fn search(&self, tenant: &str, query: &str, budget: usize) -> Result<MemoryResult> {
-        let text = self.transport.call_tool(
-            "memory.search",
-            json!({ "repo": tenant, "query": query, "budget": budget }),
-        )?;
+        self.search_with(tenant, query, budget, false)
+    }
+
+    /// [`Self::search`]; with `passages`, each hit also carries its text and, for
+    /// a document, its citation (HUP-S3.1: answering from the bundled knowledge
+    /// corpus). A daemon that predates passages ignores the flag and returns
+    /// titles only, which parse the same way.
+    pub fn search_with(
+        &self,
+        tenant: &str,
+        query: &str,
+        budget: usize,
+        passages: bool,
+    ) -> Result<MemoryResult> {
+        let mut args = json!({ "repo": tenant, "query": query, "budget": budget });
+        if passages {
+            args["passages"] = json!(true);
+        }
+        let text = self.transport.call_tool("memory.search", args)?;
         Ok(parse_result(tenant, &text))
     }
 
@@ -1239,12 +1298,13 @@ pub async fn memory_search(
     tenant: String,
     query: String,
     budget: Option<usize>,
+    passages: Option<bool>,
 ) -> std::result::Result<MemoryResult, String> {
     // HUP-S0.1: the blocking body runs on the blocking pool, never the main thread.
     crate::blocking::off_main(move || {
         let st0 = tauri::Manager::try_state::<MemoryState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        memory_search_sync(st0, tenant, query, budget)
+        memory_search_sync(st0, tenant, query, budget, passages)
     })
     .await
 }
@@ -1255,10 +1315,16 @@ pub fn memory_search_sync(
     tenant: String,
     query: String,
     budget: Option<usize>,
+    passages: Option<bool>,
 ) -> std::result::Result<MemoryResult, String> {
     state
         .0
-        .search(&tenant, &query, budget.unwrap_or(10))
+        .search_with(
+            &tenant,
+            &query,
+            budget.unwrap_or(10),
+            passages.unwrap_or(false),
+        )
         .map_err(|e| e.to_string())
 }
 

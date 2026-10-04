@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { Brief, HermesPersona, PendingWithdrawal } from "../bridge/domains";
+import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -218,7 +218,7 @@ export interface CerSpec {
  * amount the user typed) alongside the decoded view. Never carries key material.
  */
 export interface WalletReview {
-  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call";
+  kind: "send" | "stake" | "withdraw-request" | "withdraw-claim" | "claim" | "wallet-link" | "device-link" | "agent" | "social" | "deploy" | "directory-publish" | "directory-revoke" | "contract-call" | "web-sign-in";
   label: string;
   view: CeremonyView;
   spendSummary?: string;
@@ -483,8 +483,12 @@ export interface AppState {
   deviceId: string;
   s1c: number;
   pins: Pin[];
-  /** Hermes P5 — the member's own prompt-skills (persisted locally, run against the active model). */
+  /** Hermes P5: prompt-skills kept in app state by earlier builds. HUP-S3.2 moves them to SKILL.md
+   *  files on this device (`localSkills`) on launch; one that cannot move stays here with a notice. */
   userSkills: UserSkill[];
+  /** HUP-S3.2: the member's saved skills, read from the SKILL.md files the sidecar's one loader also
+   *  reads (skills_local.rs). Not persisted here; the files are the record. */
+  localSkills: LocalSkill[];
   jPages: JournalPage[];
   jSel: string | null;
   jEditing: boolean;
@@ -500,8 +504,12 @@ export interface AppState {
    * Whether a route is actually usable is read live via bridge.chat.providerStatus.
    */
   aiDefault: string;
-  /** HUP-S1.1c — run Hermes's loop in the sidecar (preview; off until the S1.9 parity suite passes). */
+  /** HUP-S1.1c — run Hermes's loop in the sidecar. On by default (owner decision 2026-10-01); the
+   * app falls back to its own loop whenever the sidecar is not running. */
   hermesSidecarLoop: boolean;
+  /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
+   * After that, the member's own choice is kept. */
+  hermesSidecarLoopDefaultApplied: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
   /** HUP-S3.3 + S3.7 — the chosen Hermes persona (its sidecar view, fragment included), or null for
@@ -509,6 +517,9 @@ export interface AppState {
   hermesPersona: HermesPersona | null;
   /** HUP-S3.3 (US-3.3 AC3) — member-defined personas, each checked by the sidecar. Persisted. */
   customPersonas: HermesPersona[];
+  /** HUP-S3.7 — read Hermes's replies aloud with the persona's voice (the system speech engine).
+   *  Off by default. Persisted. */
+  hermesReadAloud: boolean;
   aiEdit: string | null;
   sponsorUnits: number;
   blocksProposed: number;
@@ -769,6 +780,7 @@ export function freshState(pid: string): AppState {
     s1c: 0,
     pins: [],
     userSkills: [],
+    localSkills: [],
     jPages: [],
     jSel: null,
     jEditing: false,
@@ -779,10 +791,12 @@ export function freshState(pid: string): AppState {
     // AI provider KEYS live in the OS keyring (Rust), never in AppState. Only the
     // non-secret default route id is kept here (AI1, invariant 2).
     aiDefault: "gateway",
-    hermesSidecarLoop: false,
+    hermesSidecarLoop: true,
+    hermesSidecarLoopDefaultApplied: true,
     hermesBrief: null,
     hermesPersona: null,
     customPersonas: [],
+    hermesReadAloud: false,
     aiEdit: null,
     sponsorUnits: 4,
     blocksProposed: 0,
@@ -928,7 +942,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesBrief", "hermesPersona", "customPersonas", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {
@@ -940,5 +954,11 @@ export function loadState(): AppState {
   }
   const base = freshState((saved && saved.persona) || "p1");
   if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready" });
+  // Owner decision 2026-10-01: the sidecar agent loop is on for members. Installs that saved the
+  // old default (off) are switched on once; a member who turns it off afterwards stays off.
+  if (saved && saved.hermesSidecarLoopDefaultApplied !== true) {
+    base.hermesSidecarLoop = true;
+    base.hermesSidecarLoopDefaultApplied = true;
+  }
   return base;
 }
