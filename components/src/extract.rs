@@ -2,11 +2,15 @@
 //!
 //! Rules: every entry path is a relative path of normal components (no `..`, no absolute or
 //! drive paths, no backslashes); only regular files, directories and symlinks are accepted
-//! (hard links, devices and FIFOs are refused); a path may appear once; set-id bits and
-//! group/other write bits are dropped. Symlinks are created after every file and directory, so
-//! no file is ever written through an archive symlink; each symlink target must stay inside
+//! (hard links, devices, FIFOs and sockets are refused); a path may appear once; set-id bits
+//! and group/other write bits are dropped. Symlinks are created after every file and directory,
+//! so no file is ever written through an archive symlink; each symlink target must stay inside
 //! the tree both lexically and after resolution, and must exist; no link is placed under
 //! another archive link.
+//!
+//! The same rules hold for tar (tar.gz, tar.xz) and zip. In a zip a symlink is an entry whose
+//! unix mode has the link type and whose content is the target; encrypted entries, compression
+//! methods other than stored and deflate, and entries whose data fails the CRC are refused.
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -120,10 +124,139 @@ fn extract_into(
             let _ = fs::remove_file(&tmp);
             r
         }
-        ArchiveFormat::Zip => Err(ComponentError::UnsupportedFormat(
-            "zip archives are not unpacked in this version (Windows toolchain spike)".into(),
-        )),
+        ArchiveFormat::Zip => unpack_zip(archive, dest),
     }
+}
+
+/// The longest symlink target accepted (a target is stored as the entry's content in a zip).
+const MAX_LINK_TARGET_BYTES: u64 = MAX_PATH_CHARS as u64;
+const S_IFMT: u32 = 0o170_000;
+const S_IFREG: u32 = 0o100_000;
+const S_IFDIR: u32 = 0o040_000;
+const S_IFLNK: u32 = 0o120_000;
+
+fn zip_err(e: zip::result::ZipError) -> ComponentError {
+    unsafe_entry(format!("zip: {e}"))
+}
+
+/// The total entry count the zip's end-of-central-directory record declares (ZIP64 aware).
+/// Read from the last 64 KiB + 22 bytes, where the record must sit; any doubt is an error.
+fn zip_declared_entries(archive: &Path) -> Result<u64, ComponentError> {
+    use std::io::{Seek, SeekFrom};
+    const EOCD: &[u8; 4] = b"PK\x05\x06";
+    const LOC64: &[u8; 4] = b"PK\x06\x07";
+    const EOCD64: &[u8; 4] = b"PK\x06\x06";
+    let bad = || unsafe_entry("zip: the end of the central directory is not readable");
+    let mut f = fs::File::open(archive).map_err(io)?;
+    let len = f.metadata().map_err(io)?.len();
+    let tail_len = len.min(65_535 + 22);
+    f.seek(SeekFrom::Start(len - tail_len)).map_err(io)?;
+    let mut tail = Vec::with_capacity(tail_len as usize);
+    (&mut f).take(tail_len).read_to_end(&mut tail).map_err(io)?;
+    let at = tail
+        .windows(4)
+        .rposition(|w| w == EOCD)
+        .filter(|at| at + 22 <= tail.len())
+        .ok_or_else(bad)?;
+    let le16 = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+    let total = le16(&tail, at + 10);
+    if total != u16::MAX {
+        return Ok(u64::from(total));
+    }
+    // ZIP64: the locator sits just before the record and points at the ZIP64 record.
+    let loc = at.checked_sub(20).ok_or_else(bad)?;
+    if &tail[loc..loc + 4] != LOC64 {
+        return Err(bad());
+    }
+    let mut off = [0u8; 8];
+    off.copy_from_slice(&tail[loc + 8..loc + 16]);
+    f.seek(SeekFrom::Start(u64::from_le_bytes(off)))
+        .map_err(io)?;
+    let mut rec = [0u8; 40];
+    f.read_exact(&mut rec).map_err(|_| bad())?;
+    if &rec[..4] != EOCD64 {
+        return Err(bad());
+    }
+    let mut n = [0u8; 8];
+    n.copy_from_slice(&rec[32..40]);
+    Ok(u64::from_le_bytes(n))
+}
+
+fn unpack_zip(archive: &Path, dest: &Path) -> Result<ExtractReport, ComponentError> {
+    let f = fs::File::open(archive).map_err(io)?;
+    let mut ar = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+    if ar.len() as u64 > MAX_ENTRIES {
+        return Err(unsafe_entry("too many entries"));
+    }
+    // The reader keys entries by name, so a repeated name would silently drop one copy. Two
+    // entries with one name are refused instead: the central directory's own count must match.
+    if zip_declared_entries(archive)? != ar.len() as u64 {
+        return Err(unsafe_entry(
+            "zip: a name appears twice (or the entry count does not match)",
+        ));
+    }
+    let mut rep = ExtractReport::default();
+    let mut links: Vec<(PathBuf, String)> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for i in 0..ar.len() {
+        // `by_index` refuses an encrypted entry (no password is ever given) and an unsupported
+        // compression method, so neither reaches the checks below.
+        let mut e = ar.by_index(i).map_err(zip_err)?;
+        let path = utf8(e.name_raw(), "a path")?;
+        let rel = safe_relative_path(&path)?;
+        // The file type comes from the unix mode when the archiver recorded one; a zip made
+        // without unix attributes (Windows) has only files and `/`-terminated directories.
+        let kind = e.unix_mode().map(|m| m & S_IFMT).filter(|k| *k != 0);
+        let exec = e.unix_mode().is_some_and(|m| m & 0o111 != 0);
+        if path.ends_with('/') {
+            if !matches!(kind, None | Some(S_IFDIR)) {
+                return Err(unsafe_entry(format!(
+                    "{path}: a directory with another file type"
+                )));
+            }
+            fs::create_dir_all(dest.join(&rel)).map_err(io)?;
+            rep.dirs += 1;
+            continue;
+        }
+        if !seen.insert(rel.clone()) {
+            return Err(unsafe_entry(format!("{path} appears twice")));
+        }
+        match kind {
+            None | Some(S_IFREG) => {
+                let left = MAX_UNPACKED_BYTES.saturating_sub(rep.bytes);
+                let mut out = create_new(&dest.join(&rel))?;
+                // Reading to the end makes the zip reader check the entry's CRC.
+                let n = std::io::copy(&mut (&mut e).take(left.saturating_add(1)), &mut out)
+                    .map_err(|e| unsafe_entry(format!("zip: {path}: {e}")))?;
+                if n > left {
+                    return Err(unsafe_entry("the archive unpacks to more than the limit"));
+                }
+                out.flush().map_err(io)?;
+                set_mode(&out, exec)?;
+                rep.bytes += n;
+                rep.files += 1;
+            }
+            Some(S_IFLNK) => {
+                let mut target = Vec::new();
+                (&mut e)
+                    .take(MAX_LINK_TARGET_BYTES + 1)
+                    .read_to_end(&mut target)
+                    .map_err(|e| unsafe_entry(format!("zip: {path}: {e}")))?;
+                if target.len() as u64 > MAX_LINK_TARGET_BYTES {
+                    return Err(unsafe_entry(format!("{path}: symlink target too long")));
+                }
+                links.push((rel, utf8(&target, "a symlink target")?));
+            }
+            Some(other) => {
+                return Err(unsafe_entry(format!(
+                    "{path}: file type {other:o} is not allowed"
+                )));
+            }
+        }
+    }
+    make_symlinks(dest, &links)?;
+    rep.symlinks = links.len() as u64;
+    Ok(rep)
 }
 
 struct CappedWriter<W> {
