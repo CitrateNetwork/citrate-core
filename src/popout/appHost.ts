@@ -22,6 +22,7 @@ import { resolveActive } from "../agent/modelRouter";
 import { createPopoutHost, type PopoutHost } from "./host";
 import { tauriTransport } from "./bridge";
 import { focusContractReader, startContractHost } from "./contractHost";
+import { focusDiff, startDiffHost } from "./diffHost";
 import { tauriBrowserApi } from "./browserApi";
 import type { PopoutKind } from "./kinds";
 import { daemonsSection } from "./monitorSnapshot";
@@ -36,6 +37,8 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
   if (BRIDGE_MODE !== "tauri") return null;
   // HUP-S6.7: the Contract reader's requests are answered here too.
   startContractHost(tauriTransport);
+  // HUP-S5.4: and the Code and diff pop-out's.
+  startDiffHost(tauriTransport);
   hostPromise ??= (async () =>
     createPopoutHost({
       transport: await tauriTransport(),
@@ -115,4 +118,10 @@ export async function openPopout(kind: PopoutKind): Promise<void> {
 export async function openContractReader(address?: string, target = "citrate"): Promise<void> {
   if (address) await focusContractReader(address, target);
   await openPopout("contract");
+}
+
+/** HUP-S5.4 — open the Code and diff pop-out on an agent file change (or a session's latest). */
+export async function openDiff(session: string, seq: number | null = null): Promise<void> {
+  if (startPopoutHost()) await focusDiff(session, seq);
+  await openPopout("diff");
 }

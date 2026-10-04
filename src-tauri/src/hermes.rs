@@ -1426,7 +1426,10 @@ pub(crate) fn manager<R: tauri::Runtime>(
         .with_learn_dirs(base.join("learn"), base.join("skills"))
         .with_mcp_allowlist(base.join(crate::mcp_servers::ALLOWLIST_FILE))
         .with_chain_data_dir(base.clone())
-        .with_env_source(crate::hermes_web::file_env_source(base.clone()));
+        .with_env_source(crate::hermes_web::file_env_source(
+            base.clone(),
+            crate::components::components_root(app).ok(),
+        ));
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))

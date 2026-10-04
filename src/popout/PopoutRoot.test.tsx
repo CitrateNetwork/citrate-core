@@ -1,6 +1,6 @@
 // HUP-S5.4 — the pop-out window's root: it announces itself ready, renders the monitor from the
 // snapshots it receives (and says it is waiting until the first one), and Stop goes back over the
-// bridge. A pop-out kind without a view yet says so plainly.
+// bridge. Every pop-out kind has a view now (HUP-S5.4 added Code and diff).
 import { describe, it, expect, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -72,10 +72,23 @@ describe("HUP-S5.4 pop-out root", () => {
     expect(el.textContent).toMatch(/waiting for the main window/i);
   });
 
-  it("a kind without a view says it is not built yet", async () => {
+  it("HUP-S5.4: Code and diff renders its view, asks the main window where to start, and stops listening on unmount", async () => {
     const f = fake();
     const el = await render(<PopoutRoot kind="diff" transport={async () => f.t} />);
-    expect(el.textContent).toMatch(/not built yet/i);
+    expect(el.textContent).not.toMatch(/not built yet/i);
+    expect(el.querySelector('[data-testid="diff-viewer"]')).not.toBeNull();
+    const req = f.sent.find((s) => s.payload?.type === "diff.request");
+    expect(req?.to).toBe("main");
+    expect(req?.payload.op).toBe("initial");
+    expect(document.title).toBe("Code and diff");
+    act(() => root?.unmount());
+    root = null;
+    expect(f.listening()).toBe(false);
+  });
+
+  it("HUP-S5.4: a Code and diff transport that cannot start is reported, not hidden", async () => {
+    const el = await render(<PopoutRoot kind="diff" transport={async () => { throw new Error("no ipc"); }} />);
+    expect(el.querySelector('[role="alert"]')?.textContent).toMatch(/could not connect/i);
   });
 
   it("a transport that cannot start is reported, not hidden", async () => {

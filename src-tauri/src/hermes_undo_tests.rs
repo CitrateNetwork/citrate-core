@@ -163,3 +163,62 @@ fn the_child_gets_the_checkpoint_dir_but_never_the_file_tools_switch() {
     assert!(!env.contains_key("CITRATE_HERMES_FILES"));
     assert!(!env.contains_key("CITRATE_HERMES_GRANTS"));
 }
+
+// HUP-S5.4: one step's diff for the Code and diff pop-out.
+#[test]
+fn a_step_diff_is_read_from_its_route_and_passed_on_as_is() {
+    let (rec, m) = with_reply(
+        200,
+        r#"{"session":"s3-ab","seq":2,"status":"committed","files":[
+            {"path":"src/a.rs","before":{"kind":"text","text":"fn a() {}\n"},"after":{"kind":"text","text":"fn a() { 1 }\n"}},
+            {"path":"img.png","before":{"kind":"absent"},"after":{"kind":"binary","size":12}},
+            {"path":"big.log","before":{"kind":"too_large","size":900000},"after":{"kind":"unavailable","reason":"the file changed after this step (now absent)"}}]}"#,
+    );
+    let d = m.checkpoint_diff("s3-ab", 2).unwrap();
+    assert_eq!(
+        rec.gets.lock().unwrap()[0],
+        format!("http://{HERMES_CONTROL_ADDR}/checkpoints/s3-ab/steps/2/diff")
+    );
+    assert!(d.ok);
+    assert_eq!(d.status, "committed");
+    assert_eq!(d.files.len(), 3);
+    assert_eq!(
+        d.files[0].before,
+        DiffSide::Text {
+            text: "fn a() {}\n".into()
+        }
+    );
+    assert_eq!(d.files[1].after, DiffSide::Binary { size: 12 });
+    assert_eq!(d.files[2].before, DiffSide::TooLarge { size: 900_000 });
+    let json = serde_json::to_value(&d).unwrap();
+    assert_eq!(json["files"][2]["after"]["kind"], "unavailable");
+    assert_eq!(json["files"][0]["before"]["kind"], "text");
+}
+
+#[test]
+fn a_step_diff_refusal_is_an_honest_outcome_and_bad_input_reaches_no_url() {
+    let (_rec, m) = with_reply(410, r#"{"error":"step 1 of s3-ab was pruned","kind":"pruned"}"#);
+    let d = m.checkpoint_diff("s3-ab", 1).unwrap();
+    assert!(!d.ok);
+    assert_eq!(d.kind.as_deref(), Some("pruned"));
+    assert!(d.reason.as_deref().unwrap_or("").contains("pruned"));
+    assert!(d.files.is_empty());
+    let (_rec, m) = with_reply(404, "");
+    let d = m.checkpoint_diff("s3-ab", 1).unwrap();
+    assert_eq!(d.kind.as_deref(), Some("unsupported"));
+    assert!(d.reason.as_deref().unwrap_or("").contains("cannot show diffs"));
+    let rec = std::sync::Arc::new(Recorder::default());
+    let m = mgr(rec.clone());
+    assert!(m.checkpoint_diff("s3-ab", 0).is_err());
+    assert!(m.checkpoint_diff("../x", 1).is_err());
+    assert!(rec.gets.lock().unwrap().is_empty(), "nothing was called");
+}
+
+#[test]
+fn a_diff_for_another_step_is_refused() {
+    let (_rec, m) = with_reply(
+        200,
+        r#"{"session":"s3-ab","seq":9,"status":"committed","files":[]}"#,
+    );
+    assert!(m.checkpoint_diff("s3-ab", 2).is_err());
+}
