@@ -9,7 +9,7 @@
 //! | Slither | a successful Slither JSON report (or Slither SARIF) with zero High findings |
 //! | Aderyn | an Aderyn JSON report with zero High issues (its two High counts agree) |
 //! | Medusa campaign | the summary reports zero failed and at least one passed property test, and the campaign reached its call budget (budget ≥ [`MIN_MEDUSA_CALL_BUDGET`]; the planset names 50,000 calls for template invariants) |
-//! | Fork dry run | the dry-run receipt succeeded with a contract address, the dry run deployed exactly this init code, and the contract does not use Citrate precompiles (an anvil fork cannot simulate them) |
+//! | Fork dry run | the dry-run receipt succeeded with a contract address and the dry run deployed exactly this init code. On a plain anvil fork the contract must not use Citrate precompiles (anvil cannot simulate them). On the Citrate-aware fork (HUP-S6.10, [`crate::fork_dry_run`]) it ran on chain 40204 state, every later step (the test mint) succeeded, and every Citrate precompile it touched or calls is one the fork runs with the node's own code; a contract that uses Citrate precompiles passes only on a run core made itself (`forkInCore`, [`ForkProvenance::Core`]) |
 //!
 //! A tool that is not installed, or that errored, is a FAIL for its item, never a pass.
 //! Each item carries evidence: counts, the SHA-256 of the raw tool output, run time and the
@@ -118,7 +118,25 @@ pub struct GateInputs {
     pub slither: ToolRun,
     pub aderyn: ToolRun,
     pub medusa: MedusaInput,
-    pub fork_dry_run: ForkDryRunInput,
+    /// A fork dry run the caller ran and hands over. Exactly one of this and
+    /// [`GateInputs::fork_in_core`]; neither is a FAIL for the fork item.
+    #[serde(default)]
+    pub fork_dry_run: Option<ForkDryRunInput>,
+    /// HUP-S6.10: ask core to run the fork step itself on the Citrate-aware fork
+    /// (`citrate-fork`), on exactly this init code. Only a run core made itself can vouch for
+    /// Citrate precompile coverage (see [`ForkProvenance`]).
+    #[serde(default)]
+    pub fork_in_core: Option<crate::fork_dry_run::ForkInCore>,
+}
+
+/// Who produced the fork item's output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkProvenance {
+    /// Handed in through `deploy_gate_submit` (the runtime verifiers or the UI). Its
+    /// precompile coverage list is the caller's word, so the gate does not rely on it.
+    Caller,
+    /// Run by core itself (`fork_in_core`): core chose the binary, the plan and the init code.
+    Core,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -281,6 +299,21 @@ pub fn initcode_from_hex(
 /// Evaluate the gate for `inputs`. `Err` only for malformed bytecode or compiler settings;
 /// every tool problem becomes a failing item in a NOT READY record.
 pub fn evaluate(inputs: &GateInputs, now_ms: u64) -> Result<GateRecord, String> {
+    evaluate_with_fork(
+        inputs,
+        inputs.fork_dry_run.as_ref(),
+        ForkProvenance::Caller,
+        now_ms,
+    )
+}
+
+/// [`evaluate`] with the fork item's input and its provenance given explicitly.
+pub fn evaluate_with_fork(
+    inputs: &GateInputs,
+    fork: Option<&ForkDryRunInput>,
+    provenance: ForkProvenance,
+    now_ms: u64,
+) -> Result<GateRecord, String> {
     let initcode = initcode_from_hex(&inputs.bytecode_hex, inputs.constructor_args_hex.as_deref())?;
     let binding = binding_hash(&initcode, &inputs.compiler)?;
     let items = vec![
@@ -300,12 +333,25 @@ pub fn evaluate(inputs: &GateInputs, now_ms: u64) -> Result<GateRecord, String> 
         eval_tool(GateItemId::Medusa, &inputs.medusa.run, "medusa", |out| {
             parse_medusa(out, inputs.medusa.call_budget)
         }),
-        eval_tool(
-            GateItemId::ForkDryRun,
-            &inputs.fork_dry_run.run,
-            "anvil",
-            |out| parse_fork(out, &inputs.fork_dry_run, &initcode),
-        ),
+        match fork {
+            Some(f) => eval_tool(
+                GateItemId::ForkDryRun,
+                &f.run,
+                match provenance {
+                    ForkProvenance::Core => "citrate-fork",
+                    ForkProvenance::Caller => "the fork dry run",
+                },
+                |out| parse_fork(out, f, &initcode, provenance),
+            ),
+            None => eval_tool(
+                GateItemId::ForkDryRun,
+                &ToolRun::Error {
+                    message: "no fork dry run was supplied (send forkDryRun or forkInCore)".into(),
+                },
+                "the fork dry run",
+                |_| fail("no fork dry run"),
+            ),
+        },
     ];
     let verdict = if items.iter().all(|i| i.pass) {
         Verdict::Ready
@@ -886,7 +932,69 @@ fn hex_u64(v: &serde_json::Value) -> Option<u64> {
     }
 }
 
-fn parse_fork(out: &str, input: &ForkDryRunInput, initcode: &[u8]) -> Parsed {
+/// The fork item's checks on a citrate-fork report (HUP-S6.10): chain 40204, a create first,
+/// every later step succeeded, and every Citrate precompile touched (or found by the bytecode
+/// scan) is one the fork runs with the node's own code.
+fn citrate_fork_problems(
+    ev: &crate::fork_dry_run::CitrateForkEvidence,
+    sites: &[String],
+    provenance: ForkProvenance,
+    problems: &mut Vec<String>,
+    counts: &mut BTreeMap<String, u64>,
+) {
+    // The report's coverage list (`real`) is only as good as whoever produced the report. A
+    // caller-supplied report could list every address as real, so precompile use is accepted
+    // only from a run core made itself.
+    if provenance == ForkProvenance::Caller && (!ev.touched.is_empty() || !sites.is_empty()) {
+        problems.push(
+            "the contract uses Citrate precompiles; only a fork dry run core runs itself (forkInCore) can vouch for them"
+                .into(),
+        );
+    }
+    if ev.chain_id != crate::fork_dry_run::DEPLOY_CHAIN_ID {
+        problems.push(format!(
+            "the dry run ran on chain {} state, not chain 40204",
+            ev.chain_id
+        ));
+    }
+    if !ev.first_step_is_create {
+        problems.push("the dry run did not start with the contract creation".into());
+    }
+    if !ev.failed_later_steps.is_empty() {
+        problems.push(format!(
+            "the dry run's later steps failed: {}",
+            ev.failed_later_steps.join("; ")
+        ));
+    }
+    counts.insert(
+        "citrate_precompiles_touched".to_string(),
+        ev.touched.len() as u64,
+    );
+    if !ev.unavailable_touched.is_empty() {
+        problems.push(format!(
+            "the contract called Citrate precompile(s) {} that the fork cannot reproduce, so the dry run does not show what 40204 would do",
+            ev.unavailable_touched.join(", ")
+        ));
+    }
+    let not_real: Vec<&str> = sites
+        .iter()
+        .filter(|s| !ev.real.contains(s))
+        .map(String::as_str)
+        .collect();
+    if !not_real.is_empty() {
+        problems.push(format!(
+            "the bytecode calls Citrate precompile(s) {} that the fork cannot reproduce",
+            not_real.join(", ")
+        ));
+    }
+}
+
+fn parse_fork(
+    out: &str,
+    input: &ForkDryRunInput,
+    initcode: &[u8],
+    provenance: ForkProvenance,
+) -> Parsed {
     let Ok(receipt) = serde_json::from_str::<serde_json::Value>(out) else {
         return fail("fork dry-run output is not a receipt JSON");
     };
@@ -915,23 +1023,37 @@ fn parse_fork(out: &str, input: &ForkDryRunInput, initcode: &[u8]) -> Parsed {
         )),
         Err(e) => problems.push(e),
     }
-    match input.citrate_precompiles {
-        PrecompileUse::None => {}
-        PrecompileUse::Used => problems.push(
-            "the contract uses Citrate precompiles, which an anvil fork cannot simulate (needs the Citrate-aware fork, HUP-S6.10)".into(),
-        ),
-        PrecompileUse::Unknown => problems.push(
-            "Citrate precompile use is unknown, and an anvil fork cannot simulate precompiles".into(),
-        ),
-    }
     let sites = precompile_call_sites(initcode);
     counts.insert("precompile_call_sites".to_string(), sites.len() as u64);
-    if !sites.is_empty() {
-        problems.push(format!(
-            "the bytecode calls Citrate precompile(s) {}, which an anvil fork cannot simulate",
-            sites.join(", ")
-        ));
-    }
+    // HUP-S6.10: a citrate-fork report carries its own precompile evidence.
+    let engine = match crate::fork_dry_run::citrate_fork_evidence(&receipt) {
+        Some(Ok(ev)) => {
+            citrate_fork_problems(&ev, &sites, provenance, &mut problems, &mut counts);
+            format!("the Citrate-aware fork (40204 block {})", ev.fork_block)
+        }
+        Some(Err(e)) => {
+            problems.push(e);
+            "the Citrate-aware fork".to_string()
+        }
+        None => {
+            match input.citrate_precompiles {
+                PrecompileUse::None => {}
+                PrecompileUse::Used => problems.push(
+                    "the contract uses Citrate precompiles, which an anvil fork cannot simulate (run the dry run on the Citrate-aware fork, HUP-S6.10)".into(),
+                ),
+                PrecompileUse::Unknown => problems.push(
+                    "Citrate precompile use is unknown, and an anvil fork cannot simulate precompiles".into(),
+                ),
+            }
+            if !sites.is_empty() {
+                problems.push(format!(
+                    "the bytecode calls Citrate precompile(s) {}, which an anvil fork cannot simulate",
+                    sites.join(", ")
+                ));
+            }
+            "an anvil fork".to_string()
+        }
+    };
     if problems.is_empty() {
         let gas = counts
             .get("gas_used")
@@ -940,7 +1062,7 @@ fn parse_fork(out: &str, input: &ForkDryRunInput, initcode: &[u8]) -> Parsed {
         Parsed {
             pass: true,
             reason: format!(
-                "deployed at {} on an anvil fork{gas}",
+                "deployed at {} on {engine}{gas}",
                 address.unwrap_or_default()
             ),
             counts,
@@ -1101,9 +1223,36 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+/// Evaluates a submission. With `fork_in_core`, core runs the fork step itself on the
+/// Citrate-aware fork (`bin`, bounded by `timeout`) for exactly the submitted init code, and
+/// the fork item is judged as core-made. No Tauri; `deploy_gate_submit` calls this.
+pub fn evaluate_submission(
+    inputs: &GateInputs,
+    bin: Option<&std::path::Path>,
+    timeout: std::time::Duration,
+    now_ms: u64,
+) -> Result<GateRecord, String> {
+    let Some(opts) = &inputs.fork_in_core else {
+        return evaluate(inputs, now_ms);
+    };
+    if inputs.fork_dry_run.is_some() {
+        return Err("send forkDryRun or forkInCore, not both".into());
+    }
+    let req = crate::fork_dry_run::ForkDryRunRequest {
+        bytecode_hex: inputs.bytecode_hex.clone(),
+        constructor_args_hex: inputs.constructor_args_hex.clone(),
+        state_rpc: opts.state_rpc.clone(),
+        from: opts.from.clone(),
+        test_mint: opts.test_mint.clone(),
+    };
+    let fork = crate::fork_dry_run::dry_run(&req, bin, timeout)?;
+    evaluate_with_fork(inputs, Some(&fork), ForkProvenance::Core, now_ms)
+}
+
 /// **Command — deploy_gate_submit.** Evaluate verifier outputs for one bytecode and store the
-/// record (replacing any earlier record for the same init-code hash). A NOT READY result rejects
-/// any deploy ceremony still open for that hash. Returns the record.
+/// record (replacing any earlier record for the same init-code hash). With `forkInCore`, core
+/// runs the fork step itself on the Citrate-aware fork first ([`evaluate_submission`]). A NOT
+/// READY result rejects any deploy ceremony still open for that hash. Returns the record.
 #[tauri::command]
 pub async fn deploy_gate_submit(
     app_h: tauri::AppHandle,
@@ -1114,7 +1263,18 @@ pub async fn deploy_gate_submit(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let cer = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        let rec = evaluate(&inputs, now_ms())?;
+        let rec = match &inputs.fork_in_core {
+            None => evaluate(&inputs, now_ms())?,
+            Some(_) => {
+                let bin = crate::fork_dry_run::resolve_fork_bin_for_app(&app_h);
+                evaluate_submission(
+                    &inputs,
+                    bin.as_deref(),
+                    crate::fork_dry_run::FORK_TIMEOUT,
+                    now_ms(),
+                )?
+            }
+        };
         // An already-decided ceremony cannot be rejected again; that error is expected and moot.
         st.0.record_and_revoke(rec.clone(), |id| {
             let _ = cer.0.reject(id);

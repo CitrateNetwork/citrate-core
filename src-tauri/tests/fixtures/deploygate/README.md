@@ -21,6 +21,7 @@ were rewritten to `/work/hello-mint`.
 | `anvil-receipt.json`, `anvil-tx.json` | real: anvil 1.5.1, `cast send --create <initcode> --json` and `cast tx <hash> --json` |
 | `initcode.hex` | real: `HelloMint` creation bytecode followed by one ABI-encoded address argument |
 | `aderyn-*.handwritten.json` | hand-written: Aderyn is not installed on the build machine; the shape follows Aderyn's JSON report (`issue_count`, `high_issues.issues`, `low_issues.issues`) |
+| `citrate-fork-{belnap,inference,revert}.json` | real: citrate-chain `crates/citrate-fork` 0.4.0 (`citrate-fork run --block 100000 --timestamp 1790000000`, empty state) on that crate's `tests/fixtures/Probes.sol`: a constructor calling 0x0110 (real), one calling 0x0100 (unavailable), and a create followed by a reverting call. Each file holds the init code and the report (HUP-S6.10) |
 | `medusa-*.handwritten.txt` | hand-written: Medusa is not installed on the build machine (`.txt`, not `.log`: the repo ignores `*.log`); the lines follow Medusa's console output (`fuzz: elapsed: …, calls: …`, `Test summary: N test(s) passed, M test(s) failed`) |
 
 Real captures added in fan-out 6 (branch `hup/n6-hellomint-e2e`), from the macOS arm64

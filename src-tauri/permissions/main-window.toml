@@ -92,6 +92,7 @@ commands.allow = [
   "contract_verified_source",
   "deploy_gate_submit",
   "deploy_gate_lookup",
+  "deploy_gate_fork_dry_run",
   "fl_overview",
   "fl_coordinator_set",
   "fl_round_plan",
