@@ -22,7 +22,25 @@ export interface QaCliArgs {
   coverageThreshold?: number;
   /** HUP-S7.7: which QA set to run, by version name (default qa-v1). */
   dataset?: string;
+  /**
+   * HUP-S3.1 / g2-knowledge: answer from the bundled knowledge corpus, retrieved per question from a
+   * memory daemon socket (src/agent/eval/retrieval.ts). Absent = closed-book.
+   */
+  retrieval?: { socket: string; mode: QaRetrievalMode; tenants: string[]; k: number; corpusDigest?: string; corpusDir?: string };
 }
+
+/**
+ * How a retrieval run reaches the corpus. "tool" (default): the model calls the app's memory_search
+ * tool on the tenant it picks, with the app's hit budget (src/agent/eval/toolLoop.ts), which is
+ * what the app does. "passages": the harness retrieves passages per tenant before the question.
+ */
+export type QaRetrievalMode = "tool" | "passages";
+
+/** Hits per memory_search on a knowledge tenant in the app (knowledgeSearch memorySearchBudget). */
+const APP_KNOWLEDGE_K = 5;
+
+/** Knowledge tenants a retrieval run may search (mem_corpus::KNOWLEDGE_TENANTS). */
+export const QA_RETRIEVAL_TENANTS = ["citrate-docs", "methodology", "refs", "skills"];
 
 /** A QA set version name: `qa-vN` or a named pack `qa-<pack>-vN` (same rule as the dataset validator). */
 export const QA_SET_NAME_RE = /^qa(-[a-z0-9]+)*-v\d+$/;
@@ -35,7 +53,8 @@ export function qaDatasetFiles(name = "qa-v1"): { dataset: string; index: string
 
 export const QA_CLI_USAGE =
   "usage: node scripts/eval-qa.mjs --base-url <http://127.0.0.1:18080/v1> --model <name> " +
-  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--coverage-threshold 0..1] [--dataset qa-v1] [--adapter-sha256 <hex>] [--allow-remote]";
+  "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--coverage-threshold 0..1] [--dataset qa-v1] [--adapter-sha256 <hex>] [--allow-remote] " +
+  "[--memory-socket <path> [--retrieval-mode tool|passages] [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5] [--corpus-dir <dir>] [--corpus-digest <hex>]]";
 
 function parseHttpUrl(raw: string): URL | null {
   let u: URL;
@@ -59,7 +78,22 @@ export function isLoopbackUrl(raw: string): boolean {
   return octets.every((o) => o <= 255) && octets[0] === 127;
 }
 
-const VALUE_FLAGS = new Set(["--base-url", "--model", "--api-key-env", "--tier", "--out-dir", "--adapter-sha256", "--coverage-threshold", "--dataset"]);
+const VALUE_FLAGS = new Set([
+  "--base-url",
+  "--model",
+  "--api-key-env",
+  "--tier",
+  "--out-dir",
+  "--adapter-sha256",
+  "--coverage-threshold",
+  "--dataset",
+  "--memory-socket",
+  "--retrieval-mode",
+  "--retrieve-tenants",
+  "--retrieve-k",
+  "--corpus-digest",
+  "--corpus-dir",
+]);
 
 /** Parse argv (without the node + script entries). Throws with a readable message on error. */
 export function parseQaCliArgs(argv: string[]): QaCliArgs {
@@ -124,6 +158,43 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
   if (adapterRaw !== undefined) out.adapterSha256 = adapterRaw.toLowerCase();
   if (coverageThreshold !== undefined) out.coverageThreshold = coverageThreshold;
   if (dataset !== undefined) out.dataset = dataset;
+  const socket = vals["--memory-socket"];
+  const tenantsRaw = vals["--retrieve-tenants"];
+  const kRaw = vals["--retrieve-k"];
+  const digest = vals["--corpus-digest"];
+  const corpusDir = vals["--corpus-dir"];
+  const modeRaw = vals["--retrieval-mode"];
+  if (socket === undefined) {
+    if (tenantsRaw !== undefined || kRaw !== undefined || digest !== undefined || corpusDir !== undefined || modeRaw !== undefined) {
+      throw new Error("--retrieval-mode, --retrieve-tenants, --retrieve-k, --corpus-digest and --corpus-dir need --memory-socket");
+    }
+    return out;
+  }
+  if (modeRaw !== undefined && modeRaw !== "tool" && modeRaw !== "passages") {
+    throw new Error(`--retrieval-mode must be tool or passages (got ${modeRaw})`);
+  }
+  if (digest !== undefined && !/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error(`--corpus-digest takes the corpus manifest bundle_digest (64 lowercase hex; got ${digest})`);
+  }
+  if ((modeRaw ?? "tool") === "tool") {
+    if (tenantsRaw !== undefined || kRaw !== undefined) {
+      throw new Error("--retrieve-tenants and --retrieve-k need --retrieval-mode passages; in tool mode the model picks the tenant and the app sets k");
+    }
+    out.retrieval = { socket, mode: "tool", tenants: [...QA_RETRIEVAL_TENANTS], k: APP_KNOWLEDGE_K };
+    if (digest !== undefined) out.retrieval.corpusDigest = digest;
+    if (corpusDir !== undefined) out.retrieval.corpusDir = corpusDir;
+    return out;
+  }
+  const tenants = (tenantsRaw ?? "citrate-docs,methodology").split(",").map((t) => t.trim()).filter(Boolean);
+  const bad = tenants.filter((t) => !QA_RETRIEVAL_TENANTS.includes(t));
+  if (!tenants.length || bad.length) {
+    throw new Error(`--retrieve-tenants takes knowledge tenants (${QA_RETRIEVAL_TENANTS.join(", ")}); got ${bad.join(", ") || "none"}`);
+  }
+  const k = kRaw === undefined ? 5 : Number(kRaw);
+  if (!Number.isInteger(k) || k < 1 || k > 20) throw new Error(`--retrieve-k must be an integer from 1 to 20 (got ${kRaw})`);
+  out.retrieval = { socket, mode: "passages", tenants, k };
+  if (digest !== undefined) out.retrieval.corpusDigest = digest;
+  if (corpusDir !== undefined) out.retrieval.corpusDir = corpusDir;
   return out;
 }
 
@@ -131,10 +202,13 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
  * `<YYYY-MM-DD>-qa-<model>.json` for qa-v1, `<YYYY-MM-DD>-<set>-<model>.json` for any other set,
  * with the model name reduced to a safe single path segment.
  */
-export function qaResultFileName(isoDate: string, model: string, dataset = "qa-v1", adapterSha256?: string): string {
+export function qaResultFileName(isoDate: string, model: string, dataset = "qa-v1", adapterSha256?: string, retrieval?: QaRetrievalMode): string {
   const safe = model.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.\./g, "__");
   const set = dataset === "qa-v1" || !QA_SET_NAME_RE.test(dataset) ? "qa" : dataset;
   // HUP-S9.4: a LoRA candidate run never overwrites the base run it is compared against.
   const lora = adapterSha256 ? `-lora-${adapterSha256.slice(0, 12)}` : "";
-  return `${isoDate.slice(0, 10)}-${set}-${safe}${lora}.json`;
+  // HUP-S3.1: a run that answers from the retrieved corpus never overwrites the closed-book run,
+  // and a tool run (the app's path) never overwrites a passages run.
+  const rag = retrieval === "tool" ? "-tool" : retrieval === "passages" ? "-rag" : "";
+  return `${isoDate.slice(0, 10)}-${set}${rag}-${safe}${lora}.json`;
 }

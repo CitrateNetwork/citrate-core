@@ -339,8 +339,11 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async recall(tenant: string, budget?: number) {
         return invoke<MemoryResult>("memory_recall", { tenant, budget });
       },
-      async search(tenant: string, query: string, budget?: number) {
-        return invoke<MemoryResult>("memory_search", { tenant, query, budget });
+      async search(tenant: string, query: string, budget?: number, opts?: { passages?: boolean }) {
+        return invoke<MemoryResult>(
+          "memory_search",
+          opts?.passages ? { tenant, query, budget, passages: true } : { tenant, query, budget },
+        );
       },
       async neighbors(tenant: string, idPrefix: string, budget?: number) {
         return invoke<MemoryNeighbor[]>("memory_neighbors", { tenant, idPrefix, budget });

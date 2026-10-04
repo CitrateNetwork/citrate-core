@@ -7,7 +7,7 @@
 // reports keeps `step: null`, and the monitor shows that as unknown (Rule 1).
 // =====================================================================
 import { createSlice } from "./createSlice";
-import type { ChatStatus } from "../../agent/harness";
+import type { ChatStatus, TurnActivityEvent } from "../../agent/harness";
 
 export type TurnPhase = "thinking" | "streaming" | "tool";
 
@@ -18,6 +18,23 @@ export interface ToolRow {
   state: "running" | "done" | "failed" | "abandoned";
   startedAt: number;
   endedAt: number | null;
+}
+
+/** HUP-S2.2 (US-2.2 AC3) — one command run (shell_run or a toolchain tool), from its tool result. */
+export interface RunRow {
+  callId: string;
+  tool: string;
+  /** The run's status as the sidecar reported it ("completed", "timed_out", "refused", "failed",
+   *  "not_installed"), or "declined" when the member said no. */
+  status: string;
+  summary: string;
+  exitCode: number | null;
+  durationMs: number | null;
+  timedOut: boolean;
+  /** The OS sandbox summary the run reported, or null when it reported none. */
+  sandbox: string | null;
+  /** When core received the result (ms since epoch). */
+  at: number;
 }
 
 export interface TurnActivity {
@@ -32,11 +49,15 @@ export interface TurnActivity {
   startedAt: number | null;
   endedAt: number | null;
   tools: ToolRow[];
+  /** HUP-S2.2: the command runs of this turn (most recent last). */
+  runs: RunRow[];
   outcome: "answered" | "failed" | "stopped" | null;
 }
 
 /** The monitor lists at most this many tool calls of the current turn (the most recent ones). */
 export const MAX_TOOL_ROWS = 20;
+/** The monitor lists at most this many command runs of the current turn (the most recent ones). */
+export const MAX_RUN_ROWS = 20;
 
 export const IDLE_ACTIVITY: TurnActivity = {
   state: "idle",
@@ -48,6 +69,7 @@ export const IDLE_ACTIVITY: TurnActivity = {
   startedAt: null,
   endedAt: null,
   tools: [],
+  runs: [],
   outcome: null,
 };
 
@@ -109,4 +131,23 @@ export function endTurn(outcome: "answered" | "failed" | "stopped", now: number 
     outcome,
     tools: s.tools.map((t) => (t.state === "running" ? { ...t, state: "abandoned" as const, endedAt: now } : t)),
   }));
+}
+
+/**
+ * HUP-S2.2 (US-2.2 AC3) — record one command run. Not gated on a live turn: a run reported while a
+ * stopped turn drains still happened, so it is kept until the next turn starts.
+ */
+export function commandRan(ev: Extract<TurnActivityEvent, { kind: "command_run" }>, now: number = Date.now()): void {
+  const row: RunRow = {
+    callId: ev.callId,
+    tool: ev.tool,
+    status: ev.status,
+    summary: ev.summary,
+    exitCode: ev.exitCode,
+    durationMs: ev.durationMs,
+    timedOut: ev.timedOut,
+    sandbox: ev.sandbox,
+    at: now,
+  };
+  turnActivity.set((s) => ({ runs: (s.runs ?? []).concat([row]).slice(-MAX_RUN_ROWS) }));
 }

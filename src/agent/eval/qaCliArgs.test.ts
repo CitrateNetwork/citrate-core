@@ -91,3 +91,58 @@ describe("HUP-S9.4 --adapter-sha256 (eval a LoRA candidate for the gate)", () =>
     expect(qaResultFileName("2026-10-01T00:00:00Z", "m")).toBe("2026-10-01-qa-m.json");
   });
 });
+
+describe("retrieval flags (HUP-S3.1, g2-knowledge)", () => {
+  const base = ["--base-url", "http://127.0.0.1/v1", "--model", "m"];
+  const passages = ["--retrieval-mode", "passages"];
+  it("defaults to the app's own path: the model calls memory_search on the tenant it picks, k as in the app", () => {
+    expect(parseQaCliArgs([...base, "--memory-socket", "/tmp/memdag.sock"]).retrieval).toEqual({
+      socket: "/tmp/memdag.sock",
+      mode: "tool",
+      tenants: ["citrate-docs", "methodology", "refs", "skills"],
+      k: 5,
+    });
+    expect(parseQaCliArgs(base).retrieval).toBeUndefined();
+  });
+  it("keeps retrieve-then-answer as an explicit passages mode with tenants and k", () => {
+    expect(parseQaCliArgs([...base, "--memory-socket", "/s", ...passages]).retrieval).toEqual({
+      socket: "/s",
+      mode: "passages",
+      tenants: ["citrate-docs", "methodology"],
+      k: 5,
+    });
+    expect(
+      parseQaCliArgs([...base, "--memory-socket", "/s", ...passages, "--retrieve-tenants", "citrate-docs,refs", "--retrieve-k", "8", "--corpus-digest", "a".repeat(64)])
+        .retrieval,
+    ).toEqual({ socket: "/s", mode: "passages", tenants: ["citrate-docs", "refs"], k: 8, corpusDigest: "a".repeat(64) });
+  });
+  it("refuses tenant and k flags in tool mode: there the model and the app choose them", () => {
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--retrieve-tenants", "refs"])).toThrow(/passages/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--retrieve-k", "3"])).toThrow(/passages/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--retrieval-mode", "magic"])).toThrow(/retrieval-mode/);
+    expect(() => parseQaCliArgs([...base, "--retrieval-mode", "tool"])).toThrow(/--memory-socket/);
+  });
+  it("refuses runtime tenants, a bad k, retrieval flags without a socket, and a malformed digest", () => {
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", ...passages, "--retrieve-tenants", "personal"])).toThrow(/knowledge tenant/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", ...passages, "--retrieve-k", "0"])).toThrow(/retrieve-k/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", ...passages, "--retrieve-k", "99"])).toThrow(/retrieve-k/);
+    expect(() => parseQaCliArgs([...base, "--retrieve-k", "5"])).toThrow(/--memory-socket/);
+    expect(() => parseQaCliArgs([...base, "--memory-socket", "/s", "--corpus-digest", "xyz"])).toThrow(/corpus-digest/);
+  });
+  it("takes the corpus directory whose nodes citations may resolve to", () => {
+    expect(parseQaCliArgs([...base, "--memory-socket", "/s", "--corpus-dir", "/c"]).retrieval).toEqual({
+      socket: "/s",
+      mode: "tool",
+      tenants: ["citrate-docs", "methodology", "refs", "skills"],
+      k: 5,
+      corpusDir: "/c",
+    });
+    expect(() => parseQaCliArgs([...base, "--corpus-dir", "/c"])).toThrow(/--memory-socket/);
+  });
+  it("names a retrieval run apart from the closed-book run, and a tool run apart from a passages run", () => {
+    expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma", "qa-v1", undefined, "passages")).toBe("2026-10-01-qa-rag-gemma.json");
+    expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma", "qa-literacy-v1", undefined, "passages")).toBe("2026-10-01-qa-literacy-v1-rag-gemma.json");
+    expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma", "qa-v1", undefined, "tool")).toBe("2026-10-01-qa-tool-gemma.json");
+    expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma")).toBe("2026-10-01-qa-gemma.json");
+  });
+});

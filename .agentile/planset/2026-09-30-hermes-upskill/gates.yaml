@@ -65,11 +65,29 @@ gates:
       - {id: g1-eval, desc: "Per-tier eval on synthetic tool-call tasks: T1+ >=90% valid tool calls, >=80% step success; T0 guided-tier bar set from its baseline", met: false, evidence: eval/}
   - id: gate2
     name: Controlled + knowledgeable (S2, S3, S4)
-    status: pending
+    status: partial
     exit_criteria:
-      - {id: g2-hic, desc: "Folder grants, shell allowlist, SIWE budgets, capsule sandbox proven by tests + TLC", met: false}
+      - id: g2-hic
+        desc: Folder grants, shell allowlist, SIWE budgets, capsule sandbox proven by tests + TLC
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-m2/M2_STATUS.md
+        note: >-
+          Met 2026-10-04 on hup/m2-runtime + hup/m2-core. Folder grants: FolderGrant TLC green and
+          agent-grants/traversal tests. Shell: agent-shell OS sandbox (Seatbelt, bubblewrap) and
+          shell_run with exact-command HIC approval, tests. SIWE budgets: kit web_budget and core
+          web_signin tests, WebSigningBudget TLC green. Capsule sandbox: per-session sandbox wired,
+          guest-capsule tests. Not yet: Linux and Windows proof runs (hardware), packaged-app QA
+          (S11); shell_run and the toolchain stay off by default pending owner sign-off.
       - {id: g2-knowledge, desc: "Bundled graph imported offline; Citrate QA eval >= target with citations", met: false}
-      - {id: g2-personas, desc: ">=5 personas (owner-named) + 5 tracks with workflows", met: false}
+      - id: g2-personas
+        desc: ">=5 personas (owner-named) + 5 tracks with workflows"
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-m2/M2_STATUS.md
+        note: >-
+          Met 2026-10-04 on hup/m2-runtime + hup/m2-core. Six personas with owner-approved names
+          (owner decision 2026-10-01, Operator ships); five tracks with ten workflows, runnable per
+          session and from chat. TTS voices and the Guide/Operator default tracks are shipped
+          defaults pending owner sign-off.
       - {id: g2-mcp, desc: "MCP host + citrate-node MCP server; external client demo recorded", met: false}
   - id: gate3
     name: hello mint (S5, S6)
