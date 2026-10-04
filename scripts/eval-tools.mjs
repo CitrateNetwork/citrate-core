@@ -6,8 +6,11 @@
 //        [--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--allow-remote]
 //        [--adapter-sha256 <hex>]   (HUP-S9.4: the endpoint serves this LoRA; stamped into the
 //                                    scorecard so the app's eval gate can bind it to the file)
+//        [--datasets v1|v2]         (A50: v1 = the frozen sets every v1 scorecard used (default);
+//                                    v2 = v1 + the fragment files in toolcall-v2.d / injection-v2.d.
+//                                    v2's live MCP/browser cases run in scripts/eval-sidecar.mjs)
 //
-// Runs src/agent/eval/{toolcall-v1,injection-v1}.json against a LIVE OpenAI-compatible
+// Runs src/agent/eval/{toolcall,injection}-<gen> against a LIVE OpenAI-compatible
 // /chat/completions endpoint (llama-server --jinja, or a user endpoint) and writes the
 // scorecard to <out-dir>/<date>-<model>.json. Scoring is deterministic (runner.ts); there is
 // no model-as-judge. A transport error aborts the run and writes nothing (Rule 1: no
@@ -16,18 +19,16 @@
 // Loads the TypeScript runner with Node's built-in type stripping (Node >= 22.18 / 23.6),
 // so no new dependency (tsx etc.) is needed. See eval/README.md.
 // =====================================================================
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEvalCliArgs, resultFileName } from "../src/agent/eval/cliArgs.ts";
-import { parseToolcallDataset, parseInjectionDataset, runEvalSuite } from "../src/agent/eval/runner.ts";
+import { runEvalSuite } from "../src/agent/eval/runner.ts";
+import { loadInjectionDataset, loadToolcallDataset } from "../src/agent/eval/datasetFiles.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REQUEST_TIMEOUT_MS = 180_000;
-
-async function loadJson(rel) {
-  return JSON.parse(await readFile(join(ROOT, rel), "utf8"));
-}
 
 function makeComplete(args, apiKey) {
   return async (messages, tools) => {
@@ -73,8 +74,10 @@ async function main() {
     }
   }
 
-  const toolcall = parseToolcallDataset(await loadJson("src/agent/eval/toolcall-v1.json"));
-  const injection = parseInjectionDataset(await loadJson("src/agent/eval/injection-v1.json"));
+  const evalDir = join(ROOT, "src/agent/eval");
+  const dsFs = { readText: (p) => readFileSync(p, "utf8"), listDir: (p) => readdirSync(p) };
+  const toolcall = loadToolcallDataset(dsFs, evalDir, args.datasets);
+  const injection = loadInjectionDataset(dsFs, evalDir, args.datasets);
   console.error(
     `eval: ${toolcall.version} (${toolcall.tasks.length}) + ${injection.version} (${injection.cases.length}) ` +
       `→ ${args.model} @ ${args.baseUrl}${args.allowRemote ? " (remote allowed)" : ""}`,
@@ -98,14 +101,16 @@ async function main() {
   if (args.adapterSha256) scorecard.adapterSha256 = args.adapterSha256;
   const outDir = resolve(ROOT, args.outDir);
   await mkdir(outDir, { recursive: true });
-  const out = join(outDir, resultFileName(scorecard.startedAt, args.model, args.adapterSha256));
+  const label = args.datasets === "v1" ? args.model : `${args.datasets}-${args.model}`;
+  const out = join(outDir, resultFileName(scorecard.startedAt, label, args.adapterSha256));
   await writeFile(out, JSON.stringify(scorecard, null, 2) + "\n");
   const pct = (r) => (r === null ? "n/a" : (r * 100).toFixed(1) + "%");
   console.log(
     [
       `model ${scorecard.model}${scorecard.tier ? " (" + scorecard.tier + ")" : ""} · ${scorecard.datasetVersion} · n=${scorecard.n}`,
       `valid tool call ${pct(scorecard.validToolCallRate)} · correct tool ${pct(scorecard.correctToolRate)} · ` +
-        `args ok ${pct(scorecard.argsOkRate)} · injection resist ${pct(scorecard.injectionResistRate)}`,
+        `args ok ${pct(scorecard.argsOkRate)} · injection resist ${pct(scorecard.injectionResistRate)}` +
+        (scorecard.injectionLiveNotScored ? ` · ${scorecard.injectionLiveNotScored} live cases left to eval-sidecar.mjs` : ""),
       `failures (${scorecard.failures.length}): ${scorecard.failures.join(", ") || "none"}`,
       `wrote ${out}`,
     ].join("\n"),
