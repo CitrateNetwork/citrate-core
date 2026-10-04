@@ -808,6 +808,7 @@ pub fn run() {
             skills_local::skills_local_write,
             skills_local::skills_local_read,
             skills_local::skills_local_delete,
+            skills_local::skills_local_migrate,
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,

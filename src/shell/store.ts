@@ -38,14 +38,16 @@ import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
+import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
-import { validateNewSkill, runPrompt } from "../agent/userSkills";
+import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -279,12 +281,8 @@ export function entitlementSafeguardFromChain(
  * rather than being left to invent Citrate facts). The hit `title` carries the
  * authored content (the `Title › Section` breadcrumb + body from docs_ingest).
  */
-export function formatMemoryHits(res: MemoryResult): string {
-  if (!res.hits.length) {
-    return `No results in the ${res.tenant} memory (${res.totalInTenant} nodes total). Do not fabricate; tell the member nothing was found.`;
-  }
-  return res.hits.map((h, i) => `[${i + 1}] ${h.title}`).join("\n\n");
-}
+// HUP-S3.1: passages + citations for knowledge tenants (src/agent/knowledgeSearch.ts).
+export { formatMemoryHits };
 
 /**
  * Derive a display name + initials from an email local-part. The authority
@@ -508,7 +506,6 @@ export class Store {
   private snap: AppState;
   private cid = 0;
   private mid = 0;
-  private uskSeq = 0;
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
@@ -590,6 +587,9 @@ export class Store {
     // Tauri build this reads the real /userinfo-derived status (silent if signed
     // out); in web-dev it reads the sim persona. Honest no-op on failure.
     void this.refreshAuth();
+    // HUP-S3.2: the member's saved skills are SKILL.md files the sidecar also loads; move any
+    // older-format skills there once, then list them.
+    void this.syncLocalSkills();
     // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
     // the default id is configured (key sealed in the OS keyring), else the honest
     // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
@@ -973,9 +973,10 @@ export class Store {
   private reflectProvider(): void {
     const p = this.provider;
     if (!p) return;
-    // local → local; gateway (real/agentic) → real; anything else → the honest demo.
+    // local (the app's own loop or the Hermes sidecar loop, both on the local model) → local;
+    // gateway (real/agentic) → real; anything else → the honest demo.
     const kind: "local" | "real" | "demo" =
-      p.kind === "local" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
+      p.kind === "local" || p.kind === "sidecar" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
   }
 
@@ -2558,9 +2559,10 @@ export class Store {
     } else if (call.name === "memory_search") {
       // W3.3 — REAL semantic search over the mem graph (docs or personal). Returns
       // real hits or honest emptiness (Rule 1 — never a fabricated Citrate fact).
-      const tenant = args.tenant === "personal" ? "personal" : "citrate-docs";
+      // HUP-S3.1: knowledge tenants (the bundled corpus) answer with passages + citations.
+      const { tenant, passages } = memorySearchTarget(args.tenant);
       try {
-        const res = await bridge.memory.search(tenant, args.query || "", 6);
+        const res = await bridge.memory.search(tenant, args.query || "", memorySearchBudget(passages), passages ? { passages } : undefined);
         result = formatMemoryHits(res);
       } catch (e) {
         result = "memory search unavailable: " + (e instanceof Error ? e.message : String(e));
@@ -2717,6 +2719,7 @@ export class Store {
           try {
             const skill = await bridge.agentSkills.write(name, description, instructions, before !== "");
             result = `Saved the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+            void this.refreshLocalSkills();
           } catch (e) {
             result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
           }
@@ -2725,6 +2728,7 @@ export class Store {
         try {
           const skill = await bridge.agentSkills.write(name, description, instructions, false);
           result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
+          void this.refreshLocalSkills();
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (!msg.startsWith("SKILL_EXISTS")) {
@@ -2752,6 +2756,7 @@ export class Store {
               try {
                 const skill = await bridge.agentSkills.write(name, description, instructions, true);
                 result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+                void this.refreshLocalSkills();
               } catch (e2) {
                 result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
               }
@@ -2842,6 +2847,9 @@ export class Store {
           result = "verified-source lookup unavailable: " + (e instanceof Error ? e.message : String(e));
         }
         }
+    } else if (call.name === "belnap_codec") {
+      // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
+      result = belnapCodecTool(args as Record<string, unknown>);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
@@ -2908,42 +2916,88 @@ export class Store {
 
   // ---------- Hermes P5 — user skills (prompt-skills) ----------
   /**
-   * Add a member-authored prompt-skill (validated + normalized by the pure core).
-   * Persists in local state (PERSIST_KEYS) like the journal — no chain, no key. On a
-   * validation failure it toasts the honest reason and adds nothing (Rule 1).
-   * Returns whether it was added, so a form can clear itself only on success.
+   * HUP-S3.2 (US-3.2 AC2): one format, one loader. Convert skills saved in older formats (flat
+   * files, and the prompt-skills earlier builds kept in app state) to SKILL.md files, then read the
+   * member's skills from those files. Whatever cannot move stays where it was and the member is
+   * told why. Called on launch and after any change.
    */
-  addUserSkill(name: string, instruction: string, description = ""): boolean {
-    const r = validateNewSkill(name, instruction, description, this.state.userSkills);
+  async syncLocalSkills(): Promise<void> {
+    const notes: string[] = [];
+    const report = await bridge.agentSkills.migrate().catch(() => null);
+    if (report && report.failed.length) {
+      notes.push(...report.failed.map((f) => `${f.file}: ${f.reason}`));
+    }
+    const legacy = this.state.userSkills;
+    if (legacy.length) {
+      const r = await migrateLegacyUserSkills(legacy, bridge.agentSkills);
+      const kept = new Set(r.kept.map((k) => k.skill.id));
+      this.setState((s) => ({ userSkills: s.userSkills.filter((k) => kept.has(k.id)) }));
+      this.save();
+      notes.push(...r.kept.map((k) => `"${k.skill.name}": ${k.reason}`));
+    }
+    await this.refreshLocalSkills();
+    if (notes.length) {
+      this.toast(`${notes.length === 1 ? "One saved skill" : notes.length + " saved skills"} could not move to the shared skill format: ${notes.join("; ")}`);
+    }
+  }
+
+  /** Read the member's saved skills from their SKILL.md files. An unreadable folder lists none. */
+  async refreshLocalSkills(): Promise<void> {
+    const list = await bridge.agentSkills.list().catch(() => []);
+    this.setState(() => ({ localSkills: list }));
+  }
+
+  /**
+   * Save a member-authored skill as a SKILL.md file (validated + normalized by the pure core). The
+   * sidecar's loader reads the same file, so it is offered in Hermes sessions too. On a validation
+   * failure it toasts the honest reason and saves nothing (Rule 1). Resolves to whether it was
+   * saved, so a form can clear itself only on success.
+   */
+  async addUserSkill(name: string, instruction: string, description = ""): Promise<boolean> {
+    const r = validateNewSkill(name, instruction, description, this.state.localSkills);
     if (!r.ok) {
       this.toast(r.error);
       return false;
     }
-    const id = "usk-" + ++this.uskSeq + "-" + this.state.userSkills.length;
-    this.setState((s) => ({ userSkills: s.userSkills.concat([{ id, ...r.skill }]) }));
-    this.save();
+    try {
+      await bridge.agentSkills.write(r.skill.name, r.skill.description, r.skill.instruction, false);
+    } catch (e) {
+      this.toast("Couldn't save the skill: " + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    await this.refreshLocalSkills();
     this.toast(`Added your "${r.skill.name}" skill.`);
     return true;
   }
 
-  /** Remove a user skill by id. */
-  removeUserSkill(id: string): void {
-    this.setState((s) => ({ userSkills: s.userSkills.filter((k) => k.id !== id) }));
-    this.save();
+  /** Remove a saved skill by its slug. */
+  async removeUserSkill(slug: string): Promise<void> {
+    try {
+      await bridge.agentSkills.remove(slug);
+    } catch (e) {
+      this.toast("Couldn't remove the skill: " + (e instanceof Error ? e.message : String(e)));
+    }
+    await this.refreshLocalSkills();
   }
 
   /**
-   * Run a user skill: send its instruction to the chat against the ACTIVE model
-   * (the router's Gemma / gateway / local backend). It is a prompt, not code — any
-   * chain action the model then proposes still stops at the SignatureCeremony
-   * (Rule 3 holds by construction; nothing here signs). Navigates to the dashboard
-   * chat so the member sees the run.
+   * Run a saved skill: send its instructions (read from its SKILL.md) to the chat against the
+   * ACTIVE model. It is a prompt, not code: any chain action the model then proposes still stops
+   * at the SignatureCeremony (Rule 3 holds by construction; nothing here signs). Navigates to the
+   * dashboard chat so the member sees the run.
    */
-  runUserSkill(id: string): void {
-    const skill = this.state.userSkills.find((k) => k.id === id);
+  async runUserSkill(slug: string): Promise<void> {
+    const skill = this.state.localSkills.find((k) => k.slug === slug);
     if (!skill) return;
+    let instruction: string;
+    try {
+      instruction = (await bridge.agentSkills.read(slug)).trim();
+    } catch (e) {
+      this.toast(`Couldn't read the "${skill.name}" skill: ` + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
     if (this.state.route !== "dashboard") this.go("dashboard");
-    void this.sendChat(runPrompt(skill));
+    void this.sendChat(runPrompt({ name: skill.name, instruction }));
   }
 
   // ---------- journal capture ----------
