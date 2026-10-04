@@ -4,6 +4,7 @@ import {
   isCriticalNotes,
   progressFraction,
   INITIAL_UPDATE_STATE,
+  isNoPlatformInFeed,
 } from "./updater";
 
 describe("updater — pure helpers", () => {
@@ -39,5 +40,29 @@ describe("updater — pure helpers", () => {
     expect(INITIAL_UPDATE_STATE.status).toBe("idle");
     expect(INITIAL_UPDATE_STATE.version).toBeNull();
     expect(INITIAL_UPDATE_STATE.critical).toBe(false);
+  });
+});
+
+describe("updater — feed without this platform", () => {
+  it("treats a feed that does not list this OS/arch as no update, not an error", () => {
+    // Exact tauri-plugin-updater text, as seen on Linux and Windows builds.
+    expect(
+      isNoPlatformInFeed(
+        'None of the fallback platforms `["linux-aarch64-appimage", "linux-aarch64"]` were found in the response `platforms` object',
+      ),
+    ).toBe(true);
+    expect(
+      isNoPlatformInFeed(
+        'None of the fallback platforms `["windows-x86_64-nsis", "windows-x86_64"]` were found in the response `platforms` object',
+      ),
+    ).toBe(true);
+    expect(isNoPlatformInFeed("the platform `windows-x86_64` was not found on the response `platforms` object")).toBe(true);
+  });
+
+  it("still surfaces real failures", () => {
+    expect(isNoPlatformInFeed("error sending request for url (https://citrate.ai/updater/latest.json)")).toBe(false);
+    expect(isNoPlatformInFeed("signature verification failed")).toBe(false);
+    expect(isNoPlatformInFeed("Could not fetch a valid release JSON from the remote")).toBe(false);
+    expect(isNoPlatformInFeed("")).toBe(false);
   });
 });

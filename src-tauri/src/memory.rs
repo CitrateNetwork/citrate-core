@@ -59,11 +59,10 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-// Issue #46 — cross-platform local IPC. The `Stream` trait brings the
-// `set_recv_timeout`/`set_send_timeout` methods (-> `UnixStream::set_read_timeout`
-// / `set_write_timeout` on unix) and `TryClone` brings `try_clone`
-// (-> `UnixStream::try_clone` on unix) onto the interprocess stream, so the framing
-// below is byte-identical to the pre-port `UnixStream` path.
+// Issue #46 — cross-platform local IPC. On Unix, the `Stream` trait brings the
+// required read/write timeout methods onto the interprocess stream. `TryClone`
+// provides the writer half on every supported platform, so framing stays unchanged.
+#[cfg(unix)]
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
 use std::sync::Mutex;
@@ -105,8 +104,9 @@ pub const PERSONAL_TENANT: &str = "personal";
 /// graph).
 const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Per-request read timeout on the socket, so a wedged daemon surfaces a
-/// transport error instead of hanging the UI thread.
+/// Per-request Unix socket timeout, so a wedged daemon surfaces a transport error instead of
+/// hanging the UI thread. The current Windows named-pipe transport does not support this option.
+#[cfg(unix)]
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
@@ -249,12 +249,15 @@ impl MemoryTransport for UnixSocketTransport {
             crate::ipc_name::connect(&self.socket_path.to_string_lossy()).map_err(|e| {
                 MemoryError::Transport(format!("connect {}: {e}", self.socket_path.display()))
             })?;
-        stream
-            .set_recv_timeout(Some(SOCKET_IO_TIMEOUT))
-            .map_err(|e| MemoryError::Transport(e.to_string()))?;
-        stream
-            .set_send_timeout(Some(SOCKET_IO_TIMEOUT))
-            .map_err(|e| MemoryError::Transport(e.to_string()))?;
+        #[cfg(unix)]
+        {
+            stream
+                .set_recv_timeout(Some(SOCKET_IO_TIMEOUT))
+                .map_err(|e| MemoryError::Transport(e.to_string()))?;
+            stream
+                .set_send_timeout(Some(SOCKET_IO_TIMEOUT))
+                .map_err(|e| MemoryError::Transport(e.to_string()))?;
+        }
         let mut writer = stream
             .try_clone()
             .map_err(|e| MemoryError::Transport(e.to_string()))?;

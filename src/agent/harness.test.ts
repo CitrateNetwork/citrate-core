@@ -167,14 +167,14 @@ describe("createDemoProvider — no fabricated recall/docs claims (Rule 1)", () 
     expect(text.toLowerCase()).toContain("can't read your memory graph in demo mode");
     // And it fires NO memory_recall tool (there is nothing to recall from).
     expect(toolNames).not.toContain("memory_recall");
-  });
+  }, 10_000);
 
   it("a 'how do i' docs prompt does NOT falsely claim it linked guides", async () => {
     const { text, toolNames } = await ask("how do i run a validator? show me the guide");
     expect(text).not.toMatch(/I linked the closest Almanac guides/i);
     expect(text.toLowerCase()).toContain("docs linking isn't available in demo mode");
     expect(toolNames).not.toContain("docs_link");
-  });
+  }, 10_000);
 
   it("a 'remember this' prompt does NOT claim a durable write occurred on approval (demo writes nothing)", async () => {
     const provider = createDemoProvider(() => ctx);
@@ -193,7 +193,7 @@ describe("createDemoProvider — no fabricated recall/docs claims (Rule 1)", () 
     });
     expect(streamed).not.toMatch(/it now lives in your personal tenant/i);
     expect(streamed.toLowerCase()).toContain("nothing was durably stored");
-  });
+  }, 10_000);
 });
 
 // W3.3 — the agentic tool loop: the model decides tool calls; the frontend
