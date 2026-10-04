@@ -516,6 +516,13 @@ describe("live parity support (HUP-S1.9)", () => {
     expect(body.maxTokens).toBe(2048);
   });
 
+  it("caps the per-turn reply at a quarter of a small window, as build_session_body does", () => {
+    // hermes_session_tests.rs pins 4096 -> 1024 on the Rust side; the fixture's 16384 window does
+    // not reach the min() branch, so this keeps the mirror honest there too.
+    expect(liveSessionBody("p", "[]", "http://127.0.0.1:1/v1", "", "m", 4096).maxTokens).toBe(1024);
+    expect(liveSessionBody("p", "[]", "http://127.0.0.1:1/v1", "", "m", 8192).maxTokens).toBe(AI_MAX_TOKENS);
+  });
+
   it("refuses a tool without effect/trust annotations, as core does", () => {
     expect(() => liveSessionBody("p", JSON.stringify([{ name: "x" }]), "http://127.0.0.1:1/v1", "", "m", 8192)).toThrow(/annotations/);
   });
@@ -693,6 +700,8 @@ describe.skipIf(LIVE_BIN === "")("process split LIVE: packaged sidecar workers (
       const deadline = Date.now() + 20_000;
       for (;;) {
         const tc = (await workers()).find((w) => w.kind === "toolchain");
+        // The control plane answers on every poll, during the restart too.
+        expect((await fetch(`${sc.controlUrl}/health`)).status, "control plane up while the worker restarts").toBe(200);
         if (tc && pred(tc)) return tc;
         if (Date.now() > deadline) throw new Error(`toolchain worker never reached the state: ${JSON.stringify(tc)}`);
         await new Promise((r) => setTimeout(r, 100));

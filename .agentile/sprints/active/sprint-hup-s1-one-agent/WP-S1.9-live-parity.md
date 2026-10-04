@@ -68,7 +68,10 @@ createSidecarProvider (the chat view the app uses)
 
 Recorded in `src/agent/parity/results/2026-10-04-live-packaged.json`: **21 of 21 scenarios pass;
 the process-split check passes** (toolchain pid killed with SIGKILL, restarted as a new pid,
-`restarts 1`, `last exit "killed by signal 9"`, `/health` 200 throughout).
+`restarts 1`, `last exit "killed by signal 9"`). The recorded JSON says "/health 200 throughout";
+in that run the control plane answered `/workers` with 200 on every poll during the restart and
+`/health` with 200 once after it. Since review, the test checks `/health` on every poll as well, and
+it still passes on the same binary (sha256 `c7144115...a4fc4b`, rebuilt reproducibly by the reviewer).
 
 Live overrides, each with its cause (the test refuses an override without one):
 
@@ -104,7 +107,8 @@ turn cap set to 6 (1 fail), transport override dropped (1 fail), Stop never pres
 - core vitest: 1763 passed, 32 skipped, measured against 1754 passed, 10 skipped on `hup/m2-core`
   @ 7581e88. The 22 new skipped tests are the live ones (21 scenarios plus the process split),
   which run only with a binary; with the bundled binary all 29 tests in `live.test.ts` pass. The
-  new always-on tests are 7 live-support tests and 2 header tests. `npx tsc --noEmit` clean.
+  new always-on tests are 7 live-support tests and 2 header tests (8 live-support after review: the
+  reply cap on a small window). `npx tsc --noEmit` clean.
 - core cargo: `hermes::` 106 passed, including `build_session_body_matches_the_live_parity_fixture`.
 - runtime: `process_split_tests` 13 passed (the report test is stricter; red on the old text).
 
