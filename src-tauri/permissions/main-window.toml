@@ -250,6 +250,7 @@ commands.allow = [
   "skills_local_write",
   "skills_local_read",
   "skills_local_delete",
+  "skills_local_migrate",
   "journal_export_encrypted",
   "journal_import_encrypted",
   "daemons_list",

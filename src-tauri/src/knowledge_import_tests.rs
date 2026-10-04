@@ -9,7 +9,7 @@ use super::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
-const FIXTURE_DIGEST: &str = "9dfc0e4e64edf264b92c0a86678d21e32efc86d787526c049997ab01003505fe";
+const FIXTURE_DIGEST: &str = "ab4e8407b2bcf76090b8d2952ae0f81d48b6e6ab8f35d6d874bce036607283b8";
 
 fn tmp_dir(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -116,6 +116,54 @@ fn reads_the_bundle_digest_from_the_manifest() {
         read_bundle_digest(&dir).is_err(),
         "a malformed digest is refused"
     );
+}
+
+// ---------------------------------------------------------------- precomputed vectors
+
+#[cfg(unix)]
+#[test]
+fn the_report_carries_how_many_nodes_were_embedded_or_took_bundled_vectors() {
+    let dir = tmp_dir("vectors");
+    let lines = done_lines(FIXTURE_DIGEST).replace(
+        r#""tenants_skipped":["skills"]}"#,
+        r#""tenants_skipped":["skills"],"nodes_embedded":2,"vectors_reused":17}"#,
+    );
+    let p = plan(&dir, fake_importer(&dir, &lines, 0));
+    let r = run_plan(&p, |_| {});
+    assert_eq!(r.state, "imported", "{r:?}");
+    assert_eq!((r.nodes_embedded, r.vectors_reused), (2, 17));
+}
+
+#[test]
+fn an_older_importer_without_the_counters_still_parses() {
+    let line = done_lines(FIXTURE_DIGEST).lines().last().unwrap().to_string();
+    match parse_line(&line) {
+        Some(ImportLine::Done {
+            nodes_embedded,
+            vectors_reused,
+            ..
+        }) => assert_eq!((nodes_embedded, vectors_reused), (0, 0)),
+        other => panic!("{other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------- staging
+
+#[test]
+fn only_a_directory_with_a_manifest_counts_as_a_staged_corpus() {
+    // The app ships `knowledge-corpus/README.md` in every build so the bundle
+    // resource glob always matches; a release stages the corpus beside it.
+    let dir = tmp_dir("staged");
+    assert_eq!(staged_corpus_dir(&dir.join("absent")), None);
+    std::fs::write(dir.join("README.md"), "staging notes").unwrap();
+    assert_eq!(staged_corpus_dir(&dir), None, "README only = no bundle");
+    std::fs::write(dir.join("manifest.json"), "{}").unwrap();
+    assert_eq!(staged_corpus_dir(&dir), Some(dir.clone()));
+    assert_eq!(staged_corpus_dir(&fixture_corpus()), Some(fixture_corpus()));
+    // A manifest that is a directory (or anything but a file) is not a corpus.
+    let odd = tmp_dir("staged-odd");
+    std::fs::create_dir_all(odd.join("manifest.json")).unwrap();
+    assert_eq!(staged_corpus_dir(&odd), None);
 }
 
 // ---------------------------------------------------------------- gates

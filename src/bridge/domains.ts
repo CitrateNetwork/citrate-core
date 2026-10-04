@@ -334,6 +334,10 @@ export interface MemoryHit {
   kind: string;
   title: string;
   status?: string;
+  /** HUP-S3.1: `<repo>:<path>[#<anchor>]` of a document passage (search with `passages`). */
+  cite?: string;
+  /** HUP-S3.1: the hit's text (search with `passages`). */
+  passage?: string;
 }
 export interface MemoryResult {
   tenant: string;
@@ -408,6 +412,9 @@ export interface KnowledgeImportReport {
   edgesAdded: number;
   tenantsImported: string[];
   tenantsSkipped: string[];
+  /** HUP-S3.1: nodes embedded on this machine, and nodes that took the release's precomputed vectors. */
+  nodesEmbedded?: number;
+  vectorsReused?: number;
 }
 
 export interface MemoryDomain {
@@ -416,7 +423,8 @@ export interface MemoryDomain {
   stop(): Promise<void>;
   assert(fact: string): Promise<"approved" | "declined">;
   recall(tenant: string, budget?: number): Promise<MemoryResult>;
-  search(tenant: string, query: string, budget?: number): Promise<MemoryResult>;
+  /** `opts.passages` (HUP-S3.1): each hit also carries its text and citation. */
+  search(tenant: string, query: string, budget?: number, opts?: { passages?: boolean }): Promise<MemoryResult>;
   neighbors(tenant: string, idPrefix: string, budget?: number): Promise<MemoryNeighbor[]>;
   /** Recall the personal + chain-state tenants for the Storage constellation. */
   constellation(budget?: number): Promise<MemoryResult[]>;
@@ -1376,6 +1384,15 @@ export interface AgentSkillsDomain {
   read(name: string): Promise<string>;
   /** Remove an authored skill (idempotent). */
   remove(name: string): Promise<void>;
+  /** HUP-S3.2: convert skills saved in the older flat-file format to SKILL.md, and say what happened. */
+  migrate(): Promise<SkillMigrationReport>;
+}
+/** HUP-S3.2: what converting older flat-file skills to SKILL.md did (skills_local.rs). */
+export interface SkillMigrationReport {
+  /** Slugs now saved as SKILL.md skills. */
+  converted: string[];
+  /** Old files left in place, each with the reason. */
+  failed: { file: string; reason: string }[];
 }
 
 // ── Social identity (Connections · social discovery). Privacy model: ADR-2026-08-30. ──
