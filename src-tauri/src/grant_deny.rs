@@ -218,7 +218,10 @@ mod tests {
             denied_location(Path::new("/system/volumes/data/var/db")),
             Some("system secrets")
         );
-        assert_eq!(denied_location(Path::new("/System/Volumes/Data/Users")), None);
+        assert_eq!(
+            denied_location(Path::new("/System/Volumes/Data/Users")),
+            None
+        );
         assert_eq!(denied_location(Path::new("/System/Volumes")), None);
     }
 }
