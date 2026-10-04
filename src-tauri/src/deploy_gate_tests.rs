@@ -20,6 +20,12 @@ const MEDUSA_PASS: &str = include_str!("../tests/fixtures/deploygate/medusa-pass
 const MEDUSA_FAIL: &str = include_str!("../tests/fixtures/deploygate/medusa-fail.handwritten.txt");
 const MEDUSA_SHORT: &str =
     include_str!("../tests/fixtures/deploygate/medusa-short.handwritten.txt");
+// HUP-S6 g3-gate (fan-out 6): REAL captures from the measured macOS arm64 component archives
+// (aderyn 0.6.8, medusa 1.5.1) on the rendered hello-mint template ("Lemon Drops", T1 budget).
+// `medusa-fail.real.txt` is the same project with the payment check removed.
+const ADERYN_CLEAN_REAL: &str = include_str!("../tests/fixtures/deploygate/aderyn-clean.real.json");
+const MEDUSA_PASS_REAL: &str = include_str!("../tests/fixtures/deploygate/medusa-pass.real.txt");
+const MEDUSA_FAIL_REAL: &str = include_str!("../tests/fixtures/deploygate/medusa-fail.real.txt");
 const ANVIL_RECEIPT: &str = include_str!("../tests/fixtures/deploygate/anvil-receipt.json");
 const ANVIL_TX: &str = include_str!("../tests/fixtures/deploygate/anvil-tx.json");
 const INITCODE: &str = include_str!("../tests/fixtures/deploygate/initcode.hex");
@@ -861,4 +867,82 @@ fn free_text_from_the_verifier_is_bounded_in_the_record() {
         .clone()
         .expect("version kept");
     assert!(version.chars().count() <= MAX_TOOL_TEXT_CHARS + 1);
+}
+
+// ---------------------------------------------------------------- real aderyn + medusa captures
+
+#[test]
+fn real_aderyn_and_medusa_captures_pass_the_gate() {
+    let mut inp = green_inputs();
+    inp.aderyn = ran(ADERYN_CLEAN_REAL);
+    inp.medusa.run = ran(MEDUSA_PASS_REAL);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    assert_eq!(rec.verdict, Verdict::Ready, "failing: {:?}", failing(&rec));
+    let ad = item(&rec, GateItemId::Aderyn);
+    assert_eq!(ad.evidence.counts.get("high"), Some(&0));
+    assert_eq!(ad.evidence.counts.get("low"), Some(&7));
+    let md = item(&rec, GateItemId::Medusa);
+    // The last progress line before the T1 test limit (50,000 calls) halted the campaign.
+    assert_eq!(md.evidence.counts.get("calls"), Some(&81_117));
+    assert_eq!(md.evidence.counts.get("passed"), Some(&14));
+    assert_eq!(md.evidence.counts.get("failed"), Some(&0));
+}
+
+#[test]
+fn a_real_failed_medusa_campaign_names_the_failed_tests() {
+    let mut inp = green_inputs();
+    inp.medusa.run = ran(MEDUSA_FAIL_REAL);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    assert_eq!(failing(&rec), vec![GateItemId::Medusa]);
+    let r = &item(&rec, GateItemId::Medusa).reason;
+    assert!(r.starts_with("2 failed"), "{r}");
+    assert!(
+        r.contains("LemonDropsProperties.property_payments_are_accounted()")
+            && r.contains("LemonDropsProperties.property_wrong_payment_never_accepted()"),
+        "the finding is named: {r}"
+    );
+}
+
+#[test]
+fn a_forge_failure_names_the_failing_test_and_its_reason() {
+    let mut inp = green_inputs();
+    inp.forge_tests = ran(FORGE_FAIL);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    let r = &item(&rec, GateItemId::ForgeTests).reason;
+    assert!(r.starts_with("1 failed"), "{r}");
+    assert!(r.contains("BrokenTest.test_wrongSupply()"), "{r}");
+    assert!(r.contains("supply"), "the revert reason rides along: {r}");
+}
+
+#[test]
+fn named_failures_are_bounded() {
+    // 40 failing tests with long reasons: the reason names a few and counts the rest.
+    let mut results = serde_json::Map::new();
+    for i in 0..40 {
+        results.insert(
+            format!("test_{i}()"),
+            serde_json::json!({"status": "Failure", "reason": "x".repeat(2_000)}),
+        );
+    }
+    let out = serde_json::json!({"test/T.t.sol:T": {"test_results": results}}).to_string();
+    let mut inp = green_inputs();
+    inp.forge_tests = ran(&out);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    let r = &item(&rec, GateItemId::ForgeTests).reason;
+    assert!(r.starts_with("40 failed"), "{r}");
+    assert!(r.contains("and 37 more"), "{r}");
+    assert!(r.chars().count() <= 1_200, "{}", r.chars().count());
+
+    let mut log = String::from("fuzz: elapsed: 9s, calls: 50000 (5104/sec)\n");
+    for i in 0..40 {
+        log.push_str(&format!("[FAILED] Property Test: P.property_{i}_{}()\n", "y".repeat(500)));
+    }
+    log.push_str("Test summary: 0 test(s) passed, 40 test(s) failed\n");
+    let mut inp = green_inputs();
+    inp.medusa.run = ran(&log);
+    let rec = evaluate(&inp, 0).expect("evaluates");
+    let r = &item(&rec, GateItemId::Medusa).reason;
+    assert!(r.starts_with("40 failed"), "{r}");
+    assert!(r.contains("and 37 more"), "{r}");
+    assert!(r.chars().count() <= 1_200, "{}", r.chars().count());
 }

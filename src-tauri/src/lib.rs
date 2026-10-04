@@ -129,6 +129,9 @@ mod main_thread_tripwire;
 // HUP-S10.5: offline matrix probes, telemetry consent field list, default budget ceilings.
 #[cfg(test)]
 mod privacy_contract_tests;
+// HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
+#[cfg(test)]
+mod hello_mint_e2e_tests;
 
 use tauri::Manager;
 

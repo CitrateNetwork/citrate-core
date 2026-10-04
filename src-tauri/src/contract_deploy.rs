@@ -89,9 +89,9 @@ pub async fn contract_deploy(
         let st2 = tauri::Manager::try_state::<crate::deploy_gate::DeployGateState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         contract_deploy_sync(
-            st0,
-            st1,
-            st2,
+            &st0.0,
+            &st1.0,
+            &st2.0,
             bytecode_hex,
             constructor_args_hex,
             value_wei,
@@ -102,10 +102,12 @@ pub async fn contract_deploy(
 }
 
 /// Blocking body of [`contract_deploy`]; reached only through [`crate::blocking::off_main`].
+/// Takes the managed states' inner values so the local hello-mint end-to-end test drives this
+/// same body (HUP-S6, `hello_mint_e2e_tests.rs`).
 pub fn contract_deploy_sync(
-    custody: tauri::State<'_, crate::custody::CustodyState>,
-    ceremony: tauri::State<'_, crate::ceremony::CeremonyState>,
-    gate: tauri::State<'_, crate::deploy_gate::DeployGateState>,
+    custody: &crate::custody::CustodyVault,
+    ceremony: &crate::ceremony::SignatureCeremony,
+    gate: &crate::deploy_gate::GateStore,
     bytecode_hex: String,
     constructor_args_hex: Option<String>,
     value_wei: Option<String>,
@@ -130,8 +132,8 @@ pub fn contract_deploy_sync(
     // D-4: no READY gate for exactly these bytes → refuse, naming what fails, before touching
     // the wallet. The ceremony below carries this same `initcode`, so what was gated is what
     // gets signed; `open_ceremony` re-checks under the store lock.
-    gate.0.require_ready(&initcode)?;
-    let wallet = crate::wallet::address_auto_unlocked(&custody.0).map_err(|e| e.to_string())?;
+    gate.require_ready(&initcode)?;
+    let wallet = crate::wallet::address_auto_unlocked(custody).map_err(|e| e.to_string())?;
     let raw = encode_deploy_tx_json(
         &wallet.address,
         &initcode,
@@ -147,11 +149,11 @@ pub fn contract_deploy_sync(
     // Return the decoded view so the UI drives signing.broadcast(view.id) (the money-path
     // pattern) — nothing signs here (Rule 3). The gate record rides along for the review card.
     // An already-decided ceremony cannot be rejected again; that error is expected and moot.
-    let (gate_record, view) = gate.0.open_ceremony(
+    let (gate_record, view) = gate.open_ceremony(
         &initcode,
-        || Ok(ceremony.0.request(intent)),
+        || Ok(ceremony.request(intent)),
         |id| {
-            let _ = ceremony.0.reject(id);
+            let _ = ceremony.reject(id);
         },
     )?;
     Ok(DeployProposal {
