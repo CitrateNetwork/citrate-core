@@ -870,3 +870,28 @@ fn mcp_env_is_set_only_while_the_allowlist_file_exists() {
         Some(cfg.to_string_lossy().as_ref())
     );
 }
+
+#[test]
+fn the_child_is_told_where_the_saved_mcp_server_list_is() {
+    // HUP-S4.4: the sidecar's dry-run probe starts only an entry core has saved, so it needs the
+    // saved list (mcp-servers.json, next to the allowlist). Without the member-servers feature
+    // wired, nothing is passed.
+    let (mgr, dir) = stub_manager("mcpreg");
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert!(!env.contains_key(crate::mcp_servers::MCP_REGISTRY_ENV));
+
+    let hermes = dir.join("hermes");
+    let mgr = mgr.with_mcp_allowlist(hermes.join(crate::mcp_servers::ALLOWLIST_FILE));
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(
+        env.get(crate::mcp_servers::MCP_REGISTRY_ENV).map(String::as_str),
+        Some(
+            hermes
+                .join(crate::mcp_servers::REGISTRY_FILE)
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+}

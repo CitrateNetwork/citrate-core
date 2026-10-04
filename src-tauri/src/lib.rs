@@ -45,6 +45,7 @@ mod deploy_gate;
 mod fl_rounds;
 // HUP-S2.3 — Settings → Budgets + the budgeted SIWE entry point (ADR-2026-09-30, accepted).
 mod hic_records;
+mod inference_router;
 mod web_budgets;
 mod web_signin;
 // HUP-S8.1 — per-device key + DeviceLink (ceremony-gated wallet signature).
@@ -81,6 +82,7 @@ mod postdeploy;
 // HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
 mod node_mcp;
 mod node_mcp_approvals;
+mod node_mcp_hermes;
 mod node_mcp_http;
 mod node_mcp_live;
 mod node_mcp_protocol;
@@ -586,6 +588,12 @@ pub fn run() {
             escalation::escalation_run,
             hic_records::hic_record_decision,
             escalation::escalation_registry_status,
+            inference_router::escalation_registry_quote,
+            inference_router::escalation_registry_request,
+            inference_router::escalation_registry_result,
+            inference_router::escalation_registry_mine,
+            inference_router::escalation_registry_claim_refund,
+            inference_router::escalation_registry_expire,
             web_budgets::web_budget_status,
             web_budgets::web_budget_grant,
             web_budgets::web_budget_revoke,
@@ -806,6 +814,7 @@ pub fn run() {
             skills_local::skills_local_write,
             skills_local::skills_local_read,
             skills_local::skills_local_delete,
+            skills_local::skills_local_migrate,
             // HUP-S10.4 — journal encrypted export/import (passphrase-sealed file; plaintext never on disk).
             journal_export::journal_export_encrypted,
             journal_export::journal_import_encrypted,

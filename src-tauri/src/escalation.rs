@@ -7,9 +7,12 @@
 //!    and an API key. The key is sealed in the **OS keyring** here and never written to a file,
 //!    never returned to the webview, and never stored by the sidecar: core reads it for one request
 //!    and passes it to the sidecar inside that request (`POST /escalations`), which drops it.
-//! 2. **Registry models** (InferenceRouter + x402, ADR-2026-09-30 Rule-3 B-2). **Disabled**: the
-//!    router is not pinned for chain 40204, the x402 asset allowlist is empty, and the EIP-712
-//!    precondition is open. [`registry_status`] says so; nothing calls a registry.
+//! 2. **Registry models** (the on-chain InferenceRouter, [`crate::inference_router`]). The deployed
+//!    router is paid in native SALT, so each registry escalation is a transaction the member
+//!    approves (HIC-1), never a budgeted x402 authorization. **Off on 40204** while the address
+//!    book has no router pin (federation F-4); [`registry_status`] says so and the registry
+//!    commands refuse without a network call. Budgeted x402 (ADR-2026-09-30 B-2) stays inert: the
+//!    router has no token entry point and the asset allowlist is empty (owner decision O-1).
 //!
 //! ## The spend budget (TLA+ `formal/SpendBudget.tla`)
 //!
@@ -998,13 +1001,21 @@ pub fn interpret_sidecar(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegistryStatusView {
+    /// The HIC-1 registry route can run: a router is pinned for 40204.
     pub enabled: bool,
     pub reason: String,
     pub missing: Vec<String>,
+    /// The pinned InferenceRouter, when there is one.
+    pub router: Option<String>,
+    /// How a registry escalation is paid: `"native-salt-hic1"` (a transaction the member approves).
+    pub payment: String,
+    /// Budgeted x402 payment (ADR B-2). Off in this build.
+    pub x402_enabled: bool,
 }
 
-/// The registry route's status. In this build it is always disabled: even with a pinned router and
-/// an allowlisted asset, core's lean crypto build has no EIP-712 hasher yet (ADR D3 precondition).
+/// The registry route's status. The HIC-1 route (native SALT, one approval per request) is on only
+/// when an InferenceRouter is pinned for 40204. Budgeted x402 (B-2) is always off here: the
+/// deployed router has no token entry point and the asset allowlist is empty (O-1).
 pub fn registry_status(inference_router: Option<&str>, x402_assets: &[&str]) -> RegistryStatusView {
     let mut missing = Vec::new();
     if inference_router.is_none() {
@@ -1013,22 +1024,33 @@ pub fn registry_status(inference_router: Option<&str>, x402_assets: &[&str]) -> 
                 .to_string(),
         );
     }
+    missing.push(
+        "budgeted x402 payment: the InferenceRouter takes native SALT only, so each registry request is a transaction you approve"
+            .to_string(),
+    );
     if x402_assets.is_empty() {
         missing.push(
             "x402 asset: no token with TransferWithAuthorization (such as a wrapped SALT) is allowlisted (ADR O-1)"
                 .to_string(),
         );
     }
-    missing.push("EIP-712 hasher in core's lean crypto build (ADR D3 precondition)".to_string());
     missing.push(
         "registry model routing after the model precompile integration (federation F-1)"
             .to_string(),
     );
+    let enabled = inference_router.is_some();
     RegistryStatusView {
-        enabled: false,
-        reason: "Registry escalation is not deployed yet. Escalations use your own endpoints."
-            .to_string(),
+        enabled,
+        reason: if enabled {
+            "Registry models are available. Each request is paid in SALT and needs your approval."
+                .to_string()
+        } else {
+            crate::inference_router::ROUTE_OFF.to_string()
+        },
         missing,
+        router: inference_router.map(str::to_ascii_lowercase),
+        payment: "native-salt-hic1".to_string(),
+        x402_enabled: false,
     }
 }
 
@@ -1521,7 +1543,7 @@ fn escalation_run_sync<R: tauri::Runtime>(
     })
 }
 
-/// **escalation_registry_status** — the registry route (disabled in this build).
+/// **escalation_registry_status** — the registry route (off on 40204 until a router is pinned).
 #[tauri::command]
 pub async fn escalation_registry_status() -> Result<RegistryStatusView, String> {
     Ok(registry_status(

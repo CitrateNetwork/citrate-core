@@ -146,6 +146,52 @@ fn credential_folders_app_data_missing_folders_and_root_writes_are_refused() {
     assert!(ok(store.load()).grants.is_empty(), "nothing was stored");
 }
 
+/// The early refusal mirrors the sidecar's default-deny folders (agent-guard `RULES`), so the
+/// Grants panel never lists a grant the sidecar would ignore: browser profiles, keychains,
+/// wallet keystores, Citrate key folders and system secrets, at any depth and in any case.
+#[test]
+fn folders_on_the_sidecar_deny_list_are_refused_at_any_depth_and_case() {
+    let fx = Fx::new();
+    let store = fx.store();
+    let denied = [
+        ".config/gh",
+        ".password-store",
+        ".azure",
+        ".mozilla",
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Firefox",
+        "Library/Safari",
+        ".foundry/keystores",
+        ".ethereum/keystore",
+        ".citrate/keystore",
+        ".citrate-wallet",
+        ".local/share/keyrings",
+        "work/client/.SSH",
+        "work/client/.Gnupg/private-keys-v1.d",
+        "Library/Application Support/ai.citrate.core.custody",
+    ];
+    for rel in denied {
+        let dir = fx.home().join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = store
+            .add_folder(&dir, true, false, T0)
+            .expect_err(&format!("{rel} must be refused"));
+        assert!(
+            err.to_string().contains("cannot be granted"),
+            "{rel}: refusal says why: {err}"
+        );
+    }
+    // Parents of denied folders stay grantable: the sidecar keeps refusing the denied children.
+    for rel in [".config", "Library/Application Support", ".citrate", "work/client"] {
+        let dir = fx.home().join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            store.add_folder(&dir, true, false, T0).is_ok(),
+            "{rel} is not itself denied"
+        );
+    }
+}
+
 #[test]
 fn revoking_is_immediate_final_and_kept_for_the_list() {
     let fx = Fx::new();

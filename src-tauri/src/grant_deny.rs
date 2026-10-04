@@ -185,7 +185,13 @@ pub fn denied_location(path: &Path) -> Option<&'static str> {
             return Some(cat);
         }
     }
-    if path.has_root() && AT_ROOT.iter().any(|run| matches_at(run, 0)) {
+    // macOS mounts the data volume a second time under /System/Volumes/Data.
+    let data_alias = path.has_root() && matches_at(&["system", "volumes", "data"], 0);
+    if path.has_root()
+        && AT_ROOT
+            .iter()
+            .any(|run| matches_at(run, 0) || (data_alias && matches_at(run, 3)))
+    {
         return Some("system secrets");
     }
     for (cat, prefix) in PREFIXES {
@@ -194,4 +200,25 @@ pub fn denied_location(path: &Path) -> Option<&'static str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::denied_location;
+    use std::path::Path;
+
+    /// The macOS data-volume alias reaches the same system secrets as the root itself.
+    #[test]
+    fn root_secrets_are_denied_through_the_macos_data_volume_alias() {
+        assert_eq!(
+            denied_location(Path::new("/System/Volumes/Data/private/etc/ssh")),
+            Some("system secrets")
+        );
+        assert_eq!(
+            denied_location(Path::new("/system/volumes/data/var/db")),
+            Some("system secrets")
+        );
+        assert_eq!(denied_location(Path::new("/System/Volumes/Data/Users")), None);
+        assert_eq!(denied_location(Path::new("/System/Volumes")), None);
+    }
 }

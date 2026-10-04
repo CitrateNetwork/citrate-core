@@ -9,6 +9,9 @@ import type {
   EscalationEndpoint,
   EscalationEndpointInput,
   EscalationQuote,
+  EscalationRegistryMine,
+  EscalationRegistryQuote,
+  EscalationRegistryResult,
   EscalationRegistryStatus,
   EscalationRun,
 } from "../domains";
@@ -40,5 +43,24 @@ export const tauriEscalation: EscalationDomain = {
   },
   registryStatus() {
     return invoke<EscalationRegistryStatus>("escalation_registry_status");
+  },
+  // Registry route (InferenceRouter, native SALT, HIC-1 per request): `inference_router.rs`.
+  registryQuote(modelHash: string, input: string, maxPriceWei: string) {
+    return invoke<EscalationRegistryQuote>("escalation_registry_quote", { modelHash, input, maxPriceWei });
+  },
+  registryRequest(modelHash: string, input: string, maxPriceWei: string, shownMaxPriceWei: string) {
+    return invoke<void>("escalation_registry_request", { modelHash, input, maxPriceWei, shownMaxPriceWei });
+  },
+  registryResult(requestId: number) {
+    return invoke<EscalationRegistryResult>("escalation_registry_result", { requestId });
+  },
+  registryMine() {
+    return invoke<EscalationRegistryMine>("escalation_registry_mine");
+  },
+  registryClaimRefund() {
+    return invoke<void>("escalation_registry_claim_refund");
+  },
+  registryExpire(requestId: number) {
+    return invoke<void>("escalation_registry_expire", { requestId });
   },
 };

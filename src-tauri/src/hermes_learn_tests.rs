@@ -242,6 +242,31 @@ fn a_record_that_is_not_a_learn_memory_is_refused() {
     assert!(ledger.entries.is_empty());
 }
 
+/// The learned-memories ledger is the member's own record: owner-only, also when it replaces a
+/// file an older build wrote readable by others.
+#[cfg(unix)]
+#[test]
+fn the_ledger_file_is_private_to_the_member() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("hlearn-ledger-mode-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("learned-memories.json");
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut ledger = Ledger::default();
+    ledger.accept_record(&record(P1, "k", "v", "true", &[]), &g).unwrap();
+    ledger.save(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let stale_tmp = dir.join(".learned-memories.json.tmp");
+    std::fs::write(&stale_tmp, b"left by an interrupted save").unwrap();
+    std::fs::set_permissions(&stale_tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+    ledger.save(&path).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(Ledger::load(&path).unwrap().entries, ledger.entries);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_ledger_round_trips_through_its_file() {
     let dir = std::env::temp_dir().join(format!("hlearn-ledger-{}-{:?}", std::process::id(), std::thread::current().id()));
@@ -411,6 +436,71 @@ fn the_sidecar_gets_the_learn_and_skills_folders() {
     assert_eq!(get("CITRATE_HERMES_SKILLS"), Some(dir.join("skills").to_string_lossy().to_string()), "accepted skills load in later sessions");
     let plain = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"));
     assert!(plain.spec_env_for_test().iter().all(|(n, _)| !n.contains("LEARN")), "no folders, no learning");
+}
+
+// ---- HUP-S3.2: every skill source reaches the one loader --------------------------------------
+
+fn skills_fixture(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("hskills-env-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("res/skills/citrate-precompiles")).unwrap();
+    std::fs::create_dir_all(dir.join("res/skills-bundle/trailofbits")).unwrap();
+    std::fs::write(dir.join("res/skills-bundle/skills.lock"), "version = 1\n").unwrap();
+    dir
+}
+
+fn sources(dir: &Path) -> SkillSources {
+    SkillSources {
+        authored: dir.join("data/agent-skills"),
+        first_party: Some(dir.join("res/skills")),
+        third_party: Some((
+            dir.join("res/skills-bundle/skills.lock"),
+            dir.join("res/skills-bundle"),
+        )),
+    }
+}
+
+#[test]
+fn the_sidecar_gets_learned_authored_first_party_and_reviewed_skills_in_order() {
+    let dir = skills_fixture("all");
+    let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"))
+        .with_learn_dirs(dir.join("learn"), dir.join("skills"))
+        .with_skill_sources(sources(&dir));
+    let env = m.spec_env_for_test();
+    let all = |k: &str| env.iter().filter(|(n, _)| n == k).map(|(_, v)| v.clone()).collect::<Vec<_>>();
+    let skills = all(SKILLS_ENV);
+    assert_eq!(skills.len(), 1, "one CITRATE_HERMES_SKILLS, not two: {skills:?}");
+    let paths: Vec<PathBuf> = std::env::split_paths(&skills[0]).collect();
+    assert_eq!(
+        paths,
+        vec![dir.join("skills"), dir.join("data/agent-skills"), dir.join("res/skills")],
+        "the member's learned and saved skills first, then Citrate's own"
+    );
+    assert_eq!(all(SKILLS_LOCK_ENV), vec![dir.join("res/skills-bundle/skills.lock").to_string_lossy().to_string()]);
+    assert_eq!(all(SKILLS_THIRD_PARTY_ENV), vec![dir.join("res/skills-bundle").to_string_lossy().to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bundled_skill_sources_that_are_not_staged_are_left_out() {
+    let dir = skills_fixture("absent");
+    std::fs::remove_dir_all(dir.join("res")).unwrap();
+    let env = skills_env(None, &sources(&dir));
+    let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    assert_eq!(get(SKILLS_ENV), Some(dir.join("data/agent-skills").to_string_lossy().to_string()));
+    assert_eq!(get(SKILLS_LOCK_ENV), None, "no staged bundle, no reviewed skills");
+    assert_eq!(get(SKILLS_THIRD_PARTY_ENV), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_lock_without_its_staged_tree_offers_no_reviewed_skills() {
+    let dir = skills_fixture("lockonly");
+    std::fs::remove_dir_all(dir.join("res/skills-bundle/trailofbits")).unwrap();
+    std::fs::remove_file(dir.join("res/skills-bundle/skills.lock")).unwrap();
+    let env = skills_env(None, &sources(&dir));
+    assert!(env.iter().all(|(n, _)| n != SKILLS_LOCK_ENV));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- resolving a contradiction (US-3.4 AC4; formal/ContradictionResolve.tla in the runtime) ----
@@ -708,4 +798,39 @@ fn the_publish_payload_must_carry_the_pinned_cid() {
     assert!(check_manifest_cid(&p, "bafkreiother").is_err());
     p["manifest_cid"] = serde_json::json!("");
     assert!(check_manifest_cid(&p, "bafkreiexampleskillcid").is_err());
+}
+
+/// HUP-S7.7 / US-9.2: Citrate's first-party literacy skills (`src-tauri/skills/`, including
+/// citrate-paraconsensus and citrate-belnap-aggregate) are a resource in every bundle config, so
+/// the `first_party` skills source the sidecar is pointed at exists in every build, not only in
+/// the release overlays.
+#[test]
+fn every_bundle_config_ships_the_first_party_skills() {
+    let src_tauri = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for entry in std::fs::read_dir(src_tauri).expect("src-tauri").flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        if !(file.starts_with("tauri.") && file.ends_with(".conf.json")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path()).expect("read config");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("config is JSON");
+        let listed: Vec<&str> = json
+            .pointer("/bundle/resources")
+            .and_then(|r| r.as_array())
+            .unwrap_or_else(|| panic!("{file} has no bundle.resources list"))
+            .iter()
+            .filter_map(|r| r.as_str())
+            .collect();
+        assert!(listed.contains(&"skills/**/*"), "{file} must bundle skills/**/*");
+        checked += 1;
+    }
+    assert!(checked >= 6, "expected the base config and the overlays, saw {checked}");
+    // The resource the sidecar is pointed at holds the literacy skills US-9.2 relies on.
+    for name in ["citrate-paraconsensus", "citrate-belnap-aggregate", "citrate-precompiles"] {
+        assert!(
+            src_tauri.join("skills").join(name).join("SKILL.md").is_file(),
+            "src-tauri/skills/{name}/SKILL.md"
+        );
+    }
 }

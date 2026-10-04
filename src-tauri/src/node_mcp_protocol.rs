@@ -78,6 +78,15 @@ pub trait NodeBackend: Send + Sync {
     ) -> Result<ProposedSignature, String>;
     /// Close a ceremony that will never be approved (expired / token revoked).
     fn close_ceremony(&self, ceremony_id: &str);
+    /// HUP-S1.1: the Hermes sidecar's open sessions (`GET /sessions`).
+    fn hermes_sessions(&self) -> Result<Value, String> {
+        Err(crate::node_mcp_hermes::HERMES_UNAVAILABLE.to_string())
+    }
+    /// HUP-S1.1: a Hermes session's events after `after`, waiting up to `wait_ms` for one.
+    fn hermes_events(&self, session: &str, after: u64, wait_ms: u64) -> Result<Value, String> {
+        let _ = (session, after, wait_ms);
+        Err(crate::node_mcp_hermes::HERMES_UNAVAILABLE.to_string())
+    }
 }
 
 /// Who is calling (resolved by the transport from the connect token + the session).
@@ -307,7 +316,7 @@ impl McpCore {
             "ping" => rpc_result(&id, json!({})),
             "tools/list" => rpc_result(
                 &id,
-                json!({"tools": tools::TOOLS.iter().map(tools::tool_json).collect::<Vec<_>>()}),
+                json!({"tools": tools::all_tools().map(tools::tool_json).collect::<Vec<_>>()}),
             ),
             "tools/call" => return Some(self.tools_call(ctx, &id, &params)),
             "resources/list" => rpc_result(&id, json!({"resources": resources_list()})),
@@ -511,7 +520,12 @@ impl McpCore {
                     .map(|r| request_view(&r))
                     .ok_or_else(|| format!("no request {id} for this client"))
             }
-            other => Err(format!("unknown read tool {other}")),
+            other => crate::node_mcp_hermes::read_tool(
+                &crate::node_mcp_hermes::ViaBackend(self.backend.as_ref()),
+                other,
+                args,
+            )
+            .unwrap_or_else(|| Err(format!("unknown read tool {other}"))),
         }
     }
 
@@ -597,7 +611,10 @@ impl McpCore {
                     i.to_ascii_lowercase()
                 },
             },
-            other => return Err(format!("unknown action tool {other}")),
+            other => match crate::node_mcp_hermes::action_for(other, args) {
+                Some(a) => a?,
+                None => return Err(format!("unknown action tool {other}")),
+            },
         };
         let summary = action.summary();
         let (req, close) = self.inbox.submit(

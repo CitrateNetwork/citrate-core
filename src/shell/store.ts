@@ -30,7 +30,7 @@ import {
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
 import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
-import { createSidecarProvider } from "../agent/sidecarProvider";
+import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
 import type { FlRoundPlan } from "../bridge/domains";
@@ -38,14 +38,16 @@ import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
+import { formatMemoryHits, memorySearchBudget, memorySearchTarget } from "../agent/knowledgeSearch";
 import { formatVerifiedSourceForAgent, isAddress } from "../agent/verifiedSource";
+import { belnapCodecTool } from "../agent/belnap";
 import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
-import { validateNewSkill, runPrompt } from "../agent/userSkills";
-import { composeSystemPrompt, withPersonaMessage } from "../agent/personas";
+import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
+import { withPersonaMessage } from "../agent/personas";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, MemoryResult, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { layoutGraph } from "./memGraph";
@@ -279,12 +281,8 @@ export function entitlementSafeguardFromChain(
  * rather than being left to invent Citrate facts). The hit `title` carries the
  * authored content (the `Title › Section` breadcrumb + body from docs_ingest).
  */
-export function formatMemoryHits(res: MemoryResult): string {
-  if (!res.hits.length) {
-    return `No results in the ${res.tenant} memory (${res.totalInTenant} nodes total). Do not fabricate; tell the member nothing was found.`;
-  }
-  return res.hits.map((h, i) => `[${i + 1}] ${h.title}`).join("\n\n");
-}
+// HUP-S3.1: passages + citations for knowledge tenants (src/agent/knowledgeSearch.ts).
+export { formatMemoryHits };
 
 /**
  * Derive a display name + initials from an email local-part. The authority
@@ -508,7 +506,6 @@ export class Store {
   private snap: AppState;
   private cid = 0;
   private mid = 0;
-  private uskSeq = 0;
   private resolvers: Record<string, (v: string) => void> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
   private nodeTimer: ReturnType<typeof setInterval> | null = null;
@@ -590,6 +587,9 @@ export class Store {
     // Tauri build this reads the real /userinfo-derived status (silent if signed
     // out); in web-dev it reads the sim persona. Honest no-op on failure.
     void this.refreshAuth();
+    // HUP-S3.2: the member's saved skills are SKILL.md files the sidecar also loads; move any
+    // older-format skills there once, then list them.
+    void this.syncLocalSkills();
     // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
     // the default id is configured (key sealed in the OS keyring), else the honest
     // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
@@ -914,6 +914,13 @@ export class Store {
           .endpoints()
           .then((e) => e.length > 0)
           .catch(() => false);
+        // HUP-S1.1 (US-1.1 AC3): the session is saved so a reloaded view picks it back up. Only the
+        // first sidecar provider of this app load does that; a later rebuild (persona or provider
+        // change) means a fresh session, so the saved one is let go.
+        const sessionStore = localSessionStore();
+        const firstSidecarBuild = !this.sidecarReattachTried;
+        this.sidecarReattachTried = true;
+        if (!firstSidecarBuild) sessionStore.save(null);
         this.provider = createSidecarProvider(
           {
             // HUP-S3.3: the persona (when chosen) travels with the session: the sidecar applies its
@@ -921,8 +928,11 @@ export class Store {
             open: (p, t, persona) => (persona ? h.sessionOpen(p, t, persona) : h.sessionOpen(p, t)),
             send: (id, text) => h.sessionSend(id, text),
             events: (id, after, waitMs) => h.sessionEvents(id, after, waitMs),
+            // HUP-S1.1: the session's last sequence number (an `after` past every event reads none).
+            position: (id) => h.sessionEvents(id, Number.MAX_SAFE_INTEGER, 0).then((p) => p.lastSeq),
             toolResult: (id, callId, status, content) => h.sessionToolResult(id, callId, status, content),
             stop: (id) => h.sessionStop(id),
+            // L-20: a stopped session is closed, so it never fills the sidecar's session table.
             close: (id) => h.sessionClose(id),
             // HUP-S3.3 (US-3.3 AC2): track workflows run in the same session.
             trackWorkflowRun: (id, workflowId) => h.trackWorkflowRun(id, workflowId),
@@ -931,12 +941,14 @@ export class Store {
             shellPending: (id) => h.shellPending(id),
             shellDecide: (id, approvalId, allow, argv, cwd) => h.shellDecide(id, approvalId, allow, argv, cwd),
           },
-          // HUP-S3.3: the chosen persona's fragment comes after the base prompt (none = unchanged).
+          // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
           () => withEscalationTool(annotatedAgentTools(), escalationReady),
           () => this.sidecarPersonaChoice(),
+          { store: sessionStore },
         );
         this.reflectProvider();
+        if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
         return;
       }
       if (kind === "local") {
@@ -974,9 +986,10 @@ export class Store {
   private reflectProvider(): void {
     const p = this.provider;
     if (!p) return;
-    // local → local; gateway (real/agentic) → real; anything else → the honest demo.
+    // local (the app's own loop or the Hermes sidecar loop, both on the local model) → local;
+    // gateway (real/agentic) → real; anything else → the honest demo.
     const kind: "local" | "real" | "demo" =
-      p.kind === "local" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
+      p.kind === "local" || p.kind === "sidecar" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
   }
 
@@ -2069,13 +2082,11 @@ export class Store {
     this.scrollChat();
   }
 
-  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context, then the
-   *  chosen persona's fragment (none = exactly the base prompt and context). */
+  /** HUP-S3.3 — the sidecar session's system prompt: the base prompt and the live context only. The
+   *  chosen persona travels as `sidecarPersonaChoice()`; the sidecar checks it and renders its
+   *  fragment itself, so a fragment kept in app state never reaches the prompt (L-23). */
   sidecarSystemPrompt(): string {
-    return composeSystemPrompt(
-      AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot()),
-      this.state.hermesPersona,
-    );
+    return AGENT_SYSTEM_PROMPT + "\n\nLive app context (JSON snapshot at session start): " + JSON.stringify(this.snapshot());
   }
 
   /** HUP-S3.3 — what the sidecar session applies for the chosen persona (null = none). */
@@ -2220,6 +2231,97 @@ export class Store {
     const userIdx = idx - 1 >= 0 && msgs[idx - 1].who === "You" && msgs[idx - 1].text === text ? idx - 1 : -1;
     this.setState({ chatMsgs: msgs.filter((_, i) => i !== idx && i !== userIdx) });
     await this.sendChat(text);
+  }
+
+  /** HUP-S1.1 — whether this app load already tried to pick up a saved sidecar session. */
+  private sidecarReattachTried = false;
+
+  /**
+   * HUP-S1.1 (US-1.1 AC3) — after a reload, pick the saved Hermes session back up: a turn that was
+   * running (or finished while the view was gone) is shown to its end, core calls the loop asks for
+   * run through the same gates, calls that were in progress at the reload are reported as
+   * interrupted, and a session Hermes no longer has is let go with a plain notice.
+   */
+  private async resumeSidecarSession(provider: ChatProvider): Promise<void> {
+    if (!provider.reattach || this.state.chatStatus !== "ready") return;
+    const ac = new AbortController();
+    const msgId = "m" + ++this.mid;
+    let shown = false;
+    const ensure = () => {
+      if (shown) return;
+      shown = true;
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([{ id: msgId, who: "Agent", text: "", chips: [], streaming: true }]) }));
+    };
+    const patch = (fn: (m: ChatMsg) => ChatMsg) =>
+      this.setState((s) => ({ chatMsgs: s.chatMsgs.map((m) => (m.id === msgId ? fn(m) : m)) }));
+    let began = false;
+    const begin = () => {
+      if (began) return;
+      began = true;
+      this.turnAbort = ac;
+      beginTurn(provider.kind, `${provider.label} · resumed after reload`);
+    };
+    try {
+      const r = await provider.reattach({
+        signal: ac.signal,
+        callbacks: {
+          onStatus: (st) => {
+            if (ac.signal.aborted) return;
+            begin();
+            notePhase(st);
+            if (st === "streaming") ensure();
+            this.setState({ chatStatus: st === "done" || st === "error" ? "ready" : (st as AppState["chatStatus"]) });
+          },
+          onToken: (tk) => {
+            if (ac.signal.aborted) return;
+            ensure();
+            patch((m) => ({ ...m, text: m.text + tk }));
+            this.scrollChat();
+          },
+          onToolCall: async (call, meta) => {
+            if (ac.signal.aborted) return "stopped by the member before this ran; nothing was done.";
+            toolStarted(call.id, call.name);
+            try {
+              const result = await this.handleTool(call, msgId, ensure, meta);
+              toolFinished(call.id, true);
+              return result;
+            } catch (e) {
+              toolFinished(call.id, false);
+              throw e;
+            }
+          },
+          onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
+          onActivity: (ev) => {
+            if (ev.kind === "file_change") {
+              ensure();
+              recordFileChange(ev.change, msgId);
+              void refreshUndoPanel(bridge.agentHarness);
+            } else if (ev.kind === "command_run") {
+              commandRan(ev);
+            } else if (ev.kind === "notice") {
+              this.toast(ev.text);
+            } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
+          },
+        },
+      });
+      if (r.kind === "gone") this.toast(r.notice);
+      if (r.kind === "resumed") {
+        ensure();
+        if (r.failure) patch((m) => ({ ...m, error: r.failure ?? undefined }));
+        endTurn(r.failure ? "failed" : "answered");
+      }
+    } catch (e) {
+      if (began) {
+        ensure();
+        const stopped = e instanceof TurnStopped || ac.signal.aborted;
+        patch((m) => ({ ...m, error: stopped ? "stopped by you" : e instanceof Error ? e.message : String(e) }));
+        endTurn(stopped ? "stopped" : "failed");
+      }
+    }
+    if (this.turnAbort === ac) this.turnAbort = null;
+    if (shown) patch((m) => ({ ...m, streaming: false }));
+    if (began) this.setState({ chatStatus: "ready" });
+    this.scrollChat();
   }
 
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
@@ -2585,9 +2687,10 @@ export class Store {
     } else if (call.name === "memory_search") {
       // W3.3 — REAL semantic search over the mem graph (docs or personal). Returns
       // real hits or honest emptiness (Rule 1 — never a fabricated Citrate fact).
-      const tenant = args.tenant === "personal" ? "personal" : "citrate-docs";
+      // HUP-S3.1: knowledge tenants (the bundled corpus) answer with passages + citations.
+      const { tenant, passages } = memorySearchTarget(args.tenant);
       try {
-        const res = await bridge.memory.search(tenant, args.query || "", 6);
+        const res = await bridge.memory.search(tenant, args.query || "", memorySearchBudget(passages), passages ? { passages } : undefined);
         result = formatMemoryHits(res);
       } catch (e) {
         result = "memory search unavailable: " + (e instanceof Error ? e.message : String(e));
@@ -2744,6 +2847,7 @@ export class Store {
           try {
             const skill = await bridge.agentSkills.write(name, description, instructions, before !== "");
             result = `Saved the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+            void this.refreshLocalSkills();
           } catch (e) {
             result = "couldn't save the skill: " + (e instanceof Error ? e.message : String(e));
           }
@@ -2752,6 +2856,7 @@ export class Store {
         try {
           const skill = await bridge.agentSkills.write(name, description, instructions, false);
           result = `Saved the skill "${skill.name}" (id: ${skill.slug}) on this device. Run it later with skill_run, or list it with skills_list.`;
+          void this.refreshLocalSkills();
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (!msg.startsWith("SKILL_EXISTS")) {
@@ -2779,6 +2884,7 @@ export class Store {
               try {
                 const skill = await bridge.agentSkills.write(name, description, instructions, true);
                 result = `Replaced the skill "${skill.name}" (id: ${skill.slug}) with the member's approval.`;
+                void this.refreshLocalSkills();
               } catch (e2) {
                 result = "couldn't save the skill: " + (e2 instanceof Error ? e2.message : String(e2));
               }
@@ -2869,6 +2975,9 @@ export class Store {
           result = "verified-source lookup unavailable: " + (e instanceof Error ? e.message : String(e));
         }
         }
+    } else if (call.name === "belnap_codec") {
+      // US-9.2 AC2 — READ: local 0x0110 input encoding / output decoding over the call's own args.
+      result = belnapCodecTool(args as Record<string, unknown>);
     } else if (call.name === "fl_round_plan") {
       // HUP-S9.4: a read. Core reads the coordinator and this device and explains the plan.
       try {
@@ -2937,42 +3046,88 @@ export class Store {
 
   // ---------- Hermes P5 — user skills (prompt-skills) ----------
   /**
-   * Add a member-authored prompt-skill (validated + normalized by the pure core).
-   * Persists in local state (PERSIST_KEYS) like the journal — no chain, no key. On a
-   * validation failure it toasts the honest reason and adds nothing (Rule 1).
-   * Returns whether it was added, so a form can clear itself only on success.
+   * HUP-S3.2 (US-3.2 AC2): one format, one loader. Convert skills saved in older formats (flat
+   * files, and the prompt-skills earlier builds kept in app state) to SKILL.md files, then read the
+   * member's skills from those files. Whatever cannot move stays where it was and the member is
+   * told why. Called on launch and after any change.
    */
-  addUserSkill(name: string, instruction: string, description = ""): boolean {
-    const r = validateNewSkill(name, instruction, description, this.state.userSkills);
+  async syncLocalSkills(): Promise<void> {
+    const notes: string[] = [];
+    const report = await bridge.agentSkills.migrate().catch(() => null);
+    if (report && report.failed.length) {
+      notes.push(...report.failed.map((f) => `${f.file}: ${f.reason}`));
+    }
+    const legacy = this.state.userSkills;
+    if (legacy.length) {
+      const r = await migrateLegacyUserSkills(legacy, bridge.agentSkills);
+      const kept = new Set(r.kept.map((k) => k.skill.id));
+      this.setState((s) => ({ userSkills: s.userSkills.filter((k) => kept.has(k.id)) }));
+      this.save();
+      notes.push(...r.kept.map((k) => `"${k.skill.name}": ${k.reason}`));
+    }
+    await this.refreshLocalSkills();
+    if (notes.length) {
+      this.toast(`${notes.length === 1 ? "One saved skill" : notes.length + " saved skills"} could not move to the shared skill format: ${notes.join("; ")}`);
+    }
+  }
+
+  /** Read the member's saved skills from their SKILL.md files. An unreadable folder lists none. */
+  async refreshLocalSkills(): Promise<void> {
+    const list = await bridge.agentSkills.list().catch(() => []);
+    this.setState(() => ({ localSkills: list }));
+  }
+
+  /**
+   * Save a member-authored skill as a SKILL.md file (validated + normalized by the pure core). The
+   * sidecar's loader reads the same file, so it is offered in Hermes sessions too. On a validation
+   * failure it toasts the honest reason and saves nothing (Rule 1). Resolves to whether it was
+   * saved, so a form can clear itself only on success.
+   */
+  async addUserSkill(name: string, instruction: string, description = ""): Promise<boolean> {
+    const r = validateNewSkill(name, instruction, description, this.state.localSkills);
     if (!r.ok) {
       this.toast(r.error);
       return false;
     }
-    const id = "usk-" + ++this.uskSeq + "-" + this.state.userSkills.length;
-    this.setState((s) => ({ userSkills: s.userSkills.concat([{ id, ...r.skill }]) }));
-    this.save();
+    try {
+      await bridge.agentSkills.write(r.skill.name, r.skill.description, r.skill.instruction, false);
+    } catch (e) {
+      this.toast("Couldn't save the skill: " + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    await this.refreshLocalSkills();
     this.toast(`Added your "${r.skill.name}" skill.`);
     return true;
   }
 
-  /** Remove a user skill by id. */
-  removeUserSkill(id: string): void {
-    this.setState((s) => ({ userSkills: s.userSkills.filter((k) => k.id !== id) }));
-    this.save();
+  /** Remove a saved skill by its slug. */
+  async removeUserSkill(slug: string): Promise<void> {
+    try {
+      await bridge.agentSkills.remove(slug);
+    } catch (e) {
+      this.toast("Couldn't remove the skill: " + (e instanceof Error ? e.message : String(e)));
+    }
+    await this.refreshLocalSkills();
   }
 
   /**
-   * Run a user skill: send its instruction to the chat against the ACTIVE model
-   * (the router's Gemma / gateway / local backend). It is a prompt, not code — any
-   * chain action the model then proposes still stops at the SignatureCeremony
-   * (Rule 3 holds by construction; nothing here signs). Navigates to the dashboard
-   * chat so the member sees the run.
+   * Run a saved skill: send its instructions (read from its SKILL.md) to the chat against the
+   * ACTIVE model. It is a prompt, not code: any chain action the model then proposes still stops
+   * at the SignatureCeremony (Rule 3 holds by construction; nothing here signs). Navigates to the
+   * dashboard chat so the member sees the run.
    */
-  runUserSkill(id: string): void {
-    const skill = this.state.userSkills.find((k) => k.id === id);
+  async runUserSkill(slug: string): Promise<void> {
+    const skill = this.state.localSkills.find((k) => k.slug === slug);
     if (!skill) return;
+    let instruction: string;
+    try {
+      instruction = (await bridge.agentSkills.read(slug)).trim();
+    } catch (e) {
+      this.toast(`Couldn't read the "${skill.name}" skill: ` + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
     if (this.state.route !== "dashboard") this.go("dashboard");
-    void this.sendChat(runPrompt(skill));
+    void this.sendChat(runPrompt({ name: skill.name, instruction }));
   }
 
   // ---------- journal capture ----------

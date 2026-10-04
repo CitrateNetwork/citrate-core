@@ -694,16 +694,28 @@ fn an_unavailable_keyring_fails_the_ledger_closed() {
 fn the_registry_route_is_disabled_and_names_what_is_missing() {
     let s = registry_status(None, &[]);
     assert!(!s.enabled);
+    assert!(!s.x402_enabled);
+    assert_eq!(s.router, None);
+    assert_eq!(s.reason, crate::inference_router::ROUTE_OFF);
     assert!(s.missing.iter().any(|m| m.contains("InferenceRouter")));
     assert!(s.missing.iter().any(|m| m.contains("x402")));
-    // Even with an address and an asset, the EIP-712 precondition keeps it off in this build.
+    // The EIP-712 hasher now exists in the kit, so it is no longer listed as missing.
+    assert!(!s.missing.iter().any(|m| m.contains("EIP-712")));
+}
+
+#[test]
+fn a_pinned_router_turns_on_the_hic1_route_but_never_budgeted_x402() {
     let s = registry_status(
         Some("0x1111111111111111111111111111111111111111"),
         &["0x2222222222222222222222222222222222222222"],
     );
-    assert!(!s.enabled);
-    assert!(!s.missing.iter().any(|m| m.contains("InferenceRouter")));
-    assert!(s.missing.iter().any(|m| m.contains("EIP-712")));
+    assert!(s.enabled);
+    assert!(!s.x402_enabled, "the router has no token entry point");
+    assert_eq!(s.payment, "native-salt-hic1");
+    assert_eq!(s.router.as_deref(), Some("0x1111111111111111111111111111111111111111"));
+    assert!(!s.missing.iter().any(|m| m.contains("not deployed")));
+    assert!(s.missing.iter().any(|m| m.contains("native SALT")));
+    assert!(s.reason.contains("approval"));
 }
 
 #[test]

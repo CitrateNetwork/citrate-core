@@ -91,6 +91,11 @@
       "baselineBytes": 29370,
       "source": "local v0.4.2 build 2026-09-30"
     },
+    "macos-aarch64/resources/knowledge-corpus": {
+      "maxBytes": 110000000,
+      "baselineBytes": 99669598,
+      "source": "HUP-S3.1 full knowledge corpus built and staged 2026-10-02 (format 2, digest 97096683, 32,702 nodes: citrate-docs 1,688, methodology 37, refs 12,730 incl. Solady, Foundry book, Medusa and Slither docs, skills 18,247 from the 240-skill skills.lock), with BGE vectors for every node: measured 99,669,598 bytes on disk (49.4 MB corpus files, 50.2 MB vectors; the release tarball is 58,498,298 bytes); +10%, rounded up. Pushes macos-aarch64/app past its budget: owner decision"
+    },
     "macos-aarch64/resources/icon.icns": {
       "maxBytes": 1000000,
       "baselineBytes": 178076,
@@ -105,6 +110,16 @@
       "maxBytes": 483000000,
       "baselineBytes": 438667685,
       "source": "local v0.4.2 build 2026-09-30"
+    },
+    "macos-aarch64/resources/skills": {
+      "maxBytes": 1000000,
+      "baselineBytes": 36294,
+      "source": "HUP-S3.2 Citrate's own SKILL.md skills (src-tauri/skills), measured 2026-10-01"
+    },
+    "macos-aarch64/resources/skills-bundle": {
+      "maxBytes": 10000000,
+      "baselineBytes": 8690842,
+      "source": "HUP-S3.2 reviewed third-party skills staged from skills.lock 2026-10-01 (240 skills, 1,055 files incl. skills.lock), measured; +10%, rounded up"
     },
     "macos-aarch64/app": {
       "maxBytes": 797000000,
