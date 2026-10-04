@@ -94,3 +94,11 @@ single-purpose rule should live: putting the decode check in the request path wa
 because the signer could still be handed different bytes later; rebuilding the transaction from
 the commitment alone at signing time is what makes the restriction a property of the code rather
 than of the caller.
+
+## Update 2026-10-04 (fan-out 6, `hup/n6-anchor-rest`)
+
+Decision records for every HIC-1/2 event now exist (HUP-S2.6), both registries are pinned in the
+book (optional, features still off by default), the in-flight set is kept on disk, the proof
+surface and opt-in benchmark sharing are built, and the whole path passed an anvil rehearsal on
+both registry versions. Evidence and the review findings: `EVIDENCE-n6-anchor-rest.md`. Still not
+done: a live anchor on 40204 (O-5 and a member's approval) and the D-27 measures.

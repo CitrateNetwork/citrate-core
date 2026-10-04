@@ -6,8 +6,9 @@
 //!   event stream; tokens only when the model provider reported them).
 //! - Anchor batches: the sidecar's `/anchor/*` routes over the local decision records.
 //! - Registry addresses: the generated 40204 address book (`src-tauri/addresses/40204.json`).
-//!   `AnchorRegistry` and `BenchmarkRegistry` are not in it (not deployed on 40204 yet), so both
-//!   features report that and stay off.
+//!   `AnchorRegistry` and `BenchmarkRegistry` are optional pins in it (both deployed on 40204 and
+//!   verified to have code when the book was generated). A build whose book lacks one reports it
+//!   and keeps that feature off. Both features stay off until the member turns them on.
 //! - Receipts: the live 40204 RPC, through the anchor ceremony.
 //!
 //! Signing (Rule 3): only through `citrate_core_kit::ceremony::anchor::AnchorCeremony`, with the
@@ -40,7 +41,7 @@ pub const TICK_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 
 /// Decisions this build makes with conservative placeholders, pending owner sign-off.
 pub const PENDING_OWNER_SIGN_OFF: &[&str] = &[
     "How the anchor key pays gas: the EIP-2771 relayer or a capped gas float (ADR O-5). Pending owner sign-off.",
-    "The anchor gas caps (50 gwei, 200,000 gas) are conservative placeholders until O-5 is decided. Pending owner sign-off.",
+    "The anchor gas caps (50 gwei, 400,000 gas) are conservative placeholders until O-5 is decided. Pending owner sign-off.",
     "How the anchor key is bound on chain as the member's anchor delegate. Pending owner sign-off.",
     "Whether the nightly anchor may be approved unattended (HIC-2). Until then each day needs an explicit approval. Pending owner sign-off.",
     "How shared benchmark aggregates reach BenchmarkRegistry (per-metric calls from the member's account, or folded into the nightly batch). Pending owner sign-off.",
@@ -112,13 +113,13 @@ pub fn apply_settings(
 ) -> Result<ChainSettings, String> {
     if requested.anchor_nightly && !anchor_deployed {
         return Err(
-            "Nightly anchoring cannot be turned on: AnchorRegistry is not deployed on 40204 yet."
+            "Nightly anchoring cannot be turned on: AnchorRegistry is not in this app's 40204 address book."
                 .into(),
         );
     }
     if requested.share_benchmarks && !benchmark_deployed {
         return Err(
-            "Benchmark sharing cannot be turned on: BenchmarkRegistry is not deployed on 40204 yet."
+            "Benchmark sharing cannot be turned on: BenchmarkRegistry is not in this app's 40204 address book."
                 .into(),
         );
     }
@@ -149,7 +150,7 @@ pub fn anchor_gate(registry: Option<&str>, s: &ChainSettings) -> AnchorGate {
 
 pub fn anchor_status_line(gate: AnchorGate) -> String {
     match gate {
-        AnchorGate::NotDeployed => "Nightly anchoring is off: AnchorRegistry is not deployed on 40204 yet. Decision records stay on this device.".into(),
+        AnchorGate::NotDeployed => "Nightly anchoring is off: AnchorRegistry is not in this app's 40204 address book. Decision records stay on this device.".into(),
         AnchorGate::Off => "Nightly anchoring is off. Turn it on to anchor each day's decision records on 40204.".into(),
         AnchorGate::Ready => "Nightly anchoring is on. Each closed day waits for your approval before it is sent.".into(),
     }
@@ -157,7 +158,7 @@ pub fn anchor_status_line(gate: AnchorGate) -> String {
 
 pub fn benchmark_status_line(registry: Option<&str>, s: &ChainSettings) -> String {
     match (registry, s.share_benchmarks) {
-        (None, _) => "Benchmark sharing is off: BenchmarkRegistry is not deployed on 40204 yet. Nothing leaves this device.".into(),
+        (None, _) => "Benchmark sharing is off: BenchmarkRegistry is not in this app's 40204 address book. Nothing leaves this device.".into(),
         (Some(_), false) => "Benchmark sharing is off. Nothing leaves this device.".into(),
         (Some(_), true) => "Benchmark sharing is on: daily aggregates (counts only, no content) are prepared for BenchmarkRegistry.".into(),
     }
@@ -428,10 +429,21 @@ impl InFlightAnchors {
     }
 
     /// The day is settled (anchored or reverted). Kept in memory as removed even if the save
-    /// fails; the next save or the next re-poll writes it.
+    /// fails; the next save or the next re-poll writes it. (Not named `remove`: the main-thread
+    /// tripwire resolves calls by name, and this one writes a file.)
     pub fn settle_day(&self, day: u64) {
         let mut m = self.lock();
         if m.remove(&day).is_some() {
+            let _ = self.save(&m);
+        }
+    }
+
+    /// The node refused this transaction outright, so it is not on the way: forget its record,
+    /// but only while the record is still that transaction (never another send for the day).
+    pub fn forget_unsent(&self, r: &AnchorReceipt) {
+        let mut m = self.lock();
+        if m.get(&r.day).is_some_and(|held| held.tx_hash == r.tx_hash) {
+            m.remove(&r.day);
             let _ = self.save(&m);
         }
     }
@@ -518,7 +530,9 @@ fn keyring() -> citrate_core_kit::custody::OsKeyring {
     citrate_core_kit::custody::OsKeyring::with_service(crate::CUSTODY_KEYRING_SERVICE)
 }
 
-fn settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+pub(crate) fn settings_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
     use tauri::Manager;
     Ok(app
         .path()
@@ -677,7 +691,7 @@ pub async fn hermes_anchor_approve(
 ) -> Result<AnchorApproveView, String> {
     crate::blocking::off_main(move || {
         let registry = anchor_registry()
-            .ok_or("AnchorRegistry is not deployed on 40204 yet; nothing was signed.")?;
+            .ok_or("AnchorRegistry is not in this app's 40204 address book; nothing was signed.")?;
         let held = submitted(&app);
         if let Some(why) = held.blocked() {
             return Err(format!("{why}; nothing was signed."));
@@ -686,7 +700,7 @@ pub async fn hermes_anchor_approve(
             .ok_or("internal: custody state unavailable")?;
         let rpc = crate::rpc::RpcClient::citrate();
         let record = |r: &AnchorReceipt| held.record_sent(r);
-        let not_sent = |r: &AnchorReceipt| held.settle_day(r.day);
+        let not_sent = |r: &AnchorReceipt| held.forget_unsent(r);
         let receipt = ceremony()
             .approve_and_broadcast(
                 &keyring(),
@@ -814,8 +828,8 @@ pub fn anchor_now(app: &tauri::AppHandle) -> Result<TickReport, String> {
 }
 
 /// Start the nightly scheduler thread if, and only if, the gate is `Ready` (deployed registry and
-/// the member turned anchoring on). In this build `AnchorRegistry` is not deployed, so this
-/// returns false and starts nothing. Idempotent.
+/// the member turned anchoring on). Without an `AnchorRegistry` pin in the book this returns
+/// false and starts nothing. Idempotent.
 pub fn start_nightly_if_ready(app: tauri::AppHandle) -> bool {
     static STARTED: OnceLock<()> = OnceLock::new();
     let registry = anchor_registry();

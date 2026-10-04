@@ -644,7 +644,7 @@ fn a_locked_vault_keeps_the_anchor_key_unused() {
 #[test]
 fn the_gas_caps_are_placeholders_pending_owner_sign_off() {
     const { assert!(GAS_CAPS_PENDING_OWNER_SIGNOFF) };
-    assert_eq!(PLACEHOLDER_MAX_GAS_LIMIT, 200_000);
+    assert_eq!(PLACEHOLDER_MAX_GAS_LIMIT, 400_000);
     assert_eq!(PLACEHOLDER_MAX_GAS_PRICE_WEI, 50_000_000_000);
 }
 
@@ -760,4 +760,115 @@ fn a_send_error_for_a_transaction_the_node_holds_or_cannot_say_keeps_the_day_hel
             "no second card for a possibly sent day"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// P-anchor lane (stacked): gas-cap room and the refused-send fallback
+
+/// The cap must leave room for the registry version the next redeploy ships: on the anvil
+/// rehearsal (scripts/anvil-anchor-e2e.sh, 2026-10-01) its `anchor()` estimated 335,227 gas,
+/// because it keeps a second, per-committer record. A cap below that refuses every anchor.
+#[test]
+fn the_gas_cap_leaves_room_for_the_next_registry_version() {
+    const NEXT_REGISTRY_ANCHOR_GAS: u64 = 335_227;
+    const ROOM: u64 = NEXT_REGISTRY_ANCHOR_GAS + NEXT_REGISTRY_ANCHOR_GAS / 10;
+    const { assert!(PLACEHOLDER_MAX_GAS_LIMIT >= ROOM) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// review follow-up: a send the node refused is not in flight
+
+fn node_error(msg: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32000, "message": msg } })
+}
+
+/// Approve with scripted RPC answers; returns the result and the records passed to
+/// `before_send` and `not_sent`.
+fn approve_logged(
+    send: &[Value],
+) -> (
+    Result<AnchorReceipt>,
+    Vec<AnchorReceipt>,
+    Vec<AnchorReceipt>,
+    usize,
+) {
+    let kr = FakeKeyring::default();
+    ensure_anchor_key(&kr).unwrap();
+    let c = AnchorCeremony::new();
+    let v = c
+        .request(good_request(20_000, root(0x61)), REGISTRY)
+        .unwrap();
+    let mut answers = vec![
+        ok(json!("0x5")),
+        ok(json!("0x3b9aca00")),
+        ok(json!("0xb000")),
+    ];
+    // An empty list: the transport fails on the send (no scripted answer), so its outcome is
+    // unknown. Answers after the send's are the node's reply to the "do you hold it" lookup.
+    answers.extend(send.iter().cloned());
+    let rpc = RpcClient::with_transport(MockRpc::new(answers));
+    let vault = unlocked_vault();
+    let recorded = RefCell::new(Vec::new());
+    let forgotten = RefCell::new(Vec::new());
+    let rec = |r: &AnchorReceipt| -> std::result::Result<(), String> {
+        recorded.borrow_mut().push(r.clone());
+        Ok(())
+    };
+    let forget = |r: &AnchorReceipt| forgotten.borrow_mut().push(r.clone());
+    let r = c.approve_and_broadcast(
+        &kr,
+        &rpc,
+        &v.id,
+        REGISTRY,
+        cfg(),
+        AnchorGuards {
+            vault: &vault,
+            before_send: &rec,
+            not_sent: &forget,
+        },
+    );
+    let pending = c.pending().len();
+    (r, recorded.into_inner(), forgotten.into_inner(), pending)
+}
+
+#[test]
+fn a_send_the_node_refuses_is_forgotten_and_the_card_stays() {
+    let (r, recorded, forgotten, pending) = approve_logged(&[
+        node_error("insufficient funds for gas * price + value"),
+        ok(Value::Null),
+    ]);
+    assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(forgotten, recorded, "the same record is forgotten");
+    assert_eq!(pending, 1, "the card goes back for another try");
+}
+
+#[test]
+fn a_send_with_an_unknown_outcome_stays_in_flight() {
+    // Transport failure: the node may have the transaction.
+    let (r, recorded, forgotten, pending) = approve_logged(&[]);
+    assert!(matches!(r, Err(AnchorError::Rpc(_))), "{r:?}");
+    assert_eq!(recorded.len(), 1);
+    assert!(forgotten.is_empty(), "the re-poll decides, not the error");
+    assert_eq!(pending, 0, "no second approval while it may be on the way");
+    // The node already has it: accepted, so it stays in flight too.
+    // Even when the lookup then says it is not held (a node behind a load balancer).
+    let (_, recorded, forgotten, pending) =
+        approve_logged(&[node_error("already known"), ok(Value::Null)]);
+    assert_eq!(recorded.len(), 1);
+    assert!(forgotten.is_empty());
+    assert_eq!(pending, 0);
+}
+
+#[test]
+fn only_a_node_error_proves_a_send_was_refused() {
+    assert!(send_refused(&RpcError::Node("nonce too low".into())));
+    assert!(send_refused(&RpcError::Node("insufficient funds".into())));
+    assert!(!send_refused(&RpcError::Node("Already Known".into())));
+    assert!(!send_refused(&RpcError::Node(
+        "known transaction: 0xab".into()
+    )));
+    assert!(!send_refused(&RpcError::Transport("timeout".into())));
+    assert!(!send_refused(&RpcError::BadResponse("html".into())));
+    assert!(!send_refused(&RpcError::MissingField("hash".into())));
 }

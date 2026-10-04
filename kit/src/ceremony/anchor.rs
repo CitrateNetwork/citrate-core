@@ -247,9 +247,12 @@ pub struct AnchorCeremonyView {
 
 /// Highest gas price an anchor is signed at (50 gwei). Placeholder, pending owner sign-off (O-5).
 pub const PLACEHOLDER_MAX_GAS_PRICE_WEI: u128 = 50_000_000_000;
-/// Highest gas limit an anchor is signed with. `anchor(uint8,bytes32)` needs far less; this only
-/// stops a hostile or broken estimate. Placeholder, pending owner sign-off (O-5).
-pub const PLACEHOLDER_MAX_GAS_LIMIT: u64 = 200_000;
+/// Highest gas limit an anchor is signed with. This only stops a hostile or broken estimate; it
+/// must leave room for the real call. Measured on the anvil rehearsal (2026-10-01,
+/// `scripts/anvil-anchor-e2e.sh`): the registry version the next redeploy ships keeps a second,
+/// per-committer record and estimates about 335,000 gas, so the earlier 200,000 cap would have
+/// refused every anchor there. Placeholder, pending owner sign-off (O-5).
+pub const PLACEHOLDER_MAX_GAS_LIMIT: u64 = 400_000;
 /// The two caps above are conservative placeholders until the owner decides O-5.
 pub const GAS_CAPS_PENDING_OWNER_SIGNOFF: bool = true;
 
@@ -284,10 +287,25 @@ pub struct AnchorGuards<'a> {
     /// after signing and before sending; if it fails nothing is sent. This is what lets a restart
     /// know a day is already on the way, so it never raises a second anchor for it.
     pub before_send: &'a dyn Fn(&AnchorReceipt) -> std::result::Result<(), String>,
-    /// The send failed and the node does not hold the transaction, so it was never sent: the
-    /// record `before_send` wrote is withdrawn (the card stays pending for another try). Without
-    /// this, a refused send (for example an unfunded anchor key) would hold the day forever.
+    /// Called with the same record when the send failed and the node then says it does not hold
+    /// the transaction (and the send error was not "already known"), so it was never accepted and
+    /// can never be mined: the caller forgets the in-flight record, or the day would wait on it
+    /// forever (for example an unfunded anchor key). Not called when the outcome is unknown (the
+    /// lookup failed, or the node holds or already knows the transaction); then the record stays
+    /// and the re-poll decides. The card stays pending for another try.
     pub not_sent: &'a dyn Fn(&AnchorReceipt),
+}
+
+/// Whether a send error proves the node did not accept the transaction. Only a JSON-RPC error
+/// object does; a node that reports it already knows the transaction did accept it.
+pub fn send_refused(e: &RpcError) -> bool {
+    match e {
+        RpcError::Node(m) => {
+            let m = m.to_ascii_lowercase();
+            !(m.contains("already known") || m.contains("known transaction"))
+        }
+        _ => false,
+    }
 }
 
 /// What happened to a broadcast anchor. `block_number` / `status` are `None` while unknown.
@@ -537,9 +555,12 @@ impl AnchorCeremony {
         let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
             Ok(h) => h,
             Err(e) => {
-                // Only an explicit "not held" from the node means nothing went out; any other
-                // answer (including a failed lookup) keeps the day held as possibly sent.
-                if matches!(rpc.transaction_known(&in_flight.tx_hash), Ok(false)) {
+                // Nothing went out only when the node says so: it answers that it does not hold
+                // the transaction, and the send error was not the node saying it already knows it.
+                // Any other answer (a failed lookup included) keeps the day held as possibly sent.
+                let not_held = matches!(rpc.transaction_known(&in_flight.tx_hash), Ok(false))
+                    && (send_refused(&e) || !matches!(e, RpcError::Node(_)));
+                if not_held {
                     (guards.not_sent)(&in_flight);
                     return Err(keep(p, rpc_err(e)));
                 }

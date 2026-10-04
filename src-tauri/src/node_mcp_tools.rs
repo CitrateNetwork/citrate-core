@@ -227,7 +227,7 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef { name: "wallet_info", title: "Wallet (public)", kind: ToolKind::Read, input_schema: no_args,
         description: "This member's public wallet address and SALT balance. Never returns key material." },
     ToolDef { name: "address_book", title: "Address book", kind: ToolKind::Read, input_schema: no_args,
-        description: "The deployed 40204 contract addresses this build was shipped with. A registry missing here is not deployed yet." },
+        description: "The 40204 contract addresses this build was shipped with (the contracts this app reads, each checked to have code when the book was generated). A contract missing here is not in this app's book." },
     ToolDef { name: "memory_search", title: "Memory search", kind: ToolKind::Read, input_schema: memory_schema,
         description: "Search the node's shared knowledge graphs (Citrate docs and chain-state facts). The member's personal memory is not available over MCP." },
     ToolDef { name: "groups_list", title: "Groups", kind: ToolKind::Read, input_schema: no_args,

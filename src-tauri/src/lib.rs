@@ -32,6 +32,8 @@ mod agent;
 mod agent_grants;
 mod agent_sbt;
 mod ai;
+mod anchor_proof;
+mod benchmark_share;
 mod blocking;
 mod capsule_pins;
 mod chain_agent;
@@ -972,6 +974,11 @@ pub fn run() {
             chain_agent::hermes_metering_daily,
             chain_agent::hermes_anchor_approve,
             chain_agent::hermes_anchor_reject,
+            // HUP-S7.3 + S7.5 (rest): prove a past decision (core checks the proof and reads
+            // AnchorRegistry itself) and opt-in benchmark sharing (one wallet card per metric).
+            anchor_proof::hermes_anchor_records,
+            anchor_proof::hermes_anchor_proof,
+            benchmark_share::hermes_benchmark_share,
             // HUP-S4.2 — citrate-node MCP server (Settings, API endpoints & keys).
             node_mcp::node_mcp_status,
             node_mcp::node_mcp_set_enabled,
