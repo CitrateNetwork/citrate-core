@@ -68,6 +68,10 @@ function deps(over: Partial<EscalationDeps> = {}) {
       order.push("quote");
       return quote();
     }),
+    prepareConfirm: vi.fn(async () => {
+      order.push("prepare");
+      return "c-core-1";
+    }),
     run: vi.fn(async () => {
       order.push("run");
       return runResult();
@@ -106,17 +110,30 @@ describe("runEscalationTool — price first, then the budget or the member decid
     const notice = (d.notice as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     expect(notice).toContain("Planner · api.example.com");
     expect(notice).toContain("$0.031");
-    expect(d.run).toHaveBeenCalledWith("q-1", 31_000, false, false);
+    expect(d.run).toHaveBeenCalledWith("q-1", 31_000, null, false);
+    expect(d.prepareConfirm).not.toHaveBeenCalled();
     expect(d.confirm).not.toHaveBeenCalled();
     expect(out).toContain("charged $0.0012 from today's budget");
     expect(out).toContain(UNTRUSTED_OPEN);
   });
 
-  it("over budget: the member sees the price card first and the run is marked confirmed", async () => {
+  it("over budget: core mints the confirmation as the card opens, and the run carries that id", async () => {
     const { d, order } = deps({ quote: vi.fn(async () => quote({ withinBudget: false })) });
     await runEscalationTool(d, { question: "q" });
-    expect(order).toEqual(["confirm", "run"]);
-    expect(d.run).toHaveBeenCalledWith("q-1", 31_000, true, false);
+    expect(order).toEqual(["prepare", "confirm", "run"]);
+    expect(d.prepareConfirm).toHaveBeenCalledWith("q-1", 31_000);
+    expect(d.run).toHaveBeenCalledWith("q-1", 31_000, "c-core-1", false);
+  });
+
+  it("if core cannot open the confirmation, nothing runs and nothing is asked", async () => {
+    const { d } = deps({
+      quote: vi.fn(async () => quote({ withinBudget: false })),
+      prepareConfirm: vi.fn(async () => Promise.reject(new Error("that price quote expired; ask for a new quote"))),
+    });
+    const out = await runEscalationTool(d, { question: "q" });
+    expect(d.confirm).not.toHaveBeenCalled();
+    expect(d.run).not.toHaveBeenCalled();
+    expect(out).toMatch(/could not open the approval.*Nothing was sent/);
   });
 
   it("over budget and declined: nothing runs", async () => {
@@ -130,26 +147,26 @@ describe("runEscalationTool — price first, then the budget or the member decid
   it("untrusted context (hic required): asks even within budget and tells core it is tainted", async () => {
     const { d, order } = deps();
     await runEscalationTool(d, { question: "q" }, { reason: "the session read a web page" });
-    expect(order).toEqual(["quote", "confirm", "run"]);
+    expect(order).toEqual(["quote", "prepare", "confirm", "run"]);
     expect((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe("the session read a web page");
-    expect(d.run).toHaveBeenCalledWith("q-1", 31_000, true, true);
+    expect(d.run).toHaveBeenCalledWith("q-1", 31_000, "c-core-1", true);
     expect(d.notice).not.toHaveBeenCalled();
   });
 
   it("the budget moved between quote and run: core says NEEDS_CONFIRMATION, the member is asked, then it runs confirmed", async () => {
     let first = true;
     const { d, order } = deps({
-      run: vi.fn(async (_q: string, _c: number, confirmed: boolean) => {
+      run: vi.fn(async (_q: string, _c: number, confirmId: string | null) => {
         order.push("run");
         if (first) {
           first = false;
           throw new Error("NEEDS_CONFIRMATION: this would go over today's escalation budget.");
         }
-        return runResult({ mode: confirmed ? "confirmed" : "budget" });
+        return runResult({ mode: confirmId ? "confirmed" : "budget" });
       }),
     });
     const out = await runEscalationTool(d, { question: "q" });
-    expect(order).toEqual(["quote", "notice", "run", "confirm", "run"]);
+    expect(order).toEqual(["quote", "notice", "run", "prepare", "confirm", "run"]);
     expect(out).toContain("approved by the member");
   });
 

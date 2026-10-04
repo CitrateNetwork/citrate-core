@@ -93,7 +93,9 @@ export function fenceEndpointAnswer(destination: string, content: string): strin
 export interface EscalationDeps {
   endpoints(): Promise<EscalationEndpoint[]>;
   quote(endpointId: string, prompt: string, system: string, maxTokens: number): Promise<EscalationQuote>;
-  run(quoteId: string, shownCostMicros: number, confirmed: boolean, tainted: boolean): Promise<EscalationRun>;
+  /** Core mints the one-shot confirmation id for this quote as the member's card opens. */
+  prepareConfirm(quoteId: string, shownCostMicros: number): Promise<string>;
+  run(quoteId: string, shownCostMicros: number, confirmId: string | null, tainted: boolean): Promise<EscalationRun>;
   /** HIC-1: show the price card and wait for the member. Resolves "approved" to proceed. */
   confirm(quote: EscalationQuote, reason: string, question: string): Promise<string>;
   /** HIC-2: a non-modal notice naming the destination and price, shown before the run. */
@@ -132,29 +134,42 @@ export async function runEscalationTool(deps: EscalationDeps, args: Record<strin
     return "could not price the escalation: " + message(e) + ". Nothing was sent.";
   }
 
-  const ask = async (reason: string): Promise<boolean> => (await deps.confirm(quote, reason, question)) === "approved";
+  // HIC-1: core mints a one-shot id for this quote as the card opens; only that id, sent back after
+  // the member approves, lets core run the escalation as a confirmed one-off.
+  const ask = async (reason: string): Promise<string | null> => {
+    const id = await deps.prepareConfirm(quote.quoteId, quote.costMicros);
+    return (await deps.confirm(quote, reason, question)) === "approved" ? id : null;
+  };
   const declined = () => `${ESCALATION_DECLINED_PREFIX} to ${quote.destination} (up to ${quote.costLabel}); nothing was sent.`;
+  const unconfirmable = (e: unknown) => "could not open the approval for this escalation: " + message(e) + ". Nothing was sent.";
 
-  let confirmed = false;
-  if (hic) {
-    if (!(await ask(hic.reason))) return declined();
-    confirmed = true;
-  } else if (!quote.withinBudget) {
-    if (!(await ask("this would go over today's escalation budget"))) return declined();
-    confirmed = true;
+  let confirmId: string | null = null;
+  if (hic || !quote.withinBudget) {
+    try {
+      confirmId = await ask(hic ? hic.reason : "this would go over today's escalation budget");
+    } catch (e) {
+      return unconfirmable(e);
+    }
+    if (confirmId === null) return declined();
   } else {
     deps.notice(`Escalating to ${quote.destination}: up to ${quote.costLabel}, charged to today's budget (${formatMicros(quote.remainingMicros)} left).`);
   }
 
   let run: EscalationRun;
   try {
-    run = await deps.run(quote.quoteId, quote.costMicros, confirmed, Boolean(hic));
+    run = await deps.run(quote.quoteId, quote.costMicros, confirmId, Boolean(hic));
   } catch (e) {
     // The budget moved between the quote and the run (another escalation finished): ask now.
-    if (!confirmed && NEEDS_CONFIRMATION.test(message(e))) {
-      if (!(await ask("today's escalation budget changed since the price was shown"))) return declined();
+    if (confirmId === null && NEEDS_CONFIRMATION.test(message(e))) {
+      let later: string | null;
       try {
-        run = await deps.run(quote.quoteId, quote.costMicros, true, Boolean(hic));
+        later = await ask("today's escalation budget changed since the price was shown");
+      } catch (e2) {
+        return unconfirmable(e2);
+      }
+      if (later === null) return declined();
+      try {
+        run = await deps.run(quote.quoteId, quote.costMicros, later, Boolean(hic));
       } catch (e2) {
         return "the escalation failed: " + message(e2);
       }

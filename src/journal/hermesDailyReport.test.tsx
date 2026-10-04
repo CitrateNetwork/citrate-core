@@ -44,7 +44,7 @@ function chain(over: { deployed?: boolean; pending?: ChainStatus["anchor"]["pend
   return {
     anchor: {
       gate: deployed ? "off" : "not_deployed",
-      statusLine: deployed ? "Nightly anchoring is off." : "Nightly anchoring is off: AnchorRegistry is not deployed on 40204 yet. Decision records stay on this device.",
+      statusLine: deployed ? "Nightly anchoring is off." : "Nightly anchoring is off: AnchorRegistry is not in this app's 40204 address book. Decision records stay on this device.",
       registry: deployed ? "0x00000000000000000000000000000000000000a1" : null,
       enabled: false,
       anchorKey: null,
@@ -58,7 +58,7 @@ function chain(over: { deployed?: boolean; pending?: ChainStatus["anchor"]["pend
       registry: deployed ? "0x00000000000000000000000000000000000000b1" : null,
       deployed,
       sharing: false,
-      statusLine: deployed ? "Benchmark sharing is off. Nothing leaves this device." : "Benchmark sharing is off: BenchmarkRegistry is not deployed on 40204 yet. Nothing leaves this device.",
+      statusLine: deployed ? "Benchmark sharing is off. Nothing leaves this device." : "Benchmark sharing is off: BenchmarkRegistry is not in this app's 40204 address book. Nothing leaves this device.",
     },
     pendingOwnerSignOff: ["How the anchor key pays gas. Pending owner sign-off."],
   };
@@ -138,12 +138,12 @@ describe("HermesDailyReport", () => {
     expect(invoke).toHaveBeenCalledWith("hermes_metering_daily", { day: "2026-10-01" });
     expect(host.textContent).toContain("83.33%");
     expect(q(host, "hm-source")?.textContent).toMatch(/stored on this device/);
-    expect(q(host, "hm-anchor-line")?.textContent).toMatch(/not deployed on 40204/);
+    expect(q(host, "hm-anchor-line")?.textContent).toMatch(/not in this app's 40204 address book/);
     const bench = q<HTMLInputElement>(host, "hm-bench-toggle");
     expect(bench?.disabled).toBe(true);
     expect(bench?.checked).toBe(false);
     expect(q<HTMLInputElement>(host, "hm-anchor-toggle")?.disabled).toBe(true);
-    expect(q(host, "hm-bench-line")?.textContent).toMatch(/BenchmarkRegistry is not deployed/);
+    expect(q(host, "hm-bench-line")?.textContent).toMatch(/BenchmarkRegistry is not in this app's 40204 address book/);
     expect(host.textContent).toMatch(/Pending owner sign-off/);
     expect(host.textContent).not.toMatch(/—/);
     root.unmount();

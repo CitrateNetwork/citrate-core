@@ -35,6 +35,9 @@ export function simCluster(_host: SimHost): ClusterDomain {
     async linkDeviceReject() {
       /* sim: nothing pending */
     },
+    async revokeDevicePrepare() {
+      throw new Error("Removing a device needs the Citrate Core desktop app.");
+    },
     async revokeDevice() {
       throw new Error("Removing a device needs the Citrate Core desktop app.");
     },
@@ -43,6 +46,24 @@ export function simCluster(_host: SimHost): ClusterDomain {
     },
     async importDeviceLink() {
       throw new Error("Linking a device needs the Citrate Core desktop app.");
+    },
+    // Nothing to share and nothing accepted: the sim holds no links.
+    async deviceLinksShareOffer() {
+      return null;
+    },
+    async deviceLinksMarkShared() {
+      /* sim: nothing was sent */
+    },
+    async deviceLinksIngest() {
+      return { links: 0, revocations: 0, refused: [] };
+    },
+    async meshStatus() {
+      return {
+        on: false,
+        source: "off" as const,
+        signedOff: false,
+        note: "The preview has no cluster daemon.",
+      };
     },
   };
 }

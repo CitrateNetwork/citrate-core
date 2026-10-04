@@ -271,6 +271,28 @@ impl LlamaServerManager {
         *self.lora.lock().unwrap_or_else(|e| e.into_inner()) = path;
     }
 
+    /// HUP-S9.4: set the adapter only if `expected_model_file` (the base model the eval gate
+    /// authorized it for) is still the selected model, checked under the model lock so a model
+    /// switch cannot slip in between the check and the set.
+    pub fn set_lora_for_model(
+        &self,
+        path: PathBuf,
+        expected_model_file: &str,
+    ) -> std::result::Result<(), String> {
+        let guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+        let current = guard
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if current != expected_model_file {
+            return Err(format!(
+                "the selected model changed to {current} while the adapter was being loaded; nothing was loaded"
+            ));
+        }
+        self.set_lora(Some(path));
+        Ok(())
+    }
+
     /// HUP-S9.4: the LoRA adapter the server is (or will be) started with.
     pub fn lora(&self) -> Option<PathBuf> {
         self.lora.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -618,6 +640,9 @@ pub async fn model_serve_start(app_h: tauri::AppHandle) -> std::result::Result<(
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
         let st1 = tauri::Manager::try_state::<crate::model::ModelState>(&app_h)
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
+        // HUP-S9.4: put back the LoRA adapter the member loaded before a restart, if the eval
+        // gate still allows it on this base (never fails the start).
+        crate::fl_rounds::reapply_before_start(&app_h);
         // HUP-S1.6: size the context + GPU offload for the effective tier and the active model.
         let plan = crate::serve_plan::plan_or_unsized(crate::serve_plan::plan_for_model(
             &app_h,

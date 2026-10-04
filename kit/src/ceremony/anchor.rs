@@ -68,6 +68,12 @@ pub enum AnchorError {
     Rpc(String),
     /// Signing failed.
     Sign,
+    /// The custody vault is locked: the anchor key is used only while the member is present.
+    Locked,
+    /// The live gas price or estimate is over the cap; nothing was signed.
+    GasOverCap(String),
+    /// The in-flight record could not be written before sending; nothing was sent.
+    NotRecorded(String),
 }
 
 impl std::fmt::Display for AnchorError {
@@ -86,6 +92,12 @@ impl std::fmt::Display for AnchorError {
             AnchorError::UnknownCeremony => write!(f, "no pending anchor with that id"),
             AnchorError::Rpc(m) => write!(f, "chain RPC failed: {m}"),
             AnchorError::Sign => write!(f, "signing failed"),
+            AnchorError::Locked => write!(f, "unlock your wallet first; nothing was signed"),
+            AnchorError::GasOverCap(m) => write!(f, "{m}; nothing was signed"),
+            AnchorError::NotRecorded(m) => write!(
+                f,
+                "the anchor could not be recorded before sending ({m}); nothing was sent"
+            ),
         }
     }
 }
@@ -233,11 +245,67 @@ pub struct AnchorCeremonyView {
     pub decoded: DecodedAction,
 }
 
-/// Receipt-poll budget for [`AnchorCeremony::approve_and_broadcast`].
+/// Highest gas price an anchor is signed at (50 gwei). Placeholder, pending owner sign-off (O-5).
+pub const PLACEHOLDER_MAX_GAS_PRICE_WEI: u128 = 50_000_000_000;
+/// Highest gas limit an anchor is signed with. This only stops a hostile or broken estimate; it
+/// must leave room for the real call. Measured on the anvil rehearsal (2026-10-01,
+/// `scripts/anvil-anchor-e2e.sh`): the registry version the next redeploy ships keeps a second,
+/// per-committer record and estimates about 335,000 gas, so the earlier 200,000 cap would have
+/// refused every anchor there. Placeholder, pending owner sign-off (O-5).
+pub const PLACEHOLDER_MAX_GAS_LIMIT: u64 = 400_000;
+/// The two caps above are conservative placeholders until the owner decides O-5.
+pub const GAS_CAPS_PENDING_OWNER_SIGNOFF: bool = true;
+
+/// Receipt-poll budget and gas caps for [`AnchorCeremony::approve_and_broadcast`].
 #[derive(Debug, Clone, Copy)]
 pub struct AnchorTxConfig {
     pub poll_attempts: u32,
     pub poll_interval: std::time::Duration,
+    /// Refuse to sign when the live gas price is above this (wei).
+    pub max_gas_price_wei: u128,
+    /// Refuse to sign when the gas estimate is above this.
+    pub max_gas_limit: u64,
+}
+
+impl AnchorTxConfig {
+    /// The given receipt poll with the placeholder gas caps.
+    pub fn with_placeholder_caps(poll_attempts: u32, poll_interval: std::time::Duration) -> Self {
+        AnchorTxConfig {
+            poll_attempts,
+            poll_interval,
+            max_gas_price_wei: PLACEHOLDER_MAX_GAS_PRICE_WEI,
+            max_gas_limit: PLACEHOLDER_MAX_GAS_LIMIT,
+        }
+    }
+}
+
+/// What an approval must hold before the anchor key is used.
+pub struct AnchorGuards<'a> {
+    /// The member's custody vault: the anchor key is used only while it is unlocked.
+    pub vault: &'a crate::custody::CustodyVault,
+    /// Records the signed, not yet sent transaction (day, commitment, hash) durably. Called once,
+    /// after signing and before sending; if it fails nothing is sent. This is what lets a restart
+    /// know a day is already on the way, so it never raises a second anchor for it.
+    pub before_send: &'a dyn Fn(&AnchorReceipt) -> std::result::Result<(), String>,
+    /// Called with the same record when the send failed and the node then says it does not hold
+    /// the transaction (and the send error was not "already known"), so it was never accepted and
+    /// can never be mined: the caller forgets the in-flight record, or the day would wait on it
+    /// forever (for example an unfunded anchor key). Not called when the outcome is unknown (the
+    /// lookup failed, or the node holds or already knows the transaction); then the record stays
+    /// and the re-poll decides. The card stays pending for another try.
+    pub not_sent: &'a dyn Fn(&AnchorReceipt),
+}
+
+/// Whether a send error proves the node did not accept the transaction. Only a JSON-RPC error
+/// object does; a node that reports it already knows the transaction did accept it.
+pub fn send_refused(e: &RpcError) -> bool {
+    match e {
+        RpcError::Node(m) => {
+            let m = m.to_ascii_lowercase();
+            !(m.contains("already known") || m.contains("known transaction"))
+        }
+        _ => false,
+    }
 }
 
 /// What happened to a broadcast anchor. `block_number` / `status` are `None` while unknown.
@@ -250,6 +318,12 @@ pub struct AnchorReceipt {
     pub tx_hash: String,
     pub block_number: Option<u64>,
     pub status: Option<u64>,
+    /// The transaction's nonce (absent in records from before it was kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<u64>,
+    /// The anchor key's address that sent it (absent in records from before it was kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// A day may be marked anchored only on a mined receipt whose status is 1.
@@ -377,13 +451,16 @@ impl AnchorCeremony {
     }
 
     /// Approve one pending anchor: consume it, sign `anchor(NightlyMerkle, commitment)` to the
-    /// registry it was raised for with the anchor key, broadcast, and poll for the receipt.
+    /// registry it was raised for with the anchor key, record it as in flight, broadcast, and poll
+    /// for the receipt.
     ///
     /// `pinned_registry` is the address the caller pins now; if it no longer matches the one the
     /// ceremony was raised for, nothing is signed. Nonce, gas price and gas limit come from the
-    /// live RPC for the anchor key's own address (nothing is guessed). The returned receipt may
-    /// be unmined, unknown (the poll failed after the send) or reverted: only [`receipt_confirms`]
-    /// decides whether the day is anchored.
+    /// live RPC for the anchor key's own address (nothing is guessed), and are refused above the
+    /// caps in `cfg`. The anchor key is used only while `guards.vault` is unlocked. The returned
+    /// receipt may be unmined, unknown (the poll failed after the send) or reverted: only
+    /// [`receipt_confirms`] decides whether the day is anchored. A refusal before sending keeps the
+    /// card pending.
     pub fn approve_and_broadcast<T: RpcTransport>(
         &self,
         keyring: &dyn Keyring,
@@ -391,15 +468,28 @@ impl AnchorCeremony {
         id: &str,
         pinned_registry: &str,
         cfg: AnchorTxConfig,
+        guards: AnchorGuards<'_>,
     ) -> Result<AnchorReceipt> {
         let key = id
             .parse::<u64>()
             .map_err(|_| AnchorError::UnknownCeremony)?;
+        if !guards.vault.is_unlocked() {
+            return if self.lock().contains_key(&key) {
+                Err(AnchorError::Locked)
+            } else {
+                Err(AnchorError::UnknownCeremony)
+            };
+        }
         // Consume first: a duplicate approval finds nothing.
         let p = self
             .lock()
             .remove(&key)
             .ok_or(AnchorError::UnknownCeremony)?;
+        // Any refusal before the send puts the card back: nothing was sent.
+        let keep = |p: Pending, e: AnchorError| -> AnchorError {
+            self.lock().insert(key, p);
+            e
+        };
         let pinned = parse_address(&pinned_registry.to_ascii_lowercase())
             .ok_or(AnchorError::RegistryMismatch)?;
         if pinned != p.registry {
@@ -421,6 +511,24 @@ impl AnchorCeremony {
                 "data": format!("0x{}", hex::encode(&data)),
             }))
             .map_err(rpc_err)?;
+        if u128::from(gas_price) > cfg.max_gas_price_wei {
+            return Err(keep(
+                p,
+                AnchorError::GasOverCap(format!(
+                    "the network gas price ({gas_price} wei) is over the anchor cap ({} wei)",
+                    cfg.max_gas_price_wei
+                )),
+            ));
+        }
+        if gas_limit > cfg.max_gas_limit {
+            return Err(keep(
+                p,
+                AnchorError::GasOverCap(format!(
+                    "the gas estimate ({gas_limit}) is over the anchor cap ({})",
+                    cfg.max_gas_limit
+                )),
+            ));
+        }
         let fields = LegacyTxFields {
             nonce,
             gas_price,
@@ -432,7 +540,33 @@ impl AnchorCeremony {
         let signed = sign_eip155_legacy_tx(&signer, &fields, ANCHOR_CHAIN_ID)
             .map_err(|_| AnchorError::Sign)?;
         drop(signer);
-        let tx_hash = rpc.send_raw_transaction(&signed.raw).map_err(rpc_err)?;
+        let in_flight = AnchorReceipt {
+            day: p.req.day,
+            commitment: p.req.commitment,
+            tx_hash: format!("0x{}", hex::encode(signed.hash)),
+            block_number: None,
+            status: None,
+            nonce: Some(nonce),
+            from: Some(from.clone()),
+        };
+        if let Err(e) = (guards.before_send)(&in_flight) {
+            return Err(keep(p, AnchorError::NotRecorded(e)));
+        }
+        let tx_hash = match rpc.send_raw_transaction(&signed.raw) {
+            Ok(h) => h,
+            Err(e) => {
+                // Nothing went out only when the node says so: it answers that it does not hold
+                // the transaction, and the send error was not the node saying it already knows it.
+                // Any other answer (a failed lookup included) keeps the day held as possibly sent.
+                let not_held = matches!(rpc.transaction_known(&in_flight.tx_hash), Ok(false))
+                    && (send_refused(&e) || !matches!(e, RpcError::Node(_)));
+                if not_held {
+                    (guards.not_sent)(&in_flight);
+                    return Err(keep(p, rpc_err(e)));
+                }
+                return Err(rpc_err(e));
+            }
+        };
         let (block_number, status) =
             match rpc.poll_receipt(&tx_hash, cfg.poll_attempts, cfg.poll_interval) {
                 Ok(r) => (Some(r.block_number), r.status),
@@ -447,6 +581,8 @@ impl AnchorCeremony {
             tx_hash,
             block_number,
             status,
+            nonce: Some(nonce),
+            from: Some(from),
         })
     }
 }

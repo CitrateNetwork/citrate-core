@@ -15,6 +15,11 @@ function overview(over: Partial<FlOverview> = {}): FlOverview {
     starts: [],
     gates: [],
     activeAdapter: null,
+    rememberedAdapter: null,
+    restoreError: null,
+    consentedRounds: [],
+    consentFile: "/data/fl_consent.json",
+    consentError: null,
     storeError: null,
     ...over,
   };
@@ -26,6 +31,7 @@ function gateRec(verdict: "ACCEPT" | "REJECT"): FlAdapterGateRecord {
     adapterPath: "/x/a.gguf",
     baseModel: "m",
     decidedAtMs: 1,
+    round: null,
     decision: {
       verdict,
       reasons: verdict === "REJECT" ? ["the eval score did not improve (0.8000 to 0.8000)"] : [],
@@ -46,6 +52,7 @@ function domain(over: Partial<FlRoundsDomain> = {}): FlRoundsDomain {
     gateAdapter: vi.fn(async () => gateRec("ACCEPT")),
     loadAdapter: vi.fn(async () => "/data/adapters/" + "c".repeat(64) + ".gguf"),
     unloadAdapter: vi.fn(async () => {}),
+    revokeConsent: vi.fn(async () => []),
     ...over,
   };
 }
@@ -203,5 +210,95 @@ describe("FlRoundsPanel — web preview", () => {
     // it matches the served GGUF file name, so a short alias passed as --model would make every load fail.
     const { host } = await mount(<FlRoundsPanel fl={domain()} requestSig={vi.fn()} toast={vi.fn()} />);
     expect(host.textContent).toContain("--model set to the base model's file name");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HUP-S9.4 rest (fan-out 6): named rounds and consent, round results, re-apply after a restart.
+// ---------------------------------------------------------------------------
+const ROUND = "0x29a0bbad3829ef8c62a4ba4b8c6bb61f0e893db107b033a80e55171f159a3dfe";
+
+describe("FlRoundsPanel — a named round and its consent", () => {
+  it("plans with the round id the member typed, and without one when the field is empty", async () => {
+    const fl = domain();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await click(q(host, "fl-plan"));
+    expect(fl.plan).toHaveBeenLastCalledWith(undefined);
+    await type(q(host, "fl-round-id"), " " + ROUND + " ");
+    await click(q(host, "fl-plan"));
+    expect(fl.plan).toHaveBeenLastCalledWith(expect.objectContaining({ roundId: ROUND, requires: "federated" }));
+  });
+
+  it("lists the rounds this device consented to, with the worker's file, and withdraws one", async () => {
+    const fl = domain({
+      overview: vi.fn(async () => overview({ consentedRounds: [ROUND] })),
+      revokeConsent: vi.fn(async () => []),
+    });
+    const toast = vi.fn();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={toast} />);
+    const box = q(host, "fl-consents")!;
+    expect(box.textContent).toContain(ROUND);
+    expect(box.textContent).toContain("/data/fl_consent.json");
+    expect(box.textContent).toContain("CITRATE_FL_CONSENT_FILE");
+    await click(q(host, "fl-consent-revoke-0"));
+    expect(fl.revokeConsent).toHaveBeenCalledWith(ROUND);
+    expect(toast).toHaveBeenCalled();
+  });
+
+  it("shows core's error when the consent file cannot be read", async () => {
+    const fl = domain({ overview: vi.fn(async () => overview({ consentError: "fl_consent.json is unreadable" })) });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(q(host, "fl-consents")!.textContent).toContain("unreadable");
+  });
+});
+
+describe("FlRoundsPanel — round results and re-apply", () => {
+  it("sends the round result path, and lets the round supply the expected hash", async () => {
+    const fl = domain();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-gate-adapter"), "/x/merged.gguf");
+    await type(q(host, "fl-gate-round"), "/x/round.json");
+    await type(q(host, "fl-gate-base-tools"), "/x/base.json");
+    await type(q(host, "fl-gate-cand-tools"), "/x/cand.json");
+    await click(q(host, "fl-gate-run"));
+    expect(fl.gateAdapter).toHaveBeenCalledWith({
+      adapterPath: "/x/merged.gguf",
+      expectedSha256: "",
+      baseToolsPath: "/x/base.json",
+      candidateToolsPath: "/x/cand.json",
+      roundResultPath: "/x/round.json",
+    });
+  });
+
+  it("shows the round a gated adapter came from", async () => {
+    const rec = gateRec("ACCEPT");
+    rec.round = { roundId: ROUND, recordDigest: "0x" + "6".repeat(64), adapterSha256: "c".repeat(64), chainId: 1337, ledger: "0x" + "7".repeat(40), participants: 3 };
+    const fl = domain({ gateAdapter: vi.fn(async () => rec) });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    await type(q(host, "fl-gate-adapter"), "/x/merged.gguf");
+    await type(q(host, "fl-gate-round"), "/x/round.json");
+    await click(q(host, "fl-gate-run"));
+    expect(q(host, "fl-gate-verdict")!.textContent).toContain(ROUND);
+  });
+
+  it("says a loaded adapter is put back after a restart, and why it was not when that failed", async () => {
+    const fl = domain({
+      overview: vi.fn(async () =>
+        overview({
+          activeAdapter: "/data/adapters/x.gguf",
+          rememberedAdapter: { sha256: "c".repeat(64), baseModel: "m.gguf" },
+          restoreError: null,
+        }),
+      ),
+    });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(q(host, "fl-remembered")!.textContent).toMatch(/put back when the app starts the local model on m\.gguf/);
+    const failed = domain({
+      overview: vi.fn(async () =>
+        overview({ rememberedAdapter: { sha256: "c".repeat(64), baseModel: "m.gguf" }, restoreError: "The adapter you loaded earlier was not put back: the adapter file changed since the eval gate; run the gate again" }),
+      ),
+    });
+    const second = await mount(<FlRoundsPanel fl={failed} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(q(second.host, "fl-remembered")!.textContent).toContain("was not put back");
   });
 });

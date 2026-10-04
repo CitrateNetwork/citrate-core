@@ -18,6 +18,18 @@ export function deviceNameError(name: string): string | null {
   return null;
 }
 
+/** A valid device name made from any label (the fleet wizard's machine name): characters core
+ *  refuses are dropped, spaces collapsed, cut to 48, and "My machine" when nothing is left. */
+export function deviceNameFrom(label: string): string {
+  const cleaned = label
+    .replace(/[^A-Za-z0-9 ._'-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_DEVICE_NAME)
+    .trim();
+  return cleaned.length > 0 ? cleaned : "My machine";
+}
+
 export interface DeviceRow {
   device: string;
   label: string;

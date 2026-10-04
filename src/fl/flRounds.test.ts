@@ -145,3 +145,57 @@ describe("gateSummary", () => {
     expect(r.lines.join("\n")).toContain("injectionResistRate got worse");
   });
 });
+
+// ---------------------------------------------------------------------------
+// HUP-S9.4 rest (fan-out 6): a named round (per-round consent, D-29) and the round a gated
+// adapter came from (the local-devnet flow, citrate-chain docs/fl/FL_ROUND_V1.md).
+// ---------------------------------------------------------------------------
+const ROUND = "0x29a0bbad3829ef8c62a4ba4b8c6bb61f0e893db107b033a80e55171f159a3dfe";
+
+describe("a named round", () => {
+  it("passes a roundId from the tool call to core, and adds none when it is absent", () => {
+    expect(proposalFromToolArgs({ roundId: ROUND })).toEqual({ ...DEFAULT_PROPOSAL, roundId: ROUND });
+    expect(proposalFromToolArgs({ roundId: "  " })).toEqual(DEFAULT_PROPOSAL);
+    expect("roundId" in proposalFromToolArgs({})).toBe(false);
+    // Odd values go to core to refuse, as with the numbers.
+    expect(proposalFromToolArgs({ roundId: "0x12" }).roundId).toBe("0x12");
+  });
+
+  it("shows the round on the approval card and says it writes consent for that round only", () => {
+    const spec = flStartCerSpec(livePlan({ proposal: { ...DEFAULT_PROPOSAL, roundId: ROUND } }), "chat agent");
+    const row = spec.rows.find((r) => r.k === "Round");
+    expect(row?.v).toContain(ROUND);
+    expect(row?.v).toMatch(/consent for this round only/i);
+    expect(flStartCerSpec(livePlan(), "chat agent").rows.find((r) => r.k === "Round")).toBeUndefined();
+  });
+
+  it("tells Hermes that joining a named round writes consent the member can withdraw", () => {
+    const t = formatPlanForAgent(livePlan({ proposal: { ...DEFAULT_PROPOSAL, roundId: ROUND } }));
+    expect(t).toContain(ROUND);
+    expect(t).toMatch(/withdraw/i);
+    expect(t).not.toMatch(/training (has )?started/i);
+  });
+});
+
+describe("gateSummary with a round", () => {
+  it("names the round, its record digest and the device count", () => {
+    const rec: FlAdapterGateRecord = {
+      adapterSha256: "b".repeat(64),
+      adapterPath: "/x/a.gguf",
+      baseModel: "m",
+      decidedAtMs: 5,
+      round: { roundId: ROUND, recordDigest: "0x" + "6".repeat(64), adapterSha256: "b".repeat(64), chainId: 1337, ledger: "0x" + "7".repeat(40), participants: 3 },
+      decision: { verdict: "ACCEPT", reasons: [], metrics: [], compositeBase: 0.8, compositeCandidate: 0.85 },
+    };
+    const s = gateSummary(rec).lines.join("\n");
+    expect(s).toContain(ROUND);
+    expect(s).toContain("0x" + "6".repeat(64));
+    expect(s).toMatch(/3 devices/);
+    expect(s).toMatch(/chain 1337/);
+    // Honest wording: core checks the result file's own consistency, not the ledger.
+    expect(s).toMatch(/did not read the ledger/i);
+    expect(s).not.toMatch(/round result was checked: Accepted/);
+    const plain = gateSummary({ ...rec, round: null }).lines.join("\n");
+    expect(plain).toMatch(/no round result/i);
+  });
+});

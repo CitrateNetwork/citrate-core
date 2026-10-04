@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Mutation check for FlRoundGate.tla (HUP-S9.4, federated round start + LoRA eval gate).
+"""Mutation check for FlRoundGate.tla (HUP-S9.4, federated round start + LoRA eval gate +
+re-apply after a restart).
 
 Each mutant breaks one guard of the spec, then runs TLC with only the target invariant (plus
 TypeOK) and expects TLC to report a violation. The spec in this directory is never modified:
@@ -65,6 +66,29 @@ M = [
  ("M13", "ServedIsLoaded",
   [("    /\\ IF Refreshed(v) = v\n", "    /\\ IF TRUE\n"),
    ("          THEN /\\ copy' = [copy EXCEPT ![v] = v]\n", "          THEN /\\ copy' = [copy EXCEPT ![v] = Refreshed(v)]\n")]),
+ # --- re-apply after a restart (fan-out 6) ---
+ # Unload forgets nothing: the adapter comes back after a restart.
+ ("M14", "LoadedIsWanted",
+  [("    /\\ saved' = NoAdapter /\\ wanted' = NoAdapter\n    /\\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, savedBase, restored>>",
+    "    /\\ wanted' = NoAdapter\n    /\\ UNCHANGED <<coord, settle, startVars, content, gateVerdict, gateBase, gateSrc, copy, base, savedBase, restored, saved>>")]),
+ # A gate record never ends the re-apply.
+ ("M15", "LoadedIsWanted",
+  [("    /\\ IF saved = v /\\ (verdict = \"REJECT\" \\/ b # savedBase)\n          THEN saved' = NoAdapter\n", "    /\\ IF FALSE\n          THEN saved' = NoAdapter\n")]),
+ # Only a REJECT ends it (an ACCEPT measured on another base does not).
+ ("M16", "LoadedIsWanted",
+  [("    /\\ IF saved = v /\\ (verdict = \"REJECT\" \\/ b # savedBase)\n          THEN saved' = NoAdapter\n", "    /\\ IF saved = v /\\ verdict = \"REJECT\"\n          THEN saved' = NoAdapter\n")]),
+ # Switching the base while loaded keeps it remembered.
+ ("M17", "LoadedIsWanted",
+  [("          THEN saved' = NoAdapter /\\ wanted' = NoAdapter\n          ELSE UNCHANGED <<saved, wanted>>\n", "          THEN saved' = saved /\\ wanted' = NoAdapter\n          ELSE UNCHANGED <<saved, wanted>>\n")]),
+ # Restore ignores which base is served.
+ ("M18", "LoadedIsAccepted",
+  [("    /\\ savedBase = base\n    /\\ gateVerdict[saved] = \"ACCEPT\"\n    /\\ gateBase[saved] = base\n", "    /\\ gateVerdict[saved] = \"ACCEPT\"\n")]),
+ # Restore serves the stored copy without re-hashing it.
+ ("M19", "ServedIsLoaded",
+  [("    /\\ IF Refreshed(saved) = saved\n          THEN /\\ copy' = [copy EXCEPT ![saved] = saved]\n", "    /\\ IF copy[saved] # \"none\"\n          THEN /\\ copy' = copy\n")]),
+ # Restore ignores the latest verdict and which base is served.
+ ("M20", "LoadedIsAccepted",
+  [("    /\\ savedBase = base\n    /\\ gateVerdict[saved] = \"ACCEPT\"\n    /\\ gateBase[saved] = base\n", "    /\\ TRUE\n")]),
 ]
 
 def run(name, target, patches):

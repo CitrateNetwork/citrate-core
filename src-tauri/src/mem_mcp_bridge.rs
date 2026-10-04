@@ -60,6 +60,8 @@ pub enum Gate {
     Forward {
         list_id: Option<String>,
         has_id: bool,
+        /// The line to send: the gate's own serialization of the parsed request.
+        line: String,
     },
     /// Answer locally with this JSON-RPC response; never relay.
     Reply(Value),
@@ -98,6 +100,7 @@ pub fn gate_request(line: &str) -> Gate {
             Gate::Forward {
                 list_id: None,
                 has_id: false,
+                line: v.to_string(),
             }
         } else {
             Gate::Drop
@@ -126,6 +129,7 @@ pub fn gate_request(line: &str) -> Gate {
     Gate::Forward {
         list_id: (method == "tools/list").then(|| id_key(&id)),
         has_id: true,
+        line: v.to_string(),
     }
 }
 
@@ -299,16 +303,18 @@ pub fn run_bridge<R: BufRead + Send + 'static>(
                 match gate_request(&line) {
                     Gate::Drop => {}
                     Gate::Reply(v) => write_line(&output, &v.to_string()),
-                    Gate::Forward { list_id, has_id } => {
+                    Gate::Forward {
+                        list_id,
+                        has_id,
+                        line: fwd,
+                    } => {
                         if let Some(k) = list_id {
                             list_ids.lock().unwrap_or_else(|e| e.into_inner()).insert(k);
                         }
                         if has_id {
                             outstanding.fetch_add(1, Ordering::SeqCst);
                         }
-                        if writeln!(to_daemon, "{}", line.trim_end()).is_err()
-                            || to_daemon.flush().is_err()
-                        {
+                        if writeln!(to_daemon, "{fwd}").is_err() || to_daemon.flush().is_err() {
                             break;
                         }
                     }

@@ -55,7 +55,8 @@ export interface DaemonTurnDeps {
   inferLocalTools(messagesJson: string, toolsJson: string, contextJson: string): Promise<string>;
   sidecar: SidecarDaemonApi | null;
   /** The store's gated tool handler (the same approval gates as chat). */
-  handleTool(call: ToolCall, meta?: ToolCallMeta): Promise<string>;
+  /** `signal` is the run's: approval cards it raises close when the run ends. */
+  handleTool(call: ToolCall, meta?: ToolCallMeta, signal?: AbortSignal): Promise<string>;
 }
 
 /** Whether a daemon may run now, and why not. */
@@ -142,7 +143,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
           throwIfStopped(signal);
           meter.context(call.arguments.length);
           const d = daemonToolDecision(call, claim.name, meta);
-          const out = d.run ? await deps.handleTool(call, d.meta) : d.result;
+          const out = d.run ? await deps.handleTool(call, d.meta, signal) : d.result;
           meter.context(out.length);
           return out;
         },

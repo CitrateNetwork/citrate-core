@@ -49,7 +49,18 @@ REQUIRED = [
 # "unavailable", never as a guessed address.
 # HUP-S7.4: AgentSBT (Hermes identity) and its parent OrganizationSBT are optional too: the
 # onboarding identity step stays off while either is absent or has no code.
-OPTIONAL = ["PatronageLedger", "ModelCooperative", "AgentSBT", "OrganizationSBT"]
+# HUP-S7.3 + S7.5: AnchorRegistry (nightly decision anchor, inclusion-proof check) and
+# BenchmarkRegistry (opt-in daily aggregates). Both features stay off until the member turns them
+# on; an absent pin keeps them unavailable. Pinning AnchorRegistry (not CitAgentAnchorRegistry)
+# as Hermes's registry is a placeholder pending owner sign-off.
+OPTIONAL = [
+    "PatronageLedger",
+    "ModelCooperative",
+    "AgentSBT",
+    "OrganizationSBT",
+    "AnchorRegistry",
+    "BenchmarkRegistry",
+]
 
 ADDR = re.compile(r"^0x[0-9a-fA-F]{40}$")
 HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")

@@ -674,7 +674,7 @@ fn member_address(app_h: &tauri::AppHandle) -> Result<String, String> {
     Ok(w.address)
 }
 
-fn status_now(app_h: &tauri::AppHandle) -> Result<AgentSbtStatus, String> {
+pub(crate) fn status_now(app_h: &tauri::AppHandle) -> Result<AgentSbtStatus, String> {
     let member = member_address(app_h)?;
     let org = parent_org()?;
     let rpc = RpcClient::citrate();

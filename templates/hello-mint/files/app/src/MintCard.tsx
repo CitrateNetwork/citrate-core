@@ -13,6 +13,7 @@ import { injected } from "wagmi/connectors";
 import { mintAbi } from "./abi";
 import { COLLECTION } from "./collection";
 import type { Deployment } from "./config";
+import { httpRpc, walletIsOnFork, type Rpc } from "./forkGuard";
 
 function errorText(error: unknown): string {
   if (error instanceof BaseError) return error.shortMessage;
@@ -43,6 +44,9 @@ function LiveMintCard({ deployment, address }: { deployment: Deployment; address
   const { disconnect } = useDisconnect();
   const { switchChain, isPending: switching } = useSwitchChain();
   const [quantity, setQuantity] = useState(1);
+  // Fork mode: the wallet check's refusal, and whether it is running.
+  const [guardError, setGuardError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const contract = { address, abi: mintAbi, chainId } as const;
   const reads = useReadContracts({
@@ -85,8 +89,30 @@ function LiveMintCard({ deployment, address }: { deployment: Deployment; address
   const wrongChain = account.isConnected && account.chainId !== chainId;
   const busy = signing || receipt.isLoading;
 
-  const onMint = () => {
+  const onMint = async () => {
     reset();
+    setGuardError(null);
+    // Fork mode: refuse to ask the wallet to sign unless its RPC is this fork (same chain id as
+    // chain 40204, so the chain id alone proves nothing).
+    if (deployment.target === "fork") {
+      setChecking(true);
+      try {
+        const provider = (await account.connector?.getProvider()) as { request?: (a: { method: string; params?: unknown[] }) => Promise<unknown> } | undefined;
+        if (!provider?.request) {
+          setGuardError("The wallet gave the page no way to check its network, so the mint was not sent.");
+          return;
+        }
+        const request = provider.request.bind(provider);
+        const wallet: Rpc = (method, params) => request({ method, params });
+        const guard = await walletIsOnFork(wallet, httpRpc(deployment.rpcUrl));
+        if (!guard.ok) {
+          setGuardError(guard.reason);
+          return;
+        }
+      } finally {
+        setChecking(false);
+      }
+    }
     writeContract(
       { ...contract, functionName: "mint", args: [BigInt(qty)], value: cost },
       { onSuccess: () => void reads.refetch() },
@@ -125,7 +151,7 @@ function LiveMintCard({ deployment, address }: { deployment: Deployment; address
               onChange={(e) => setQuantity(Number.parseInt(e.target.value, 10) || 1)}
             />
           </label>
-          <button type="button" disabled={busy} onClick={onMint}>
+          <button type="button" disabled={busy || checking} onClick={() => void onMint()}>
             {busy ? "Minting" : `Mint ${qty} for ${formatEther(cost)} SALT`}
           </button>
         </div>
@@ -140,6 +166,7 @@ function LiveMintCard({ deployment, address }: { deployment: Deployment; address
         </p>
       )}
       {connectError && <p className="error">{errorText(connectError)}</p>}
+      {guardError && <p className="error">{guardError}</p>}
       {writeError && <p className="error">{errorText(writeError)}</p>}
       {receipt.isSuccess && <p className="status">Minted. Transaction {hash}</p>}
       {receipt.isError && <p className="error">{errorText(receipt.error)}</p>}

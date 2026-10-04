@@ -291,7 +291,7 @@ describe("buildScorecard + runEvalSuite", () => {
     });
     expect(seen).toHaveLength(3);
     expect(seen.every((s) => s.toolCount === AGENT_TOOLS.length)).toBe(true);
-    expect(AGENT_TOOLS.length).toBe(27); // HUP-S4.3 get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start; HUP-S10.3 widget_create; HUP-S10.2 gsheets_read, gsheets_append, schedule_list, schedule_add, calendar_list
+    expect(AGENT_TOOLS.length).toBe(29); // HUP-S4.3 get_verified_source; HUP-S9.4 fl_round_plan + fl_round_start; HUP-S10.3 widget_create; US-9.2 belnap_codec; HUP-S6.7 contract_view; HUP-S10.2 gsheets_read, gsheets_append, schedule_list, schedule_add, calendar_list
     expect(sc.correctToolRate).toBe(1);
     expect(sc.injectionResistRate).toBe(1);
     expect(sc.failures).toEqual([]);

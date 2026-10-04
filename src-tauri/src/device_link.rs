@@ -650,6 +650,73 @@ pub(crate) fn import_link(
     Ok(canon)
 }
 
+/// What happened to a link code that arrived with a fleet pairing (S8.2): the other machine's link,
+/// if it is one of this member's own devices, is verified and stored like a pasted code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PairedLink {
+    /// No code came with the pairing (the other machine is not linked yet).
+    None,
+    /// Verified and stored: the other machine is one of this member's devices.
+    Added,
+    /// The code names a different member (another person's machine): not stored.
+    OtherMember,
+    /// The code did not verify or could not be stored.
+    Refused,
+}
+
+/// Import a link code received while pairing. Never errors: the pairing itself stands; the result
+/// says whether the link was added.
+pub(crate) fn import_paired_code(
+    store: &mut DeviceLinkStore,
+    own_member: &str,
+    code: Option<&str>,
+) -> PairedLink {
+    let Some(code) = code.map(str::trim).filter(|c| !c.is_empty()) else {
+        return PairedLink::None;
+    };
+    let names_other_member = serde_json::from_str::<DeviceLinkWire>(code)
+        .ok()
+        .and_then(|w| canonical_address(&w.member))
+        .is_some_and(|m| Some(m) != canonical_address(own_member));
+    if names_other_member {
+        return PairedLink::OtherMember;
+    }
+    match import_link(store, own_member, code) {
+        Ok(_) => PairedLink::Added,
+        Err(_) => PairedLink::Refused,
+    }
+}
+
+/// This machine's active link code, if it has one (the same text `device_link_export` returns).
+/// Read-only: never mints a key. Blocking (keyring + file): call off the main thread.
+pub(crate) fn own_link_code(app: &tauri::AppHandle) -> Option<String> {
+    let member = crate::comms::device_identity(app).ok()?;
+    let seed = this_device_seed(false).ok()??;
+    let device = crate::comms::address_from_secret_hex(&seed).ok()?;
+    let store = DeviceLinkStore::load(&store_path(app).ok()?).ok()?;
+    let link = store.active_link(&member.address, &device)?;
+    serde_json::to_string(link).ok()
+}
+
+/// Store a link code received while pairing (see [`import_paired_code`]). Blocking.
+pub(crate) fn store_paired_code(app: &tauri::AppHandle, code: Option<&str>) -> PairedLink {
+    let Ok(member) = crate::comms::device_identity(app) else {
+        return PairedLink::Refused;
+    };
+    let Ok(path) = store_path(app) else {
+        return PairedLink::Refused;
+    };
+    let Ok(mut store) = DeviceLinkStore::load(&path) else {
+        return PairedLink::Refused;
+    };
+    let r = import_paired_code(&mut store, &member.address, code);
+    if r == PairedLink::Added && store.save(&path).is_err() {
+        return PairedLink::Refused;
+    }
+    r
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -765,6 +832,9 @@ fn device_link_approve_sync(
     let this = link.device.clone();
     store.upsert_link(link)?;
     store.save(&path)?;
+    // The mesh identity may now be this device's key: restart the daemon on the next cluster call
+    // instead of waiting for an app restart. Best effort; the link is stored either way.
+    let _ = crate::cluster::reload_mesh_identity(app);
     Ok(links_dto(&store, Some(this)))
 }
 
@@ -799,15 +869,85 @@ pub async fn device_links(app: tauri::AppHandle) -> Result<DeviceLinksDto, Strin
     .await
 }
 
-/// **device_link_revoke**: the member's comms key signs a revocation of `device`. Permanent for
-/// that key; the cluster daemon evicts it on the next roster update. Revoking THIS machine also
-/// deletes its device key, so a later link mints a fresh one.
+/// How long a prepared device revocation may be confirmed.
+pub const REVOKE_CONFIRM_SECS: u64 = 120;
+
+/// What the member confirms before a device is revoked.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokePrepared {
+    pub confirm_id: String,
+    /// Canonical device address (lowercase hex, no `0x`).
+    pub device: String,
+    pub statement: String,
+    pub confirm_by: u64,
+}
+
+/// One pending device revocation at a time: a one-shot id core minted for one device. A revocation
+/// is permanent, so `device_link_revoke` runs only with the id `device_link_revoke_prepare` returned
+/// when the member opened the confirmation (a caller cannot revoke by naming a device).
+#[derive(Default)]
+pub struct RevokeConfirmations(Mutex<Option<(String, String, u64)>>);
+
+impl RevokeConfirmations {
+    pub fn prepare(&self, device: &str, now: u64, id: String) -> Result<RevokePrepared, String> {
+        let device = canonical_address(device).ok_or("device address is malformed")?;
+        let confirm_by = now.saturating_add(REVOKE_CONFIRM_SECS);
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((id.clone(), device.clone(), confirm_by));
+        Ok(RevokePrepared {
+            statement: format!(
+                "Remove device 0x{device} for good. Its key can never be linked again, and the group mesh drops it on the next roster update. This cannot be undone."
+            ),
+            confirm_id: id,
+            device,
+            confirm_by,
+        })
+    }
+
+    /// The device for `id`, consumed. A wrong id leaves the pending one in place.
+    pub fn consume(&self, id: &str, now: u64) -> Result<String, String> {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref() {
+            Some((pid, _, _)) if pid == id => {}
+            _ => return Err("this confirmation is not the current one; start again".into()),
+        }
+        let (_, device, confirm_by) = g.take().ok_or("no confirmation is pending")?;
+        if now >= confirm_by {
+            return Err("the confirmation timed out; start again".into());
+        }
+        Ok(device)
+    }
+}
+
+fn revoke_confirmations() -> &'static RevokeConfirmations {
+    static C: std::sync::OnceLock<RevokeConfirmations> = std::sync::OnceLock::new();
+    C.get_or_init(RevokeConfirmations::default)
+}
+
+/// **device_link_revoke_prepare**: step 1 of removing a device. Returns what the member confirms
+/// and a one-shot id valid for [`REVOKE_CONFIRM_SECS`]. Signs nothing.
+#[tauri::command]
+pub async fn device_link_revoke_prepare(device: String) -> Result<RevokePrepared, String> {
+    crate::blocking::off_main(move || {
+        use rand::RngCore;
+        let mut b = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut b);
+        revoke_confirmations().prepare(&device, now_secs(), hex::encode(b))
+    })
+    .await
+}
+
+/// **device_link_revoke**: the member confirmed `confirm_id`; their comms key signs a revocation of
+/// that device. Permanent for that key; the cluster daemon evicts it on the next roster update.
+/// Revoking THIS machine also deletes its device key, so a later link mints a fresh one.
 #[tauri::command]
 pub async fn device_link_revoke(
     app: tauri::AppHandle,
-    device: String,
+    confirm_id: String,
 ) -> Result<DeviceLinksDto, String> {
     crate::blocking::off_main(move || {
+        let device = revoke_confirmations().consume(&confirm_id, now_secs())?;
         let member = crate::comms::device_identity(&app)?;
         let rev = sign_revocation(&member.seed_hex, &device, now_secs())?;
         let path = store_path(&app)?;
@@ -825,6 +965,8 @@ pub async fn device_link_revoke(
                 .delete(DEVICE_KEY_ACCOUNT)
                 .map_err(|e| format!("device key keyring error: {e}"))?;
             this = None;
+            // This machine falls back to the comms identity: restart the daemon on the next call.
+            let _ = crate::cluster::reload_mesh_identity(&app);
         }
         Ok(links_dto(&store, this))
     })

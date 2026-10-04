@@ -564,3 +564,81 @@ fn import_refuses_an_overlong_code_even_when_it_parses() {
     assert!(import_link(&mut st, &addr_of(&member), &code).is_err());
     assert!(st.links.is_empty());
 }
+
+// ---- link codes that travel with a fleet pairing (S8.2) ----
+
+#[test]
+fn a_paired_machine_of_the_same_member_is_added_and_others_are_only_reported() {
+    let (member, wallet) = (seed(1), seed(3));
+    let mut st = DeviceLinkStore::default();
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), None),
+        PairedLink::None
+    );
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some("  ")),
+        PairedLink::None
+    );
+
+    let mine = serde_json::to_string(&wire(&member, &seed(4), &wallet, 1, "Linux box")).expect("json");
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some(&mine)),
+        PairedLink::Added
+    );
+    assert_eq!(st.links.len(), 1);
+
+    // Another person's machine: reported, never stored (a pairing does not make it yours).
+    let theirs = serde_json::to_string(&wire(&seed(7), &seed(5), &seed(8), 0, "Theirs")).expect("json");
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some(&theirs)),
+        PairedLink::OtherMember
+    );
+    // A forged code of "our" member: refused.
+    let mut forged = wire(&member, &seed(6), &wallet, 2, "Forged");
+    forged.wallet_sig = sign_eip191(&seed(9), "x").expect("sign");
+    let forged = serde_json::to_string(&forged).expect("json");
+    assert_eq!(
+        import_paired_code(&mut st, &addr_of(&member), Some(&forged)),
+        PairedLink::Refused
+    );
+    assert_eq!(st.links.len(), 1, "only the verified own device was stored");
+}
+
+// ---- revoking a device needs a one-shot confirmation core minted ----
+
+#[test]
+fn a_revocation_needs_the_confirmation_core_minted_for_that_device() {
+    let c = RevokeConfirmations::default();
+    let dev = addr_of(&seed(7));
+    let other = addr_of(&seed(8));
+    // Nothing prepared: nothing can be revoked, whatever id is sent.
+    assert!(c.consume("anything", 1_000).is_err());
+    let p = c.prepare(&format!("0x{dev}"), 1_000, "c-1".into()).expect("prepare");
+    assert_eq!(p.device, dev);
+    assert!(p.statement.contains("for good"));
+    // A wrong id does not consume the right one.
+    assert!(c.consume("c-2", 1_001).is_err());
+    assert_eq!(c.consume("c-1", 1_001).expect("take"), dev);
+    // Single use.
+    assert!(c.consume("c-1", 1_002).is_err());
+    // A newer prepare replaces the older one, and it expires.
+    c.prepare(&dev, 2_000, "c-3".into()).expect("prepare");
+    c.prepare(&other, 2_001, "c-4".into()).expect("prepare");
+    assert!(c.consume("c-3", 2_002).is_err());
+    assert!(c.consume("c-4", 2_001 + REVOKE_CONFIRM_SECS).is_err(), "expired");
+    // A malformed device is refused up front.
+    assert!(c.prepare("not-an-address", 3_000, "c-5".into()).is_err());
+}
+
+#[test]
+fn the_revoke_command_takes_a_confirmation_id_not_a_device() {
+    let src = include_str!("device_link.rs");
+    let i = src.find("pub async fn device_link_revoke(").expect("command");
+    let sig = &src[i..i + src[i..].find(')').expect("end")];
+    assert!(sig.contains("confirm_id: String"), "{sig}");
+    assert!(!sig.contains("device: String"), "{sig}");
+    let lib = include_str!("lib.rs");
+    let acl = include_str!("../permissions/main-window.toml");
+    assert!(lib.contains("device_link::device_link_revoke_prepare"));
+    assert!(acl.contains("\"device_link_revoke_prepare\""));
+}

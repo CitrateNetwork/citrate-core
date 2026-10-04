@@ -102,6 +102,12 @@ describe("Feature: every agent tool is annotated (A8)", () => {
   });
 });
 
+describe("HUP-S6.7 — contract_view", () => {
+  it("is a read with untrusted output (values the contract chose)", () => {
+    expect(annotationFor("contract_view")).toEqual({ effect: "none", trust: "untrusted" });
+  });
+});
+
 describe("HUP-S4.3 — get_verified_source", () => {
   it("is a read with untrusted output (deployer-written source)", () => {
     expect(annotationFor("get_verified_source")).toEqual({ effect: "none", trust: "untrusted" });

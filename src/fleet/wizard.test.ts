@@ -153,6 +153,12 @@ describe("fleet wizard: device list shows tier and role", () => {
     expect(rows[2].addr).toBe("192.168.1.30");
   });
 
+  it("a paired machine shows the confirmation code both screens share", () => {
+    const s = run({ type: "roster", devices: [{ ...paired, code: "042917" }] });
+    expect(deviceRows(s)[0].where).toBe("paired");
+    expect(deviceRows(s)[0].code).toBe("042917");
+  });
+
   it("role labels are plain language and unknown stays unknown", () => {
     expect(roleLabel("heavy")).toMatch(/larger models/);
     expect(roleLabel("light")).toMatch(/chat/);
@@ -189,5 +195,34 @@ describe("expiresIn", () => {
     expect(expiresIn(1_600, 1_000)).toBe("expires in 10 min");
     expect(expiresIn(1_600, 1_570)).toBe("expires in under a minute");
     expect(expiresIn(1_600, 1_600)).toBe("expired");
+  });
+});
+
+// HUP-S8.1/S8.2 follow-on: DeviceLinks travel with the pairing; a pairing link can arrive by deep link.
+import { linkNote } from "./wizard";
+
+describe("fleet wizard: device links and deep links", () => {
+  it("records whether this machine is linked", () => {
+    const s = run({ type: "probed", probe }, { type: "linkStatus", status: { linked: true, label: "Studio Mac" } });
+    expect(s.link).toEqual({ linked: true, label: "Studio Mac" });
+  });
+
+  it("a deep-linked pairing link lands on the pair step, filled in, without pairing", () => {
+    const s = run({ type: "probed", probe }, { type: "prefill", link: "citrate://pair?c=a&s=b" });
+    expect(s.step).toBe("pair");
+    expect(s.joinLink).toBe("citrate://pair?c=a&s=b");
+    expect(s.roster).toEqual([]);
+  });
+
+  it("shows, per paired machine, what happened to its device link", () => {
+    const added = { ...paired, id: "c".repeat(32), deviceLink: "added" as const };
+    const other = { ...paired, id: "d".repeat(32), deviceLink: "otherMember" as const };
+    const s = run({ type: "probed", probe }, { type: "roster", devices: [added, other, paired] });
+    const rows = deviceRows(s).filter((r) => r.where === "paired");
+    expect(rows.map((r) => r.link)).toEqual(["added", "otherMember", null]);
+    expect(linkNote("added")).toMatch(/linked under you/);
+    expect(linkNote("otherMember")).toMatch(/another person/);
+    expect(linkNote("refused")).toMatch(/did not verify/);
+    expect(linkNote(null)).toMatch(/not linked/);
   });
 });

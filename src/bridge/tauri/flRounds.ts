@@ -37,4 +37,7 @@ export const tauriFlRounds: FlRoundsDomain = {
   async unloadAdapter() {
     await invoke("fl_adapter_unload");
   },
+  revokeConsent(roundId: string) {
+    return invoke<string[]>("fl_round_consent_revoke", { roundId });
+  },
 };

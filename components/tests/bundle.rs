@@ -56,8 +56,10 @@ fn macos_arm64_is_measured_for_every_binary_tool() {
             .artifacts
             .get("macos-arm64")
             .unwrap_or_else(|| panic!("{} has no macos-arm64 entry", t.name));
-        if t.name == "slither" {
+        if t.name == "slither" || t.name == "searxng" {
+            // Python environments the release step packs from a hash lock.
             assert_eq!(a.status, ArtifactStatus::ToBeBuilt);
+            assert!(a.build_from.is_some(), "{}: no lock", t.name);
             continue;
         }
         assert_eq!(a.status, ArtifactStatus::Measured, "{}", t.name);
@@ -88,6 +90,35 @@ fn unmeasured_entries_carry_no_hash() {
         }
     }
     assert!(to_measure > 0);
+}
+
+#[test]
+fn the_web_components_are_present_with_their_kinds_and_licences() {
+    use citrate_components::manifest::{ArchiveFormat, ComponentKind};
+    let (b, _) = load();
+    let chromium = b.tools.iter().find(|t| t.name == "chromium").unwrap();
+    assert_eq!(chromium.kind, ComponentKind::Browser);
+    assert!(chromium.license.contains("Chrome-for-Testing"));
+    let mac = &chromium.artifacts["macos-arm64"];
+    assert_eq!(mac.status, ArtifactStatus::Measured);
+    assert_eq!(mac.format, ArchiveFormat::Zip);
+    assert_eq!(mac.size, Some(191_153_086));
+    assert!(mac
+        .url
+        .as_deref()
+        .is_some_and(|u| u.contains("/154.0.8037.92/mac-arm64/")));
+    for (plat, a) in &chromium.artifacts {
+        assert!(
+            a.entrypoints.as_ref().is_some_and(|e| !e.is_empty()),
+            "chromium {plat}: the executable differs per platform"
+        );
+    }
+    let searxng = b.tools.iter().find(|t| t.name == "searxng").unwrap();
+    assert_eq!(searxng.kind, ComponentKind::Search);
+    assert_eq!(searxng.license, "AGPL-3.0-or-later");
+    assert!(searxng.note.as_deref().is_some_and(|n| n.contains("AGPL")));
+    let up = searxng.upstream.as_ref().unwrap();
+    assert!(up.url.contains("d48c4b555421e824342c51d68482dd0898e54d0f"));
 }
 
 #[test]
@@ -195,7 +226,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
     )
     .unwrap();
     let names: Vec<&str> = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .map(|c| c.name.as_str())
@@ -210,7 +241,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
         "slither is not built yet, so it is not in the manifest"
     );
     let foundry = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .find(|c| c.name == "foundry")
@@ -220,7 +251,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
         vec!["macos-arm64"]
     );
     let solc = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .find(|c| c.name == "solc")
@@ -231,7 +262,7 @@ fn manifest_from_bundle_contains_only_measured_artifacts_and_verifies_once_signe
         "macos-arm64 and macos-x64 (the same universal file)"
     );
     let oz = vm
-        .manifest
+        .manifest()
         .components
         .iter()
         .find(|c| c.name == "openzeppelin-contracts")

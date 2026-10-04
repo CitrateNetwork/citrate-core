@@ -14,6 +14,7 @@ import {
 
 describe("web opt-ins: defaults", () => {
   it("everything is off or local by default", () => {
+    expect(DEFAULT_WEB_SETTINGS.browserEnabled).toBe(false);
     expect(DEFAULT_WEB_SETTINGS.searchEnabled).toBe(false);
     expect(DEFAULT_WEB_SETTINGS.reader).toBe("local");
     expect(DEFAULT_WEB_SETTINGS.jevEnabled).toBe(false);
@@ -24,6 +25,7 @@ describe("web opt-ins: defaults", () => {
   it("only the Jina reader with search on, or Jev, sends data to a third party", () => {
     expect(sendsToThirdParty({ ...DEFAULT_WEB_SETTINGS, reader: "jina" })).toBe(false);
     expect(sendsToThirdParty({ ...DEFAULT_WEB_SETTINGS, searchEnabled: true })).toBe(false);
+    expect(sendsToThirdParty({ ...DEFAULT_WEB_SETTINGS, browserEnabled: true })).toBe(false);
     expect(sendsToThirdParty({ ...DEFAULT_WEB_SETTINGS, searchEnabled: true, reader: "jina" })).toBe(true);
     expect(sendsToThirdParty({ ...DEFAULT_WEB_SETTINGS, jevEnabled: true })).toBe(true);
   });
