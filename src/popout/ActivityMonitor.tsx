@@ -13,6 +13,9 @@
 // HUP-S2.9: with an undo panel it also lists the agent session's recent file changes, with Undo for
 // each and Undo all. The pop-out only asks; the main window runs the undo and sends the result.
 // HUP-S10.3: the scheduled daemons, with Pause / Resume and Stop for the run in flight.
+// HUP-S7.6 (US-7.4 AC1): context used and tokens per second from the model server's own report,
+// a workflow run's plan with each step's verifier state, the approvals asked this turn, and the
+// verifier verdicts.
 // =====================================================================
 import { useId, type CSSProperties, type ReactNode } from "react";
 import { formatElapsed, workerLine, type DaemonsSection, type MonitorSnapshot } from "./monitorSnapshot";
@@ -160,7 +163,8 @@ function Daemons({ d, onPause, onStopRun }: { d: DaemonsSection; onPause?: (id: 
                 ) : null}
               </span>
               <span className="mono" style={{ color: "var(--tx-3)" }}>
-                {r.runsToday} of {r.maxRuns} runs · {fmt(r.tokensToday)} of {fmt(r.maxTokens)} tokens (estimated) · spend 0 SALT
+                {r.runsToday} of {r.maxRuns} runs · {fmt(r.tokensToday)} of {fmt(r.maxTokens)} tokens
+                {r.lastTokenSource === "measured" ? " (last run measured)" : " (estimated)"} · spend 0 SALT
               </span>
               <span style={note}>
                 {r.nextRunAt !== null ? "Next: " + clock(r.nextRunAt) : "No run scheduled"}
@@ -203,6 +207,13 @@ export function ActivityMonitor({
   const workersId = useId();
   const runsId = useId();
   const runs = turn.runs ?? [];
+  const plan = turn.plan ?? null;
+  const approvals = turn.approvals ?? [];
+  const verifiers = turn.verifiers ?? [];
+  const speed = snapshot.speed ?? { tokensPerSecond: null, note: "this window's sender does not report speed" };
+  const planId = useId();
+  const approvalsId = useId();
+  const verifiersId = useId();
   const stopName = running ? "Stop the running turn" : turn.state === "stopping" ? "Stopping the turn" : "Stop (nothing is running)";
 
   return (
@@ -242,6 +253,9 @@ export function ActivityMonitor({
       <Row name="Context" testId="mon-ctx" hint={`${context.windowNote}; ${context.usedNote}`}>
         {ctxUsed} of {ctxWindow}
       </Row>
+      <Row name="Speed" testId="mon-speed" hint={speed.note}>
+        {speed.tokensPerSecond !== null ? `${speed.tokensPerSecond} tokens/s` : "unknown"}
+      </Row>
       <Row name="Elapsed" testId="mon-elapsed-row">
         <span data-testid="mon-elapsed">{formatElapsed(turn.startedAt, endAt)}</span>
       </Row>
@@ -265,6 +279,66 @@ export function ActivityMonitor({
                 <span className="mono" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{t.name}</span>
                 <span className="mono" style={{ color: TOOL_STATE_COLOR[t.state] ?? "var(--tx-2)" }}>{t.state}</span>
                 <span className="mono" style={{ color: "var(--tx-3)" }}>{formatElapsed(t.startedAt, t.endedAt ?? now)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div style={{ paddingTop: 8 }} data-testid="mon-plan">
+        <span id={planId} className="mono" style={label}>
+          Plan
+        </span>
+        {plan === null ? (
+          <div style={{ ...note, paddingTop: 4 }}>{turn.state === "idle" && turn.outcome === null ? "Nothing has run yet." : "This turn has no plan; steps show as they run."}</div>
+        ) : (
+          <ol aria-labelledby={planId} style={{ margin: 0, padding: "4px 0 0 18px", display: "flex", flexDirection: "column", gap: 3 }}>
+            {plan.map((p, i) => (
+              <li key={p.step + ":" + i} data-testid="mon-plan-row" style={{ fontSize: 12, color: "var(--tx-1)" }}>
+                <span className="mono">{p.step}</span>{" "}
+                <span className="mono" style={{ color: p.state === "passed" ? "var(--ok)" : p.state === "failed" ? "var(--danger)" : "var(--tx-3)" }}>
+                  {p.state}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+      <div style={{ paddingTop: 8 }} data-testid="mon-approvals">
+        <span id={approvalsId} className="mono" style={label}>
+          Approvals
+        </span>
+        {approvals.length === 0 ? (
+          <div style={{ ...note, paddingTop: 4 }}>None asked this turn.</div>
+        ) : (
+          <ul aria-labelledby={approvalsId} style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
+            {approvals.map((a) => (
+              <li key={a.callId + ":" + a.tool} data-testid="mon-approval-row" style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--tx-1)" }}>
+                <span className="mono" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{a.tool}</span>
+                <span className="mono" style={{ color: a.state === "pending" ? "var(--warn)" : a.state === "approved" ? "var(--ok)" : "var(--tx-2)" }}>
+                  {a.state === "pending" ? "waiting for you in the main window" : a.state === "declined" ? "declined by you" : a.state === "failed" ? "decision did not reach Hermes" : "approved by you"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div style={{ paddingTop: 8 }} data-testid="mon-verifiers">
+        <span id={verifiersId} className="mono" style={label}>
+          Checks
+        </span>
+        {verifiers.length === 0 ? (
+          <div style={{ ...note, paddingTop: 4 }}>No checks ran this turn.</div>
+        ) : (
+          <ul aria-labelledby={verifiersId} style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
+            {verifiers.map((v, i) => (
+              <li key={v.step + ":" + v.name + ":" + i} data-testid="mon-verifier-row" style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 12, color: "var(--tx-1)" }}>
+                <span style={{ display: "flex", gap: 8 }}>
+                  <span className="mono" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+                    {v.step} · {v.name}
+                  </span>
+                  <span className="mono" style={{ color: v.passed ? "var(--ok)" : "var(--danger)" }}>{v.passed ? "passed" : "failed"}</span>
+                </span>
+                {!v.passed && v.detail ? <span style={{ ...note, overflowWrap: "anywhere" }}>{v.detail}</span> : null}
               </li>
             ))}
           </ul>

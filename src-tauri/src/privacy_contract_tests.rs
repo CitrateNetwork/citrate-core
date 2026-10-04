@@ -190,6 +190,50 @@ fn run_probe(name: &str) -> Probe {
                 Err(e) => from_result(Err(e.to_string())),
             }
         }
+        "node_sync_tip_unreachable" => {
+            // The node keeps its last synced height; with the network tip unreadable, sync
+            // progress must read as unknown (-1), never "synced".
+            use citrate_core_kit::rpc::{HttpTransport, RpcClient};
+            let c = RpcClient::with_transport(HttpTransport::new(closed_url("/")));
+            let tip = crate::node::network_tip_from(&c);
+            let pct = crate::node::sync_progress(84_000, tip);
+            match (tip, pct) {
+                (None, p) if p < 0.0 => Probe::FailedHonestly(
+                    "the network tip could not be read, so sync progress shows as unknown; the node keeps its last synced height".into(),
+                ),
+                (t, p) => Probe::Dishonest(format!("tip {t:?} and progress {p} with no network")),
+            }
+        }
+        "messaging_relay_unreachable" => {
+            // The member daemon carries messages to the relay. With no network its relay link is
+            // down; core must report that and fail a messaging request, never claim a send.
+            let d = tmpdir("comms");
+            let relay = closed_url("/").replacen("http://", "ws://", 1);
+            let m = crate::comms::CommsMemberManager::new(
+                d.join("no-daemon"),
+                d.join("member.sock"),
+                d.join("member.bearer"),
+                d.clone(),
+                "",
+                "comms.citrate.ai",
+                d.join("crash.jsonl"),
+            )
+            .with_relay_url(relay);
+            let st = m.status();
+            let bearer = "probe-bearer-not-a-secret-0001";
+            let sent = crate::comms::probe_list_groups(&d.join("member.sock"), bearer);
+            let _ = std::fs::remove_dir_all(&d);
+            match (st.relay.as_str(), sent) {
+                ("connected", _) => Probe::Dishonest("relay reported connected offline".into()),
+                (_, Ok(())) => Probe::Dishonest("a messaging request succeeded offline".into()),
+                (_, Err(e)) if e.contains(bearer) => {
+                    Probe::Dishonest("error echoes the bearer".into())
+                }
+                (relay, Err(e)) => from_result(Err(format!(
+                    "messages cannot reach the relay right now (relay link: {relay}): {e}"
+                ))),
+            }
+        }
         other => Probe::Dishonest(format!("no probe named {other}")),
     }
 }
@@ -245,8 +289,9 @@ fn every_offline_matrix_feature_is_probed_or_says_why_not() {
         }
     }
     // Pinned so a new unprobed row is a deliberate, reviewed change.
+    // HUP-S10.5 follow-up: node-sync and messaging are probed now, so every row has a probe.
     assert_eq!(
-        unprobed, 2,
+        unprobed, 0,
         "unprobed features changed; update this pin on purpose"
     );
 }

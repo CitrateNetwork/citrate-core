@@ -11,7 +11,8 @@
 //     without that click. There is no budget path for these calls.
 //   - on the sidecar loop the session is opened `unattended` (the sidecar marks every effectful
 //     call HIC-required on its own as well) and is closed when the run ends.
-// The run's tokens are estimated by the TokenMeter (no provider reports usage yet).
+// The run's tokens are measured from the model server's usage reports when every model call has
+// one, otherwise estimated by the TokenMeter from characters (it says which).
 // =====================================================================
 import {
   AGENT_SYSTEM_PROMPT,
@@ -136,6 +137,7 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
         onToken: (t) => meter.output(t.length),
         onActivity: (ev) => {
           if (ev.kind === "step") meter.round();
+          else if (ev.kind === "usage") meter.measured(ev.promptTokens, ev.completionTokens);
         },
         onToolCall: async (call, meta) => {
           throwIfStopped(signal);

@@ -690,6 +690,19 @@ fn member_ipc(socket_path: &Path, bearer: &str, req: &Request) -> Result<Respons
     ipc_round_trip(stream, COMMS_IPC_TIMEOUT, bearer, req)
 }
 
+/// HUP-S10.5 — the offline matrix probe's seam: one messaging request (list groups) over the
+/// member-daemon socket at `socket_path`, through the same connect + bounded round trip every
+/// messaging command uses. Test-only; production commands go through [`route`].
+#[cfg(test)]
+pub(crate) fn probe_list_groups(
+    socket_path: &Path,
+    bearer: &str,
+) -> std::result::Result<(), String> {
+    member_ipc(socket_path, bearer, &Request::ListGroups)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Flag-A — a bounded, NON-retrying round-trip for the relay-health probe: one connect attempt and a
 /// sub-second timeout so a health check can never stall a caller. Used only by `relay_status`.
 fn member_ipc_quick(socket_path: &Path, bearer: &str, req: &Request) -> Result<Response> {

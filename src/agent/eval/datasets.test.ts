@@ -4,7 +4,18 @@
 import { describe, it, expect } from "vitest";
 import toolcallJson from "./toolcall-v1.json";
 import injectionJson from "./injection-v1.json";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseToolcallDataset, parseInjectionDataset, WRITE_TOOLS, TOOL_NAMES } from "./runner";
+
+/** The items of every fragment file in a v2 fragment directory (A50: a new tool adds a fragment). */
+function fragmentItems(dir: string, key: "tasks" | "cases"): unknown[] {
+  const d = join(__dirname, dir);
+  return readdirSync(d)
+    .filter((f) => f.endsWith(".json"))
+    .sort()
+    .flatMap((f) => (JSON.parse(readFileSync(join(d, f), "utf8")) as Record<string, unknown[]>)[key] ?? []);
+}
 
 describe("dataset validators reject malformed data", () => {
   const good = {

@@ -34,6 +34,8 @@ export interface DaemonView {
   lastRunMs: number | null;
   lastOutcome: string | null;
   lastNote: string | null;
+  /** HUP-S10.3: "measured" | "estimated" for the last run's tokens; null before the first run. */
+  lastTokenSource?: string | null;
 }
 
 export interface DaemonsView {
@@ -47,6 +49,28 @@ export interface DaemonInput {
   prompt: string;
   schedule: string;
   budget?: Budget;
+}
+
+/** HUP-S10.3 — where a run's token count came from. */
+export type TokenSource = "measured" | "estimated";
+
+/** HUP-S10.3 — one finished run in the daemon run log (no conversation content). */
+export interface DaemonRunEntry {
+  schema: number;
+  daemonId: string;
+  runId: string;
+  name: string;
+  startedMs: number;
+  endedMs: number;
+  tokens: number;
+  tokenSource: TokenSource;
+  outcome: RunOutcome;
+}
+
+export interface DaemonRunLog {
+  runs: DaemonRunEntry[];
+  /** Log lines that could not be read (skipped, never guessed at). */
+  unreadable: number;
 }
 
 export interface Claim {
@@ -65,7 +89,9 @@ export interface DaemonsApi {
   setAllPaused(paused: boolean, nowMs: number): Promise<void>;
   remove(id: string): Promise<void>;
   claimDue(nowMs: number, offsetMin: number): Promise<Claim[]>;
-  finishRun(id: string, runId: string, tokensUsed: number, outcome: RunOutcome, note: string, nowMs: number): Promise<void>;
+  finishRun(id: string, runId: string, tokensUsed: number, outcome: RunOutcome, note: string, nowMs: number, tokenSource?: TokenSource): Promise<void>;
+  /** HUP-S10.3: the daemon runs that ended in [fromMs, toMs), from the run log in the metering folder. */
+  runsBetween(fromMs: number, toMs: number): Promise<DaemonRunLog>;
 }
 
 export const tauriDaemonsApi: DaemonsApi = {
@@ -75,8 +101,9 @@ export const tauriDaemonsApi: DaemonsApi = {
   setAllPaused: (paused, nowMs) => invoke<void>("daemons_set_all_paused", { paused, nowMs }),
   remove: (id) => invoke<void>("daemon_delete", { id }),
   claimDue: (nowMs, offsetMin) => invoke<Claim[]>("daemons_claim_due", { nowMs, offsetMin }),
-  finishRun: (id, runId, tokensUsed, outcome, note, nowMs) =>
-    invoke<void>("daemons_finish_run", { id, runId, tokensUsed: Math.min(Math.max(0, Math.round(tokensUsed)), 0xffffffff), outcome, note, nowMs }),
+  finishRun: (id, runId, tokensUsed, outcome, note, nowMs, tokenSource = "estimated") =>
+    invoke<void>("daemons_finish_run", { id, runId, tokensUsed: Math.min(Math.max(0, Math.round(tokensUsed)), 0xffffffff), tokenSource, outcome, note, nowMs }),
+  runsBetween: (fromMs, toMs) => invoke<DaemonRunLog>("daemon_runs_between", { fromMs, toMs }),
 };
 
 /** The API in the desktop app; null in the web preview. */

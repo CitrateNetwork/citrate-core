@@ -607,11 +607,7 @@ impl NodeManager {
         let sync_pct = if !running || height == 0 {
             0.0
         } else {
-            match self.cached_network_tip() {
-                Some(tip) if is_caught_up(height, tip) => 100.0,
-                Some(tip) if tip > 0 => ((height as f64 / tip as f64) * 100.0).clamp(0.0, 99.9),
-                _ => -1.0, // tip unknown — never fabricate "synced"
-            }
+            sync_progress(height, self.cached_network_tip())
         };
         NodeStatus {
             state: state.to_string(),
@@ -661,7 +657,27 @@ impl NodeManager {
 /// a wedged/self-mining local node cannot fool the arm gate into thinking it has
 /// caught up. `None` on any transport error (→ no-arm, stay a follower).
 fn remote_network_tip() -> Option<u64> {
-    crate::rpc::RpcClient::citrate().block_number().ok()
+    network_tip_from(&crate::rpc::RpcClient::citrate())
+}
+
+/// The network tip read through `client` (`None` on any transport error). Split out so the
+/// offline probe (HUP-S10.5) runs this exact read against an unreachable endpoint.
+pub(crate) fn network_tip_from<T: citrate_core_kit::rpc::RpcTransport>(
+    client: &citrate_core_kit::rpc::RpcClient<T>,
+) -> Option<u64> {
+    client.block_number().ok()
+}
+
+/// Sync progress of a running node at `height` against the network `tip`: 100 when caught up, a
+/// percentage below 100 while behind, and -1.0 (shown as unknown) when the tip could not be read.
+/// Never "synced" without a tip (Rule 1). Offline, the tip read fails, so progress is unknown and
+/// the node keeps its last synced height.
+pub(crate) fn sync_progress(height: u64, tip: Option<u64>) -> f64 {
+    match tip {
+        Some(tip) if is_caught_up(height, tip) => 100.0,
+        Some(tip) if tip > 0 => ((height as f64 / tip as f64) * 100.0).clamp(0.0, 99.9),
+        _ => -1.0, // tip unknown — never fabricate "synced"
+    }
 }
 
 /// The block margin within which the local node counts as "caught up" to the

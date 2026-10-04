@@ -33,6 +33,10 @@ import { createDemoProvider, createLocalAgentProvider, createAgentProvider, Chat
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
+import { isEverydayTool, runEverydayTool, type EverydayInvoke } from "../agent/everydayTools";
+import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, withDaemonBullet } from "../journal/dailyEntry";
+import { loadDaySources } from "../journal/daySources";
+import type { DaemonRunEntry } from "../daemons/api";
 import type { FlRoundPlan } from "../bridge/domains";
 import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
@@ -61,7 +65,20 @@ import type { TokenMeter } from "../daemons/tokenMeter";
 import type { Claim } from "../daemons/api";
 import { widgetsApi, refreshWidgets } from "../widgets/api";
 import { isWidgetQuery, WIDGET_QUERIES } from "../widgets/catalog";
-import { beginTurn, commandRan, endTurn, markStopping, notePhase, noteStep, toolFinished, toolStarted } from "./slices/turnActivity";
+import {
+  approvalNoted,
+  beginTurn,
+  commandRan,
+  endTurn,
+  markStopping,
+  notePhase,
+  noteStep,
+  planReported,
+  toolFinished,
+  toolStarted,
+  usageReported,
+  verifierReported,
+} from "./slices/turnActivity";
 import { recordFileChange, refreshUndoPanel } from "./slices/agentUndo";
 import { signInApi, type SignInOutcome } from "../budgets/signIn";
 
@@ -71,7 +88,11 @@ import { signInApi, type SignInOutcome } from "../budgets/signIn";
  * wallet review for a deploy) and so carries a hic:"required" call's reason on that one approval.
  * Every other tool is held behind an explicit card before it runs when the call is hic:"required".
  */
-const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, "widget_create"]);
+/** HUP-S10.4 — the automatic daily summary runs at or after this UTC hour (journal days are UTC
+ *  days). PENDING OWNER SIGN-OFF (conservative placeholder: late in the journal day). */
+export const AUTO_SUMMARY_UTC_HOUR = 23;
+
+const SELF_GATED_TOOLS: ReadonlySet<string> = new Set(["memory_assert", "journal_append", "group_create", "group_invite", "skill_write", "contract_deploy", "fl_round_start", ESCALATE_TOOL_NAME, "widget_create", "gsheets_append", "schedule_add"]);
 
 const WALLET_ACTION_LABELS: Record<WalletReview["kind"], string> = {
   send: "Send",
@@ -2123,6 +2144,64 @@ export class Store {
     this.save();
   }
 
+  // ---------- HUP-S10.4 (US-10.4 AC1) — the daily journal summary ----------
+
+  /**
+   * Write "what Hermes did" into the day's entry (created when missing) from local records: the
+   * approved @agent bullets, wallet activity, the sidecar's metering, the daemon run log and the
+   * most recent personal-memory facts. An earlier summary block is replaced, never stacked.
+   * Returns how many lines the summary has.
+   */
+  async writeDailySummary(day: string = new Date().toISOString().slice(0, 10)): Promise<number> {
+    const sources = await loadDaySources(
+      {
+        mode: BRIDGE_MODE,
+        invoke: async <T,>(cmd: string, a: Record<string, unknown>) => {
+          const { invoke } = await import("../bridge/tauri/invoke");
+          return invoke<T>(cmd, a);
+        },
+        recallPersonal: () => bridge.memory.recall("personal", 5),
+      },
+      day,
+    );
+    const st = this.state;
+    const ensured = ensureDailyEntry(st.jPages || [], day);
+    const lines = hermesDayLines({ pages: ensured.pages, activity: st.activity || [], today: day, sources });
+    this.setState({
+      jPages: ensured.pages.map((p) => (p.id === ensured.id ? { ...p, blocks: applyHermesSummary(p.blocks, lines) } : p)),
+    });
+    this.save();
+    return lines.length;
+  }
+
+  /** Turn the once-a-day automatic summary on or off (off by default). */
+  setJournalAutoSummary(on: boolean): void {
+    this.setState({ journalAutoSummary: on });
+    this.save();
+  }
+
+  /**
+   * The once-a-day trigger (the daemon runner's tick calls it): when the member turned it on, write
+   * the journal day's summary once, at the first tick at or after AUTO_SUMMARY_UTC_HOUR UTC.
+   * Returns whether it wrote.
+   */
+  async maybeAutoDailySummary(nowMs: number = Date.now()): Promise<boolean> {
+    if (!this.state.journalAutoSummary) return false;
+    const now = new Date(nowMs);
+    const day = now.toISOString().slice(0, 10);
+    if (this.state.journalAutoSummaryDay === day || now.getUTCHours() < AUTO_SUMMARY_UTC_HOUR) return false;
+    this.setState({ journalAutoSummaryDay: day });
+    await this.writeDailySummary(day);
+    return true;
+  }
+
+  /** HUP-S10.3 — a finished daemon run, written into its day's journal entry by the app. */
+  recordDaemonRunInJournal(run: Pick<DaemonRunEntry, "name" | "outcome" | "tokens" | "tokenSource" | "endedMs">): void {
+    const day = new Date(run.endedMs).toISOString().slice(0, 10);
+    this.setState((st) => ({ jPages: withDaemonBullet(st.jPages || [], day, daemonBullet(run)) }));
+    this.save();
+  }
+
   /** HUP-S3.7 — speak a finished answer with the persona's voice when reading aloud is on. */
   private readAloud(text: string): void {
     if (!this.state.hermesReadAloud) return;
@@ -2194,6 +2273,13 @@ export class Store {
               this.toast(ev.text);
             } else if (ev.kind === "verifier") {
               patch((m) => ({ ...m, chips: m.chips.concat([verifierChip(ev)]) }));
+              verifierReported(ev);
+            } else if (ev.kind === "usage") {
+              usageReported(ev);
+            } else if (ev.kind === "plan") {
+              planReported(ev.steps);
+            } else if (ev.kind === "approval") {
+              approvalNoted(ev.callId, ev.tool, ev.state);
             } else if (!ac.signal.aborted) noteStep(ev.step);
           },
         },
@@ -2507,7 +2593,16 @@ export class Store {
               this.toast(ev.text);
               return;
             }
-            if (!stopped() && ev.kind === "step") noteStep(ev.step);
+            // HUP-S7.6 (US-7.4 AC1): usage, plan, approvals and verifier verdicts for the monitor.
+            if (ev.kind === "approval") {
+              approvalNoted(ev.callId, ev.tool, ev.state);
+              return;
+            }
+            if (stopped()) return;
+            if (ev.kind === "step") noteStep(ev.step);
+            else if (ev.kind === "usage") usageReported(ev);
+            else if (ev.kind === "plan") planReported(ev.steps);
+            else if (ev.kind === "verifier") verifierReported(ev);
           },
         },
       });
@@ -2567,6 +2662,15 @@ export class Store {
     return r === "approved";
   }
 
+  /** HUP-S10.2 — the Rust command seam for the everyday tools (null in the web preview). */
+  everydayInvoke(): EverydayInvoke | null {
+    if (BRIDGE_MODE !== "tauri") return null;
+    return async <T,>(cmd: string, a: Record<string, unknown>) => {
+      const { invoke } = await import("../bridge/tauri/invoke");
+      return invoke<T>(cmd, a);
+    };
+  }
+
   /**
    * HUP-S4.1 (US-4.1 AC2): put a held MCP request in front of the member with the HIC banner: an
    * effectful MCP call after the session read untrusted content (server, tool, the exact
@@ -2606,8 +2710,16 @@ export class Store {
     const ann = annotationFor(call.name);
     const hic: HicRequirement | undefined =
       meta?.hic === "required" ? { reason: meta.hicReason || "this action needs your explicit approval" } : undefined;
-    // `signal`: a daemon run's; its cards close when the run ends.
-    const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card }, signal);
+    // HUP-S7.6 (US-7.4 AC1): every approval this call asks for shows in the Activity monitor,
+    // pending until the member decides. `signal`: a daemon run's; its cards close when the run ends.
+    const tracked = async (decide: () => Promise<string>): Promise<string> => {
+      approvalNoted(call.id, call.name, "pending");
+      const r = await decide();
+      approvalNoted(call.id, call.name, r === "approved" ? "approved" : "declined");
+      return r;
+    };
+    const ask = (spec: CerSpec, card: ApprovalCard): Promise<string> =>
+      tracked(() => this.requestSig(hic ? { ...spec, card, hic } : { ...spec, card }, signal));
     let held = false;
     if (hic && !SELF_GATED_TOOLS.has(call.name)) {
       const r = await ask(
@@ -3046,7 +3158,7 @@ export class Store {
       if (plan) {
         const p = plan;
         const out = await approveAndStartRound(
-          { requestSig: (spec) => this.requestSig(spec), start: (h) => bridge.flRounds.start(h) },
+          { requestSig: (spec) => tracked(() => this.requestSig(spec)), start: (h) => bridge.flRounds.start(h) },
           p,
           "chat agent",
           (spec) => {
@@ -3059,6 +3171,16 @@ export class Store {
         status = out.status;
         result = out.message;
       }
+    } else if (isEverydayTool(call.name)) {
+      // HUP-S10.2: Google Sheets, Hermes's schedule and Google Calendar. Reads run as reads; the two
+      // writes (gsheets_append, schedule_add) ask on an approval card and run only on Approve.
+      const out = await runEverydayTool(call.name, args as Record<string, unknown>, ann, {
+        invoke: this.everydayInvoke(),
+        ask,
+        nowSecs: () => Math.floor(Date.now() / 1000),
+      });
+      status = out.status;
+      result = out.result;
     } else if (call.name === "contract_deploy") {
       // WRITE: assemble the creation tx as a PENDING ceremony the member approves (Rule 3).
       try {

@@ -35,8 +35,8 @@ in Settings, Privacy & recovery, and two tests keep it honest:
 | `cloud-ai` | Hermes on a cloud AI provider | needs the network | `ai_provider_unreachable` |
 | `sign-in` | Sign in and account details | needs the network | `oidc_unreachable` |
 | `model-download` | Model downloads | needs the network | `model_download_unreachable` |
-| `node-sync` | Node sync with the network | limited | not probed (see below) |
-| `messaging` | Group messaging and invites | needs the network | not probed (see below) |
+| `node-sync` | Node sync with the network | limited | `node_sync_tip_unreachable` |
+| `messaging` | Group messaging and invites | needs the network | `messaging_relay_unreachable` |
 
 The member-facing sentence for each row (what the screen says or does) lives in the JSON
 `behaviour` field, not here.
@@ -49,13 +49,21 @@ layers fail fast with an error rather than hang or return a made-up value. How e
 screen renders that error is covered by the existing honesty tests (for example
 `walletVitalsHonesty.test.tsx`, `nodeVitalsHonesty.test.tsx`, `settingsHonesty.test.tsx`).
 
-Two rows are not probed, and the test pins that count at two so a new unprobed row is a
-deliberate change:
+Every row is probed now, and the test pins the unprobed count at zero so a new unprobed
+row is a deliberate change. The two rows added on 2026-10-04 (branch
+`hup/n6-everyday-monitor`) prove less than the others, and say so:
 
-- **node-sync** needs a running node binary and peers. The node vitals honesty tests
-  cover the zero-peer display.
-- **messaging** has no transport test seam in core yet. Follow-up: add one in the comms
-  bridge and a probe here.
+- **node-sync** runs the network-tip read the node status uses (`network_tip_from`)
+  against a closed port and feeds the result to `sync_progress`. It proves that with no
+  network the progress reads as unknown (shown as a dash) and never as synced, while the
+  node keeps its last height. It does not run a node binary or peers; the node vitals
+  honesty tests cover the zero-peer display.
+- **messaging** points a member-daemon manager at a closed relay port with no daemon
+  running, checks the relay link does not read as connected, and sends one messaging
+  request (list groups) through the same bounded socket round trip every messaging
+  command uses. It proves core fails the request with a plain message and never echoes
+  the bearer. The daemon's own relay reconnect lives in citrate-comms and is not
+  exercised here.
 
 The telemetry send now carries a 20 second bound (it had none), found while writing its
 probe.

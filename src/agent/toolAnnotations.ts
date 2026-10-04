@@ -52,6 +52,14 @@ export const AGENT_TOOL_ANNOTATIONS: Readonly<Record<AgentToolName, ToolAnnotati
   // settlement words come from the coordinator (fl_rounds.rs parse_status), so it is trusted.
   fl_round_plan: { effect: "none", trust: "trusted" },
   fl_round_start: { effect: "write", trust: "trusted" }, // records the member's approval of one plan
+  // HUP-S10.2: a shared sheet's cells and an invitation's event title are written by other people,
+  // so both Google reads are untrusted (conservative; pending owner sign-off). Hermes's own
+  // schedule is written by the member or approved by them.
+  gsheets_read: { effect: "none", trust: "untrusted" },
+  gsheets_append: { effect: "write", trust: "trusted" }, // after the member's approval card
+  schedule_list: { effect: "none", trust: "trusted" },
+  schedule_add: { effect: "write", trust: "trusted" }, // after the member's approval card
+  calendar_list: { effect: "none", trust: "untrusted" },
 };
 
 /** The annotation for a tool name, or null for a name core does not offer. */
