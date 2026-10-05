@@ -832,7 +832,7 @@ fn user_claim_bridges_a_real_pending_ceremony() {
 
     let claimable = 5 * 10u128.pow(18); // 5 SALT
     let (id, req) = mgr
-        .bridge_user_claim(&ceremony, &v, &rpc, claimable, crate::earnings::CONTRIBUTION_ACCOUNTING)
+        .bridge_user_claim(&ceremony, &v, &rpc, claimable, crate::earnings::contribution_accounting())
         .expect("user claim bridges");
     // The bridged request is the user-claim id space (C2-F-3) + real claimRewards().
     assert_eq!(req.id, crate::earnings::USER_CLAIM_ID);
@@ -854,7 +854,7 @@ fn user_claim_with_zero_claimable_is_honest_nothing_to_claim() {
     // No RPC should be consumed — the zero check short-circuits before gas estimate.
     let rpc = RpcClient::with_transport(MockRpc::new(vec![]));
 
-    let r = mgr.bridge_user_claim(&ceremony, &v, &rpc, 0, crate::earnings::CONTRIBUTION_ACCOUNTING);
+    let r = mgr.bridge_user_claim(&ceremony, &v, &rpc, 0, crate::earnings::contribution_accounting());
     assert!(
         matches!(r, Err(AgentError::NoPending)),
         "zero claimable → honest NoPending, never a faked claim: {r:?}"
@@ -894,7 +894,7 @@ fn user_claim_and_node_agent_id_zero_do_not_alias() {
 
     // Bridge the USER claim (USER_CLAIM_ID) and the node-agent request (id 0).
     let (user_id, user_req) = mgr
-        .bridge_user_claim(&ceremony, &v, &rpc, 5 * 10u128.pow(18), crate::earnings::CONTRIBUTION_ACCOUNTING)
+        .bridge_user_claim(&ceremony, &v, &rpc, 5 * 10u128.pow(18), crate::earnings::contribution_accounting())
         .expect("user claim bridges");
     let (na_id, na_req) = mgr
         .bridge_one_pending(&ceremony, &v, &rpc)
@@ -1240,7 +1240,7 @@ fn user_claim_request_targets_whatever_contract_it_is_given() {
     let to_contrib = crate::earnings::user_claim_request(1);
     assert_eq!(
         to_contrib.to,
-        crate::earnings::CONTRIBUTION_ACCOUNTING,
+        crate::earnings::contribution_accounting(),
         "a non-validator claim still goes to ContributionAccounting"
     );
 
@@ -1255,5 +1255,5 @@ fn a_validator_claim_never_silently_targets_contribution_accounting() {
     // NEGATIVE CONTROL: the bug was that the bond address was ignored entirely.
     let bond = "0xd9ff524e1e1959440e4c5f18aa0fe8b54f01752b";
     let req = crate::earnings::user_claim_request_to(1, bond);
-    assert_ne!(req.to, crate::earnings::CONTRIBUTION_ACCOUNTING);
+    assert_ne!(req.to, crate::earnings::contribution_accounting());
 }

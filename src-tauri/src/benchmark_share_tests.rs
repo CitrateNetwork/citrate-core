@@ -133,7 +133,7 @@ fn the_agent_id_is_the_first_agent_sbt_and_none_means_no_sharing() {
         contract: None,
         member: "0x1111111111111111111111111111111111111111".into(),
         did: None,
-        parent_org_id: "0".into(),
+        parent_org_id: None,
         balance: None,
         tokens: None,
         tokens_note: None,

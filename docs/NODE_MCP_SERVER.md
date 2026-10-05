@@ -114,8 +114,8 @@ the agent precompile fork, HUP-S7.2: 0x0112 LORA_APPLY, 0x0113 LORA_MERGE, 0x012
 MEMORY_ANCHOR_VERIFY, 0x0122 AGENT_OPS. Encode builds the exact input bytes, the scheduled gas and
 the `CitratePrecompiles` helper to pass them to, from Q16.16 tensors, the sidecar's anchor proof, or
 a stored device link or revocation; decode reads an answer back, and empty output is an error, never
-a verdict. Both are pure, with no RPC call: the four precompiles answer only to contract code and only
-from the fork height, which is not scheduled on 40204. Encodings are pinned to the chain's encoders by
+a verdict. Both are pure, with no RPC call: the four precompiles answer only to contract code, and on
+40204 they are active from genesis (reroll 2026-10-05). Encodings are pinned to the chain's encoders by
 `src-tauri/tests/fixtures/precompiles/agent_precompile_vectors.json`, generated in citrate-chain),
 `wallet_info`, `address_book`, `memory_search`,
 `groups_list`, `cluster_status`, `cluster_peers`, `cluster_devices` (each member's linked

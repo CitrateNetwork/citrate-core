@@ -46,6 +46,10 @@ struct Addresses {
     citrate_wallet_factory: String,
     #[serde(rename = "LiquidStakingPool")]
     liquid_staking_pool: String,
+    /// Reroll fan-out (2026-10-05): the contribution claim target, previously a literal in
+    /// `earnings.rs` that drifted from the book.
+    #[serde(rename = "ContributionAccounting")]
+    contribution_accounting: String,
     #[serde(rename = "IPFSIncentivesV3")]
     ipfs_incentives_v3: String,
     #[serde(rename = "PatronageLedger", default)]
@@ -88,6 +92,8 @@ fn book() -> &'static Book {
         b.addresses.citrate_wallet_factory =
             b.addresses.citrate_wallet_factory.to_ascii_lowercase();
         b.addresses.liquid_staking_pool = b.addresses.liquid_staking_pool.to_ascii_lowercase();
+        b.addresses.contribution_accounting =
+            b.addresses.contribution_accounting.to_ascii_lowercase();
         b.addresses.ipfs_incentives_v3 = b.addresses.ipfs_incentives_v3.to_ascii_lowercase();
         b.addresses.model_registry = b.addresses.model_registry.to_ascii_lowercase();
         b.addresses.skill_registry = b.addresses.skill_registry.to_ascii_lowercase();
@@ -137,6 +143,11 @@ pub fn citrate_wallet_factory() -> &'static str {
 #[allow(dead_code)]
 pub fn liquid_staking_pool() -> &'static str {
     &book().addresses.liquid_staking_pool
+}
+
+/// `ContributionAccounting`: the `claimable` read and the contribution `claimRewards` target.
+pub fn contribution_accounting() -> &'static str {
+    &book().addresses.contribution_accounting
 }
 
 /// `ModelRegistry` — the on-chain model registry (a backbone of the app layer): models are
@@ -272,6 +283,53 @@ mod tests {
         }
         assert_eq!(optional(""), None);
         assert_eq!(optional("0xab"), Some("0xab"));
+    }
+
+    /// Reroll fan-out tripwire (2026-10-05): no non-test module carries its own copy of a
+    /// contract address. Every pin comes from this generated book, so one sync moves them all.
+    /// The precompile and zero-prefixed sentinel forms (`0x000…`) are not book addresses.
+    #[test]
+    fn no_module_hard_codes_a_contract_address() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("src dir") {
+            let path = entry.expect("entry").path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !name.ends_with(".rs") || name.contains("tests") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("read");
+            let body = src.split("#[cfg(test)]").next().unwrap_or("");
+            for (i, line) in body.lines().enumerate() {
+                let mut rest = line;
+                while let Some(pos) = rest.find("\"0x") {
+                    let lit = &rest[pos + 1..];
+                    let hex: String = lit[2..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_hexdigit())
+                        .collect();
+                    if hex.len() == 40 && !hex.starts_with("0000000000") {
+                        offenders.push(format!("{name}:{}: 0x{hex}", i + 1));
+                    }
+                    rest = &lit[2..];
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "hard-coded contract addresses (read them from crate::addresses): {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn contribution_accounting_is_pinned_from_the_book() {
+        let a = contribution_accounting();
+        assert!(is_address(a), "{a}");
+        assert_eq!(a, a.to_ascii_lowercase());
     }
 
     #[test]

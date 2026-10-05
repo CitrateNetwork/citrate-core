@@ -1,11 +1,13 @@
 //! HUP-S7.4 (US-7.1) — **AgentSBT mint at onboarding**: give Hermes an on-chain identity.
 //!
-//! Live ABI (citrate-chain `contracts/src/cit_agent/AgentSBT.sol`, soulbound ERC-721, no
-//! `ERC721Enumerable`):
+//! ABI (citrate-chain `contracts/src/cit_agent/AgentSBT.sol`, soulbound ERC-721, no
+//! `ERC721Enumerable`), as of the 2026-10-05 reroll:
 //!
 //! ```text
-//! mintAgent(address to, uint256 parent_org_id, bytes32 did, bytes32 pubkey_fingerprint)
-//!     external onlyOwner returns (uint256)          // reverts OrgNotActive() unless the parent org is active
+//! mintAgentAsMember(bytes32 did, bytes32 pubkey_fingerprint) external returns (uint256)
+//!     // mints to msg.sender; requires the membership SBT; parent org = memberOrgId();
+//!     // per-member cap maxAgentsPerMember; reverts OrgNotActive() unless that org is active
+//! memberOrgId() returns (uint256)                   // owner-set parent org for member mints
 //! balanceOf(address) / ownerOf(uint256)             // ERC-721
 //! getAgent(uint256) returns ((uint256 parent_org_id, bytes32 did, bytes32 pubkey_fingerprint, bool quarantined))
 //! orgContract() returns (address)                   // the parent OrganizationSBT; isActive(uint256) there
@@ -16,37 +18,35 @@
 //! `Transfer(0, member, id)` logs and checked against `balanceOf` (the token is soulbound and
 //! has no burn path, so a mint log is a holding).
 //!
+//! # Issuance (owner decision 2026-10-04)
+//!
+//! The member mints their own AgentSBT from their own wallet. No registrar or issuer mints
+//! for them, and this app never builds the owner-only `mintAgent`. The member approves the one
+//! transaction in the SignatureCeremony (HIC-1). Rule 3: nothing here signs or holds a key,
+//! and the Hermes sidecar is not involved.
+//!
 //! # What this module does
 //!
-//! * builds the `mintAgent` calldata (byte-exact against `cast`; tested);
+//! * builds the `mintAgentAsMember` calldata (byte-exact against `cast`; tested);
 //! * gathers the facts that decide whether the onboarding step can be offered, and turns them
 //!   into one honest state (`assess`). The step is offered ONLY when the address book carries
-//!   AgentSBT, the address has code, the member holds none yet, the parent organization is
-//!   active, this install has the identity key, and an `eth_call` preflight of the exact tx
-//!   from the member's wallet succeeds. Anything else shows why, in plain words;
-//! * submits the mint as a PENDING SignatureCeremony (HIC-1: the member approves it). Rule 3:
-//!   nothing here signs or holds a key.
+//!   AgentSBT, the address has code, the member holds none yet, the contract has member
+//!   issuance (`memberOrgId()` answers), the wallet holds the membership SBT (read from the
+//!   canonical book's `CitrateMemberSBT`), the member org is active, this install has the
+//!   identity key, and an `eth_call` preflight of the exact tx from the member's wallet
+//!   succeeds. Anything else shows why, in plain words;
+//! * submits the mint as a PENDING SignatureCeremony that the member approves.
 //!
-//! # State on 40204 (2026-10-01)
+//! On the pre-reroll contract `memberOrgId()` does not exist, so the step reads "available
+//! after the network upgrade" and enables itself on the reroll book with no app change.
 //!
-//! AgentSBT is deployed (`0xd16b1ad6…7c7b`) and owned by the CitAgent 2-of-3 timelock, and no
-//! OrganizationSBT has been minted yet. So the step shows "available after the network
-//! upgrade" today: first because the parent organization is not active, and after that because
-//! `mintAgent` is issuer-only (`onlyOwner`). It enables itself when the chain allows the
-//! member's own mint, with no app change.
+//! # Identity inputs
 //!
-//! # Pending owner sign-off
-//!
-//! * **Parent organization.** Which OrganizationSBT parents every member's Hermes.
-//!   Placeholder: org `0` ([`DEFAULT_PARENT_ORG_ID`]), overridable with
-//!   `CITRATE_AGENT_PARENT_ORG_ID` for operators and test networks.
-//! * **Issuance path.** `mintAgent` is `onlyOwner`, so a member cannot mint their own today.
-//!   Either the contract gains a member-callable mint, or a registrar service mints on the
-//!   member's request. This module preflights from the member's wallet, so either change
-//!   turns the step on without an app release (the registrar path would add a request route).
+//! * **Parent organization.** Chosen by the contract (`memberOrgId()`), never by the app.
 //! * **Identity key.** The `pubkey_fingerprint` is `sha256(ed25519 pubkey)`, the runtime's
 //!   `signer_id_from_pubkey`. Hermes has no key of its own (the sidecar is keyless), so the
-//!   placeholder binds the identity to this node's ed25519 proposer key (public half only).
+//!   placeholder (pending owner sign-off) binds the identity to this node's ed25519 proposer
+//!   key (public half only).
 //! * **DID.** `did:citrate:agent:<member address, lowercase>`, hashed with keccak-256 to the
 //!   `bytes32` the contract stores (the OrganizationSBT documents its `did` the same way).
 use serde::Serialize;
@@ -57,22 +57,15 @@ use sha3::Keccak256;
 use crate::model_registry::selector;
 use crate::rpc::{LogEntry, RpcClient, RpcTransport};
 
-/// The `mintAgent` signature the selector (`0x51d3fe66`) derives from.
-pub const MINT_AGENT_SIG: &str = "mintAgent(address,uint256,bytes32,bytes32)";
+/// The member mint the selector (`0x6bb96405`) derives from. The recipient is `msg.sender`.
+pub const MINT_AGENT_AS_MEMBER_SIG: &str = "mintAgentAsMember(bytes32,bytes32)";
 
 /// keccak256("Transfer(address,address,uint256)") — the ERC-721 Transfer event topic.
 pub const TRANSFER_TOPIC: &str =
     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-/// `OwnableUnauthorizedAccount(address)` — the caller is not the contract owner (the issuer).
-const ERR_NOT_OWNER: &str = "118cdaa7";
 /// `OrgNotActive()` — the parent OrganizationSBT is not active.
 const ERR_ORG_NOT_ACTIVE: &str = "a4dde45e";
-
-/// Pending owner sign-off: the OrganizationSBT that parents every member's Hermes.
-pub const DEFAULT_PARENT_ORG_ID: u64 = 0;
-/// Operator / test-network override for [`DEFAULT_PARENT_ORG_ID`].
-pub const PARENT_ORG_ENV: &str = "CITRATE_AGENT_PARENT_ORG_ID";
 
 /// Chain id the mint targets (40204).
 const CHAIN_ID: u64 = 40204;
@@ -111,17 +104,6 @@ pub fn parse_pubkey_hex(s: &str) -> Result<[u8; 32], String> {
         .map_err(|v: Vec<u8>| format!("identity key must be 32 bytes, got {}", v.len()))
 }
 
-/// The parent organization id: the override when set (it must be a plain unsigned integer),
-/// else [`DEFAULT_PARENT_ORG_ID`].
-pub fn parse_parent_org(v: Option<&str>) -> Result<u64, String> {
-    match v.map(str::trim) {
-        None | Some("") => Ok(DEFAULT_PARENT_ORG_ID),
-        Some(s) => s
-            .parse::<u64>()
-            .map_err(|_| format!("{PARENT_ORG_ENV} must be an unsigned integer, got {s:?}")),
-    }
-}
-
 // ------------------------------------------------------------------ calldata
 
 fn word_u64(n: u64) -> [u8; 32] {
@@ -136,21 +118,19 @@ fn word_addr(a: &[u8; 20]) -> [u8; 32] {
     w
 }
 
-/// `mintAgent(to, parent_org_id, did, pubkey_fingerprint)` calldata. All four arguments are
-/// static words. Pure: no I/O, no signing.
-pub fn mint_agent_calldata(
-    to: &[u8; 20],
-    parent_org_id: u64,
-    did: &[u8; 32],
-    fingerprint: &[u8; 32],
-) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 4 * 32);
-    out.extend_from_slice(&selector(MINT_AGENT_SIG));
-    out.extend_from_slice(&word_addr(to));
-    out.extend_from_slice(&word_u64(parent_org_id));
+/// `mintAgentAsMember(did, pubkey_fingerprint)` calldata: two static words. The token goes
+/// to `msg.sender`, so there is no recipient argument. Pure: no I/O, no signing.
+pub fn mint_agent_as_member_calldata(did: &[u8; 32], fingerprint: &[u8; 32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 2 * 32);
+    out.extend_from_slice(&selector(MINT_AGENT_AS_MEMBER_SIG));
     out.extend_from_slice(did);
     out.extend_from_slice(fingerprint);
     out
+}
+
+/// `AgentSBT.memberOrgId()`.
+pub fn member_org_id_calldata() -> Vec<u8> {
+    selector("memberOrgId()").to_vec()
 }
 
 /// `balanceOf(owner)`.
@@ -269,8 +249,6 @@ pub fn token_id_from_log(log: &LogEntry) -> Result<u64, String> {
 pub enum Preflight {
     /// The call would succeed.
     Ok,
-    /// `OwnableUnauthorizedAccount`: only the issuer can mint today.
-    NotIssuer,
     /// `OrgNotActive`: the parent organization is not active.
     OrgNotActive,
     /// Any other revert or node error, verbatim.
@@ -296,9 +274,7 @@ pub fn classify_revert(err: &Value) -> Preflight {
         hay.match_indices("0x")
             .any(|(i, _)| hay[i + 2..].starts_with(sel))
     };
-    if has(ERR_NOT_OWNER) {
-        Preflight::NotIssuer
-    } else if has(ERR_ORG_NOT_ACTIVE) {
+    if has(ERR_ORG_NOT_ACTIVE) {
         Preflight::OrgNotActive
     } else if msg.is_empty() {
         Preflight::Reverted(err.to_string())
@@ -319,10 +295,12 @@ pub enum MintState {
     NotInBook,
     /// The AgentSBT address has no code on chain.
     NoCode,
-    /// The parent organization is not active (or does not exist yet).
+    /// This AgentSBT has no member issuance (the pre-reroll contract).
+    MemberMintUnavailable,
+    /// The wallet does not hold the membership SBT.
+    NotMember,
+    /// The member organization is not active (or does not exist yet).
     OrgNotActive,
-    /// Only the issuer can mint today.
-    NotIssuer,
     /// This install does not have the identity key yet.
     IdentityKeyMissing,
     /// A chain read failed.
@@ -337,6 +315,10 @@ pub struct Facts {
     pub contract: Option<String>,
     pub has_code: Result<bool, String>,
     pub held: Result<u128, String>,
+    /// `memberOrgId()`: `Ok(None)` when the contract has no member issuance.
+    pub member_org: Result<Option<u64>, String>,
+    /// The wallet holds the membership SBT.
+    pub is_member: Result<bool, String>,
     pub org_active: Result<bool, String>,
     pub identity_key: Result<[u8; 32], String>,
     pub preflight: Result<Preflight, String>,
@@ -368,12 +350,16 @@ pub fn message_for(state: MintState, detail: &str) -> String {
         MintState::NoCode => {
             format!("{LATER} The AgentSBT contract is not deployed on chain 40204 yet.")
         }
-        MintState::OrgNotActive => format!(
-            "{LATER} The organization that issues Hermes identities is not set up on chain yet."
+        MintState::MemberMintUnavailable => format!(
+            "{LATER} The AgentSBT contract on chain 40204 does not support members minting \
+             their own identity yet."
         ),
-        MintState::NotIssuer => format!(
-            "{LATER} Identities are issued by the network's agent registrar today, and \
-             self-service issuance for members is not open yet."
+        MintState::NotMember => "Hermes identity is for Citrate members. Your wallet does not \
+             hold the membership SBT yet, so this step unlocks once your membership is active."
+            .into(),
+        MintState::OrgNotActive => format!(
+            "{LATER} The member organization that Hermes identities belong to is not active on \
+             chain yet."
         ),
         MintState::IdentityKeyMissing => format!(
             "Hermes identity uses this node's key, which your node creates once it finishes \
@@ -396,8 +382,9 @@ fn verdict(state: MintState, detail: &str) -> Readiness {
     }
 }
 
-/// Decide the state. Order: the book, the code, what the member already holds, the parent
-/// organization, the identity key, then the preflight of the exact tx.
+/// Decide the state. Order: the book, the code, what the member already holds, member
+/// issuance, membership, the member organization, the identity key, then the preflight of
+/// the exact tx.
 pub fn assess(f: &Facts) -> Readiness {
     if f.contract.is_none() {
         return verdict(MintState::NotInBook, "");
@@ -412,6 +399,16 @@ pub fn assess(f: &Facts) -> Readiness {
         Ok(n) if *n > 0 => return verdict(MintState::Minted, ""),
         Ok(_) => {}
     }
+    match &f.member_org {
+        Err(e) => return verdict(MintState::ChainUnreachable, e),
+        Ok(None) => return verdict(MintState::MemberMintUnavailable, ""),
+        Ok(Some(_)) => {}
+    }
+    match &f.is_member {
+        Err(e) => return verdict(MintState::ChainUnreachable, e),
+        Ok(false) => return verdict(MintState::NotMember, ""),
+        Ok(true) => {}
+    }
     match &f.org_active {
         Err(e) => return verdict(MintState::ChainUnreachable, e),
         Ok(false) => return verdict(MintState::OrgNotActive, ""),
@@ -423,7 +420,6 @@ pub fn assess(f: &Facts) -> Readiness {
     match &f.preflight {
         Err(e) => verdict(MintState::ChainUnreachable, e),
         Ok(Preflight::Ok) => verdict(MintState::Ready, ""),
-        Ok(Preflight::NotIssuer) => verdict(MintState::NotIssuer, ""),
         Ok(Preflight::OrgNotActive) => verdict(MintState::OrgNotActive, ""),
         Ok(Preflight::Reverted(m)) => verdict(MintState::Reverted, m),
     }
@@ -440,7 +436,9 @@ pub struct AgentSbtStatus {
     pub member: String,
     /// The DID string the mint binds (null when the member address is malformed).
     pub did: Option<String>,
-    pub parent_org_id: String,
+    /// The contract's `memberOrgId()`; null when it could not be read or the contract has no
+    /// member issuance (never a guessed org).
+    pub parent_org_id: Option<String>,
     /// `balanceOf(member)` as a decimal string; null when it could not be read.
     pub balance: Option<String>,
     /// The member's tokens; null when they could not be listed (never a guessed empty list).
@@ -477,6 +475,39 @@ fn read_code<T: RpcTransport>(rpc: &RpcClient<T>, contract: &str) -> Result<bool
         .and_then(Value::as_str)
         .ok_or("eth_getCode: no result")?;
     Ok(!matches!(code, "0x" | "0x0" | ""))
+}
+
+/// Decode the raw `memberOrgId()` answer. A revert or empty data means the contract has no
+/// member issuance (`Ok(None)`); a word is the org id; anything else is an error.
+pub fn decode_member_org(r: &Value) -> Result<Option<u64>, String> {
+    if r.get("error").is_some() {
+        return Ok(None);
+    }
+    let res = r
+        .get("result")
+        .and_then(Value::as_str)
+        .ok_or("memberOrgId: no result")?;
+    let raw = res.trim_start_matches("0x");
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let b = hex::decode(raw).map_err(|e| format!("memberOrgId: {e}"))?;
+    let n = decode_u128(&b)?;
+    u64::try_from(n)
+        .map(Some)
+        .map_err(|_| "memberOrgId exceeds u64".to_string())
+}
+
+fn read_member_org<T: RpcTransport>(
+    rpc: &RpcClient<T>,
+    contract: &str,
+) -> Result<Option<u64>, String> {
+    let r = raw_call(
+        rpc,
+        "eth_call",
+        json!([{"to": contract, "data": hex_data(&member_org_id_calldata())}, "latest"]),
+    )?;
+    decode_member_org(&r)
 }
 
 fn call<T: RpcTransport>(rpc: &RpcClient<T>, to: &str, data: &[u8]) -> Result<Vec<u8>, String> {
@@ -519,26 +550,24 @@ fn list_tokens<T: RpcTransport>(
     Ok(out)
 }
 
-/// The mint calldata for `member`, or why it cannot be built.
-fn member_calldata(member: &str, parent_org: u64, key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    let to = crate::validator::parse_address_20(member)?;
+/// The member-mint calldata for `member`, or why it cannot be built.
+fn member_calldata(member: &str, key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let did = agent_did(member)?;
-    Ok(mint_agent_calldata(
-        &to,
-        parent_org,
+    Ok(mint_agent_as_member_calldata(
         &did_hash(&did),
         &pubkey_fingerprint(key),
     ))
 }
 
-/// Read everything from the chain and decide. `contract` is the address-book entry (None =
-/// absent: no RPC call is made). `identity_key` is this install's ed25519 public key or why
+/// Read everything from the chain and decide. `contract` is the address-book AgentSBT (None =
+/// absent: no RPC call is made). `member_sbt` is the book's `CitrateMemberSBT` (None = absent:
+/// membership cannot be confirmed). `identity_key` is this install's ed25519 public key or why
 /// it is not available.
 pub fn gather<T: RpcTransport>(
     rpc: &RpcClient<T>,
     contract: Option<&str>,
+    member_sbt: Option<&str>,
     member: &str,
-    parent_org: u64,
     identity_key: Result<[u8; 32], String>,
 ) -> AgentSbtStatus {
     let did = agent_did(member).ok();
@@ -546,7 +575,7 @@ pub fn gather<T: RpcTransport>(
         contract: contract.map(str::to_string),
         member: member.to_string(),
         did,
-        parent_org_id: parent_org.to_string(),
+        parent_org_id: None,
         balance: None,
         tokens: None,
         tokens_note: None,
@@ -559,6 +588,8 @@ pub fn gather<T: RpcTransport>(
         contract: st.contract.clone(),
         has_code: skipped(),
         held: Err("not checked".into()),
+        member_org: Err("not checked".into()),
+        is_member: skipped(),
         org_active: skipped(),
         identity_key,
         preflight: Err("not checked".into()),
@@ -586,13 +617,26 @@ pub fn gather<T: RpcTransport>(
             }
         }
         if matches!(facts.held, Ok(0)) {
-            facts.org_active = call(rpc, c, &org_contract_calldata())
-                .and_then(|r| decode_address(&r))
-                .and_then(|org| call(rpc, &org, &is_active_calldata(parent_org)))
-                .and_then(|r| decode_bool(&r));
-            if let (Ok(true), Ok(key)) = (&facts.org_active, &facts.identity_key) {
-                facts.preflight = member_calldata(member, parent_org, key)
-                    .and_then(|cd| preflight(rpc, member, c, &cd));
+            facts.member_org = read_member_org(rpc, c);
+            if let Ok(Some(org)) = facts.member_org {
+                st.parent_org_id = Some(org.to_string());
+                facts.is_member = match (member_sbt, &member20) {
+                    (None, _) => Err("the address book has no membership SBT".into()),
+                    (_, Err(e)) => Err(e.clone()),
+                    (Some(sbt), Ok(m)) => call(rpc, sbt, &balance_of_calldata(m))
+                        .and_then(|r| decode_u128(&r))
+                        .map(|n| n > 0),
+                };
+                if matches!(facts.is_member, Ok(true)) {
+                    facts.org_active = call(rpc, c, &org_contract_calldata())
+                        .and_then(|r| decode_address(&r))
+                        .and_then(|o| call(rpc, &o, &is_active_calldata(org)))
+                        .and_then(|r| decode_bool(&r));
+                }
+                if let (Ok(true), Ok(key)) = (&facts.org_active, &facts.identity_key) {
+                    facts.preflight =
+                        member_calldata(member, key).and_then(|cd| preflight(rpc, member, c, &cd));
+                }
             }
         }
     }
@@ -625,11 +669,10 @@ pub fn mint_tx_json(from: &str, contract: &str, calldata: &[u8], gas: u64) -> St
 
 /// The pending-ceremony tx for a member whose readiness is `st`: refuses with the
 /// member-facing reason unless `st.available` (and then never asks the node for gas), else
-/// builds the exact `mintAgent` calldata, estimates gas through `estimate` and adds the
-/// margin. Pure apart from `estimate`; signs nothing.
+/// builds the exact `mintAgentAsMember` calldata from the member's own wallet, estimates gas
+/// through `estimate` and adds the margin. Pure apart from `estimate`; signs nothing.
 pub fn prepare_mint_tx(
     st: &AgentSbtStatus,
-    parent_org: u64,
     key: &[u8; 32],
     estimate: impl FnOnce(Value) -> Result<u64, String>,
 ) -> Result<String, String> {
@@ -640,7 +683,7 @@ pub fn prepare_mint_tx(
         .contract
         .as_deref()
         .ok_or_else(|| message_for(MintState::NotInBook, ""))?;
-    let calldata = member_calldata(&st.member, parent_org, key)?;
+    let calldata = member_calldata(&st.member, key)?;
     let gas = estimate(json!({"from": st.member, "to": contract, "data": hex_data(&calldata)}))
         .map_err(|e| format!("could not estimate gas for the identity mint: {e}"))?;
     Ok(mint_tx_json(
@@ -652,11 +695,6 @@ pub fn prepare_mint_tx(
 }
 
 // ------------------------------------------------------------------ commands
-
-/// The parent org id in effect (env override or the placeholder).
-fn parent_org() -> Result<u64, String> {
-    parse_parent_org(std::env::var(PARENT_ORG_ENV).ok().as_deref())
-}
 
 /// This install's identity key: the node's ed25519 proposer public key (placeholder source,
 /// pending owner sign-off). Only the public half is read.
@@ -676,13 +714,13 @@ fn member_address(app_h: &tauri::AppHandle) -> Result<String, String> {
 
 pub(crate) fn status_now(app_h: &tauri::AppHandle) -> Result<AgentSbtStatus, String> {
     let member = member_address(app_h)?;
-    let org = parent_org()?;
     let rpc = RpcClient::citrate();
+    let member_sbt = Some(crate::addresses::citrate_member_sbt()).filter(|a| !a.is_empty());
     Ok(gather(
         &rpc,
         crate::addresses::agent_sbt(),
+        member_sbt,
         &member,
-        org,
         identity_key(app_h),
     ))
 }
@@ -695,9 +733,10 @@ pub async fn agent_sbt_status(app_h: tauri::AppHandle) -> Result<AgentSbtStatus,
     crate::blocking::off_main(move || status_now(&app_h)).await
 }
 
-/// **Command — agent_sbt_mint.** Re-checks readiness, then submits the `mintAgent` tx as a
-/// PENDING SignatureCeremony and returns its view for the member to approve (HIC-1). Refuses
-/// with the member-facing reason when the mint is not available. Nothing signs here (Rule 3).
+/// **Command — agent_sbt_mint.** Re-checks readiness, then submits the member's own
+/// `mintAgentAsMember` tx as a PENDING SignatureCeremony and returns its view for the member to
+/// approve (HIC-1). Refuses with the member-facing reason when the mint is not available.
+/// Nothing signs here (Rule 3); the sidecar holds no key and is not involved.
 #[tauri::command]
 pub async fn agent_sbt_mint(
     app_h: tauri::AppHandle,
@@ -709,7 +748,7 @@ pub async fn agent_sbt_mint(
         }
         let key = identity_key(&app_h)?;
         let rpc = RpcClient::citrate();
-        let raw = prepare_mint_tx(&st, parent_org()?, &key, |q| {
+        let raw = prepare_mint_tx(&st, &key, |q| {
             rpc.estimate_gas(q).map_err(|e| e.to_string())
         })?;
         let ceremony = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h)

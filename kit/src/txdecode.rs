@@ -144,6 +144,9 @@ const KNOWN_CALL_SIGNATURES: &[(&str, &str)] = &[
     ),
     ("claimRefund()", "claimRefund"),
     ("expireRequest(uint256)", "expireRequest"),
+    // Reroll 2026-10-05: the member's own AgentSBT mint (core `agent_sbt`), approved by the
+    // member (HIC-1). The owner-only `mintAgent` is deliberately absent: core never builds it.
+    ("mintAgentAsMember(bytes32,bytes32)", "mintAgentAsMember"),
 ];
 
 /// The 4-byte selector for a canonical function signature: `keccak256(sig)[..4]`.

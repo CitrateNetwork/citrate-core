@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # HUP-S7.4 — the AgentSBT anvil test: build AgentSBT + OrganizationSBT from the citrate-chain
-# source, then run the opt-in Rust test that deploys them on a local anvil and mints through the
-# app's calldata builder (src-tauri/src/agent_sbt_tests.rs).
+# source, then run the opt-in Rust test that deploys them on a local anvil and checks the member
+# path (mintAgentAsMember, reroll 2026-10-05) through the app's readiness gather and calldata
+# builder (src-tauri/src/agent_sbt_tests.rs). Against a chain checkout without member issuance it
+# proves the app reports "after the network upgrade" and never falls back to an owner-only mint.
 #
 # Usage: scripts/anvil-agent-sbt.sh [path/to/citrate-chain/contracts]
 #   default: ../citrate-chain/contracts next to this repo, or CITRATE_CHAIN_CONTRACTS.

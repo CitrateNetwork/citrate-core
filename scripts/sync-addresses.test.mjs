@@ -32,6 +32,7 @@ const REQUIRED = {
   IPFSIncentivesV3: addr("07"),
   ModelRegistry: addr("08"),
   SkillRegistry: addr("09"),
+  ContributionAccounting: addr("0a"),
 };
 const HUP = {
   AgentSBT: addr("a1"),

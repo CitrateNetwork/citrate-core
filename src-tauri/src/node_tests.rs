@@ -154,6 +154,32 @@ fn storage_key_is_minted_into_keyring_on_start() {
     mgr.stop();
 }
 
+/// Agent precompiles are active from genesis on 40204 (reroll 2026-10-05, owner decision
+/// 2026-10-04): the node binary's release pin sets the height to 0, and on a release network a
+/// config or env height that disagrees with the pin stops the node at start-up (citrate-chain
+/// `core/execution/src/agent_fork.rs`). So the app must never pass its own height: no
+/// activation gate lives in the app.
+#[test]
+fn spawn_env_never_sets_an_agent_precompile_height() {
+    let (mgr, _fake, _data) = stub_manager("agent-height");
+    let spec = mgr.build_spec("00");
+    assert!(
+        !spec.env.iter().any(|(k, _)| k == "CITRATE_AGENT_PRECOMPILES_HEIGHT"),
+        "the node's release pin is the only source of the agent precompile height"
+    );
+    assert!(
+        !spec.args.iter().any(|a| a.contains("agent_precompiles_height")),
+        "no agent precompile height on the command line either: {:?}",
+        spec.args
+    );
+    // The member node config core writes (`[chain] agent_precompiles_height` is the node's
+    // config key) never carries one.
+    assert!(
+        !MEMBER_NODE_CONFIG.contains("agent_precompiles_height"),
+        "member-node.toml must not set the agent precompile height"
+    );
+}
+
 /// Sync-wedge tripwire (DGX_NODE_SYNC_WEDGE_RESPONSE 2026-07-22): the node spawn MUST
 /// carry the fleet producer's consensus env — `CITRATE_BLOCK_V2`,
 /// `CITRATE_VALIDATOR_ACTIVATION_HEIGHT=2000`, and the live `CITRATE_VALIDATOR_REGISTRY`

@@ -1,19 +1,20 @@
 // HUP-S7.4 (US-7.1) — the Hermes identity card model. Pure: the states come from core
 // (`agent_sbt_status`), and the card offers the mint only when core says it is available.
 import { describe, it, expect, vi } from "vitest";
-import { identityCard, loadAgentSbt, requestAgentSbtMint, agentSbtSlice, type AgentSbtStatus, type AgentSbtIo } from "./agentSbt";
+import { readFileSync } from "node:fs";
+import { identityCard, loadAgentSbt, requestAgentSbtMint, agentSbtSlice, AGENT_SBT_STATES, type AgentSbtStatus, type AgentSbtIo } from "./agentSbt";
 
 const base = (over: Partial<AgentSbtStatus> = {}): AgentSbtStatus => ({
   contract: "0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b",
   member: "0x1111111111111111111111111111111111111111",
   did: "did:citrate:agent:0x1111111111111111111111111111111111111111",
-  parentOrgId: "0",
+  parentOrgId: "3",
   balance: "0",
   tokens: [],
   tokensNote: null,
   state: "org-not-active",
   available: false,
-  message: "Hermes identity is available after the network upgrade. The organization that issues Hermes identities is not set up on chain yet.",
+  message: "Hermes identity is available after the network upgrade. The member organization that Hermes identities belong to is not active on chain yet.",
   ...over,
 });
 
@@ -44,8 +45,8 @@ describe("identityCard", () => {
     expect(c.button).toBe("Give Hermes an identity");
   });
 
-  it("not in the book and no code are both disabled", () => {
-    for (const state of ["not-in-book", "no-code", "not-issuer"] as const) {
+  it("not in the book, no code and a contract without member issuance are all disabled", () => {
+    for (const state of ["not-in-book", "no-code", "member-mint-unavailable"] as const) {
       const c = identityCard(base({ state, message: "Hermes identity is available after the network upgrade." }), {
         mode: "tauri",
         loaded: true,
@@ -102,6 +103,46 @@ describe("identityCard", () => {
       identityCard(base(), { mode: "tauri", loaded: true, error: null }),
     ];
     for (const c of cards) expect(JSON.stringify(c)).not.toContain("—");
+  });
+});
+
+describe("member mint (reroll 2026-10-05)", () => {
+  it("the states mirror core's MintState, with the member states and no issuer state", () => {
+    expect([...AGENT_SBT_STATES]).toEqual([
+      "ready",
+      "minted",
+      "not-in-book",
+      "no-code",
+      "member-mint-unavailable",
+      "not-member",
+      "org-not-active",
+      "identity-key-missing",
+      "chain-unreachable",
+      "reverted",
+    ]);
+    expect(AGENT_SBT_STATES).not.toContain("not-issuer");
+  });
+
+  it("a wallet without the membership SBT waits with core's reason and cannot mint", () => {
+    const msg = "Hermes identity is for Citrate members. Your wallet does not hold the membership SBT yet, so this step unlocks once your membership is active.";
+    const c = identityCard(base({ state: "not-member", message: msg }), { mode: "tauri", loaded: true, error: null });
+    expect(c.canMint).toBe(false);
+    expect(c.tone).toBe("waiting");
+    expect(c.body).toContain("membership SBT");
+  });
+
+  it("an unknown parent org (null) is accepted and never shown as a guessed id", () => {
+    const c = identityCard(base({ state: "member-mint-unavailable", parentOrgId: null }), { mode: "tauri", loaded: true, error: null });
+    expect(c.canMint).toBe(false);
+    expect(JSON.stringify(c)).not.toContain("org #");
+  });
+
+  it("the identity flow never mentions a registrar or the owner-only mint", () => {
+    for (const f of ["src/identity/agentSbt.ts", "src/onboarding/AgentIdentityStep.tsx"]) {
+      const src = readFileSync(f, "utf8");
+      expect(src.toLowerCase()).not.toContain("registrar");
+      expect(src).not.toMatch(/mintAgent\(/);
+    }
   });
 });
 

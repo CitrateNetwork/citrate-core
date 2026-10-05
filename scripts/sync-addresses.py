@@ -40,6 +40,7 @@ REQUIRED = [
     "ValidatorRegistry",
     "CitrateWalletFactory",
     "LiquidStakingPool",
+    "ContributionAccounting",
     "CitratePaymaster",
     "IPFSIncentivesV3",
     "ModelRegistry",

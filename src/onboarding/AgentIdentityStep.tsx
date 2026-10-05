@@ -2,13 +2,15 @@
 // citrate-core — onboarding: give Hermes an identity (HUP-S7.4, US-7.1)
 //
 // AC1: an AgentSBT is minted at onboarding (HIC-1), bound to the member. The member presses
-// one button; core builds the `mintAgent` tx and opens it in the Signature Ceremony, where the
-// member approves it. AC2 (visible in Wallet) reuses `RegisteredAgents` below.
+// one button; core builds the member's own `mintAgentAsMember` tx (reroll 2026-10-05) and
+// opens it in the Signature Ceremony, where the member approves it from their own wallet.
+// AC2 (visible in Wallet) reuses `RegisteredAgents` below.
 //
 // The button is enabled ONLY when core says the mint is available: the address book has
-// AgentSBT, it has code, the parent organization is active, this node has its key, and a
-// preflight of the exact tx succeeds. On chain 40204 today it is not, so the step shows
-// "available after the network upgrade" and stays disabled (Rule 1).
+// AgentSBT, it has code and member issuance, the wallet holds the membership SBT, the member
+// organization is active, this node has its key, and a preflight of the exact tx succeeds.
+// On a contract without member issuance the step shows "available after the network
+// upgrade" and stays disabled (Rule 1).
 // =====================================================================
 import { useEffect, type CSSProperties } from "react";
 import type { Store } from "../shell/store";
@@ -54,6 +56,9 @@ export function AgentIdentityView({ card, busy, onMint }: { card: IdentityCard; 
           optional · you approve it
         </span>
       </div>
+      <div style={note} data-testid="agent-identity-who">
+        You mint it from your own wallet as a member. It needs your membership SBT and costs only network gas.
+      </div>
       <p style={{ fontSize: 13.5, lineHeight: 1.6, color, margin: 0 }} data-testid="agent-identity-message">
         {card.body}
       </p>
@@ -66,7 +71,7 @@ export function AgentIdentityView({ card, busy, onMint }: { card: IdentityCard; 
         </div>
       )}
       <div className="mono" style={{ fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-        Data source: AgentSBT on chain 40204 (balanceOf, mint logs, getAgent) · address from the app's address book
+        Data source: AgentSBT on chain 40204 (balanceOf, mint logs, getAgent, memberOrgId, mintAgentAsMember preflight) · CitrateMemberSBT balanceOf · addresses from the app's address book
       </div>
     </div>
   );

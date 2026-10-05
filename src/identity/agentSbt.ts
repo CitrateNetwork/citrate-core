@@ -2,8 +2,11 @@
 // citrate-core — Hermes identity (AgentSBT), HUP-S7.4 (US-7.1)
 //
 // Core (src-tauri/src/agent_sbt.rs) owns every decision: it reads the address book, the
-// contract code, the member's AgentSBT balance and tokens, the parent organization, and an
-// eth_call preflight of the exact mint, and answers with one state plus the sentence to show.
+// contract code, the member's AgentSBT balance and tokens, the contract's member issuance
+// (memberOrgId), the member's membership SBT, the member organization, and an eth_call
+// preflight of the exact mint, and answers with one state plus the sentence to show.
+// Since the 2026-10-05 reroll the member mints their own AgentSBT (mintAgentAsMember) from
+// their own wallet; nobody else issues it.
 // This file is the wire type, a pure card model, and two thin calls. The card offers the
 // mint ONLY when core says `available` (fail closed). The mint itself is a pending
 // SignatureCeremony that the member approves (HIC-1); nothing here signs.
@@ -11,16 +14,21 @@
 import { createSlice } from "../shell/slices/createSlice";
 import type { CeremonyView } from "../bridge/types";
 
-export type AgentSbtState =
-  | "ready"
-  | "minted"
-  | "not-in-book"
-  | "no-code"
-  | "org-not-active"
-  | "not-issuer"
-  | "identity-key-missing"
-  | "chain-unreachable"
-  | "reverted";
+/** Mirrors Rust `MintState` (kebab-case), in its declaration order. */
+export const AGENT_SBT_STATES = [
+  "ready",
+  "minted",
+  "not-in-book",
+  "no-code",
+  "member-mint-unavailable",
+  "not-member",
+  "org-not-active",
+  "identity-key-missing",
+  "chain-unreachable",
+  "reverted",
+] as const;
+
+export type AgentSbtState = (typeof AGENT_SBT_STATES)[number];
 
 export interface AgentToken {
   tokenId: string;
@@ -36,7 +44,8 @@ export interface AgentSbtStatus {
   contract: string | null;
   member: string;
   did: string | null;
-  parentOrgId: string;
+  /** The contract's memberOrgId; null when unknown (never a guessed org). */
+  parentOrgId: string | null;
   balance: string | null;
   /** null = could not be listed (never a guessed empty list). */
   tokens: AgentToken[] | null;
