@@ -3,10 +3,10 @@
 //
 // CI-safe: everything here runs headless against
 //   (a) an in-memory keyring fake (the @rule8 store-key handoff),
-//   (b) a STUB MCP daemon — a shell script that binds a Unix socket and answers
-//       tools/list + tools/call with FIXTURE nodes, so the socket protocol +
-//       parse path are proven WITHOUT building the heavy rocksdb+transformer
-//       daemon + a 440 MB model, and
+//   (b) a native fixture process that exercises supervised lifecycle + encrypted
+//       store creation without building the heavy rocksdb+transformer daemon or
+//       downloading a 440 MB model (socket protocol is proven separately by the
+//       in-process cross-platform local-socket server below), and
 //   (c) a fixture "encrypted store" whose raw bytes carry no plaintext node text
 //       (the ciphertext-at-rest tripwire).
 // The real daemon recall/search + chain-state ingest is a separate scripted +
@@ -21,7 +21,8 @@ use crate::custody::CustodyError;
 // `try_clone`.
 use crate::ipc_name::endpoint_name;
 use interprocess::local_socket::{prelude::*, ListenerOptions};
-use std::sync::Arc;
+use std::process::Command as ProcessCommand;
+use std::sync::{Arc, OnceLock};
 use std::sync::Mutex as StdMutex;
 
 // ---------------------------------------------------------------------------
@@ -108,12 +109,35 @@ fn tmp_dir(tag: &str) -> PathBuf {
     p
 }
 
-/// Absolute path to the CI stub MCP daemon shell script.
+/// Compile the dependency-free native test fixture once per unit-test process.
 fn stub_daemon_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("stub_mem_mcp.sh")
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+
+    BIN.get_or_init(|| {
+        let fixture_dir = PathBuf::from(env!("OUT_DIR")).join("test-fixtures");
+        std::fs::create_dir_all(&fixture_dir).expect("create test-fixture output directory");
+        let binary = fixture_dir.join(format!("stub_mem_mcp{}", std::env::consts::EXE_SUFFIX));
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("stub_mem_mcp.rs");
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let output = ProcessCommand::new(rustc)
+            .arg("--edition=2021")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("run rustc for native mem-mcp fixture");
+        assert!(
+            output.status.success(),
+            "compile native mem-mcp fixture\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        binary
+    })
+    .clone()
 }
 
 /// A grounded-shape `render_result` payload (mem-mcp render_result): a freshness
@@ -435,7 +459,7 @@ fn unreachable_socket_is_honest_transport_error() {
 
 /// A killed daemon that left a stale socket file behind is restart-safe: the
 /// next start reclaims it (the real daemon removes a stale socket because it
-/// holds the DB lock; the stub mimics remove-then-bind). Here we prove OUR side:
+/// holds the DB lock; the fixture mimics the stale-path cleanup). Here we prove OUR side:
 /// start → stop (killed) → start again succeeds even with a leftover socket file.
 #[test]
 fn restart_is_safe_with_a_leftover_socket_file() {
@@ -448,11 +472,17 @@ fn restart_is_safe_with_a_leftover_socket_file() {
     let _ = std::fs::write(&sock, b"");
     assert!(sock.exists(), "precondition: a stale socket file is present");
     // A second start must succeed despite the leftover socket file — OUR side
-    // (the manager + supervisor) must not choke. The stub daemon reclaims the
-    // socket the same way the real daemon does (remove-then-bind under the DB
-    // lock), so this asserts the supervised start returns Ok past a stale socket.
+    // (the manager + supervisor) must not choke. The fixture reclaims the stale
+    // endpoint before staying alive, so this asserts the supervised start returns
+    // Ok past the stale path without changing production process spawning.
     mgr.start().expect("start 2 must survive a leftover socket file");
-    std::thread::sleep(Duration::from_millis(200));
+    for _ in 0..20 {
+        if !sock.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!sock.exists(), "fixture must reclaim the stale endpoint path");
     // The supervisor holds a live child (not Failed) after the stale-socket start.
     assert_ne!(mgr.status().state, "failed", "restart must not fail on a stale socket");
     mgr.stop();

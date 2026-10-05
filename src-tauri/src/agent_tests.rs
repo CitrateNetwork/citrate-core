@@ -3,7 +3,7 @@
 // Red-first. Splits into:
 //   * WP0 bundling — asserted by the (out-of-source) tauri overlay + gitignore;
 //     here we prove the binary resolution + spawn under the supervisor via a
-//     STUB node-agent (a small shell helper that serves the grounded supervision
+//     STUB node-agent (a small native helper that serves the grounded supervision
 //     API on a loopback port and blocks until killed).
 //   * WP1 @rule8 bearer — mint (OsRng, 64 hex, distinct), persist 0600/0700,
 //     round-trip against a REAL loopback stub server, and the 401 NEGATIVE
@@ -29,7 +29,7 @@ use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::Mutex as StdMutex;
+use std::sync::{Mutex as StdMutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Vault + wallet fixture (mirrors ceremony_tests: canonical BIP44 vector).
@@ -1020,14 +1020,42 @@ fn manager_surfaces_401_from_supervision() {
 // WP0 — spawn/supervise under the SidecarSupervisor (stub node-agent binary)
 // ===========================================================================
 
-/// Absolute path to the CI stub node-agent shell script (serves the supervision
-/// API on the loopback port from CITRATE_NODE_AGENT_ADDR + reads the bearer file,
-/// blocks until killed).
+/// Compile the checked-in native fixture once per test process and return its
+/// absolute path. The output lives under Cargo's OUT_DIR, never in the checkout.
+///
+/// `cargo test --lib` does not build separate `[[bin]]` targets, so the fixture
+/// is compiled here and then passed to the unchanged shell-free supervisor as a
+/// real platform executable.
 fn stub_agent_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("stub_node_agent.sh")
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("stub_node_agent.rs");
+        let out_dir = PathBuf::from(env!("OUT_DIR")).join("test-fixtures");
+        std::fs::create_dir_all(&out_dir).expect("create native fixture output directory");
+        let output = out_dir.join(format!(
+            "stub_node_agent-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let status = std::process::Command::new(rustc)
+            .arg("--edition=2021")
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .status()
+            .expect("run rustc for native node-agent fixture");
+        assert!(
+            status.success(),
+            "native node-agent fixture must compile from {}",
+            source.display()
+        );
+        output
+    })
+    .clone()
 }
 
 /// Build a manager over the stub binary + the production ureq transport, bound to

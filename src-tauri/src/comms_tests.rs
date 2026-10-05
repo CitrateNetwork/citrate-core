@@ -491,3 +491,191 @@ fn relay_status_is_unknown_when_configured_but_not_running() {
     assert_eq!(mgr.relay_status(), RelayHealth::Unknown);
     assert_eq!(mgr.status().relay, "unknown");
 }
+
+// ---------------------------------------------------------------------------
+// #180 — the IPC round-trip is bounded on every transport and fails closed.
+// ---------------------------------------------------------------------------
+
+/// Bind a stub daemon that accepts one connection and then says NOTHING (a wedged daemon), holding
+/// the connection open until `release` fires. Returns the socket path and the server thread.
+fn silent_daemon(
+    tag: &str,
+) -> (
+    PathBuf,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<bool>,
+) {
+    let sock = short_sock(tag);
+    let _ = std::fs::remove_file(&sock);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (bound_tx, bound_rx) = std::sync::mpsc::channel::<()>();
+    let sock_srv = sock.clone();
+    let handle = std::thread::spawn(move || {
+        let name = endpoint_name(&sock_srv.to_string_lossy()).expect("endpoint name");
+        let listener = ListenerOptions::new().name(name).create_sync().expect("bind");
+        bound_tx.send(()).expect("signal bound");
+        let stream = listener.accept().expect("accept");
+        // Hold the connection open and never answer until the test releases us.
+        let _ = release_rx.recv_timeout(Duration::from_secs(30));
+        // Report whether the client sent anything before giving up (fail-closed must send nothing).
+        let mut r = BufReader::new(stream);
+        let mut line = String::new();
+        matches!(r.read_line(&mut line), Ok(n) if n > 0)
+    });
+    bound_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("stub daemon bound");
+    (sock, release_tx, handle)
+}
+
+/// Run `f` on a thread and fail the test (instead of hanging the suite) if it does not finish within
+/// `limit`. Returns `f`'s value and how long it took.
+fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> (T, Duration) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let v = f();
+        let _ = tx.send((v, t0.elapsed()));
+    });
+    rx.recv_timeout(limit)
+        .unwrap_or_else(|_| panic!("did not return within {limit:?}: the round-trip is unbounded"))
+}
+
+// A wedged daemon (accepts, never answers) cannot hold the caller past the deadline. Unix: the socket
+// deadlines fire. Windows: the caller-side `run_with_deadline` bound fires and cancels the pipe I/O.
+#[test]
+fn ipc_round_trip_is_bounded_against_a_silent_daemon() {
+    let (sock, release, server) = silent_daemon("silent");
+    let bearer = "b".repeat(64);
+    let timeout = Duration::from_millis(300);
+    let (res, took) = within(Duration::from_secs(10), move || {
+        let stream = crate::ipc_name::connect(&sock.to_string_lossy()).expect("connect");
+        ipc_round_trip(stream, timeout, &bearer, &Request::RelayStatus)
+    });
+    assert!(
+        matches!(res, Err(CommsError::Ipc(_))),
+        "a silent daemon must surface an Ipc error, got {res:?}"
+    );
+    assert!(took >= timeout, "returned before the deadline: {took:?}");
+    assert!(
+        took < timeout + IPC_CANCEL_GRACE + Duration::from_secs(2),
+        "the bound did not hold: {took:?}"
+    );
+    let _ = release.send(());
+    let _ = server.join();
+}
+
+// Unix fail-closed: if the OS refuses the socket deadline (a zero timeout is rejected by
+// setsockopt via std with InvalidInput), the round-trip errors out BEFORE writing anything instead
+// of running unbounded.
+#[cfg(unix)]
+#[test]
+fn ipc_round_trip_fails_closed_when_socket_timeouts_cannot_be_set() {
+    let (sock, release, server) = silent_daemon("failclosed");
+    let bearer = "b".repeat(64);
+    let (res, took) = within(Duration::from_secs(10), move || {
+        let stream = crate::ipc_name::connect(&sock.to_string_lossy()).expect("connect");
+        ipc_round_trip(stream, Duration::ZERO, &bearer, &Request::RelayStatus)
+    });
+    match res {
+        Err(CommsError::Ipc(_)) => {}
+        other => panic!("timeout-setup failure must fail closed, got {other:?}"),
+    }
+    assert!(took < Duration::from_secs(2), "fail-closed must be immediate: {took:?}");
+    let _ = release.send(());
+    let sent_anything = server.join().expect("server thread");
+    assert!(!sent_anything, "nothing (not even the bearer) may be written after a failed timeout setup");
+}
+
+// The deadline helper (the Windows bound) returns the worker's result when it is on time.
+#[test]
+fn run_with_deadline_returns_an_on_time_result() {
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = cancelled.clone();
+    let r = run_with_deadline(
+        Duration::from_secs(5),
+        || Ok::<_, CommsError>(42u32),
+        move |_| {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        },
+    );
+    assert_eq!(r.expect("on time"), 42);
+    assert_eq!(cancelled.load(std::sync::atomic::Ordering::SeqCst), 0, "no cancel when on time");
+    // The worker's own error passes through unchanged.
+    let e = run_with_deadline(
+        Duration::from_secs(5),
+        || Err::<u32, _>(CommsError::Ipc("handshake rejected: x".into())),
+        |_| {},
+    );
+    assert!(matches!(e, Err(CommsError::Ipc(m)) if m.contains("handshake rejected")));
+}
+
+// On expiry the helper returns the timeout error within the bound, cancels the blocked worker, and
+// the cancelled worker unwinds (no leaked thread). The "blocked I/O" is a channel recv that the cancel
+// hook unblocks, the same contract `cancel_blocked_pipe_io` fulfils for a pipe read on Windows.
+#[test]
+fn run_with_deadline_times_out_and_cancels_the_blocked_worker() {
+    let (unblock_tx, unblock_rx) = std::sync::mpsc::channel::<()>();
+    let unblock_tx = Mutex::new(Some(unblock_tx));
+    let exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let exited_w = exited.clone();
+    let timeout = Duration::from_millis(200);
+    let t0 = Instant::now();
+    let r = run_with_deadline(
+        timeout,
+        move || {
+            // Blocks until cancelled (sender dropped) or 30 s pass.
+            let _ = unblock_rx.recv_timeout(Duration::from_secs(30));
+            exited_w.store(true, std::sync::atomic::Ordering::SeqCst);
+            Err::<(), _>(CommsError::Ipc("aborted".into()))
+        },
+        |_| {
+            if let Ok(mut g) = unblock_tx.lock() {
+                g.take();
+            }
+        },
+    );
+    let took = t0.elapsed();
+    match r {
+        Err(CommsError::Ipc(m)) => assert!(m.contains("did not respond within 200 ms"), "{m}"),
+        other => panic!("expected the deadline error, got {other:?}"),
+    }
+    assert!(took >= timeout, "returned before the deadline: {took:?}");
+    assert!(took < timeout + IPC_CANCEL_GRACE + Duration::from_secs(1), "bound: {took:?}");
+    assert!(
+        exited.load(std::sync::atomic::Ordering::SeqCst),
+        "the cancelled worker must have unwound before the caller returned"
+    );
+}
+
+// Even if the cancel cannot unblock the worker, the CALLER is still bounded by timeout + grace.
+#[test]
+fn run_with_deadline_bounds_the_caller_even_if_cancel_cannot_unblock() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let timeout = Duration::from_millis(100);
+    let t0 = Instant::now();
+    let r = run_with_deadline(
+        timeout,
+        move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            Ok::<_, CommsError>(())
+        },
+        |_| {},
+    );
+    let took = t0.elapsed();
+    assert!(matches!(r, Err(CommsError::Ipc(_))), "{r:?}");
+    assert!(took < timeout + IPC_CANCEL_GRACE + Duration::from_secs(1), "bound: {took:?}");
+    // Let the stuck worker finish so the test leaves no thread behind.
+    let _ = release_tx.send(());
+}
+
+// A panicking worker surfaces as an Ipc error, never a hang or a propagated panic.
+#[test]
+fn run_with_deadline_maps_a_worker_panic_to_an_error() {
+    let r = run_with_deadline(
+        Duration::from_secs(5),
+        || -> Result<()> { panic!("worker blew up") },
+        |_| {},
+    );
+    assert!(matches!(r, Err(CommsError::Ipc(m)) if m.contains("without a result")));
+}
