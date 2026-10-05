@@ -1144,6 +1144,30 @@ export interface FlRoundsDomain {
   unloadAdapter(): Promise<void>;
   /** Withdraw this device's consent for one round. Returns the rounds still consented. */
   revokeConsent(roundId: string): Promise<string[]>;
+  /** HUP-S9.3: the "train on my verified conversations" switch (default off) and what is stored. */
+  trajectoryStatus(): Promise<FlTrajectoryStatus>;
+  /** Turn the switch on or off. Off deletes assembled training sets now (and, if asked, recordings). */
+  setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean): Promise<FlTrajectoryStatus>;
+  /** Assemble the newest verified conversations (at most `maxTrajectories`) into one training set.
+   *  Core refuses when the switch is off. */
+  buildTrainingSet(maxTrajectories: number): Promise<FlTrainingSet>;
+}
+/** HUP-S9.3 (core fl_trajectories.rs TrajectoryStatus). */
+export interface FlTrajectoryStatus {
+  settings: { enabled: boolean; changedAtMs: number | null };
+  recordedFiles: number;
+  datasets: number;
+  appliesOnRestart: boolean;
+  loadError: string | null;
+}
+/** HUP-S9.3 (core fl_trajectories.rs DatasetSummary). */
+export interface FlTrainingSet {
+  path: string;
+  sha256: string;
+  examples: number;
+  filesRead: number;
+  skippedLines: number;
+  overCap: number;
 }
 
 // ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──

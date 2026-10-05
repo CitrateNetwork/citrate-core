@@ -442,7 +442,7 @@ pub fn build_plan(
     let mut blockers = Vec::new();
 
     let data = format!(
-        "Trains only on your verified Hermes conversations, at most {} of them, redacted on this device before use. Conversations that read untrusted pages are left out. The verified-trajectory export (HUP-S9.3) is not wired into this build yet, so this device has no training set to offer until it is.",
+        "Trains only on your verified Hermes conversations, at most {} of them, redacted on this device before use. Conversations that read untrusted pages are left out. They are recorded only while \"Train on my verified conversations\" is on (off by default); with it off this device has no training set to offer.",
         proposal.max_trajectories
     );
 

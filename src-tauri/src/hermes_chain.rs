@@ -3,8 +3,8 @@
 //! Data source (Rule 7): every call here is the Hermes sidecar's bearer-authed loopback control
 //! plane (`citrate-agent-sidecar`, crates `citrate-agent-metering` and `citrate-agent-anchor` in
 //! citrate-agent-runtime). Core passes the sidecar three data folders under its own app-data dir:
-//! the metering log, the decision records, and the anchor ledger. Trajectory recording is never
-//! turned on by core; a member opts in by setting `CITRATE_HERMES_TRAJECTORIES` themselves.
+//! the metering log, the decision records, and the anchor ledger. Trajectory recording is not one
+//! of them: it is turned on only by the member's own switch (`fl_trajectories.rs`, default off).
 //!
 //! The sidecar batches and builds calldata; it never signs. Core signs the anchor with its own
 //! anchor key inside the anchor ceremony (`citrate_core_kit::ceremony::anchor`).
