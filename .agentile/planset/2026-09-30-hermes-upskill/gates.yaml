@@ -5,7 +5,7 @@ program: HUP
 gates:
   - id: gate0
     name: Theory locked
-    status: partial
+    status: met
     exit_criteria:
       - id: g0-decisions
         desc: 40 locked decisions recorded (owner interactive pass 2026-09-30)
@@ -32,12 +32,26 @@ gates:
           formal review is a recommended follow-up. O-1..O-5 accepted as proposed.
       - id: g0-formal
         desc: AgentLoop, FolderGrant, WebSigningBudget, SkillPersistence, DeployGate, SpendBudget, AnchorBatch, DeviceLink written and TLC-checked at small bounds (full proofs close with their WPs)
-        met: false
-        evidence: src-tauri/formal/
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s11-prove-it/EVIDENCE-g0-formal-2026-10-04.md
+        paths:
+          - citrate-core src-tauri/formal/AgentLoop.tla
+          - citrate-core src-tauri/formal/WebSigningBudget.tla
+          - citrate-core src-tauri/formal/DeployGate.tla
+          - citrate-core src-tauri/formal/SpendBudget.tla
+          - citrate-agent-runtime agent-grants/formal/FolderGrant.tla
+          - citrate-agent-runtime agent-learn/formal/SkillPersistence.tla
+          - citrate-agent-runtime agent-anchor/formal/AnchorBatch.tla
+          - citrate-cluster formal/DeviceLink.tla
         note: >-
-          Partial 2026-09-30: AgentLoop written + TLC-green (1,258 distinct states, mutation-checked;
-          scripts/run-tlc.sh AgentLoop). Remaining: FolderGrant, WebSigningBudget, SkillPersistence,
-          DeployGate, SpendBudget, AnchorBatch, DeviceLink.
+          Met 2026-10-04 (paperwork flip, HUP fan-out 7 lane L19). All eight specs are on
+          citrate-core hup/forward-merge-main-0.4.3 (not merged yet), citrate-agent-runtime main and
+          citrate-cluster main (DeviceLink's ADR-003 revision is on cluster PR #10, not merged), each
+          with a .cfg and a recorded TLC run with no error. AgentLoop
+          (1,258 distinct states), FolderGrant (153,484) and DeviceLink (8,248 on main, 21,456 on
+          the ADR-003 revision) were re-run with TLC 2.19 on 2026-10-04; the other five cite their
+          recorded runs (EVIDENCE file). Small bounds only; mutation
+          checks are recorded per spec in each formal/README.md. Owner is the listed reviewer.
     reviewers: [Larry Klosowski (owner)]
   - id: gate1
     name: Stable + one agent (S0, S1)
@@ -177,4 +191,13 @@ gates:
       - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false, evidence: "release/README.md (macOS arm64 0.5.0-line build PASS 2026-10-04 at budgets pending owner sign-off; Linux and Windows not measured)"}
       - {id: g5-os, desc: "hello-mint e2e on macOS arm64, Linux x64, Windows x64 clean installs", met: false}
       - {id: g5-redteam, desc: "Red-team pass: no open High", met: false}
-      - {id: g5-docs, desc: "Document pass + retro + essay", met: false}
+      - id: g5-docs
+        desc: Document pass + retro + essay
+        met: false
+        note: >-
+          Drafted 2026-10-04 on branches (fan-out 7 lane L19), not merged: five Almanac pages in
+          citrate-docs content/core (hermes, node-mcp, skills, personas, fleet-wizard) on
+          hup/n7-docs-almanac-retro; in citrate-core on hup/n7-docs-almanac-retro the program
+          retro draft (.agentile/sprints/active/sprint-hup-s11-prove-it/RETRO.md) and the essay
+          docs/essays/off-by-default-and-the-verifier-says-done.md. Flips when those PRs merge
+          after the 0.5.0 stacks, and the retro's "at close" section is written at the release.

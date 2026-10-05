@@ -3,8 +3,9 @@
 //
 // The shipped personas, their fragments and every rule about them come from the Hermes sidecar
 // (runtime agent-loop `personas` + `workflows`, served at /personas, /personas/check and
-// /workflows through core's bearer-authed control client). Their names are placeholders pending
-// owner sign-off, and the picker says so next to each name. "Hermes (default voice)" is the
+// /workflows through core's bearer-authed control client). The owner approved the shipped names on
+// 2026-10-01; a name the sidecar still marks `name_pending_sign_off` is labeled as a placeholder next
+// to it, and the note above the list says so only while such a name exists. "Hermes (default voice)" is the
 // default and changes nothing. A persona shapes tone and wording; in the sidecar loop its skill
 // allowlist decides which skills are offered and its tool emphasis keeps its tools in view. It
 // never grants a tool or changes an approval, a gate or the signing ceremony. "Read replies aloud"
@@ -207,7 +208,7 @@ export function PersonaPicker({
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }} data-testid="persona-picker">
       <span style={note}>
         A persona sets how Hermes writes: voice, tone and style rules. It does not change what Hermes may do; every approval and gate stays the same.
-        {" "}The shipped names are placeholders, pending owner sign-off.
+        {shipped.some((p) => p.name_pending_sign_off) && " Names marked as placeholders are pending owner sign-off."}
       </span>
       {load.state === "loading" && <span style={note}>Loading personas from the Hermes sidecar...</span>}
       {load.state === "unavailable" && (

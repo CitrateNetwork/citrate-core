@@ -111,6 +111,16 @@ describe("PersonaPicker", () => {
     expect(q(host, "persona-option-auditor")).toBeTruthy();
   });
 
+  it("says names are placeholders only while the sidecar marks one as pending sign-off", async () => {
+    const { host } = await mount(props());
+    expect(host.textContent).toContain("Names marked as placeholders are pending owner sign-off.");
+    const approved = [GRAFT, PITH].map((p) => ({ ...p, name_status: "owner-approved", name_pending_sign_off: false }));
+    const { host: h2 } = await mount(props({ api: api({ personas: vi.fn(async () => approved) }) }));
+    expect(h2.textContent).toContain("Graft");
+    expect(h2.textContent).not.toContain("placeholder");
+    expect(h2.textContent).not.toContain("pending owner sign-off");
+  });
+
   it("choosing a persona hands its sidecar view to the store; the default voice hands null", async () => {
     const p = props();
     const { host } = await mount(p);

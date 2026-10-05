@@ -3,8 +3,8 @@
 //
 // A persona is a voice: writing-style rules the runtime renders into a system-prompt fragment,
 // plus a default track and workflow, a tool emphasis and an optional TTS voice id. The runtime
-// (citrate-agent-runtime agent-loop, one data file) owns the shipped personas; their names are
-// placeholders pending owner sign-off. The sidecar serves them with their fragments and checks a
+// (citrate-agent-runtime agent-loop, one data file) owns the shipped personas; the owner approved
+// their names on 2026-10-01 (`name_pending_sign_off` marks any that are not). The sidecar serves them with their fragments and checks a
 // member-defined persona (POST /personas/check), rendering it with the same template.
 //
 // This module only picks, composes and bounds. With no persona chosen (the default) the prompt and
