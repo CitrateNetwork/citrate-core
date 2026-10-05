@@ -20,7 +20,8 @@ import { IDLE_ACTIVITY } from "../shell/slices/turnActivity";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/** The shape Rust returns, from a local web-subset-v2 run (9 of 10 tasks, 38 decisions). */
+/** The shape Rust returns, with the numbers of the local web-subset-v2 T0 run 2 of 2026-10-04
+ *  (agent-loop/evals/runs/web-subset-v2-2026-10-04-t0-run2.json: 9 of 10 tasks, 38 decisions). */
 const METERING: DecideMetering = {
   jevEnabled: false,
   jevOrigins: 0,
@@ -28,7 +29,7 @@ const METERING: DecideMetering = {
   logging: true,
   backends: [
     { backend: "jev", decisions: 0, errors: 0, p50Ms: null, p95Ms: null, meanConfidence: null, egressBytes: 0, tasksAttempted: 0, tasksSucceeded: 0, taskSuccessBps: null },
-    { backend: "local", decisions: 38, errors: 0, p50Ms: 812, p95Ms: 2210, meanConfidence: null, egressBytes: 0, tasksAttempted: 10, tasksSucceeded: 9, taskSuccessBps: 9000 },
+    { backend: "local", decisions: 38, errors: 0, p50Ms: 487, p95Ms: 756, meanConfidence: 0.9615815382270364, egressBytes: 0, tasksAttempted: 10, tasksSucceeded: 9, taskSuccessBps: 9000 },
   ],
 };
 
@@ -67,7 +68,8 @@ describe("HUP-S5.3 decide() metering in the Activity monitor", () => {
     expect(rows.length).toBe(1);
     expect(rows[0].textContent).toContain("local");
     expect(rows[0].textContent).toContain("38 decisions");
-    expect(rows[0].textContent).toContain("median 812 ms, p95 2210 ms");
+    expect(rows[0].textContent).toContain("median 487 ms, p95 756 ms");
+    expect(rows[0].textContent).toContain("mean confidence 0.96");
     expect(rows[0].textContent).toContain("tasks 9 of 10 succeeded (90.0%)");
     expect(byTestId(el, "mon-decide")?.textContent).toMatch(/Jev is off/);
     expect(el.textContent).not.toContain("—");
@@ -148,9 +150,11 @@ describe("HUP-S5.3 the host reads the metering while the monitor is open", () =>
     await flush();
     expect(ft.sent[0].payload.snapshot.decide.rows[0].tasksSucceeded).toBe(9);
     report = { ...METERING, backends: [{ ...METERING.backends[1], tasksAttempted: 11, tasksSucceeded: 10, taskSuccessBps: 9090 }] };
-    await new Promise((r) => setTimeout(r, 30));
-    const last = ft.sent[ft.sent.length - 1].payload.snapshot;
-    expect(last.decide.rows[0].tasksSucceeded).toBe(10);
+    // Wait for the poll to pick up the change (a fixed sleep was flaky under machine load).
+    await vi.waitFor(() => {
+      const last = ft.sent[ft.sent.length - 1].payload.snapshot;
+      expect(last.decide.rows[0].tasksSucceeded).toBe(10);
+    }, { timeout: 5000, interval: 10 });
     h.dispose();
   });
 

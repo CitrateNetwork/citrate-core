@@ -123,7 +123,7 @@ gates:
         note: >-
           Proven in code and tests (2026-10-04): the Browser pop-out with screencast and element
           highlight; the browser switch (default off); decide() in the browser scored locally on
-          web-subset-v2 with T0 Gemma 4 E4B, 9 of 10 tasks, every outcome recorded through POST
+          web-subset-v2 with T0 Gemma 4 E4B (8 and 9 of 10 tasks over two runs), every outcome recorded through POST
           /decide/outcomes; SearXNG live run. Attach-to-Chrome scoping (S5.6) is merged:
           per-session consent, per-origin consent, banking, email and health origins excluded by
           default, with unit, scope and live-Chrome tests that an excluded origin is refused even

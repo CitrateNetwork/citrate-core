@@ -1,7 +1,7 @@
 // HUP-S5.3 (core half): the decide() slot's per-backend metering as core reads it: GET
 // /decide/stats through the bearer-authed control client, decoded into bounded camelCase rows for
-// the Activity monitor. The fixture is the sidecar's own report shape (DecideStatus with a
-// DecisionReport inside), from a local run recorded through POST /decide/outcomes.
+// the Activity monitor. The fixture follows the sidecar's own report shape (DecideStatus with a
+// DecisionReport inside); its numbers are illustrative, not a recorded run.
 
 use super::super::*;
 use super::*;
@@ -96,4 +96,17 @@ fn a_bad_report_is_bounded() {
     assert!(m.backends.iter().all(|b| b.backend.chars().count() <= 32));
     assert!(m.backends.iter().all(|b| b.tasks_succeeded <= b.tasks_attempted));
     assert!(m.backends.iter().all(|b| b.task_success_bps.unwrap_or(0) <= 10_000));
+}
+
+#[test]
+fn the_command_is_async_registered_and_in_the_main_window_acl() {
+    let lib = include_str!("lib.rs");
+    let acl = include_str!("../permissions/main-window.toml");
+    let src = include_str!("hermes_decide.rs");
+    let invoke = include_str!("../../src/bridge/tauri/invoke.ts");
+    let cmd = "hermes_decide_stats";
+    assert!(lib.contains(&format!("hermes::decide::{cmd},")), "{cmd} registered");
+    assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
+    assert!(src.contains(&format!("pub async fn {cmd}(")), "{cmd} is async");
+    assert!(invoke.contains(&format!("{cmd}: ")), "{cmd} has an invoke timeout");
 }
