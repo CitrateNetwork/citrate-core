@@ -380,6 +380,8 @@ fn tools_list_carries_annotations_and_strict_schemas() {
         "get_logs",
         "precompile_table",
         "precompile_call",
+        "agent_precompile_encode",
+        "agent_precompile_decode",
         "wallet_info",
         "address_book",
         "memory_search",
@@ -632,6 +634,36 @@ fn precompile_call_targets_the_table_address() {
     assert!(rows
         .iter()
         .any(|r| r["short"] == "0x0110" && r["name"] == "BELNAP_AGGREGATE"));
+}
+
+#[test]
+fn precompile_call_reports_an_empty_answer_as_an_error_not_a_result() {
+    // A top-level eth_call whose `to` is a precompile returns 0x on a Citrate node (the executor
+    // runs code only at accounts that have it). That empty answer is not the precompile's output.
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some("0x".into());
+    let r = call(
+        &core,
+        &ctx("t"),
+        "precompile_call",
+        json!({"address": "0x0000000000000000000000000000000000000120", "data": "0xAB"}),
+    );
+    assert!(is_tool_error(&r), "{r}");
+    assert!(r.to_string().contains("contract code"), "{r}");
+    // A non-empty answer is still returned as the result.
+    *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("0x{}1", "0".repeat(63)));
+    let ok = call(
+        &core,
+        &ctx("t"),
+        "precompile_call",
+        json!({"address": "0x0000000000000000000000000000000000000120", "data": "0xAB"}),
+    );
+    assert!(!is_tool_error(&ok), "{ok}");
+    assert_eq!(
+        ok["result"]["structuredContent"]["result"],
+        json!(format!("0x{}1", "0".repeat(63)))
+    );
 }
 
 #[test]
@@ -3131,4 +3163,53 @@ fn the_server_proves_it_holds_hermes_in_memory_token_to_the_shim() {
         assert!(proofs.contains(&p), "a proof for every live token");
     }
     assert!(s.verify(&hermes.connect_token, 3).is_some_and(|a| a.read_only));
+}
+
+// ---------------------------------------------------------------------------
+// HUP-S7.2 follow-up: typed agent precompile helpers (pure; no RPC)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agent_precompile_tools_encode_and_decode_without_touching_the_node() {
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    let c = ctx("t");
+    let v: Value = serde_json::from_str(include_str!("../tests/fixtures/precompiles/agent_precompile_vectors.json"))
+        .unwrap_or_else(|e| panic!("vectors: {e}"));
+    let ap = &v["lora_apply"][0];
+    let enc = call(
+        &core,
+        &c,
+        "agent_precompile_encode",
+        json!({"operation": "LORA_APPLY", "args": {"w": ap["w"], "b": ap["b"], "a": ap["a"], "alpha": ap["alpha"]}}),
+    );
+    let out = &enc["result"]["structuredContent"];
+    assert_eq!(out["input"], json!(format!("0x{}", ap["input"].as_str().unwrap_or_default())), "{enc}");
+    assert_eq!(out["address"], json!(crate::node_mcp_tools::precompile_address(0x0112)));
+    let dec = call(
+        &core,
+        &c,
+        "agent_precompile_decode",
+        json!({"operation": "MEMORY_ANCHOR_VERIFY", "output": format!("0x{}", v["memory_anchor"][0]["output"].as_str().unwrap_or_default())}),
+    );
+    assert_eq!(dec["result"]["structuredContent"]["valid"], json!(true), "{dec}");
+    // Empty output (the precompile was not active) is an error, never a verdict.
+    let empty = call(&core, &c, "agent_precompile_decode", json!({"operation": "DEVICE_LINK_VERIFY", "output": "0x"}));
+    assert!(is_tool_error(&empty), "{empty}");
+    // Bad shapes are refused, unknown top-level arguments too.
+    let bad = call(&core, &c, "agent_precompile_encode", json!({"operation": "LORA_MERGE", "args": {"adapters": []}}));
+    assert!(is_tool_error(&bad), "{bad}");
+    let extra = call(&core, &c, "agent_precompile_encode", json!({"operation": "LORA_MERGE", "args": {}, "rpc": "x"}));
+    assert!(is_tool_error(&extra), "{extra}");
+    // Pure: nothing reached the node.
+    assert!(f.rpc_calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+    // The table lists the fork precompiles with the activation note.
+    let table = crate::node_mcp_tools::precompile_table();
+    let names: Vec<&str> = table["agent_fork"]["precompiles"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|p| p["name"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(names, ["LORA_APPLY", "LORA_MERGE", "MEMORY_ANCHOR_VERIFY", "AGENT_OPS"]);
+    // A fork precompile is not in the callable table: precompile_call refuses it.
+    assert!(crate::node_mcp_tools::precompile_at(&crate::node_mcp_tools::precompile_address(0x0121)).is_none());
 }
