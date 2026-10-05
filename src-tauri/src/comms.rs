@@ -41,6 +41,8 @@ use std::path::{Path, PathBuf};
 // and `TryClone` supplies `try_clone` (-> `UnixStream::try_clone` on unix), so the
 // member-daemon framing stays byte-identical to the pre-port path.
 use crate::ipc_name::IpcStream;
+// Unix only: the socket deadlines. Windows pipes reject them and are bounded by `run_with_deadline`.
+#[cfg(unix)]
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
 use std::sync::{Mutex, OnceLock};
@@ -698,28 +700,66 @@ fn member_ipc_quick(socket_path: &Path, bearer: &str, req: &Request) -> Result<R
     ipc_round_trip(stream, RELAY_PROBE_TIMEOUT, bearer, req)
 }
 
-/// The shared post-connect half of the IPC: bound both directions by `timeout`, do the bearer
-/// handshake, then one request → one response. Factored out so the normal (retry-connect) path and
-/// the relay-health probe (single-connect, short timeout) share identical framing.
+/// The shared post-connect half of the IPC: bound the exchange by `timeout`, do the bearer handshake,
+/// then one request -> one response. Factored out so the normal (retry-connect) path and the
+/// relay-health probe (single-connect, short timeout) share identical framing.
+///
+/// How the bound is enforced differs by transport, and both fail closed:
+/// - **Unix** (`UnixStream`): `SO_RCVTIMEO`/`SO_SNDTIMEO` are set before any read/write. If the OS
+///   refuses either, the round-trip errors out instead of running unbounded.
+/// - **Windows** (named pipe): the interprocess pipe transport rejects socket I/O timeouts ("named
+///   pipes do not support I/O timeouts"), so the exchange runs on a worker thread and the caller waits
+///   at most `timeout` (see [`run_with_deadline`]). On expiry the worker's blocked pipe read/write is
+///   cancelled ([`cancel_blocked_pipe_io`]) so it unwinds and closes the pipe handle.
 fn ipc_round_trip(
     stream: IpcStream,
     timeout: Duration,
     bearer: &str,
     req: &Request,
 ) -> Result<Response> {
-    // Bound both directions before any read/write (SO_RCVTIMEO/SO_SNDTIMEO on unix). Best-effort:
-    // the Windows interprocess named-pipe transport does not support socket I/O timeouts ("named
-    // pipes do not support I/O timeouts") and returns an error here — treat it as non-fatal rather
-    // than failing the whole IPC (the writer clone below already does), so Groups/agent IPC works on
-    // Windows. On unix these still apply as before. TODO(windows): bound the round-trip with a
-    // thread + join-timeout so a silent daemon still can't hang the caller without socket timeouts.
-    let _ = stream.set_recv_timeout(Some(timeout));
-    let _ = stream.set_send_timeout(Some(timeout));
+    let body = serde_json::to_string(req).map_err(|e| CommsError::Ipc(e.to_string()))?;
+    #[cfg(unix)]
+    {
+        // Fail closed: never run the exchange without both socket deadlines in place.
+        stream
+            .set_recv_timeout(Some(timeout))
+            .map_err(|e| CommsError::Ipc(e.to_string()))?;
+        stream
+            .set_send_timeout(Some(timeout))
+            .map_err(|e| CommsError::Ipc(e.to_string()))?;
+        ipc_exchange(stream, timeout, bearer, &body)
+    }
+    #[cfg(windows)]
+    {
+        let bearer = Zeroizing::new(bearer.to_owned());
+        run_with_deadline(
+            timeout,
+            move || ipc_exchange(stream, timeout, &bearer, &body),
+            cancel_blocked_pipe_io,
+        )
+    }
+}
+
+/// The blocking bearer handshake + one request/response over an already-bounded stream.
+fn ipc_exchange(
+    stream: IpcStream,
+    timeout: Duration,
+    bearer: &str,
+    body: &str,
+) -> Result<Response> {
     let mut writer = stream
         .try_clone()
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
-    let _ = writer.set_send_timeout(Some(timeout));
-    let _ = writer.set_recv_timeout(Some(timeout));
+    // Unix: the clone shares the socket, so the deadlines set in `ipc_round_trip` already cover it;
+    // re-applying is belt-and-braces and its result is advisory. Windows pipes reject these calls,
+    // and the caller-side deadline bounds the exchange there.
+    #[cfg(unix)]
+    {
+        let _ = writer.set_send_timeout(Some(timeout));
+        let _ = writer.set_recv_timeout(Some(timeout));
+    }
+    #[cfg(windows)]
+    let _ = timeout;
     let mut reader = BufReader::new(stream);
 
     // bearer handshake
@@ -736,8 +776,7 @@ fn ipc_round_trip(
         )));
     }
 
-    // request → response
-    let body = serde_json::to_string(req).map_err(|e| CommsError::Ipc(e.to_string()))?;
+    // request -> response
     writeln!(writer, "{body}").map_err(|e| CommsError::Ipc(e.to_string()))?;
     line.clear();
     reader
@@ -745,6 +784,84 @@ fn ipc_round_trip(
         .map_err(|e| CommsError::Ipc(e.to_string()))?;
     serde_json::from_str::<Response>(line.trim())
         .map_err(|e| CommsError::Ipc(format!("bad response: {e}: {}", line.trim())))
+}
+
+/// After a [`run_with_deadline`] expiry, how long the caller keeps cancelling the worker's blocked I/O
+/// and waiting for it to unwind (and drop its pipe handle) before returning anyway.
+const IPC_CANCEL_GRACE: Duration = Duration::from_millis(500);
+/// Interval between cancel attempts inside [`IPC_CANCEL_GRACE`]. A cancel that lands while the worker
+/// is between two I/O calls has nothing to abort, so it is retried until the worker exits.
+const IPC_CANCEL_RETRY: Duration = Duration::from_millis(25);
+
+/// Run the blocking `work` on a worker thread and wait for it at most `timeout`.
+///
+/// On expiry, `cancel` is called with the worker's handle every [`IPC_CANCEL_RETRY`] until the worker
+/// exits or [`IPC_CANCEL_GRACE`] passes, and the caller gets `CommsError::Ipc("comms daemon did not
+/// respond within ...")`. The caller is therefore blocked for at most `timeout + IPC_CANCEL_GRACE`
+/// (plus one retry tick) whatever `work` does. A worker panic surfaces as an `Ipc` error, not a hang.
+/// This is the Windows named-pipe bound; it is platform-neutral so the deadline logic is unit-tested on
+/// every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn run_with_deadline<T, W, C>(timeout: Duration, work: W, cancel: C) -> Result<T>
+where
+    T: Send + 'static,
+    W: FnOnce() -> Result<T> + Send + 'static,
+    C: Fn(&std::thread::JoinHandle<()>),
+{
+    use std::sync::mpsc::{sync_channel, RecvTimeoutError};
+    let (tx, rx) = sync_channel::<Result<T>>(1);
+    let worker = std::thread::Builder::new()
+        .name("comms-ipc".into())
+        .spawn(move || {
+            // The receiver may be gone after a timeout; the result is then simply dropped.
+            let _ = tx.send(work());
+        })
+        .map_err(|e| CommsError::Ipc(format!("spawn comms ipc worker: {e}")))?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => {
+            let _ = worker.join();
+            result
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let _ = worker.join();
+            Err(CommsError::Ipc(
+                "comms ipc worker exited without a result".into(),
+            ))
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            let grace_end = Instant::now() + IPC_CANCEL_GRACE;
+            loop {
+                cancel(&worker);
+                match rx.recv_timeout(IPC_CANCEL_RETRY) {
+                    Ok(_) | Err(RecvTimeoutError::Disconnected) => {
+                        let _ = worker.join();
+                        break;
+                    }
+                    Err(RecvTimeoutError::Timeout) if Instant::now() >= grace_end => break,
+                    Err(RecvTimeoutError::Timeout) => {}
+                }
+            }
+            Err(CommsError::Ipc(format!(
+                "comms daemon did not respond within {} ms",
+                timeout.as_millis()
+            )))
+        }
+    }
+}
+
+/// Windows: abort the synchronous pipe `ReadFile`/`WriteFile` the IPC worker is blocked in. The
+/// aborted call returns `ERROR_OPERATION_ABORTED`, the worker's exchange errors out, and dropping its
+/// stream closes the pipe handle. `ERROR_NOT_FOUND` (no I/O pending at this instant) is expected
+/// between calls and is why [`run_with_deadline`] retries.
+#[cfg(windows)]
+fn cancel_blocked_pipe_io(worker: &std::thread::JoinHandle<()>) {
+    use std::os::windows::io::AsRawHandle;
+    // SAFETY: the handle comes from a live `JoinHandle` borrowed for the duration of the call, so it
+    // is a valid thread handle (std opens threads with full access, which includes THREAD_TERMINATE,
+    // the right CancelSynchronousIo needs). The call only cancels I/O; it does not touch memory.
+    unsafe {
+        windows_sys::Win32::System::IO::CancelSynchronousIo(worker.as_raw_handle());
+    }
 }
 
 // ---------------------------------------------------------------------------
