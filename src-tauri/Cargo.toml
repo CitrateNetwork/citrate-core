@@ -153,6 +153,13 @@ toml = "0.9"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Windows comms IPC bound (#180): named pipes reject socket I/O timeouts, so the round-trip runs on a
+# worker thread with a caller-side deadline, and on expiry `CancelSynchronousIo` aborts the worker's
+# blocked pipe read/write. windows-sys 0.61 is ALREADY in the tree (interprocess depends on it), so
+# naming it directly adds NO new compiled crate. Windows-only.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO"] }
+
 [dev-dependencies]
 # HUP-S5.4 test-only: resolve the app's ACL (permissions/main-window.toml + capabilities/*.json)
 # with Tauri's own resolver, to prove pop-out windows get no app command. Same versions tauri
