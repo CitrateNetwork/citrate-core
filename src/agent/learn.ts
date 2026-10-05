@@ -70,9 +70,12 @@ export interface LearnedMemory {
   proposalId: string;
   key: string;
   value: string;
-  /** "true"; "both": contradicted and unresolved (both memories are kept); "false": set aside by
-   *  the member when resolving a contradiction (kept for the record). */
+  /** "true"; "both": contradicted and unresolved (both memories are kept, and recall leaves it
+   *  out until it is resolved); "false": set aside by the member when resolving a contradiction
+   *  (kept for the record). */
   belnap: "true" | "both" | "false";
+  /** Learned memories (proposal ids) and memories the app already held (`memory:<id>`) this one
+   *  contradicts and is unresolved against. */
   contradicts: string[];
   contentSha256: string;
   workflowId: string;
@@ -80,7 +83,8 @@ export interface LearnedMemory {
   acceptedAtMs: number;
   decisionSeq: number;
   graph: { state: "stored" | "pending" | "failed" | "retracted"; nodeId?: string; detail?: string };
-  /** For a retracted memory: the proposal id kept instead. */
+  /** For a retracted memory: the proposal id kept instead, or `memory:<id>` for a memory the
+   *  app already held. */
   retractedFor?: string;
   resolvedSeq?: number;
   /** Graph nodes still to be marked superseded by this memory's node. */
@@ -273,7 +277,11 @@ export function memoryRowModel(
     return {
       title: m.key,
       value: m.value,
-      belnapLabel: kept ? `Set aside: you kept "${kept.value}" instead. Kept for the record.` : "Set aside when you resolved a contradiction. Kept for the record.",
+      belnapLabel: kept
+        ? `Set aside: you kept "${kept.value}" instead. Kept for the record.`
+        : isKnownRef(m.retractedFor)
+          ? "Set aside: you kept the memory you already had instead. Kept for the record."
+          : "Set aside when you resolved a contradiction. Kept for the record.",
       graphLabel,
       tone: "muted",
     };
@@ -282,24 +290,52 @@ export function memoryRowModel(
   return {
     title: m.key,
     value: m.value,
-    belnapLabel: m.belnap === "both" ? "Contradiction, unresolved: both are kept and linked as contradicting; nothing was merged or overwritten" : null,
+    belnapLabel:
+      m.belnap === "both"
+        ? "Contradiction, unresolved: both are kept and linked as contradicting; nothing was merged or overwritten. Hermes does not recall it until you resolve it."
+        : null,
     graphLabel,
     tone,
   };
 }
 
-/** The member's way out of `both`: keep this memory and set aside every learned memory it still
- *  contradicts. `null` when there is nothing this ledger can resolve. */
+/** The prefix core gives a memory the app held before Hermes learned anything (not learned here). */
+export const KNOWN_MEMORY_PREFIX = "memory:";
+
+/** `memory:<id>`: a memory the app already held, which a learned memory can contradict. */
+export function isKnownRef(id: string | undefined): id is string {
+  if (!id || !id.startsWith(KNOWN_MEMORY_PREFIX)) return false;
+  const rest = id.slice(KNOWN_MEMORY_PREFIX.length);
+  return rest.length > 0 && rest.length <= 128 && /^[\x21-\x7e]+$/.test(rest);
+}
+
+/** The member's way out of `both`: keep this memory and set aside every learned memory, and every
+ *  memory the app already held, it still contradicts. `null` when there is nothing this ledger can
+ *  resolve. */
 export function resolveChoice(all: readonly LearnedMemory[], m: LearnedMemory): { keep: string; retract: string[]; confirm: string } | null {
   if (m.belnap !== "both") return null;
   const others = m.contradicts
     .map((id) => all.find((x) => x.proposalId === id))
     .filter((x): x is LearnedMemory => x !== undefined && x.belnap !== "false" && x.proposalId !== m.proposalId);
-  if (others.length === 0) return null;
-  const quoted = others.map((o) => `"${o.value}"`).join(", ");
+  const known = m.contradicts.filter(isKnownRef);
+  if (others.length === 0 && known.length === 0) return null;
+  const named = [...others.map((o) => `"${o.value}"`), ...(known.length === 1 ? ["the memory you already had"] : known.length > 1 ? [`${known.length} memories you already had`] : [])].join(", ");
   return {
     keep: m.proposalId,
-    retract: others.map((o) => o.proposalId),
-    confirm: `Keep "${m.value}" for ${m.key} and set aside ${quoted}? What you set aside is kept for the record, not deleted. Each choice is recorded as your decision.`,
+    retract: [...others.map((o) => o.proposalId), ...known],
+    confirm: `Keep "${m.value}" for ${m.key} and set aside ${named}? What you set aside is kept for the record, not deleted. Each choice is recorded as your decision.`,
+  };
+}
+
+/** For a learned memory that contradicts a memory the app already held: set the learned one aside
+ *  and keep the one the app had. `null` when there is no such contradiction. */
+export function setAsideChoice(m: LearnedMemory): { keep: string; retract: string[]; confirm: string } | null {
+  if (m.belnap !== "both") return null;
+  const known = m.contradicts.find(isKnownRef);
+  if (!known) return null;
+  return {
+    keep: known,
+    retract: [m.proposalId],
+    confirm: `Set aside "${m.value}" for ${m.key} and keep the memory you already had? What you set aside is kept for the record, not deleted. Your choice is recorded as your decision.`,
   };
 }
