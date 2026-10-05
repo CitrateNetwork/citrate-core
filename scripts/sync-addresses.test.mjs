@@ -98,13 +98,23 @@ const sync = (...extra) => run(["--book", bookPath, "--genesis", GENESIS, "--out
 describe("optional HUP pins", () => {
   it("emits CapsuleRegistry and InferenceRouter when the book has them", async () => {
     writeBook(book());
-    const r = await sync("--rpc", rpcUrl);
+    const r = await sync("--rpc", rpcUrl, "--with-inference-router");
     expect(r.code).toBe(0);
     const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
     expect(out.chainId).toBe(40204);
     expect(out.genesisHash).toBe(GENESIS);
     for (const [name, a] of Object.entries({ ...REQUIRED, ...HUP })) expect(out.addresses[name]).toBe(a);
     expect(r.stdout).toContain("CapsuleRegistry, InferenceRouter");
+  });
+
+  it("withholds InferenceRouter unless --with-inference-router (the route stays off)", async () => {
+    writeBook(book());
+    const r = await sync("--rpc", rpcUrl);
+    expect(r.code).toBe(0);
+    const out = JSON.parse(fs.readFileSync(outPath, "utf8"));
+    expect(out.addresses).not.toHaveProperty("InferenceRouter");
+    expect(out.addresses.CapsuleRegistry).toBe(HUP.CapsuleRegistry);
+    expect(r.stdout).toContain("withheld InferenceRouter");
   });
 
   it("leaves an absent optional pin out instead of guessing", async () => {

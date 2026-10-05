@@ -34,7 +34,7 @@ if [[ -n "${HUP_DRYRUN_RPC:-}" ]]; then
   ok()   { echo "  ok  $1"; }
   fail() { echo "sync rehearsal: FAIL $1" >&2; exit 6; }
 
-  out="$(python3 "$sync" --book "$book" --genesis "$gen" --rpc "$rpc" --check)" || fail "the redeployed book did not pass"
+  out="$(python3 "$sync" --book "$book" --genesis "$gen" --rpc "$rpc" --check --with-inference-router)" || fail "the redeployed book did not pass"
   echo "$out"
   grep -q "CapsuleRegistry" <<<"$out" && grep -q "InferenceRouter" <<<"$out" \
     || fail "CapsuleRegistry or InferenceRouter missing from the optional pins"

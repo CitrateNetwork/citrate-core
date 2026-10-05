@@ -56,9 +56,11 @@ REQUIRED = [
 # as Hermes's registry is a placeholder pending owner sign-off.
 # HUP-S7.1 (federation F-4): CapsuleRegistry (workspace capsule records, part of the registry
 # redeploy set) and InferenceRouter (the HIC-1 registry escalation route, HUP-S1.5). A pinned
-# InferenceRouter turns that route on in the app, so the embedded book picks it up only when the
-# operator regenerates it after the redeploy (runbook step 5); listing it here changes nothing until
-# then.
+# InferenceRouter turns that route on in the app. The canonical book already pins an InferenceRouter
+# that the registry redeploy does not replace, so a routine regeneration must not switch the route
+# on by accident: the pin is validated like every other pin but written only with
+# --with-inference-router (US-1.5, pending owner sign-off). Without the flag it is withheld and the
+# route stays off.
 OPTIONAL = [
     "PatronageLedger",
     "ModelCooperative",
@@ -125,6 +127,12 @@ def main() -> None:
     ap.add_argument("--genesis", required=True, help="block-0 hash of the chain this build targets")
     ap.add_argument("--rpc", help="live RPC to verify chain id, genesis and code at every pin")
     ap.add_argument("--check", action="store_true", help="verify only; do not write")
+    ap.add_argument(
+        "--with-inference-router",
+        action="store_true",
+        help="also write the InferenceRouter pin; it turns on the HIC-1 registry escalation route "
+        "(US-1.5, pending owner sign-off). Without it the pin is checked but withheld.",
+    )
     ap.add_argument("--out", default=str(OUT), help=argparse.SUPPRESS)  # tests write to a temp file
     a = ap.parse_args()
 
@@ -166,6 +174,10 @@ def main() -> None:
         missing = [n for n, ad in pins.items() if rpc(a.rpc, "eth_getCode", [ad, "latest"]) in (None, "0x", "0x0")]
         if missing:
             die("no code on the live chain at: " + ", ".join(f"{n} {pins[n]}" for n in missing))
+
+    if "InferenceRouter" in pins and not a.with_inference_router:
+        del pins["InferenceRouter"]
+        print("sync-addresses: withheld InferenceRouter (checked; pass --with-inference-router to write it, pending owner sign-off)")
 
     out = {"_comment": MARKER, "chainId": CHAIN_ID, "genesisHash": genesis, "addresses": pins}
     print("sync-addresses: optional pins: " + (", ".join(n for n in OPTIONAL if n in pins) or "(none)"))
