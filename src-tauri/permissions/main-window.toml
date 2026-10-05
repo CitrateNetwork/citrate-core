@@ -75,6 +75,8 @@ commands.allow = [
   "model_catalog_search",
   "model_catalog_download",
   "model_catalog_select",
+  "model_delete_states",
+  "model_delete",
   "tier_recommend",
   "tier_set_override",
   "fleet_probe",

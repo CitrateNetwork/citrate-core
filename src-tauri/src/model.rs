@@ -402,6 +402,14 @@ impl DownloadGuard {
     }
 }
 
+/// Whether a download currently holds `part` (the Models screen's delete state).
+pub fn download_in_flight(part: &std::path::Path) -> bool {
+    in_flight()
+        .lock()
+        .map(|set| set.contains(part))
+        .unwrap_or(true)
+}
+
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
         if let Ok(mut set) = in_flight().lock() {

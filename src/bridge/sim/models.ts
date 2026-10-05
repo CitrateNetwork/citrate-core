@@ -22,6 +22,12 @@ export function simModelsCatalog(_host: SimHost): ModelsCatalogDomain {
     async select() {
       /* sim: no-op (no real llama-server) */
     },
+    async deleteStates() {
+      return []; // honest-empty: no downloaded models in web/dev, so nothing to delete
+    },
+    async deleteLocal() {
+      throw new Error("deleting a model needs the desktop app (the web preview has no downloaded models)");
+    },
     async registry() {
       return []; // honest-empty: web/dev has no chain to read the ModelRegistry from
     },
