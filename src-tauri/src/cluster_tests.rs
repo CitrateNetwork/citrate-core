@@ -163,6 +163,7 @@ fn with_libp2p_adds_listen_seedpath_bootstrap_never_inline_seed() {
         listen: "/ip4/0.0.0.0/tcp/0".into(),
         bootstrap: Some("/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWxyz".into()),
         seed_hex: Zeroizing::new(seed.clone()),
+        mdns: false,
     });
     let env: std::collections::BTreeMap<String, String> =
         mgr.spec_env_for_test().into_iter().collect();
@@ -173,6 +174,8 @@ fn with_libp2p_adds_listen_seedpath_bootstrap_never_inline_seed() {
         Some(dir.join("cluster.seed").to_string_lossy().as_ref())
     );
     assert_eq!(env.get(ENV_BOOTSTRAP).map(String::as_str), Some("/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWxyz"));
+    // HUP-S8.4: LAN discovery stays off unless asked for.
+    assert!(!env.contains_key(ENV_MDNS), "mDNS is off by default");
     // The raw seed hex must NEVER appear in any env value (Rule 4 / CLAUDE.md: secrets via file path).
     assert!(
         mgr.spec_env_for_test().iter().all(|(_, v)| !v.contains(&seed)),
@@ -444,4 +447,91 @@ fn a_manager_taken_out_of_the_slot_is_never_restarted() {
     done.store(true, Ordering::SeqCst);
     reloader.join().expect("reloader thread");
     assert_eq!(revived.load(Ordering::SeqCst), 0, "a taken-out manager was restarted");
+}
+
+// ---- HUP-S8.4: group seeds (link/QR) and opt-in LAN discovery ----
+
+#[test]
+fn mdns_reaches_the_daemon_only_when_the_operator_asks() {
+    let (mgr, _dir) = stub_manager("mdns");
+    let mgr = mgr.with_libp2p(Libp2pOpts {
+        listen: "/ip4/0.0.0.0/tcp/0".into(),
+        bootstrap: None,
+        seed_hex: Zeroizing::new("22".repeat(32)),
+        mdns: true,
+    });
+    let env: std::collections::BTreeMap<String, String> =
+        mgr.spec_env_for_test().into_iter().collect();
+    assert_eq!(env.get(ENV_MDNS).map(String::as_str), Some("1"));
+    // No libp2p, no mDNS: in-process mode never forwards it.
+    let (plain, _d) = stub_manager("mdns-off");
+    assert!(!plain
+        .spec_env_for_test()
+        .iter()
+        .any(|(k, _)| k == ENV_MDNS));
+}
+
+#[test]
+fn the_operator_mdns_flag_is_on_only_for_explicit_yes() {
+    for on in ["1", "true", " ON "] {
+        assert!(mdns_requested(Some(on)), "{on}");
+    }
+    for off in ["", "0", "false", "off", "yes", "2"] {
+        assert!(!mdns_requested(Some(off)), "{off}");
+    }
+    assert!(!mdns_requested(None));
+}
+
+#[test]
+fn seed_text_is_trimmed_and_bounded_before_it_reaches_the_daemon() {
+    assert_eq!(
+        seed_text("  citrate-cluster://seed?v=1&g=g&a=/ip4/1.2.3.4/tcp/1/p2p/x \n"),
+        Ok("citrate-cluster://seed?v=1&g=g&a=/ip4/1.2.3.4/tcp/1/p2p/x".to_string())
+    );
+    assert!(seed_text("   ").unwrap_err().contains("Paste"));
+    assert!(seed_text(&"a".repeat(MAX_SEED_TEXT + 1))
+        .unwrap_err()
+        .contains("too long"));
+}
+
+#[test]
+fn seed_requests_and_responses_match_the_daemon_wire() {
+    assert_eq!(
+        serde_json::to_string(&Request::Seed { group: "g".into() }).expect("json"),
+        r#"{"op":"seed","group":"g"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&Request::AddSeed {
+            group: "g".into(),
+            seed: "s".into()
+        })
+        .expect("json"),
+        r#"{"op":"addSeed","group":"g","seed":"s"}"#
+    );
+    let r: Response = serde_json::from_str(
+        r#"{"type":"seed","seed":"citrate-cluster://seed?v=1","addrs":["/ip4/1.2.3.4/tcp/1/p2p/x"]}"#,
+    )
+    .expect("parse");
+    assert!(matches!(r, Response::Seed { ref addrs, .. } if addrs.len() == 1));
+    let r: Response = serde_json::from_str(r#"{"type":"seeded","dialing":2}"#).expect("parse");
+    assert!(matches!(r, Response::Seeded { dialing: 2 }));
+    let dto = ClusterGroupSeedDto {
+        group_id: "g".into(),
+        link: "s".into(),
+        addrs: vec!["a".into()],
+    };
+    let v = serde_json::to_value(dto).expect("json");
+    assert_eq!(v["groupId"], "g", "the UI sees camelCase");
+    assert_eq!(v["link"], "s", "the link text, named so it never reads as key material");
+    assert!(v.get("seed").is_none());
+}
+
+#[test]
+fn the_seed_commands_are_registered_and_allowed_for_the_main_window_only() {
+    let lib = include_str!("lib.rs");
+    let acl = include_str!("../permissions/main-window.toml");
+    for cmd in ["cluster_group_seed", "cluster_add_seed"] {
+        assert!(lib.contains(&format!("cluster::{cmd},")), "{cmd} in lib.rs");
+        assert!(acl.contains(&format!("\"{cmd}\"")), "{cmd} in main-window.toml");
+    }
 }
