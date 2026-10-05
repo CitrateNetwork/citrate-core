@@ -398,3 +398,142 @@ fn the_file_env_source_reads_the_browser_switch_at_each_start() {
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(components);
 }
+
+// HUP-S5.5: the component updater's open-web rule reaches the managed browser.
+#[test]
+fn an_expired_manifest_keeps_the_managed_browser_off_the_open_web() {
+    let on = HermesWebSettings {
+        browser_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let managed = Path::new("/data/components/chromium/154/chrome");
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), Some(managed), false, None));
+    assert_eq!(env["CITRATE_BROWSER_OPEN_WEB"], "0");
+    assert_eq!(env["CITRATE_BROWSER_CHROMIUM"], "/data/components/chromium/154/chrome");
+    assert!(SIDECAR_ENV_KEYS.contains(&"CITRATE_BROWSER_OPEN_WEB"), "the manager passes it");
+    // Current updates: nothing extra, the sidecar's default (open) applies.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), Some(managed), true, None));
+    assert!(!env.contains_key("CITRATE_BROWSER_OPEN_WEB"));
+    // The rule follows the managed Chromium only: a system Chrome (no managed one installed,
+    // every machine while the component key slot is empty) is not affected.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), None, false, None));
+    assert!(!env.contains_key("CITRATE_BROWSER_OPEN_WEB"));
+    // A relative path is never passed, and neither is the rule without it.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), Some(Path::new("chrome")), false, None));
+    assert!(!env.contains_key("CITRATE_BROWSER_OPEN_WEB"));
+    // With the switch off, nothing at all.
+    assert!(sidecar_env_managed(&HermesWebSettings::default(), Path::new("/d"), Some(managed), false, None).is_empty());
+}
+
+#[test]
+fn the_status_says_when_the_managed_browser_is_kept_off_the_open_web() {
+    let on = HermesWebSettings {
+        browser_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let off_web = |n: &String| n.contains("stays off the open web");
+    let st = status_managed(on.clone(), None, Some(Path::new("/c/chrome")), false, None);
+    assert!(st.notices.iter().any(off_web));
+    let st = status_managed(on.clone(), None, Some(Path::new("/c/chrome")), true, None);
+    assert!(!st.notices.iter().any(off_web));
+    let st = status_managed(on, None, None, false, None);
+    assert!(!st.notices.iter().any(off_web), "no managed Chromium: nothing is held back");
+}
+
+#[test]
+fn the_installed_searxng_component_is_used_only_with_search_on_and_no_path_of_the_members() {
+    let managed = Path::new("/data/components/searxng/2026.10.4-ab/bin/searxng-run");
+    // Search off (the default): an installed component changes nothing.
+    assert!(sidecar_env_managed(&HermesWebSettings::default(), Path::new("/d"), None, true, Some(managed)).is_empty());
+    let on = HermesWebSettings {
+        search_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), None, true, Some(managed)));
+    assert_eq!(env["CITRATE_HERMES_SEARCH"], "1");
+    assert_eq!(env["CITRATE_HERMES_SEARXNG"], managed.to_string_lossy());
+    // Not installed: search is on but reports "not installed", as before.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), None, true, None));
+    assert!(!env.contains_key("CITRATE_HERMES_SEARXNG"));
+    // A relative path is never passed.
+    let env = env_map(&sidecar_env_managed(&on, Path::new("/d"), None, true, Some(Path::new("bin/searxng-run"))));
+    assert!(!env.contains_key("CITRATE_HERMES_SEARXNG"));
+    // The member's own SearXNG wins over the component.
+    let mine = HermesWebSettings {
+        search_enabled: true,
+        searxng_path: Some("/opt/searxng".into()),
+        ..HermesWebSettings::default()
+    };
+    let env = env_map(&sidecar_env_managed(&mine, Path::new("/d"), None, true, Some(managed)));
+    assert_eq!(env["CITRATE_HERMES_SEARXNG"], "/opt/searxng");
+}
+
+#[test]
+fn the_status_says_when_search_uses_the_installed_component() {
+    let on = HermesWebSettings {
+        search_enabled: true,
+        ..HermesWebSettings::default()
+    };
+    let st = status_managed(on.clone(), None, None, true, None);
+    assert!(!st.searxng_found);
+    assert!(st.notices.iter().any(|n| n.contains("no SearXNG program was found")));
+    let st = status_managed(on, None, None, true, Some(Path::new("/c/searxng-run")));
+    assert!(st.searxng_found);
+    assert!(st
+        .notices
+        .iter()
+        .any(|n| n.contains("installed private search component")));
+    assert!(st.notices.iter().all(|n| !n.contains("no SearXNG program was found")));
+}
+
+#[test]
+fn the_file_env_source_finds_the_installed_searxng_component() {
+    use citrate_components::install::{InstalledComponent, InstalledVersion, StoreState};
+    let Some(platform) = citrate_components::platform::Platform::current() else {
+        return;
+    };
+    let dir = tmp("file-src-searxng");
+    let components = tmp("file-src-searxng-components");
+    let exe = components
+        .join(crate::components::SEARXNG_COMPONENT)
+        .join("2026.10.4-ab")
+        .join("bin")
+        .join("searxng-run");
+    std::fs::create_dir_all(exe.parent().expect("parent")).expect("dirs");
+    std::fs::write(&exe, b"#!/bin/sh\n").expect("exe");
+    let mut st = StoreState::default();
+    st.components.insert(
+        crate::components::SEARXNG_COMPONENT.to_string(),
+        InstalledComponent {
+            current: InstalledVersion {
+                version: "2026.10.4+d48c4b555".into(),
+                sha256: "ab".repeat(32),
+                dir: "2026.10.4-ab".into(),
+                platform,
+                installed_at: 1_790_000_000,
+                manifest_sequence: 1,
+            },
+            previous: None,
+        },
+    );
+    std::fs::write(
+        components.join("state.json"),
+        serde_json::to_vec_pretty(&st).expect("json"),
+    )
+    .expect("state");
+    let src = file_env_source(dir.clone(), Some(components.clone()));
+    assert!(src().is_empty(), "search off: nothing is passed");
+    save(
+        &dir,
+        &HermesWebSettings {
+            search_enabled: true,
+            ..HermesWebSettings::default()
+        },
+    )
+    .expect("save");
+    let env = env_map(&src());
+    // The bundle's searxng entrypoint is the same on every platform (bin/searxng-run).
+    assert_eq!(env["CITRATE_HERMES_SEARXNG"], exe.to_string_lossy());
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(components);
+}

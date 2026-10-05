@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01
-branch: hup/n4-search-decide
+branch: hup/n4-search-decide (updated on hup/n7-components-unpack-searxng, 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
 status: active
 ---
@@ -45,8 +45,14 @@ Conservative placeholders; the defaults change nothing for members:
 
 ## Not done here
 
-- SearXNG is not bundled (HUP-S5.5, the signed component updater). Until then search reports
+- SearXNG is not installed for members yet: `scripts/pack-searxng.sh` builds the component
+  (macOS arm64), and it installs once the component key exists and a signed manifest is
+  published (HUP-S5.5, `docs/COMPONENT_UPDATER.md`). When it is installed and search is on, core
+  passes its `bin/searxng-run` (a SearXNG path the member set wins). Until then search reports
   "not installed" unless the member points to an installed `searxng-run`.
+- US-5.2 AC2: SearXNG loads only a named list of engines (`agent-search/README.md` in the
+  runtime: five general web engines by default, pending owner sign-off), never its own default
+  list, and only after the member turns web search on.
 - The managed browser (HUP-S5.1) does not call `decide()` yet, and the activity monitor does not
   render the decide metering yet.
 - The Jev adapter has been exercised only against a loopback stand-in; no TypeSafe key is held.
