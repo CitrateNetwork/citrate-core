@@ -247,7 +247,7 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef { name: "ed25519_verify", title: "Verify an Ed25519 signature", kind: ToolKind::Read, input_schema: ed25519_schema,
         description: "Check an Ed25519 signature with the chain's ED25519_VERIFY precompile (0x0120), read-only. Encodes public key, signature and message for the precompile and returns whether the chain accepts the signature." },
     ToolDef { name: "agent_precompile_encode", title: "Encode an agent precompile input", kind: ToolKind::Read, input_schema: agent_precompile_encode_schema,
-        description: "Build the exact input bytes, gas and Solidity helper for the agent precompile fork (0x0112 LORA_APPLY, 0x0113 LORA_MERGE, 0x0121 MEMORY_ANCHOR_VERIFY, 0x0122 AGENT_OPS device link and revocation checks). Pure: no RPC, no signing. These precompiles answer only from the fork height (not scheduled on 40204) and only to contract code." },
+        description: "Build the exact input bytes, gas and Solidity helper for the agent precompile fork (0x0112 LORA_APPLY, 0x0113 LORA_MERGE, 0x0121 MEMORY_ANCHOR_VERIFY, 0x0122 AGENT_OPS device link and revocation checks). Pure: no RPC, no signing. These precompiles are active from genesis on chain 40204 and answer only to contract code." },
     ToolDef { name: "agent_precompile_decode", title: "Decode an agent precompile answer", kind: ToolKind::Read, input_schema: agent_precompile_decode_schema,
         description: "Read an agent precompile's output: the LoRA result tensor, the anchor day commitment (or invalid), or the device link / revocation verdict. Empty output means the precompile was not active and is an error, never a verdict." },
     ToolDef { name: "wallet_info", title: "Wallet (public)", kind: ToolKind::Read, input_schema: no_args,
@@ -440,6 +440,7 @@ pub fn precompile_table() -> Value {
                 "summary": summary,
             })).collect::<Vec<_>>(),
             "note": crate::agent_precompiles::FORK_NOTE,
+            "active_from_genesis": crate::agent_precompiles::ACTIVE_FROM_GENESIS,
             "tools": ["agent_precompile_encode", "agent_precompile_decode"],
         },
     })

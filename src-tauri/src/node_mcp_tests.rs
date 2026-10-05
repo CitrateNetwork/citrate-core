@@ -3210,6 +3210,13 @@ fn agent_precompile_tools_encode_and_decode_without_touching_the_node() {
         .map(|a| a.iter().filter_map(|p| p["name"].as_str()).collect())
         .unwrap_or_default();
     assert_eq!(names, ["LORA_APPLY", "LORA_MERGE", "MEMORY_ANCHOR_VERIFY", "AGENT_OPS"]);
+    // Active from genesis on 40204 (reroll 2026-10-05): no activation height is implied anywhere.
+    assert_eq!(table["agent_fork"]["active_from_genesis"], json!(true));
+    let note = table["agent_fork"]["note"].as_str().unwrap_or_default();
+    assert!(note.contains("from genesis on chain 40204"), "{note}");
+    for t in crate::node_mcp_tools::TOOLS.iter().filter(|t| t.name.starts_with("agent_precompile")) {
+        assert!(!t.description.contains("not scheduled"), "{}: {}", t.name, t.description);
+    }
     // A fork precompile is not in the callable table: precompile_call refuses it.
     assert!(crate::node_mcp_tools::precompile_at(&crate::node_mcp_tools::precompile_address(0x0121)).is_none());
 }

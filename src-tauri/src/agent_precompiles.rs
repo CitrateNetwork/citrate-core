@@ -19,8 +19,10 @@
 //! Citrate node at every height, so these inputs are for contract code: the chain's
 //! `CitratePrecompiles` library (`loraApply`, `loraMerge`, `memoryAnchorCommitment`,
 //! `deviceLinkValid`, `deviceRevocationValid`), a generated contract, or the devnet check
-//! (citrate-chain `scripts/devnet-precompile-check.sh`). The four addresses answer only from the
-//! fork height, which is not scheduled on 40204; below it every library call reverts with
+//! (citrate-chain `scripts/devnet-precompile-check.sh`). On chain 40204 the four addresses are
+//! active from genesis: the 2026-10-05 reroll pins the agent precompile height to 0 in the node
+//! binary (owner decision 2026-10-04), so the app applies no activation gate of its own. A node
+//! built before the reroll does not have them, and there every library call reverts with
 //! `PrecompileUnavailable`.
 //!
 //! The encodings are pinned against the chain's own Rust encoders and precompile answers by the
@@ -87,7 +89,10 @@ pub const FORK_PRECOMPILES: &[(u16, &str, &str)] = &[
 ];
 
 /// What a caller should know before relying on any of these inputs.
-pub const FORK_NOTE: &str = "Reachable from contract code (citrate-chain CitratePrecompiles) at and after the agent precompile fork height, which is not scheduled on 40204; below it the library call reverts with PrecompileUnavailable. A top-level eth_call to the address returns 0x on a Citrate node, so do not call it directly.";
+pub const FORK_NOTE: &str = "Active from genesis on chain 40204 (the 2026-10-05 reroll pins the agent precompile height to 0). Reachable from contract code through citrate-chain CitratePrecompiles; a node built before the reroll does not have them and the library call reverts with PrecompileUnavailable. A top-level eth_call to the address returns 0x on a Citrate node, so do not call it directly.";
+
+/// The agent precompiles are active from genesis on 40204 (reroll 2026-10-05).
+pub const ACTIVE_FROM_GENESIS: bool = true;
 
 /// The 20-byte address form of a short precompile id.
 pub fn address(short: u16) -> String {

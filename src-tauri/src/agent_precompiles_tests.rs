@@ -310,7 +310,9 @@ fn json_entry_points_encode_and_decode_every_operation() {
         .map(|x| s(x).trim_start_matches("0x").to_string())
         .collect::<String>();
     assert_eq!(joined, s(&ap["input"]));
-    assert!(s(&e["note"]).contains("not scheduled on 40204"));
+    // Reroll 2026-10-05 (owner decision 2026-10-04): active from genesis on 40204, no gate.
+    assert!(s(&e["note"]).contains("from genesis on chain 40204"));
+    assert!(!s(&e["note"]).contains("not scheduled"));
     let d = decode_json("LORA_APPLY", &format!("0x{}", s(&ap["output"])))
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(d["q16"], ap["out"]["q16"]);

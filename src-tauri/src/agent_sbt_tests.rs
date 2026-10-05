@@ -1,17 +1,20 @@
 // HUP-S7.4 (US-7.1) — AgentSBT mint at onboarding: calldata, reads, revert decoding, readiness.
 //
-// Golden vectors were produced with foundry `cast` 1.5.1 against the live ABI in
-// citrate-chain/contracts/src/cit_agent/AgentSBT.sol:
+// Reroll 2026-10-05 (owner decision 2026-10-04): the member mints their own AgentSBT with
+// `mintAgentAsMember(bytes32 did, bytes32 pubkey_fingerprint)`, gated on the membership SBT;
+// the parent org is the contract's owner-set `memberOrgId()`. No registrar mints.
+//
+// Golden vectors were produced with foundry `cast` 1.5.1:
 //
 //   M=0x1111111111111111111111111111111111111111
 //   PK=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a   (RFC 8032 test 1 pubkey)
 //   FP=$(printf $PK | xxd -r -p | shasum -a 256)
 //   DID=$(cast keccak "did:citrate:agent:$M")
-//   cast calldata "mintAgent(address,uint256,bytes32,bytes32)" $M 7 $DID 0x$FP
+//   cast calldata "mintAgentAsMember(bytes32,bytes32)" $DID 0x$FP
+//   cast sig "memberOrgId()"
 //
-// The revert payloads are REAL node answers: the Citrate one from rpc.citrate.ai (eth_call of
-// mintAgent from a non-owner, 2026-10-01), the anvil ones from anvil 1.5.1 against AgentSBT
-// built from the chain repo source.
+// The OrgNotActive revert payload is a REAL anvil 1.5.1 answer against AgentSBT built from the
+// chain repo source.
 use super::*;
 use serde_json::json;
 
@@ -19,7 +22,9 @@ const MEMBER: &str = "0x1111111111111111111111111111111111111111";
 const RFC8032_PK: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 const FP_HEX: &str = "21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9";
 const DID_HASH_HEX: &str = "8aca81ccce51576b4a0f6e60d53c72b960f786d54bfbcd326be98a7ab37a7c8f";
-const MINT_CAST: &str = "51d3fe66000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000078aca81ccce51576b4a0f6e60d53c72b960f786d54bfbcd326be98a7ab37a7c8f21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9";
+const MINT_CAST: &str = "6bb964058aca81ccce51576b4a0f6e60d53c72b960f786d54bfbcd326be98a7ab37a7c8f21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9";
+/// The canonical membership SBT the scripted transport answers for (any address works).
+const MEMBER_SBT: &str = "0x2222222222222222222222222222222222222222";
 
 fn arr32(h: &str) -> [u8; 32] {
     let v = hex::decode(h).expect("hex");
@@ -35,11 +40,21 @@ fn member20() -> [u8; 20] {
 // ------------------------------------------------------------------ identity + calldata
 
 #[test]
-fn mint_selector_is_the_live_mint_agent_selector() {
+fn mint_selector_is_the_member_mint_selector() {
     assert_eq!(
-        hex::encode(crate::model_registry::selector(MINT_AGENT_SIG)),
-        "51d3fe66"
+        hex::encode(crate::model_registry::selector(MINT_AGENT_AS_MEMBER_SIG)),
+        "6bb96405"
     );
+    assert_eq!(MINT_AGENT_AS_MEMBER_SIG, "mintAgentAsMember(bytes32,bytes32)");
+}
+
+/// The registrar path is gone: nothing in the member flow builds the owner-only `mintAgent`.
+#[test]
+fn the_member_flow_never_builds_the_owner_only_mint() {
+    let cd = mint_agent_as_member_calldata(&arr32(DID_HASH_HEX), &arr32(FP_HEX));
+    assert_ne!(&cd[..4], &crate::model_registry::selector("mintAgent(address,uint256,bytes32,bytes32)"));
+    // Two static words after the selector; the recipient is msg.sender, never an argument.
+    assert_eq!(cd.len(), 4 + 64);
 }
 
 #[test]
@@ -72,7 +87,7 @@ fn agent_did_rejects_a_malformed_address() {
 
 #[test]
 fn mint_calldata_matches_cast_byte_for_byte() {
-    let got = mint_agent_calldata(&member20(), 7, &arr32(DID_HASH_HEX), &arr32(FP_HEX));
+    let got = mint_agent_as_member_calldata(&arr32(DID_HASH_HEX), &arr32(FP_HEX));
     assert_eq!(hex::encode(got), MINT_CAST);
 }
 
@@ -91,6 +106,7 @@ fn read_calldata_matches_cast() {
         "82afd23b0000000000000000000000000000000000000000000000000000000000000000"
     );
     assert_eq!(hex::encode(org_contract_calldata()), "6607f9d6");
+    assert_eq!(hex::encode(member_org_id_calldata()), "1e3e1e8b");
 }
 
 #[test]
@@ -183,17 +199,19 @@ fn token_id_from_a_transfer_log() {
 // ------------------------------------------------------------------ revert classification
 
 #[test]
-fn classifies_the_live_citrate_not_owner_revert() {
-    let err = json!({"code":-32000,"message":"execution reverted: Execution reverted: Contract call reverted: 0x118cdaa7000000000000000000000000000000000000000000000000000000000000dead (gas used: 24955)"});
-    assert_eq!(classify_revert(&err), Preflight::NotIssuer);
-}
-
-#[test]
-fn classifies_anvil_reverts_from_the_data_field() {
-    let not_owner = json!({"code":3,"message":"execution reverted: custom error 0x118cdaa7: \u{0}\u{0}","data":"0x118cdaa7000000000000000000000000000000000000000000000000000000000000dead"});
-    assert_eq!(classify_revert(&not_owner), Preflight::NotIssuer);
+fn classifies_the_org_not_active_revert_from_data_or_message() {
     let org = json!({"code":3,"message":"execution reverted: custom error 0xa4dde45e","data":"0xa4dde45e"});
     assert_eq!(classify_revert(&org), Preflight::OrgNotActive);
+    let citrate = json!({"code":-32000,"message":"execution reverted: Execution reverted: Contract call reverted: 0xa4dde45e (gas used: 24955)"});
+    assert_eq!(classify_revert(&citrate), Preflight::OrgNotActive);
+}
+
+/// An owner-only revert is no longer special: the member path never calls an issuer-only
+/// function, so such a revert is shown verbatim instead of claiming a registrar exists.
+#[test]
+fn an_owner_only_revert_is_not_read_as_a_registrar_gate() {
+    let not_owner = json!({"code":3,"message":"execution reverted: custom error 0x118cdaa7","data":"0x118cdaa7000000000000000000000000000000000000000000000000000000000000dead"});
+    assert!(matches!(classify_revert(&not_owner), Preflight::Reverted(_)));
 }
 
 #[test]
@@ -212,6 +230,8 @@ fn ready_facts() -> Facts {
         contract: Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b".into()),
         has_code: Ok(true),
         held: Ok(0),
+        member_org: Ok(Some(3)),
+        is_member: Ok(true),
         org_active: Ok(true),
         identity_key: Ok([7u8; 32]),
         preflight: Ok(Preflight::Ok),
@@ -288,13 +308,53 @@ fn missing_identity_key_says_what_unlocks_it() {
 }
 
 #[test]
-fn not_the_issuer_is_after_the_network_upgrade() {
+fn a_contract_without_member_issuance_is_after_the_network_upgrade() {
     let mut f = ready_facts();
-    f.preflight = Ok(Preflight::NotIssuer);
+    f.member_org = Ok(None);
     let r = assess(&f);
-    assert_eq!(r.state, MintState::NotIssuer);
+    assert_eq!(r.state, MintState::MemberMintUnavailable);
     assert!(!r.available);
     assert!(r.message.contains("available after the network upgrade"));
+    assert!(!r.message.to_ascii_lowercase().contains("registrar"));
+}
+
+#[test]
+fn a_wallet_without_the_membership_sbt_is_told_why() {
+    let mut f = ready_facts();
+    f.is_member = Ok(false);
+    let r = assess(&f);
+    assert_eq!(r.state, MintState::NotMember);
+    assert!(!r.available);
+    assert!(r.message.contains("membership"));
+}
+
+#[test]
+fn unreadable_member_issuance_or_membership_is_unreachable_not_ready() {
+    let mut f = ready_facts();
+    f.member_org = Err("timeout".into());
+    assert_eq!(assess(&f).state, MintState::ChainUnreachable);
+    let mut f = ready_facts();
+    f.is_member = Err("timeout".into());
+    assert_eq!(assess(&f).state, MintState::ChainUnreachable);
+}
+
+#[test]
+fn no_message_mentions_a_registrar_or_an_issuer() {
+    for st in [
+        MintState::Ready,
+        MintState::Minted,
+        MintState::NotInBook,
+        MintState::NoCode,
+        MintState::MemberMintUnavailable,
+        MintState::NotMember,
+        MintState::OrgNotActive,
+        MintState::IdentityKeyMissing,
+        MintState::ChainUnreachable,
+        MintState::Reverted,
+    ] {
+        let m = message_for(st, "detail").to_ascii_lowercase();
+        assert!(!m.contains("registrar") && !m.contains("issuer"), "{st:?}: {m}");
+    }
 }
 
 #[test]
@@ -324,6 +384,14 @@ fn mint_state_serialises_as_kebab_codes() {
         serde_json::to_value(MintState::IdentityKeyMissing).expect("json"),
         json!("identity-key-missing")
     );
+    assert_eq!(
+        serde_json::to_value(MintState::MemberMintUnavailable).expect("json"),
+        json!("member-mint-unavailable")
+    );
+    assert_eq!(
+        serde_json::to_value(MintState::NotMember).expect("json"),
+        json!("not-member")
+    );
 }
 
 #[test]
@@ -333,8 +401,9 @@ fn user_facing_messages_have_no_em_dashes() {
         MintState::Minted,
         MintState::NotInBook,
         MintState::NoCode,
+        MintState::MemberMintUnavailable,
+        MintState::NotMember,
         MintState::OrgNotActive,
-        MintState::NotIssuer,
         MintState::IdentityKeyMissing,
         MintState::ChainUnreachable,
         MintState::Reverted,
@@ -351,14 +420,14 @@ fn mint_tx_json_is_from_and_to_the_member_with_zero_value() {
     let raw = mint_tx_json(
         MEMBER,
         "0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b",
-        &[0x51, 0xd3, 0xfe, 0x66],
+        &[0x6b, 0xb9, 0x64, 0x05],
         120_000,
     );
     let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
     assert_eq!(v["from"], MEMBER);
     assert_eq!(v["to"], "0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b");
     assert_eq!(v["value"], "0x0");
-    assert_eq!(v["data"], "0x51d3fe66");
+    assert_eq!(v["data"], "0x6bb96405");
     assert_eq!(v["gas"], "0x1d4c0");
     assert_eq!(v["chainId"], "0x9d0c");
 }
@@ -368,7 +437,7 @@ fn status_with(state: MintState, available: bool, contract: Option<&str>) -> Age
         contract: contract.map(str::to_string),
         member: MEMBER.to_string(),
         did: agent_did(MEMBER).ok(),
-        parent_org_id: "7".into(),
+        parent_org_id: Some("3".into()),
         balance: Some("0".into()),
         tokens: Some(Vec::new()),
         tokens_note: None,
@@ -385,14 +454,15 @@ fn mint_request_refuses_when_not_available_and_never_estimates() {
     let c = "0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b";
     for (state, contract) in [
         (MintState::OrgNotActive, Some(c)),
-        (MintState::NotIssuer, Some(c)),
+        (MintState::MemberMintUnavailable, Some(c)),
+        (MintState::NotMember, Some(c)),
         (MintState::Minted, Some(c)),
         (MintState::NotInBook, None),
         (MintState::ChainUnreachable, Some(c)),
     ] {
         let st = status_with(state, false, contract);
         let mut asked = false;
-        let r = prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |_| {
+        let r = prepare_mint_tx(&st, &arr32(RFC8032_PK), |_| {
             asked = true;
             Ok(100_000)
         });
@@ -404,7 +474,7 @@ fn mint_request_refuses_when_not_available_and_never_estimates() {
     }
     // `available` is the gate even if a state were inconsistent with it.
     let st = status_with(MintState::Ready, false, Some(c));
-    assert!(prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |_| Ok(1)).is_err());
+    assert!(prepare_mint_tx(&st, &arr32(RFC8032_PK), |_| Ok(1)).is_err());
 }
 
 #[test]
@@ -412,7 +482,7 @@ fn mint_request_when_ready_builds_the_exact_tx_with_margin() {
     let c = "0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b";
     let st = status_with(MintState::Ready, true, Some(c));
     let mut seen = None;
-    let raw = prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |q| {
+    let raw = prepare_mint_tx(&st, &arr32(RFC8032_PK), |q| {
         seen = Some(q);
         Ok(100_000)
     })
@@ -426,7 +496,7 @@ fn mint_request_when_ready_builds_the_exact_tx_with_margin() {
     assert_eq!(q["data"], format!("0x{MINT_CAST}"));
     assert_eq!(q["from"], MEMBER);
     // A failed estimate is surfaced, never a guessed gas limit.
-    let e = prepare_mint_tx(&st, 7, &arr32(RFC8032_PK), |_| Err("boom".into()));
+    let e = prepare_mint_tx(&st, &arr32(RFC8032_PK), |_| Err("boom".into()));
     assert!(e.expect_err("estimate failed").contains("boom"));
 }
 
@@ -437,14 +507,16 @@ fn gas_margin_adds_a_quarter_and_never_overflows() {
 }
 
 #[test]
-fn parent_org_id_parses_the_override_and_refuses_junk() {
-    assert_eq!(
-        parse_parent_org(None).expect("default"),
-        DEFAULT_PARENT_ORG_ID
-    );
-    assert_eq!(parse_parent_org(Some("12")).expect("override"), 12);
-    assert!(parse_parent_org(Some("-1")).is_err());
-    assert!(parse_parent_org(Some("twelve")).is_err());
+fn member_org_id_decodes_and_an_old_contract_reads_as_no_member_issuance() {
+    // A word: the owner-set member org.
+    assert_eq!(decode_member_org(&ok(json!(word(3)))), Ok(Some(3)));
+    // The pre-reroll AgentSBT has no memberOrgId(): the call reverts (no fallback) or returns
+    // no data. Both mean "this contract has no member issuance", not a chain failure.
+    let reverted = json!({"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}});
+    assert_eq!(decode_member_org(&reverted), Ok(None));
+    assert_eq!(decode_member_org(&ok(json!("0x"))), Ok(None));
+    // A malformed answer is an error, never a guessed org.
+    assert!(decode_member_org(&json!({"jsonrpc":"2.0","id":1})).is_err());
 }
 
 #[test]
@@ -473,10 +545,12 @@ impl crate::rpc::RpcTransport for Scripted {
         let key: &str = match (method.as_str(), &data[..data.len().min(10)]) {
             ("eth_getCode", _) => "code",
             ("eth_getLogs", _) => "logs",
+            ("eth_call", "0x70a08231") if body["params"][0]["to"] == MEMBER_SBT => "membership",
             ("eth_call", "0x70a08231") => "balance",
+            ("eth_call", "0x1e3e1e8b") => "member_org",
             ("eth_call", "0x6607f9d6") => "org",
             ("eth_call", "0x82afd23b") => "active",
-            ("eth_call", "0x51d3fe66") => "preflight",
+            ("eth_call", "0x6bb96405") => "preflight",
             ("eth_call", "0x2de5aaf7") => "agent",
             _ => "other",
         };
@@ -508,25 +582,21 @@ fn live_like() -> std::collections::HashMap<&'static str, serde_json::Value> {
         )),
     );
     m.insert("active", ok(json!(word(0))));
+    m.insert("member_org", ok(json!(word(3))));
+    m.insert("membership", ok(json!(word(1))));
     m.insert("logs", ok(json!([])));
     m
 }
 
 #[test]
 fn gather_reports_the_live_40204_state_honestly() {
-    // 2026-10-01 on 40204: AgentSBT has code, no org exists, so isActive(0) is false.
+    // A member of the new book whose member org is not active yet: isActive(3) is false.
     let t = Scripted {
         answers: live_like(),
         seen: Default::default(),
     };
     let rpc = crate::rpc::RpcClient::with_transport(t);
-    let st = gather(
-        &rpc,
-        Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"),
-        MEMBER,
-        0,
-        Ok([7u8; 32]),
-    );
+    let st = gather(&rpc, Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"), Some(MEMBER_SBT), MEMBER, Ok([7u8; 32]));
     assert_eq!(st.state, MintState::OrgNotActive);
     assert!(!st.available);
     assert_eq!(st.balance.as_deref(), Some("0"));
@@ -535,6 +605,7 @@ fn gather_reports_the_live_40204_state_honestly() {
         st.did.as_deref(),
         Some("did:citrate:agent:0x1111111111111111111111111111111111111111")
     );
+    assert_eq!(st.parent_org_id.as_deref(), Some("3"), "the parent org is the contract's memberOrgId");
     // The org read went to the contract the AgentSBT itself names, not a guessed address.
     let seen = rpc.transport().seen.borrow();
     let active_call = seen
@@ -559,31 +630,61 @@ fn gather_without_a_book_entry_makes_no_rpc_calls() {
         seen: Default::default(),
     };
     let rpc = crate::rpc::RpcClient::with_transport(t);
-    let st = gather(&rpc, None, MEMBER, 0, Ok([7u8; 32]));
+    let st = gather(&rpc, None, Some(MEMBER_SBT), MEMBER, Ok([7u8; 32]));
     assert_eq!(st.state, MintState::NotInBook);
     assert!(rpc.transport().seen.borrow().is_empty());
 }
 
 #[test]
-fn gather_preflights_from_the_member_and_decodes_not_issuer() {
+fn gather_on_the_pre_reroll_contract_says_after_the_upgrade_and_never_preflights() {
     let mut a = live_like();
-    a.insert("active", ok(json!(word(1))));
     a.insert(
-        "preflight",
-        json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"execution reverted: Execution reverted: Contract call reverted: 0x118cdaa70000000000000000000000001111111111111111111111111111111111111111 (gas used: 24955)"}}),
+        "member_org",
+        json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"execution reverted"}}),
     );
     let rpc = crate::rpc::RpcClient::with_transport(Scripted {
         answers: a,
         seen: Default::default(),
     });
-    let st = gather(
-        &rpc,
-        Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"),
-        MEMBER,
-        0,
-        Ok([7u8; 32]),
-    );
-    assert_eq!(st.state, MintState::NotIssuer);
+    let st = gather(&rpc, Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"), Some(MEMBER_SBT), MEMBER, Ok([7u8; 32]));
+    assert_eq!(st.state, MintState::MemberMintUnavailable);
+    assert_eq!(st.parent_org_id, None, "no member org is guessed");
+    let seen = rpc.transport().seen.borrow();
+    assert!(!seen.iter().any(|b| b["params"][0]["data"].as_str().unwrap_or("").starts_with("0x6bb96405")));
+}
+
+#[test]
+fn gather_reads_membership_from_the_canonical_member_sbt() {
+    let mut a = live_like();
+    a.insert("membership", ok(json!(word(0))));
+    let rpc = crate::rpc::RpcClient::with_transport(Scripted {
+        answers: a,
+        seen: Default::default(),
+    });
+    let st = gather(&rpc, Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"), Some(MEMBER_SBT), MEMBER, Ok([7u8; 32]));
+    assert_eq!(st.state, MintState::NotMember);
+    assert!(!st.available);
+    // Without a membership SBT in the book the gather cannot claim membership.
+    let rpc = crate::rpc::RpcClient::with_transport(Scripted {
+        answers: live_like(),
+        seen: Default::default(),
+    });
+    let st = gather(&rpc, Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"), None, MEMBER, Ok([7u8; 32]));
+    assert_eq!(st.state, MintState::ChainUnreachable);
+}
+
+#[test]
+fn gather_ready_preflights_the_member_mint_from_the_member() {
+    let mut a = live_like();
+    a.insert("active", ok(json!(word(1))));
+    a.insert("preflight", ok(json!(word(0))));
+    let rpc = crate::rpc::RpcClient::with_transport(Scripted {
+        answers: a,
+        seen: Default::default(),
+    });
+    let st = gather(&rpc, Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"), Some(MEMBER_SBT), MEMBER, Ok(arr32(RFC8032_PK)));
+    assert_eq!(st.state, MintState::Ready);
+    assert!(st.available);
     let seen = rpc.transport().seen.borrow();
     let pf = seen
         .iter()
@@ -591,10 +692,11 @@ fn gather_preflights_from_the_member_and_decodes_not_issuer() {
             b["params"][0]["data"]
                 .as_str()
                 .unwrap_or("")
-                .starts_with("0x51d3fe66")
+                .starts_with("0x6bb96405")
         })
         .expect("preflight ran");
     assert_eq!(pf["params"][0]["from"], MEMBER);
+    assert_eq!(pf["params"][0]["data"], format!("0x{MINT_CAST}"));
 }
 
 #[test]
@@ -621,13 +723,7 @@ fn gather_lists_held_tokens_with_their_records() {
         answers: a,
         seen: Default::default(),
     });
-    let st = gather(
-        &rpc,
-        Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"),
-        MEMBER,
-        0,
-        Ok([7u8; 32]),
-    );
+    let st = gather(&rpc, Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"), Some(MEMBER_SBT), MEMBER, Ok([7u8; 32]));
     assert_eq!(st.state, MintState::Minted);
     let toks = st.tokens.expect("tokens listed");
     assert_eq!(toks.len(), 1);
@@ -647,13 +743,7 @@ fn a_failed_log_scan_keeps_the_balance_and_says_tokens_are_unknown() {
         answers: a,
         seen: Default::default(),
     });
-    let st = gather(
-        &rpc,
-        Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"),
-        MEMBER,
-        0,
-        Ok([7u8; 32]),
-    );
+    let st = gather(&rpc, Some("0xd16b1ad6e744f3e92223c65f492c35d36ae07c7b"), Some(MEMBER_SBT), MEMBER, Ok([7u8; 32]));
     assert_eq!(st.state, MintState::Minted);
     assert_eq!(st.balance.as_deref(), Some("1"));
     assert!(st.tokens.is_none(), "unknown, never an empty list");
@@ -666,15 +756,15 @@ fn a_failed_log_scan_keeps_the_balance_and_says_tokens_are_unknown() {
 
 // ------------------------------------------------------------------ anvil (real contract)
 
-/// Deploys OrganizationSBT + AgentSBT built from the citrate-chain source on a local anvil,
-/// then mints through [`mint_agent_calldata`] and reads it back through [`gather`].
+/// Deploys OrganizationSBT + AgentSBT built from the citrate-chain source on a local anvil and
+/// checks the member path against it through [`gather`] and [`mint_agent_as_member_calldata`].
 ///
 /// Needs anvil and the forge artifacts, so it is opt-in. Run it with
 /// `scripts/anvil-agent-sbt.sh`, which compiles the chain source into a scratch dir and sets
 /// `CITRATE_AGENT_SBT_ARTIFACTS` before running this test with `--ignored`.
 #[test]
 #[ignore = "needs anvil + AgentSBT artifacts: run scripts/anvil-agent-sbt.sh"]
-fn anvil_deploys_agent_sbt_and_mints_through_the_calldata_builder() {
+fn anvil_pre_reroll_agent_sbt_reads_as_no_member_issuance() {
     use std::process::{Command, Stdio};
 
     let artifacts = std::env::var("CITRATE_AGENT_SBT_ARTIFACTS").expect(
@@ -761,10 +851,17 @@ fn anvil_deploys_agent_sbt_and_mints_through_the_calldata_builder() {
         ["contractAddress"].as_str().expect("agent addr").to_string();
 
     let member_key = parse_pubkey_hex(&format!("0x{RFC8032_PK}")).expect("key");
+    // Any address with no code stands in for the membership SBT: on this contract the gather
+    // stops before the membership read.
+    let member_sbt = "0x2222222222222222222222222222222222222222";
 
-    // 1. Before any org exists: honest OrgNotActive, nothing offered.
-    let st = gather(&rpc, Some(agent.as_str()), member, 0, Ok(member_key));
-    assert_eq!(st.state, MintState::OrgNotActive, "{st:?}");
+    // 1. Before any org exists, on the pre-reroll AgentSBT (owner-only mintAgent, no
+    //    memberOrgId): the member path is honestly unavailable, nothing is offered and the
+    //    member mint is never preflighted.
+    let st = gather(&rpc, Some(agent.as_str()), Some(member_sbt), member, Ok(member_key));
+    assert_eq!(st.state, MintState::MemberMintUnavailable, "{st:?}");
+    assert!(!st.available);
+    assert_eq!(st.parent_org_id, None);
 
     // 2. The owner mints org 0: mintOrg(owner, keccak("did:citrate:org:test"), owner, []).
     let org_did = did_hash("did:citrate:org:test");
@@ -778,40 +875,22 @@ fn anvil_deploys_agent_sbt_and_mints_through_the_calldata_builder() {
         json!({"from": owner, "to": org, "data": format!("0x{}", hex::encode(&mint_org)), "gas": "0x7a120"}),
     );
 
-    // 3. A member who is not the issuer: the preflight decodes NotIssuer (anvil data shape).
-    let st = gather(&rpc, Some(agent.as_str()), member, 0, Ok(member_key));
-    assert_eq!(st.state, MintState::NotIssuer, "{st:?}");
-    assert!(!st.available);
+    // 3. An active org does not change that: the contract still has no member issuance, and
+    //    the app never falls back to an issuer-only mint (no registrar path).
+    let st = gather(&rpc, Some(agent.as_str()), Some(member_sbt), member, Ok(member_key));
+    assert_eq!(st.state, MintState::MemberMintUnavailable, "{st:?}");
+    let st = gather(&rpc, Some(agent.as_str()), Some(member_sbt), owner, Ok(member_key));
+    assert_eq!(st.state, MintState::MemberMintUnavailable, "{st:?}");
 
-    // 4. The issuer (contract owner) runs the same gather: Ready, then mints through the builder.
-    let st = gather(&rpc, Some(agent.as_str()), owner, 0, Ok(member_key));
-    assert_eq!(st.state, MintState::Ready, "{st:?}");
-    let owner20 = crate::validator::parse_address_20(owner).expect("addr");
-    let did = agent_did(owner).expect("did");
-    let calldata = mint_agent_calldata(
-        &owner20,
-        0,
-        &did_hash(&did),
+    // 4. The exact member-mint calldata reverts on this contract (unknown selector), so a
+    //    build that skipped the readiness check would still never mint here.
+    let calldata = mint_agent_as_member_calldata(
+        &did_hash(&agent_did(member).expect("did")),
         &pubkey_fingerprint(&member_key),
     );
-    let call = json!({"from": owner, "to": agent, "data": format!("0x{}", hex::encode(&calldata))});
-    let gas = with_gas_margin(rpc.estimate_gas(call).expect("estimate"));
-    // The exact tx the ceremony would carry (mint_tx_json), broadcast by anvil's unlocked owner.
-    let tx: serde_json::Value =
-        serde_json::from_str(&mint_tx_json(owner, &agent, &calldata, gas)).expect("tx json");
-    send(
-        json!({"from": tx["from"], "to": tx["to"], "data": tx["data"], "gas": tx["gas"], "value": tx["value"]}),
-    );
-
-    // 5. The status read shows the token, its DID and fingerprint, and offers no second mint.
-    let st = gather(&rpc, Some(agent.as_str()), owner, 0, Ok(member_key));
-    assert_eq!(st.state, MintState::Minted, "{st:?}");
-    assert_eq!(st.balance.as_deref(), Some("1"));
-    let toks = st.tokens.expect("tokens");
-    assert_eq!(toks.len(), 1);
-    assert_eq!(toks[0].token_id, "0");
-    assert_eq!(toks[0].parent_org_id, "0");
-    assert_eq!(toks[0].did, format!("0x{}", hex::encode(did_hash(&did))));
-    assert_eq!(toks[0].pubkey_fingerprint, format!("0x{FP_HEX}"));
-    assert!(!toks[0].quarantined);
+    let r = raw("eth_call", json!([{"from": member, "to": agent, "data": format!("0x{}", hex::encode(&calldata))}, "latest"]));
+    assert!(r.get("error").is_some(), "mintAgentAsMember must not exist on the pre-reroll contract: {r}");
+    // The member-path mint itself (Ready, then Minted with parent org = memberOrgId) runs
+    // against the reroll AgentSBT once the chain lane's mintAgentAsMember lands on
+    // citrate-chain reroll/panic-s1; this script then builds it from that branch.
 }

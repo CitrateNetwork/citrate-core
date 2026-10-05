@@ -234,3 +234,18 @@ fn expire_request_is_a_known_call() {
     let (_, d) = decode_transaction(&router_tx(&data, 0)).unwrap_or_else(|| panic!("decodes"));
     assert!(d.action.starts_with("Call expireRequest()"), "{}", d.action);
 }
+
+// Reroll 2026-10-05: the member's own AgentSBT mint (built by core's agent_sbt module and approved
+// in the ceremony, HIC-1) is a known call. The owner-only `mintAgent` is not one: core never builds it.
+#[test]
+fn member_agent_sbt_mint_is_a_known_call_and_the_owner_mint_is_not() {
+    let mut data = selector_of("mintAgentAsMember(bytes32,bytes32)").to_vec();
+    data.extend_from_slice(&[0x8a; 32]);
+    data.extend_from_slice(&[0x21; 32]);
+    let (_, d) = decode_transaction(&router_tx(&data, 0)).unwrap_or_else(|| panic!("decodes"));
+    assert!(d.action.starts_with("Call mintAgentAsMember()"), "{}", d.action);
+    let mut owner = selector_of("mintAgent(address,uint256,bytes32,bytes32)").to_vec();
+    owner.extend_from_slice(&[0u8; 128]);
+    let (_, d) = decode_transaction(&router_tx(&owner, 0)).unwrap_or_else(|| panic!("decodes"));
+    assert!(!d.action.contains("mintAgent"), "{}", d.action);
+}

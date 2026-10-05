@@ -15,7 +15,7 @@ const status = (over: Partial<AgentSbtStatus> = {}): AgentSbtStatus => ({
   tokensNote: null,
   state: "org-not-active",
   available: false,
-  message: "Hermes identity is available after the network upgrade. The organization that issues Hermes identities is not set up on chain yet.",
+  message: "Hermes identity is available after the network upgrade. The member organization that Hermes identities belong to is not active on chain yet.",
   ...over,
 });
 const tauri = { mode: "tauri" as const, loaded: true, error: null };
@@ -62,8 +62,16 @@ describe("AgentIdentityView", () => {
     expect(html).not.toContain('data-testid="agent-identity-mint"');
   });
 
-  it("names the data source", () => {
+  it("names the data source, including the membership SBT and the member mint", () => {
     const html = renderToStaticMarkup(<AgentIdentityView card={identityCard(status(), tauri)} busy={false} onMint={noop} />);
     expect(html).toContain("AgentSBT on chain 40204");
+    expect(html).toContain("CitrateMemberSBT");
+    expect(html).toContain("mintAgentAsMember");
+  });
+
+  it("says the member mints from their own wallet", () => {
+    const card = identityCard(status({ state: "ready", available: true, message: "x" }), tauri);
+    const html = renderToStaticMarkup(<AgentIdentityView card={card} busy={false} onMint={noop} />);
+    expect(html).toContain("from your own wallet");
   });
 });
