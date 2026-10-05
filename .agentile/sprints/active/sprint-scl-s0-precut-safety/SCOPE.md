@@ -42,6 +42,13 @@ Each WP is red, then green, then close-with-proof. Definitions and acceptance cr
 | S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | not started |
 | S0.5 | Shutdown coverage check: embed stops with Hermes, workers exit on stdin close | (QA) | S | all three OSes | not started |
 | S0.6 | Genesis-change update check: no old node left holding the chain database or ports; if one is, the UI names it | US-0.4 | M | all three OSes | not started |
+| S0.7 | Windows installer stops this installation's own sidecars before copying files (red-team addition RT-04) | US-0.2 (amended) | M | Windows team: manual 0.4.2 to 0.5.0 install with the old app running | not started |
+
+*Red-team correction (2026-10-05, RT-03):* S0.2 targets the Windows in-app update install path,
+which is not live in 0.5.0 (the Windows bundle ships no updater artifacts). It is conditional
+on a Windows feed and is not part of `g1-precut`; S0.7 covers the path Windows members use.
+S0.6's per-OS update run means the macOS in-app update and the manual Linux and Windows
+installs.
 
 ## Exit criteria
 
@@ -68,3 +75,5 @@ PR in `EVIDENCE.md`. Baseline: taken at the first PR from `release/0.5.0-hermes-
 ## Daily log
 
 - 2026-10-05: sprint opened with the Stage-1 planset (docs only). No code yet.
+- 2026-10-05: planset red-teamed (08_RED_TEAM, 29 findings, 3 blocking). S0.7 added, S0.2
+  made conditional. Still docs only.

@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: planset (Stage-1 draft)
+status: planset (Stage-2, red-teamed)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core (primary); citrate-agent-runtime
@@ -92,6 +93,15 @@ Service profiles on the release branch (`d16f194`), with the retry policy D-6 as
 Llama chat and llama embed both have grace longer than `healthy_after`, which is the
 ordering under which bug (b) fires today (06_BUG_TRIAGE).
 
+*Red-team correction (2026-10-05, RT-12, proposed O-19):* `serve.rs:768` feeds
+`server_healthy: serve.0.is_running()` into `select_inference_state` (`ai.rs:262-271`), which
+routes "model ready, server not healthy, gateway key configured" to `LocalFallback`, the
+remote gateway. Swapping in fresh `Ready` as written would send prompts off the device during
+every cold load (`Awaiting`) and after any single timed-out probe (`Stale`). Rule: readiness
+gates admission to the local server; it never switches provider by itself. `LocalFallback`
+is chosen only when the local owner is `Failed`, `Stopped` or `Quarantined`. While `Awaiting`
+or `Stale`, local requests wait boundedly or fail honestly (SCL-S7.5).
+
 ## 4. Probes and adapters
 
 Adopted from SPEC-001 "Finite actual workers and transports": one probe permit per service
@@ -129,6 +139,17 @@ unreaped; permanently close actuation before reaping; afterwards only signal-zer
 observation, and only `ESRCH` counts as absence. Escaped descendants (a new session or
 group) are out of scope and reported as such by a fixture.
 
+*Red-team correction (2026-10-05, RT-07, RT-24):* (1) The group TERM, wait, group KILL
+sequence is right for leaf services. For a **nested owner** (Hermes), it pre-empts the
+runtime's ordered drain, because the browser, search and MCP children share the Hermes group.
+Nested-owner profiles stop leader-first: TERM to the leader only, wait for the runtime's child
+report inside the Hermes sub-deadline, then group TERM and at most one group KILL, all while
+the anchor is retained. (2) The sole-reaper property holds today (no `tokio::process` in the
+sidecar, no SIGCHLD handler, no shell plugin in core), but a startup check can only inspect
+SIGCHLD disposition and `SA_NOCLDWAIT`. A CI guard (SCL-S13.2) keeps reaping code out of the
+dependency tree, and `ECHILD` on an anchor is lost ownership. The existing monitor's
+`Child::try_wait` reaps and must be replaced on contained profiles.
+
 ### 6.2 Windows (D-10, not parked)
 
 - Create the child with `CREATE_SUSPENDED` (plus the existing `CREATE_NO_WINDOW`), assign it
@@ -152,6 +173,17 @@ group) are out of scope and reported as such by a fixture.
 - SPEC-001's rejection of `process-wrap` 10.0.1 as a full solution is adopted; this backend
   uses the APIs directly.
 
+*Red-team correction (2026-10-05, RT-05, RT-06):* stable Rust does not expose the primary
+thread handle of a `std::process::Child` (`ChildExt::main_thread_handle` is nightly-only) or
+`PROC_THREAD_ATTRIBUTE_JOB_LIST` (`spawn_with_attributes` is nightly-only), and both repos pin
+the stable toolchain. "Feature flags only" is therefore not enough: SCL-S10.0 chooses and
+records one stable mechanism (thread enumeration plus `ResumeThread`, or a raw `CreateProcessW`
+backend that owns its pipes; `NtResumeProcess` is rejected). Also required: if assignment
+fails, the still-suspended child is terminated and never resumed; the Job handle is created
+non-inheritable and no child holds a duplicate, otherwise kill-on-job-close cannot fire when
+core dies. Which Hermes children exist on Windows at all is recorded per OS in 07, and the
+real managed browser and an `npx`-launched MCP server are tested inside a no-breakaway Job.
+
 ### 6.3 Nested ownership (Hermes)
 
 The Hermes sidecar is a lifecycle cell in core and is itself contained. Some of its
@@ -170,6 +202,16 @@ reach them (R-4). The contract therefore nests:
    first). Blocking turns (`spawn_blocking`) are bounded or detached-and-owned so runtime
    shutdown cannot wait on them without limit.
 
+*Red-team correction (2026-10-05, RT-08, RT-09):* (1) Step 2 is unsafe unless the runtime
+closes its own admission first. Otherwise an MCP reconnect or an already-admitted turn can
+start a child after the runtime reported `Complete` and before Hermes exits, and core would
+report `Complete` with a live child. The runtime enters Closing (no new child spawn, MCP
+reconnect, or lazy browser or search start) **before** it takes the child report (SCL-S11.6;
+modelled in SCL-S1.7). (2) Step 3: records written by the sidecar are **claims, not
+authority**. Core signals a recorded runtime child only when it can tie it to a Hermes
+incarnation core itself recorded, and the record files live where no sandboxed or
+member-added program can write (SCL-S11.7, @rule8). Specifics are tracked privately.
+
 ## 7. Ownership record and next-launch cleanup (D-7)
 
 - **What is recorded:** for each owned process at spawn: owner kind, `appEpoch`, pid, OS
@@ -186,6 +228,18 @@ reach them (R-4). The contract therefore nests:
   inside a startup deadline, off the main thread.
 - **Replaces** `sweep_orphan_sidecars` and its `pgrep`, `ps` and `kill` helper processes.
   The one-release legacy path for 0.4.x leftovers is O-17.
+
+*Red-team correction (2026-10-05, RT-10, RT-11):* (1) Linux start time counts clock ticks since
+boot, so pid plus start time can repeat across a reboot. Each record also stores a boot
+identity (Linux `boot_id`, macOS `kern.boottime`; Windows creation time is already absolute).
+(2) "All must match" here and R-8's "pid plus start time first, path second" contradict. The
+rule is: pid + start time + boot identity, **and** a per-OS defined path equality that
+includes the documented moved and deleted forms. (3) A child whose record was not yet durable
+when core crashed is unrecorded; this window is a stated residual, and removing the exact-path
+fallback for bundle binaries after 0.5.0 (O-17) is conditional on SCL-S8.3 measuring it.
+(4) Next-launch cleanup is a **barrier**: no spawn ticket for an owner kind is admitted until
+cleanup for that kind finishes. The #243 reset additionally requires that the chain database
+lock can be taken, not only that nothing answers on the local RPC (SCL-S8.5).
 
 ## 8. App exit coordinator (SC7, D-8)
 
@@ -210,6 +264,29 @@ Adopted from SPEC-001 "Shutdown and frontend observation", with SCL deltas:
   path. Updater signature, feed and platform policy are unchanged.
 - **Force exit, crash, logout:** not `Complete` (O-12).
 - **Single instance:** the second instance is still rejected before any service admission.
+
+*Red-team corrections (2026-10-05):*
+
+- **RT-01, blocking.** On macOS, Cmd+Q from the predefined menu item, the Dock's Quit and
+  logout reach the app only as `RunEvent::Exit` from `applicationWillTerminate` (tao 0.35.3),
+  which cannot be prevented. "Prevent and schedule" cannot cover them. The coordinator has two
+  entry modes over the same owners and the same absolute deadline: **async** for preventable
+  requests, and a **synchronous bounded drain** inside the `Exit` callback for unpreventable
+  terminations. The app menu's Quit item becomes a custom item that calls coordinated quit
+  (SCL-S12.6).
+- **RT-02, blocking (proposed O-18).** "Final action only after `Complete`" applies to restart
+  and installer launch. Quit and the factory-reset exit proceed at the deadline after a final
+  actuation of every OS-process scope still held, record `Incomplete`, and report it at next
+  launch. In-process threads never keep the app alive (SCL-S12.7).
+- **RT-26.** Hermes drains first with a sub-deadline (proposed 7 s of the 15 s); the other
+  owners start when Hermes finishes or at the sub-deadline, whichever comes first.
+- **RT-20.** After a successful macOS install the coordinator enters `UpdateStaged`: new
+  spawns and retries of bundle binaries are refused with "Restart to finish the update" until
+  restart (SCL-S12.8).
+- **RT-18.** A second launch during `Closing` is recorded; the app relaunches after a
+  completed quit, or tells the member it is finishing shutdown (SCL-S12.8).
+- **RT-22.** On `Closing`, pending approval and budget requests are rejected with a recorded
+  reason (Rule-3 amendment A-7), never approved and never left half-admitted (SCL-S12.1).
 
 ## 9. Frontend observation
 
@@ -257,6 +334,11 @@ Every new or changed command names its source before code:
 | Crash of core | next-launch recorded cleanup | next-launch recorded cleanup | kill-on-job-close, plus recorded cleanup for anything outside a Job |
 | Update install exit path | restart path drains | restart path drains | install drains before the installer runs |
 | Native acceptance | owner Mac | DGX | Windows team |
+
+*Red-team correction (2026-10-05, RT-03):* the "Update install exit path" row describes code
+paths. In 0.5.0 the in-app updater is live on macOS only (`createUpdaterArtifacts: false` in
+the Linux and Windows bundle configs). On Linux and Windows the native acceptance target is
+the manual installer or package run (Windows: SCL-S0.7).
 
 ## 13. Rule bindings
 

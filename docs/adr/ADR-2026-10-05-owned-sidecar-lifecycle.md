@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: proposed (Stage-1 draft; pending owner sign-off; changes nothing until accepted)
+status: proposed (Stage-2, red-teamed; pending owner sign-off; changes nothing until accepted)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core (primary); citrate-agent-runtime
@@ -30,6 +31,10 @@ The two linked files are merged to core `main` from #241 and reach
 in #241. They carry a `content_sha256` lock and are **not edited** here or later. Their
 `status: locked` is a term from the contributor's tooling meaning "content-locked"; it does
 not mean owner-accepted. This ADR is the adoption record.
+
+*Red-team correction (2026-10-05, RT-21):* "are merged to core `main`" is not yet true. PR #241
+was open and unmerged at head `01772a3` on 2026-10-05. Read it as "will be merged"; until then
+the links resolve only in #241, and `g0-adr` cannot flip.
 
 ## Status
 
@@ -85,6 +90,26 @@ Owner decisions O-1 to O-17 in the planset are recommended defaults, pending own
 | Δ-11 | Thread budget | 35 (43 with Windows Comms slots) | 38 (46) for 9 cells, plus a bounded bespoke reader pool; ceilings to measure (O-5) | Embed counted as its own owner |
 | Δ-12 | Validation split for another tool's ADR schema | Proposed as policy | Declined as federation policy (O-1, pending sign-off); Rule-5 frontmatter only | One validation contract for our docs |
 | Δ-13 | Red-team | Contributor's three internal rounds | Inputs only; our own second-model pass before Stage-2 and on merged code (O-6) | Independence |
+
+*Red-team corrections to this table (2026-10-05, see the planset's 08_RED_TEAM, which governs
+where it conflicts):*
+
+- **Δ-2 (RT-03, RT-05, RT-06):** the rationale "the Windows update path is where orphans
+  matter most" does not hold for 0.5.0: the Windows bundle ships no updater artifacts, so
+  Windows members install by hand, and the NSIS installer is where 0.5.0 can act (new S0.7).
+  Windows Job capture on the stable toolchain also needs a mechanism `std` does not expose
+  (S10.0).
+- **Δ-5 (RT-07, RT-08, RT-09):** nested ownership needs a runtime Closing gate before the
+  child report, a leader-first stop for the nested owner, and core must treat runtime records
+  as claims, not authority.
+- **Δ-6 (RT-26):** Hermes-first drain keeps a sub-deadline so a slow Hermes cannot consume the
+  whole close deadline.
+- **D-8 / SPEC-001 shutdown (RT-01, RT-02):** the coordinator also needs a synchronous drain
+  mode for unpreventable macOS terminations, and Quit must always end (proposed O-18).
+- **SC6 routing (RT-12):** fresh `Ready` must not move chat to the remote gateway by itself
+  (proposed O-19).
+- **Δ-13:** the pass recorded in 08 ran in a fresh context on the same model family that wrote
+  Stage-1; the owner decides whether it satisfies "second model" (`g0-redteam`).
 
 Unchanged from SPEC-001 and adopted as written: no Tokio migration; no generic durable
 operation registry; no new process-management crate; std monitor as sole process writer;

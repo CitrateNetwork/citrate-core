@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: planset (Stage-1 draft)
+status: planset (Stage-2, red-teamed)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core
@@ -105,6 +106,13 @@ The mutant configs select a mutant action through a constant (for example
 `Mutant \in {"none", "StopOff", "ElapsedCredit", "TimeoutFrees"}`), so the mutants live in
 the same module and cannot drift from it.
 
+*Red-team correction (2026-10-05, RT-17):* a mutant can "fail as intended" vacuously, if its
+mutated action is unreachable or if TLC reports a different invariant first. The current model
+has no Stop transition from `Off`, so `MutStopOff` is exposed to exactly this. Each mutant
+carries a reachability witness (an invariant `~Reached_<action>` that TLC must violate on the
+green config, showing the action fires) and must fail on its **named** invariant. Recorded in
+SCL-S1.7.
+
 ## 2. `AppExitCoordinator.tla` (new)
 
 **Models** a fixed set of owners `Owners` (the 9 lifecycle cells, an abstract bespoke
@@ -130,17 +138,34 @@ external kill), `RepeatTrigger`.
 | X-2 | `NoFinalBeforeComplete` | `final # None` implies every owner is `Complete` and `deadlineLeft > 0` at admission |
 | X-3 | `ClosingRejectsAdmission` | `app = Closing` implies no `AdmitTicket` step is enabled |
 | X-4 | `AdmittedTicketsDrained` | an owner is `Complete` only when its `tickets` set is empty |
-| X-5 | `ExpiredNeverAuthorizes` | after `Expire`, `FinalAction` is disabled until an explicit retry trigger |
+| X-5 | `ExpiredNeverAuthorizes` | after `Expire`, `FinalAction` is disabled until an explicit retry trigger | *Red-team correction (RT-02, O-18): applies to `final \in {Restart, Installer}` only.* |
 | X-6 | `NoRecursiveDrain` | `RepeatTrigger` while `Closing` changes nothing but the joined trigger |
 | X-7 | `HermesChildrenScope` | the Hermes owner is `Complete` only if `hermesChildren = Complete` (the nested-ownership rule that pins bug (e) at this level) |
 | X-8 | `ForceExitNeverComplete` | `ForceExit` implies `reported # Complete` |
-| X-9 | `HermesDrainsFirst` | (O-11) no non-Hermes owner enters `Draining` before Hermes is `Complete` or `Incomplete` |
+| X-9 | `HermesDrainsFirst` | (O-11) no non-Hermes owner enters `Draining` before Hermes is `Complete` or `Incomplete` | *Red-team correction (RT-26): or the Hermes sub-deadline has passed.* |
 | L-1 | `CloseTerminates` | under weak fairness of owner progress and `Tick`, `<>(app = Exited \/ reported = Incomplete)` |
 
 **Configs:** `AppExitCoordinator.cfg` (3 owners plus Hermes, all triggers, small deadline);
 `AppExitCoordinator_Mut*.cfg` mutants: install on Windows calls `FinalAction` without
 `Closing` (X-1 must fail), an admission while `Closing` (X-3), a final action after expiry
 (X-5), Hermes `Complete` while children run (X-7).
+
+*Red-team corrections (2026-10-05, RT-01, RT-02, RT-08):*
+
+- `hermesChildren` as one value that never goes back to `Running` hides the nested admission
+  race (RT-08). Add `runtimeAdmission \in {Open, Closing}` and `RuntimeAdmit` (enabled only while
+  `Open`), `RuntimeClosing`, and let `RuntimeAdmit` move `hermesChildren` back to `Running`. New
+  mutant `AppExitCoordinator_MutReconnectAfterReport.cfg`: the runtime admits a child after the
+  report; X-7 must fail.
+- X-2 and X-5 are restated for `final \in {Restart, Installer}`. New **X-11
+  `QuitAlwaysTerminates`**: a Quit trigger reaches `app = Exited` (with `reported \in {Complete,
+  Incomplete}`) under fairness of `Tick`; `reported = Complete` only if every owner is
+  `Complete`. Mutant: Quit waits for `Complete` forever; X-11 must fail.
+- New **X-10 `UnpreventableExitDrains`**: trigger `Terminate` (Dock Quit, logout) cannot be
+  prevented; it runs the synchronous drain with the same deadline and owner set, and never
+  reports `Complete` for an owner it did not observe. Mutant: `Terminate` exits without a
+  drain; X-10 must fail.
+- These changes are SCL-S1.7.
 
 ## 3. Optional third module
 

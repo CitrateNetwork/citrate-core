@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: planset (Stage-1 draft)
+status: planset (Stage-2, red-teamed)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core
@@ -81,6 +82,10 @@ below are on `d16f194`.
   hook and then exits the process directly, so the app's `RunEvent` teardown does not run.
   Minimal fix pre-cut (SCL-S0.2), full fix in the coordinator (SCL-S12.2). On macOS and
   Linux the install swaps the bundle while sidecars keep running until the restart.
+  *Red-team correction (2026-10-05, RT-03):* in 0.5.0 the in-app updater is live on macOS
+  only; the Windows and Linux bundles set `createUpdaterArtifacts: false`, so the Windows
+  install path above is reachable only once a Windows feed exists. The pre-cut Windows work is
+  the manual installer path (SCL-S0.7); S0.2 is conditional.
 - **Raw capabilities.** The main window holds `process:default` (exit, restart) and
   `updater:default` (check, download, install). Removed in SCL-S12.2.
 - **Factory reset.** `local_data_delete` stops sidecars, then exits on a 2.5 s timer

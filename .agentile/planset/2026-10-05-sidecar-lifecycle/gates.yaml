@@ -1,4 +1,4 @@
-# created: 2026-10-05T18:30:00Z · branch: docs/scl-planset · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-1 draft)
+# created: 2026-10-05T18:30:00Z · branch: docs/scl-planset · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed) · red_teamed: 2026-10-05 (see 08_RED_TEAM.md)
 # planset: 2026-10-05-sidecar-lifecycle · code: SCL · repo: citrate-core (+ citrate-agent-runtime) · companions: 00_OVERVIEW.md, 05_SPRINTS_AND_WPS.md
 # (YAML files carry Rule-12 frontmatter as a comment header so the file stays valid YAML.)
 # Rule: a criterion flips to met: true only with an evidence path AND a note saying what the
@@ -39,7 +39,12 @@ gates:
       - id: g0-redteam
         desc: Planset red-teamed by a second model before Stage-2; public corrections section in 00; findings private
         met: false
-        note: The contributor's three internal review rounds are inputs, not this criterion (O-6).
+        evidence: .agentile/planset/2026-10-05-sidecar-lifecycle/08_RED_TEAM.md
+        note: The contributor's three internal review rounds are inputs, not this criterion (O-6). Red-team correction (2026-10-05) - an adversarial pass ran in a fresh context (29 findings, 3 blocking, see 08). It ran on the same model family that wrote Stage-1, so this stays false until the owner accepts it as the second-model pass or a cross-model pass is added, and until blocking findings RT-01, RT-02 and RT-03 are resolved in the plan and O-18, O-19, O-20 are answered.
+      - id: g0-ci
+        desc: "Red-team addition (RT-14) - Windows and macOS CI lanes exist for kit, the src-tauri lifecycle tests and the runtime lifecycle crates (SCL-S1.6), before SCL-S2 starts"
+        met: false
+        evidence: .agentile/sprints/active/sprint-scl-s1-theory/EVIDENCE.md
     reviewers: [Larry Klosowski (owner)]
   - id: gate1
     name: Pre-cut safety
@@ -49,7 +54,7 @@ gates:
         desc: SCL-S0.1..S0.6 merged with regression tests; native checks recorded per OS
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s0-precut-safety/EVIDENCE.md
-        note: Specifics tracked privately on federation #298. The Windows item needs the Windows team's native run; the Linux item needs the DGX run on the installed package.
+        note: Specifics tracked privately on federation #298. Red-team correction (2026-10-05, RT-03, RT-04, RT-23) - native checks run on each OS's installed build (owner Mac, DGX, Windows team); S0.2 is conditional on a Windows updater feed and is not part of this criterion in 0.5.0; S0.7 (manual Windows install) is.
   - id: gate2
     name: Bugs fixed and kept fixed
     status: pending
@@ -71,6 +76,8 @@ gates:
       - id: g2-tlc
         desc: TLC green for both modules at WP close, mutants still failing, and TLC running in CI
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s13-fault-suite/EVIDENCE.md
+        note: Red-team correction (RT-17) - every mutant carries a reachability witness and fails on its named invariant.
   - id: gate3
     name: Every process owned, every exit drains
     status: pending
@@ -78,20 +85,30 @@ gates:
       - id: g3-supervised
         desc: All 9 supervised services migrated to the lifecycle cell with consumers (SC5, SC6)
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s6-owners-a/EVIDENCE.md and .agentile/sprints/active/sprint-scl-s7-owners-b/EVIDENCE.md
       - id: g3-bespoke
         desc: Core's 12 bespoke kinds owned with deadlines (or removed); Command::new tripwire green; recorded-ownership cleanup replaces the startup sweep (O-17 legacy path only); node's 3 descendant kinds contained
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s8-bespoke/EVIDENCE.md
+        note: Red-team correction (RT-10, RT-11) - includes SCL-S8.5 (cleanup barrier before node admission, boot identity, database-lock check before the chain reset).
       - id: g3-runtime-children
         desc: The Hermes sidecar's 10 child kinds owned under the same contract in citrate-agent-runtime; Hermes receipt includes the child report; hard-kill recovery proven
         met: false
+        evidence: citrate-federation .agentile/sprints/active/2026-10-05-scl-sidecar-lifecycle.md (runtime EVIDENCE section)
+        note: Red-team correction (RT-08, RT-09) - includes SCL-S11.6 (runtime Closing gate before the child report) and SCL-S11.7 (runtime records are claims, not authority; @rule8).
       - id: g3-exit-paths
         desc: Every exit path in 07_PROCESS_INVENTORY section D drains every owner (including Hermes children) before its final action, one proof per row
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s12-exit/EVIDENCE.md
-        note: Rows marked native need the named OS run, not only a unit test.
+        note: Rows marked native need the named OS run, not only a unit test. Red-team correction (RT-01, RT-02, RT-03) - adds the Dock Quit and logout rows (synchronous drain, S12.6) and Quit-with-Incomplete (S12.7); the Windows and Linux in-app install rows are code-path tests only in 0.5.0 (no updater artifacts), and their native proof is the manual installer run (S0.7, S14).
+      - id: g3-provider-routing
+        desc: "Red-team addition (RT-12, O-19) - readiness never moves chat from the local model to the remote gateway by itself; LocalFallback only for a Failed, Stopped or Quarantined local owner"
+        met: false
+        evidence: .agentile/sprints/active/sprint-scl-s7-owners-b/EVIDENCE.md
       - id: g3-diagnostics
         desc: Diagnostic and thread budgets measured on packaged builds and confirmed or re-gated
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
   - id: gate4
     name: Contained on every OS
     status: pending
@@ -99,19 +116,26 @@ gates:
       - id: g4-unix
         desc: Shared containment Unix backend (retained anchor) adopted by every supervised profile that passes compatibility (O-10) and by the runtime; native fixtures on Linux and macOS
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s9-unix/EVIDENCE.md
       - id: g4-windows
         desc: Windows Job backend (suspend, assign, resume; no breakaway; kill-on-job-close; ActiveProcesses == 0 completion) adopted by core and the runtime
         met: false
-        note: Needs the Windows team's native run (@RDCTart69, @kurtatwork). CI on hosted Windows runners is necessary, not sufficient.
+        evidence: .agentile/sprints/active/sprint-scl-s10-windows/EVIDENCE.md
+        note: Needs the Windows team's native run (@RDCTart69, @kurtatwork). CI on hosted Windows runners is necessary, not sufficient. Red-team correction (RT-05, RT-06) - includes the S10.0 stable-Rust mechanism, assignment-failure and non-inheritable-handle tests, and the real managed browser and an npx-launched MCP server inside a no-breakaway Job.
       - id: g4-native-macos
         desc: Packaged macOS arm64 acceptance (SCL-S14.1)
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
       - id: g4-native-linux
         desc: Packaged Linux x64 acceptance on the DGX, AppImage and .deb (SCL-S14.2)
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
+        note: Red-team correction (RT-03) - "update" here is a manual package install; the Linux bundle ships no updater artifacts in 0.5.0.
       - id: g4-native-windows
         desc: Packaged Windows x64 acceptance by the Windows team, including the update install path (SCL-S14.3)
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
+        note: Red-team correction (RT-03, RT-04) - the update install path in 0.5.0 is the manual NSIS installer run with the old version running (S0.7); there is no Windows in-app update feed.
   - id: gate5
     name: Proven
     status: pending
@@ -119,6 +143,7 @@ gates:
       - id: g5-redteam
         desc: Red-team on merged code and the packaged build; no open High
         met: false
+        evidence: .agentile/sprints/active/sprint-scl-s15-redteam/EVIDENCE.md
         note: Findings private (#298); public corrections only.
       - id: g5-release-coupling
         desc: The HUP v0.5.0 release gate depends on SCL (HUP gates.yaml gate5 carries g5-scl pointing here)

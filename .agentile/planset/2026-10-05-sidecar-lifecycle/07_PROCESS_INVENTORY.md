@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: planset (Stage-1 draft)
+status: planset (Stage-2, red-teamed)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core + citrate-agent-runtime
@@ -92,6 +93,12 @@ Not counted: the OS URL opener (fire and forget); the app binary re-run as MCP s
 Spawn no process: WASM capsules (in-process), model calls (HTTP clients only), component
 installs (in-process).
 
+*Red-team correction (2026-10-05, RT-06):* this table has no OS column. The runtime has no
+Windows containment today (`agent-workers` `stop_session` is a no-op off Unix), SearXNG does
+not officially support Windows, and MCP launchers on Windows add a `cmd.exe` level. SCL-S1.4
+adds a per-OS column (exists / n/a / unverified) for C1 to C10, and a kind marked n/a on an OS
+is never claimed as contained there.
+
 ## D. Exit paths
 
 Core's only teardown hook today is the `.run` callback (`src-tauri/src/lib.rs:1029-1039`),
@@ -112,3 +119,18 @@ which calls `shutdown_all_sidecars` on `ExitRequested` and on `Exit`.
 | Second launch (single instance) | rejected before setup | n/a | unchanged, before admission | test |
 | Panic, SIGTERM, SIGKILL, force quit, logout | none | no | not `Complete`; recorded cleanup at next launch (Unix), kill-on-job-close (Windows) | native |
 | Webview reload | webview only | n/a | services keep running; observer re-snapshots | vitest |
+
+*Red-team corrections (2026-10-05):*
+
+- **RT-01:** the "Cmd+Q / menu Quit" row also covers the Dock's Quit and logout. All arrive as
+  `Exit` from `applicationWillTerminate` and cannot be prevented, so their route is the
+  coordinator's synchronous drain mode, and the app menu's Quit item becomes a custom item
+  that takes the async path (SCL-S12.6).
+- **RT-03:** the in-app updater is live on macOS only in 0.5.0. The "Update install, Windows"
+  and "Critical update" rows are code paths without a live feed on Windows and Linux; their
+  native proof is replaced by the manual installer run (SCL-S0.7). Add a row: "Manual installer
+  run while the app is running (Windows)": today nothing stops the old sidecars; route: NSIS
+  pre-install hook (SCL-S0.7); proof: Windows native.
+- **RT-20:** add a row: "macOS update downloaded and installed, restart postponed": today
+  retries and lazy starts run the new bundle's binaries next to the old app; route:
+  `UpdateStaged` admission (SCL-S12.8); proof: test + native.

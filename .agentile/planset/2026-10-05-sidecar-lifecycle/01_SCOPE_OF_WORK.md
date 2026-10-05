@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: planset (Stage-1 draft)
+status: planset (Stage-2, red-teamed)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core (primary); citrate-agent-runtime
@@ -68,9 +69,10 @@ The gate criterion stays `met: false` until the named run is recorded.
 |---|---|---|
 | Windows Job capture, no breakaway, kill-on-close, `ActiveProcesses == 0` completion | Windows team (@RDCTart69, @kurtatwork) | SCL-S10 EVIDENCE, `g4-windows` |
 | Windows update install drains every owner before the installer runs | Windows team | SCL-S0 and S12 EVIDENCE, `g1-precut`, `g3-exit-paths` |
+| *Red-team correction (2026-10-05, RT-03, RT-04):* the row above is not runnable in 0.5.0 (no Windows updater artifacts). It is replaced by: a manual 0.4.2 to 0.5.0 NSIS install with the old app and Hermes running stops this installation's own sidecars before files are copied, and no old sidecar is left running | Windows team | SCL-S0.7 EVIDENCE, `g1-precut`, `g3-exit-paths` |
 | Windows Comms foreground slots release only after real I/O completion | Windows team | SCL-S7 EVIDENCE |
 | Linux owned-session containment (leader-first exit, no post-reap actuation, absence observation) on the packaged AppImage and `.deb` | DGX team | SCL-S9 and S14 EVIDENCE, `g4-unix`, `g4-native-linux` |
-| Linux pre-cut safety check on the installed package | DGX team | private #298, then `g1-precut` note |
+| Pre-cut safety checks on each OS's installed build (wording genericized by red-team correction RT-23) | owner Mac, DGX team, Windows team | private #298, then `g1-precut` note |
 | macOS owned-session containment and update-moved bundle paths | Owner Mac | SCL-S9 and S14 EVIDENCE, `g4-native-macos` |
 | Diagnostic and thread budgets under noisy output and cold model load | each OS above | SCL-S14 EVIDENCE, `g3-diagnostics` |
 | `fork+exec` cold-launch cost of the `pre_exec` setup on the real app | macOS and Linux | SCL-S9 EVIDENCE |
@@ -92,3 +94,15 @@ The gate criterion stays `met: false` until the named run is recorded.
 | R-11 | Fault-injection tests are flaky (timing, PID reuse on CI runners) | Med | Med | Owned fixtures with marker-checked guards, monotonic timing with generous bounds, no fixed sleeps as oracles; flake budget tracked; a flaky fixture is fixed, never deleted (manifest tripwire) |
 | R-12 | Cross-repo drift between core's kit and the runtime's use of the shared crate | Med | Med | One crate, `[[drift]]` entry, pin-bump through the manifest (Rule 11, 12) |
 | R-13 | Old clients (0.4.x) perform the 0.4.x to 0.5.0 update with their own exit code | High | Med | 0.5.0 defends at its own startup. Recorded-ownership cleanup cannot see 0.4.x processes (0.4.x wrote no records), so 0.5.0 keeps the narrowed exact-path cleanup from SCL-S0.1 as a one-release legacy path (O-17) and SCL-S0.6 adds a startup check that names a leftover old node in the UI |
+
+*Red-team corrections to this register (2026-10-05, 08_RED_TEAM):*
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|
+| R-1 (amended) | Program size: about 280 agent-days total, critical path about 70 to 92 agent-days, 10 to 14 calendar weeks with parallel lanes (RT-15) | High | High | Corrected dependency graph (RT-13); two native-run windows (RT-25); O-20 offers a split of cut-blocking from 0.5.0-line gates |
+| R-14 | macOS terminations that cannot be prevented (Dock Quit, logout) bypass an async-only coordinator (RT-01) | High | High | Synchronous bounded drain in `Exit` plus a custom Quit menu item (SCL-S12.6) |
+| R-15 | Quit blocked forever by a stuck in-process worker (RT-02) | Med | High | O-18 (SCL-S12.7) |
+| R-16 | Readiness changes silently move chat from the local model to the remote gateway (RT-12) | High | High | O-19 (SCL-S7.5) |
+| R-17 | Runtime ownership records are trusted as authority to signal (RT-09) | Med | Med | Records are claims; core ties them to its own recorded Hermes incarnation (SCL-S11.7, @rule8) |
+| R-18 | Windows Job capture on stable Rust needs a mechanism `std` does not expose (RT-05) | High | Med | SCL-S10.0 spike and ADR addendum before S10.1 |
+| R-19 | Hosted CI has no Windows or macOS lane today, so "Windows CI" acceptance has nowhere to run (RT-14) | High | Med | SCL-S1.6 before S2 |

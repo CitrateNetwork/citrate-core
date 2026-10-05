@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: planset (Stage-1 draft)
+status: planset (Stage-2, red-teamed)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core + citrate-agent-runtime
@@ -50,7 +51,8 @@ Core never signals a process that Citrate did not start.
 Feature: Pre-cut safety
 
   Scenario: A process that only resembles Citrate is left alone
-    Given a process not started by Citrate whose command line contains the app's directory
+    Given a process not started by Citrate that resembles a Citrate sidecar
+    # Red-team correction (2026-10-05, RT-23): wording genericized; specifics on #298
     And an orphaned Citrate sidecar from a previous run at this bundle's exact binary path
     When Citrate Core starts
     Then the orphaned sidecar is stopped
@@ -60,6 +62,15 @@ Feature: Pre-cut safety
     Given a Windows Member running Citrate Core with the node and Hermes started
     When they install an update
     Then every sidecar from the running version has exited before the installer starts
+    # Red-team correction (2026-10-05, RT-03): not runnable in 0.5.0 (no Windows updater
+    # feed). Kept as a code-path test for S0.2; the native proof is the scenario below.
+
+  Scenario: Manual Windows install with the old version running
+    Given a Windows Member running Citrate Core 0.4.2 with the node and Hermes started
+    When they run the 0.5.0 installer by hand
+    Then the installer stops only this installation's own sidecar binaries before copying files
+    And no process from another location is signalled
+    And after the install no sidecar from 0.4.2 is running
 
   Scenario: Managed browser cleaned after a hard kill
     Given Hermes is running with its managed browser open
@@ -507,6 +518,8 @@ Feature: App exit coordinator
     When the deadline passes
     Then the app reports incomplete cleanup and does not exit on its own
     And a later explicit Quit retries the close
+    # Red-team correction (2026-10-05, RT-02, O-18): superseded for Quit by US-11.4.
+    # It still holds for Restart and update install.
 
   Scenario: Raw exit is not available to the webview
     When web content calls the process exit or restart command
@@ -579,4 +592,95 @@ Feature: Packaged native acceptance
       | macOS arm64   |
       | Linux x64     |
       | Windows x64   |
+```
+
+---
+
+## Red-team additions (2026-10-05)
+
+Added by the red-team pass ([08_RED_TEAM](08_RED_TEAM.md)). They supersede conflicting text
+above.
+
+**US-6.2: Chat stays where the member put it.** (RT-12, O-19) As a Member with a local model,
+a cold load or a slow health check never sends my prompt to the remote gateway by itself.
+- AC1: While the local owner is `Awaiting` or `Stale`, local requests wait boundedly or fail
+  honestly; the route is not `LocalFallback`. *Source: S7.5 tests over `select_inference_state`
+  with the new readiness inputs.*
+- AC2: `LocalFallback` only when the local owner is `Failed`, `Stopped` or `Quarantined`.
+  *Source: S7.5 tests.*
+- AC3: Under generation load, a timed-out probe does not change the route. *Source: S14
+  packaged run under load.*
+
+**US-7.3: Cleanup after a crash is a barrier.** (RT-10, RT-11)
+- AC1: No node spawn is admitted until startup cleanup has finished. *Source: S8.5 test.*
+- AC2: The chain reset refuses while another process holds the chain database lock, even if
+  nothing answers on the local RPC. *Source: S8.5 owned lock-holder fixture.*
+- AC3: A record whose boot identity differs from this boot is removed and nothing is
+  signalled. *Source: S8.5 unit test.*
+
+**US-10.2: The sidecar cannot direct core to signal arbitrary processes.** (RT-09)
+- AC1: Core signals a recorded runtime child only when it is tied to a Hermes incarnation core
+  itself recorded. *Source: S11.7 tests; details private.*
+- AC2: Hermes's child report is taken only after the runtime closed its own admission.
+  *Source: S11.6 test with an MCP reconnect racing the report.*
+
+**US-11.3: Quit from the Dock or at logout still drains.** (RT-01)
+- AC1: Dock Quit and logout run a synchronous bounded drain inside `Exit` over the same
+  owners and deadline. *Source: S12.6 test + macOS native run.*
+- AC2: The app menu's Quit takes the async coordinated path. *Source: S12.6 test.*
+
+**US-11.4: Quit always ends.** (RT-02, O-18)
+- AC1: When an owner is still `Incomplete` at the deadline, Quit performs a final actuation of
+  every OS-process scope still held, records `Incomplete` and exits. *Source: S12.7 test with a
+  never-returning probe worker.*
+- AC2: Restart and update install still require `Complete`. *Source: S12.7 test.*
+- AC3: The next launch says cleanup was incomplete when it was. *Source: S12.7 test.*
+
+**US-11.5: Edges of closing.** (RT-18, RT-20, RT-22)
+- AC1: After a macOS update is installed and restart is postponed, no bundle binary is spawned
+  until restart. *Source: S12.8 test.*
+- AC2: A second launch during `Closing` is not lost. *Source: S12.8 test.*
+- AC3: Pending approval and budget requests are rejected with a recorded reason on `Closing`
+  (A-7). *Source: S12.1 test.*
+
+```gherkin
+Feature: Red-team additions
+
+  Scenario: A cold load does not move chat off the device
+    Given a verified local model and a configured gateway key
+    And the local model server is still loading
+    When the Member sends a chat message
+    Then the message is not sent to the gateway
+    And the app says the local model is still loading
+
+  Scenario: Dock Quit drains synchronously
+    Given the node, memory and Hermes are running on macOS
+    When the Member chooses Quit from the Dock
+    Then every owner is drained inside the close deadline before the process ends
+
+  Scenario: A stuck worker cannot keep the app open
+    Given a model-server health check that never returns
+    When the Member chooses Quit
+    And the close deadline passes
+    Then the app stops every process it still owns and exits
+    And the next launch reports that cleanup was incomplete
+
+  Scenario: Hermes cannot start children after reporting them stopped
+    Given Hermes is stopping and an MCP server reconnect is due
+    When the runtime takes its child report
+    Then no child is started after the report
+    And core reports Complete only if no Hermes child is running
+
+  Scenario: An orphan that holds the database blocks the reset
+    Given a process from an earlier run holds the chain database lock and does not answer RPC
+    And the address book names a new genesis
+    When Citrate Core starts
+    Then the chain database is not reset
+    And the app names the problem instead of waiting silently
+
+  Scenario: Postponed restart after an update
+    Given a macOS update is installed and the Member chose Later
+    When the model server exits and would be retried
+    Then it is not restarted from the new bundle
+    And the app asks the Member to restart to finish the update
 ```

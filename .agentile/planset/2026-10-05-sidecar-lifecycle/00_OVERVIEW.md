@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: planset (Stage-1 draft)
+status: planset (Stage-2, red-teamed)
+red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core (primary); citrate-agent-runtime (Hermes-sidecar children, shared containment crate, via federation sprint)
@@ -11,7 +12,7 @@ adopts: docs/adr/0001-owned-sidecar-lifecycle.md (ADR-0001) and docs/specs/001-o
 adr: docs/adr/ADR-2026-10-05-owned-sidecar-lifecycle.md
 contributor: "@mfarzanansari (Farzan Ansari): issue #240, PR #241"
 tracking: citrate-core #244
-companions: 01_SCOPE_OF_WORK.md, 02_ARCHITECTURE.md, 03_TLA_SPECS.md, 04_FEATURES_BDD.md, 05_SPRINTS_AND_WPS.md, 06_BUG_TRIAGE.md, 07_PROCESS_INVENTORY.md, gates.yaml
+companions: 01_SCOPE_OF_WORK.md, 02_ARCHITECTURE.md, 03_TLA_SPECS.md, 04_FEATURES_BDD.md, 05_SPRINTS_AND_WPS.md, 06_BUG_TRIAGE.md, 07_PROCESS_INVENTORY.md, 08_RED_TEAM.md, gates.yaml
 ---
 
 # Owned Sidecar Lifecycle (SCL): Planset Overview
@@ -107,6 +108,48 @@ scope) are locked above as D-1 to D-14.
 | O-16 | Who owns the cross-cutting lifecycle contract? | The owner (Larry Klosowski) until delegated; CODEOWNERS entries for the supervisor, the ownership registry, the containment crate, capabilities and the updater bridge | SCL-S13 |
 | O-17 | Leftovers from 0.4.x, which wrote no ownership records | 0.5.0 keeps the narrowed cleanup from SCL-S0.1 as a one-release legacy path: only processes whose exact binary path equals one of this bundle's own sidecar binaries and that are already orphaned. Anything else is named in the UI, never signalled. The legacy path is removed in the release after 0.5.0 | SCL-S0, S8 |
 
+## Red-team findings (2026-10-05, supersede the text above and below)
+
+An adversarial pass (SCL-S15.1) checked this planset against code on the release branch, the
+runtime and the locked dependency sources. The full table, evidence and the critical-path
+estimate are in [08_RED_TEAM](08_RED_TEAM.md). Where these corrections conflict with any text
+in this planset or the adoption ADR, the corrections govern. Affected passages carry a
+"Red-team correction (2026-10-05)" note so the original text stays visible.
+
+**Blocking (must be resolved before Stage-2 is accepted):**
+
+1. **RT-01. Unpreventable exits.** On macOS, Cmd+Q, Dock Quit and logout arrive only as
+   `RunEvent::Exit`, which cannot be prevented. The coordinator gets a synchronous bounded
+   drain mode inside `Exit` in addition to its async mode, and the app menu's Quit item calls
+   the coordinated command (SCL-S12.6).
+2. **RT-02. Quit must always end.** Proposed O-18: install and restart still need `Complete`;
+   Quit and the factory-reset exit proceed at the deadline after a final actuation of every
+   OS-process scope still held, record `Incomplete`, and report it at next launch. In-process
+   threads never keep the app alive (SCL-S12.7).
+3. **RT-03. The in-app updater is live on macOS only.** Windows and Linux bundles ship no
+   updater artifacts. Native gate rows that need a Windows or Linux in-app install are
+   replaced by the manual installer path, and S0.2 becomes conditional on a Windows feed
+   (with RT-04, new SCL-S0.7).
+
+**Other corrections:** a stable-Rust mechanism for the Windows Job backend (RT-05, S10.0);
+per-OS child matrix (RT-06); leader-first stop for nested owners (RT-07); a runtime Closing
+gate before the child report, modelled in TLA+ (RT-08, S1.7, S11.6); runtime ownership
+records are claims, not authority (RT-09, S11.7); boot identity in records and a defined path
+rule (RT-10); startup cleanup is a barrier before node admission and the #243 reset also
+checks the database lock (RT-11, S8.5); readiness never switches chat to the remote gateway
+by itself (RT-12, proposed O-19, S7.5); containment lanes start at gate0 (RT-13); Windows and
+macOS CI lanes first (RT-14, S1.6); a recorded estimate (RT-15); update staging, relaunch
+during Closing and pending approvals rejected on Closing (RT-18, RT-20, RT-22, S12.8); two
+native-run windows (RT-25, S14.5); Hermes-first drain with a sub-deadline (RT-26).
+
+**Owner decisions added (recommended defaults, pending sign-off):** O-18 (quit with
+`Incomplete`), O-19 (no silent local-to-gateway switch), O-20 (optionally split cut-blocking
+gates from 0.5.0-line follow-up; D-2 stands until the owner changes it). Text in 08.
+
+**Estimate:** about 280 agent-days of total effort; a critical path of about 70 to 92
+agent-days, which is roughly 10 to 14 calendar weeks with parallel lanes. A cut that waits on
+every SCL gate lands about mid-December 2026 to mid-January 2027 (08 "Critical path").
+
 ## Architecture at a glance
 
 ```
@@ -190,6 +233,10 @@ The app **refuses** an action unless all of these hold:
 4. **No final action before Complete.** Exit, restart and installer launch run only after
    the coordinator reports `Complete` inside its deadline. An expired deadline never
    authorizes a late final action.
+   *Red-team correction (2026-10-05, RT-02, proposed O-18):* this holds for **restart and
+   installer launch**. Quit and the factory-reset exit proceed at the deadline after a final
+   actuation of every OS-process scope still held, and are reported `Incomplete`, never
+   `Complete`.
 5. **Custody unchanged.** Generation-owned cleanup never deletes a key or credential that
    a newer generation uses, and preserves the #243 keep-list. Nothing in SCL signs.
 6. **@rule8 review** for the WPs that change process-spawn-sensitive code (SCL-S8.3, S9,
@@ -207,6 +254,11 @@ Two timing facts shape SCL-S0 (from the reconciliation research): the 0.4.x to 0
 update runs **0.4.x's** updater and exit code, so 0.5.0 can only defend at its own startup;
 and the 0.5.0 to 0.5.x update runs **0.5.0's** code, so whatever 0.5.0 ships for the update
 exit path is what every member's next update uses.
+
+*Red-team correction (2026-10-05, RT-03, RT-04):* both facts hold for the **macOS** in-app
+updater only. Windows and Linux bundles ship no updater artifacts in 0.5.0, so members there
+update by running the installer or package by hand. On Windows that installer is 0.5.0 code
+that runs **before** 0.5.0 starts, so 0.5.0 can also defend at install time (SCL-S0.7).
 
 ## How this was missed
 
