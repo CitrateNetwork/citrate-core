@@ -108,25 +108,37 @@ pub(crate) fn components_root<R: tauri::Runtime>(
 /// HUP-S5.1: the name of the managed Chromium component (`components/toolchain-bundle.json`).
 pub const CHROMIUM_COMPONENT: &str = "chromium";
 
+/// HUP-S5.2: the name of the private search component (`components/toolchain-bundle.json`).
+pub const SEARXNG_COMPONENT: &str = "searxng";
+
 /// HUP-S5.1: the managed Chromium's executable when the signed `chromium` component is installed
 /// in `root` and its entrypoint for this platform exists; `None` otherwise ("not installed").
 /// Read-only: never creates the store.
 pub(crate) fn managed_chromium(root: &Path) -> Option<PathBuf> {
+    managed_entrypoint(root, CHROMIUM_COMPONENT)
+}
+
+/// HUP-S5.2: the installed SearXNG component's `bin/searxng-run`, or `None` ("not installed").
+/// Read-only: never creates the store.
+pub(crate) fn managed_searxng(root: &Path) -> Option<PathBuf> {
+    managed_entrypoint(root, SEARXNG_COMPONENT)
+}
+
+/// The first entrypoint of component `name` for this platform, when the component is recorded
+/// as installed in `root` and that file exists.
+fn managed_entrypoint(root: &Path, name: &str) -> Option<PathBuf> {
     let st = read_state(root).ok()?;
-    let installed = st.components.get(CHROMIUM_COMPONENT)?;
+    let installed = st.components.get(name)?;
     let platform = Platform::current()?;
     let bundle = Bundle::parse(BUNDLE_JSON).ok()?;
-    let tool = bundle.tools.iter().find(|t| t.name == CHROMIUM_COMPONENT)?;
+    let tool = bundle.tools.iter().find(|t| t.name == name)?;
     let eps = tool
         .artifacts
         .get(platform.as_str())
         .and_then(|a| a.entrypoints.clone())
         .unwrap_or_else(|| tool.entrypoints.clone());
     let rel = citrate_components::extract::safe_relative_path(eps.first()?).ok()?;
-    let exe = root
-        .join(CHROMIUM_COMPONENT)
-        .join(&installed.current.dir)
-        .join(rel);
+    let exe = root.join(name).join(&installed.current.dir).join(rel);
     exe.is_file().then_some(exe)
 }
 
