@@ -47,6 +47,7 @@ import { desktopMcpIo } from "./mcpServers";
 import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
 import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
 import { WebSearchSettings } from "./WebSearchSettings";
+import { TERMINAL_ACCESS_HINT, TERMINAL_ACCESS_LABEL } from "../agent/terminalAccess";
 import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
@@ -1150,6 +1151,20 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>
                 On by default. Uses your local model, and tools still run here behind the same approvals. When the Hermes sidecar is not running, the app uses its own loop instead.
               </span>
+            </div>
+            {/* Hermes terminal commands (the sidecar's shell_run). On by default since the owner decision of 2026-10-04. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-terminal-access">
+              <span className="eyebrow">Hermes · terminal commands</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <input
+                  id="hermes-terminal"
+                  type="checkbox"
+                  checked={!!s.hermesTerminal}
+                  onChange={(e) => void store.setHermesTerminal(e.target.checked)}
+                />
+                {TERMINAL_ACCESS_LABEL}
+              </label>
+              <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
             </div>
             {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">

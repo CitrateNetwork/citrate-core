@@ -490,6 +490,22 @@ impl LlamaServerManager {
         self.start_inner(true, plan)
     }
 
+    /// The model at `deleted` was removed from disk: when it is the selected model, select
+    /// `fallback` instead (without starting anything) and drop any adapter, so nothing points at
+    /// the missing file. Returns whether `deleted` was the selected model. When `deleted` is the
+    /// fallback itself the path stays (it then reads as not downloaded).
+    pub fn forget_model_if(&self, deleted: &std::path::Path, fallback: PathBuf) -> bool {
+        let mut guard = self.model_path.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_path() != deleted {
+            return false;
+        }
+        if *guard != fallback {
+            self.set_lora(None);
+            *guard = fallback;
+        }
+        true
+    }
+
     /// The active model GGUF path (the current `-m` target).
     pub fn current_model_path(&self) -> PathBuf {
         self.model_path

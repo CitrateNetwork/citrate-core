@@ -75,6 +75,8 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
 const HERMES_HEALTHY_AFTER: Duration = Duration::from_secs(30);
 /// Startup grace before a failing probe counts as a crash.
 const HERMES_START_GRACE: Duration = Duration::from_secs(20);
+/// How long a restart waits for the old child's control port to be released.
+const RESTART_PORT_WAIT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Errors — coarse, secret-free (NEVER carry the bearer token).
@@ -636,6 +638,7 @@ impl HermesManager {
                 crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::fl_trajectories::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -743,6 +746,25 @@ impl HermesManager {
             state: state.to_string(),
             control_url: self.control_url(),
             healthy,
+        }
+    }
+
+    /// Whether the sidecar was started and not stopped (running, starting or restarting).
+    pub fn is_started(&self) -> bool {
+        self.sup.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    /// [`Self::start`] right after [`Self::stop`]: the old child's control port can take a moment
+    /// to be released, so a port still held is retried for up to [`RESTART_PORT_WAIT`].
+    pub fn start_after_restart(&self) -> Result<()> {
+        let deadline = std::time::Instant::now() + RESTART_PORT_WAIT;
+        loop {
+            match self.start() {
+                Err(HermesError::PortInUse(_)) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                other => return other,
+            }
         }
     }
 
@@ -1445,6 +1467,35 @@ pub fn shutdown() {
     }
 }
 
+/// Restart Hermes so a changed spawn setting applies (the terminal-commands switch). A Hermes that
+/// is not started stays stopped (`Ok(false)`) and picks the setting up when it starts. Open
+/// conversations end with the old sidecar; the chat opens a fresh one.
+pub(crate) fn restart_if_running<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<bool, String> {
+    let Some(m) = HERMES.get() else {
+        return Ok(false);
+    };
+    if !m.is_started() {
+        return Ok(false);
+    }
+    m.stop();
+    if let Err(e) = crate::hermes_mcp::sync_for_app(app) {
+        eprintln!("hermes: MCP allowlist not updated: {e}");
+    }
+    m.start_after_restart().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// The embedding server's model file while it runs (the Models screen refuses to delete it).
+pub(crate) fn embed_model_in_use() -> Option<PathBuf> {
+    HERMES
+        .get()
+        .and_then(|m| m.embed.as_ref())
+        .filter(|e| e.is_started())
+        .map(|e| e.model_path().to_path_buf())
+}
+
 /// HUP-S2.1: send the grant document to every open agent session, if the manager exists.
 pub(crate) fn push_grants_to_sessions(doc: &crate::agent_grants::GrantState) -> GrantsPushOutcome {
     match HERMES.get() {
@@ -1523,10 +1574,14 @@ pub(crate) fn manager<R: tauri::Runtime>(
             );
             // HUP-S9.3: verified-trajectory recording, only when the member turned it on.
             let trajectories = crate::fl_trajectories::file_env_source(base.clone());
+            // Terminal commands (shell_run): `1` when the member's switch is on (the default),
+            // pinned empty when off.
+            let terminal = crate::hermes_terminal::file_env_source(base.clone());
             std::sync::Arc::new(move || {
                 let mut env = web();
                 env.extend(toolchain());
                 env.extend(trajectories());
+                env.extend(terminal());
                 env
             })
         });
