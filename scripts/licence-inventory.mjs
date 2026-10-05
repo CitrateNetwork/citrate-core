@@ -2,7 +2,7 @@
 // HUP gate g3-licence: check release/licences.json against what this repo actually ships.
 //
 //   node scripts/licence-inventory.mjs [--repo <dir>] [--inventory <file>] [--corpus <dir>]
-//                                      [--json <out>] [--require-sign-off]
+//                                      [--json <out>] [--require-sign-off] [--require-notices]
 //
 // Required keys come from the repo itself, so a new sidecar, resource, tool, library or skills
 // source cannot ship without a licence entry:
@@ -17,6 +17,11 @@
 // config must ship `licenses/*`. A shipped copyleft entry must carry a source offer, and a
 // third-party entry that ships with the app (installer, skills bundle, corpus text) must name at
 // least one licence text under src-tauri/licenses/.
+//
+// third_party_notices (on a component or on app) points at the generated notices of the packages
+// compiled into that program (scripts/third-party-notices.mjs): its file must exist under
+// src-tauri/licenses/ and counts as named. --require-notices also fails while the app or a
+// first-party component that ships a sidecar (an externalBin cover) has none (release checklist).
 //
 // review states (ok / action / owner) are reported, not failed: they are the review's findings.
 // --require-sign-off also fails while sign_off.status is not "signed" (for a release checklist).
@@ -105,7 +110,7 @@ export function requiredKeys(repoRoot) {
  * Check an inventory. `corpusSources` (ids from a staged manifest) turns on the corpus check.
  * Returns { errors, summary }.
  */
-export function checkInventory(inv, { repoRoot, corpusSources = null }) {
+export function checkInventory(inv, { repoRoot, corpusSources = null, requireNotices = false }) {
   const errors = [];
   const comps = Array.isArray(inv?.components) ? inv.components : [];
   if (!Array.isArray(inv?.components)) errors.push("inventory has no components[]");
@@ -117,6 +122,23 @@ export function checkInventory(inv, { repoRoot, corpusSources = null }) {
   const coveredBy = new Map();
   const named = new Set();
   const ids = new Set();
+  // Generated third-party notices: the file must exist in the bundled licence dir.
+  const checkNotices = (owner, n) => {
+    if (n == null) return false;
+    const f = typeof n?.file === "string" ? path.normalize(n.file) : null;
+    if (!f || !f.startsWith(path.normalize(LICENCE_DIR) + path.sep)) {
+      errors.push(`${owner}: third_party_notices.file must be a file under ${LICENCE_DIR}/`);
+      return false;
+    }
+    named.add(f);
+    if (!fs.existsSync(path.join(repoRoot, f))) {
+      errors.push(`${owner}: third-party notices ${n.file} do not exist (run scripts/third-party-notices.mjs collect and render)`);
+      return false;
+    }
+    return true;
+  };
+  const appNotices = checkNotices("app", inv?.app?.third_party_notices);
+  if (requireNotices && !appNotices) errors.push("app: no third_party_notices for the crates compiled into the app");
   for (const c of comps) {
     const id = c.id ?? "(no id)";
     if (!c.id || ids.has(c.id)) errors.push(`${id}: missing or duplicate id`);
@@ -144,6 +166,11 @@ export function checkInventory(inv, { repoRoot, corpusSources = null }) {
     if (c.first_party === false && BUNDLED.has(c.ships_as) && c.spdx !== PER_SOURCE) {
       const bundled = (c.licence_texts ?? []).some((t) => path.normalize(t).startsWith(path.normalize(LICENCE_DIR) + path.sep));
       if (!bundled) errors.push(`${id}: shipped third-party component names no licence text under ${LICENCE_DIR}/`);
+    }
+    const hasNotices = checkNotices(id, c.third_party_notices);
+    const shipsSidecar = (c.covers ?? []).some((k) => k.startsWith("externalBin:"));
+    if (requireNotices && c.first_party === true && c.ships_as === "installer" && shipsSidecar && !hasNotices) {
+      errors.push(`${id}: no third_party_notices for the packages compiled into this sidecar`);
     }
     if (!Array.isArray(c.covers) || c.covers.length === 0) errors.push(`${id}: covers is empty`);
     for (const k of c.covers ?? []) {
@@ -194,7 +221,7 @@ export function checkInventory(inv, { repoRoot, corpusSources = null }) {
 }
 
 function parseArgs(argv) {
-  const a = { repo: process.cwd(), inventory: null, corpus: null, json: null, requireSignOff: false };
+  const a = { repo: process.cwd(), inventory: null, corpus: null, json: null, requireSignOff: false, requireNotices: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     const val = () => {
@@ -207,6 +234,7 @@ function parseArgs(argv) {
     else if (k === "--corpus") a.corpus = path.resolve(val());
     else if (k === "--json") a.json = path.resolve(val());
     else if (k === "--require-sign-off") a.requireSignOff = true;
+    else if (k === "--require-notices") a.requireNotices = true;
     else throw new Usage(`unknown argument ${k}`);
   }
   a.inventory ??= path.join(a.repo, "release", "licences.json");
@@ -221,11 +249,11 @@ function main() {
     const inv = readJson(args.inventory);
     let corpusSources = null;
     if (args.corpus) corpusSources = corpusSourceIds(readJson(path.join(args.corpus, "manifest.json")));
-    result = checkInventory(inv, { repoRoot: args.repo, corpusSources });
+    result = checkInventory(inv, { repoRoot: args.repo, corpusSources, requireNotices: args.requireNotices });
   } catch (e) {
     if (e instanceof Usage) {
       process.stderr.write(
-        `licence-inventory: ${e.message}\nusage: node scripts/licence-inventory.mjs [--repo <dir>] [--inventory <file>] [--corpus <dir>] [--json <out>] [--require-sign-off]\n`,
+        `licence-inventory: ${e.message}\nusage: node scripts/licence-inventory.mjs [--repo <dir>] [--inventory <file>] [--corpus <dir>] [--json <out>] [--require-sign-off] [--require-notices]\n`,
       );
       return 2;
     }

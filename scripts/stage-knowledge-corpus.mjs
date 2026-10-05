@@ -3,7 +3,7 @@
 // citrate-core: stage the Hermes knowledge corpus into the app bundle (HUP-S3.1)
 //
 //   node scripts/stage-knowledge-corpus.mjs <corpus-dir | knowledge-corpus.tar.gz>
-//        --bge-dir src-tauri/models/bge-base-en-v1.5 [--allow-unembedded]
+//        --bge-dir src-tauri/models/bge-base-en-v1.5 [--allow-unembedded] [--allow-dirty]
 //        [--dest src-tauri/knowledge-corpus] [--mem-mcp <bundled mem-mcp binary>]
 //
 // The corpus is built in citrate-memories (`scripts/build-corpus.sh`, format citrate-corpus/2)
@@ -25,6 +25,11 @@
 //     with exactly those weights (same sha256, model id and dimension): otherwise the importer
 //     ignores them and each member embeds about 21k nodes on their own CPU (hours). A dev build may
 //     stage an unembedded corpus with --allow-unembedded; it is warned, never silent.
+//   - every included source records a clean commit. The builder suffixes a commit with `-dirty`
+//     when the source's work tree had local changes (mem_corpus build.rs resolve_git), so the
+//     corpus text and its NOTICE.md cannot be reproduced from that commit (HUP g3-licence,
+//     L-sizelicence). A release corpus is built from clean checkouts; a dev build may pass
+//     --allow-dirty, which is warned, never silent.
 //
 // On success the destination keeps its README.md and receives the verified files; anything else
 // in it is replaced. The importer re-verifies everything on the member's machine; this gate
@@ -42,7 +47,7 @@ export const CORPUS_FORMAT = "citrate-corpus/2";
 export const KNOWLEDGE_TENANTS = ["citrate-docs", "skills", "refs", "methodology"];
 const USAGE =
   "usage: node scripts/stage-knowledge-corpus.mjs <corpus-dir | corpus.tar.gz> --bge-dir <bundled bge model dir> " +
-  "[--allow-unembedded] [--dest <dir>] [--mem-mcp <binary>]";
+  "[--allow-unembedded] [--allow-dirty] [--dest <dir>] [--mem-mcp <binary>]";
 
 /** `Embedder::model_id` of the app's BGE embedder (citrate-memories mem-index DEFAULT_MODEL_ID). */
 export const APP_EMBED_MODEL = "bge-base-en-v1.5";
@@ -195,6 +200,27 @@ export function checkEmbedder(manifest, bgeDir, { allowUnembedded = false } = {}
   return { model: APP_EMBED_MODEL, dim, weightsSha256, embeddedNodes };
 }
 
+/** Suffix mem-corpus appends to a source commit built from a work tree with local changes. */
+export const DIRTY_SUFFIX = "-dirty";
+
+/**
+ * Included sources whose recorded commit is `<sha>-dirty`, as [{ id, commit }]. Throws listing them
+ * unless `allowDirty`; with `allowDirty` returns them so the caller can warn.
+ */
+export function checkSourceCommits(manifest, { allowDirty = false } = {}) {
+  if (!Array.isArray(manifest.sources)) throw new Error("manifest lists no sources");
+  const dirty = manifest.sources
+    .filter((s) => s.included === true && typeof s.commit === "string" && s.commit.endsWith(DIRTY_SUFFIX))
+    .map((s) => ({ id: s.id, commit: s.commit }));
+  if (dirty.length && !allowDirty) {
+    throw new Error(
+      `${dirty.map((d) => `${d.id} @ ${d.commit}`).join(", ")}: built from a work tree with local changes, so this corpus and its NOTICE ` +
+        `cannot be reproduced from the recorded commit. Rebuild from clean checkouts, or pass --allow-dirty for a dev build`,
+    );
+  }
+  return dirty;
+}
+
 /** True when a mem-mcp binary carries the `import-corpus` subcommand (its usage string). */
 export function memMcpSupportsImport(binPath) {
   return fs.readFileSync(binPath).includes(Buffer.from("mem-mcp import-corpus <store-path> <corpus-dir>"));
@@ -213,7 +239,14 @@ export function stageInto(src, dest, files) {
 }
 
 function parseArgs(argv, root) {
-  const out = { dest: path.join(root, "src-tauri", "knowledge-corpus"), memMcp: undefined, bgeDir: undefined, allowUnembedded: false, input: undefined };
+  const out = {
+    dest: path.join(root, "src-tauri", "knowledge-corpus"),
+    memMcp: undefined,
+    bgeDir: undefined,
+    allowUnembedded: false,
+    allowDirty: false,
+    input: undefined,
+  };
   const valueFlags = { "--dest": "dest", "--mem-mcp": "memMcp", "--bge-dir": "bgeDir" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -223,6 +256,7 @@ function parseArgs(argv, root) {
       out[valueFlags[a]] = v;
       i++;
     } else if (a === "--allow-unembedded") out.allowUnembedded = true;
+    else if (a === "--allow-dirty") out.allowDirty = true;
     else if (a.startsWith("--")) throw new Error(`unknown argument ${JSON.stringify(a)}\n${USAGE}`);
     else if (out.input === undefined) out.input = a;
     else throw new Error(`one corpus input only\n${USAGE}`);
@@ -258,11 +292,15 @@ function main() {
       src = findCorpusRoot(tmp);
     }
     const { manifest, files, bytes } = verifyCorpus(src);
+    const dirty = checkSourceCommits(manifest, { allowDirty: args.allowDirty });
     const emb = checkEmbedder(manifest, path.resolve(args.bgeDir), { allowUnembedded: args.allowUnembedded });
     if (args.memMcp && !memMcpSupportsImport(args.memMcp)) {
       throw new Error(`${args.memMcp} predates \`mem-mcp import-corpus\`; stage a mem-mcp built from citrate-memories with mem-corpus`);
     }
     stageInto(src, path.resolve(args.dest), files);
+    for (const d of dirty) {
+      console.error(`warning: source ${d.id} was built from a work tree with local changes (${d.commit}); not reproducible, dev build only`);
+    }
     const tenants = manifest.tenants.map((t) => `${t.tenant} ${t.nodes} nodes`).join(", ");
     console.log(`staged knowledge corpus ${manifest.bundle_digest} (${files.length} files, ${bytes} bytes; ${tenants}) -> ${args.dest}`);
     const total = manifest.tenants.reduce((n, t) => n + t.nodes, 0);
