@@ -517,11 +517,13 @@ fn seed_requests_and_responses_match_the_daemon_wire() {
     assert!(matches!(r, Response::Seeded { dialing: 2 }));
     let dto = ClusterGroupSeedDto {
         group_id: "g".into(),
-        seed: "s".into(),
+        link: "s".into(),
         addrs: vec!["a".into()],
     };
     let v = serde_json::to_value(dto).expect("json");
     assert_eq!(v["groupId"], "g", "the UI sees camelCase");
+    assert_eq!(v["link"], "s", "the link text, named so it never reads as key material");
+    assert!(v.get("seed").is_none());
 }
 
 #[test]
