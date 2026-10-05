@@ -243,7 +243,7 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef { name: "precompile_table", title: "Precompile table", kind: ToolKind::Read, input_schema: no_args,
         description: "The Citrate precompiles a client may call read-only with precompile_call, with their addresses and what they do." },
     ToolDef { name: "precompile_call", title: "Precompile call", kind: ToolKind::Read, input_schema: precompile_schema,
-        description: "Call a Citrate precompile read-only (eth_call) and return its output bytes. Only addresses in the precompile table are accepted." },
+        description: "Call a Citrate precompile read-only (eth_call) and return its output bytes. Only addresses in the precompile table are accepted. A Citrate node answers a top-level call to a precompile address with empty data, so an empty reply is an error, never a result; precompiles answer to contract code." },
     ToolDef { name: "ed25519_verify", title: "Verify an Ed25519 signature", kind: ToolKind::Read, input_schema: ed25519_schema,
         description: "Check an Ed25519 signature with the chain's ED25519_VERIFY precompile (0x0120), read-only. Encodes public key, signature and message for the precompile and returns whether the chain accepts the signature." },
     ToolDef { name: "agent_precompile_encode", title: "Encode an agent precompile input", kind: ToolKind::Read, input_schema: agent_precompile_encode_schema,

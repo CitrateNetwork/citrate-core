@@ -103,7 +103,10 @@ partial match, or not verified. The source text is left out; no ABI is ever gues
 `chain_call` (eth_call), `estimate_gas`, `get_logs` (one contract, at most 5,000 blocks),
 `precompile_table`,
 `precompile_call` (read-only eth_call to a precompile in the table: 0x0107-0x0109, 0x0110,
-0x0111, 0x0120, 0x0130, 0x0200-0x0202), `ed25519_verify` (a typed helper for ED25519_VERIFY
+0x0111, 0x0120, 0x0130, 0x0200-0x0202; an empty reply is an error, never a result. A Citrate node
+answers a top-level eth_call to a precompile address with `0x` because precompiles answer only to
+contract code, so on a real node this tool and `ed25519_verify` report an error today; calling
+them through a contract is open work), `ed25519_verify` (a typed helper for ED25519_VERIFY
 at 0x0120: it encodes `public key (32 bytes) || signature (64 bytes) || message (at most 8 KiB)`,
 calls the precompile read-only and returns `valid`; an answer that is not a 32-byte word is an
 error, never "valid"), `agent_precompile_encode` and `agent_precompile_decode` (typed helpers for

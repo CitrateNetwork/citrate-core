@@ -637,6 +637,36 @@ fn precompile_call_targets_the_table_address() {
 }
 
 #[test]
+fn precompile_call_reports_an_empty_answer_as_an_error_not_a_result() {
+    // A top-level eth_call whose `to` is a precompile returns 0x on a Citrate node (the executor
+    // runs code only at accounts that have it). That empty answer is not the precompile's output.
+    let f = Arc::new(Fixture::default());
+    let core = core_with(f.clone());
+    *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some("0x".into());
+    let r = call(
+        &core,
+        &ctx("t"),
+        "precompile_call",
+        json!({"address": "0x0000000000000000000000000000000000000120", "data": "0xAB"}),
+    );
+    assert!(is_tool_error(&r), "{r}");
+    assert!(r.to_string().contains("contract code"), "{r}");
+    // A non-empty answer is still returned as the result.
+    *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("0x{}1", "0".repeat(63)));
+    let ok = call(
+        &core,
+        &ctx("t"),
+        "precompile_call",
+        json!({"address": "0x0000000000000000000000000000000000000120", "data": "0xAB"}),
+    );
+    assert!(!is_tool_error(&ok), "{ok}");
+    assert_eq!(
+        ok["result"]["structuredContent"]["result"],
+        json!(format!("0x{}1", "0".repeat(63)))
+    );
+}
+
+#[test]
 fn memory_search_never_reaches_personal_memory() {
     let core = core_with(Arc::new(Fixture::default()));
     let c = ctx("t");
