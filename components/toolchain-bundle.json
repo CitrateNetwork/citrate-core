@@ -115,7 +115,7 @@
           "sha256": null,
           "size": null,
           "upstream_checksums": "https://github.com/foundry-rs/foundry/releases/tag/v1.5.1",
-          "note": "zip is not unpacked by the updater yet (Windows toolchain spike)."
+          "note": "zip is unpacked by the updater (extract.rs); this archive is still to be measured on Windows."
         }
       }
     },
@@ -406,7 +406,7 @@
           "sha256": null,
           "size": null,
           "upstream_checksums": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
-          "note": "zip is not unpacked by the updater yet (Windows toolchain spike).",
+          "note": "zip is unpacked by the updater (extract.rs); this archive is still to be measured on Windows.",
           "entrypoints": [
             "node-v24.21.0-win-x64/node.exe"
           ]
@@ -430,7 +430,7 @@
           "status": "measured",
           "sha256": "b62e904b6571c5ff5108ed7812cf93ac6d1c4027f10ae47ac34d8e229ed88001",
           "size": 191153086,
-          "note": "Downloaded and hashed on 2026-10-04 (365 MB unpacked, 5 symbolic links inside the .app, ad-hoc signed). --version printed Google Chrome for Testing 154.0.8037.92, and the agent-browser live tests (navigate, snapshot, act, screencast, approvals, attach, the sign-in bridge, console and network tools, web-subset-v2) passed with it as the managed browser. The updater does not unpack zip in this version (extract.rs), so before this can install the release step must either add zip unpacking with symbolic-link checks or repack the tree as tar.xz.",
+          "note": "Downloaded and hashed on 2026-10-04 (365 MB unpacked, 5 symbolic links inside the .app, ad-hoc signed). --version printed Google Chrome for Testing 154.0.8037.92, and the agent-browser live tests (navigate, snapshot, act, screencast, approvals, attach, the sign-in bridge, console and network tools, web-subset-v2) passed with it as the managed browser. The updater unpacks it as published (zip unpacking with symbolic-link containment, extract.rs): on 2026-10-04 `citrate-components unpack` gave 344 files, 324 directories and the 5 links, all resolving inside the tree, and the unpacked browser printed its version (components/tests/extract.rs, the ignored test the_pinned_chrome_for_testing_zip_unpacks_with_its_five_links).",
           "entrypoints": [
             "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
           ]
@@ -500,7 +500,7 @@
           "sha256": null,
           "size": null,
           "build_from": "components/locks/searxng-2026.10.4-macos-arm64-cp312.txt",
-          "note": "30 runtime wheels (25.9 MB) and 3 build-only wheels, hashed on 2026-10-04; a fresh venv built from them with --require-hashes ran searxng-run and answered /healthz."
+          "note": "30 runtime wheels (25.9 MB) and 3 build-only wheels, hashed on 2026-10-04; a fresh venv built from them with --require-hashes ran searxng-run and answered /healthz. scripts/pack-searxng.sh builds the artifact from this lock (the pinned Python runtime, the wheels and the unmodified source, bin/searxng-run, LICENSES/); on 2026-10-04 it gave a deterministic 53,546,294-byte tar.gz that the updater unpacks and that the Hermes supervisor started on 127.0.0.1. It stays to_be_built until the release step hosts it (pack-searxng.sh --url ... --apply)."
         },
         "macos-x64": {
           "url": null,

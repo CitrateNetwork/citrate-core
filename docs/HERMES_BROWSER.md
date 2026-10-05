@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01T14:00:00Z
-branch: hup/n4-browser (updated on hup/n6-web-browse, 2026-10-04)
+branch: hup/n4-browser (updated on hup/n6-web-browse and hup/n7-components-unpack-searxng, 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
 status: implemented behind a Settings switch (default off); the managed Chromium is measured as a component, its install waits for the signed manifest (HUP-S5.5)
 wp: HUP-S5.1, HUP-S5.6
@@ -27,7 +27,8 @@ The sidecar prefers the managed Chromium: when the signed `chromium` component i
 core passes its executable as `CITRATE_BROWSER_CHROMIUM`. Until then the sidecar uses a
 Chromium-family browser already installed, and says "not installed" when there is none; the
 Settings card says which. Installing it needs the external component-key ceremony and a published
-signed manifest, and the updater does not unpack zip yet (see the bundle entry's note).
+signed manifest. The updater unpacks the Chrome for Testing zip, with its five app-bundle links
+kept inside the tree (`components/src/extract.rs`, 2026-10-04).
 
 ## What the member sees
 
@@ -79,8 +80,8 @@ signed manifest, and the updater does not unpack zip yet (see the bundle entry's
 ## Not done here
 
 - Installing the managed Chromium: the component entry is measured, but the component-key
-  ceremony, a signed manifest on the CDN, zip unpacking in the updater, and the owner's decision on
-  re-hosting Google's builds are all still open.
+  ceremony, a signed manifest on the CDN, and the owner's decision on re-hosting Google's builds
+  are still open (zip unpacking in the updater is built).
 - Sign-in with the member's wallet is the sign-in bridge (HUP-S2.3,
   `docs/WEB_SIGNING_BUDGETS.md`): the managed browser's page provider asks, core decides.
 - The console and network tools and the `decide()` picker (`browser_pick`) live in the sidecar

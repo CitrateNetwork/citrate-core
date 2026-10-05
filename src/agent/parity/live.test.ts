@@ -241,8 +241,9 @@ export function httpSessionApi(controlUrl: string, token: string, bodyFor: (syst
 // ---------------------------------------------------------------------------------------------
 /**
  * The sidecar's default `max_steps` (agent-sidecar sessions.rs). The app opens sessions without
- * overriding it, so live turns run under it. Whether chat keeps 8 or moves to harness.ts's 6 is
- * the open owner decision `default_turn_cap`; when it is made, this value follows it.
+ * overriding it, so live turns run under it. Whether chat keeps 8 or moves to another cap is
+ * the owner decision `default_turn_cap`; the recommended default (8 for both, pending sign-off)
+ * makes the scripted fixture agree with this value.
  */
 export const LIVE_SESSION_MAX_STEPS = 8;
 
@@ -563,12 +564,13 @@ describe("live parity support (HUP-S1.9)", () => {
   it("the turn-cap override is the fixture's own turn-cap shape at the sidecar default", () => {
     const s = FIXTURE.scenarios.find((x) => x.id === "turn_cap_exhausted");
     expect(s).toBeDefined();
-    // At 6 steps the derived expectation equals the fixture's (so only the step count differs).
-    const at6 = turnCapOverride(6);
-    expect(at6.model_calls).toBe(s?.expect.model_calls);
-    expect(at6.host_calls).toEqual(s?.expect.host_calls);
-    expect(at6.last_request_roles).toEqual(s?.expect.last_request_roles);
-    expect(at6.error_contains).toBe(needleFor(s?.expect ?? {}));
+    // At the fixture's cap (8 since HUP-S1.1, pending owner sign-off) the derived expectation
+    // equals the fixture's own.
+    const atCap = turnCapOverride(8);
+    expect(atCap.model_calls).toBe(s?.expect.model_calls);
+    expect(atCap.host_calls).toEqual(s?.expect.host_calls);
+    expect(atCap.last_request_roles).toEqual(s?.expect.last_request_roles);
+    expect(atCap.error_contains).toBe(needleFor(s?.expect ?? {}));
     expect(LIVE_OVERRIDES.turn_cap_exhausted.expect.model_calls).toBe(LIVE_SESSION_MAX_STEPS);
   });
 

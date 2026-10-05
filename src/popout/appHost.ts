@@ -29,7 +29,7 @@ import type { PopoutKind } from "./kinds";
 import { daemonsSection } from "./monitorSnapshot";
 import { daemonsSlice } from "../daemons/slice";
 import { setDaemonPaused, stopDaemonRun } from "../daemons/appRunner";
-import type { WorkerRow } from "./monitorSnapshot";
+import type { DecideMetering, WorkerRow } from "./monitorSnapshot";
 
 let hostPromise: Promise<PopoutHost> | null = null;
 
@@ -84,6 +84,8 @@ export function startPopoutHost(): Promise<PopoutHost> | null {
       },
       // HUP-S1.9: the sidecar's worker processes (Rust → the sidecar's GET /workers).
       workers: () => invoke<WorkerRow[]>("hermes_workers"),
+      // HUP-S5.3: the decide() slot's per-backend metering (Rust → the sidecar's GET /decide/stats).
+      decide: () => invoke<DecideMetering | null>("hermes_decide_stats"),
       now: () => Date.now(),
       // HUP-S2.9: the agent session's recent file changes, refreshed from the sidecar when the monitor
       // opens; an undo the monitor asks for runs here, in the main window.

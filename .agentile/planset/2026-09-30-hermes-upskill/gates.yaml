@@ -116,7 +116,30 @@ gates:
     exit_criteria:
       - {id: g3-updater, desc: "Signed component updater live w/ CVE SLA before the browser ships (@rule8)", met: false}
       - {id: g3-licence, desc: "Licence review for bundled/first-run tools complete; source offer published", met: false, evidence: "docs/LICENCE_REVIEW.md + release/licences.json (review drafted, check green; pending owner sign-off and source offer publication)"}
-      - {id: g3-browser, desc: "Browser pop-out + search + decide() slot scored", met: false}
+      - id: g3-browser
+        desc: "Browser pop-out + search + decide() slot scored"
+        met: false
+        evidence: "runtime agent-browser (gate.rs, egress.rs, scope.rs, pick.rs); agent-loop/evals/runs/web-subset-v2-2026-10-04-t0-run{1,2}.json; agent-search/evals/live-run-2026-10-04.json; core hermes_decide.rs + src/popout/ActivityMonitor.decide.test.tsx"
+        note: >-
+          Proven in code and tests (2026-10-04): the Browser pop-out with screencast and element
+          highlight; the browser switch (default off); decide() in the browser scored locally on
+          web-subset-v2 with T0 Gemma 4 E4B (8 and 9 of 10 tasks over two runs), every outcome recorded through POST
+          /decide/outcomes; SearXNG live run. Attach-to-Chrome scoping (S5.6) is merged:
+          per-session consent, per-origin consent, banking, email and health origins excluded by
+          default, with unit, scope and live-Chrome tests that an excluded origin is refused even
+          with ordinary consent. hup/n7-browser-safety-decide adds: browserMayOpenWeb enforced in
+          the managed browser path (S5.5): when the last signed component manifest has expired or
+          none was checked, core passes CITRATE_BROWSER_OPEN_WEB=0 with the managed Chromium and
+          the browser reaches only developer-allowed origins on this machine (loopback: a site
+          preview or the anvil fork), at the DevTools request gate and the SOCKS5 egress gate
+          (gate, egress, service, live-Chrome and core tests; five mutants killed). The rule
+          follows the managed Chromium only, so no member is blocked while the component key
+          slot is empty. The per-backend decide() metering (GET /decide/stats) is shown in the
+          Activity monitor (hermes_decide_stats, vitest). Not met until the signed component
+          publish: the component key ceremony, the signed Chrome for Testing and SearXNG
+          manifest (g3-updater), then a packaged-app QA run with the switch on. T1 and Jev are
+          not scored; the recommended default (pending owner sign-off) ships Jev off as "not
+          offered", with local as the only backend.
       - id: g3-gate
         desc: "DeployGate TLC-green; injected-bug run yields NOT READY"
         met: true
