@@ -9,8 +9,9 @@
 //! - **The switch:** `<app local data>/hermes/trajectory-settings.json`, written only by
 //!   [`trajectories_settings_set`] from the member's toggle in the federated rounds panel.
 //!
-//! **Default off, and off changes nothing.** With the switch off core passes no
-//! `CITRATE_HERMES_TRAJECTORIES` to the sidecar (so nothing is recorded) and
+//! **Default off, and off changes nothing.** With the switch off core passes
+//! `CITRATE_HERMES_TRAJECTORIES` to the sidecar pinned empty, overriding any inherited value (so
+//! nothing is recorded), and
 //! [`build_round_dataset`] refuses before reading or writing anything. A missing, unreadable or
 //! corrupt settings file counts as off. The switch applies the next time Hermes starts, like the
 //! other sidecar switches.
@@ -86,10 +87,13 @@ pub fn save(dir: &Path, s: &TrajectorySettings) -> Result<(), String> {
         .map_err(|_| "cannot write the training-data settings".to_string())
 }
 
-/// The sidecar environment for these settings. Off (or a relative folder) produces nothing.
+/// The sidecar environment for these settings. Off (or a relative folder) pins the variable
+/// empty rather than leaving it out: the sidecar inherits core's own environment, so a value set
+/// outside the member's switch (a shell or `launchctl` export) would otherwise turn recording on.
+/// The sidecar treats an empty value as off (`TrajectoryConfig::from_value`).
 pub fn sidecar_env(hermes_dir: &Path, s: &TrajectorySettings) -> Vec<(String, String)> {
     if !s.enabled || !hermes_dir.is_absolute() {
-        return Vec::new();
+        return vec![(TRAJECTORIES_ENV.to_string(), String::new())];
     }
     vec![(
         TRAJECTORIES_ENV.to_string(),

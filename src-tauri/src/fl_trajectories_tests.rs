@@ -36,13 +36,19 @@ fn env_map(v: &[(String, String)]) -> BTreeMap<String, String> {
     v.iter().cloned().collect()
 }
 
+/// Off is not "say nothing": the variable is pinned empty so a value inherited from core's own
+/// environment cannot turn recording on (the sidecar treats an empty value as off).
+fn pinned_off(env: &[(String, String)]) -> bool {
+    env == [(TRAJECTORIES_ENV.to_string(), String::new())]
+}
+
 #[test]
-fn the_default_is_off_and_off_passes_no_variable() {
+fn the_default_is_off_and_off_pins_the_variable_empty() {
     let d = tmp("default");
     assert_eq!(load(&d).expect("load"), TrajectorySettings::default());
     assert!(!enabled(&d));
-    assert!(sidecar_env(&d, &TrajectorySettings::default()).is_empty());
-    assert!((file_env_source(d.clone()))().is_empty());
+    assert!(pinned_off(&sidecar_env(&d, &TrajectorySettings::default())));
+    assert!(pinned_off(&(file_env_source(d.clone()))()));
     let _ = std::fs::remove_dir_all(d);
 }
 
@@ -66,7 +72,7 @@ fn a_corrupt_settings_file_reads_as_off() {
     std::fs::write(d.join(SETTINGS_FILE), "{\"enabled\": tru").expect("write");
     assert!(load(&d).is_err());
     assert!(!enabled(&d));
-    assert!((file_env_source(d.clone()))().is_empty());
+    assert!(pinned_off(&(file_env_source(d.clone()))()));
     assert!(status(&d).load_error.is_some());
     assert!(build_round_dataset(&d, 10, 1).is_err());
     let _ = std::fs::remove_dir_all(d);
@@ -78,7 +84,7 @@ fn a_relative_hermes_folder_never_turns_recording_on() {
         enabled: true,
         changed_at_ms: None,
     };
-    assert!(sidecar_env(Path::new("relative/hermes"), &on).is_empty());
+    assert!(pinned_off(&sidecar_env(Path::new("relative/hermes"), &on)));
 }
 
 #[test]
@@ -171,7 +177,7 @@ fn turning_off_deletes_training_sets_and_on_request_the_recordings() {
     assert!(!st.settings.enabled);
     assert_eq!(st.datasets, 0);
     assert_eq!(st.recorded_files, 1, "recordings stay unless asked");
-    assert!((file_env_source(d.clone()))().is_empty());
+    assert!(pinned_off(&(file_env_source(d.clone()))()));
 
     set(&d, true, false, 4).expect("on again");
     let st = set(&d, false, true, 5).expect("off and delete");
@@ -191,7 +197,9 @@ fn the_hermes_manager_passes_the_variable_only_when_the_switch_is_on() {
         .with_env_source(file_env_source(dir))
     };
     let off = env_map(&mgr(d.clone()).spec_env_for_test());
-    assert!(!off.contains_key(TRAJECTORIES_ENV));
+    // Off overrides a value core itself inherited (a shell or launchctl export), so the
+    // sidecar never records just because the variable was set outside the member's switch.
+    assert_eq!(off.get(TRAJECTORIES_ENV).map(String::as_str), Some(""));
     set(&d, true, false, 1).expect("on");
     let on = env_map(&mgr(d.clone()).spec_env_for_test());
     assert_eq!(
