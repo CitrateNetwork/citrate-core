@@ -458,7 +458,7 @@ export interface QaScorecard {
      * does; src/agent/eval/toolLoop.ts). "memory.search passages": the harness retrieved passages
      * before the question (retrieve-then-answer).
      */
-    mode: "memory_search tool" | "memory.search passages";
+    mode: "memory_search tool" | "memory.search passages" | "memory_search tool via sidecar";
     tenants: string[];
     k: number;
     /** Tool mode: model requests per question (the app's AGENT_MAX_TURNS). */
@@ -466,6 +466,12 @@ export interface QaScorecard {
     corpusDigest?: string;
     /** Citations were also accepted when they resolve to a node of the bundled corpus. */
     citationsResolveToCorpus?: boolean;
+    /**
+     * HUP-S7.7: "memory_search tool via sidecar" runs. The skill directories the sidecar loaded
+     * (repo-relative where possible), whether the reviewed third-party skills were loaded too, and
+     * the context and reply sizes the sessions were opened with.
+     */
+    sidecar?: { skills: string[]; reviewedThirdParty: boolean; contextTokens: number; maxTokens: number };
   };
 }
 
@@ -563,12 +569,15 @@ export interface QaAnswer {
   retrieved?: RetrievedNodeRef[];
   /** Tool runs: the memory_search calls the model made. */
   toolCalls?: { tenant: string; query: string }[];
+  /** Sidecar runs (HUP-S7.7): the skills the model read with skill_load, in order. */
+  skillLoads?: string[];
 }
 
 export type QaItemResult = QaItemScore & {
   answer: string;
   retrievedNodes?: string[];
   toolCalls?: { tenant: string; query: string }[];
+  skillLoads?: string[];
   citedNodes?: CitationNodes[];
 };
 
@@ -602,6 +611,7 @@ export async function runQaEval(
       retrievalRun = true;
       item.retrievedNodes = res.retrieved.map((n) => n.id);
       if (res.toolCalls !== undefined) item.toolCalls = res.toolCalls;
+      if (res.skillLoads !== undefined) item.skillLoads = res.skillLoads;
       item.citedNodes = resolveCitationNodes(res.text, res.retrieved);
       cited += item.citedNodes.length;
       citedToNodes += item.citedNodes.filter((c) => c.nodeIds.length > 0).length;

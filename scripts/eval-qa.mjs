@@ -19,6 +19,12 @@
 //                                    passages: each question first runs `memory.search {passages:
 //                                    true}` per tenant and the passages go before the question.
 //                                    Result <date>-qa-rag-<model>.json.
+//                                    sidecar (HUP-S7.7, US-9.2 AC1): each question runs in a REAL
+//                                    citrate-agent-sidecar session that offers the bundled skills
+//                                    (--skills, --skills-lock/--skills-third-party) and the
+//                                    memory_search core tool, which this script answers from the
+//                                    daemon (src/agent/eval/qaSidecar.ts). Needs --sidecar-bin and
+//                                    --context-tokens. Result <date>-<set>-sidecar-<model>.json.
 //                                    Both record the node ids each search returned and resolve every
 //                                    answer citation to them (scorecard citationNodeRate). With
 //                                    --corpus-dir (the imported corpus), a citation also counts as
@@ -36,15 +42,21 @@
 // Sibling of scripts/eval-tools.mjs (tool-call + injection eval, HUP-S1.7/S1.10). Requires
 // Node >= 22.18 / 23.6 (built-in TypeScript type stripping, no new dependency).
 // =====================================================================
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { createConnection } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { createConnection, createServer as createNetServer } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseQaCliArgs, qaDatasetFiles, qaResultFileName } from "../src/agent/eval/qaCliArgs.ts";
 import { QA_SYSTEM_PROMPT, findMissingCitations, parseQaDataset, runQaEval } from "../src/agent/eval/qa.ts";
 import { buildCorpusCitationIndex } from "../src/agent/eval/corpusCitations.ts";
 import { buildRetrievalContext, parsePassages, parseSearchResponse, retrievalUserMessage, searchRequestLine, selectRetrievalPassages } from "../src/agent/eval/retrieval.ts";
 import { QA_TOOL_MAX_TURNS, answerWithMemoryTool } from "../src/agent/eval/toolLoop.ts";
+import { qaCoreAnswerer, qaOutcomeFromEvents, qaSessionBody } from "../src/agent/eval/qaSidecar.ts";
+import { driveSession } from "../src/agent/eval/sidecar.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REQUEST_TIMEOUT_MS = 180_000;
@@ -124,10 +136,122 @@ async function chat(args, apiKey, messages, tools) {
   return message;
 }
 
-function makeAsk(args, apiKey) {
+function freePort() {
+  return new Promise((res, rej) => {
+    const s = createNetServer();
+    s.once("error", rej);
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close(() => res(port));
+    });
+  });
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * HUP-S7.7: start the real sidecar with the skills sources (as core sets them for the child) and a
+ * 0600 bearer file. Resolves to { http, stop, log }; rejects when it does not come up.
+ */
+async function startSidecar(sc) {
+  const work = mkdtempSync(join(tmpdir(), "citrate-eval-qa-sidecar-"));
+  const capsDir = join(work, "capsules");
+  mkdirSync(capsDir);
+  const bearer = randomBytes(24).toString("hex");
+  const tokenFile = join(work, "token");
+  writeFileSync(tokenFile, bearer);
+  chmodSync(tokenFile, 0o600);
+  const port = await freePort();
+  const env = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HOME: process.env.HOME ?? work,
+    TMPDIR: process.env.TMPDIR ?? "/tmp",
+    CITRATE_HERMES_ADDR: `127.0.0.1:${port}`,
+    CITRATE_HERMES_TOKEN_FILE: tokenFile,
+    CITRATE_HERMES_CAPSULES: capsDir,
+  };
+  if (sc.skills.length) env.CITRATE_HERMES_SKILLS = sc.skills.join(":");
+  if (sc.thirdParty) {
+    env.CITRATE_HERMES_SKILLS_LOCK = sc.thirdParty.lock;
+    env.CITRATE_HERMES_SKILLS_THIRD_PARTY = sc.thirdParty.root;
+  }
+  const side = spawn(sc.bin, [], { env, stdio: ["ignore", "ignore", "pipe"] });
+  let log = "";
+  side.stderr.on("data", (d) => {
+    log = (log + d.toString()).slice(-8000);
+  });
+  const base = `http://127.0.0.1:${port}`;
+  const stop = () => {
+    try {
+      side.kill("SIGTERM");
+    } catch {}
+    rmSync(work, { recursive: true, force: true });
+  };
+  const http = async (method, path, body) => {
+    let res;
+    try {
+      res = await fetch(base + path, {
+        method,
+        headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch (e) {
+      throw new Error(`sidecar ${method} ${path}: ${e?.cause?.code || e?.message || String(e)}`);
+    }
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = { raw: text.slice(0, 300) };
+    }
+    return { status: res.status, json };
+  };
+  let up = false;
+  // Loading and hash-checking the reviewed skills can take minutes on a loaded machine.
+  for (let i = 0; i < 1500 && !up; i++) {
+    await sleep(200);
+    try {
+      up = (await fetch(base + "/health")).ok;
+    } catch {}
+  }
+  if (!up) {
+    stop();
+    throw new Error(`the sidecar did not come up:\n${log}`);
+  }
+  return { http, stop, log: () => log, base };
+}
+
+function makeAsk(args, apiKey, sidecar) {
   let rpcId = 0;
   const nextId = () => ++rpcId;
   const r = args.retrieval;
+  if (r?.mode === "sidecar") {
+    // HUP-S7.7 / US-9.2 AC1: the app's path with the sidecar loop on. One session per question.
+    const sc = r.sidecar;
+    return async (question) => {
+      const open = await sidecar.http(
+        "POST",
+        "/sessions",
+        qaSessionBody({ model: args.model, baseUrl: args.baseUrl, bearer: apiKey ?? "", contextTokens: sc.contextTokens, maxTokens: sc.maxTokens, systemPrompt: QA_SYSTEM_PROMPT }),
+      );
+      if (open.status !== 201 || typeof open.json?.id !== "string") throw new Error(`POST /sessions: HTTP ${open.status} ${JSON.stringify(open.json)}`);
+      const id = open.json.id;
+      const sent = await sidecar.http("POST", `/sessions/${id}/messages`, { text: question });
+      if (sent.status !== 202) throw new Error(`send: HTTP ${sent.status} ${JSON.stringify(sent.json)}`);
+      const log = { calls: [], retrieved: [] };
+      const run = await driveSession(sidecar.http, id, { fixtures: {}, approve: [] }, {
+        deadlineMs: sc.deadlineSeconds * 1000,
+        browser: false,
+        answerCore: qaCoreAnswerer((tenant, query, k, passages) => searchOnce(r.socket, nextId(), tenant, query, k, passages), log),
+      });
+      await sidecar.http("DELETE", `/sessions/${id}`);
+      const o = qaOutcomeFromEvents(run.events);
+      if (!o.text) console.error(`  (no answer; session outcome ${o.outcome ?? "unknown"})`);
+      return { text: o.text, retrieved: log.retrieved, toolCalls: log.calls, skillLoads: o.skillLoads };
+    };
+  }
   if (r?.mode === "tool") {
     // g2-knowledge (b): the app's own path. The model calls memory_search; the daemon answers.
     return async (question) => {
@@ -179,7 +303,9 @@ async function main() {
   console.error(
     `eval-qa: ${ds.version} (${ds.items.length}) → ${args.model} @ ${args.baseUrl}${args.allowRemote ? " (remote allowed)" : ""}` +
       (args.retrieval
-        ? args.retrieval.mode === "tool"
+        ? args.retrieval.mode === "sidecar"
+          ? ` · sidecar ${args.retrieval.sidecar.bin} (skills: ${args.retrieval.sidecar.skills.length} dir(s)${args.retrieval.sidecar.thirdParty ? " + reviewed third-party" : ""}; ctx ${args.retrieval.sidecar.contextTokens}) · memory_search via ${args.retrieval.socket}`
+          : args.retrieval.mode === "tool"
           ? ` · memory_search tool (k=${args.retrieval.k}, ${QA_TOOL_MAX_TURNS} turns) via ${args.retrieval.socket}`
           : ` · retrieval ${args.retrieval.tenants.join("+")} k=${args.retrieval.k} via ${args.retrieval.socket}`
         : " · closed-book"),
@@ -199,12 +325,23 @@ async function main() {
     console.error(`eval-qa: citations may resolve to ${corpus.files.size} bundled files (corpus ${manifest.bundle_digest.slice(0, 12)})`);
   }
 
+  let sidecar;
+  if (args.retrieval?.mode === "sidecar") {
+    try {
+      sidecar = await startSidecar(args.retrieval.sidecar);
+    } catch (e) {
+      console.error((e instanceof Error ? e.message : String(e)) + "\nno scorecard written.");
+      process.exit(1);
+    }
+    console.error(`eval-qa: sidecar up on ${sidecar.base}`);
+  }
+
   let out;
   try {
     out = await runQaEval(
       ds,
       index,
-      { ask: makeAsk(args, apiKey), onProgress: (id, pass) => console.error(`  ${pass ? "pass" : "FAIL"}  ${id}`) },
+      { ask: makeAsk(args, apiKey, sidecar), onProgress: (id, pass) => console.error(`  ${pass ? "pass" : "FAIL"}  ${id}`) },
       { model: args.model, tier: args.tier },
       {
         ...(args.coverageThreshold === undefined ? {} : { coverageThreshold: args.coverageThreshold }),
@@ -212,15 +349,30 @@ async function main() {
       },
     );
   } catch (e) {
+    sidecar?.stop();
     console.error((e instanceof Error ? e.message : String(e)) + "\nno scorecard written.");
     process.exit(1);
   }
+  sidecar?.stop();
 
   const { scorecard, items } = out;
   if (args.adapterSha256) scorecard.adapterSha256 = args.adapterSha256;
   if (args.retrieval) {
+    const sc = args.retrieval.sidecar;
     scorecard.retrieval =
-      args.retrieval.mode === "tool"
+      args.retrieval.mode === "sidecar"
+        ? {
+            mode: "memory_search tool via sidecar",
+            tenants: args.retrieval.tenants,
+            k: args.retrieval.k,
+            sidecar: {
+              skills: sc.skills.map((d) => relative(ROOT, d) || "."),
+              reviewedThirdParty: Boolean(sc.thirdParty),
+              contextTokens: sc.contextTokens,
+              maxTokens: sc.maxTokens,
+            },
+          }
+        : args.retrieval.mode === "tool"
         ? { mode: "memory_search tool", tenants: args.retrieval.tenants, k: args.retrieval.k, maxTurns: QA_TOOL_MAX_TURNS }
         : { mode: "memory.search passages", tenants: args.retrieval.tenants, k: args.retrieval.k };
     if (args.retrieval.corpusDigest) scorecard.retrieval.corpusDigest = args.retrieval.corpusDigest;

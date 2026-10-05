@@ -2,13 +2,16 @@
 // citrate-core — argument parsing for scripts/eval-sidecar.mjs (HUP-S1.7 / HUP-S1.10)
 //
 // Pure (no I/O), so the guards are unit-tested. Like eval-tools.mjs, the model endpoint must be
-// loopback (a run sends the system prompt, tool schemas and canary secrets to it); the sidecar
-// itself refuses any non-loopback http model endpoint as well. Executables must be absolute paths.
+// loopback (a run sends the system prompt, tool schemas and canary secrets to it) unless the
+// operator passes --allow-remote (the CI workflow, eval.yml), and then it must be https: the
+// sidecar itself refuses plain http to a non-loopback host. Executables must be absolute paths.
 // =====================================================================
 import { isLoopbackUrl } from "./cliArgs.ts";
 
 export interface SidecarEvalArgs {
   baseUrl: string;
+  /** --allow-remote: a non-loopback https endpoint was accepted on purpose. */
+  allowRemote: boolean;
   model: string;
   tier?: "T0" | "T1" | "T2";
   apiKeyEnv?: string;
@@ -24,12 +27,14 @@ export interface SidecarEvalArgs {
   outDir: string;
   /** Longest one case may take before the run aborts. */
   deadlineSeconds: number;
+  /** The citrate-agent-runtime commit the sidecar binary was built from (stamped into the scorecard). */
+  runtimeRev?: string;
 }
 
 export const SIDECAR_EVAL_USAGE =
   "usage: node scripts/eval-sidecar.mjs --base-url <http://127.0.0.1:PORT/v1> --model <name> " +
   "--sidecar-bin </abs/citrate-agent-sidecar> --mcp-fixture-bin </abs/citrate-mcp-fixture-server> " +
-  "--context-tokens <n> [--chromium </abs/chrome>] [--tier T0|T1|T2] [--api-key-env VAR] " +
+  "--context-tokens <n> [--chromium </abs/chrome>] [--tier T0|T1|T2] [--api-key-env VAR] [--allow-remote] [--runtime-rev <40-hex>] " +
   "[--max-tokens <n>] [--only workflows|injection] [--out-dir eval/results] [--deadline-s 900]";
 
 const VALUE_FLAGS = new Set([
@@ -45,6 +50,7 @@ const VALUE_FLAGS = new Set([
   "--only",
   "--out-dir",
   "--deadline-s",
+  "--runtime-rev",
 ]);
 
 /** core's per-turn reply cap (src-tauri/src/ai.rs AI_MAX_TOKENS). */
@@ -65,8 +71,13 @@ function absPath(flag: string, raw: string | undefined): string | undefined {
 
 export function parseSidecarEvalArgs(argv: string[]): SidecarEvalArgs {
   const vals: Record<string, string> = {};
+  let allowRemote = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === "--allow-remote") {
+      allowRemote = true;
+      continue;
+    }
     if (!VALUE_FLAGS.has(a)) throw new Error(`unknown argument ${JSON.stringify(a)}\n${SIDECAR_EVAL_USAGE}`);
     const v = argv[i + 1];
     if (v === undefined || v.startsWith("--")) throw new Error(`${a} needs a value\n${SIDECAR_EVAL_USAGE}`);
@@ -77,7 +88,12 @@ export function parseSidecarEvalArgs(argv: string[]): SidecarEvalArgs {
     if (!vals[req]) throw new Error(`${req} is required\n${SIDECAR_EVAL_USAGE}`);
   }
   const baseUrl = vals["--base-url"].replace(/\/+$/, "");
-  if (!isLoopbackUrl(baseUrl)) throw new Error(`--base-url must be a loopback http(s) URL (got ${baseUrl})`);
+  if (!isLoopbackUrl(baseUrl)) {
+    if (!allowRemote) throw new Error(`--base-url must be a loopback http(s) URL, or pass --allow-remote (got ${baseUrl})`);
+    if (!/^https:\/\/[^/\s]+/.test(baseUrl)) {
+      throw new Error(`a non-loopback --base-url must be https (the sidecar refuses plain http off loopback; got ${baseUrl})`);
+    }
+  }
   const tier = vals["--tier"];
   if (tier !== undefined && tier !== "T0" && tier !== "T1" && tier !== "T2") throw new Error(`--tier must be T0, T1 or T2 (got ${tier})`);
   const apiKeyEnv = vals["--api-key-env"];
@@ -93,6 +109,7 @@ export function parseSidecarEvalArgs(argv: string[]): SidecarEvalArgs {
   }
   const out: SidecarEvalArgs = {
     baseUrl,
+    allowRemote,
     model: vals["--model"],
     sidecarBin: absPath("--sidecar-bin", vals["--sidecar-bin"]) as string,
     mcpFixtureBin: absPath("--mcp-fixture-bin", vals["--mcp-fixture-bin"]) as string,
@@ -101,6 +118,11 @@ export function parseSidecarEvalArgs(argv: string[]): SidecarEvalArgs {
     outDir: vals["--out-dir"] ?? "eval/results",
     deadlineSeconds: posInt("--deadline-s", vals["--deadline-s"], 30, 7200) ?? 900,
   };
+  const runtimeRev = vals["--runtime-rev"];
+  if (runtimeRev !== undefined) {
+    if (!/^[0-9a-f]{40}$/.test(runtimeRev)) throw new Error(`--runtime-rev takes a full 40-hex commit (got ${runtimeRev})`);
+    out.runtimeRev = runtimeRev;
+  }
   if (tier !== undefined) out.tier = tier;
   if (apiKeyEnv !== undefined) out.apiKeyEnv = apiKeyEnv;
   if (chromium !== undefined) out.chromium = chromium;

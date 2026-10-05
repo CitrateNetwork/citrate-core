@@ -1,0 +1,1603 @@
+{
+  "scorecard": {
+    "datasetVersion": "qa-literacy-v2",
+    "model": "gemma-4-E4B-it-Q4_0",
+    "startedAt": "2026-10-04T22:28:57.591Z",
+    "n": 41,
+    "passRate": 0.43902439024390244,
+    "keyPointCoverage": 0.5540540540540541,
+    "citationHitRate": 0.5945945945945946,
+    "citationValidity": 0.975,
+    "abstentionRate": 0.75,
+    "falseAbstentionRate": 0.08108108108108109,
+    "byCategory": {
+      "ai-inference": {
+        "n": 4,
+        "passRate": 0.25
+      },
+      "agentile-hic": {
+        "n": 2,
+        "passRate": 0.5
+      },
+      "devtools-contracts": {
+        "n": 10,
+        "passRate": 0.6
+      },
+      "paraconsensus-fl": {
+        "n": 25,
+        "passRate": 0.4
+      }
+    },
+    "failures": [
+      "qa-lit-knowledge-order",
+      "qa-lit-truth-order",
+      "qa-lit-negation",
+      "qa-lit-lattice-laws",
+      "qa-lit-reduction",
+      "qa-lit-output-size",
+      "qa-lit-q16-repr",
+      "qa-lit-q16-saturation",
+      "qa-lit-safety-invariant",
+      "qa-lit-x402-page",
+      "qa-lit-how-to-call",
+      "qa-lit-eip712-gas",
+      "qa-lit-tensor-format",
+      "qa-lit-compute-ops",
+      "qa-lit-hosted-receipt",
+      "qa-lit-verify-trio",
+      "qa-lit-approval-quorum",
+      "qa-lit-unans-belnap-call-count",
+      "qa-lit-mean-collapses",
+      "qa-lit-aggregation-steps",
+      "qa-lit-dual-output",
+      "qa-lit-router-contested",
+      "qa-lit-0110-inputs"
+    ],
+    "failureReasons": {
+      "qa-lit-knowledge-order": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-truth-order": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-negation": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-lattice-laws": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "qa-lit-reduction": [
+        "key-point coverage 0.50 < 0.6"
+      ],
+      "qa-lit-output-size": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-q16-repr": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-q16-saturation": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-safety-invariant": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-x402-page": [
+        "no required citation cited"
+      ],
+      "qa-lit-how-to-call": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "qa-lit-eip712-gas": [
+        "1 citation(s) do not resolve",
+        "no required citation cited"
+      ],
+      "qa-lit-tensor-format": [
+        "key-point coverage 0.50 < 0.6"
+      ],
+      "qa-lit-compute-ops": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-hosted-receipt": [
+        "key-point coverage 0.50 < 0.6"
+      ],
+      "qa-lit-verify-trio": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-approval-quorum": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "qa-lit-unans-belnap-call-count": [
+        "unanswerable item answered without admitting it is not documented"
+      ],
+      "qa-lit-mean-collapses": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "qa-lit-aggregation-steps": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-dual-output": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-router-contested": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "qa-lit-0110-inputs": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ]
+    },
+    "tier": "T0",
+    "citationNodeRate": 0.975,
+    "retrieval": {
+      "mode": "memory_search tool via sidecar",
+      "tenants": [
+        "citrate-docs",
+        "methodology",
+        "refs",
+        "skills"
+      ],
+      "k": 5,
+      "sidecar": {
+        "skills": [
+          "src-tauri/skills"
+        ],
+        "reviewedThirdParty": true,
+        "contextTokens": 8192,
+        "maxTokens": 2048
+      },
+      "corpusDigest": "970966831d9cd851c36a1564bf9494c8957405f1870024cf6cb7a7e2f6426638",
+      "citationsResolveToCorpus": true
+    }
+  },
+  "items": [
+    {
+      "id": "qa-lit-knowledge-order",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "In the Citrate Belnap bilattice implementation, the four values are arranged in the **knowledge order** (which measures \"how much is known\") as follows:\n\n*   **Neither** is at the bottom (0).\n*   **True** and **False** are both above Neither but are not comparable to each other.\n*   **Both** is at the top (2).\n\nThis partial order is implemented by the `k_leq` function, where the values can be assigned levels: **Neither** (N=0), **True** (T=1), **False** (F=1), and **Both** (B=2) <source>citrate-chain:core/learning/src/belnap.rs#pub fn k_leq</source>.",
+      "retrievedNodes": [],
+      "toolCalls": [],
+      "skillLoads": [
+        "citrate-paraconsensus"
+      ],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-truth-order",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "In the Belnap bilattice, the truth order is defined as follows:\n\n*   **False** is below **Neither** and **Both**.\n*   **Neither** and **Both** are below **True**.\n*   **Neither** and **Both** are not comparable to each other.\n\nThis ordering is implemented by `k_leq` in the codebase (which, in this context, refers to `t_leq` for the truth order) at `citrate-chain:core/learning/src/belnap.rs#pub fn t_leq`.",
+      "retrievedNodes": [],
+      "toolCalls": [],
+      "skillLoads": [
+        "citrate-paraconsensus"
+      ],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-join-meet",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "On Belnap values, which form a bilattice in Citrate's paraconsistent aggregation:\n\n*   The **`join`** operation is used to **combine information**.\n*   The **`meet`** operation is used to **keep only what both inputs agree on**.\n\nThese operations work with the four Belnap values: True, False, Both, and Neither. The implementation is designed so that these operations are commutative, associative, idempotent, satisfy absorption, and that negation is its own inverse.\n\n<source>cite as citrate-docs:content/research/paraconsistent.md#how-the-implementation-works</source>",
+      "retrievedNodes": [
+        "728b710860",
+        "2a70f345a7",
+        "3524b272c0",
+        "e2b98d5139",
+        "4530f32e79"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Belnap join meet operations"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#how-the-implementation-works",
+          "nodeIds": [
+            "728b710860"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-negation",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "Belnap negation has the following effects on the four values:\n\n*   It **swaps True and False**.\n*   It **leaves Both and Neither alone**.\n\nApplying negation twice returns the original value (it is an identity). This information comes from the description of the two orders in the `citrate-paraconsensus` skill documentation:\n\n*   <source>1:skills</source>",
+      "retrievedNodes": [],
+      "toolCalls": [],
+      "skillLoads": [
+        "citrate-paraconsensus"
+      ],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-lattice-laws",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "answer": "The documentation confirms that property tests are in place for the lattice laws of the Belnap lattice, which includes the join and meet operations <source>:citrate-docs:content/research/paraconsistent.md#source-and-verification. However, it does not specify which particular algebraic laws are being checked.",
+      "retrievedNodes": [
+        "7f3c2fd72b",
+        "add2a521d0",
+        "8a07d1628d",
+        "af32f519c5",
+        "3809a9092c"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "algebraic laws for Belnap join and meet operations property tests"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#source-and-verification",
+          "nodeIds": [
+            "8a07d1628d"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-reduction",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6"
+      ],
+      "answer": "The per-source Belnap classifications are reduced to a single state vector by joining across sources using the function `reduce_belnap_states` <source>:citrate-docs:content/research/paraconsistent.md#how-the-implementation-works.\n\nThe result of this reduction is \"Both\" if:\n*   Any source is classified as \"Both\"; or\n*   The sources are split between \"True\" and \"False.\"\n\nFor completeness, the other possible results are \"True\" if all sources agree, and \"Neither\" is absorbed by any other value <source>:citrate-docs:content/research/paraconsistent.md#how-the-implementation-works.",
+      "retrievedNodes": [
+        "7f3c2fd72b",
+        "af32f519c5",
+        "df7215cfd0",
+        "4530f32e79",
+        "cfd6311ce8"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Belnap aggregation reduction single state vector"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#how-the-implementation-works",
+          "nodeIds": [
+            "cfd6311ce8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-independent-outputs",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 2,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The reason a dimension of the aggregated embedding can be numerically near zero yet still be labeled \"Both\" is due to the fact that the numeric embedding and the Belnap state are computed independently within the Citrate protocol.\n\n*   **Numerical Embedding:** The numeric embedding is calculated as a confidence- and trust-weighted mean over the sources' per-dimension confidence.\n*   **Belnap State:** The Belnap state is a separate label that indicates whether the sources agreed or disagreed.\n\nWhen sources hold contradictory views (for example, one source suggests a value should be strongly positive while another suggests a strongly negative value), the resulting weighted mean (the numeric embedding) will sit near zero. This near-zero value, however, does not convey the underlying contradiction, which is instead captured by the Belnap state, correctly labeling the dimension as \"Both\" because the sources split their opinions.\n\nAccording to the documentation:\n\n*   \"The numeric embedding is computed separately, as a weighted mean using each source's trust weight times its per-dimension confidence. The two outputs, the embedding and the state vector, never read each other, which is what lets a dimension be numerically near zero and still be labelled Both.\" <source>citrate-docs:content/research/paraconsistent.md#how-the-implementation-works>\n*   \"One is a numeric value, a confidence- and trust-weighted mean over the consenting sources. The other is a Belnap state, a label that says whether the sources agreed, disagreed, or said nothing.\" <source>citrate-docs:content/research/paraconsistent.md#what-it-is>",
+      "retrievedNodes": [
+        "cfd6311ce8",
+        "af32f519c5",
+        "4530f32e79",
+        "bd1c623cc0",
+        "6b1270d9fa"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Belnap aggregation dimension near zero labelled Both"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#how-the-implementation-works",
+          "nodeIds": [
+            "cfd6311ce8"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#what-it-is",
+          "nodeIds": [
+            "6b1270d9fa"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-in-circuit",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 2,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The verifiable, in-circuit form of the Belnap aggregation has been proposed but is not yet built.\n\nThe documentation specifies that:\n\n*   The fixed-point, in-circuit aggregation precompile and the proof tie-in are **Specified, not yet built**.<source>:citrate-docs:content/research/paraconsistent.md#source-and-verification\n*   A verifiable, in-circuit form of this aggregation is **proposed but not built**. The planned implementation involves a Belnap reduction over a fixed-point representation so that the result is bit-deterministic and can be proved, allowing the aggregation to be checked rather than merely trusted.<source>:citrate-docs:content/research/paraconsistent.md#how-it-maps-to-the-network",
+      "retrievedNodes": [
+        "8a07d1628d",
+        "3809a9092c",
+        "1c38578179",
+        "7f3c2fd72b",
+        "df7215cfd0"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "verifiable in-circuit Belnap aggregation"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#source-and-verification",
+          "nodeIds": [
+            "8a07d1628d"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#how-it-maps-to-the-network",
+          "nodeIds": [
+            "df7215cfd0"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-output-size",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The `0x0110 BELNAP_AGGREGATE` precompile returns **9 * dim** bytes as output, according to `citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn encode_output`.\n\nThis output is organized into two blocks, not interleaved:\n\n1.  **Aggregated Values:** The first `dim` values, each stored as a signed 64-bit integer (Q16 fixed-point format). These represent the aggregated value for each dimension.\n2.  **State Bytes:** The subsequent `dim` bytes represent the state for each dimension. These states indicate the relationship between confident participants on either side of a dimension. The defined states are:\n    *   **0 (Neither):** No participant with a positive weight reached `threshold_pos`.\n    *   **1 (True):** Every confident participant is on the same side (all agree or all oppose).\n    *   **3 (Both):** Confident participants are on both sides.\n    *   **2 (False):** Defined but typically not produced at the reduced level.\n\nThe aggregated value for a dimension is a weighted sum over every participant, calculated using saturation arithmetic, where the real value is the raw Q16 integer divided by 65536 (`citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn encode_output`).",
+      "retrievedNodes": [],
+      "toolCalls": [],
+      "skillLoads": [
+        "citrate-belnap-aggregate"
+      ],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-q16-repr",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 2,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The underlying type in Citrate's Q16 fixed-point library is a single **`i32`** that implements the **Q16.16** format <source>gradient-papers:markdown/Gradient_Papers_No10_Substrate_of_Verifiable_Inference_v3.md#3-q1616-fixed-point-arithmetic-implemented>.\n\nThis format is defined as:\n*   **Data Type:** A single `i32` (signed integer).\n*   **Format:** It carries a sign, **15 integer bits**, and **16 fractional bits** <source>gradient-papers:markdown/Gradient_Papers_No10_Substrate_of_Verifiable_Inference_v3.md#3-q1616-fixed-point-arithmetic-implemented>.\n*   **Purpose:** It provides bit-deterministic, integer-only saturating arithmetic for cross-platform determinism in a zero-knowledge system <source>gradient-papers:markdown/Gradient_Papers_No10_Substrate_of_Verifiable_Inference_v3.md#3-q1616-fixed-point-arithmetic-implemented>.\n\nThe \"value recovery\" is achieved by treating the bits as a fixed-point number; for example, the fractional part is implicitly scaled by $2^{16}$ relative to the integer part. The Q16 substrate exposes six core operations (`Q16_MATMUL`, `Q16_DOT`, `Q16_SOFTMAX`, `Q16_RELU`, `Q16_LINEAR`, and `Q16_TRANSPOSE`) which all validate the data type as Q16.16 <source>citrate-docs:content/chain/precompiles-zkp.md#deterministic-q1616-compute-0x010a-to-0x010f>.",
+      "retrievedNodes": [
+        "6068f7d84c",
+        "da9779e4e5",
+        "add2a521d0",
+        "ab5ac2a61a",
+        "3ad50ccb6d"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Q16 fixed-point library underlying type value recovery"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "gradient-papers:markdown/Gradient_Papers_No10_Substrate_of_Verifiable_Inference_v3.md#3-q1616-fixed-point-arithmetic-implemented",
+          "nodeIds": [
+            "6068f7d84c",
+            "da9779e4e5"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/chain/precompiles-zkp.md#deterministic-q1616-compute-0x010a-to-0x010f",
+          "nodeIds": [
+            "ab5ac2a61a"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-q16-saturation",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "Citrate utilizes Q16.16 fixed-point arithmetic, where numbers are represented as a 32-bit integer divided into 16 integer bits and 16 fractional bits. This arithmetic is computed using saturating integer operations to handle overflow, meaning it does not wrap around.\n\nRegarding division by zero, the documentation does not specify how Citrate handles this scenario.",
+      "retrievedNodes": [
+        "9ddc15eebe",
+        "cd0f07188b",
+        "b819e1cc35",
+        "351ff8b2df",
+        "71112f4a2d"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Citrate Q16 arithmetic overflow and division by zero"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-precompile-vs-reference",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "No, the 0x0110 precompile output is not byte-identical to the off-chain f32 Belnap reference.\n\nThe documentation states that the precompile matches the reference at the semantic level, sign, and confidence regime, but not at byte equality, because the reference uses floating-point math (f32), whereas the precompile uses a hand-rolled, integer-only, saturating Q16.16 fixed-point library (Q16(i64)). <source>:citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation",
+      "retrievedNodes": [
+        "b87ae400bb",
+        "bd1c623cc0",
+        "99e101fb70",
+        "3524b272c0",
+        "d2f26b35d2"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "0x0110 precompile output format Belnap reference f32"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation",
+          "nodeIds": [
+            "bd1c623cc0",
+            "3524b272c0"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-safety-invariant",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The learning safety invariant, as enforced by the `SafetyGuard` (specifically in `core/learning/src/safety.rs`), guarantees that the `state_root` remains identical whether or not learning is active during a round, ensuring that the execution state is never changed by the learning process <source>:citrate-docs:content/research/tutorials/reproduce-a-learning-round.md#step-5-see-the-safety-invariant.",
+      "retrievedNodes": [
+        "4f8728199f",
+        "c950b0f463",
+        "4220bc3ef9",
+        "3809a9092c",
+        "1c38578179"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "learning safety invariant Paper II section 7.1 state root"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/tutorials/reproduce-a-learning-round.md#step-5-see-the-safety-invariant",
+          "nodeIds": [
+            "c950b0f463"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-learning-page",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The Citrate precompile page for learning uses the address range `0x0110` to `0x011F`, and its purpose is Belnap-q16 aggregation and routing inference <source>citrate-docs:content/chain/precompiles.md#what-it-is>.",
+      "retrievedNodes": [
+        "4e14987b32",
+        "e3d3c7ba64",
+        "b87ae400bb",
+        "93852af74b",
+        "683eceed6c"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Citrate precompile page for learning address range"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#what-it-is",
+          "nodeIds": [
+            "e3d3c7ba64"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-signature-page",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The precompile address range used for signature verification on Citrate is `0x0120` to `0x012F`, and it utilizes the Ed25519 signature scheme <source>:citrate-docs:content/chain/precompiles.md#what-it-is.",
+      "retrievedNodes": [
+        "add2a521d0",
+        "b87ae400bb",
+        "e7c054e100",
+        "e3d3c7ba64",
+        "6e50eec78f"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "signature verification precompile address range"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#what-it-is",
+          "nodeIds": [
+            "e3d3c7ba64"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-x402-page",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": false,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "no required citation cited"
+      ],
+      "answer": "The x402 payment precompiles are located at addresses `0x0200` to `0x0209` <source>citrate-docs:content/contracts/x402.md#what-it-is>.\n\nThese precompiles verify EIP-712 and EIP-3009 payloads <source>citrate-docs:content/contracts/x402.md#what-it-is>.",
+      "retrievedNodes": [
+        "492a915792",
+        "683eceed6c",
+        "8477b547af",
+        "4e14987b32",
+        "a48989224b"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Citrate precompile map chain 40204 address range and signature standards"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/contracts/x402.md#what-it-is",
+          "nodeIds": [
+            "492a915792"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-how-to-call",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "answer": "Based on the documentation, the specific mechanism for how a contract calls a Citrate precompile is not detailed.\n\nRegarding the source of encodings:\n\n*   The Citrate precompiles are defined within the `citrate-chain` source repository.\n*   The relevant source files include `core/execution/src/precompiles/mod.rs`, `core/execution/src/precompiles/{x402.rs,tensor_format.rs}`, and `core/execution/src/precompiles/q16/{mod.rs,belnap.rs}` <source>:citrate-docs:content/chain/precompiles.md#source-and-verification.\n*   These primitives (such as the `0x010A` to `0x010F` Q16 compute primitives) are implemented and run on testnet 40204 <source>:citrate-docs:content/chain/precompiles.md#source-and-verification.",
+      "retrievedNodes": [
+        "3f300e4101",
+        "a6ef09abf1",
+        "683eceed6c",
+        "93852af74b",
+        "26d38a6a1c"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "how to call a Citrate precompile and where to find encodings"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#source-and-verification",
+          "nodeIds": [
+            "683eceed6c"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-x402-bad-sig",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 3,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The `x402` verifier precompiles fail closed on a bad signature, meaning they return the zero address instead of reverting <source>:citrate-docs:content/chain/precompiles.md#failure-modes.\n\nSpecifically:\n*   The precompiles accelerate signature checks and \"fail closed by returning the zero address on a bad signature\" <source>:citrate-docs:content/contracts/x402.md#what-it-is>.\n*   The `EIP712_VERIFY` precompile at address `0x0200` returns \"32 bytes: 12 zero bytes then the 20-byte recovered address; zero address on failure\" <source>:citrate-docs:content/chain/precompiles.md#x402-payment-precompiles>.\n\nThis design means that a caller that does not check the return value will treat a failed verification as an unrecognized signer, not a success <source>:citrate-docs:content/chain/precompiles.md#failure-modes.",
+      "retrievedNodes": [
+        "4b3b5604a7",
+        "492a915792",
+        "7bb0bfbcf6",
+        "6e50eec78f",
+        "b87ae400bb"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "x402 verifier precompile bad signature return"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#failure-modes",
+          "nodeIds": [
+            "7bb0bfbcf6"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/contracts/x402.md#what-it-is",
+          "nodeIds": [
+            "492a915792"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#x402-payment-precompiles",
+          "nodeIds": [
+            "6e50eec78f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-eip712-gas",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 1,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "1 citation(s) do not resolve",
+        "no required citation cited"
+      ],
+      "answer": "The gas cost for the `0x0200 EIP712_VERIFY` precompile is **3450**.\n\n<source>:citrate-precompiles:citrate-precompiles.md#x402-payment-precompiles",
+      "retrievedNodes": [],
+      "toolCalls": [],
+      "skillLoads": [
+        "citrate-precompiles"
+      ],
+      "citedNodes": [
+        {
+          "citation": "citrate-precompiles:citrate-precompiles.md#x402-payment-precompiles",
+          "nodeIds": []
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-batch-gas",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The gas computation for the `0x0202 BATCH_PAYMENT_VERIFY` precompile is calculated as:\n\n`BATCH_BASE` 2,000 plus `BATCH_PER_PAYMENT` 3,800 times `n`, where `n` is the number of repeated `TransferWithAuthorization` records provided in the input.\n\n<source>citrate-docs:content/chain/precompiles.md#x402-payment-precompiles</source>",
+      "retrievedNodes": [
+        "6e50eec78f",
+        "e7c054e100",
+        "492a915792",
+        "4b3b5604a7",
+        "add2a521d0"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "gas computation for 0x0202 BATCH_PAYMENT_VERIFY precompile"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#x402-payment-precompiles",
+          "nodeIds": [
+            "6e50eec78f"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-tensor-format",
+      "category": "devtools-contracts",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6"
+      ],
+      "answer": "The canonical tensor format accepts ranks from **0 to 4**. Ranks of 5 or more are rejected by the format <source>:citrate-docs:content/chain/precompiles.md#tensor-primitives.\n\nThe format is frozen because doing so keeps the `0x0107 TENSOR_COMMIT` commitments stable across different versions. If an incompatible change were made to the format, it would require the introduction of a new dtype byte or a new precompile address <source>:citrate-docs:content/chain/precompiles.md#tensor-primitives.",
+      "retrievedNodes": [
+        "350c11d8ee",
+        "d2f26b35d2",
+        "55e67bd5e9",
+        "eca0e5a338",
+        "17bf49e9e4"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "canonical tensor format ranks accepted"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#tensor-primitives",
+          "nodeIds": [
+            "d2f26b35d2",
+            "eca0e5a338"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-compute-ops",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "It is not documented.",
+      "retrievedNodes": [
+        "3f300e4101",
+        "93852af74b",
+        "a6ef09abf1",
+        "26d38a6a1c",
+        "7bc00a44c0",
+        "3f300e4101",
+        "a48989224b",
+        "93852af74b",
+        "a6ef09abf1",
+        "26d38a6a1c"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Citrate precompiles 0x010A to 0x010F fixed-point operations"
+        },
+        {
+          "tenant": "citrate-docs",
+          "query": "Citrate fixed-point operations precompiles 0x010A 0x010B 0x010C 0x010D 0x010E 0x010F"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-hosted-receipt",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": true,
+      "citedValid": 3,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6"
+      ],
+      "answer": "No, the `hosted-inference` precompile call (0x0100 to 0x0106) does not return a cryptographic proof that the output is correct. It is model-runtime-backed, meaning the call returns a **signed receipt** over the result—an attestable statement about what ran, rather than a deterministic on-chain proof of correctness <source>citrate-docs:content/chain/precompiles-zkp.md#hosted-inference-0x0100-to-0x0106</source>, <source>citrate-docs:content/chain/precompiles-zkp.md#what-it-is</source>, <source>citrate-docs:content/research/verifiable-inference.md#how-to-use-it</source>.\n\nFor a result that is verifiable on-chain rather than merely signed, you should use the proof-verification group, specifically `0x0108` (`INFERENCE_PROOF_VERIFY`), which verifies an inference proof using a Halo2-KZG verifier <source>citrate-docs:content/chain/precompiles-zkp.md#hosted-inference-0x0100-to-0x0106</source>, <source>citrate-docs:content/research/verifiable-inference.md#how-to-use-it</source>.",
+      "retrievedNodes": [
+        "c3533217e8",
+        "add2a521d0",
+        "b9adc9c5e7",
+        "958642b45d",
+        "85f0bdcc84"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "hosted-inference precompile call 0x0100 to 0x0106 return proof"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles-zkp.md#hosted-inference-0x0100-to-0x0106",
+          "nodeIds": [
+            "c3533217e8"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/chain/precompiles-zkp.md#what-it-is",
+          "nodeIds": [
+            "b9adc9c5e7"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/research/verifiable-inference.md#how-to-use-it",
+          "nodeIds": [
+            "85f0bdcc84"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-attestation-default",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 2,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The default behavior of the attestation gate on mainnet validator binaries is **always-reject** <source>:citrate-docs:content/chain/precompiles-zkp.md#attestation-gate.\n\nThis means:\n*   The gate is fail-closed, with no silent allow-by-omission <source>:citrate-docs:content/chain/precompiles-zkp.md#attestation-gate, <source>:citrate-docs:content/chain/precompiles-zkp.md#failure-modes.\n*   In strict inference mode, the precompile refuses to run if an attestation is missing or stale, rather than executing an unattested non-deterministic path <source>:citrate-docs:content/chain/precompiles-zkp.md#attestation-gate, <source>:citrate-docs:content/chain/precompiles-zkp.md#failure-modes.\n*   This `AlwaysReject` attestation gate is the shipped default in the production build to gate non-deterministic inference operations like `0x0101` and `0x0102` <source>:citrate-docs:content/chain/precompiles-zkp.md#attestation-gate.",
+      "retrievedNodes": [
+        "3450a63f43",
+        "add2a521d0",
+        "452ee589a8",
+        "76d66e5f5f",
+        "95580cd9cf"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "attestation gate default behavior mainnet validator binaries"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles-zkp.md#attestation-gate",
+          "nodeIds": [
+            "3450a63f43"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/chain/precompiles-zkp.md#failure-modes",
+          "nodeIds": [
+            "95580cd9cf"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-verify-trio",
+      "category": "ai-inference",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "Based on the bundled Citrate documentation, the precompiles you asked about perform the following functions:\n\n*   **0x0107 (`TensorCommit`):** This precompile is designed for tensor commitments.\n    <source>citrate-docs:content/chain/_generated/addresses.md#precompiles</source>\n\n*   **0x0108 (`InferenceProofVerify`):** This precompile is used for verifying inference proofs.\n    <source>citrate-docs:content/chain/_generated/addresses.md#precompiles</source>\n\n*   **0x0109 (`MerkleVerifyTensor`):** This precompile is for verifying tensors using Merkle proofs.\n    <source>citrate-docs:content/chain/_generated/addresses.md#precompiles</source>",
+      "retrievedNodes": [
+        "b87ae400bb",
+        "99e101fb70",
+        "2c34e76687",
+        "d2f26b35d2",
+        "e803be1e34"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "precompile 0x0107 0x0108 0x0109 function"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/_generated/addresses.md#precompiles",
+          "nodeIds": [
+            "2c34e76687",
+            "e803be1e34"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-approval-quorum",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "answer": "Based on the Citrate Agent Runtime's approval gate, the risk tier of a tool call determines the number of signatures required:\n\n*   **Low-risk:** Auto-approves on a fast path.\n*   **Medium-risk:** Requires one signer from the required set.\n*   **High-risk:** Requires two signatures.\n*   **Critical-risk:** Requires a fixed set of officer roles.\n\nThese signatures are verified against a canonical payload and a known signer roster. Additionally, the system enforces separation of duties (e.g., the Auditor role cannot approve, and Compliance Officer and Security Officer roles cannot both approve the same action) <source>citrate-docs:content/compute/agent-runtime.md#the-approval-gate-approvalqueue>.",
+      "retrievedNodes": [
+        "0d3b8114c7",
+        "bded5aaab9",
+        "421b5894eb",
+        "590f4025cc",
+        "c3e95a9ca5"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "tool call risk tier signatures approval gate"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/compute/agent-runtime.md#the-approval-gate-approvalqueue",
+          "nodeIds": [
+            "0d3b8114c7",
+            "c3e95a9ca5"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-auditor-role",
+      "category": "agentile-hic",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "No, the Auditor role cannot approve an action in the agent runtime's approval gate. The system enforces a separation of duties where \"the Auditor role can never approve\" <source>citrate-docs:content/compute/agent-runtime.md#the-approval-gate-approvalqueue>.",
+      "retrievedNodes": [
+        "c3e95a9ca5",
+        "0d3b8114c7",
+        "a7698fab3a",
+        "b75fd33751",
+        "73124778d5"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Auditor role approve action approval gate"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/compute/agent-runtime.md#the-approval-gate-approvalqueue",
+          "nodeIds": [
+            "c3e95a9ca5",
+            "0d3b8114c7"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-unans-hardening-height",
+      "category": "devtools-contracts",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "The provided documentation does not mention a block height at which precompile hardening activation takes effect on chain 40204.",
+      "retrievedNodes": [
+        "b87ae400bb",
+        "99e101fb70",
+        "add2a521d0",
+        "a48989224b",
+        "921d7c3e85"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "precompile hardening activation block height chain 40204"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-unans-belnap-call-count",
+      "category": "paraconsensus-fl",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "unanswerable item answered without admitting it is not documented"
+      ],
+      "answer": "I do not have access to real-time operational data or call counts for the 0x0110 Belnap precompile on chain 40204 in the provided documentation. The documentation describes the precompile's function, inputs, outputs, and how to use it, but does not include usage statistics.",
+      "retrievedNodes": [
+        "bd1c623cc0",
+        "b87ae400bb",
+        "3524b272c0",
+        "683eceed6c",
+        "15ac8e51f2"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "0x0110 Belnap precompile call count on chain 40204"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-unans-x402-volume",
+      "category": "devtools-contracts",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "I apologize, but the bundled documentation does not provide information on the total amount of SALT settled by the x402 facilitator on chain 40204 to date.",
+      "retrievedNodes": [
+        "bf5d14ca0f",
+        "2802ffe673",
+        "03972b3be8",
+        "3d17e46b61",
+        "d41fdeb875"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "total SALT value settled by x402 facilitator on chain 40204"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-four-both-neither",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "In Citrate's Belnap four-valued logic (FOUR), the values \"Both\" and \"Neither\" convey specific information about a dimension:\n\n*   **Both:** This value signifies that the dimension is \"true and false at once.\" It indicates that \"sources of comparable trust genuinely disagree\" regarding the dimension [citrate-docs:content/research/paraconsistent.md#the-four-values]. In summary, a `Both` is the signal that a dimension is **contested** [citrate-docs:content/research/paraconsistent.md#the-four-values].\n*   **Neither:** This value signifies \"no information,\" meaning \"no source spoke with enough confidence\" [citrate-docs:content/research/paraconsistent.md#the-four-values]. In summary, a `Neither` is the signal that a dimension is simply **unknown** [citrate-docs:content/research/paraconsistent.md#the-four-values].\n\n(The network uses this four-valued logic to record genuine disagreement and ignorance as first-class citizens, rather than collapsing them into a single True/False continuum [citrate-docs:content/research/paraconsistent.md#the-four-values]).",
+      "retrievedNodes": [
+        "338c8cbab3",
+        "7f3c2fd72b",
+        "fc43489839",
+        "af32f519c5",
+        "b9dde213e2"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Belnap four-valued logic FOUR \"Both\" \"Neither\" dimension"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#the-four-values",
+          "nodeIds": [
+            "338c8cbab3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-four-true-false",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "In Citrate's Belnap four-valued logic (FOUR), the values True and False mean the following for the network:\n\n*   **True** (`BelnapValue::True`): Indicates that \"the trusted sources agree this dimension is positive\" [citrate-docs:content/research/paraconsistent.md#the-four-values].\n*   **False** (`BelnapValue::False`): Indicates that \"the trusted sources agree it is negative\" [citrate-docs:content/research/paraconsistent.md#the-four-values].\n\nThe Rust type that holds these four values is `BelnapValue`, which is defined as the variants of this structure [citrate-docs:content/research/paraconsistent.md#the-four-values].",
+      "retrievedNodes": [
+        "338c8cbab3",
+        "7f3c2fd72b",
+        "af32f519c5",
+        "b9dde213e2",
+        "8a07d1628d"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Belnap four-valued logic True and False meaning network Rust type"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#the-four-values",
+          "nodeIds": [
+            "338c8cbab3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-mean-collapses",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6"
+      ],
+      "answer": "Citrate utilizes the four-valued Belnap state because a simple averaging process would collapse the crucial information contained in the 'Both' and 'Neither' states.\n\nAccording to the documentation, the Belnap four-valued logic preserves specific states that a mean would lose:\n\n1.  **Detection of Contestation:** The `Both` value serves as a signal that sources of comparable trust genuinely disagree on a dimension.\n2.  **Indication of Unknown Information:** The `Neither` value indicates that no source spoke with enough confidence to provide information.\n\nA mean collapses these values into the basic True/False continuum, thereby losing the distinction between contested or unknown data and a clear positive or negative consensus <source>:citrate-docs:content/research/paraconsistent.md#the-four-values. By keeping the four values, Citrate ensures that contested dimensions (`Both`) and unknown dimensions (`Neither`) are explicitly maintained as states <source>:citrate-docs:content/research/paraconsistent.md#the-four-values.\n\nIn summary, the four-valued reduction is necessary to distinguish between a dimension that is disputed (`Both`) and a dimension that is simply unknown (`Neither`) <source>:citrate-docs:content/research/paraconsistent.md#the-four-values.",
+      "retrievedNodes": [
+        "338c8cbab3",
+        "af32f519c5",
+        "7f3c2fd72b",
+        "cfd6311ce8",
+        "728b710860"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "why Belnap four-valued state instead of averaging"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#the-four-values",
+          "nodeIds": [
+            "338c8cbab3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-classifier-rules",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "Each source is classified on each dimension by the `classify_belnap` function based on the following criteria:\n\n*   **True**: If a source is above the high-confidence threshold and agrees with the trust-weighted majority.\n*   **False**: If a source disagrees alone.\n*   **Both**: If a source disagrees but has a comparably trusted ally on its side.\n*   **Neither**: If a source is below the threshold.\n\n<source>:citrate-docs:content/research/paraconsistent.md#how-the-implementation-works",
+      "retrievedNodes": [
+        "cfd6311ce8",
+        "d8565ebad3",
+        "cd0f07188b",
+        "8a07d1628d",
+        "93852af74b"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Citrate classify_belnap source dimension labeling"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#how-the-implementation-works",
+          "nodeIds": [
+            "cfd6311ce8"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-trust-weights",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 2,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "In Citrate's Belnap aggregation, the trust weights ($w_i$) for each source are derived from the source's blue scores and a trust concentration parameter ($\\tau$).\n\nThe formula used to compute these trust weights is:\n$$w_i = c_i[j] \\cdot \\text{softmax}(b_i / \\tau)$$\nwhere $c_i[j]$ represents the confidence of the source for a given dimension. The trust concentration is controlled by the parameter $\\tau$ <source>gradient-papers:markdown/Gradient_Papers_No2_Paraconsistent_Consensus_v3.md#32-aggregation-rule>.\n\nThese trust weights are used to compute the aggregated numeric embedding as a trust-confidence-weighted mean:\n$$e_{\\text{agg}}[j] = \\sum_i (w_i \\cdot e_i[j]) / \\sum_i w_i$$\n\nThe references indicate that `softmax_weights` and `blue_scores_to_trust_weights` are related to the implementation of these trust weights in `core/learning/src/belnap.rs` <source>citrate-docs:content/research/paraconsistent.md#reference>.",
+      "retrievedNodes": [
+        "cfd6311ce8",
+        "da1b8525f3",
+        "7fc643149e",
+        "af32f519c5",
+        "4530f32e79"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "per-source trust weights Belnap aggregation source"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "gradient-papers:markdown/Gradient_Papers_No2_Paraconsistent_Consensus_v3.md#32-aggregation-rule",
+          "nodeIds": [
+            "da1b8525f3"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/research/paraconsistent.md#reference",
+          "nodeIds": [
+            "af32f519c5"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-aggregation-steps",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The provided Citrate documentation does not explicitly list the three steps run by `ParaconsistentAggregator::aggregate_paraconsistent`.",
+      "retrievedNodes": [
+        "da1b8525f3",
+        "9e0e946569",
+        "e45fe1a634",
+        "4530f32e79",
+        "7f3c2fd72b"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "ParaconsistentAggregator::aggregate_paraconsistent steps"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-dual-output",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0,
+      "citationHit": false,
+      "citedValid": 1,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.00 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "Citrate's paraconsistent aggregation produces two outputs for each dimension: an aggregated embedding (`e_agg`) and a state vector `s` (where `s` is an element of the set {T, F, B, N}ᵈ) <source>:gradient-papers:markdown/Gradient_Papers_No2_Paraconsistent_Consensus_v3.md#32-aggregation-rule.",
+      "retrievedNodes": [
+        "4530f32e79",
+        "cd0f07188b",
+        "da1b8525f3",
+        "8a07d1628d",
+        "e45fe1a634"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "Citrate paraconsistent aggregator outputs per dimension"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "gradient-papers:markdown/Gradient_Papers_No2_Paraconsistent_Consensus_v3.md#32-aggregation-rule",
+          "nodeIds": [
+            "da1b8525f3"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-router-contested",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": false,
+      "citedValid": 2,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "A dimension marked as contradictory—which corresponds to the `Both` state in Citrate's Belnap four-valued logic—is handled by the router as follows:\n\n*   **Cross-Validation Routing:** Instead of relying on a \"fictional mean\" of the contradictory data, the router can send a contested dimension to several destinations for cross-validation <source>citrate-docs:content/research/tutorials/reproduce-a-learning-round.md#step-3-read-what-happened</source>, and it is explicitly routed to multiple zones for cross-validation rather than being averaged <source>gradient-papers:markdown/Gradient_Papers_No11_NAT_v3.md#paraconsistent-aggregation</source>.\n\nThe router receives the aggregated embedding and the state vector (which contains the `Both` states per dimension), allowing it to act upon this disagreement rather than suppressing it into a misleading near-zero value <source>citrate-docs:content/research/tutorials/reproduce-a-learning-round.md#step-3-read-what-happened</source>.",
+      "retrievedNodes": [
+        "e45fe1a634",
+        "4530f32e79",
+        "3524b272c0",
+        "df7215cfd0",
+        "cfd6311ce8"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "router downstream of Belnap aggregation contradictory dimension"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/research/tutorials/reproduce-a-learning-round.md#step-3-read-what-happened",
+          "nodeIds": [
+            "e45fe1a634"
+          ]
+        },
+        {
+          "citation": "gradient-papers:markdown/Gradient_Papers_No11_NAT_v3.md#paraconsistent-aggregation",
+          "nodeIds": [
+            "4530f32e79"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-0110-why-integer",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 2,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": true,
+      "reasons": [],
+      "answer": "The `0x0110 BELNAP_AGGREGATE` precompile uses Q16 integer arithmetic to ensure that the computations are bit-identical across all execution nodes, which is critical for the proof and commitment machinery within the system.\n\nKey reasons detailed in the documentation include:\n\n*   **Bit-Determinism:** The substrate utilizes a hand-rolled, integer-only, saturating Q16.16 fixed-point library. Every operation uses only `i64` math (with `i128` intermediates for multiplication and division), avoiding floating-point numbers entirely. This design ensures that the results are \"bit-identical on any CPU,\" and the output is \"bit-deterministic\" <source>citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation</source>.\n*   **Compatibility with Proof Machinery:** The use of saturating Q16.16 integer arithmetic is described as the \"deterministic floor\" upon which the proof and commitment machinery rests <source>citrate-docs:content/chain/precompiles-zkp.md#deterministic-q1616-compute-0x010a-to-0x010f</source>.\n\nWhile an off-chain f32 reference exists for semantic matching, the precompile itself operates using Q16, and this match is made \"at the semantic level, sign and confidence regime, not at byte equality\" due to the use of `f32` in the reference implementation <source>citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation</source>.",
+      "retrievedNodes": [
+        "3524b272c0",
+        "bd1c623cc0",
+        "b87ae400bb",
+        "ab5ac2a61a",
+        "da9779e4e5"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "0x0110 BELNAP_AGGREGATE precompile Q16 integer arithmetic vs floating point"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": [
+        {
+          "citation": "citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation",
+          "nodeIds": [
+            "3524b272c0",
+            "bd1c623cc0"
+          ]
+        },
+        {
+          "citation": "citrate-docs:content/chain/precompiles-zkp.md#deterministic-q1616-compute-0x010a-to-0x010f",
+          "nodeIds": [
+            "ab5ac2a61a"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qa-lit-0110-inputs",
+      "category": "paraconsensus-fl",
+      "answerable": true,
+      "coverage": 0.5,
+      "citationHit": false,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": false,
+      "pass": false,
+      "reasons": [
+        "key-point coverage 0.50 < 0.6",
+        "no required citation cited"
+      ],
+      "answer": "The `0x0110 BELNAP_AGGREGATE` precompile takes the following values as input besides `dim` and the participant count (`n`):\n\n*   **embeddings**: A matrix of embeddings, organized in participant-major order, where each participant has `dim` values. Each value is an `i64` (representing a Q16 fixed-point number) (`citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn decode`).\n*   **confidences**: A matrix of confidences, matching the dimensions and order of the embeddings. Each value is an `i64` (`citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn decode`).\n*   **weights**: A list of weights, where each weight is assigned to a single participant. Each value is an `i64` (`citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn decode`).\n*   **threshold\\_pos**: A single threshold value (`i64`).\n*   **threshold\\_neg**: A single threshold value (`i64`) (`citrate-chain:core/execution/src/precompiles/q16/belnap.rs#pub fn decode`).",
+      "retrievedNodes": [],
+      "toolCalls": [],
+      "skillLoads": [
+        "citrate-belnap-aggregate"
+      ],
+      "citedNodes": []
+    },
+    {
+      "id": "qa-lit-unans-contradiction-count",
+      "category": "paraconsensus-fl",
+      "answerable": false,
+      "coverage": 1,
+      "citationHit": true,
+      "citedValid": 0,
+      "citedInvalid": 0,
+      "abstained": true,
+      "pass": true,
+      "reasons": [],
+      "answer": "It is not documented.",
+      "retrievedNodes": [
+        "548cedf3a7",
+        "51a2ec03e6",
+        "c9f8d1edb2",
+        "ffc17e0efc",
+        "848c075c8c"
+      ],
+      "toolCalls": [
+        {
+          "tenant": "citrate-docs",
+          "query": "ContradictionLedger chain 40204 contested dimensions"
+        }
+      ],
+      "skillLoads": [],
+      "citedNodes": []
+    }
+  ]
+}

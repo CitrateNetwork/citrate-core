@@ -28,6 +28,9 @@ import { JournalVaultPanel } from "../journal/JournalVaultPanel";
 import { desktopJournalIo } from "../journal/encryptedExport";
 import { SchedulePanel } from "../agent/schedule/SchedulePanel";
 import { SheetsPanel } from "../agent/sheets/SheetsPanel";
+import { AgentSheetChanges } from "../agent/sheets/AgentSheetChanges";
+import { agentUndo, undoChange } from "../shell/slices/agentUndo";
+import { bridge } from "../bridge";
 import { desktopScheduleIo } from "../agent/schedule/schedule";
 import { HermesDailyReport } from "../journal/HermesDailyReport";
 import { BRIDGE_MODE } from "../bridge/mode";
@@ -143,6 +146,8 @@ export function Journal({ store, s }: SurfaceProps) {
   // HUP-S10.2: Hermes's schedule (and Google Calendar when connected), shown as a week calendar.
   const [showSchedule, setShowSchedule] = useState(false);
   const [showSheets, setShowSheets] = useState(false);
+  // HUP-S10.2 follow-up: sheets Hermes wrote this session, each with Undo (the chat's undo path).
+  const undo = agentUndo.use();
   const [reportOpen, setReportOpen] = useState(false);
 
   const jPages = s.jPages || [];
@@ -458,6 +463,9 @@ export function Journal({ store, s }: SurfaceProps) {
         {showSheets && (
           <div style={{ paddingTop: 14 }} id="journal-sheets">
             <SheetsPanel io={desktopScheduleIo} />
+            <div style={{ paddingTop: 14 }}>
+              <AgentSheetChanges cards={undo.cards} onUndo={(session, seq) => void undoChange(bridge.agentHarness, session, seq)} />
+            </div>
           </div>
         )}
 

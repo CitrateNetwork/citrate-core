@@ -23,13 +23,14 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
+    abi_book, ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
 };
 
 mod activity;
 mod addresses;
 mod agent;
 mod agent_grants;
+mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
@@ -49,6 +50,7 @@ mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
 mod faucet;
 mod fl_rounds;
+mod fl_trajectories;
 // HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
 mod forge_toolchain;
 mod fork_dry_run;
@@ -128,7 +130,9 @@ mod widgets;
 mod cluster;
 mod cluster_mesh;
 mod comms;
+mod embed_serve;
 mod hermes;
+mod hermes_headless;
 mod hermes_learn;
 mod hermes_web;
 mod invite_seal;
@@ -319,6 +323,9 @@ pub fn run() {
             // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
             // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
             chain_agent::start_nightly_if_ready(app.handle().clone());
+            // HUP-S7.5 (D-27) — meter Hermes's own transactions (gas, SALT) once mined. Installs an
+            // observer only; nothing is signed or sent by it.
+            chain_agent::spend::install(app.handle().clone());
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
@@ -439,6 +446,10 @@ pub fn run() {
             // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
             // Settings; loopback only; every request needs a connect token; writes need approval.
             app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
+            // HUP-S1.1 (US-1.1 AC3): answer core-hosted tool calls of sessions the chat view is not
+            // watching (turns from the node MCP server or the CLI), instead of leaving them to the
+            // sidecar's 300 s deadline. Idle while the Hermes sidecar is not running.
+            hermes_headless::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -593,6 +604,10 @@ pub fn run() {
             fl_rounds::fl_adapter_gate,
             fl_rounds::fl_adapter_load,
             fl_rounds::fl_adapter_unload,
+            // HUP-S9.3 — the member's opt-in for training on verified conversations (default off).
+            fl_trajectories::trajectories_settings_get,
+            fl_trajectories::trajectories_settings_set,
+            fl_trajectories::trajectories_dataset_build,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,
@@ -661,6 +676,8 @@ pub fn run() {
             cluster::cluster_share_file,
             cluster::cluster_leave,
             cluster::cluster_devices,
+            cluster::cluster_group_seed,
+            cluster::cluster_add_seed,
             device_link::device_link_request,
             device_link::device_link_approve,
             device_link::device_link_reject,
@@ -716,6 +733,7 @@ pub fn run() {
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,
             hermes::workers::hermes_workers,
+            hermes::decide::hermes_decide_stats,
             hermes_learn::hermes_workflow_run,
             hermes_learn::hermes_workflow_status,
             hermes_learn::hermes_learn_status,

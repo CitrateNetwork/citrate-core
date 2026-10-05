@@ -186,3 +186,47 @@ fn only_a_closed_day_is_shared() {
         "the command checks the day is closed"
     );
 }
+
+/// HUP-S7.5 (D-27): the real sidecar's payload after a live Gemma 4 E4B session (2026-10-04,
+/// citrate-agent-runtime `hup/n7-metering-d27`) carries the new per-metric calls; core accepts
+/// and rebuilds each one, and still shares closed days only.
+const FIXTURE_D27: &str =
+    include_str!("../tests/fixtures/anchor/sidecar-benchmark-payload-d27.json");
+
+#[test]
+fn the_d27_metrics_are_picked_up_call_for_call_and_only_for_closed_days() {
+    let p: Payload = serde_json::from_str(FIXTURE_D27).expect("fixture");
+    let calls = validate(&p, REGISTRY, 7, "2026-10-04").expect("valid");
+    let names: Vec<&str> = calls.iter().map(|c| c.metric.as_str()).collect();
+    for m in [
+        "hermes.daily.ttft_p50_ms",
+        "hermes.daily.ttft_p95_ms",
+        "hermes.daily.tokens_per_s_milli",
+        "hermes.daily.cpu_peak_bps",
+        "hermes.daily.gpu_peak_bps",
+        "hermes.daily.ram_peak_mib",
+        "hermes.daily.energy_estimate_uwh",
+        "hermes.daily.self_review_opinion_pass",
+        "hermes.daily.self_review_opinion_fail",
+    ] {
+        assert!(names.contains(&m), "{m} missing from {names:?}");
+    }
+    assert!(
+        calls.len() > 15 && calls.len() <= MAX_CALLS,
+        "{}",
+        calls.len()
+    );
+    let ttft = calls
+        .iter()
+        .find(|c| c.metric == "hermes.daily.ttft_p50_ms")
+        .expect("ttft");
+    assert_eq!(ttft.value, "364", "the live session's first-token p50");
+    // No Hermes transaction that day: gas and SALT are omitted, never sent as zero.
+    assert!(!names.contains(&"hermes.daily.gas_used"));
+    assert!(!names.contains(&"hermes.daily.salt_spent_wei"));
+    // The day the numbers were taken is still open, so it is not shared; the next day it is.
+    assert!(!is_closed_day("2026-10-04", "2026-10-04"));
+    assert!(is_closed_day("2026-10-04", "2026-10-05"));
+    // The card count the member is told matches what a full day can carry.
+    assert!(PENDING_OWNER_SIGN_OFF[0].contains("up to twenty-six a day"));
+}

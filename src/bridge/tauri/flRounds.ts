@@ -10,6 +10,8 @@ import type {
   FlRoundProposal,
   FlRoundsDomain,
   FlStartReceipt,
+  FlTrainingSet,
+  FlTrajectoryStatus,
 } from "../domains";
 
 export const tauriFlRounds: FlRoundsDomain = {
@@ -39,5 +41,14 @@ export const tauriFlRounds: FlRoundsDomain = {
   },
   revokeConsent(roundId: string) {
     return invoke<string[]>("fl_round_consent_revoke", { roundId });
+  },
+  trajectoryStatus() {
+    return invoke<FlTrajectoryStatus>("trajectories_settings_get");
+  },
+  setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean) {
+    return invoke<FlTrajectoryStatus>("trajectories_settings_set", { enabled, deleteRecorded });
+  },
+  buildTrainingSet(maxTrajectories: number) {
+    return invoke<FlTrainingSet>("trajectories_dataset_build", { maxTrajectories });
   },
 };

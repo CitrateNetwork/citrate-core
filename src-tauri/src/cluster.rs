@@ -29,9 +29,12 @@
 //! seed to a 0600 file and forward `CITRATE_CLUSTER_SEED_FILE` + optional `CITRATE_CLUSTER_BOOTSTRAP`, so
 //! the daemon runs the real cross-machine libp2p mesh. This is OFF by default and stays operator-only
 //! until the two-machine soak + the Rule-8 transport sign-off (citrate-cluster Rule 8) — it must not be
-//! flipped on for real partner traffic pre-audit. NOTE: the CL-S1 libp2p transport is one-group-per-daemon
-//! (a per-group swarm reading the same listen addr), so use an ephemeral `/tcp/0` or one group per soak run;
-//! multi-group cross-machine fan-out from this single daemon is a documented follow-on.
+//! flipped on for real partner traffic pre-audit. HUP-S8.4: a cluster-daemon built from citrate-cluster
+//! `hup/n7-cluster-mesh-prereqs` or later serves every group from one process (one swarm per group, each
+//! on its own port derived from the listen address) unless the operator pins it with
+//! `CITRATE_CLUSTER_GROUP`. Machines find each other through group seeds (`cluster_group_seed` /
+//! `cluster_add_seed`, link or QR text) and, only when the operator sets `CITRATE_CLUSTER_MDNS=1`, mDNS
+//! on the local network. Neither admits anyone: the daemon's roster + DeviceLink check still decides.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -62,6 +65,8 @@ const ENV_SELF_ADDR: &str = "CITRATE_CLUSTER_SELF_ADDR";
 const ENV_LISTEN: &str = "CITRATE_CLUSTER_LISTEN"; // listen multiaddr; its presence SELECTS libp2p
 const ENV_SEED_FILE: &str = "CITRATE_CLUSTER_SEED_FILE"; // 0600 file: the comms secp256k1 seed (Noise id)
 const ENV_BOOTSTRAP: &str = "CITRATE_CLUSTER_BOOTSTRAP"; // optional comma-sep peer multiaddrs to dial
+/// HUP-S8.4: LAN discovery for every group (`1`), forwarded only when the operator sets it here.
+const ENV_MDNS: &str = "CITRATE_CLUSTER_MDNS";
 
 const TOKEN_LEN: usize = 32;
 const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
@@ -136,6 +141,10 @@ pub struct Libp2pOpts {
     /// The comms secp256k1 seed hex — the Noise/peer identity binds to this key (never the wallet).
     /// Written to a 0600 file at start; the daemon reads the PATH, so the secret never crosses env/argv.
     pub seed_hex: Zeroizing<String>,
+    /// HUP-S8.4: LAN discovery (mDNS) in the daemon. Off unless the operator sets
+    /// `CITRATE_CLUSTER_MDNS=1` for this app; mDNS tells the local network this device's PeerId.
+    /// PENDING OWNER SIGN-OFF for any default.
+    pub mdns: bool,
 }
 
 impl ClusterDaemonManager {
@@ -230,6 +239,9 @@ impl ClusterDaemonManager {
             ));
             if let Some(b) = &opts.bootstrap {
                 spec.env.push((ENV_BOOTSTRAP.to_string(), b.clone()));
+            }
+            if opts.mdns {
+                spec.env.push((ENV_MDNS.to_string(), "1".to_string()));
             }
         }
         let sock = self.socket_path.clone();
@@ -388,6 +400,16 @@ enum Request {
         group: String,
         cid: String,
     },
+    /// HUP-S8.4: this node's group seed (link/QR text naming where to dial it for this group).
+    Seed {
+        group: String,
+    },
+    /// HUP-S8.4: dial the peers in a seed another member shared (locations only; admission is still
+    /// the daemon's roster + DeviceLink check at identify).
+    AddSeed {
+        group: String,
+        seed: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -447,6 +469,15 @@ enum Response {
     },
     Peers {
         peers: Vec<PeerView>,
+    },
+    /// HUP-S8.4: answer to [`Request::Seed`].
+    Seed {
+        seed: String,
+        addrs: Vec<String>,
+    },
+    /// HUP-S8.4: answer to [`Request::AddSeed`].
+    Seeded {
+        dialing: usize,
     },
     Error {
         message: String,
@@ -639,11 +670,37 @@ fn libp2p_opts(listen: Option<String>, seed_hex: Zeroizing<String>) -> Option<Li
     let bootstrap = std::env::var(ENV_BOOTSTRAP)
         .ok()
         .filter(|s| !s.trim().is_empty());
+    let mdns = mdns_requested(std::env::var(ENV_MDNS).ok().as_deref());
     Some(Libp2pOpts {
         listen,
         bootstrap,
         seed_hex,
+        mdns,
     })
+}
+
+/// HUP-S8.4: the operator's `CITRATE_CLUSTER_MDNS`: on only for `1`, `true` or `on` (anything else,
+/// including unset, is off, so a typo never turns discovery on).
+fn mdns_requested(v: Option<&str>) -> bool {
+    matches!(
+        v.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "on")
+    )
+}
+
+/// HUP-S8.4: the longest seed text core forwards (the daemon's own cap, `cluster_core::seed`).
+const MAX_SEED_TEXT: usize = 2048;
+
+/// The seed text as the daemon should see it: trimmed, non-empty, within the cap.
+fn seed_text(seed: &str) -> std::result::Result<String, String> {
+    let s = seed.trim();
+    if s.is_empty() {
+        return Err("Paste the group link first.".into());
+    }
+    if s.len() > MAX_SEED_TEXT {
+        return Err("That group link is too long.".into());
+    }
+    Ok(s.to_string())
 }
 
 /// Whether the cluster daemon is already running (never starts it). For callers that must not start
@@ -836,6 +893,58 @@ pub async fn cluster_share_file(
     cid: String,
 ) -> std::result::Result<(), String> {
     parse_ok(route(&app, Request::ShareFile { group, cid })?)
+}
+
+/// HUP-S8.4: this machine's group seed: link/QR text another member's machine can use to find
+/// this one for `group`, plus the addresses in it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterGroupSeedDto {
+    group_id: String,
+    seed: String,
+    addrs: Vec<String>,
+}
+
+/// **cluster_group_seed** (HUP-S8.4): this machine's link/QR text for a group. Needs the
+/// cross-machine mesh; without it the daemon says so (no address is invented).
+#[tauri::command]
+pub async fn cluster_group_seed(
+    app: tauri::AppHandle,
+    group: String,
+) -> std::result::Result<ClusterGroupSeedDto, String> {
+    feed_roster(&app, &group).await?;
+    match route(
+        &app,
+        Request::Seed {
+            group: group.clone(),
+        },
+    )? {
+        Response::Seed { seed, addrs } => Ok(ClusterGroupSeedDto {
+            group_id: group,
+            seed,
+            addrs,
+        }),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// **cluster_add_seed** (HUP-S8.4): dial the machines named in a group link another member
+/// shared. Returns how many addresses are being dialed. A link only says where to knock: each
+/// machine is still let in only if the group's roster and DeviceLinks admit it.
+#[tauri::command]
+pub async fn cluster_add_seed(
+    app: tauri::AppHandle,
+    group: String,
+    seed: String,
+) -> std::result::Result<usize, String> {
+    let seed = seed_text(&seed)?;
+    feed_roster(&app, &group).await?;
+    match route(&app, Request::AddSeed { group, seed })? {
+        Response::Seeded { dialing } => Ok(dialing),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
 
 /// **cluster_leave** — this node leaves the group's mesh.

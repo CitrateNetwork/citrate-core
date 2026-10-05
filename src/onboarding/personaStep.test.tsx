@@ -15,7 +15,8 @@ describe("onboarding PersonaStep", () => {
     expect(html).toContain("Optional");
     expect(html).toContain("Hermes (default voice)");
     expect(html).toContain("change this later in Settings");
-    expect(html).toMatch(/placeholders, pending owner sign-off/);
+    // Owner-approved names (2026-10-01): no blanket "placeholder" claim before the sidecar answers.
+    expect(html).not.toContain("pending owner sign-off");
     // compact: no custom-persona form during onboarding
     expect(html).not.toContain("persona-custom-open");
   });

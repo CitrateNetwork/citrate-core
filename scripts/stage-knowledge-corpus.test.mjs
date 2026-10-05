@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkEmbedder, computeDigest, listFiles, memMcpSupportsImport, stageInto, tenantFile, verifyCorpus } from "./stage-knowledge-corpus.mjs";
+import { checkEmbedder, checkSourceCommits, computeDigest, listFiles, memMcpSupportsImport, stageInto, tenantFile, verifyCorpus } from "./stage-knowledge-corpus.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(here, "stage-knowledge-corpus.mjs");
@@ -227,6 +227,59 @@ describe("the bundled BGE embedder is a hard dependency of the corpus (US-3.1 of
     const { manifest } = verifyCorpus(corpus);
     expect(() => checkEmbedder(manifest, bge.dir)).toThrow(/no precomputed vectors.*each member's first launch would embed \d+ nodes on their own CPU/);
     expect(checkEmbedder(manifest, bge.dir, { allowUnembedded: true }).embeddedNodes).toBe(0);
+  });
+});
+
+describe("source commits must be clean (a -dirty commit cannot be reproduced)", () => {
+  const dirtyCorpus = (dir) =>
+    reseal(dir, (m) => {
+      for (const s of m.sources) if (s.id === "gradient-papers" || s.id === "agentile") s.commit = `${"a".repeat(40)}-dirty`;
+    });
+
+  it("accepts the fixture, whose included sources all record clean commits", () => {
+    expect(checkSourceCommits(verifyCorpus(corpus).manifest)).toEqual([]);
+  });
+
+  it("refuses an included source recorded at a -dirty commit and names every one", () => {
+    dirtyCorpus(corpus);
+    const { manifest } = verifyCorpus(corpus);
+    expect(() => checkSourceCommits(manifest)).toThrow(/gradient-papers @ a{40}-dirty, agentile @ a{40}-dirty: built from a work tree with local changes/);
+  });
+
+  it("returns the dirty sources instead of throwing under allowDirty", () => {
+    dirtyCorpus(corpus);
+    const { manifest } = verifyCorpus(corpus);
+    expect(checkSourceCommits(manifest, { allowDirty: true }).map((d) => d.id)).toEqual(["gradient-papers", "agentile"]);
+  });
+
+  it("refuses an included source recorded as unpinned (not in a git work tree), which is no more reproducible", () => {
+    reseal(corpus, (m) => {
+      for (const s of m.sources) if (s.id === "gradient-papers") s.commit = "unpinned";
+    });
+    const { manifest } = verifyCorpus(corpus);
+    expect(() => checkSourceCommits(manifest)).toThrow(/gradient-papers @ unpinned: not built from a git checkout/);
+    expect(checkSourceCommits(manifest, { allowDirty: true })).toEqual([{ id: "gradient-papers", commit: "unpinned" }]);
+  });
+
+  it("ignores excluded sources, which ship no text", () => {
+    reseal(corpus, (m) => {
+      for (const s of m.sources) if (s.included === false) s.commit = `${"b".repeat(40)}-dirty`;
+    });
+    expect(checkSourceCommits(verifyCorpus(corpus).manifest)).toEqual([]);
+  });
+
+  it("CLI: refuses a dirty corpus with exit 1 and stages it under --allow-dirty with a warning", () => {
+    dirtyCorpus(corpus);
+    const dest = path.join(tmp, "dest");
+    const refused = run(corpus, "--dest", dest, "--bge-dir", fakeBge().dir, "--allow-unembedded");
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toMatch(/knowledge corpus refused: .*-dirty.*--allow-dirty/);
+    expect(fs.existsSync(path.join(dest, "manifest.json"))).toBe(false);
+
+    const allowed = run(corpus, "--dest", dest, "--bge-dir", fakeBge().dir, "--allow-unembedded", "--allow-dirty");
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(allowed.stderr).toMatch(/warning: source gradient-papers was built from a work tree with local changes/);
+    expect(allowed.stderr).toMatch(/warning: source agentile was built/);
   });
 });
 

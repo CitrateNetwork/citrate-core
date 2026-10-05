@@ -1,6 +1,6 @@
 ---
 created: 2026-10-04
-branch: hup/n6-size-licence
+branch: hup/n6-size-licence (addendum section 8 on hup/n7-size-licence-release-prep, 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
 status: draft, pending owner sign-off
 ---
@@ -217,3 +217,42 @@ node scripts/licence-inventory.mjs --require-sign-off                 # release 
 
 Tests: `scripts/licence-inventory.test.mjs` (committed inventory, fixture repos with one defect
 each, corpus manifest coverage, CLI exit codes).
+
+## 8. Addendum, 2026-10-04: release prep (pending owner sign-off)
+
+Sections 1 to 7 stand as written. This addendum records what the release-prep lane built for 4.7
+and 4.8; nothing in it changes `sign_off`, and the generator choice is still checklist item 6.
+
+**4.7, crate and Go module notices: generator built.** `scripts/third-party-notices.mjs` runs
+cargo-about (0.9.2, config `release/about.toml`) on the app and the six Rust sidecars and
+go-licenses (v2.0.1) on Kubo's `cmd/ipfs` (plus the Go standard library), for
+`aarch64-apple-darwin`, as configured in `release/notices.json`. It writes one file,
+`src-tauri/licenses/THIRD-PARTY-NOTICES.txt`, which ships through the existing `licenses/*`
+resource: every third-party package with its licence and the full text, each distinct text once
+with the copyright lines of the packages it applies to. First run: 2,231 packages across 8
+components, 107 distinct licence bodies, 656,022 bytes, generated from the federation main
+checkouts (revisions in the file header). Every package resolved to a licence on the generator's
+permissive list; a package outside it fails the run, so a new copyleft dependency is a reviewed
+change. Each covered inventory entry now names the file (`third_party_notices`), and
+`licence-inventory --require-notices` (also run by release.yml) fails while the app or a
+first-party sidecar has none. Re-run it at release from the revisions the bundled sidecars are
+built from (docs/RELEASE.md, step 7).
+
+For the owner: 14 packages are MPL-2.0 (file-level copyleft), used unmodified: cssparser,
+cssparser-macros, dtoa-short and selectors (app), option-ext, colored, priority-queue (MPL-2.0
+chosen over LGPL-3.0), hpke-rs, hpke-rs-crypto and hpke-rs-rust-crypto (comms), and HashiCorp
+go-version, golang-lru (v1, v2) and go-yamux (Kubo). The notices list each with its upstream URL;
+whether that URL is enough as the "how to get the source" statement MPL-2.0 section 3.2 asks for is
+an owner or counsel call, recommended yes for unmodified files.
+
+**4.8, corpus provenance: gate built, clean rebuild blocked.** `stage-knowledge-corpus.mjs` now
+refuses a corpus whose included sources record a `-dirty` commit (`--allow-dirty` for dev builds,
+warned). It refuses the current staged corpus (`gradient-papers` and `agentile` at
+`ca5b2e7…-dirty`). A clean rebuild cannot remove those two today: `gradient-papers/` is not under
+version control (it is untracked inside the citrate-labs metarepo, with no repository of its own),
+and the `agentile` source reads the metarepo root, which any checkout with untracked child repos
+makes dirty. Owner decision needed: put `gradient-papers` under version control (recommended: its
+own private repository), after which mem-corpus records a clean commit for it. Follow-up for
+citrate-memories: scope mem-corpus's dirty check to the files a source includes (for `agentile`,
+only `AGENTILE.md`), so untracked child checkouts beside it do not mark it dirty.
+

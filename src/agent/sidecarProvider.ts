@@ -7,6 +7,7 @@
 // and posts the result back. It never talks to the model and never decides an approval.
 // =====================================================================
 import { parseFileChange, isFileTool } from "./fileChanges";
+import { ChatPlan } from "./chatPlan";
 import { TurnStopped, untilStopped, usageEventOf, type ChatProvider, type ReattachResult, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
 import type { McpPendingView, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import type { WorkflowRunView } from "./learn";
@@ -407,6 +408,10 @@ export function createSidecarProvider(
       }
     }
 
+    // HUP-S7.6 (US-7.4 AC1): a chat turn's plan, from the tool calls the model asks for. A workflow
+    // run reports its own plan (the sidecar's `plan` event), so it gets none from here.
+    const plan = new ChatPlan();
+    let planStep = 0;
     try {
       let final = "";
       let failure: string | null = null;
@@ -420,6 +425,14 @@ export function createSidecarProvider(
         let finished = false;
         for (const { seq, event: ev } of fresh) {
           const type = String(ev.type);
+          if (type === "step_start" && Number.isInteger(ev.step)) planStep = Number(ev.step);
+          if (type === "tool_call" && runId === null && !stopping) {
+            const c = ev.call as { id?: unknown; name?: unknown } | undefined;
+            const step = Number.isInteger(ev.step) ? Number(ev.step) : planStep;
+            if (c && typeof c.id === "string" && typeof c.name === "string" && plan.note(step, c.id, c.name)) {
+              callbacks.onActivity?.({ kind: "plan", steps: plan.steps(), source: "chat" });
+            }
+          }
           if (type === "done") {
             if (ev.outcome === "stopped") {
               // A session's stop switch stays on, so every later turn in it would end at once with

@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyScorecard, loadScorecards, renderScorecardMarkdown, splitFrontmatter } from "./eval-scorecard.mjs";
+import { classifyScorecard, filterByTier, loadScorecards, renderScorecardMarkdown, splitFrontmatter } from "./eval-scorecard.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -157,15 +157,44 @@ describe("renderScorecardMarkdown", () => {
     }
   });
 
-  it("marks the g1 valid-tool-call bar per tier: met / not met on T1+, T0 has its own bar", () => {
+  it("HUP-S7.7: marks a run asked through the real sidecar with the bundled skills", () => {
+    const side = {
+      ...QA,
+      scorecard: {
+        ...QA.scorecard,
+        citationNodeRate: 0.5,
+        retrieval: {
+          mode: "memory_search tool via sidecar",
+          tenants: ["citrate-docs", "methodology", "refs", "skills"],
+          k: 5,
+          corpusDigest: "6e6f5689f9566db7" + "0".repeat(48),
+          sidecar: { skills: ["src-tauri/skills"], reviewedThirdParty: true, contextTokens: 8192, maxTokens: 2048 },
+        },
+      },
+    };
+    fs.writeFileSync(path.join(tmp, "results", "2026-10-04-qa-sidecar-m-small.json"), JSON.stringify(side));
+    try {
+      expect(md()).toContain(
+        "| 2026-10-04-qa-sidecar-m-small.json | m-small | T0 | qa-v1 + corpus 6e6f5689f956 (memory_search via sidecar + bundled skills + reviewed skills, k=5) | 40 |",
+      );
+    } finally {
+      fs.rmSync(path.join(tmp, "results", "2026-10-04-qa-sidecar-m-small.json"));
+    }
+  });
+
+  it("marks the g1 valid-tool-call bar per tier: met / not met, T0 held to the T1 bar (pending sign-off)", () => {
     const low = { tools: [{ file: "x.json", sc: { ...TOOLS, validToolCallRate: 0.89 } }], qa: [], skipped: [] };
     expect(renderScorecardMarkdown(low, { created: "2026-10-01", branch: "b", source: "s" })).toContain("| not met |");
     const edge = { tools: [{ file: "x.json", sc: { ...TOOLS, validToolCallRate: 0.9 } }], qa: [], skipped: [] };
     expect(renderScorecardMarkdown(edge, { created: "2026-10-01", branch: "b", source: "s" })).toContain("| met |");
+    // ra-20 recommended default, pending owner sign-off: T0 uses the T1 bars, marked with *.
     const t0 = { tools: [{ file: "x.json", sc: { ...TOOLS, tier: "T0" } }], qa: [], skipped: [] };
-    expect(renderScorecardMarkdown(t0, { created: "2026-10-01", branch: "b", source: "s" })).toContain(
-      "| T0 bar |",
-    );
+    const t0md = renderScorecardMarkdown(t0, { created: "2026-10-01", branch: "b", source: "s" });
+    expect(t0md).toContain("| met* |");
+    expect(t0md).toMatch(/\* T0 is held to the T1 bars .*pending owner sign-off/);
+    const t0low = { tools: [{ file: "x.json", sc: { ...TOOLS, tier: "T0", validToolCallRate: 0.89 } }], qa: [], skipped: [] };
+    expect(renderScorecardMarkdown(t0low, { created: "2026-10-01", branch: "b", source: "s" })).toContain("| not met* |");
+    expect(renderScorecardMarkdown(edge, { created: "2026-10-01", branch: "b", source: "s" })).not.toMatch(/T0 is held/);
     const none = { tools: [{ file: "x.json", sc: { ...TOOLS, tier: undefined } }], qa: [], skipped: [] };
     expect(renderScorecardMarkdown(none, { created: "2026-10-01", branch: "b", source: "s" })).toContain(
       "| no tier |",
@@ -243,7 +272,9 @@ describe("sidecar scorecards (HUP-S1.7 step success, HUP-S1.10 live vectors)", (
     const low = { ...cards, sidecar: [{ file: "x.json", sc: { ...SIDECAR, workflow: { ...SIDECAR.workflow, stepSuccessRate: 0.79 } } }] };
     expect(render(low)).toContain("| not met |");
     const t0 = { ...cards, sidecar: [{ file: "x.json", sc: { ...SIDECAR, tier: "T0" } }] };
-    expect(render(t0)).toContain("| T0 bar |");
+    expect(render(t0)).toContain("| met* |");
+    const t0low = { ...cards, sidecar: [{ file: "x.json", sc: { ...SIDECAR, tier: "T0", workflow: { ...SIDECAR.workflow, stepSuccessRate: 0.5 } } }] };
+    expect(render(t0low)).toContain("| not met* |");
   });
   it("renders the live injection row and the failures", () => {
     const m = render(cards);
@@ -252,6 +283,42 @@ describe("sidecar scorecards (HUP-S1.7 step success, HUP-S1.10 live vectors)", (
   });
   it("a set without sidecar rows says so", () => {
     expect(render({ tools: [], qa: [], skipped: [] })).toContain("No workflow scorecard in this set.");
+  });
+});
+
+describe("per-tier scorecards (eval.yml renders one per dispatched tier)", () => {
+  const cards = {
+    tools: [
+      { file: "a-T0.json", sc: { ...TOOLS, tier: "T0" } },
+      { file: "b-T1.json", sc: { ...TOOLS, tier: "T1" } },
+      { file: "c.json", sc: { ...TOOLS, tier: undefined } },
+    ],
+    qa: [],
+    sidecar: [{ file: "d-T1.json", sc: SIDECAR }],
+    skipped: ["x.json"],
+  };
+  it("filterByTier keeps only that tier's rows; none = the untiered rows", () => {
+    const t1 = filterByTier(cards, "T1");
+    expect(t1.tools.map((e) => e.file)).toEqual(["b-T1.json"]);
+    expect(t1.sidecar.map((e) => e.file)).toEqual(["d-T1.json"]);
+    expect(filterByTier(cards, "none").tools.map((e) => e.file)).toEqual(["c.json"]);
+    expect(filterByTier(cards, "T2").tools).toEqual([]);
+    expect(() => filterByTier(cards, "T9")).toThrow(/tier/);
+  });
+  it("a tier render says which tier it shows", () => {
+    const md = renderScorecardMarkdown(filterByTier(cards, "T1"), { created: "2026-10-04", branch: "b", source: "s", tier: "T1" });
+    expect(md).toContain("Tier: **T1** only.");
+    expect(md).not.toContain("a-T0.json");
+  });
+  it("CLI --tier writes only that tier and exits 2 when the tier has no scorecard", () => {
+    const out = path.join(tmp, "SCORECARD-T0.md");
+    const r = runCli(["--in", path.join(tmp, "results"), "--out", out, "--tier", "T0", "--date", "2026-10-04", "--branch", "b"]);
+    expect(r.status).toBe(0);
+    expect(fs.readFileSync(out, "utf8")).toContain("Tier: **T0** only.");
+    const none = path.join(tmp, "SCORECARD-T2.md");
+    expect(runCli(["--in", path.join(tmp, "results"), "--out", none, "--tier", "T2"]).status).toBe(2);
+    expect(fs.existsSync(none)).toBe(false);
+    expect(runCli(["--in", path.join(tmp, "results"), "--tier", "T7"]).status).toBe(2);
   });
 });
 

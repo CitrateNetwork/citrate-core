@@ -5,7 +5,7 @@ program: HUP
 gates:
   - id: gate0
     name: Theory locked
-    status: partial
+    status: met
     exit_criteria:
       - id: g0-decisions
         desc: 40 locked decisions recorded (owner interactive pass 2026-09-30)
@@ -32,12 +32,26 @@ gates:
           formal review is a recommended follow-up. O-1..O-5 accepted as proposed.
       - id: g0-formal
         desc: AgentLoop, FolderGrant, WebSigningBudget, SkillPersistence, DeployGate, SpendBudget, AnchorBatch, DeviceLink written and TLC-checked at small bounds (full proofs close with their WPs)
-        met: false
-        evidence: src-tauri/formal/
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s11-prove-it/EVIDENCE-g0-formal-2026-10-04.md
+        paths:
+          - citrate-core src-tauri/formal/AgentLoop.tla
+          - citrate-core src-tauri/formal/WebSigningBudget.tla
+          - citrate-core src-tauri/formal/DeployGate.tla
+          - citrate-core src-tauri/formal/SpendBudget.tla
+          - citrate-agent-runtime agent-grants/formal/FolderGrant.tla
+          - citrate-agent-runtime agent-learn/formal/SkillPersistence.tla
+          - citrate-agent-runtime agent-anchor/formal/AnchorBatch.tla
+          - citrate-cluster formal/DeviceLink.tla
         note: >-
-          Partial 2026-09-30: AgentLoop written + TLC-green (1,258 distinct states, mutation-checked;
-          scripts/run-tlc.sh AgentLoop). Remaining: FolderGrant, WebSigningBudget, SkillPersistence,
-          DeployGate, SpendBudget, AnchorBatch, DeviceLink.
+          Met 2026-10-04 (paperwork flip, HUP fan-out 7 lane L19). All eight specs are on
+          citrate-core hup/forward-merge-main-0.4.3 (not merged yet), citrate-agent-runtime main and
+          citrate-cluster main (DeviceLink's ADR-003 revision is on cluster PR #10, not merged), each
+          with a .cfg and a recorded TLC run with no error. AgentLoop
+          (1,258 distinct states), FolderGrant (153,484) and DeviceLink (8,248 on main, 21,456 on
+          the ADR-003 revision) were re-run with TLC 2.19 on 2026-10-04; the other five cite their
+          recorded runs (EVIDENCE file). Small bounds only; mutation
+          checks are recorded per spec in each formal/README.md. Owner is the listed reviewer.
     reviewers: [Larry Klosowski (owner)]
   - id: gate1
     name: Stable + one agent (S0, S1)
@@ -116,7 +130,30 @@ gates:
     exit_criteria:
       - {id: g3-updater, desc: "Signed component updater live w/ CVE SLA before the browser ships (@rule8)", met: false}
       - {id: g3-licence, desc: "Licence review for bundled/first-run tools complete; source offer published", met: false, evidence: "docs/LICENCE_REVIEW.md + release/licences.json (review drafted, check green; pending owner sign-off and source offer publication)"}
-      - {id: g3-browser, desc: "Browser pop-out + search + decide() slot scored", met: false}
+      - id: g3-browser
+        desc: "Browser pop-out + search + decide() slot scored"
+        met: false
+        evidence: "runtime agent-browser (gate.rs, egress.rs, scope.rs, pick.rs); agent-loop/evals/runs/web-subset-v2-2026-10-04-t0-run{1,2}.json; agent-search/evals/live-run-2026-10-04.json; core hermes_decide.rs + src/popout/ActivityMonitor.decide.test.tsx"
+        note: >-
+          Proven in code and tests (2026-10-04): the Browser pop-out with screencast and element
+          highlight; the browser switch (default off); decide() in the browser scored locally on
+          web-subset-v2 with T0 Gemma 4 E4B (8 and 9 of 10 tasks over two runs), every outcome recorded through POST
+          /decide/outcomes; SearXNG live run. Attach-to-Chrome scoping (S5.6) is merged:
+          per-session consent, per-origin consent, banking, email and health origins excluded by
+          default, with unit, scope and live-Chrome tests that an excluded origin is refused even
+          with ordinary consent. hup/n7-browser-safety-decide adds: browserMayOpenWeb enforced in
+          the managed browser path (S5.5): when the last signed component manifest has expired or
+          none was checked, core passes CITRATE_BROWSER_OPEN_WEB=0 with the managed Chromium and
+          the browser reaches only developer-allowed origins on this machine (loopback: a site
+          preview or the anvil fork), at the DevTools request gate and the SOCKS5 egress gate
+          (gate, egress, service, live-Chrome and core tests; five mutants killed). The rule
+          follows the managed Chromium only, so no member is blocked while the component key
+          slot is empty. The per-backend decide() metering (GET /decide/stats) is shown in the
+          Activity monitor (hermes_decide_stats, vitest). Not met until the signed component
+          publish: the component key ceremony, the signed Chrome for Testing and SearXNG
+          manifest (g3-updater), then a packaged-app QA run with the switch on. T1 and Jev are
+          not scored; the recommended default (pending owner sign-off) ships Jev off as "not
+          offered", with local as the only backend.
       - id: g3-gate
         desc: "DeployGate TLC-green; injected-bug run yields NOT READY"
         met: true
@@ -154,4 +191,13 @@ gates:
       - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false, evidence: "release/README.md (macOS arm64 0.5.0-line build PASS 2026-10-04 at budgets pending owner sign-off; Linux and Windows not measured)"}
       - {id: g5-os, desc: "hello-mint e2e on macOS arm64, Linux x64, Windows x64 clean installs", met: false}
       - {id: g5-redteam, desc: "Red-team pass: no open High", met: false}
-      - {id: g5-docs, desc: "Document pass + retro + essay", met: false}
+      - id: g5-docs
+        desc: Document pass + retro + essay
+        met: false
+        note: >-
+          Drafted 2026-10-04 on branches (fan-out 7 lane L19), not merged: five Almanac pages in
+          citrate-docs content/core (hermes, node-mcp, skills, personas, fleet-wizard) on
+          hup/n7-docs-almanac-retro; in citrate-core on hup/n7-docs-almanac-retro the program
+          retro draft (.agentile/sprints/active/sprint-hup-s11-prove-it/RETRO.md) and the essay
+          docs/essays/off-by-default-and-the-verifier-says-done.md. Flips when those PRs merge
+          after the 0.5.0 stacks, and the retro's "at close" section is written at the release.

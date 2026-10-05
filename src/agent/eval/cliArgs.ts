@@ -16,7 +16,10 @@ export interface EvalCliArgs {
   outDir: string;
   /** HUP-S9.4: the LoRA adapter the endpoint serves for this run (a candidate run for the eval gate). */
   adapterSha256?: string;
-  /** A50: which dataset generation to score (default v1, the frozen set every v1 scorecard used). */
+  /**
+   * A50: which dataset generation to score. Default v2 (HUP-S11.2: v1 plus the fragment files);
+   * v1 is the frozen set every v1 scorecard used, kept for like-for-like comparisons.
+   */
   datasets: "v1" | "v2";
 }
 
@@ -88,7 +91,7 @@ export function parseEvalCliArgs(argv: string[]): EvalCliArgs {
   if (adapterRaw !== undefined && !/^[0-9a-fA-F]{64}$/.test(adapterRaw)) {
     throw new Error(`--adapter-sha256 takes the adapter file's sha256 as 64 hex characters (got ${adapterRaw})`);
   }
-  const datasets = vals["--datasets"] ?? "v1";
+  const datasets = vals["--datasets"] ?? "v2";
   if (datasets !== "v1" && datasets !== "v2") throw new Error(`--datasets must be v1 or v2 (got ${datasets})`);
   const out: EvalCliArgs = {
     baseUrl: baseUrl.replace(/\/+$/, ""),

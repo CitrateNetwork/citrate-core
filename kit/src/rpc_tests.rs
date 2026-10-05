@@ -151,6 +151,27 @@ fn receipt_null_is_pending_then_mined_yields_block() {
     assert_eq!(reqs[0]["params"][0], tx_hash);
 }
 
+/// HUP-S7.5 (D-27): the receipt's gas used and effective price are read when present.
+#[test]
+fn receipt_reports_gas_used_and_the_price_paid_when_the_node_gives_them() {
+    let tx_hash = "0xdeadbeef00000000000000000000000000000000000000000000000000000001";
+    let mock = MockTransport::new(vec![
+        ok_result(serde_json::json!({
+            "blockNumber": "0x1",
+            "status": "0x1",
+            "gasUsed": "0xbb80",
+            "effectiveGasPrice": "0x3b9aca00",
+        })),
+        ok_result(serde_json::json!({ "blockNumber": "0x2", "status": "0x0", "gasUsed": "nope" })),
+    ]);
+    let client = RpcClient::with_transport(mock);
+    let r = client.transaction_receipt(tx_hash).unwrap().unwrap();
+    assert_eq!(r.gas_used, Some(48_000));
+    assert_eq!(r.effective_gas_price, Some(1_000_000_000));
+    let r = client.transaction_receipt(tx_hash).unwrap().unwrap();
+    assert_eq!((r.status, r.gas_used, r.effective_gas_price), (Some(0), None, None));
+}
+
 #[test]
 fn receipt_poll_times_out_when_never_mined() {
     let tx_hash = "0xfeed000000000000000000000000000000000000000000000000000000000000";

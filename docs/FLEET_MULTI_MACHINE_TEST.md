@@ -3,6 +3,7 @@ created: 2026-10-01
 branch: hup/n5-fleet-rest
 author: Larry Klosowski + Claude Opus 5.5
 status: ready for the DGX team and a person at each machine; not yet run across machines
+updated: 2026-10-04 (hup/n7-cluster-mesh-prereqs, multi-group daemon + group links)
 wp: HUP-S8.1, HUP-S8.2, HUP-S8.3 (US-8.1), S8.4 prep
 companions:
   - docs/FLEET_WIZARD_RUNBOOK.md (what each wizard step does)
@@ -34,7 +35,7 @@ If nobody can sign in on the Linux box, run the daemon-level version first (citr
 | Variable | Value |
 |---|---|
 | `CITRATE_CLUSTER_LISTEN` | `/ip4/0.0.0.0/tcp/4001` |
-| `CITRATE_CLUSTER_GROUP` | the group id from step 1 (Groups shows it; one group per daemon today) |
+| `CITRATE_CLUSTER_GROUP` | the group id from step 1 (Groups shows it). With a daemon built from citrate-cluster `hup/n7-cluster-mesh-prereqs` or later, leave it unset to have one daemon serve every group (each group then listens on its own port near 4001; see below) |
 | `CITRATE_CLUSTER_BOOTSTRAP` | machines after the first: `/ip4/<A ip>/tcp/4001/p2p/<A peerId>`, comma-separated for more |
 
 To read a machine's PeerId once it is linked and has opened the Cluster screen:
@@ -90,7 +91,13 @@ Remove B on A, then select the group on A and on C. Expect B evicted from both, 
 * The mesh is off unless `CITRATE_CLUSTER_LISTEN` is set. It turns on by default only after the CL-S4
   transport sign-off and a daemon that serves every group (`cluster_mesh.rs`); the Cluster screen
   says which applies.
-* One group per daemon: `CITRATE_CLUSTER_GROUP` picks it.
+* With `CITRATE_CLUSTER_GROUP` set, the daemon serves only that group, as before. Unset (needs a
+  daemon from citrate-cluster `hup/n7-cluster-mesh-prereqs` or later), one daemon serves every group,
+  each on port `4001 + keccak(group) mod 1024`; open that range, or read the ports from a group link.
+  Instead of `CITRATE_CLUSTER_BOOTSTRAP`, machines can find each other from a group link:
+  `cluster_group_seed` on one machine, `cluster_add_seed` on the other (bridge
+  `cluster.groupSeed` / `cluster.addGroupSeed`; no screen yet). `CITRATE_CLUSTER_MDNS=1` adds LAN
+  discovery only with a daemon built with `--features mdns`; a default daemon refuses it.
 * Members' links are picked up when the group is opened (Cluster screen or the chat). An app older
   than this build shows the hidden share message as text.
 * A machine that still holds the wallet can link itself again after being removed; only a new wallet

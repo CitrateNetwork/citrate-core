@@ -325,3 +325,39 @@ fn the_daemon_gets_the_gates_reading_of_the_request_not_the_raw_line() {
         other => panic!("expected a forward: {other:?}"),
     }
 }
+
+// ---- HUP-S3.4 (fan-out 7, L02): unresolved learned memories are left out of answers -------------
+
+#[test]
+fn a_tool_answer_loses_the_hits_of_unresolved_learned_memories() {
+    let hide = crate::hermes_learn::RecallHide::Nodes(vec!["0a1b2c3d4e5f".into()]);
+    let text = "tenant 'personal' — 2 nodes, showing 2:\n  0a1b2c3d4e [Claim] deploy chain: 1\n  9988776655 [Doc] node data dir fact\n";
+    let line = json!({"jsonrpc": "2.0", "id": 7, "result": {"content": [{"type": "text", "text": text}], "isError": false}}).to_string();
+    let out: Value = serde_json::from_str(&hide_unresolved_in_response(&line, &hide)).unwrap();
+    let t = out["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(!t.contains("0a1b2c3d4e"), "{t}");
+    assert!(t.contains("9988776655"), "{t}");
+    assert_eq!(out["id"], 7);
+    // Nothing to hide, or not a tool answer: the line passes unchanged.
+    let none = crate::hermes_learn::RecallHide::Nodes(vec![]);
+    assert_eq!(hide_unresolved_in_response(&line, &none), line);
+    let list = json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}).to_string();
+    assert_eq!(hide_unresolved_in_response(&list, &hide), list);
+    assert_eq!(hide_unresolved_in_response("not json", &hide), "not json");
+}
+
+#[test]
+fn the_ledger_is_the_optional_argument_after_the_socket() {
+    assert_eq!(
+        parse_bridge_ledger(&["--citrate-mem-mcp-stdio".into(), "/s".into(), "/l/learned-memories.json".into()]),
+        Some(std::path::PathBuf::from("/l/learned-memories.json"))
+    );
+    assert_eq!(parse_bridge_ledger(&["--citrate-mem-mcp-stdio".into(), "/s".into()]), None);
+    assert_eq!(parse_bridge_ledger(&["--citrate-mem-mcp-stdio".into(), "/s".into(), "".into()]), None);
+    assert_eq!(parse_bridge_ledger(&["--other".into(), "/s".into(), "/l".into()]), None);
+    // The socket is still the first argument.
+    assert_eq!(
+        parse_bridge_args(&["--citrate-mem-mcp-stdio".into(), "/s".into(), "/l".into()]),
+        Some(Ok("/s".to_string()))
+    );
+}

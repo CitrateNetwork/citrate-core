@@ -3,7 +3,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { FlAdapterGateRecord, FlOverview, FlRoundsDomain } from "../bridge/domains";
+import type { FlAdapterGateRecord, FlOverview, FlRoundsDomain, FlTrajectoryStatus } from "../bridge/domains";
 import { FlRoundsPanel } from "./FlRoundsPanel";
 import { livePlan, PLAN_HASH } from "./fixtures/plan";
 
@@ -42,6 +42,17 @@ function gateRec(verdict: "ACCEPT" | "REJECT"): FlAdapterGateRecord {
   };
 }
 
+function trajStatus(enabled: boolean, over: Partial<FlTrajectoryStatus> = {}): FlTrajectoryStatus {
+  return {
+    settings: { enabled, changedAtMs: enabled ? 5 : null },
+    recordedFiles: 0,
+    datasets: 0,
+    appliesOnRestart: true,
+    loadError: null,
+    ...over,
+  };
+}
+
 function domain(over: Partial<FlRoundsDomain> = {}): FlRoundsDomain {
   return {
     overview: vi.fn(async () => overview()),
@@ -53,6 +64,11 @@ function domain(over: Partial<FlRoundsDomain> = {}): FlRoundsDomain {
     loadAdapter: vi.fn(async () => "/data/adapters/" + "c".repeat(64) + ".gguf"),
     unloadAdapter: vi.fn(async () => {}),
     revokeConsent: vi.fn(async () => []),
+    trajectoryStatus: vi.fn(async () => trajStatus(false)),
+    setTrajectoryConsent: vi.fn(async (enabled: boolean) => trajStatus(enabled)),
+    buildTrainingSet: vi.fn(async () => {
+      throw new Error("training on your conversations is off; turn it on first. Nothing was read or written.");
+    }),
     ...over,
   };
 }
@@ -300,5 +316,53 @@ describe("FlRoundsPanel — round results and re-apply", () => {
     });
     const second = await mount(<FlRoundsPanel fl={failed} requestSig={vi.fn()} toast={vi.fn()} />);
     expect(q(second.host, "fl-remembered")!.textContent).toContain("was not put back");
+  });
+});
+
+describe("FlRoundsPanel — training on verified conversations (HUP-S9.3)", () => {
+  it("is off by default, says nothing is recorded, and offers no training set", async () => {
+    const fl = domain();
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(q<HTMLInputElement>(host, "fl-traj-toggle")!.checked).toBe(false);
+    expect(q(host, "fl-traj-explain")!.textContent).toMatch(/Off \(the default\)\. Hermes records nothing/);
+    expect(q(host, "fl-traj-build")).toBeNull();
+    expect(fl.buildTrainingSet).not.toHaveBeenCalled();
+    expect(fl.setTrajectoryConsent).not.toHaveBeenCalled();
+  });
+
+  it("turns on only on the member's click, then offers to build a training set", async () => {
+    const toast = vi.fn();
+    const built = { path: "/h/fl-datasets/9.jsonl", sha256: "a".repeat(64), examples: 3, filesRead: 1, skippedLines: 1, overCap: 0 };
+    const fl = domain({ buildTrainingSet: vi.fn(async () => built) });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={toast} />);
+    await click(q(host, "fl-traj-toggle"));
+    expect(fl.setTrajectoryConsent).toHaveBeenCalledWith(true, false);
+    expect(q<HTMLInputElement>(host, "fl-traj-toggle")!.checked).toBe(true);
+    expect(toast.mock.calls[0][0]).toMatch(/records them from its next start/);
+    await click(q(host, "fl-traj-build"));
+    expect(fl.buildTrainingSet).toHaveBeenCalledWith(500);
+    expect(q(host, "fl-traj-built")!.textContent).toMatch(/3 verified conversations in \/h\/fl-datasets\/9\.jsonl/);
+    expect(q(host, "fl-traj-built")!.textContent).toMatch(/1 unusable line left out/);
+  });
+
+  it("turning off can delete the recordings, and core's refusal is shown as is", async () => {
+    const fl = domain({ trajectoryStatus: vi.fn(async () => trajStatus(true, { recordedFiles: 2 })) });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(q(host, "fl-traj-counts")!.textContent).toMatch(/2 recorded session files/);
+    await click(q(host, "fl-traj-delete"));
+    await click(q(host, "fl-traj-toggle"));
+    expect(fl.setTrajectoryConsent).toHaveBeenCalledWith(false, true);
+    expect(q(host, "fl-traj-build")).toBeNull();
+  });
+
+  it("shows the bridge's error instead of a switch state it does not know", async () => {
+    const fl = domain({
+      trajectoryStatus: vi.fn(async () => {
+        throw new Error("federated rounds need the desktop app");
+      }),
+    });
+    const { host } = await mount(<FlRoundsPanel fl={fl} requestSig={vi.fn()} toast={vi.fn()} />);
+    expect(q(host, "fl-traj-error")!.textContent).toMatch(/need the desktop app/);
+    expect(q<HTMLInputElement>(host, "fl-traj-toggle")!.disabled).toBe(true);
   });
 });

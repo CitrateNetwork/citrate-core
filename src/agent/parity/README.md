@@ -62,5 +62,7 @@ override checks always run. Live overrides (`LIVE_OVERRIDES`) each name their ca
 applies while the owner's decision is open) or `transport` (over real HTTP a provider failure
 reaches the loop as the HTTP status, not the provider's text). Recorded runs are in `results/`.
 
-This suite does not retire `harness.ts` or change the default provider. Retirement is an owner
-call (the turn cap, 6 or 8, decides the last expectation that differs).
+HUP-S1.1 (2026-10-04, owner default pending sign-off): the turn cap is 8 on both sides, so the
+turn-cap scenarios expect 8 model requests everywhere. `harness.ts` no longer runs a tool loop for
+the local model (that is the sidecar's); its loop serves only a configured gateway provider, with
+at most 8 tool schemas per request.

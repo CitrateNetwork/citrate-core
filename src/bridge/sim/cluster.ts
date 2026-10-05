@@ -65,5 +65,12 @@ export function simCluster(_host: SimHost): ClusterDomain {
         note: "The preview has no cluster daemon.",
       };
     },
+    // HUP-S8.4: no daemon, no address, so refuse rather than invent one.
+    async groupSeed() {
+      throw new Error("Group links need the Citrate Core desktop app.");
+    },
+    async addGroupSeed() {
+      throw new Error("Group links need the Citrate Core desktop app.");
+    },
   };
 }
