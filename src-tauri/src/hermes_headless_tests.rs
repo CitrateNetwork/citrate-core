@@ -508,3 +508,49 @@ fn a_turn_started_without_the_view_gets_its_core_tool_answered_by_the_real_sidec
         .iter()
         .any(|p| p.ends_with("/chat/completions")));
 }
+
+#[test]
+fn a_call_the_view_was_shown_before_the_loop_listed_it_as_pending_stays_the_views() {
+    // The loop emits the tool_call event BEFORE it registers the call as pending, so the view's
+    // long-poll can return the call with an empty pendingCoreCalls. The view runs it all the same
+    // (host "core"); if the member then takes more than the lease on the approval card, the call
+    // must not be declined here behind the member's back.
+    let leases = ViewLeases::new(Duration::from_secs(30));
+    let t0 = Instant::now();
+    let shown = page(
+        vec![call_event(5, "call_9", "group_create", r#"{"name":"x"}"#, false)],
+        &[],
+    );
+    let _ = leases.view_page("s-race", shown, t0);
+    let later = t0 + Duration::from_secs(120);
+    let now_pending = page(
+        vec![call_event(5, "call_9", "group_create", r#"{"name":"x"}"#, false)],
+        &["call_9"],
+    );
+    assert!(
+        leases.claim("s-race", &now_pending, later).is_empty(),
+        "a call the view was shown is the view's, pending flag or not"
+    );
+}
+
+#[test]
+fn a_call_already_answered_in_the_page_the_view_read_is_not_kept_for_the_view() {
+    // A page that holds both a call and its result (a reattach read) leaves nothing view-owned.
+    let leases = ViewLeases::new(Duration::from_secs(30));
+    let t0 = Instant::now();
+    let read = page(
+        vec![
+            call_event(5, "call_4", "node_status", "{}", false),
+            json!({"seq": 6, "event": {"type": "tool_result", "call_id": "call_4", "status": "ok", "content": "{}"}}),
+        ],
+        &[],
+    );
+    let _ = leases.view_page("s-old", read, t0);
+    // A later step reuses the id while the view is away: it is claimed here.
+    let later = t0 + Duration::from_secs(120);
+    let next = page(
+        vec![call_event(9, "call_4", "node_status", "{}", false)],
+        &["call_4"],
+    );
+    assert_eq!(leases.claim("s-old", &next, later).len(), 1);
+}

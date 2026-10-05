@@ -173,10 +173,24 @@ impl ViewLeases {
     }
 
     /// The view read `page` for `session` (`hermes_session_events`). Renews the lease, marks the
-    /// pending core calls it shows as view-owned, and rewrites the `host` of every call this side
-    /// claimed to [`HEADLESS_HOST`] so the view does not run it again.
+    /// core calls it shows (and will run) as view-owned, and rewrites the `host` of every call this
+    /// side claimed to [`HEADLESS_HOST`] so the view does not run it again.
+    ///
+    /// A shown call counts as the view's whether or not the page lists it in `pendingCoreCalls`:
+    /// the loop announces a call before it registers it as pending, so a long-poll can return the
+    /// call first, and the view runs it either way. A call whose result is in the same page is
+    /// answered and is not kept.
     pub fn view_page(&self, session: &str, mut page: Value, now: Instant) -> Value {
-        let pending = pending_of(&page);
+        // The latest tool_result sequence number per call id in this page.
+        let mut results: HashMap<String, u64> = HashMap::new();
+        for (seq, ev) in envelopes(&page) {
+            if ev.get("type").and_then(Value::as_str) == Some("tool_result") {
+                if let Some(id) = ev.get("call_id").and_then(Value::as_str) {
+                    let e = results.entry(id.to_string()).or_insert(seq);
+                    *e = (*e).max(seq);
+                }
+            }
+        }
         let mut g = self.lock();
         let l = g.entry(session.to_string()).or_default();
         l.seen = Some(now);
@@ -196,7 +210,9 @@ impl ViewLeases {
                     if let Some(o) = ev.as_object_mut() {
                         o.insert("host".into(), json!(HEADLESS_HOST));
                     }
-                } else if pending.contains(&id) {
+                } else if results.get(&id).is_some_and(|r| *r > seq) {
+                    l.view_owned.remove(&id);
+                } else {
                     l.view_owned.insert(id);
                 }
             }
