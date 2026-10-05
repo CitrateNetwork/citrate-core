@@ -199,6 +199,8 @@ struct Behavior {
     identity_calls: Vec<(String, String, Option<String>)>,
     /// Force this status for `/identity/*` requests (default 200 `{"ok":true}`).
     identity_status: Option<u16>,
+    /// Replace the 200 body of `GET /identity/*` (default: a two-wallet list).
+    identity_get_body: Option<String>,
     /// Forge the id_token nonce (ADV-7 nonce).
     forge_nonce: bool,
     /// Sign the id_token with a WRONG key (ADV-7 signature).
@@ -636,8 +638,11 @@ impl ServerCtx {
         b.identity_calls
             .push((method.to_string(), path.to_string(), authorization));
         let status = b.identity_status.unwrap_or(200);
+        let get_body = b.identity_get_body.clone();
         drop(b);
-        if status == 200 && method == "GET" {
+        if let (200, "GET", Some(body)) = (status, method, get_body) {
+            write_resp(stream, 200, "application/json", &body);
+        } else if status == 200 && method == "GET" {
             let body = format!(
                 r#"{{"sub":"usr_2af4c19e","wallets":[{{"address":"{UNLINK_ADDR}","canonical":true,"linked_at":"2026-09-30T01:00:00.000Z"}},{{"address":"{LIST_SECOND_ADDR}","canonical":false,"linked_at":"2026-09-30T02:00:00.000Z"}}]}}"#
             );
@@ -1820,4 +1825,18 @@ fn wallet_list_error_is_an_error_never_an_empty_list() {
     auth.behavior().identity_status = Some(500);
     mgr.wallet_list()
         .expect_err("a 500 must not read as \"no linked wallets\"");
+}
+
+#[test]
+fn wallet_list_unparseable_200_is_an_error_never_an_empty_list() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _fake, _path) = fresh_vault();
+    mgr.login_with(&vault, |url| auth.drive_browser(url))
+        .expect("login should succeed");
+    // A 2xx whose body is not the list shape (no `wallets`) is an unknown
+    // answer, not "no other wallets".
+    auth.behavior().identity_get_body = Some(r#"{"ok":true}"#.to_string());
+    mgr.wallet_list()
+        .expect_err("an unparseable 200 must not read as \"no linked wallets\"");
 }
