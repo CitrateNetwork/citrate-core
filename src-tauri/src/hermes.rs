@@ -614,6 +614,7 @@ impl HermesManager {
             spec.env.extend(src().into_iter().filter(|(k, _)| {
                 crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::fl_trajectories::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -1479,9 +1480,12 @@ pub(crate) fn manager<R: tauri::Runtime>(
                 base.clone(),
                 crate::forge_toolchain::places_for(app)?,
             );
+            // HUP-S9.3: verified-trajectory recording, only when the member turned it on.
+            let trajectories = crate::fl_trajectories::file_env_source(base.clone());
             std::sync::Arc::new(move || {
                 let mut env = web();
                 env.extend(toolchain());
+                env.extend(trajectories());
                 env
             })
         });

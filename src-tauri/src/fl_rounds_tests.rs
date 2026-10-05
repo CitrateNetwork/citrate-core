@@ -306,7 +306,9 @@ fn plan_explains_data_compute_reward_privacy_in_plain_words() {
 }
 
 #[test]
-fn data_explanation_is_honest_that_the_trajectory_export_is_not_wired() {
+/// HUP-S9.3 wired the export behind the member's switch (fl_trajectories.rs): the plan says the
+/// switch is off by default and that with it off there is nothing to train on.
+fn data_explanation_names_the_members_switch_and_its_off_default() {
     let plan = build_plan(
         RoundProposal::default(),
         live_view(3, 0, 0, "shadow"),
@@ -315,11 +317,10 @@ fn data_explanation_is_honest_that_the_trajectory_export_is_not_wired() {
         NOW,
     )
     .unwrap();
-    assert!(
-        plan.explain.data.contains("not wired"),
-        "{}",
-        plan.explain.data
-    );
+    let d = &plan.explain.data;
+    assert!(d.contains("Train on my verified conversations"), "{d}");
+    assert!(d.contains("off by default"), "{d}");
+    assert!(d.contains("no training set to offer"), "{d}");
 }
 
 #[test]

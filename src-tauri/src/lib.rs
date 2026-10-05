@@ -49,6 +49,7 @@ mod deploy_gate_toolchain;
 // HUP-S6.5: deploy-gas top-ups from the faucet, off by default (faucet ADR, proposed).
 mod faucet;
 mod fl_rounds;
+mod fl_trajectories;
 // HUP-S6.3: the member's toolchain switch and the sidecar environment it produces.
 mod forge_toolchain;
 mod fork_dry_run;
@@ -591,6 +592,10 @@ pub fn run() {
             fl_rounds::fl_adapter_gate,
             fl_rounds::fl_adapter_load,
             fl_rounds::fl_adapter_unload,
+            // HUP-S9.3 — the member's opt-in for training on verified conversations (default off).
+            fl_trajectories::trajectories_settings_get,
+            fl_trajectories::trajectories_settings_set,
+            fl_trajectories::trajectories_dataset_build,
             // HUP-S6.6 — post-deploy steps for a hello-mint project.
             postdeploy::postdeploy_status,
             postdeploy::postdeploy_receipt,
