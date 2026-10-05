@@ -51,6 +51,24 @@ async function click(el: HTMLElement | null) {
 }
 
 describe("Feature: after the deploy (HUP-S6.6)", () => {
+  it("says the page's mint is decoded by name only when core registered the gated ABI", async () => {
+    for (const decodedCalls of [true, false]) {
+      const o = ops({
+        postdeploySwitchSite: vi.fn(async () => ({ envPath: "/p/app/.env.local", address: ADDR, decodedCalls })),
+      });
+      const el = await render(<PostDeployPanel ops={o} lastDeployTx={TX} openReader={vi.fn()} />);
+      await act(async () => { type($(el, "pd-project"), "/p"); });
+      await click($(el, "pd-find"));
+      await click($(el, "pd-switch"));
+      const text = $(el, "pd-switch-out")?.textContent ?? "";
+      expect(text.includes("shows the call by name")).toBe(decodedCalls);
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+      host = null;
+    }
+  });
+
   it("walks receipt → verify → switch → pin → export and shows each answer", async () => {
     const o = ops();
     const openReader = vi.fn();

@@ -445,6 +445,8 @@ struct Pending {
 pub struct SignatureCeremony {
     pending: Mutex<BTreeMap<u64, Pending>>,
     next_id: AtomicU64,
+    /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
+    abis: crate::abi_book::AbiBook,
 }
 
 impl Default for SignatureCeremony {
@@ -458,6 +460,48 @@ impl SignatureCeremony {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
+            abis: crate::abi_book::AbiBook::default(),
+        }
+    }
+
+    /// HUP-S6: let calls to `address` be decoded from `abi`. Only for a contract whose on-chain
+    /// code is exactly a READY-gated artifact's runtime code (core's `postdeploy` checks both).
+    pub fn register_gated_contract(&self, address: [u8; 20], abi: crate::abi_book::ContractAbi) {
+        self.abis.register(address, abi);
+    }
+
+    /// Gated contracts registered.
+    pub fn gated_contracts(&self) -> usize {
+        self.abis.len()
+    }
+
+    /// [`decode_intent`], plus: a transaction calling a registered gated contract whose call is
+    /// not otherwise understood is decoded from that contract's ABI. Anything the ABI does not
+    /// decode exactly stays [`UNRECOGNIZED_ACTION`] (raw-ack gated).
+    fn decode_with_book(&self, intent: &SignatureIntent) -> DecodedAction {
+        let decoded = decode_intent(intent);
+        if intent.kind != IntentKind::Transaction || decoded.action != UNRECOGNIZED_ACTION {
+            return decoded;
+        }
+        let Some((tx, display)) = crate::txdecode::decode_transaction(&intent.raw) else {
+            return decoded;
+        };
+        let Some(to) = tx.to else {
+            return decoded;
+        };
+        let Some(abi) = self.abis.get(&to) else {
+            return decoded;
+        };
+        match abi.decode_call(&tx.data, tx.value) {
+            Some(call) => DecodedAction {
+                action: format!(
+                    "Call {call} on {} at {} (a contract you deployed from a READY gated build; value {} wei)",
+                    abi.name, display.destination, tx.value
+                ),
+                cost: display.cost,
+                destination: display.destination,
+            },
+            None => decoded,
         }
     }
 
@@ -479,7 +523,7 @@ impl SignatureCeremony {
     /// touches no key material. The returned `id` is what a human must later
     /// approve/reject *explicitly* — there is no "approve latest" (B1.2-ADV-6).
     pub fn request(&self, intent: SignatureIntent) -> CeremonyView {
-        let decoded = decode_intent(&intent);
+        let decoded = self.decode_with_book(&intent);
         let requires_raw_ack = decoded.action == UNRECOGNIZED_ACTION;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let view = CeremonyView {

@@ -18,7 +18,7 @@
 // verifier verdicts.
 // =====================================================================
 import { useId, type CSSProperties, type ReactNode } from "react";
-import { formatElapsed, workerLine, type DaemonsSection, type MonitorSnapshot } from "./monitorSnapshot";
+import { decideBackendLine, formatElapsed, workerLine, type DaemonsSection, type DecideSection, type MonitorSnapshot } from "./monitorSnapshot";
 import type { UndoPanel } from "./undoPanel";
 import type { RunRow } from "../shell/slices/turnActivity";
 
@@ -175,6 +175,31 @@ function Daemons({ d, onPause, onStopRun }: { d: DaemonsSection; onPause?: (id: 
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** HUP-S5.3: the decide() slot's metering per backend (the sidecar's GET /decide/stats). */
+function DecideMetering({ d }: { d: DecideSection }) {
+  const id = useId();
+  return (
+    <div style={{ paddingTop: 8 }} data-testid="mon-decide">
+      <span id={id} className="mono" style={label}>
+        Decisions by backend
+      </span>
+      <div style={{ ...note, paddingTop: 4 }}>{d.note}</div>
+      {d.rows && d.rows.length > 0 ? (
+        <ul aria-labelledby={id} style={{ listStyle: "none", margin: 0, padding: "4px 0 0", display: "flex", flexDirection: "column", gap: 4 }}>
+          {d.rows.map((b) => (
+            <li key={b.backend} data-testid="mon-decide-row" style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--tx-1)" }}>
+              <span className="mono" style={{ minWidth: 72 }}>{b.backend}</span>
+              <span style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", color: b.errors > 0 ? "var(--warn)" : "var(--tx-1)" }}>
+                {decideBackendLine(b)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }
@@ -395,6 +420,7 @@ export function ActivityMonitor({
           </ul>
         ) : null}
       </div>
+      {snapshot.decide ? <DecideMetering d={snapshot.decide} /> : null}
       {turn.state === "idle" && turn.outcome ? (
         <div style={{ ...note, paddingTop: 8 }}>Last turn: {turn.outcome === "stopped" ? "stopped by you" : turn.outcome}.</div>
       ) : null}

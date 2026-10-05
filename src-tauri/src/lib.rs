@@ -23,13 +23,14 @@
 pub(crate) const CUSTODY_KEYRING_SERVICE: &str = "ai.citrate.core.custody";
 
 pub use citrate_core_kit::{
-    ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
+    abi_book, ceremony, config, custody, oidc, rpc, supervisor, txdecode, wallet, wallet_link,
 };
 
 mod activity;
 mod addresses;
 mod agent;
 mod agent_grants;
+mod agent_precompiles;
 mod agent_sbt;
 mod ai;
 mod anchor_proof;
@@ -128,7 +129,9 @@ mod widgets;
 mod cluster;
 mod cluster_mesh;
 mod comms;
+mod embed_serve;
 mod hermes;
+mod hermes_headless;
 mod hermes_learn;
 mod hermes_web;
 mod invite_seal;
@@ -442,6 +445,10 @@ pub fn run() {
             // HUP-S4.2 — the citrate-node MCP server. OFF unless the member turned it on in
             // Settings; loopback only; every request needs a connect token; writes need approval.
             app.manage(node_mcp::build_node_mcp_state(&app.handle().clone()));
+            // HUP-S1.1 (US-1.1 AC3): answer core-hosted tool calls of sessions the chat view is not
+            // watching (turns from the node MCP server or the CLI), instead of leaving them to the
+            // sidecar's 300 s deadline. Idle while the Hermes sidecar is not running.
+            hermes_headless::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -717,6 +724,7 @@ pub fn run() {
             hermes_mcp::hermes_mcp_settings,
             hermes_mcp::hermes_mcp_set,
             hermes::workers::hermes_workers,
+            hermes::decide::hermes_decide_stats,
             hermes_learn::hermes_workflow_run,
             hermes_learn::hermes_workflow_status,
             hermes_learn::hermes_learn_status,

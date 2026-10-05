@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractAnchors } from "../eval/qa";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const skillsRoot = join(repoRoot, "src-tauri", "skills");
@@ -223,7 +224,10 @@ describe("the literacy skills under src-tauri/skills", () => {
             if (!cache.has(key)) cache.set(key, git(join(sourcesRoot, c.source), ["show", `${pin}:${c.path}`]));
             const file = cache.get(key);
             if (file === null || file === undefined) problems.push(`${key} does not exist at ${pin}`);
-            else if (c.symbol && !file.includes(c.symbol)) problems.push(`${key}#${c.symbol}: symbol not found`);
+            // A Markdown citation may name a heading by its anchor slug (the form QA answers cite).
+            else if (c.symbol && !file.includes(c.symbol) && !(c.path.endsWith(".md") && extractAnchors(file).includes(c.symbol))) {
+              problems.push(`${key}#${c.symbol}: symbol not found`);
+            }
           }
           expect(problems).toEqual([]);
         },
