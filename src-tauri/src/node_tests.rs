@@ -2,7 +2,7 @@
 // ciphertext-at-rest suite. Red-first (see the sprint file + PR body).
 //
 // CI-safe: everything here runs headless against (a) an in-memory keyring fake
-// (the @rule8 storage-key handoff) and (b) a small shell STUB node binary that
+// (the @rule8 storage-key handoff) and (b) a small native STUB node binary that
 // writes ciphertext to its data dir and blocks until killed — so the wiring,
 // the storage-key mint/hold, and the ciphertext-at-rest grep are all proven
 // WITHOUT building the heavy ark/zk node. Status-parsing is proven against a
@@ -13,7 +13,7 @@ use super::*;
 use crate::custody::CustodyError;
 use crate::rpc::{RpcError, RpcTransport};
 use serde_json::{json, Value};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Mutex as StdMutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -95,12 +95,39 @@ impl RpcTransport for MockRpc {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Absolute path to the CI stub node shell script.
+/// Compile the checked-in native fixture once per test process and return its
+/// absolute path. The output lives under Cargo's OUT_DIR, never in the checkout.
+///
+/// Compiling at test runtime keeps `cargo test --lib` self-contained: Cargo does
+/// not build `[[bin]]` targets for library unit tests, while the supervisor must
+/// receive a real executable path and continue to spawn it directly without a
+/// shell.
 fn stub_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("stub_node.sh")
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("stub_node.rs");
+        let out_dir = PathBuf::from(env!("OUT_DIR")).join("test-fixtures");
+        std::fs::create_dir_all(&out_dir).expect("create native fixture output directory");
+        let output = out_dir.join(format!(
+            "stub_node-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let status = std::process::Command::new(rustc)
+            .arg("--edition=2021")
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .status()
+            .expect("run rustc for native node fixture");
+        assert!(status.success(), "native node fixture must compile from {}", source.display());
+        output
+    })
+    .clone()
 }
 
 /// A fresh unique temp dir for a test's data dir + crash records.
