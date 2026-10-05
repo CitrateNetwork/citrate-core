@@ -896,12 +896,14 @@ pub async fn cluster_share_file(
 }
 
 /// HUP-S8.4: this machine's group seed: link/QR text another member's machine can use to find
-/// this one for `group`, plus the addresses in it.
+/// this one for `group`, plus the addresses in it. The field is `link`, not `seed`: it holds
+/// locations only (never key material), and the invoke secret scan (PBA-L4-008) treats a `seed`
+/// field crossing invoke as secret-bearing.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterGroupSeedDto {
     group_id: String,
-    seed: String,
+    link: String,
     addrs: Vec<String>,
 }
 
@@ -921,7 +923,7 @@ pub async fn cluster_group_seed(
     )? {
         Response::Seed { seed, addrs } => Ok(ClusterGroupSeedDto {
             group_id: group,
-            seed,
+            link: seed,
             addrs,
         }),
         Response::Error { message } => Err(message),

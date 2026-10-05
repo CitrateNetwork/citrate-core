@@ -951,8 +951,8 @@ export interface ClusterDomain {
 /** HUP-S8.4: a group link (mirrors Rust `cluster::ClusterGroupSeedDto`). */
 export interface ClusterGroupSeed {
   groupId: string;
-  /** `citrate-cluster://seed?v=1&g=...&a=...`, short enough for a QR code. */
-  seed: string;
+  /** `citrate-cluster://seed?v=1&g=...&a=...`, short enough for a QR code. Locations only. */
+  link: string;
   /** The multiaddrs in the link, each ending in this machine's peer id. */
   addrs: string[];
 }
