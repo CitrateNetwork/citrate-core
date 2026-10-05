@@ -117,6 +117,15 @@ STATICCALL; the call succeeded):
 Values 53248, 0, 8192, -36864 are 0.8125, 0.0, 0.125, -0.5625. States 1, 3, 0, 1 are True, Both,
 Neither, True. The output matches the hand calculation.
 
+## Citing the docs
+
+Cite `citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation` for the address,
+the Q16 type and its saturation rules, the `9 * dim` output size, the inputs (embeddings,
+confidences, weights, the positive and negative thresholds), and the semantic (not byte) match with
+the off-chain reference. Cite `citrate-docs:content/chain/precompiles.md#how-to-use-it` for how a
+contract calls a precompile. Where this skill follows the code instead of the docs (the two-block
+output, the weight per participant, gas scaled by `n`), cite the code and say the docs differ.
+
 ## Calling it
 
 - **From Solidity:** `(bool ok, bytes memory out) = address(0x0110).staticcall{gas: g}(input);`
