@@ -123,8 +123,9 @@ node scripts/stage-knowledge-corpus.mjs /tmp/knowledge-corpus \
 ```
 
 Build the release corpus from clean checkouts. mem-corpus records a source whose work tree had
-local changes as `<commit>-dirty`, and the stager refuses such a corpus (its text and NOTICE cannot
-be reproduced from the recorded commit); `--allow-dirty` stages it for a dev build, with a warning.
+local changes as `<commit>-dirty` and a source outside any git work tree as `unpinned`; the stager
+refuses a corpus with either on an included source (its text and NOTICE cannot be reproduced from
+the recorded commit); `--allow-dirty` stages it for a dev build, with a warning.
 
 The corpus depends on the bundled BGE model, so `--bge-dir` is required. The stager
 refuses a missing or partial model (the first-run import would be skipped as

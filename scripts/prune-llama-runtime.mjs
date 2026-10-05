@@ -15,7 +15,7 @@
 // ...), resolved through the `@loader_path` rpath to this directory. This script walks that graph
 // from `llama-server` with `otool -L` and keeps exactly the closure:
 //
-//   - every `@rpath/` or `@loader_path/` dependency of a kept Mach-O must exist in the directory
+//   - every `@rpath/`, `@loader_path/` or `@executable_path/` dependency of a kept Mach-O must exist in the directory
 //     as a regular file (else refused, nothing removed): a pruned runtime can never miss a library;
 //   - Mach-O files outside the closure are removed; every other file (the llama.cpp licence, the
 //     checksum list) is kept. Symlinks and subdirectories are refused (the runtime is flat files).
@@ -35,14 +35,15 @@ export const ENTRY = "llama-server";
 const USAGE = "usage: node scripts/prune-llama-runtime.mjs [--dir <staged llama runtime dir>] [--dry-run]";
 
 /**
- * The dependencies `otool -L` lists that resolve inside the runtime directory: `@rpath/<name>` and
- * `@loader_path/<name>`, as bare file names. A dylib's own install name is listed too; a kept file
+ * The dependencies `otool -L` lists that resolve inside the runtime directory: `@rpath/<name>`,
+ * `@loader_path/<name>` and `@executable_path/<name>` (the executable is llama-server, in the same
+ * directory), as bare file names. A dylib's own install name is listed too; a kept file
  * satisfies its own id, so that changes nothing. System libraries (absolute paths) are ignored.
  */
 export function parseLocalDeps(otoolText) {
   const deps = [];
   for (const line of otoolText.split(/\r?\n/).slice(1)) {
-    const m = /^\s+@(?:rpath|loader_path)\/([^\s]+) \(/.exec(line);
+    const m = /^\s+@(?:rpath|loader_path|executable_path)\/([^\s]+) \(/.exec(line);
     if (!m) continue;
     const name = m[1];
     if (name.includes("/")) throw new Error(`dependency ${name} points into a subdirectory`);

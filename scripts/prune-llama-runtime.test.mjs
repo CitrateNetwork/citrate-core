@@ -116,6 +116,13 @@ describe("parseLocalDeps", () => {
     expect(parseLocalDeps(text)).toEqual(["libllama.0.dylib", "libggml.0.dylib", "libggml-base.0.dylib", "libextra.dylib"]);
   });
 
+  it("reads @executable_path names too (llama-server is the executable, in the same directory)", () => {
+    // A dylib that names a dependency through @executable_path resolves it beside llama-server, so
+    // that dependency belongs to the closure; ignoring it would let the prune remove a needed file.
+    const text = "/x/libllama.0.dylib:\n\t@executable_path/libggml.0.dylib (compatibility version 0.0.0, current version 0.23.0)\n";
+    expect(parseLocalDeps(text)).toEqual(["libggml.0.dylib"]);
+  });
+
   it("parses the real otool -L output of llama-server (build 10909)", () => {
     const real = [
       "llama/llama-server:",

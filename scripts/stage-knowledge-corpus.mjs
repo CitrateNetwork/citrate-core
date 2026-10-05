@@ -26,7 +26,8 @@
 //     ignores them and each member embeds about 21k nodes on their own CPU (hours). A dev build may
 //     stage an unembedded corpus with --allow-unembedded; it is warned, never silent.
 //   - every included source records a clean commit. The builder suffixes a commit with `-dirty`
-//     when the source's work tree had local changes (mem_corpus build.rs resolve_git), so the
+//     when the source's work tree had local changes, and records `unpinned` for a source outside
+//     any git work tree (mem_corpus build.rs resolve_git); either way the
 //     corpus text and its NOTICE.md cannot be reproduced from that commit (HUP g3-licence,
 //     L-sizelicence). A release corpus is built from clean checkouts; a dev build may pass
 //     --allow-dirty, which is warned, never silent.
@@ -203,18 +204,38 @@ export function checkEmbedder(manifest, bgeDir, { allowUnembedded = false } = {}
 /** Suffix mem-corpus appends to a source commit built from a work tree with local changes. */
 export const DIRTY_SUFFIX = "-dirty";
 
+/** What mem-corpus records for a source that is not in a git work tree (resolve_git). */
+export const UNPINNED = "unpinned";
+
+/** A clean commit: a bare hex object id, nothing appended. */
+const CLEAN_COMMIT = /^[0-9a-f]{7,64}$/;
+
+/** Why a recorded commit is not clean, worded to follow "was" (the refusal and the warning). */
+export function dirtyReason(commit) {
+  if (typeof commit === "string" && commit.endsWith(DIRTY_SUFFIX)) return "built from a work tree with local changes";
+  if (commit === UNPINNED) return "not built from a git checkout";
+  return "recorded without a clean commit";
+}
+
 /**
- * Included sources whose recorded commit is `<sha>-dirty`, as [{ id, commit }]. Throws listing them
- * unless `allowDirty`; with `allowDirty` returns them so the caller can warn.
+ * Included sources whose recorded commit is not a clean commit (`<sha>-dirty`, `unpinned`, or
+ * anything else that is not a bare sha), as [{ id, commit }]. Throws listing them unless
+ * `allowDirty`; with `allowDirty` returns them so the caller can warn.
  */
 export function checkSourceCommits(manifest, { allowDirty = false } = {}) {
   if (!Array.isArray(manifest.sources)) throw new Error("manifest lists no sources");
   const dirty = manifest.sources
-    .filter((s) => s.included === true && typeof s.commit === "string" && s.commit.endsWith(DIRTY_SUFFIX))
+    .filter((s) => s.included === true && !(typeof s.commit === "string" && CLEAN_COMMIT.test(s.commit)))
     .map((s) => ({ id: s.id, commit: s.commit }));
   if (dirty.length && !allowDirty) {
+    const groups = new Map();
+    for (const d of dirty) {
+      const why = dirtyReason(d.commit);
+      if (!groups.has(why)) groups.set(why, []);
+      groups.get(why).push(`${d.id} @ ${d.commit}`);
+    }
     throw new Error(
-      `${dirty.map((d) => `${d.id} @ ${d.commit}`).join(", ")}: built from a work tree with local changes, so this corpus and its NOTICE ` +
+      `${[...groups].map(([why, list]) => `${list.join(", ")}: ${why}`).join("; ")}, so this corpus and its NOTICE ` +
         `cannot be reproduced from the recorded commit. Rebuild from clean checkouts, or pass --allow-dirty for a dev build`,
     );
   }
@@ -299,7 +320,7 @@ function main() {
     }
     stageInto(src, path.resolve(args.dest), files);
     for (const d of dirty) {
-      console.error(`warning: source ${d.id} was built from a work tree with local changes (${d.commit}); not reproducible, dev build only`);
+      console.error(`warning: source ${d.id} was ${dirtyReason(d.commit)} (${d.commit}); not reproducible, dev build only`);
     }
     const tenants = manifest.tenants.map((t) => `${t.tenant} ${t.nodes} nodes`).join(", ");
     console.log(`staged knowledge corpus ${manifest.bundle_digest} (${files.length} files, ${bytes} bytes; ${tenants}) -> ${args.dest}`);

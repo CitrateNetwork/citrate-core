@@ -252,6 +252,15 @@ describe("source commits must be clean (a -dirty commit cannot be reproduced)", 
     expect(checkSourceCommits(manifest, { allowDirty: true }).map((d) => d.id)).toEqual(["gradient-papers", "agentile"]);
   });
 
+  it("refuses an included source recorded as unpinned (not in a git work tree), which is no more reproducible", () => {
+    reseal(corpus, (m) => {
+      for (const s of m.sources) if (s.id === "gradient-papers") s.commit = "unpinned";
+    });
+    const { manifest } = verifyCorpus(corpus);
+    expect(() => checkSourceCommits(manifest)).toThrow(/gradient-papers @ unpinned: not built from a git checkout/);
+    expect(checkSourceCommits(manifest, { allowDirty: true })).toEqual([{ id: "gradient-papers", commit: "unpinned" }]);
+  });
+
   it("ignores excluded sources, which ship no text", () => {
     reseal(corpus, (m) => {
       for (const s of m.sources) if (s.included === false) s.commit = `${"b".repeat(40)}-dirty`;
