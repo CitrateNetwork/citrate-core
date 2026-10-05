@@ -146,3 +146,47 @@ describe("retrieval flags (HUP-S3.1, g2-knowledge)", () => {
     expect(qaResultFileName("2026-10-01T08:00:00.000Z", "gemma")).toBe("2026-10-01-qa-gemma.json");
   });
 });
+
+describe("HUP-S7.7: --retrieval-mode sidecar", () => {
+  const base = ["--base-url", "http://127.0.0.1/v1", "--model", "m", "--memory-socket", "q.sock"];
+  const sc = ["--retrieval-mode", "sidecar", "--sidecar-bin", "/abs/citrate-agent-sidecar", "--context-tokens", "8192"];
+  it("parses a sidecar run with the app's tenants and k, core's reply cap, and the skills sources", () => {
+    const a = parseQaCliArgs([...base, ...sc, "--skills", "/abs/skills:/abs/learned", "--skills-lock", "/abs/skills.lock", "--skills-third-party", "/abs/bundle", "--corpus-dir", "c"]);
+    expect(a.retrieval).toEqual({
+      socket: "q.sock",
+      mode: "sidecar",
+      tenants: ["citrate-docs", "methodology", "refs", "skills"],
+      k: 5,
+      corpusDir: "c",
+      sidecar: {
+        bin: "/abs/citrate-agent-sidecar",
+        contextTokens: 8192,
+        maxTokens: 2048,
+        skills: ["/abs/skills", "/abs/learned"],
+        thirdParty: { lock: "/abs/skills.lock", root: "/abs/bundle" },
+        deadlineSeconds: 600,
+      },
+    });
+    const small = parseQaCliArgs([...base, "--retrieval-mode", "sidecar", "--sidecar-bin", "/abs/s", "--context-tokens", "4096", "--max-tokens", "512", "--deadline-s", "120"]);
+    expect(small.retrieval?.sidecar).toEqual({ bin: "/abs/s", contextTokens: 4096, maxTokens: 512, skills: [], deadlineSeconds: 120 });
+    expect(parseQaCliArgs([...base, "--retrieval-mode", "sidecar", "--sidecar-bin", "/abs/s", "--context-tokens", "4096"]).retrieval?.sidecar?.maxTokens).toBe(1024);
+  });
+  it("refuses a sidecar run without its binary or context size, relative paths, and half a third-party pair", () => {
+    expect(() => parseQaCliArgs([...base, "--retrieval-mode", "sidecar", "--context-tokens", "8192"])).toThrow(/--sidecar-bin/);
+    expect(() => parseQaCliArgs([...base, "--retrieval-mode", "sidecar", "--sidecar-bin", "/abs/s"])).toThrow(/--context-tokens/);
+    expect(() => parseQaCliArgs([...base, "--retrieval-mode", "sidecar", "--sidecar-bin", "rel/s", "--context-tokens", "8192"])).toThrow(/absolute/);
+    expect(() => parseQaCliArgs([...base, ...sc, "--skills", "rel/skills"])).toThrow(/absolute/);
+    expect(() => parseQaCliArgs([...base, ...sc, "--skills-lock", "/abs/l"])).toThrow(/go together/);
+    expect(() => parseQaCliArgs([...base, ...sc, "--context-tokens", "100"])).toThrow(/--context-tokens/);
+    expect(() => parseQaCliArgs([...base, ...sc, "--retrieve-k", "3"])).toThrow(/passages/);
+  });
+  it("refuses sidecar flags outside sidecar mode", () => {
+    expect(() => parseQaCliArgs([...base, "--sidecar-bin", "/abs/s"])).toThrow(/--retrieval-mode sidecar/);
+    expect(() => parseQaCliArgs(["--base-url", "http://127.0.0.1/v1", "--model", "m", "--skills", "/abs/s"])).toThrow(/--memory-socket/);
+    expect(() => parseQaCliArgs([...base, "--retrieval-mode", "bogus"])).toThrow(/tool, passages or sidecar/);
+  });
+  it("names a sidecar result so it never overwrites a tool or passages run", () => {
+    expect(qaResultFileName("2026-10-04T08:00:00.000Z", "gemma", "qa-literacy-v2", undefined, "sidecar")).toBe("2026-10-04-qa-literacy-v2-sidecar-gemma.json");
+    expect(qaResultFileName("2026-10-04T08:00:00.000Z", "gemma", "qa-v1", undefined, "sidecar")).toBe("2026-10-04-qa-sidecar-gemma.json");
+  });
+});
