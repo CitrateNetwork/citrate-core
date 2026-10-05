@@ -297,9 +297,9 @@ PY
 SHA=$(sha256 "$OUT/$NAME")
 SIZE=$(wc -c < "$OUT/$NAME" | tr -d ' ')
 ENTRY="$OUT/searxng-$PLATFORM.bundle-entry.json"
-python3 - "$BUNDLE" "$PLATFORM" "$SHA" "$SIZE" "$URL" "$ENTRY" "$APPLY" "$NAME" <<'PY'
+python3 - "$BUNDLE" "$PLATFORM" "$SHA" "$SIZE" "$URL" "$ENTRY" "$APPLY" "$NAME" "$SMOKE" <<'PY'
 import json, sys, datetime
-bundle, plat, sha, size, url, entry_path, apply, name = sys.argv[1:9]
+bundle, plat, sha, size, url, entry_path, apply, name, smoke = sys.argv[1:10]
 text = open(bundle).read()
 b = json.loads(text)
 tool = next(t for t in b["tools"] if t["name"] == "searxng")
@@ -312,7 +312,8 @@ entry = {
     "sha256": sha if url else None,
     "size": int(size) if url else None,
     "build_from": old["build_from"],
-    "note": f"Packed by scripts/pack-searxng.sh on {today} ({name}): the pinned Python runtime, the hash-locked wheels and the unmodified SearXNG source; bin/searxng-run answered /healthz on 127.0.0.1.",
+    "note": f"Packed by scripts/pack-searxng.sh on {today} ({name}): the pinned Python runtime, the hash-locked wheels and the unmodified SearXNG source; "
+    + ("bin/searxng-run answered /healthz on 127.0.0.1." if smoke == "1" else "packed with --no-smoke, so not started."),
 }
 json.dump({"artifact": name, "sha256": sha, "size": int(size), "entry": entry}, open(entry_path, "w"), indent=2)
 if apply == "1":

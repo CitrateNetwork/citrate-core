@@ -139,47 +139,37 @@ fn zip_err(e: zip::result::ZipError) -> ComponentError {
     unsafe_entry(format!("zip: {e}"))
 }
 
-/// The total entry count the zip's end-of-central-directory record declares (ZIP64 aware).
-/// Read from the last 64 KiB + 22 bytes, where the record must sit; any doubt is an error.
-fn zip_declared_entries(archive: &Path) -> Result<u64, ComponentError> {
+/// The number of central-directory file headers that sit back to back from `start`, the offset
+/// at which the zip reader itself began reading them. Counting the records the reader read, rather
+/// than trusting a count field, keeps this check on the reader's own view of the archive: a second
+/// end-of-central-directory record (in a comment, say) cannot make the two disagree unnoticed.
+fn zip_central_records(archive: &Path, start: u64) -> Result<u64, ComponentError> {
     use std::io::{Seek, SeekFrom};
-    const EOCD: &[u8; 4] = b"PK\x05\x06";
-    const LOC64: &[u8; 4] = b"PK\x06\x07";
-    const EOCD64: &[u8; 4] = b"PK\x06\x06";
-    let bad = || unsafe_entry("zip: the end of the central directory is not readable");
-    let mut f = fs::File::open(archive).map_err(io)?;
-    let len = f.metadata().map_err(io)?.len();
-    let tail_len = len.min(65_535 + 22);
-    f.seek(SeekFrom::Start(len - tail_len)).map_err(io)?;
-    let mut tail = Vec::with_capacity(tail_len as usize);
-    (&mut f).take(tail_len).read_to_end(&mut tail).map_err(io)?;
-    let at = tail
-        .windows(4)
-        .rposition(|w| w == EOCD)
-        .filter(|at| at + 22 <= tail.len())
-        .ok_or_else(bad)?;
-    let le16 = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
-    let total = le16(&tail, at + 10);
-    if total != u16::MAX {
-        return Ok(u64::from(total));
+    const CDH: &[u8; 4] = b"PK\x01\x02";
+    let f = fs::File::open(archive).map_err(io)?;
+    let mut r = BufReader::new(f);
+    r.seek(SeekFrom::Start(start)).map_err(io)?;
+    let mut n: u64 = 0;
+    let mut head = [0u8; 46];
+    loop {
+        match r.read_exact(&mut head) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(io(e)),
+        }
+        if &head[..4] != CDH {
+            break;
+        }
+        n += 1;
+        if n > MAX_ENTRIES {
+            return Err(unsafe_entry("too many entries"));
+        }
+        let le16 = |i: usize| i64::from(u16::from_le_bytes([head[i], head[i + 1]]));
+        // Name, extra field and comment lengths: skip to the next header.
+        r.seek_relative(le16(28) + le16(30) + le16(32))
+            .map_err(io)?;
     }
-    // ZIP64: the locator sits just before the record and points at the ZIP64 record.
-    let loc = at.checked_sub(20).ok_or_else(bad)?;
-    if &tail[loc..loc + 4] != LOC64 {
-        return Err(bad());
-    }
-    let mut off = [0u8; 8];
-    off.copy_from_slice(&tail[loc + 8..loc + 16]);
-    f.seek(SeekFrom::Start(u64::from_le_bytes(off)))
-        .map_err(io)?;
-    let mut rec = [0u8; 40];
-    f.read_exact(&mut rec).map_err(|_| bad())?;
-    if &rec[..4] != EOCD64 {
-        return Err(bad());
-    }
-    let mut n = [0u8; 8];
-    n.copy_from_slice(&rec[32..40]);
-    Ok(u64::from_le_bytes(n))
+    Ok(n)
 }
 
 fn unpack_zip(archive: &Path, dest: &Path) -> Result<ExtractReport, ComponentError> {
@@ -189,8 +179,9 @@ fn unpack_zip(archive: &Path, dest: &Path) -> Result<ExtractReport, ComponentErr
         return Err(unsafe_entry("too many entries"));
     }
     // The reader keys entries by name, so a repeated name would silently drop one copy. Two
-    // entries with one name are refused instead: the central directory's own count must match.
-    if zip_declared_entries(archive)? != ar.len() as u64 {
+    // entries with one name are refused instead: every central-directory record the reader
+    // walked must be an entry it kept.
+    if zip_central_records(archive, ar.central_directory_start())? != ar.len() as u64 {
         return Err(unsafe_entry(
             "zip: a name appears twice (or the entry count does not match)",
         ));

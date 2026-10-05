@@ -574,6 +574,57 @@ fn zip_duplicate_entries_are_refused() {
     assert!(r.is_err(), "a link may not replace a file of the same name");
 }
 
+/// `z` with its end-of-central-directory record given a 22-byte comment that is itself a
+/// second record declaring `entries` entries and starting its directory at `dir_offset`.
+fn zip_with_a_second_eocd_in_the_comment(z: Vec<u8>, entries: u16, dir_offset: u32) -> Vec<u8> {
+    let at = z.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
+    let real = z[at..at + 22].to_vec();
+    let mut fake = real.clone();
+    fake[8..10].copy_from_slice(&entries.to_le_bytes());
+    fake[10..12].copy_from_slice(&entries.to_le_bytes());
+    fake[16..20].copy_from_slice(&dir_offset.to_le_bytes());
+    let mut out = z[..at + 20].to_vec();
+    out.extend_from_slice(&22u16.to_le_bytes());
+    out.extend_from_slice(&fake);
+    out
+}
+
+#[test]
+fn a_second_end_record_in_the_comment_cannot_hide_a_duplicate_name() {
+    // Two entries named dup_a. A forged record in the comment declares one entry: whether the
+    // reader uses it (it points at the real directory) or falls back to the real record (it
+    // points nowhere), the two copies must not be unpacked as one.
+    let dup = zip_rename(
+        zip_bytes(&[
+            ZEntry::File("dup_a", b"1", 0o644),
+            ZEntry::File("dup_b", b"2", 0o644),
+        ]),
+        "dup_b",
+        "dup_a",
+    );
+    let at = dup.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
+    let dir = u32::from_le_bytes([dup[at + 16], dup[at + 17], dup[at + 18], dup[at + 19]]);
+    for (label, offset) in [
+        ("forged-count", dir),
+        ("forged-count-bad-offset", 0x7fff_fff0),
+    ] {
+        let bytes = zip_with_a_second_eocd_in_the_comment(dup.clone(), 1, offset);
+        let (t, r) = run(label, ArchiveFormat::Zip, &bytes);
+        assert!(r.is_err(), "{label}: a hidden duplicate must not unpack");
+        assert!(!t.path().join("tree").exists(), "{label}");
+    }
+    // The same comment on an archive without duplicates changes nothing the reader keeps.
+    let ok = zip_bytes(&[ZEntry::File("only", b"1", 0o644)]);
+    let at = ok.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
+    let dir = u32::from_le_bytes([ok[at + 16], ok[at + 17], ok[at + 18], ok[at + 19]]);
+    let (_t, r) = run(
+        "forged-consistent",
+        ArchiveFormat::Zip,
+        &zip_with_a_second_eocd_in_the_comment(ok, 1, dir),
+    );
+    assert_eq!(r.unwrap().files, 1);
+}
+
 #[test]
 fn an_encrypted_zip_entry_is_refused() {
     let bytes = zip_bytes(&[ZEntry::Stored("secret", b"x", 0o644)]);
