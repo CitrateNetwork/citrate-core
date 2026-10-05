@@ -115,6 +115,7 @@ fn build(
         tier: "T0",
         budget: b,
         fork_dry_run: fork,
+        fork_in_core: None,
     })
     .expect("gate inputs")
 }
@@ -518,6 +519,7 @@ fn build_from_sidecar_reads_the_granted_projects_artifact_and_asks_for_that_proj
         artifact: ART.into(),
         constructor_args_hex: None,
         fork_dry_run: Some(fork_for_artifact()),
+        fork_in_core: None,
     };
     let (inputs, _, check) = build_from_sidecar(&link, &req, &project, "T0", &t0()).expect("build");
     let rec = evaluate(&inputs, 1).expect("evaluate");
@@ -619,6 +621,7 @@ fn recorded_proof_run_when_present() {
         tier: "T0",
         budget: &t0(),
         fork_dry_run: fork,
+        fork_in_core: None,
     })
     .expect("inputs");
     let rec = evaluate(&inputs, 1).expect("evaluate");
@@ -640,4 +643,148 @@ fn recorded_proof_run_when_present() {
         "{}",
         serde_json::to_string_pretty(&rec.items).unwrap_or_default()
     );
+}
+
+// ------------------------------------------------------------------------ forkInCore (HUP-S6.10)
+
+fn lock_dir(tag: &str, template: &str, price: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "citrate-gate-forkincore-{tag}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("contracts")).expect("dir");
+    std::fs::write(
+        dir.join("contracts").join(TEMPLATE_LOCK),
+        serde_json::json!({ "template": template, "params": { "price": price } }).to_string(),
+    )
+    .expect("lock");
+    dir
+}
+
+fn request(
+    fork_dry_run: Option<ForkDryRunInput>,
+    fork_in_core: Option<ForkInCore>,
+) -> ToolchainGateRequest {
+    ToolchainGateRequest {
+        session_id: "s1-ab".into(),
+        project: PROJECT.into(),
+        artifact: ART.into(),
+        constructor_args_hex: None,
+        fork_dry_run,
+        fork_in_core,
+    }
+}
+
+#[test]
+fn the_hello_mint_flow_gets_fork_in_core_with_the_templates_own_test_mint() {
+    let dir = lock_dir("erc721", "erc721", "5000000000000000000");
+    let project = dir.join("contracts");
+    let f = fork_in_core_for(&request(None, None), &project).expect("forkInCore by default");
+    assert_eq!(f.state_rpc, None, "40204 state by default");
+    assert_eq!(
+        f.test_mint,
+        Some(TestMint {
+            quantity: 1,
+            price_wei: "5000000000000000000".into()
+        })
+    );
+    // An explicit forkInCore keeps its own options and gets the template mint when it names none.
+    let mine = ForkInCore {
+        state_rpc: Some("http://127.0.0.1:18646".into()),
+        from: None,
+        test_mint: None,
+    };
+    let f = fork_in_core_for(&request(None, Some(mine)), &project).expect("forkInCore");
+    assert_eq!(f.state_rpc.as_deref(), Some("http://127.0.0.1:18646"));
+    assert_eq!(f.test_mint.map(|m| m.quantity), Some(1));
+    // A caller's own fork run is used as it is (no second run).
+    assert_eq!(
+        fork_in_core_for(&request(Some(fork_for_artifact()), None), &project),
+        None
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_template_test_mint_reads_the_lock_here_or_above_and_only_for_mint_templates() {
+    let hm = lock_dir("hm", "hello-mint", "7");
+    // The hello-mint lock sits above the Foundry folder: move it up.
+    std::fs::rename(
+        hm.join("contracts").join(TEMPLATE_LOCK),
+        hm.join(TEMPLATE_LOCK),
+    )
+    .expect("mv");
+    assert_eq!(
+        template_test_mint(&hm.join("contracts")).map(|m| m.price_wei),
+        Some("7".to_string())
+    );
+    let erc20 = lock_dir("erc20", "erc20", "1");
+    assert_eq!(template_test_mint(&erc20.join("contracts")), None);
+    let bad = lock_dir("bad", "erc721", "5e18");
+    assert_eq!(template_test_mint(&bad.join("contracts")), None);
+    let neg = lock_dir("neg", "erc721", "-1");
+    assert_eq!(template_test_mint(&neg.join("contracts")), None);
+    for d in [hm, erc20, bad, neg] {
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn with_fork_in_core_the_gate_runs_the_fork_step_itself_and_fails_closed_without_the_binary() {
+    let (inputs, _, _) = gate_inputs(GateBuild {
+        reports: &clean_reports(),
+        project: PROJECT,
+        artifact: ART,
+        artifact_json: ARTIFACT,
+        constructor_args_hex: None,
+        tier: "T0",
+        budget: &t0(),
+        fork_dry_run: None,
+        fork_in_core: Some(ForkInCore {
+            state_rpc: None,
+            from: None,
+            test_mint: None,
+        }),
+    })
+    .expect("inputs");
+    assert_eq!(inputs.fork_dry_run, None, "no caller run is invented");
+    assert!(inputs.fork_in_core.is_some());
+    let rec = crate::deploy_gate::evaluate_submission(
+        &inputs,
+        None,
+        crate::fork_dry_run::FORK_TIMEOUT,
+        1,
+    )
+    .expect("evaluates");
+    let failing: Vec<_> = rec.failing().collect();
+    assert_eq!(failing.len(), 1, "only the fork item");
+    assert_eq!(failing[0].id, GateItemId::ForkDryRun);
+    assert!(
+        failing[0].reason.contains("citrate-fork is not installed"),
+        "{}",
+        failing[0].reason
+    );
+}
+
+#[test]
+fn the_request_takes_fork_in_core_from_the_wire() {
+    let r: ToolchainGateRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "s1-ab",
+        "project": "/p",
+        "artifact": "Token.sol/LemonDrops.json",
+        "forkInCore": { "testMint": { "quantity": 1, "priceWei": "5" } }
+    }))
+    .expect("parses");
+    assert_eq!(
+        r.fork_in_core
+            .and_then(|f| f.test_mint)
+            .map(|m| m.price_wei),
+        Some("5".into())
+    );
+    let none: ToolchainGateRequest = serde_json::from_value(serde_json::json!({
+        "sessionId": "s1-ab", "project": "/p", "artifact": "Token.sol/LemonDrops.json"
+    }))
+    .expect("parses");
+    assert_eq!(none.fork_in_core, None);
 }

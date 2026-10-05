@@ -83,7 +83,7 @@ export const tauriContracts: ContractsDomain = {
     return invoke<VerifyOutcomeView>("postdeploy_verify", { projectDir, address, constructorArgsHex: constructorArgsHex ?? null });
   },
   postdeploySwitchSite(projectDir: string, address: string) {
-    return invoke<{ envPath: string; address: string }>("postdeploy_switch_site", { projectDir, address });
+    return invoke<{ envPath: string; address: string; decodedCalls?: boolean; decodeNote?: string }>("postdeploy_switch_site", { projectDir, address });
   },
   postdeployPinSite(projectDir: string) {
     return invoke<SitePinView>("postdeploy_pin_site", { projectDir });

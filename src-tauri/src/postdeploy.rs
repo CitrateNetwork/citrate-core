@@ -933,16 +933,121 @@ pub fn postdeploy_verify_sync(
 pub struct SiteSwitch {
     pub env_path: String,
     pub address: String,
+    /// HUP-S6: the ceremony now decodes calls to this contract from its own ABI (its code on
+    /// chain is exactly a READY-gated artifact's); `false` = its calls still show as raw data.
+    pub decoded_calls: bool,
+    /// Why the calls are not decoded, when they are not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_note: Option<String>,
+}
+
+/// The largest forge artifact read for its ABI.
+const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// HUP-S6 (g3-e2e prep): let the SignatureCeremony decode calls to the deployed hello-mint
+/// contract (the page's `mint(uint256)`) from the contract's own ABI, so a test mint needs no
+/// raw-data acknowledgement. Registered only when both hold:
+///
+/// 1. the project's compiled artifact (`contracts/out/Token.sol/<Contract>.json`) has a READY
+///    deploy-gate record for its init code (the template contract takes no constructor
+///    arguments), and
+/// 2. the code at `address` is exactly that artifact's runtime code (an artifact with
+///    immutables is refused: its runtime code differs per deploy).
+///
+/// Returns why not, when it is not registered. Reads only; signs nothing.
+pub fn register_gated_abi<T: crate::rpc::RpcTransport>(
+    client: &crate::rpc::RpcClient<T>,
+    p: &HelloMintProject,
+    address: &str,
+    gate: &crate::deploy_gate::GateStore,
+    ceremony: &crate::ceremony::SignatureCeremony,
+) -> std::result::Result<(), String> {
+    let addr = normalize_address(address)?;
+    let path = p
+        .contracts_dir
+        .join("out/Token.sol")
+        .join(format!("{}.json", p.contract_name));
+    let meta = std::fs::symlink_metadata(&path)
+        .map_err(|_| "the compiled artifact was not found (run forge build)".to_string())?;
+    if !meta.is_file() || meta.len() > MAX_ARTIFACT_BYTES {
+        return Err("the compiled artifact is not a forge artifact file".to_string());
+    }
+    let art: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).map_err(|e| format!("artifact: {}", e.kind()))?,
+    )
+    .map_err(|_| "the compiled artifact is not forge JSON".to_string())?;
+    let hex_of = |ptr: &str| -> Option<Vec<u8>> {
+        let s = art.pointer(ptr)?.as_str()?;
+        hex::decode(s.trim_start_matches("0x")).ok()
+    };
+    let init = hex_of("/bytecode/object").ok_or("the artifact has no creation bytecode")?;
+    let runtime =
+        hex_of("/deployedBytecode/object").ok_or("the artifact has no runtime bytecode")?;
+    let immutables = art
+        .pointer("/deployedBytecode/immutableReferences")
+        .and_then(|v| v.as_object())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if immutables != 0 || runtime.is_empty() {
+        return Err("the contract's runtime code cannot be compared (immutables)".to_string());
+    }
+    let h = crate::deploy_gate::initcode_hash(&init);
+    match gate.get(&h) {
+        Some(r) if r.verdict == crate::deploy_gate::Verdict::Ready => {}
+        _ => return Err("this build has no READY deploy-gate record".to_string()),
+    }
+    let code = crate::contract_reader::rpc_raw(
+        client,
+        "eth_getCode",
+        serde_json::json!([addr, "latest"]),
+    )?;
+    let code = code
+        .as_str()
+        .and_then(|s| s.strip_prefix("0x"))
+        .and_then(|s| hex::decode(s).ok())
+        .ok_or("the node's eth_getCode result is not 0x hex")?;
+    if code != runtime {
+        return Err("the code at this address is not the gated build".to_string());
+    }
+    let abi = crate::abi_book::ContractAbi::from_abi_json(
+        &p.contract_name,
+        art.get("abi").ok_or("the artifact has no ABI")?,
+    )?;
+    let mut a = [0u8; 20];
+    let raw = hex::decode(addr.trim_start_matches("0x")).map_err(|e| e.to_string())?;
+    if raw.len() != 20 {
+        return Err("not an address".to_string());
+    }
+    a.copy_from_slice(&raw);
+    ceremony.register_gated_contract(a, abi);
+    Ok(())
 }
 
 /// **postdeploy_switch_site** — point the page at chain 40204 and the deployed contract. Refused
 /// unless the address holds code on 40204.
 #[tauri::command]
 pub async fn postdeploy_switch_site(
+    app_h: tauri::AppHandle,
     project_dir: String,
     address: String,
 ) -> std::result::Result<SiteSwitch, String> {
-    crate::blocking::off_main(move || postdeploy_switch_site_sync(project_dir, address)).await
+    crate::blocking::off_main(move || {
+        let mut out = postdeploy_switch_site_sync(project_dir.clone(), address.clone())?;
+        // HUP-S6: decode the page's calls to this contract from its ABI when it is the gated build.
+        let gate = tauri::Manager::try_state::<crate::deploy_gate::DeployGateState>(&app_h);
+        let cer = tauri::Manager::try_state::<crate::ceremony::CeremonyState>(&app_h);
+        let note = match (gate, cer, open_project(Path::new(&project_dir))) {
+            (Some(g), Some(c), Ok(p)) => {
+                register_gated_abi(&crate::rpc::RpcClient::citrate(), &p, &address, &g.0, &c.0)
+                    .err()
+            }
+            _ => Some("internal: managed state unavailable".to_string()),
+        };
+        out.decoded_calls = note.is_none();
+        out.decode_note = note;
+        Ok(out)
+    })
+    .await
 }
 
 /// Blocking body of [`postdeploy_switch_site`]; reached only through [`crate::blocking::off_main`].
@@ -969,6 +1074,8 @@ pub fn switch_site_checked<T: crate::rpc::RpcTransport>(
     Ok(SiteSwitch {
         env_path: path.display().to_string(),
         address: checksum_address(&address),
+        decoded_calls: false,
+        decode_note: None,
     })
 }
 

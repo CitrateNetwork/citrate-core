@@ -183,7 +183,7 @@ describe("Feature: build a contract from a template (US-6.4)", () => {
       type($(el, "cf-artifact"), "Token.sol/LemonDrops.json");
     });
     await click($(el, "cf-gate"));
-    expect(o.gateFromToolchain).toHaveBeenCalledWith({ sessionId: "s1-ab", project: "/work/dapps/lemon", artifact: "Token.sol/LemonDrops.json" });
+    expect(o.gateFromToolchain).toHaveBeenCalledWith({ sessionId: "s1-ab", project: "/work/dapps/lemon", artifact: "Token.sol/LemonDrops.json", forkInCore: {} });
     expect($(el, "deploy-gate-verdict")?.textContent).toBe("NOT READY");
     expect($(el, "cf-medusa")?.textContent).toMatch(/T0: at least 10,000 calls/);
   });
