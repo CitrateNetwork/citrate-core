@@ -191,6 +191,7 @@ gates:
       - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false, evidence: "release/README.md (macOS arm64 0.5.0-line build PASS 2026-10-04 at budgets pending owner sign-off; Linux and Windows not measured)"}
       - {id: g5-os, desc: "hello-mint e2e on macOS arm64, Linux x64, Windows x64 clean installs", met: false}
       - {id: g5-redteam, desc: "Red-team pass: no open High", met: false}
+      - {id: g5-scl, desc: "Owner decision 2026-10-05: the v0.5.0 cut also requires every SCL (owned sidecar lifecycle) gate to be met; the 40204 reroll is not gated on SCL", met: false, evidence: ".agentile/planset/2026-10-05-sidecar-lifecycle/gates.yaml"}
       - id: g5-docs
         desc: Document pass + retro + essay
         met: false
