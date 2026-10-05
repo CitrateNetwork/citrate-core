@@ -149,6 +149,11 @@ jobs:
         id: runtime
         if: ${{ !cancelled() && steps.check.outcome == 'success' && (inputs.suites == 'all' || inputs.suites == 'sidecar') }}
         run: |
+          # The sidecar refuses plain http off loopback: fail now, not after the runtime build.
+          if [[ "$EVAL_BASE_URL" != https://* ]]; then
+            echo "::error::the sidecar suite needs an https endpoint (the sidecar refuses plain http off loopback)"
+            exit 2
+          fi
           repo="$(sed -n 's/^repo = //p' eval/sidecar-runtime.rev)"
           rev="$(sed -n 's/^rev = //p' eval/sidecar-runtime.rev)"
           if [ "$repo" != "CitrateNetwork/citrate-agent-runtime" ] || [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then

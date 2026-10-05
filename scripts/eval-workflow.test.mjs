@@ -158,6 +158,14 @@ describe("eval.yml suites (HUP-S11.2)", () => {
     expect(src.match(/--allow-remote/g)?.length).toBeGreaterThanOrEqual(3);
   });
 
+  it("refuses a non-https endpoint for the sidecar suite before the runtime is built", () => {
+    // The sidecar refuses plain http off loopback; fail in seconds, not after a long Rust build.
+    const guard = src.indexOf('[[ "$EVAL_BASE_URL" != https://* ]]');
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(src.indexOf("name: Check out citrate-agent-runtime at the pinned commit"));
+    expect(guard).toBeGreaterThan(src.indexOf("name: Read the pinned runtime commit"));
+  });
+
   it("checks datasets and pins before any model call, and gates the later suites on it", () => {
     const check = src.indexOf("node scripts/eval-check.mjs");
     expect(check).toBeGreaterThan(-1);
