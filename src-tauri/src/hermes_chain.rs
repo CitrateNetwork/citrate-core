@@ -3,8 +3,8 @@
 //! Data source (Rule 7): every call here is the Hermes sidecar's bearer-authed loopback control
 //! plane (`citrate-agent-sidecar`, crates `citrate-agent-metering` and `citrate-agent-anchor` in
 //! citrate-agent-runtime). Core passes the sidecar three data folders under its own app-data dir:
-//! the metering log, the decision records, and the anchor ledger. Trajectory recording is never
-//! turned on by core; a member opts in by setting `CITRATE_HERMES_TRAJECTORIES` themselves.
+//! the metering log, the decision records, and the anchor ledger. Trajectory recording is not one
+//! of them: it is turned on only by the member's own switch (`fl_trajectories.rs`, default off).
 //!
 //! The sidecar batches and builds calldata; it never signs. Core signs the anchor with its own
 //! anchor key inside the anchor ceremony (`citrate_core_kit::ceremony::anchor`).
@@ -162,6 +162,18 @@ impl HermesManager {
         Self::decode(self.control.get(
             &format!("{}/anchor/records{qs}", self.control_url()),
             &bearer,
+        )?)
+    }
+
+    /// `POST /metering/chain-receipt` (HUP-S7.5, D-27): one mined Hermes transaction's public
+    /// facts (hash, purpose, status, gas used, gas price, value), so the day's report carries its
+    /// gas and the SALT it spent. Built by `chain_agent::spend`.
+    pub fn metering_chain_receipt(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let bearer = self.bearer()?;
+        Self::decode(self.control.post(
+            &format!("{}/metering/chain-receipt", self.control_url()),
+            &bearer,
+            &body.to_string(),
         )?)
     }
 

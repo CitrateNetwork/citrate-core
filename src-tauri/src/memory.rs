@@ -389,7 +389,7 @@ fn parse_tenant_total(line: &str) -> Option<u64> {
 /// Parse one hit line: `  <id10> [<score> ][<kind><status>] <title>`. The score
 /// is optional; the bracket carries `kind` plus an optional ` ⚠SUPERSEDED` /
 /// ` (archived)` status the daemon appended.
-fn parse_hit_line(line: &str) -> Option<MemoryHit> {
+pub(crate) fn parse_hit_line(line: &str) -> Option<MemoryHit> {
     let l = line.trim_start();
     // Hit lines are indented (start with two spaces) and carry a `[` bracket.
     if !line.starts_with("  ") || !l.contains('[') {
@@ -503,6 +503,9 @@ pub struct MemoryManager {
     /// (bootstrap a fresh store to BGE for real semantic recall). `None` → the
     /// daemon has no embedder available and stays lexical (honest).
     model_dir: Option<PathBuf>,
+    /// HUP-S3.4 (fan-out 7): the learned-memory ledger. Recall and search leave out learned
+    /// memories with an unresolved contradiction (`hermes_learn::RecallHide`).
+    learned_ledger: Option<PathBuf>,
 }
 
 /// The bridge status shape surfaced to the MemoryDomain seam. PUBLIC facts only —
@@ -553,7 +556,23 @@ impl MemoryManager {
             transport,
             sup: Mutex::new(None),
             model_dir: None,
+            learned_ledger: None,
         }
+    }
+
+    /// HUP-S3.4 (fan-out 7): the learned-memory ledger recall and search read to leave out
+    /// learned memories with an unresolved contradiction. Builder style, like the model dir.
+    pub fn with_learned_ledger(mut self, ledger: Option<PathBuf>) -> Self {
+        self.learned_ledger = ledger;
+        self
+    }
+
+    /// Leave out learned memories with an unresolved contradiction (when a ledger is set).
+    fn hide_unresolved(&self, mut r: MemoryResult) -> MemoryResult {
+        if let Some(p) = &self.learned_ledger {
+            crate::hermes_learn::RecallHide::load(p).filter(&mut r);
+        }
+        r
     }
 
     /// Set the bundled BGE model dir (enables real semantic embedding). Builder
@@ -737,7 +756,7 @@ impl MemoryManager {
         let text = self
             .transport
             .call_tool("memory.recall", json!({ "repo": tenant, "budget": budget }))?;
-        Ok(parse_result(tenant, &text))
+        Ok(self.hide_unresolved(parse_result(tenant, &text)))
     }
 
     /// `memory.assert` — author a claim into a tenant (W3.2 docs preload). The
@@ -996,7 +1015,7 @@ impl MemoryManager {
             args["passages"] = json!(true);
         }
         let text = self.transport.call_tool("memory.search", args)?;
-        Ok(parse_result(tenant, &text))
+        Ok(self.hide_unresolved(parse_result(tenant, &text)))
     }
 
     /// `memory.neighbors` of a node prefix in a tenant → parsed edges.
@@ -1126,7 +1145,8 @@ pub fn build_memory_state<R: tauri::Runtime>(
             crash_record_path,
             transport,
         )
-        .with_model_dir(model_dir),
+        .with_model_dir(model_dir)
+        .with_learned_ledger(crate::hermes_learn::ledger_path(app).ok()),
     ))
 }
 

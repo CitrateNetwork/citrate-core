@@ -240,7 +240,16 @@ export async function driveSession(
   http: SidecarHttp,
   sessionId: string,
   policy: CorePolicy,
-  o: { runId?: string; deadlineMs: number; browser: boolean; now?: () => number; pollMs?: number },
+  o: {
+    runId?: string;
+    deadlineMs: number;
+    browser: boolean;
+    now?: () => number;
+    pollMs?: number;
+    /** HUP-S7.7 QA through the sidecar: answer core tool calls with this instead of the fixture
+     *  host (for example memory_search on a real memory daemon). */
+    answerCore?: (name: string, rawArgs: string) => Promise<CoreAnswer>;
+  },
 ): Promise<DriveResult> {
   const now = o.now ?? (() => Date.now());
   const until = now() + o.deadlineMs;
@@ -261,7 +270,7 @@ export async function driveSession(
         const call = ev.call as { id: string; name: string; arguments: string };
         if (answered.has(call.id)) continue;
         answered.add(call.id);
-        const a = answerCoreTool(call.name, call.arguments, policy);
+        const a = o.answerCore ? await o.answerCore(call.name, call.arguments) : answerCoreTool(call.name, call.arguments, policy);
         const r = await http("POST", `/sessions/${sessionId}/tool_results`, { callId: call.id, status: a.status, content: a.content });
         // 409 = the sidecar stopped waiting for that call (its deadline passed): the loop already
         // recorded an error for it, which the events will show.

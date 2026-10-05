@@ -261,6 +261,7 @@ describe("citations resolve to node ids of the imported graph (g2-knowledge b)",
                 text: "40204 0x9d0c citrate-docs:content/chain/genesis.md#reference citrate-docs:content/chain/genesis.md#tokenomics",
                 retrieved: retrieved.slice(0, 1),
                 toolCalls: [{ tenant: "citrate-docs", query: "chain id" }],
+                skillLoads: ["citrate-precompiles"],
               }
             : { text: "Not documented.", retrieved: [], toolCalls: [] },
       },
@@ -268,6 +269,9 @@ describe("citations resolve to node ids of the imported graph (g2-knowledge b)",
     );
     expect(out.items[0].retrievedNodes).toEqual(["0a1b2c3d4e"]);
     expect(out.items[0].toolCalls).toEqual([{ tenant: "citrate-docs", query: "chain id" }]);
+    // HUP-S7.7: a sidecar run also records which skills the model read.
+    expect(out.items[0].skillLoads).toEqual(["citrate-precompiles"]);
+    expect(out.items[1].skillLoads).toBeUndefined();
     expect(out.items[0].citedNodes).toEqual([
       { citation: "citrate-docs:content/chain/genesis.md#reference", nodeIds: ["0a1b2c3d4e"] },
       { citation: "citrate-docs:content/chain/genesis.md#tokenomics", nodeIds: [] },

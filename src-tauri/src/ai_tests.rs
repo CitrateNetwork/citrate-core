@@ -818,6 +818,28 @@ fn usage_without_timings_has_no_generation_time_and_missing_usage_adds_nothing()
     assert!(msg[USAGE_KEY].get("generation_ms").is_none());
 }
 
+/// HUP-S7.5 (D-27): llama-server's prompt time is the server's time to first token.
+#[test]
+fn the_servers_prompt_time_rides_along_as_time_to_first_token() {
+    let resp = json!({
+        "choices": [{ "message": { "content": "hi" } }],
+        "usage": { "prompt_tokens": 12, "completion_tokens": 4 },
+        "timings": { "prompt_n": 12, "prompt_ms": 95.6, "predicted_n": 4, "predicted_ms": 140.2 }
+    });
+    let msg: Value = serde_json::from_str(&parse_chat_message(&resp.to_string()).unwrap()).unwrap();
+    assert_eq!(
+        msg[USAGE_KEY],
+        json!({ "prompt_tokens": 12, "completion_tokens": 4, "generation_ms": 140, "prompt_ms": 96 })
+    );
+    let bad = json!({
+        "choices": [{ "message": { "content": "hi" } }],
+        "usage": { "prompt_tokens": 1, "completion_tokens": 1 },
+        "timings": { "prompt_ms": "fast", "predicted_ms": 5.0 }
+    });
+    let msg: Value = serde_json::from_str(&parse_chat_message(&bad.to_string()).unwrap()).unwrap();
+    assert!(msg[USAGE_KEY].get("prompt_ms").is_none(), "unknown, never guessed");
+}
+
 #[test]
 fn the_usage_key_is_never_sent_back_to_the_model() {
     let history = json!([

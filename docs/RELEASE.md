@@ -86,6 +86,22 @@ gh release upload runtime-deps /tmp/llama-runtime-arm64.tar.gz
 ```
 Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
 
+#### The BGE embedding GGUF (`bge-base-en-v1.5-f16.gguf`, HUP-S1.2 / US-1.4)
+
+Hermes ranks the tools it offers per request, and the skills it surfaces per turn, with a second
+loopback `llama-server` the app starts in embedding mode (`--embeddings --pooling cls`, its own
+API key; `src-tauri/src/embed_serve.rs`). It loads the same BGE weights as `models/bge-base-en-v1.5`,
+converted to GGUF. The conversion is deterministic and checked against the pin (already in
+`src-tauri/runtime-deps.sha256`, pending owner sign-off):
+
+```bash
+# a llama.cpp checkout at tag b8640, with its converter's Python packages installed
+LLAMA_CPP_DIR=/tmp/llama.cpp scripts/build-bge-gguf.sh /tmp/bge-base-en-v1.5 /tmp/bge-gguf
+gh release upload runtime-deps /tmp/bge-gguf/bge-base-en-v1.5-f16.gguf --clobber -R CitrateNetwork/citrate-core
+```
+
+Without it (for example a lite bundle) the app still runs: Hermes sessions rank lexically and say so.
+
 #### The Hermes knowledge corpus (`knowledge-corpus.tar.gz`, HUP-S3.1)
 
 The corpus Hermes imports on first run is built in citrate-memories from the

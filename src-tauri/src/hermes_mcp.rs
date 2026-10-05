@@ -102,6 +102,9 @@ impl std::fmt::Debug for NodeTarget {
 pub struct MemBridgeTarget {
     pub exe: PathBuf,
     pub socket: PathBuf,
+    /// HUP-S3.4 (fan-out 7): the learned-memory ledger, so the bridge leaves unresolved learned
+    /// memories out of what Hermes recalls.
+    pub ledger: Option<PathBuf>,
 }
 
 /// The allowlist file inside the Hermes data dir.
@@ -127,7 +130,7 @@ pub fn render_config(
                 "name": "mem",
                 "transport": "stdio",
                 "command": t.exe.to_string_lossy(),
-                "args": [crate::mem_mcp_bridge::BRIDGE_FLAG, t.socket.to_string_lossy()],
+                "args": mem_bridge_args(t),
                 "timeout_ms": CALL_TIMEOUT_MS,
                 "allow_write_tools": false,
             }));
@@ -380,6 +383,18 @@ pub fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBu
         .join("hermes"))
 }
 
+/// The bridge's argv: the flag, the socket, and the ledger when there is one.
+fn mem_bridge_args(t: &MemBridgeTarget) -> Vec<String> {
+    let mut args = vec![
+        crate::mem_mcp_bridge::BRIDGE_FLAG.to_string(),
+        t.socket.to_string_lossy().into_owned(),
+    ];
+    if let Some(l) = &t.ledger {
+        args.push(l.to_string_lossy().into_owned());
+    }
+    args
+}
+
 /// This executable + the managed memory daemon's socket, when both resolve.
 fn mem_target<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<MemBridgeTarget> {
     use tauri::Manager;
@@ -389,7 +404,12 @@ fn mem_target<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<MemBridgeT
         .0
         .socket_path()
         .clone();
-    Some(MemBridgeTarget { exe, socket })
+    let ledger = crate::hermes_learn::ledger_path(app).ok();
+    Some(MemBridgeTarget {
+        exe,
+        socket,
+        ledger,
+    })
 }
 
 /// HUP-S4.1: the node entry's target when the member turned it on and the node's MCP server is
