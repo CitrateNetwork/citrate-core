@@ -2,15 +2,23 @@
 created: 2026-10-04
 branch: hup/n7-sizeup-library
 author: Larry Klosowski + Claude Opus 5.5
-status: evidence for review; core switch staged as a patch, waiting on the owner to create the sizeup repo
+status: evidence for review; core switch staged as a patch; the sizeup repo now exists, the library branch is not pushed yet
 sprint: HUP-S8 Fleet (fan-out 7, lane L07)
 wps: S8.2 (sizeup probe source), S1.6 follow-up; federation item F-10
-repos: citrate-sizeup (local branch hup/n7-sizeup-library, no remote yet), citrate-core hup/n7-sizeup-library
+repos: citrate-sizeup (local branch hup/n7-sizeup-library, not pushed), citrate-core hup/n7-sizeup-library
 ---
 
 # F-10: core's tier probe on the citrate-sizeup library
 
 ## Where this stands
+
+**Update after review (2026-10-04):** the private `CitrateNetwork/citrate-sizeup` repository now
+exists (created 2026-10-04, Pacific time) and holds `main` at `09b3e11`. The
+library branch `hup/n7-sizeup-library` is still local only: `1658eba`, `d593b8b`, and the review
+commit `f29c3e0`, which pins that the library probe never asks the collector for the hostname or
+a site key and that a zero RAM reading stays unknown (sizeup tests 296 to 298). The text below was
+written before the repo existed; step 1 of the finish list is now only "push the branch and merge
+it".
 
 The work is done and proven on this machine. The core side is **not** on this branch as code
 yet, because the private `CitrateNetwork/citrate-sizeup` repository does not exist. Creating it
@@ -75,8 +83,9 @@ pin tripwire OK.
 
 ## To finish after the repo exists (owner first, then one short lane)
 
-1. **Owner**: create the private `CitrateNetwork/citrate-sizeup` and push the local checkout,
-   including branch `hup/n7-sizeup-library` (open it as a PR; merge it so the pin is on `main`).
+1. **Owner**: the private `CitrateNetwork/citrate-sizeup` exists. Push branch
+   `hup/n7-sizeup-library` from the local checkout (open it as a PR; merge it so the pin is on
+   `main`).
 2. **Owner**: extend the `CITRATE_CHAIN_READ_TOKEN` secret (core CI and release workflows) to
    Contents:read on `citrate-sizeup`, or core CI cannot fetch it.
 3. **citrate-federation** `manifest.toml` (Rule 12, before the Cargo change): add

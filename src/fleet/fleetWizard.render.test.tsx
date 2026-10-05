@@ -60,8 +60,8 @@ describe("FleetWizardView", () => {
     expect(html).toContain("pending owner sign-off");
   });
 
-  // HUP F-10 / WP-S8.2: the tier and role now come from the citrate-sizeup library
-  // (`library::recommend` + `Role::for_tier`); the machine step must render every outcome it returns,
+  // HUP F-10 / WP-S8.2: once the staged patch lands, the tier and role come from the citrate-sizeup
+  // library (`library::recommend` + `Role::for_tier`); the machine step must render every outcome it returns,
   // including the dedicated-GPU lift and the unknown-memory T0, with the rationale lines tier.rs emits.
   it.each([
     { tier: "T0", role: "light", label: "Light: chat and small jobs", line: "Under 12 GB usable → T0" },
