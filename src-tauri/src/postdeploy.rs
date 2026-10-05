@@ -951,8 +951,9 @@ const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
 /// 1. the project's compiled artifact (`contracts/out/Token.sol/<Contract>.json`) has a READY
 ///    deploy-gate record for its init code (the template contract takes no constructor
 ///    arguments), and
-/// 2. the code at `address` is exactly that artifact's runtime code (an artifact with
-///    immutables is refused: its runtime code differs per deploy).
+/// 2. the code at `address` is exactly that artifact's runtime code, and that runtime code is
+///    the one the gated init code carries (an artifact with immutables is refused: its runtime
+///    code differs per deploy).
 ///
 /// Returns why not, when it is not registered. Reads only; signs nothing.
 pub fn register_gated_abi<T: crate::rpc::RpcTransport>(
@@ -990,6 +991,12 @@ pub fn register_gated_abi<T: crate::rpc::RpcTransport>(
         .unwrap_or(0);
     if immutables != 0 || runtime.is_empty() {
         return Err("the contract's runtime code cannot be compared (immutables)".to_string());
+    }
+    // The runtime field must be the code the gated init code deploys: without immutables solc
+    // embeds it verbatim in the creation code. Otherwise an artifact could pair a READY init code
+    // with another contract's runtime and have that contract's calls shown as the gated build's.
+    if runtime.len() > init.len() || !init.windows(runtime.len()).any(|w| w == runtime.as_slice()) {
+        return Err("the code at this address is not the gated build".to_string());
     }
     let h = crate::deploy_gate::initcode_hash(&init);
     match gate.get(&h) {
