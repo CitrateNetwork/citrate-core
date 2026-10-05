@@ -18,11 +18,13 @@
 //     turn (core's `citrate_usage` on the in-app loop, the sidecar's `usage` event), giving context
 //     used (prompt + completion tokens) and tokens per second (llama-server `timings.predicted_ms`)
 //   - plan, approvals, verifier verdicts (HUP-S7.6): the turn activity slice, from the sidecar's
-//     `plan` and `verifier` events, the store's approval cards and the sidecar's held commands
+//     `plan` and `verifier` events, the store's approval cards and the sidecar's held commands; a
+//     plain chat turn's plan is built from the tool calls the model asked for (agent/chatPlan.ts)
 // Where the app has no real number the field is null and the monitor says "unknown" with the
 // reason. Usage is null until the model server reports it for this turn; it is never estimated.
 // =====================================================================
 import {
+  chatPlanStates,
   planStepStates,
   tokensPerSecond,
   type ApprovalRow,
@@ -34,6 +36,10 @@ import {
   type VerifierRow,
 } from "../shell/slices/turnActivity";
 import type { DaemonsView } from "../daemons/api";
+
+/** A plan row's state: a workflow step's verifier state, or a chat plan row's progress (HUP-S7.6). */
+export const PLAN_ROW_STATES = ["not checked yet", "passed", "failed", "running", "done", "stopped"] as const;
+export type PlanRowState = (typeof PLAN_ROW_STATES)[number];
 
 export type ProviderClass = "local" | "gateway" | "demo" | "unknown";
 
@@ -71,9 +77,10 @@ export interface MonitorSnapshot {
     tools: ToolRow[];
     /** HUP-S2.2: this turn's command runs. Absent from an older sender = none. */
     runs?: RunRow[];
-    /** HUP-S7.6: a workflow run's steps with their verifier state; null = a chat turn (no plan).
+    /** HUP-S7.6: a workflow run's steps with their verifier state, or a chat turn's plan rows
+     *  (one per model step that asked for tools) with their progress; null = no plan yet.
      *  Absent from an older sender = no plan. */
-    plan?: { step: string; state: "not checked yet" | "passed" | "failed" }[] | null;
+    plan?: { step: string; state: PlanRowState }[] | null;
     /** HUP-S7.6: approvals asked this turn. Absent from an older sender = none. */
     approvals?: ApprovalRow[];
     /** HUP-S7.6: verifier verdicts this turn. Absent from an older sender = none. */
@@ -298,7 +305,7 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
       outcome: a.outcome,
       tools: a.tools,
       runs: a.runs ?? [],
-      plan: a.plan ? planStepStates(a.plan, a.verifiers ?? []) : null,
+      plan: a.plan ? (a.planSource === "chat" ? chatPlanStates(a.plan, a) : planStepStates(a.plan, a.verifiers ?? [])) : null,
       approvals: a.approvals ?? [],
       verifiers: a.verifiers ?? [],
       why: waitingReason(a),
@@ -358,7 +365,7 @@ function isVerifierRow(v: unknown): v is VerifierRow {
 }
 
 function isPlanRow(v: unknown): boolean {
-  return isObj(v) && typeof v.step === "string" && ["not checked yet", "passed", "failed"].includes(v.state as string);
+  return isObj(v) && typeof v.step === "string" && (PLAN_ROW_STATES as readonly string[]).includes(v.state as string);
 }
 
 function isWorkerRow(v: unknown): v is WorkerRow {
