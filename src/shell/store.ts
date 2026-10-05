@@ -555,6 +555,8 @@ export class Store {
    *  restart-loop forever against a chain-side wedge that advances only a few blocks per restart. */
   private nodeStallCycles = 0;
   private nodeStalledNotified = false;
+  /** The chain-reset notice from `node_status` was shown this session. */
+  private nodeChainResetNotified = false;
   // W1.x — true once the producer has been armed this session (the node respawns
   // with --mine and mints proposer.key). Gate for `maybeAutoBond` step 1.
   private validatorArmed = false;
@@ -1221,6 +1223,11 @@ export class Store {
     this.nodeRefreshing = true;
     try {
       const st = await bridge.node.status();
+      // 40204 reroll: the node's start deleted another genesis's chain data. Say so once.
+      if (st.notice && !this.nodeChainResetNotified) {
+        this.nodeChainResetNotified = true;
+        this.toast(st.notice);
+      }
       // REAL validator bond (SALT) from the ValidatorRegistry (pubkeyOfStaker(bond)
       // → stakeOf, via grantStatus, keyed on the member's MemberBond clone). This —
       // NOT `hasGrant` — is what makes a member a validator: the membership grant

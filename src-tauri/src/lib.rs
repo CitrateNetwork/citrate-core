@@ -89,6 +89,7 @@ mod model;
 mod model_register;
 mod model_registry;
 mod node;
+mod node_genesis;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
 mod postdeploy;
 // HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).

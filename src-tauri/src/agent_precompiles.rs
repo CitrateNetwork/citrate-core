@@ -15,11 +15,14 @@
 //! reads the outputs back. It is pure: no RPC, no key, no signing. It refuses an input the
 //! chain would refuse (wrong shapes, caps, lengths) before anyone builds a call around it.
 //!
-//! Where the calls happen. A top-level `eth_call` whose `to` is a precompile returns `0x` on a
-//! Citrate node at every height, so these inputs are for contract code: the chain's
+//! Where the calls happen. Contract code reaches these addresses through the chain's
 //! `CitratePrecompiles` library (`loraApply`, `loraMerge`, `memoryAnchorCommitment`,
 //! `deviceLinkValid`, `deviceRevocationValid`), a generated contract, or the devnet check
-//! (citrate-chain `scripts/devnet-precompile-check.sh`). On chain 40204 the four addresses are
+//! (citrate-chain `scripts/devnet-precompile-check.sh`). On a node built for the reroll a
+//! top-level transaction or `eth_call` whose `to` is a precompile address runs the precompile too
+//! (citrate-chain D3, gated on the PBA hardening, which is active from the reroll genesis on
+//! 40204), except that a call with empty calldata is a plain transfer and still returns `0x`. A
+//! node built before the reroll returns `0x` to every top-level call to a precompile address. On chain 40204 the four addresses are
 //! active from genesis: the 2026-10-05 reroll pins the agent precompile height to 0 in the node
 //! binary (owner decision 2026-10-04), so the app applies no activation gate of its own. A node
 //! built before the reroll does not have them, and there every library call reverts with
@@ -89,7 +92,7 @@ pub const FORK_PRECOMPILES: &[(u16, &str, &str)] = &[
 ];
 
 /// What a caller should know before relying on any of these inputs.
-pub const FORK_NOTE: &str = "Active from genesis on chain 40204 (the 2026-10-05 reroll pins the agent precompile height to 0). Reachable from contract code through citrate-chain CitratePrecompiles; a node built before the reroll does not have them and the library call reverts with PrecompileUnavailable. A top-level eth_call to the address returns 0x on a Citrate node, so do not call it directly.";
+pub const FORK_NOTE: &str = "Active from genesis on chain 40204 (the 2026-10-05 reroll pins the agent precompile height to 0). Reachable from contract code through citrate-chain CitratePrecompiles; a node built before the reroll does not have them and the library call reverts with PrecompileUnavailable. On a node built for the reroll, a top-level eth_call or transaction to the address also runs the precompile (citrate-chain D3, gated on the PBA hardening, which is active from the reroll genesis); a call with empty calldata is a plain transfer and still returns 0x. A node built before the reroll returns 0x to every top-level call.";
 
 /// The agent precompiles are active from genesis on 40204 (reroll 2026-10-05).
 pub const ACTIVE_FROM_GENESIS: bool = true;

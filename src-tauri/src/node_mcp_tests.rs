@@ -638,8 +638,9 @@ fn precompile_call_targets_the_table_address() {
 
 #[test]
 fn precompile_call_reports_an_empty_answer_as_an_error_not_a_result() {
-    // A top-level eth_call whose `to` is a precompile returns 0x on a Citrate node (the executor
-    // runs code only at accounts that have it). That empty answer is not the precompile's output.
+    // On a node built for the reroll a top-level eth_call to a precompile runs it (citrate-chain
+    // D3), but empty calldata is a plain transfer returning 0x, and an older node returns 0x to
+    // every such call. That empty answer is not the precompile's output.
     let f = Arc::new(Fixture::default());
     let core = core_with(f.clone());
     *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some("0x".into());
@@ -650,7 +651,8 @@ fn precompile_call_reports_an_empty_answer_as_an_error_not_a_result() {
         json!({"address": "0x0000000000000000000000000000000000000120", "data": "0xAB"}),
     );
     assert!(is_tool_error(&r), "{r}");
-    assert!(r.to_string().contains("contract code"), "{r}");
+    assert!(r.to_string().contains("not the precompile's output"), "{r}");
+    assert!(r.to_string().contains("empty calldata"), "{r}");
     // A non-empty answer is still returned as the result.
     *f.ed25519_word.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("0x{}1", "0".repeat(63)));
     let ok = call(

@@ -671,11 +671,12 @@ impl McpCore {
                     .ok_or("that address is not in the precompile table (see precompile_table)")?;
                 let data = tools::parse_data(tools::arg_str(args, "data")?)?;
                 let r = self.rpc("eth_call", json!([{"to": address, "data": data}, "latest"]))?;
-                // A top-level eth_call to a precompile address answers 0x on a Citrate node: the
-                // executor runs code only at accounts that have it. Empty is not an answer.
+                // On a node built for the reroll a top-level eth_call to a precompile address runs
+                // it (citrate-chain D3), but empty calldata is a plain transfer that returns 0x, and
+                // a node built before the reroll returns 0x to every such call. Empty is not an answer.
                 if matches!(r.value.as_str(), None | Some("") | Some("0x")) {
                     return Err(format!(
-                        "{} returned no data. On a Citrate node a top-level eth_call to a precompile address returns 0x; precompiles answer only to contract code (for example through the CitratePrecompiles library). The empty reply is not the precompile's output.",
+                        "{} returned no data. On a node built for the 2026-10-05 reroll a top-level eth_call to a precompile address runs the precompile, but a call with empty calldata is a plain transfer and returns 0x, and a node built before the reroll returns 0x to every top-level call. The empty reply is not the precompile's output.",
                         p.name
                     ));
                 }

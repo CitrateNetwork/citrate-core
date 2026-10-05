@@ -228,7 +228,8 @@ export interface NodeLogLine {
 }
 
 export interface NodeDomain {
-  status(): Promise<{ state: string; peers: number; height: number; syncPct: number }>;
+  /** `notice` is set after a start reset the node's chain data for a new genesis (40204 reroll). */
+  status(): Promise<{ state: string; peers: number; height: number; syncPct: number; notice?: string }>;
   start(): Promise<void>;
   stop(): Promise<void>;
   /**

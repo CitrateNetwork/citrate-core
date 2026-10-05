@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01
-branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest, hup/n6-mcp-host and hup/n7-chain-precompile-followups, 2026-10-01 and 2026-10-04)
+branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest, hup/n6-mcp-host, hup/n7-chain-precompile-followups and hup/reroll-node-reset, 2026-10-01, 2026-10-04 and 2026-10-05)
 author: Larry Klosowski + Claude Opus 5.5
 status: implemented (HUP-S4.2 + S8.5; HUP-S4.1 Hermes entry); off by default; port, personal-memory scope, Hermes write tools and task TTL pending owner sign-off
 ---
@@ -103,10 +103,12 @@ partial match, or not verified. The source text is left out; no ABI is ever gues
 `chain_call` (eth_call), `estimate_gas`, `get_logs` (one contract, at most 5,000 blocks),
 `precompile_table`,
 `precompile_call` (read-only eth_call to a precompile in the table: 0x0107-0x0109, 0x0110,
-0x0111, 0x0120, 0x0130, 0x0200-0x0202; an empty reply is an error, never a result. A Citrate node
-answers a top-level eth_call to a precompile address with `0x` because precompiles answer only to
-contract code, so on a real node this tool and `ed25519_verify` report an error today; calling
-them through a contract is open work), `ed25519_verify` (a typed helper for ED25519_VERIFY
+0x0111, 0x0120, 0x0130, 0x0200-0x0202; an empty reply is an error, never a result. On a node built
+for the 2026-10-05 reroll a top-level eth_call to a precompile address runs the precompile
+(citrate-chain D3, gated on the PBA hardening, which is active from the reroll genesis), so this
+tool and `ed25519_verify` return the precompile's answer there. A call with empty calldata is a
+plain transfer and still returns `0x`, and a node built before the reroll returns `0x` to every
+top-level call, so both report an error in those cases), `ed25519_verify` (a typed helper for ED25519_VERIFY
 at 0x0120: it encodes `public key (32 bytes) || signature (64 bytes) || message (at most 8 KiB)`,
 calls the precompile read-only and returns `valid`; an answer that is not a 32-byte word is an
 error, never "valid"), `agent_precompile_encode` and `agent_precompile_decode` (typed helpers for
@@ -114,7 +116,8 @@ the agent precompile fork, HUP-S7.2: 0x0112 LORA_APPLY, 0x0113 LORA_MERGE, 0x012
 MEMORY_ANCHOR_VERIFY, 0x0122 AGENT_OPS. Encode builds the exact input bytes, the scheduled gas and
 the `CitratePrecompiles` helper to pass them to, from Q16.16 tensors, the sidecar's anchor proof, or
 a stored device link or revocation; decode reads an answer back, and empty output is an error, never
-a verdict. Both are pure, with no RPC call: the four precompiles answer only to contract code, and on
+a verdict. Both are pure, with no RPC call: contract code reaches the four precompiles through
+`CitratePrecompiles`, a top-level call with calldata runs them on a node built for the reroll, and on
 40204 they are active from genesis (reroll 2026-10-05). Encodings are pinned to the chain's encoders by
 `src-tauri/tests/fixtures/precompiles/agent_precompile_vectors.json`, generated in citrate-chain),
 `wallet_info`, `address_book`, `memory_search`,

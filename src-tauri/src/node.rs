@@ -188,6 +188,10 @@ pub enum NodeError {
     Spawn(String),
     /// The node is already running (idempotent-start guard).
     AlreadyRunning,
+    /// The node data could not be matched to the book's genesis (bad book
+    /// genesis, a live node holding the old chain, or a failed reset). Fail
+    /// closed: the node is not started.
+    Genesis(crate::node_genesis::GenesisGateError),
 }
 
 impl std::fmt::Display for NodeError {
@@ -197,6 +201,7 @@ impl std::fmt::Display for NodeError {
             NodeError::BinaryNotFound(m) => write!(f, "node binary not found: {m}"),
             NodeError::Spawn(m) => write!(f, "node spawn error: {m}"),
             NodeError::AlreadyRunning => write!(f, "node already running"),
+            NodeError::Genesis(e) => write!(f, "{e}"),
         }
     }
 }
@@ -222,6 +227,10 @@ pub struct NodeStatus {
     /// `starting`/unsynced and 100 once the node reports itself not syncing.
     #[serde(rename = "syncPct")]
     pub sync_pct: f64,
+    /// A one-line notice for the member, set after this session's start reset
+    /// the chain data for a new genesis ([`crate::node_genesis::CHAIN_RESET_NOTICE`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 /// Map a [`SupervisorState`] to the bridge state vocabulary the surface renders.
@@ -275,6 +284,12 @@ pub struct NodeManager {
     /// 15s cache is plenty to drive a progress figure while turning 30 network
     /// round-trips per minute into 4.
     tip_cache: Mutex<Option<(u64, std::time::Instant)>>,
+    /// The genesis the node data must belong to: the address book's
+    /// `genesisHash` (tests inject their own).
+    book_genesis: String,
+    /// Set when a start in this session reset the chain data for a new
+    /// genesis; surfaced once to the member through [`NodeStatus::notice`].
+    chain_reset_notice: Mutex<Option<String>>,
 }
 
 impl NodeManager {
@@ -298,7 +313,53 @@ impl NodeManager {
             coinbase: Mutex::new(None),
             mining_armed: AtomicBool::new(false),
             tip_cache: Mutex::new(None),
+            book_genesis: crate::addresses::genesis_hash().to_string(),
+            chain_reset_notice: Mutex::new(None),
         }
+    }
+
+    /// Tests: target another genesis than the compiled-in address book's.
+    #[cfg(test)]
+    pub fn with_book_genesis(mut self, genesis: impl Into<String>) -> Self {
+        self.book_genesis = genesis.into();
+        self
+    }
+
+    /// Make the node data dir belong to the book's genesis before a spawn (see
+    /// [`crate::node_genesis`]): keep it on a marker match, mark a fresh dir,
+    /// or delete the chain DB of another genesis while keeping key material.
+    /// Fails closed on a bad book genesis or when a node still answers on the
+    /// local RPC while a reset is needed.
+    fn prepare_data_dir_for_genesis(&self) -> Result<()> {
+        use crate::node_genesis::{reconcile_genesis, GenesisOutcome, CHAIN_RESET_NOTICE};
+        let outcome = reconcile_genesis(&self.data_dir, &self.book_genesis, || {
+            self.head_height().is_some()
+        })
+        .map_err(|e| {
+            eprintln!("[node] {e}");
+            NodeError::Genesis(e)
+        })?;
+        if let GenesisOutcome::Reset {
+            previous,
+            removed,
+            bytes,
+        } = outcome
+        {
+            eprintln!(
+                "[node] chain genesis changed ({} -> {}): removed {} chain database file(s),                  {} bytes, from {}; key material kept: {}",
+                previous.as_deref().unwrap_or("unrecorded"),
+                self.book_genesis,
+                removed.len(),
+                bytes,
+                self.data_dir.display(),
+                removed.join(", ")
+            );
+            *self
+                .chain_reset_notice
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(CHAIN_RESET_NOTICE.to_string());
+        }
+        Ok(())
     }
 
     /// W1.5 — set the coinbase (the member's wallet address) the node mines to.
@@ -543,6 +604,8 @@ impl NodeManager {
         if !self.bin.exists() {
             return Err(NodeError::BinaryNotFound(self.bin.display().to_string()));
         }
+        // Consensus safety (40204 reroll): never open another genesis's chain DB.
+        self.prepare_data_dir_for_genesis()?;
         let key_hex = self.storage_key_hex()?;
         let spec = self.build_spec(&key_hex);
         // C1.0b-1: default fork-bomb-bounded backoff, but a node-tuned
@@ -614,6 +677,11 @@ impl NodeManager {
             peers,
             height,
             sync_pct,
+            notice: self
+                .chain_reset_notice
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 
