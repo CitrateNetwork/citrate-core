@@ -15,8 +15,12 @@ import {
   searchModels,
   downloadModel,
   selectModel,
+  deleteControl,
+  deleteLocalModel,
+  type DeleteControl,
   type ModelSourceId,
 } from "../shell/slices/models";
+import { ModalDialog } from "../shell/ModalDialog";
 import { tierSlice, isRecommendedModel } from "../shell/slices/tier";
 import type { ModelDescriptor, TierId } from "../bridge/domains";
 
@@ -47,6 +51,20 @@ export function Models({ store }: SurfaceProps) {
   const tier = tierSlice.use().report;
   const [source, setSource] = useState<ModelSourceId>("hf");
   const [query, setQuery] = useState("");
+  // The model the member asked to delete, waiting for their confirmation.
+  const [confirming, setConfirming] = useState<ModelDescriptor | null>(null);
+
+  const confirmDelete = async (m: ModelDescriptor) => {
+    const out = await deleteLocalModel(m.file);
+    setConfirming(null);
+    if (!out) return; // the reason is on the error banner
+    // The chat router's pick pointed at it: let it fall back to what is available.
+    if (store.state.activeModelId === m.id || store.state.activeModelId === `local:${out.file}`) {
+      store.setState({ activeModelId: null });
+      store.save();
+    }
+    store.toast(`Deleted ${out.file}. Freed ${humanBytes(out.freedBytes)}.`);
+  };
 
   // Load the locally-present models once on mount (honest-empty on a sim/unwired bridge).
   useEffect(() => {
@@ -132,6 +150,9 @@ export function Models({ store }: SurfaceProps) {
                 actionLabel={st.activeId === m.id ? "In use" : st.selectingId === m.id ? "Switching…" : "Use"}
                 actionDisabled={st.activeId === m.id || st.selectingId != null}
                 onAction={() => void selectModel(m.id)}
+                deleteCtl={deleteControl(st, m.file)}
+                deleting={st.deletingFile === m.file}
+                onDelete={() => setConfirming(m)}
               />
             ))
           )}
@@ -254,6 +275,41 @@ export function Models({ store }: SurfaceProps) {
           that does not match is discarded, never run.
         </div>
       </section>
+
+      {confirming && (
+        <ModalDialog
+          register="instrument"
+          zIndex={58}
+          labelledBy="model-delete-title"
+          describedBy="model-delete-body"
+          onEscape={st.deletingFile ? undefined : () => setConfirming(null)}
+          focusKey={"model-delete:" + confirming.file}
+          panelStyle={{ width: 440, maxWidth: "100%", background: "var(--srf-0, #fff)", borderRadius: 12, padding: "20px 22px", display: "flex", flexDirection: "column", gap: 12 }}
+        >
+          <span id="model-delete-title" style={{ fontSize: 15, fontWeight: 560 }}>Delete this model?</span>
+          <div id="model-delete-body" style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--tx-2)" }}>
+            <span className="mono" style={{ display: "block", fontSize: 12.5, color: "var(--tx-1)", wordBreak: "break-all" }}>{confirming.file}</span>
+            <span className="mono" style={{ display: "block", fontSize: 11, color: "var(--tx-3)", marginTop: 2 }}>{humanBytes(confirming.sizeBytes)} on this machine</span>
+            <span style={{ display: "block", marginTop: 8 }}>
+              It is removed from this machine and the space is freed. You can download it again later.
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button className="btn btn-ghost btn-sm" data-autofocus disabled={!!st.deletingFile} onClick={() => setConfirming(null)}>
+              Cancel
+            </button>
+            <button
+              className="btn btn-sm"
+              style={{ background: "var(--danger)", borderColor: "var(--danger)", color: "#fff" }}
+              disabled={!!st.deletingFile}
+              aria-busy={st.deletingFile === confirming.file}
+              onClick={() => void confirmDelete(confirming)}
+            >
+              {st.deletingFile === confirming.file ? "Deleting…" : `Delete ${humanBytes(confirming.sizeBytes)}`}
+            </button>
+          </div>
+        </ModalDialog>
+      )}
     </div>
   );
 }
@@ -266,6 +322,9 @@ function ModelRow({
   actionLabel,
   actionDisabled,
   onAction,
+  deleteCtl,
+  deleting = false,
+  onDelete,
 }: {
   model: ModelDescriptor;
   active: boolean;
@@ -275,6 +334,10 @@ function ModelRow({
   actionLabel: string;
   actionDisabled: boolean;
   onAction: () => void;
+  /** Downloaded models only: the Delete control (core decides; hidden for search results). */
+  deleteCtl?: DeleteControl;
+  deleting?: boolean;
+  onDelete?: () => void;
 }) {
   return (
     <div
@@ -305,6 +368,21 @@ function ModelRow({
       >
         {actionLabel}
       </button>
+      {deleteCtl?.show && onDelete && (
+        // The reason sits on a wrapper: a disabled button gets no hover, so its own title never shows.
+        <span title={deleteCtl.reason ?? `Delete ${model.file} from this machine`} style={{ display: "inline-flex" }}>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={onDelete}
+          disabled={deleteCtl.disabled}
+          aria-label={`Delete ${model.file}`}
+          aria-busy={deleting}
+          style={deleteCtl.disabled ? { opacity: 0.55 } : { color: "var(--danger)" }}
+        >
+          {deleting ? "Deleting…" : "Delete"}
+        </button>
+        </span>
+      )}
     </div>
   );
 }

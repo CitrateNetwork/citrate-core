@@ -727,6 +727,24 @@ export interface PartialDownload {
   pct: number;
 }
 
+/** Whether a downloaded model can be deleted now (Rust `model_delete::DeleteState`). */
+export interface ModelDeleteState {
+  file: string;
+  sizeBytes: number;
+  deletable: boolean;
+  /** Why not (in use, shipped with the app, downloading), when not deletable. */
+  reason: string | null;
+}
+
+/** What a delete removed (Rust `model_delete::Deleted`). */
+export interface ModelDeleted {
+  file: string;
+  /** Bytes removed: the GGUF plus its side files. */
+  freedBytes: number;
+  /** The chat server had it selected; the selection fell back to the default. */
+  selectionCleared: boolean;
+}
+
 export interface ModelsCatalogDomain {
   /** Locally-present, verified models. */
   local(): Promise<ModelDescriptor[]>;
@@ -739,6 +757,11 @@ export interface ModelsCatalogDomain {
   download(id: string, onProgress?: (pct: number) => void): Promise<void>;
   /** Switch the active local model (restarts llama-server -m). */
   select(id: string): Promise<void>;
+  /** Which downloaded models can be deleted now, and why not. Member-only (Models screen). */
+  deleteStates(): Promise<ModelDeleteState[]>;
+  /** Delete one downloaded model by file name, after the member confirmed it. Refused while the
+   *  model is in use, downloading, or shipped with the app. Never an agent tool. */
+  deleteLocal(file: string): Promise<ModelDeleted>;
   /** Hermes WP0.2b — the models registered on-chain in the ModelRegistry (40204). A PURE
    *  read (getAllModelHashes + getModel); NOT-yet-local, so the router marks them
    *  "download to use". Honest empty list on an unwired/failed read (never fabricated). */

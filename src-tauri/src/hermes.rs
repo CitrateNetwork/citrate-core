@@ -1487,6 +1487,15 @@ pub(crate) fn restart_if_running<R: tauri::Runtime>(
     Ok(true)
 }
 
+/// The embedding server's model file while it runs (the Models screen refuses to delete it).
+pub(crate) fn embed_model_in_use() -> Option<PathBuf> {
+    HERMES
+        .get()
+        .and_then(|m| m.embed.as_ref())
+        .filter(|e| e.is_started())
+        .map(|e| e.model_path().to_path_buf())
+}
+
 /// HUP-S2.1: send the grant document to every open agent session, if the manager exists.
 pub(crate) fn push_grants_to_sessions(doc: &crate::agent_grants::GrantState) -> GrantsPushOutcome {
     match HERMES.get() {

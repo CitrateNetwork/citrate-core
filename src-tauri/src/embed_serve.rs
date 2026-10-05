@@ -131,6 +131,11 @@ impl EmbedServer {
         }
     }
 
+    /// The model file this server loads (the Models screen never deletes it while it runs).
+    pub fn model_path(&self) -> &Path {
+        &self.model
+    }
+
     /// The OpenAI-style base URL the sidecar embeds through (no key in it).
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
