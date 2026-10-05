@@ -4,6 +4,7 @@ branch: hup/n4-components
 author: Larry Klosowski + Claude Opus 5.5
 status: draft (signing key and SLA values pending owner sign-off)
 wp: HUP-S5.5, HUP-S6.1
+updated: 2026-10-04 on hup/n7-components-unpack-searxng (zip unpacking, the SearXNG pack script, the ra-7 decision)
 ---
 
 # Signed component updater and the CVE SLA
@@ -24,7 +25,10 @@ runbook. The code is the `citrate-components` crate (`components/`) and
 | Published component manifest | None yet. The first one is signed at the ceremony |
 | CVE SLA numbers below | **Placeholders, pending owner sign-off** |
 | Toolchain bundle | macOS arm64 measured; other platforms listed with upstream URLs and marked to be measured |
-| zip archives (Windows foundry and node) | Not unpacked yet; the updater refuses them honestly (Windows toolchain spike) |
+| zip archives (Chrome for Testing, Windows foundry and node) | Unpacked with the same path and link rules as tar (`components/src/extract.rs`, `components/tests/extract.rs`). The pinned Chrome for Testing 154 macOS archive unpacks to 344 files and its 5 app-bundle links, and the unpacked browser runs |
+| End-to-end update (bundle, signed manifest, install, bad hash, rollback) | Built and tested against a test key generated in the test: `components/tests/e2e_update.rs` |
+| SearXNG artifact | `scripts/pack-searxng.sh` builds it for macOS arm64 from the hash lock (deterministic, 53.5 MB); hosting and signing are the release step. Other platforms wait on their locks |
+| Skills and the docs graph | **Stay in the installer for 0.5.0** (decision below, pending owner sign-off) |
 
 Nothing here changes anything for members until the key is set: the Settings card says updates
 are off and why, and its install buttons are disabled.
@@ -47,9 +51,14 @@ are off and why, and its install buttons are disabled.
 4. **Artifact.** Downloaded into `<components>/.staging/<name>-<nonce>/`, capped at the manifest
    size. One pass over the file checks size, SHA-256 and the artifact's own minisign signature
    (trusted comment `citrate-components-artifact ...`).
-5. **Unpack.** raw, tar.gz or tar.xz. Paths must be relative with no `..`; hard links, devices
-   and duplicates are refused; set-id bits are dropped; symlinks are created last and must stay
-   inside the tree both as written and after resolution.
+5. **Unpack.** raw, tar.gz, tar.xz or zip. Paths must be relative with no `..`, no absolute,
+   drive or backslash paths; hard links, devices, FIFOs, sockets and duplicate names are
+   refused; set-id bits and group/other write bits are dropped; symlinks are created last, may
+   not sit under another archive link, and must stay inside the tree both as written and after
+   resolution (a link that leaves and re-enters the tree is refused too, because the tree is
+   renamed into place afterwards). In a zip, a link is an entry with the link file type and its
+   target as content; encrypted entries, unknown compression methods and data that fails its
+   CRC are refused.
 6. **Health check.** Every entrypoint the manifest names exists inside the unpacked tree.
 7. **Swap.** The tree is renamed to `<components>/<name>/<version>-<sha12>/`, then `state.json`
    is replaced (write, fsync, rename). That rename is the only commit point: any failure before
@@ -115,6 +124,26 @@ that also updates the test that pins the empty slot.
 A manifest must be re-signed before it expires even when nothing changed; that is what keeps
 installed clients fresh.
 
+### Packing an artifact Citrate builds (SearXNG)
+
+Entries with status `to_be_built` are packed by Citrate. For SearXNG on macOS arm64:
+
+1. On a macOS arm64 machine: `scripts/pack-searxng.sh --out <dir>`. It downloads the pinned
+   Python runtime and the pinned SearXNG source (both checked against the bundle's SHA-256), the
+   wheels in `components/locks/searxng-2026.10.4-macos-arm64-cp312.txt` with `--require-hashes`,
+   installs them into that runtime, adds `bin/searxng-run` and `LICENSES/` (the AGPL text and
+   where the source is), starts it once on 127.0.0.1 and waits for `/healthz`, then writes a
+   deterministic tar.gz (the same inputs give the same bytes) and the bundle entry.
+2. `citrate-components unpack --format tar.gz --archive <file> --dest <new dir>` must succeed
+   (the app's own unpacker).
+3. Host the file, then `scripts/pack-searxng.sh --out <dir> --url <https URL> --apply` records
+   it as `measured` in `components/toolchain-bundle.json`. Continue with step 2 above
+   (check-bundle, sign, manifest-from-bundle).
+
+The first build on 2026-10-04 gave sha256
+`a3589d5ae284f26c6244720f998199cb9a715fda7fdb195e737bf89f5df87b84`, 53,546,294 bytes, twice in
+a row. The release build is the one that is hosted and signed; record its own hash.
+
 ## CVE SLA (pending owner sign-off)
 
 **Publisher side.** From a public advisory affecting a bundled component (the managed browser,
@@ -138,15 +167,40 @@ advisory database, and the Chromium release blog for the browser.
 
 - a manifest older than **3 days** shows "updates are stale";
 - an **expired** manifest, or none ever checked, is to keep the managed browser off the open
-  web. Today this is computed (`browserMayOpenWeb` in `components_status`) and shown in
-  Settings, but no managed browser reads it yet: the block is not enforced. Whoever wires it
-  must not block members while the component key slot is still empty (every machine is
-  "never checked" until the first signed manifest exists);
+  web. This is computed (`browserMayOpenWeb` in `components_status`), shown in Settings, and
+  enforced (HUP-S5.5): when the managed Chromium is installed and the rule says no, core starts
+  the sidecar with `CITRATE_BROWSER_OPEN_WEB=0` and the managed browser reaches only
+  developer-allowed origins on this machine (loopback, such as a site preview or an anvil fork),
+  at both the DevTools request gate and the connection-level egress gate. The rule follows the
+  managed Chromium only, so it does not block members while the component key slot is empty (no
+  managed Chromium can be installed then, and a system Chrome is not affected). Whether this is
+  a block or a warning stays an owner decision below; the shipped default is the block;
 - the manifest lifetime is capped at 31 days, so a frozen feed cannot keep a client "current".
+
+## Decision: skills and the docs graph stay in the installer for 0.5.0 (ra-7)
+
+**Pending owner sign-off; this is the planner's recommended default.** The planset lists skills
+and the docs graph as future components (red-team correction 15), and the manifest already
+accepts the `skills` and `docs-graph` kinds. For 0.5.0 they stay inside the installer:
+
+- The 0.5.0 size budgets were re-set with them inside (the knowledge corpus measured 99.7 MB and
+  the skills bundle 240 skills; lane L-sizelicence), so moving them changes no budget that
+  blocks the release.
+- No component can install anything until the @rule8 component-key ceremony and the first
+  signed manifest. If skills and the docs graph depended on the updater, a fresh 0.5.0 install
+  would have neither until that happens. In the installer they work offline from the first run.
+- They are versioned with the app today (`skills.lock`, the staged corpus), so a member never
+  holds skills that do not match the app's tools.
+
+After 0.5.0, once signed manifests are published on a schedule, they can move: add a bundle
+entry of kind `skills` or `docs-graph` (an `any` platform tar.gz), have the app read them from
+`<components>/<name>/` when installed and from the installer otherwise, and take them out of
+the installer in the release after that. Nothing in the updater needs to change for it.
 
 ## Owner decisions
 
 - The component signing key ceremony (@rule8): who holds it, offline storage, rotation.
+- Skills and the docs graph in the installer for 0.5.0 (the decision above).
 - The SLA deadlines and the 3-day stale window above.
 - The 31-day lifetime cap and the 14-day expiry used by the release step.
 - Whether the browser block on an expired manifest is a block or a warning.

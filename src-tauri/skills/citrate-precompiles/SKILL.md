@@ -124,6 +124,23 @@ the federation sprint's work; until it lands, do not promise contract-level infe
   needs no signature. Anything that writes on-chain from the result is a transaction and goes to
   the member's SignatureCeremony.
 
+## Citing the docs
+
+Cite the docs section next to any code reference:
+
+| Topic | Docs section to cite |
+|---|---|
+| the address pages and their ranges | `citrate-docs:content/chain/precompiles.md#what-it-is` |
+| how a contract calls a precompile, where exact encodings come from | `citrate-docs:content/chain/precompiles.md#how-to-use-it` |
+| the tensor format | `citrate-docs:content/chain/precompiles.md#tensor-primitives` |
+| x402 verifiers and their gas | `citrate-docs:content/chain/precompiles.md#x402-payment-precompiles` |
+| what a precompile returns on a bad input or signature | `citrate-docs:content/chain/precompiles.md#failure-modes` |
+| `0x0110` and Q16 | `citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation` |
+| hosted inference `0x0100` to `0x0106` | `citrate-docs:content/chain/precompiles-zkp.md#hosted-inference-0x0100-to-0x0106` |
+| `0x0107` to `0x0109` verification | `citrate-docs:content/chain/precompiles-zkp.md#verification-0x0107-to-0x0109` |
+| Q16.16 compute `0x010A` to `0x010F` | `citrate-docs:content/chain/precompiles-zkp.md#deterministic-q1616-compute-0x010a-to-0x010f` |
+| the attestation gate | `citrate-docs:content/chain/precompiles-zkp.md#attestation-gate` |
+
 ## Answering well
 
 - Give the full address and the source file for any claim about inputs, outputs or gas.

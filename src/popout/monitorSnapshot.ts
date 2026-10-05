@@ -14,6 +14,9 @@
 //     recorded by the sidecar provider into the turn activity slice
 //   - workers (HUP-S1.9): the agent sidecar's worker processes, read from Rust (hermes_workers →
 //     the sidecar's GET /workers, i.e. its own process supervisor)
+//   - decide (HUP-S5.3): the decide() slot's per-backend metering, read from Rust
+//     (hermes_decide_stats → the sidecar's GET /decide/stats: every metered decision plus each task
+//     outcome recorded through POST /decide/outcomes)
 //   - usage (HUP-S7.6, US-7.4 AC1): the model server's own report for the latest model call of the
 //     turn (core's `citrate_usage` on the in-app loop, the sidecar's `usage` event), giving context
 //     used (prompt + completion tokens) and tokens per second (llama-server `timings.predicted_ms`)
@@ -52,6 +55,39 @@ export interface WorkerRow {
   detail: string | null;
 }
 
+/** HUP-S5.3: one decide() backend's metering, as Rust reports it (hermes_decide_stats). */
+export interface DecideBackendRow {
+  /** "local" | "jev". */
+  backend: string;
+  decisions: number;
+  errors: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  meanConfidence: number | null;
+  /** Bytes sent off the machine (Jev request bodies). */
+  egressBytes: number;
+  tasksAttempted: number;
+  tasksSucceeded: number;
+  /** Succeeded / attempted in basis points; null before any task outcome. */
+  taskSuccessBps: number | null;
+}
+
+/** HUP-S5.3: the decide() metering report Rust returns; null = Hermes is not running. */
+export interface DecideMetering {
+  jevEnabled: boolean;
+  jevOrigins: number;
+  jevNonWeb: boolean;
+  logging: boolean;
+  backends: DecideBackendRow[];
+}
+
+/** HUP-S5.3: what the monitor shows for decide(). rows null = could not be read. */
+export interface DecideSection {
+  rows: DecideBackendRow[] | null;
+  jevEnabled: boolean;
+  note: string;
+}
+
 export interface MonitorSnapshot {
   /** When the main window built this snapshot (ms since epoch). */
   at: number;
@@ -87,6 +123,8 @@ export interface MonitorSnapshot {
   workers: { rows: WorkerRow[] | null; note: string };
   /** HUP-S10.3 — scheduled daemons. */
   daemons: DaemonsSection;
+  /** HUP-S5.3: decide() metering per backend. Absent from an older sender = not shown. */
+  decide?: DecideSection;
 }
 
 /** HUP-S10.3 — one daemon as the monitor shows it. */
@@ -156,6 +194,8 @@ export interface MonitorInputs {
   localCtxTokens: number | null;
   /** HUP-S1.9: the sidecar's worker processes; null or absent = not read. */
   workers?: WorkerRow[] | null;
+  /** HUP-S5.3: the decide() metering. undefined = not read, null = Hermes is not running, "error" = the read failed. */
+  decide?: DecideMetering | null | "error";
   now: number;
   /** HUP-S10.3 — the daemon section; absent = no daemons. */
   daemons?: DaemonsSection;
@@ -248,6 +288,41 @@ export function workersFor(rows: WorkerRow[] | null | undefined): MonitorSnapsho
   return { rows, note: "each worker is a separate process; a crash restarts it without stopping Hermes" };
 }
 
+/** HUP-S5.3: the monitor's decide() section from what Rust reported. */
+export function decideFor(m: DecideMetering | null | "error" | undefined): DecideSection {
+  if (m === undefined || m === "error") {
+    return { rows: null, jevEnabled: false, note: "decision metering could not be read" };
+  }
+  if (m === null) {
+    return { rows: [], jevEnabled: false, note: "Hermes is not running, so no decisions are being made" };
+  }
+  const where = m.jevEnabled
+    ? `local model on this machine, and Jev (TypeSafe) for ${m.jevOrigins} origin${m.jevOrigins === 1 ? "" : "s"}, which sends the page snapshot off this machine`
+    : "local model on this machine only; Jev is off";
+  const rows = m.backends.filter((b) => b.decisions > 0 || b.tasksAttempted > 0);
+  return {
+    rows,
+    jevEnabled: m.jevEnabled,
+    note: rows.length === 0 ? `No decisions yet (${where}).` : `Measured by the sidecar for this session of Hermes (${where}).`,
+  };
+}
+
+/** HUP-S5.3: one backend's numbers in words. Only measured numbers are shown. */
+export function decideBackendLine(b: DecideBackendRow): string {
+  const parts = [`${b.decisions} ${b.decisions === 1 ? "decision" : "decisions"}`];
+  if (b.errors > 0) parts.push(`${b.errors} failed`);
+  if (b.p50Ms !== null && b.p95Ms !== null) parts.push(`median ${b.p50Ms} ms, p95 ${b.p95Ms} ms`);
+  if (b.tasksAttempted > 0) {
+    const pct = b.taskSuccessBps !== null ? ` (${(b.taskSuccessBps / 100).toFixed(1)}%)` : "";
+    parts.push(`tasks ${b.tasksSucceeded} of ${b.tasksAttempted} succeeded${pct}`);
+  } else {
+    parts.push("no task outcomes recorded");
+  }
+  if (b.meanConfidence !== null) parts.push(`mean confidence ${b.meanConfidence.toFixed(2)}`);
+  if (b.egressBytes > 0) parts.push(`${b.egressBytes.toLocaleString("en-US")} bytes sent off this machine`);
+  return parts.join(", ");
+}
+
 /** The one-line "why am I waiting" answer for the current turn. */
 export function waitingReason(a: Pick<TurnActivity, "state" | "phase" | "currentTool">): string {
   if (a.state === "idle") return "Idle: nothing is running.";
@@ -306,6 +381,7 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
     spend: spendFor(kind),
     daemons: i.daemons ?? NO_DAEMONS,
     workers: workersFor(i.workers),
+    decide: decideFor(i.decide),
   };
 }
 
@@ -376,6 +452,32 @@ function isWorkerRow(v: unknown): v is WorkerRow {
   );
 }
 
+function isDecideRow(v: unknown): v is DecideBackendRow {
+  return (
+    isObj(v) &&
+    typeof v.backend === "string" &&
+    num(v.decisions) &&
+    num(v.errors) &&
+    numOrNull(v.p50Ms) &&
+    numOrNull(v.p95Ms) &&
+    numOrNull(v.meanConfidence) &&
+    num(v.egressBytes) &&
+    num(v.tasksAttempted) &&
+    num(v.tasksSucceeded) &&
+    numOrNull(v.taskSuccessBps)
+  );
+}
+
+function isDecideSection(v: unknown): boolean {
+  return (
+    v === undefined ||
+    (isObj(v) &&
+      typeof v.note === "string" &&
+      typeof v.jevEnabled === "boolean" &&
+      (v.rows === null || (Array.isArray(v.rows) && v.rows.every(isDecideRow))))
+  );
+}
+
 export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   if (!isObj(v) || typeof v.at !== "number") return false;
   const { model, provider, context, turn, spend } = v;
@@ -400,6 +502,7 @@ export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   const { workers } = v;
   if (!isObj(workers) || typeof workers.note !== "string") return false;
   if (!(workers.rows === null || (Array.isArray(workers.rows) && workers.rows.every(isWorkerRow)))) return false;
+  if (!isDecideSection(v.decide)) return false;
   return isDaemonsSection(v.daemons);
 }
 

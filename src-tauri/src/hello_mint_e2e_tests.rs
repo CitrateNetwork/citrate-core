@@ -148,10 +148,31 @@ fn step_fn(text: &str) -> Option<Step> {
             then_code_matches
         }
         "the site switches to the deployed contract" => then_site_switched,
-        "a test mint of 1 token at 5 SALT succeeds through a ceremony the member acknowledges as raw data" => then_test_mint,
+        "a test mint of 1 token at 5 SALT succeeds through a ceremony that shows mint(quantity=1) without the raw-data acknowledgement" => then_test_mint,
         "the Vercel export is written" => then_vercel_export,
         "the page builds and is pinned to IPFS when the page build is enabled" => then_page_pinned,
         "the Forge tests item fails naming test_mint_stops_at_the_cap" => then_forge_names_cap,
+        // The sidecar-driven half (hello_mint_e2e_sidecar.rs).
+        "a Hermes sidecar session with the toolchain on and the hello-mint project granted" => {
+            given_sidecar_session
+        }
+        "the Dev sends one prompt that runs the hello-mint workflow" => when_dev_runs_workflow,
+        "the Dev asks Hermes to run the checks" => when_dev_asks_checks,
+        "the session kept a raw report of forge_test, slither_scan, aderyn_scan and medusa_fuzz" => {
+            then_reports_kept
+        }
+        "core gates the artifact from the session's toolchain reports with forkInCore" => {
+            when_core_gates_from_sidecar
+        }
+        "the fork dry run ran in core on the Citrate-aware fork with the template's test mint" => {
+            then_fork_in_core
+        }
+        "READY took at most 2 prompts beyond the interview answers" => then_prompt_budget,
+        "the Dev tells Hermes to deploy it anyway" => when_deploy_anyway,
+        "Hermes refuses, names test_mint_stops_at_the_cap and proposes the SoldOut patch" => {
+            then_refusal_with_fix
+        }
+        "no SignatureCeremony was created" => then_no_ceremony_created,
         _ => return None,
     };
     Some(f)
@@ -160,7 +181,7 @@ fn step_fn(text: &str) -> Option<Step> {
 #[test]
 fn hello_mint_feature_parses_and_every_step_has_a_handler() {
     let scenarios = parse_feature(FEATURE).expect("the feature parses");
-    assert_eq!(scenarios.len(), 3);
+    assert_eq!(scenarios.len(), 5);
     for s in &scenarios {
         assert!(s.steps.len() >= 8, "{}: {} steps", s.name, s.steps.len());
         for step in &s.steps {
@@ -257,6 +278,14 @@ struct E2eEnv {
     fork_rpc: String,
     work: PathBuf,
     deps_cache: PathBuf,
+    /// The sidecar-driven scenarios: the sidecar binary, the citrate-fork binary, an optional real
+    /// model (base URL + name), the solc forge uses there, and the sidecar's sandbox mode.
+    sidecar_bin: Option<PathBuf>,
+    fork_bin: Option<PathBuf>,
+    llm_url: Option<String>,
+    llm_model: Option<String>,
+    solc: Option<PathBuf>,
+    sandbox: Option<String>,
     test_aderyn: Option<PathBuf>,
     test_medusa: Option<PathBuf>,
     kubo_api: Option<String>,
@@ -271,6 +300,12 @@ impl E2eEnv {
             fork_rpc: std::env::var("CITRATE_E2E_HM_FORK_RPC").ok()?,
             work: path("CITRATE_E2E_HM_WORK")?,
             deps_cache: path("CITRATE_E2E_HM_DEPS")?,
+            sidecar_bin: path("CITRATE_E2E_HM_SIDECAR_BIN"),
+            fork_bin: path("CITRATE_E2E_HM_FORK_BIN"),
+            llm_url: std::env::var("CITRATE_E2E_HM_LLM_URL").ok(),
+            llm_model: std::env::var("CITRATE_E2E_HM_LLM_MODEL").ok(),
+            solc: path("CITRATE_E2E_HM_SOLC"),
+            sandbox: std::env::var("CITRATE_E2E_HM_SANDBOX").ok(),
             test_aderyn: path("CITRATE_E2E_HM_TEST_ADERYN_BIN"),
             test_medusa: path("CITRATE_E2E_HM_TEST_MEDUSA_BIN"),
             kubo_api: std::env::var("CITRATE_E2E_HM_KUBO_API").ok(),
@@ -310,6 +345,7 @@ struct World {
     ceremony_id: Option<String>,
     deploy_tx: Option<String>,
     address: Option<String>,
+    side: SidecarRun,
 }
 
 #[derive(Default)]
@@ -366,6 +402,7 @@ impl World {
             ceremony_id: None,
             deploy_tx: None,
             address: None,
+            side: SidecarRun::default(),
         })
     }
 
@@ -860,14 +897,20 @@ fn when_gate_runs(w: &mut World) -> Result<(), String> {
         None,
         None,
     );
-    let aderyn_report = w.dir.join("aderyn-report.json");
-    let aderyn_report_s = aderyn_report.display().to_string();
+    // The same arguments the runtime's aderyn_scan tool passes: SARIF on stdout, which is what
+    // the gate parses from a Hermes session too (one format on both paths).
     let aderyn = run_tool(
         tools.aderyn.as_deref(),
-        &[".", "--output", &aderyn_report_s, "--skip-update-check"],
+        &[
+            ".",
+            "--output",
+            "aderyn-report.sarif",
+            "--stdout",
+            "--skip-update-check",
+        ],
         &c,
         None,
-        Some(&aderyn_report),
+        None,
     );
     // Medusa compiles through crytic-compile, which lives beside slither.
     let crytic_dir = tools
@@ -1131,6 +1174,9 @@ fn then_site_switched(w: &mut World) -> Result<(), String> {
     let addr = w.address()?.to_string();
     let p = crate::postdeploy::open_project(w.project()?)?;
     crate::postdeploy::switch_site_checked(&w.chain(), &p, &addr)?;
+    // What postdeploy_switch_site does next: let the ceremony decode the page's calls to this
+    // contract from its ABI (its code is the READY-gated build's).
+    crate::postdeploy::register_gated_abi(&w.chain(), &p, &addr, &w.gate, &w.ceremony)?;
     let site = crate::postdeploy::site_contract(&p)?;
     (site.as_deref() == Some(addr.as_str()))
         .then_some(())
@@ -1151,26 +1197,27 @@ fn then_test_mint(w: &mut World) -> Result<(), String> {
         "chainId": format!("0x{CHAIN_ID:x}"),
     })
     .to_string();
-    let view = w.ceremony.request(SignatureIntent {
+    let intent = SignatureIntent {
         origin: "hello-mint page (local)".into(),
         kind: IntentKind::Transaction,
         chain_id: CHAIN_ID,
         raw,
-    });
-    // The ceremony's decoder does not know the template's `mint(uint256)`, so it shows the call
-    // as unrecognized and approval needs the member's explicit raw-data acknowledgement (the same
-    // as any page asking the wallet for an unknown call). Approving without it is refused.
-    if !view.requires_raw_ack {
-        return Err(format!(
-            "expected a raw-data ceremony, got {:?}",
-            view.decoded
-        ));
+    };
+    // The mutant: a ceremony without the gated ABI shows the same call as raw data.
+    let bare = SignatureCeremony::new();
+    let raw_view = bare.request(intent.clone());
+    let _ = bare.reject(&raw_view.id);
+    if !raw_view.requires_raw_ack {
+        return Err("without the ABI the mint should need the raw-data acknowledgement".into());
     }
-    match approve(w, &view.id, false) {
-        Err(e) if e.contains("raw-mode ack") => {}
-        other => return Err(format!("approval without the acknowledgement: {other:?}")),
+    // With the ABI the site switch registered, the member sees mint(quantity=1) and approves it
+    // with no raw-data acknowledgement.
+    let view = w.ceremony.request(intent);
+    if view.requires_raw_ack || !view.decoded.action.contains("mint(quantity=1)") {
+        return Err(format!("expected a decoded mint, got {:?}", view.decoded));
     }
-    let tx = approve(w, &view.id, true)?;
+    eprintln!("       ceremony shows: {}", view.decoded.action);
+    let tx = approve(w, &view.id, false)?;
     let r = wait_receipt(&chain, &tx)?;
     if r["status"].as_str() != Some("0x1") {
         return Err(format!("the mint reverted: {r}"));
@@ -1272,3 +1319,5 @@ fn then_page_pinned(w: &mut World) -> Result<(), String> {
         .then_some(())
         .ok_or_else(|| format!("unexpected CID {}", pin.cid))
 }
+
+include!("hello_mint_e2e_sidecar.rs");

@@ -15,6 +15,11 @@
 //! - Only `initialize`, `ping`, `tools/list`, `tools/call`, and `notifications/*` pass. Anything
 //!   else is answered `-32601` (requests) or dropped (notifications). Batches are refused.
 //!
+//! - HUP-S3.4 (fan-out 7): given the learned-memory ledger (an optional third argument), every
+//!   tool answer leaves out the hits of learned memories with an unresolved contradiction
+//!   ([`crate::hermes_learn::RecallHide`]), so Hermes never recalls a claim the member has not
+//!   settled. The ledger is read for each answer, so a resolution shows on the next call.
+//!
 //! Keyless (Rule 3): the bridge holds no key and never touches the keyring; the daemon's own
 //! session grant applies. It is a byte relay plus a filter.
 
@@ -176,6 +181,38 @@ pub fn rewrite_response(line: &str, list_ids: &mut HashSet<String>) -> (String, 
     (line.to_string(), key)
 }
 
+/// Leave unresolved learned memories out of a tool answer's text (`result.content[].text`). Any
+/// other line passes unchanged. Pure, given the hide set.
+pub fn hide_unresolved_in_response(line: &str, hide: &crate::hermes_learn::RecallHide) -> String {
+    let Ok(mut v) = serde_json::from_str::<Value>(line) else {
+        return line.to_string();
+    };
+    let Some(content) = v
+        .get_mut("result")
+        .and_then(|r| r.get_mut("content"))
+        .and_then(Value::as_array_mut)
+    else {
+        return line.to_string();
+    };
+    let mut changed = false;
+    for item in content.iter_mut() {
+        if let Some(text) = item.get("text").and_then(Value::as_str) {
+            let kept = hide.filter_text(text);
+            if kept != text {
+                if let Some(obj) = item.as_object_mut() {
+                    obj.insert("text".into(), Value::String(kept));
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        v.to_string()
+    } else {
+        line.to_string()
+    }
+}
+
 fn connect_with_retry(socket: &Path, wait: Duration) -> Result<crate::ipc_name::IpcStream, String> {
     let deadline = Instant::now() + wait;
     loop {
@@ -210,6 +247,17 @@ pub fn run_bridge<R: BufRead + Send + 'static>(
     input: R,
     output: Box<dyn Write + Send>,
     wait: Duration,
+) -> Result<(), String> {
+    run_bridge_with(socket, input, output, wait, None)
+}
+
+/// [`run_bridge`], leaving unresolved learned memories out of every answer when `ledger` is set.
+pub fn run_bridge_with<R: BufRead + Send + 'static>(
+    socket: &Path,
+    input: R,
+    output: Box<dyn Write + Send>,
+    wait: Duration,
+    ledger: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
     use interprocess::local_socket::traits::Stream as _;
     let stream = connect_with_retry(socket, wait)?;
@@ -258,6 +306,15 @@ pub fn run_bridge<R: BufRead + Send + 'static>(
                         let (out_line, key) = {
                             let mut ids = list_ids.lock().unwrap_or_else(|e| e.into_inner());
                             rewrite_response(&line, &mut ids)
+                        };
+                        let out_line = match &ledger {
+                            Some(p) if out_line.contains("\"content\"") => {
+                                hide_unresolved_in_response(
+                                    &out_line,
+                                    &crate::hermes_learn::RecallHide::load(p),
+                                )
+                            }
+                            _ => out_line,
                         };
                         write_line(&output, &out_line);
                         if key.is_some() {
@@ -335,6 +392,17 @@ pub fn run_bridge<R: BufRead + Send + 'static>(
     Ok(())
 }
 
+/// The learned-memory ledger the bridge filters with: the optional argument after the socket.
+pub fn parse_bridge_ledger(args: &[String]) -> Option<std::path::PathBuf> {
+    match args.first() {
+        Some(flag) if flag == BRIDGE_FLAG => args
+            .get(2)
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from),
+        _ => None,
+    }
+}
+
 /// Parse the bridge's argv (after the program name). `None` = not a bridge invocation.
 pub fn parse_bridge_args(args: &[String]) -> Option<Result<String, String>> {
     match args.first() {
@@ -359,11 +427,12 @@ pub fn maybe_run_from_args() -> Option<i32> {
         }
     };
     let stdin = BufReader::new(std::io::stdin());
-    match run_bridge(
+    match run_bridge_with(
         Path::new(&socket),
         stdin,
         Box::new(std::io::stdout()),
         DEFAULT_WAIT,
+        parse_bridge_ledger(&args),
     ) {
         Ok(()) => Some(0),
         Err(e) => {
