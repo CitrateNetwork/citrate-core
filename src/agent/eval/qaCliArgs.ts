@@ -7,6 +7,27 @@
 // (scripts/eval-tools.mjs, HUP-S1.7 on its own branch); when both land the two parsers should
 // fold into one module.
 // =====================================================================
+import { CORE_AI_MAX_TOKENS } from "./sidecarCliArgs.ts";
+
+/**
+ * HUP-S7.7 / US-9.2 AC1: `--retrieval-mode sidecar` asks each question in a real Hermes sidecar
+ * session (src/agent/eval/qaSidecar.ts): the sidecar offers the bundled skills, core's
+ * memory_search runs on the memory daemon.
+ */
+export interface QaSidecarArgs {
+  /** Absolute path of the citrate-agent-sidecar binary. */
+  bin: string;
+  /** The running llama-server's --ctx-size (what core passes as contextTokens). */
+  contextTokens: number;
+  /** Per-turn reply cap; default like core: min(2048, contextTokens / 4). */
+  maxTokens: number;
+  /** CITRATE_HERMES_SKILLS: SKILL.md directories, absolute, in the platform path-list order. */
+  skills: string[];
+  /** CITRATE_HERMES_SKILLS_LOCK + CITRATE_HERMES_SKILLS_THIRD_PARTY: the reviewed third-party skills. */
+  thirdParty?: { lock: string; root: string };
+  /** Longest one question may take before the run aborts. */
+  deadlineSeconds: number;
+}
 
 export interface QaCliArgs {
   baseUrl: string;
@@ -26,15 +47,26 @@ export interface QaCliArgs {
    * HUP-S3.1 / g2-knowledge: answer from the bundled knowledge corpus, retrieved per question from a
    * memory daemon socket (src/agent/eval/retrieval.ts). Absent = closed-book.
    */
-  retrieval?: { socket: string; mode: QaRetrievalMode; tenants: string[]; k: number; corpusDigest?: string; corpusDir?: string };
+  retrieval?: {
+    socket: string;
+    mode: QaRetrievalMode;
+    tenants: string[];
+    k: number;
+    corpusDigest?: string;
+    corpusDir?: string;
+    /** Set exactly when mode is "sidecar". */
+    sidecar?: QaSidecarArgs;
+  };
 }
 
 /**
  * How a retrieval run reaches the corpus. "tool" (default): the model calls the app's memory_search
  * tool on the tenant it picks, with the app's hit budget (src/agent/eval/toolLoop.ts), which is
  * what the app does. "passages": the harness retrieves passages per tenant before the question.
+ * "sidecar" (HUP-S7.7): the same memory_search tool, asked inside a real Hermes sidecar session
+ * that also offers the bundled skills, which is what the app does with the sidecar loop on.
  */
-export type QaRetrievalMode = "tool" | "passages";
+export type QaRetrievalMode = "tool" | "passages" | "sidecar";
 
 /** Hits per memory_search on a knowledge tenant in the app (knowledgeSearch memorySearchBudget). */
 const APP_KNOWLEDGE_K = 5;
@@ -54,7 +86,9 @@ export function qaDatasetFiles(name = "qa-v1"): { dataset: string; index: string
 export const QA_CLI_USAGE =
   "usage: node scripts/eval-qa.mjs --base-url <http://127.0.0.1:18080/v1> --model <name> " +
   "[--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--coverage-threshold 0..1] [--dataset qa-v1] [--adapter-sha256 <hex>] [--allow-remote] " +
-  "[--memory-socket <path> [--retrieval-mode tool|passages] [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5] [--corpus-dir <dir>] [--corpus-digest <hex>]]";
+  "[--memory-socket <path> [--retrieval-mode tool|passages|sidecar] [--retrieve-tenants citrate-docs,methodology] [--retrieve-k 5] [--corpus-dir <dir>] [--corpus-digest <hex>] " +
+  "[--sidecar-bin </abs/citrate-agent-sidecar> --context-tokens <n> [--max-tokens <n>] [--skills </abs/dir>[:</abs/dir>...]] " +
+  "[--skills-lock </abs/skills.lock> --skills-third-party </abs/dir>] [--deadline-s 600]]]";
 
 function parseHttpUrl(raw: string): URL | null {
   let u: URL;
@@ -93,7 +127,54 @@ const VALUE_FLAGS = new Set([
   "--retrieve-k",
   "--corpus-digest",
   "--corpus-dir",
+  "--sidecar-bin",
+  "--context-tokens",
+  "--max-tokens",
+  "--skills",
+  "--skills-lock",
+  "--skills-third-party",
+  "--deadline-s",
 ]);
+
+const SIDECAR_FLAGS = ["--sidecar-bin", "--context-tokens", "--max-tokens", "--skills", "--skills-lock", "--skills-third-party", "--deadline-s"];
+
+function isAbsolute(p: string): boolean {
+  return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+}
+
+function intFlag(flag: string, raw: string | undefined, min: number, max: number): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${flag} must be an integer from ${min} to ${max} (got ${raw})`);
+  return n;
+}
+
+/** The sidecar settings of a `--retrieval-mode sidecar` run. */
+function parseSidecarFlags(vals: Record<string, string>): QaSidecarArgs {
+  const bin = vals["--sidecar-bin"];
+  if (!bin) throw new Error("--retrieval-mode sidecar needs --sidecar-bin");
+  if (!isAbsolute(bin)) throw new Error(`--sidecar-bin must be an absolute path (got ${bin})`);
+  const contextTokens = intFlag("--context-tokens", vals["--context-tokens"], 2048, 1_048_576);
+  if (contextTokens === undefined) throw new Error("--retrieval-mode sidecar needs --context-tokens (the llama-server --ctx-size)");
+  const maxTokens = intFlag("--max-tokens", vals["--max-tokens"], 64, 65_536) ?? Math.min(CORE_AI_MAX_TOKENS, Math.floor(contextTokens / 4));
+  const skills = (vals["--skills"] ?? "").split(":").map((d) => d.trim()).filter(Boolean);
+  for (const d of skills) if (!isAbsolute(d)) throw new Error(`--skills takes absolute directories (got ${d})`);
+  const lock = vals["--skills-lock"];
+  const root = vals["--skills-third-party"];
+  if ((lock === undefined) !== (root === undefined)) throw new Error("--skills-lock and --skills-third-party go together");
+  const out: QaSidecarArgs = {
+    bin,
+    contextTokens,
+    maxTokens,
+    skills,
+    deadlineSeconds: intFlag("--deadline-s", vals["--deadline-s"], 30, 7200) ?? 600,
+  };
+  if (lock !== undefined && root !== undefined) {
+    if (!isAbsolute(lock) || !isAbsolute(root)) throw new Error("--skills-lock and --skills-third-party must be absolute paths");
+    out.thirdParty = { lock, root };
+  }
+  return out;
+}
 
 /** Parse argv (without the node + script entries). Throws with a readable message on error. */
 export function parseQaCliArgs(argv: string[]): QaCliArgs {
@@ -164,14 +245,28 @@ export function parseQaCliArgs(argv: string[]): QaCliArgs {
   const digest = vals["--corpus-digest"];
   const corpusDir = vals["--corpus-dir"];
   const modeRaw = vals["--retrieval-mode"];
+  const sidecarFlags = SIDECAR_FLAGS.filter((f) => vals[f] !== undefined);
   if (socket === undefined) {
     if (tenantsRaw !== undefined || kRaw !== undefined || digest !== undefined || corpusDir !== undefined || modeRaw !== undefined) {
       throw new Error("--retrieval-mode, --retrieve-tenants, --retrieve-k, --corpus-digest and --corpus-dir need --memory-socket");
     }
+    if (sidecarFlags.length) throw new Error(`${sidecarFlags.join(", ")} need --memory-socket and --retrieval-mode sidecar`);
     return out;
   }
-  if (modeRaw !== undefined && modeRaw !== "tool" && modeRaw !== "passages") {
-    throw new Error(`--retrieval-mode must be tool or passages (got ${modeRaw})`);
+  if (modeRaw !== undefined && modeRaw !== "tool" && modeRaw !== "passages" && modeRaw !== "sidecar") {
+    throw new Error(`--retrieval-mode must be tool, passages or sidecar (got ${modeRaw})`);
+  }
+  if (modeRaw !== "sidecar" && sidecarFlags.length) {
+    throw new Error(`${sidecarFlags.join(", ")} need --retrieval-mode sidecar`);
+  }
+  if (modeRaw === "sidecar") {
+    if (tenantsRaw !== undefined || kRaw !== undefined) {
+      throw new Error("--retrieve-tenants and --retrieve-k need --retrieval-mode passages; in sidecar mode the model picks the tenant and the app sets k");
+    }
+    out.retrieval = { socket, mode: "sidecar", tenants: [...QA_RETRIEVAL_TENANTS], k: APP_KNOWLEDGE_K, sidecar: parseSidecarFlags(vals) };
+    if (digest !== undefined) out.retrieval.corpusDigest = digest;
+    if (corpusDir !== undefined) out.retrieval.corpusDir = corpusDir;
+    return out;
   }
   if (digest !== undefined && !/^[0-9a-f]{64}$/.test(digest)) {
     throw new Error(`--corpus-digest takes the corpus manifest bundle_digest (64 lowercase hex; got ${digest})`);
@@ -209,6 +304,6 @@ export function qaResultFileName(isoDate: string, model: string, dataset = "qa-v
   const lora = adapterSha256 ? `-lora-${adapterSha256.slice(0, 12)}` : "";
   // HUP-S3.1: a run that answers from the retrieved corpus never overwrites the closed-book run,
   // and a tool run (the app's path) never overwrites a passages run.
-  const rag = retrieval === "tool" ? "-tool" : retrieval === "passages" ? "-rag" : "";
+  const rag = retrieval === "tool" ? "-tool" : retrieval === "passages" ? "-rag" : retrieval === "sidecar" ? "-sidecar" : "";
   return `${isoDate.slice(0, 10)}-${set}${rag}-${safe}${lora}.json`;
 }

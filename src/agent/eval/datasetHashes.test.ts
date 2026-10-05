@@ -13,6 +13,8 @@ import { resolve } from "node:path";
 const V1_SHA256: Record<string, string> = {
   "toolcall-v1.json": "0bb4205ef14cd1b1701cf7b2e0392e15c858a8bf9b020ab8c2bc49ebbdbb0bdf",
   "injection-v1.json": "9c2148ade8e50d106c4c8b14c94522d43fed1931390c5dfb45f43d9f9ff8f1e2",
+  // HUP-S7.7 / US-9.2 AC1 (2026-10-04): frozen once qa-literacy-v2 added the missing paraconsensus items.
+  "qa-literacy-v1.json": "f21c1df28df6983a72f5862b1299334271ce7577c94efa786590178d289294d6",
 };
 
 describe("v1 eval datasets are frozen (A50)", () => {

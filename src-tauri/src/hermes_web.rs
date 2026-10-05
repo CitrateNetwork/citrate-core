@@ -188,26 +188,30 @@ pub fn sidecar_env(s: &HermesWebSettings, hermes_dir: &Path) -> Vec<(String, Str
     sidecar_env_with(s, hermes_dir, None)
 }
 
-/// The sidecar environment for these settings, with a managed Chromium whose updates are current.
+/// The sidecar environment for these settings, with a managed Chromium whose updates are current
+/// and no SearXNG component installed.
 #[cfg(test)]
 pub fn sidecar_env_with(
     s: &HermesWebSettings,
     hermes_dir: &Path,
     managed_chromium: Option<&Path>,
 ) -> Vec<(String, String)> {
-    sidecar_env_managed(s, hermes_dir, managed_chromium, true)
+    sidecar_env_managed(s, hermes_dir, managed_chromium, true, None)
 }
 
 /// The sidecar environment for these settings; `managed_chromium` is the installed managed
 /// Chromium's executable, passed only while the browser switch is on. `may_open_web` is the
 /// component updater's open-web rule for it (HUP-S5.5): when false, the managed browser is kept
 /// off the open web (`CITRATE_BROWSER_OPEN_WEB=0`). It is passed only together with the managed
-/// Chromium, never for a system Chrome.
+/// Chromium, never for a system Chrome. `managed_searxng` is the installed SearXNG component's
+/// `searxng-run`, used only while web search is on and the member has not named a SearXNG of
+/// their own (theirs wins).
 pub fn sidecar_env_managed(
     s: &HermesWebSettings,
     hermes_dir: &Path,
     managed_chromium: Option<&Path>,
     may_open_web: bool,
+    managed_searxng: Option<&Path>,
 ) -> Vec<(String, String)> {
     let mut env = Vec::new();
     let mut put = |k: &str, v: String| env.push((k.to_string(), v));
@@ -224,6 +228,8 @@ pub fn sidecar_env_managed(
         put("CITRATE_HERMES_SEARCH", "1".into());
         if let Some(p) = &s.searxng_path {
             put("CITRATE_HERMES_SEARXNG", p.clone());
+        } else if let Some(p) = managed_searxng.filter(|p| p.is_absolute()) {
+            put("CITRATE_HERMES_SEARXNG", p.to_string_lossy().into_owned());
         }
         put(
             "CITRATE_HERMES_SEARXNG_DATA",
@@ -274,23 +280,25 @@ pub fn status_for(s: HermesWebSettings, load_error: Option<String>) -> HermesWeb
     status_with(s, load_error, None)
 }
 
-/// The status the Settings card renders, with a managed Chromium whose updates are current.
+/// The status the Settings card renders, with a managed Chromium whose updates are current and no
+/// SearXNG component installed.
 #[cfg(test)]
 pub fn status_with(
     s: HermesWebSettings,
     load_error: Option<String>,
     managed_chromium: Option<&Path>,
 ) -> HermesWebStatus {
-    status_managed(s, load_error, managed_chromium, true)
+    status_managed(s, load_error, managed_chromium, true, None)
 }
 
 /// The status the Settings card renders. `may_open_web` is the component updater's open-web rule
-/// for the managed Chromium (HUP-S5.5).
+/// for the managed Chromium (HUP-S5.5); `managed_searxng` is the installed SearXNG component.
 pub fn status_managed(
     s: HermesWebSettings,
     load_error: Option<String>,
     managed_chromium: Option<&Path>,
     may_open_web: bool,
+    managed_searxng: Option<&Path>,
 ) -> HermesWebStatus {
     let mut notices = Vec::new();
     if s.browser_enabled {
@@ -307,13 +315,19 @@ pub fn status_managed(
             "Pages Hermes opens are treated as untrusted: after it reads one, every click, entry or new address needs your approval. Attaching to your own Chrome is asked for each session in the Browser pop-out.".to_string(),
         );
     }
-    let searxng_found = file_exists(&s.searxng_path)
+    let member_searxng = file_exists(&s.searxng_path)
         || s.searxng_path
             .as_deref()
             .map(|p| Path::new(p).join("bin").join("searxng-run").is_file())
             .unwrap_or(false);
+    let uses_managed_searxng = s.searxng_path.is_none() && managed_searxng.is_some();
+    let searxng_found = member_searxng || uses_managed_searxng;
     if s.search_enabled {
-        if !searxng_found {
+        if uses_managed_searxng {
+            notices.push(
+                "Web search uses the installed private search component (SearXNG), which runs on this computer only.".to_string(),
+            );
+        } else if !searxng_found {
             notices.push(
                 "Web search is on, but no SearXNG program was found at the configured path, so web_search will say it is not installed. Reading a known URL still works.".to_string(),
             );
@@ -363,7 +377,7 @@ pub fn env_source_from(
 }
 
 /// The production env source: the stored settings at each start (a corrupt file = defaults),
-/// and the managed Chromium as installed in `components_root` at that moment.
+/// and the managed Chromium and SearXNG as installed in `components_root` at that moment.
 pub fn file_env_source(hermes_dir: PathBuf, components_root: Option<PathBuf>) -> EnvSource {
     Arc::new(move || {
         let s = load(&hermes_dir).unwrap_or_default();
@@ -371,13 +385,32 @@ pub fn file_env_source(hermes_dir: PathBuf, components_root: Option<PathBuf>) ->
             (Some(root), true) => crate::components::managed_browser_now(root),
             _ => None,
         };
+        let searxng = match (&components_root, s.search_enabled) {
+            (Some(root), true) => crate::components::managed_searxng(root),
+            _ => None,
+        };
         sidecar_env_managed(
             &s,
             &hermes_dir,
             managed.as_ref().map(|m| m.exe.as_path()),
             managed.as_ref().map(|m| m.may_open_web).unwrap_or(true),
+            searxng.as_deref(),
         )
     })
+}
+
+/// The managed Chromium (with its open-web rule) and SearXNG installed now (`None` each when not
+/// installed).
+fn managed_now(
+    app: &tauri::AppHandle,
+) -> (Option<crate::components::ManagedBrowser>, Option<PathBuf>) {
+    match crate::components::components_root(app) {
+        Ok(r) => (
+            crate::components::managed_browser_now(&r),
+            crate::components::managed_searxng(&r),
+        ),
+        Err(_) => (None, None),
+    }
 }
 
 fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -393,14 +426,13 @@ fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, S
 pub async fn hermes_web_settings_get(app: tauri::AppHandle) -> Result<HermesWebStatus, String> {
     crate::blocking::off_main(move || {
         let dir = hermes_dir(&app)?;
-        let managed = crate::components::components_root(&app)
-            .ok()
-            .and_then(|r| crate::components::managed_browser_now(&r));
+        let (managed, searxng) = managed_now(&app);
         let exe = managed.as_ref().map(|m| m.exe.as_path());
         let open = managed.as_ref().map(|m| m.may_open_web).unwrap_or(true);
+        let x = searxng.as_deref();
         Ok(match load(&dir) {
-            Ok(s) => status_managed(s, None, exe, open),
-            Err(e) => status_managed(HermesWebSettings::default(), Some(e), exe, open),
+            Ok(s) => status_managed(s, None, exe, open, x),
+            Err(e) => status_managed(HermesWebSettings::default(), Some(e), exe, open, x),
         })
     })
     .await
@@ -417,14 +449,13 @@ pub async fn hermes_web_settings_set(
         let dir = hermes_dir(&app)?;
         let s = validate(settings)?;
         save(&dir, &s)?;
-        let managed = crate::components::components_root(&app)
-            .ok()
-            .and_then(|r| crate::components::managed_browser_now(&r));
+        let (managed, searxng) = managed_now(&app);
         Ok(status_managed(
             s,
             None,
             managed.as_ref().map(|m| m.exe.as_path()),
             managed.as_ref().map(|m| m.may_open_web).unwrap_or(true),
+            searxng.as_deref(),
         ))
     })
     .await
