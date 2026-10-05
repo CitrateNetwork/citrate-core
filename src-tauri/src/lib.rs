@@ -659,6 +659,8 @@ pub fn run() {
             cluster::cluster_share_file,
             cluster::cluster_leave,
             cluster::cluster_devices,
+            cluster::cluster_group_seed,
+            cluster::cluster_add_seed,
             device_link::device_link_request,
             device_link::device_link_approve,
             device_link::device_link_reject,

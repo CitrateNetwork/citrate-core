@@ -935,6 +935,26 @@ export interface ClusterDomain {
   deviceLinksIngest(sender: string, body: string): Promise<DeviceLinkIngest>;
   /** HUP-S8.4 prep: whether the cross-machine mesh transport is on, and why. */
   meshStatus(): Promise<MeshStatus>;
+  /**
+   * HUP-S8.4: this machine's link (or QR text) for `groupId`: where another member's machine can
+   * reach it. Needs the cross-machine mesh; without it the daemon says so and nothing is invented.
+   */
+  groupSeed(groupId: string): Promise<ClusterGroupSeed>;
+  /**
+   * HUP-S8.4: dial the machines named in a group link another member shared. Resolves to how many
+   * addresses are being dialed. A link says where to knock, nothing more: each machine is still
+   * admitted only by the group's roster and DeviceLinks.
+   */
+  addGroupSeed(groupId: string, seed: string): Promise<number>;
+}
+
+/** HUP-S8.4: a group link (mirrors Rust `cluster::ClusterGroupSeedDto`). */
+export interface ClusterGroupSeed {
+  groupId: string;
+  /** `citrate-cluster://seed?v=1&g=...&a=...`, short enough for a QR code. */
+  seed: string;
+  /** The multiaddrs in the link, each ending in this machine's peer id. */
+  addrs: string[];
 }
 
 /** Group-message prefix of a DeviceLink share (a control message; never shown in chat). It starts

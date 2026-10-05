@@ -170,6 +170,8 @@ commands.allow = [
   "cluster_share_file",
   "cluster_leave",
   "cluster_devices",
+  "cluster_group_seed",
+  "cluster_add_seed",
   "device_link_request",
   "device_link_approve",
   "device_link_reject",
