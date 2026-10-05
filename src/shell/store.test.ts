@@ -1316,7 +1316,9 @@ describe("linked wallets — list and unlink", () => {
     vi.spyOn(bridge.wallet, "unlink").mockRejectedValue(new Error("the authority did not unlink the wallet: 403"));
     const toastSpy = vi.spyOn(store, "toast");
     await store.unlinkWallet(A);
-    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("Wallet not unlinked"));
+    expect(toastSpy).toHaveBeenCalledWith("Wallet not unlinked: the authority did not unlink the wallet: 403");
+    // Member-facing copy: no em-dashes.
+    expect(String(toastSpy.mock.calls[0]?.[0])).not.toContain("\u2014");
     expect(store.authUserinfo).not.toHaveBeenCalled();
   });
 });

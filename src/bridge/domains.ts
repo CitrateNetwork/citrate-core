@@ -215,9 +215,6 @@ export interface WalletDomain {
   unlink(address: string): Promise<void>;
 }
 
-/** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
- * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
- * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
 /** One wallet linked to the member's identity, as the authority serves it. */
 export interface LinkedWallet {
   address: string;
@@ -226,6 +223,9 @@ export interface LinkedWallet {
   linked_at: string;
 }
 
+/** CORE WP2 — a single pending (unclaimed) LiquidStakingPool withdrawal, all
+ * fields from live on-chain state. `saltWei` is the payout; `claimableAtBlock` =
+ * `requestBlock + 50400`; `claimable` is `currentBlock >= claimableAtBlock`. */
 export interface PendingWithdrawal {
   id: string;
   saltWei: string;

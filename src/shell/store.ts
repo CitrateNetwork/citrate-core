@@ -4084,7 +4084,7 @@ export class Store {
     try {
       await bridge.wallet.unlink(address);
     } catch (err) {
-      this.toast("Wallet not unlinked — " + String((err as Error).message ?? err));
+      this.toast("Wallet not unlinked: " + String((err as Error).message ?? err));
       return;
     }
     this.addActivity("Unlinked wallet " + address.slice(0, 10) + "…", "no funds moved", "");
