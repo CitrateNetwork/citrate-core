@@ -281,3 +281,48 @@ fn manifest_from_bundle_refuses_a_measured_artifact_without_a_signature() {
 fn repo_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
+
+#[test]
+fn every_build_from_lock_pins_each_requirement_by_hash() {
+    // scripts/pack-searxng.sh (and the slither packing to come) installs with
+    // pip --require-hashes from these locks: every requirement must be exact and hashed.
+    let (b, _) = load();
+    let mut locks = 0;
+    for t in &b.tools {
+        for (plat, a) in &t.artifacts {
+            let Some(f) = &a.build_from else { continue };
+            locks += 1;
+            let text = std::fs::read_to_string(repo_root().join(f)).unwrap();
+            let reqs: Vec<&str> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect();
+            assert!(!reqs.is_empty(), "{} {plat}: {f} is empty", t.name);
+            for l in reqs {
+                let (pin, hash) = l
+                    .split_once(" --hash=sha256:")
+                    .unwrap_or_else(|| panic!("{f}: no hash on {l:?}"));
+                let (name, ver) = pin
+                    .split_once("==")
+                    .unwrap_or_else(|| panic!("{f}: not an exact pin: {l:?}"));
+                assert!(
+                    !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)),
+                    "{f}: {l:?}"
+                );
+                assert!(!ver.is_empty() && !ver.contains(' '), "{f}: {l:?}");
+                assert!(
+                    hash.len() == 64
+                        && hash
+                            .chars()
+                            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                    "{f}: {l:?}"
+                );
+            }
+        }
+    }
+    assert!(locks >= 2, "the searxng and slither locks are listed");
+}

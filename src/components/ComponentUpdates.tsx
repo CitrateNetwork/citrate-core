@@ -37,6 +37,17 @@ function freshnessText(s: ComponentsStatus): string {
   }
 }
 
+/** HUP-S5.5: the open-web rule for the managed browser, and whether it holds the browser back now. */
+export function openWebText(s: Pick<ComponentsStatus, "browserMayOpenWeb" | "installed">): string {
+  const managed = s.installed.some((c) => c.name === "chromium");
+  if (!managed) {
+    return "The managed browser is not installed. Once it is, it stays off the open web whenever the last signed manifest has expired or none was checked.";
+  }
+  return s.browserMayOpenWeb
+    ? "The managed browser may open the web: its updates were checked against a current signed manifest."
+    : "The managed browser is kept off the open web now: the last signed manifest has expired or none was checked. It opens pages on this machine that a developer allowed, and nothing else, until updates are checked again.";
+}
+
 const note = { fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 } as const;
 
 export function ComponentUpdatesView({
@@ -110,9 +121,9 @@ export function ComponentUpdatesView({
       <span style={note}>
         Security fixes for bundled components: critical within {sla.criticalHours} h, high within {sla.highDays} days,
         medium within {sla.mediumDays} days, low within {sla.lowDays} days.
-        {sla.pendingOwnerSignoff ? " These values are placeholders, pending owner sign-off." : ""} Planned rule, not
-        enforced yet: the managed browser stays off the open web until a current signed manifest has been checked.
+        {sla.pendingOwnerSignoff ? " These values are placeholders, pending owner sign-off." : ""}
       </span>
+      <span style={note}>{openWebText(status)}</span>
       {error && <span style={{ ...note, color: "var(--warn)" }}>{error}</span>}
     </div>
   );

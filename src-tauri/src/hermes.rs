@@ -49,6 +49,10 @@ pub mod chain;
 #[path = "hermes_workers.rs"]
 pub mod workers;
 
+// HUP-S5.3 — the decide() slot's per-backend metering (GET /decide/stats), for the Activity monitor.
+#[path = "hermes_decide.rs"]
+pub mod decide;
+
 /// The Hermes harness loopback control bind. Distinct from node RPC (8545), llama (18080),
 /// node-agent (19600), and comms (8787/8788).
 pub const HERMES_CONTROL_ADDR: &str = "127.0.0.1:19700";
@@ -379,6 +383,10 @@ pub struct HermesManager {
     /// HUP-S5.2/S5.3: extra child environment from the member's web opt-ins, computed at each
     /// start. Only keys on `hermes_web::SIDECAR_ENV_KEYS` pass. `None` = nothing extra.
     env_source: Option<crate::hermes_web::EnvSource>,
+    /// HUP-S1.2 / US-1.4: the loopback BGE embedding server the sidecar ranks tools and skills
+    /// with. Started before the sidecar; its URL and key FILE are passed only while it runs.
+    /// `None` (tests, or no bundled model) = sessions rank lexically and report it.
+    embed: Option<crate::embed_serve::EmbedServer>,
     health_interval: Duration,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
@@ -430,6 +438,7 @@ impl HermesManager {
             mcp_allowlist: None,
             chain_data_dir: None,
             env_source: None,
+            embed: None,
             health_interval: HEALTH_INTERVAL,
             #[cfg(test)]
             spawn_args_override: None,
@@ -487,6 +496,13 @@ impl HermesManager {
     /// [`crate::hermes_mcp::effective_allowlist`]).
     pub fn with_mcp_allowlist(mut self, path: PathBuf) -> Self {
         self.mcp_allowlist = Some(path);
+        self
+    }
+
+    /// HUP-S1.2 / US-1.4: start this embedding server with the sidecar and pass its URL and key
+    /// file (`CITRATE_HERMES_EMBED_URL`, `CITRATE_HERMES_EMBED_KEY_FILE`) while it runs.
+    pub fn with_embed(mut self, embed: crate::embed_serve::EmbedServer) -> Self {
+        self.embed = Some(embed);
         self
     }
 
@@ -610,6 +626,11 @@ impl HermesManager {
                     .push((k.to_string(), dir.to_string_lossy().to_string()));
             }
         }
+        // HUP-S1.2 / US-1.4: embedding retrieval, only while the embedding server runs (otherwise
+        // the sidecar tries its own chat server and reports lexical ranking with the reason).
+        if let Some(embed) = self.embed.as_ref().filter(|e| e.is_started()) {
+            spec.env.extend(embed.sidecar_env());
+        }
         if let Some(src) = &self.env_source {
             spec.env.extend(src().into_iter().filter(|(k, _)| {
                 crate::hermes_web::SIDECAR_ENV_KEYS.contains(&k.as_str())
@@ -624,6 +645,12 @@ impl HermesManager {
             probe: std::sync::Arc::new(move || http_health_ok(&health_url)),
         });
         spec
+    }
+
+    /// Test hook: the embedding server, to start it in the wiring proof.
+    #[cfg(test)]
+    pub fn embed_for_test(&self) -> Option<&crate::embed_serve::EmbedServer> {
+        self.embed.as_ref()
     }
 
     /// Test hook: expose the spec env for the wiring proof (addr + token-file path, never a token).
@@ -654,6 +681,12 @@ impl HermesManager {
                 return Err(HermesError::PortInUse(port));
             }
         }
+        // HUP-S1.2 / US-1.4: best effort. Without it the sessions rank lexically and say why.
+        if let Some(embed) = &self.embed {
+            if let Err(e) = embed.ensure_started() {
+                eprintln!("hermes: embedding retrieval stays off: {e}");
+            }
+        }
         let token = mint_bearer();
         persist_bearer(&self.token_path, &token)?;
         let spec = self.build_spec();
@@ -675,6 +708,9 @@ impl HermesManager {
         if let Some(sup) = sup {
             sup.stop();
             drop(sup);
+        }
+        if let Some(embed) = &self.embed {
+            embed.stop();
         }
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // A new session starts with a clean dedup map.
@@ -1396,6 +1432,11 @@ pub fn sidecar_running() -> bool {
     HERMES.get().is_some_and(|m| m.is_running())
 }
 
+/// HUP-S1.1 (US-1.1 AC3): the manager, only while its sidecar is running (the headless dispatcher).
+pub(crate) fn running_manager() -> Option<&'static HermesManager> {
+    HERMES.get().filter(|m| m.is_running())
+}
+
 /// Stop the hermes sidecar if this session started it (called on graceful app teardown). Idempotent
 /// and a no-op if it was never started.
 pub fn shutdown() {
@@ -1489,6 +1530,23 @@ pub(crate) fn manager<R: tauri::Runtime>(
                 env
             })
         });
+    // HUP-S1.2 / US-1.4: the bundled BGE model on a second, embedding-only llama-server. Only
+    // when both the model and the llama-server binary are present; the pin is checked at start.
+    let mgr = match (
+        crate::embed_serve::resolve_model(resources.as_deref()),
+        crate::serve::resolve_llama_bin(app).ok(),
+    ) {
+        (Some(model), Some(llama)) if model.exists() && llama.exists() => {
+            mgr.with_embed(crate::embed_serve::EmbedServer::new(
+                llama,
+                model,
+                crate::embed_serve::EMBED_PORT,
+                base.join("embed.key"),
+                base.join("embed-crashes.log"),
+            ))
+        }
+        _ => mgr,
+    };
     // If another thread won the race, `set` fails and we return the stored winner — same instance.
     let _ = HERMES.set(mgr);
     Ok(HERMES.get().expect("manager just set"))
@@ -2114,7 +2172,8 @@ pub async fn hermes_session_send(
     .await
 }
 
-/// **hermes_session_events** — long-poll the session's event log after `after`.
+/// **hermes_session_events** — long-poll the session's event log after `after` (the chat view's
+/// read: it renews the view's lease on the session, see `hermes_headless`).
 #[tauri::command]
 pub async fn hermes_session_events(
     app: tauri::AppHandle,
@@ -2123,9 +2182,12 @@ pub async fn hermes_session_events(
     wait_ms: u64,
 ) -> std::result::Result<serde_json::Value, String> {
     crate::blocking::off_main(move || {
-        manager(&app)?
+        let page = manager(&app)?
             .session_events(&id, after, wait_ms)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // HUP-S1.1 (US-1.1 AC3): the view is watching this session; calls it is shown are its own,
+        // and a call the headless dispatcher already answered is marked so the view skips it.
+        Ok(crate::hermes_headless::LEASES.view_page(&id, page, std::time::Instant::now()))
     })
     .await
 }
@@ -2140,6 +2202,9 @@ pub async fn hermes_session_tool_result(
     content: String,
 ) -> std::result::Result<(), String> {
     crate::blocking::off_main(move || {
+        // HUP-S1.1 (US-1.1 AC3): the view is still driving this session. Renewed BEFORE the post,
+        // so the next call the result unblocks stays the view's (the lease is fresh when it lands).
+        crate::hermes_headless::LEASES.view_answered(&id, &call_id, std::time::Instant::now());
         manager(&app)?
             .session_tool_result(&id, &call_id, &status, &content)
             .map_err(|e| e.to_string())

@@ -318,3 +318,43 @@ describe("the snapshot and the pop-out", () => {
     expect(rows[2]).toContain("(estimated)");
   });
 });
+
+// HUP-S7.5 (D-27, US-7.3 AC1): the first-token time comes from the model server's own timing for
+// the turn's first call; without it the row says unknown and why.
+describe("first token (D-27)", () => {
+  it("reads llama-server's prompt time from both loops' usage", () => {
+    expect(usageEventOf({ prompt_tokens: 12, completion_tokens: 4, generation_ms: 140, prompt_ms: 96 })).toEqual({ kind: "usage", promptTokens: 12, completionTokens: 4, generationMs: 140, promptMs: 96 });
+    expect(usageEventOf({ prompt_tokens: 12, completion_tokens: 4, prompt_ms: "soon" })).toEqual({ kind: "usage", promptTokens: 12, completionTokens: 4, generationMs: null });
+  });
+
+  it("the turn's first call decides it; a later call's time is not substituted", () => {
+    beginTurn("local", "local model", 1000);
+    usageReported({ kind: "usage", promptTokens: 300, completionTokens: 12, generationMs: 400, promptMs: 180 });
+    usageReported({ kind: "usage", promptTokens: 340, completionTokens: 20, generationMs: 600, promptMs: 35 });
+    expect(turnActivity.get().usage?.firstTokenMs).toBe(180);
+    beginTurn("local", "local model", 2000);
+    usageReported({ kind: "usage", promptTokens: 300, completionTokens: 12, generationMs: 400 });
+    usageReported({ kind: "usage", promptTokens: 340, completionTokens: 20, generationMs: 600, promptMs: 35 });
+    expect(turnActivity.get().usage?.firstTokenMs).toBeUndefined();
+  });
+
+  it("the snapshot and the pop-out show the measured value, or unknown with the reason", () => {
+    beginTurn("local", "local model", 1000);
+    usageReported({ kind: "usage", promptTokens: 3000, completionTokens: 96, generationMs: 3200, promptMs: 1240 });
+    const s = buildMonitorSnapshot(inputs());
+    expect(s.firstToken).toEqual({ ms: 1240, note: "measured: the model server's own time reading the prompt before its first token" });
+    expect(isMonitorSnapshot(s)).toBe(true);
+    expect(isMonitorSnapshot({ ...s, firstToken: { ms: "fast", note: "x" } })).toBe(false);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => root.render(<ActivityMonitor snapshot={s} now={12_000} onStop={() => {}} />));
+    expect(host.querySelector('[data-testid="mon-ttft"]')?.textContent).toMatch(/^1,240 ms/);
+    const unknown = buildMonitorSnapshot(inputs({ activity: IDLE_ACTIVITY }));
+    expect(unknown.firstToken?.ms).toBeNull();
+    act(() => root.render(<ActivityMonitor snapshot={unknown} now={12_000} onStop={() => {}} />));
+    expect(host.querySelector('[data-testid="mon-ttft"]')?.textContent).toMatch(/^unknown/);
+    act(() => root.unmount());
+    host.remove();
+  });
+});

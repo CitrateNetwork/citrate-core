@@ -13,10 +13,10 @@
 //! refused while `BenchmarkRegistry` is not in the 40204 address book. Counts only, no content.
 //!
 //! Pending owner sign-off (conservative placeholders):
-//! - **Submission shape.** One wallet card per metric (up to fifteen a day), signed by the member's
-//!   account so the series is theirs (`BenchmarkRegistry` keys records by `msg.sender`). The
-//!   alternatives are a batch call on the registry or folding the aggregates into the nightly
-//!   anchor (which changes whose series it is).
+//! - **Submission shape.** One wallet card per metric (up to twenty-six a day with the D-27
+//!   measures of HUP-S7.5), signed by the member's account so the series is theirs
+//!   (`BenchmarkRegistry` keys records by `msg.sender`). The alternatives are a batch call on the
+//!   registry or folding the aggregates into the nightly anchor (which changes whose series it is).
 //! - **Agent id.** The member's first AgentSBT token. No AgentSBT, no sharing.
 //! - **Repeats.** Sharing the same day twice in one app session is refused; across restarts it
 //!   is not tracked (the registry appends every record and stores no day).
@@ -41,7 +41,7 @@ const CHAIN_ID: u64 = 40_204;
 
 /// Decisions this build makes with conservative placeholders, pending owner sign-off.
 pub const PENDING_OWNER_SIGN_OFF: &[&str] = &[
-    "Benchmark sharing sends one wallet approval card per metric (up to fifteen a day) from your account. A batched call or folding the numbers into the nightly anchor are the alternatives. Pending owner sign-off.",
+    "Benchmark sharing sends one wallet approval card per metric (up to twenty-six a day) from your account. A batched call or folding the numbers into the nightly anchor are the alternatives. Pending owner sign-off.",
     "The agent id on shared numbers is your first AgentSBT. Pending owner sign-off.",
 ];
 

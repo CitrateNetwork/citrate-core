@@ -961,18 +961,26 @@ pub(crate) const USAGE_KEY: &str = "citrate_usage";
 /// `completion_tokens`, both non-negative integers), plus llama-server's `timings.predicted_ms`
 /// as `generation_ms` when it is a finite, non-negative number. Anything missing or malformed is
 /// unknown (`None`), never zero. Mirrors the sidecar's `llm_http::parse_usage`.
+///
+/// HUP-S7.5 (D-27): llama-server's `timings.prompt_ms` (time reading the prompt before the first
+/// token, i.e. the server's time to first token) rides along as `prompt_ms` under the same rule.
 pub(crate) fn reported_usage(v: &Value) -> Option<Value> {
     let u = v.get("usage")?;
     let prompt = u.get("prompt_tokens")?.as_u64()?;
     let completion = u.get("completion_tokens")?.as_u64()?;
     let mut out = json!({ "prompt_tokens": prompt, "completion_tokens": completion });
-    if let Some(ms) = v
-        .get("timings")
-        .and_then(|t| t.get("predicted_ms"))
-        .and_then(Value::as_f64)
-        .filter(|ms| ms.is_finite() && (0.0..1.0e12).contains(ms))
-    {
-        out["generation_ms"] = json!(ms.round() as u64);
+    let timing = |field: &str| {
+        v.get("timings")
+            .and_then(|t| t.get(field))
+            .and_then(Value::as_f64)
+            .filter(|ms| ms.is_finite() && (0.0..1.0e12).contains(ms))
+            .map(|ms| ms.round() as u64)
+    };
+    if let Some(ms) = timing("predicted_ms") {
+        out["generation_ms"] = json!(ms);
+    }
+    if let Some(ms) = timing("prompt_ms") {
+        out["prompt_ms"] = json!(ms);
     }
     Some(out)
 }

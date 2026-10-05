@@ -41,7 +41,7 @@ and Neither into a number; the four-valued reduction keeps them. A `Both` says "
 ## The two orders (the bilattice)
 
 The four values form a bilattice with two partial orders
-(`citrate-chain:core/learning/ARCHITECTURE.md#Definition 1: Belnap FOUR Bilattice`):
+(`citrate-chain:core/learning/ARCHITECTURE.md#definition-1-belnap-four-bilattice`):
 
 - **Knowledge order** (how much is known): Neither is below True and False, which are below
   Both. True and False are not comparable. `k_leq` implements it; `k_level` gives N=0, T=1,
@@ -150,6 +150,21 @@ sources and two different values; a report always starts Open; resolution needs 
 decision id that points at the AgentDecisionRegistry. For Hermes this is the escalation path for
 an unresolved `Both` (planset 02_ARCHITECTURE section 8). Any write to it is a transaction and
 goes through the member's SignatureCeremony.
+
+## Citing the docs
+
+Members check answers against the public docs, so cite the docs section that states the point,
+in the form `repo:path#anchor`, next to any code reference:
+
+| Topic | Docs section to cite |
+|---|---|
+| what the four values mean, why a mean loses Both and Neither | `citrate-docs:content/research/paraconsistent.md#the-four-values` |
+| the two outputs per dimension, what the router does with Both | `citrate-docs:content/research/paraconsistent.md#what-it-is` |
+| the knowledge and truth orders, join, meet, negation, the lattice laws | `citrate-docs:content/research/paraconsistent.md#how-the-implementation-works` |
+| trust weights, the classifier, the reduction, the independent outputs | `citrate-docs:content/research/paraconsistent.md#how-the-implementation-works` |
+| checkpoint alignment, the in-circuit form (proposed, not built) | `citrate-docs:content/research/paraconsistent.md#how-it-maps-to-the-network` |
+| `0x0110`, Q16, the output size, semantic (not byte) match with the reference | `citrate-docs:content/chain/precompiles.md#belnap-q16-lattice-aggregation` |
+| the safety invariant (state root unchanged by learning) | `citrate-chain:core/learning/ARCHITECTURE.md#theorem-3-safety-invariant-paper-ii-71` |
 
 ## How to answer well
 

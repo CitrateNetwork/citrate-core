@@ -72,6 +72,10 @@ pub struct Receipt {
     pub block_number: u64,
     /// The receipt `status` (1 = success, 0 = reverted), if the node returns it.
     pub status: Option<u64>,
+    /// HUP-S7.5 (D-27): `gasUsed`, if the node returns it.
+    pub gas_used: Option<u64>,
+    /// HUP-S7.5 (D-27): `effectiveGasPrice` (wei per gas actually paid), if the node returns it.
+    pub effective_gas_price: Option<u128>,
 }
 
 /// The JSON-RPC transport seam. Production uses [`HttpTransport`] (real POSTs to
@@ -357,10 +361,18 @@ impl<T: RpcTransport> RpcClient<T> {
         let status = result
             .get("status")
             .and_then(|v| parse_hex_quantity(v, "receipt.status").ok());
+        let gas_used = result
+            .get("gasUsed")
+            .and_then(|v| parse_hex_quantity(v, "receipt.gasUsed").ok());
+        let effective_gas_price = result
+            .get("effectiveGasPrice")
+            .and_then(|v| parse_hex_quantity_u128(v, "receipt.effectiveGasPrice").ok());
         Ok(Some(Receipt {
             tx_hash: tx_hash.to_string(),
             block_number,
             status,
+            gas_used,
+            effective_gas_price,
         }))
     }
 

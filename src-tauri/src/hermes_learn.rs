@@ -21,6 +21,8 @@
 //!   graph (`memory.assert` into the `personal` tenant). A contradiction is Belnap `both`: the new
 //!   memory AND the one it contradicts are marked `both` (unresolved) in the ledger, and the two
 //!   graph nodes are linked by a quarantined `contradicts` edge. Nothing is merged or overwritten.
+//!   Until the member resolves it, recall and search leave both sides out ([`RecallHide`], read
+//!   by `memory.rs` and the Hermes memory bridge on every call).
 //!   When the memory daemon is not running, the memory waits in the ledger as `pending` and is
 //!   stored by `hermes_learn_store_pending`.
 //! - **Resolving a contradiction** is the member's call (HIC-1, recorded by the sidecar first):
@@ -31,10 +33,13 @@
 //!   If the route's answer is lost, the next sync with the sidecar's proposal list applies it
 //!   (a retracted proposal names the one kept), and the sync settles a memory left `both` with
 //!   nothing to contradict only when the sidecar shows it standing. Model:
-//!   citrate-agent-runtime `agent-learn/formal/ContradictionResolve.tla`.
+//!   citrate-agent-runtime `agent-learn/formal/ContradictionResolve.tla`. One side may be a memory
+//!   core held before (`memory:<id>`, a sidecar known memory): keeping the learned one sets it
+//!   aside (the sidecar lists it in the proposal's `set_aside`), keeping it retracts the learned one.
 //! - **Publishing** an accepted skill to the on-chain SkillRegistry is an HIC-1 action: the sidecar
 //!   records the decision and builds calldata only, core checks the payload (target, owner, chain,
-//!   selector, no value, no broadcast) and opens a PENDING SignatureCeremony; the member signs and
+//!   selector, exact calldata, and the registry's `skillHashOf` id) and opens a PENDING
+//!   SignatureCeremony; the member signs and
 //!   sends there (Rule 3). Before that, core pins the accepted `SKILL.md` to the local IPFS node,
 //!   reads it back, and passes its CID as the registry's `manifestCID` (the payload must carry
 //!   it). It is OFF ([`SKILL_PUBLISH_ENABLED`]) pending owner sign-off, and the UI says so.
@@ -57,10 +62,11 @@ pub const LEARN_SKILLS_DIR_ENV: &str = "CITRATE_HERMES_LEARN_SKILLS_DIR";
 /// The instruction-skill folders the sidecar offers in sessions (sidecar env, HUP-S3.2).
 pub const SKILLS_ENV: &str = "CITRATE_HERMES_SKILLS";
 
-/// Publishing learned skills to the SkillRegistry on 40204. **Pending owner sign-off**: the
-/// registry at the address-book address answers `registerSkill`, but whether that deployment is
-/// the one members should publish to after the fresh-keys reroll is the owner's call. While this
-/// is `false` the publish button is disabled with that note; nothing else changes.
+/// Publishing learned skills to the SkillRegistry on 40204. **Pending owner sign-off.** The
+/// recommended default (fan-out 7) is to enable it once the redeployed SkillRegistry
+/// (citrate-chain PR #272, `abi.encode` skill ids, which this module and the runtime now follow)
+/// is live on 40204 and in the address book. While this is `false` the publish button is
+/// disabled with that note; nothing else changes.
 pub const SKILL_PUBLISH_ENABLED: bool = false;
 
 /// Explicit gas for `registerSkill` (strings plus a tags array written to storage). A calldata tx
@@ -158,6 +164,27 @@ pub fn valid_proposal_id(id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("invalid proposal id".into())
+    }
+}
+
+/// The prefix of a memory core held before Hermes learned anything about it (a sidecar
+/// `known_memories` id). A learned memory can contradict one; the member resolves it like a
+/// contradiction between two learned memories.
+pub const KNOWN_MEMORY_PREFIX: &str = "memory:";
+
+/// `memory:<id>`: 1..=128 printable ASCII bytes after the prefix, no spaces.
+pub fn valid_known_ref(r: &str) -> bool {
+    r.strip_prefix(KNOWN_MEMORY_PREFIX).is_some_and(|id| {
+        !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_graphic())
+    })
+}
+
+/// One side of a resolution: a learned proposal id or a known memory (`memory:<id>`).
+fn valid_memory_ref(r: &str) -> Result<(), String> {
+    if valid_known_ref(r) {
+        Ok(())
+    } else {
+        valid_proposal_id(r)
     }
 }
 
@@ -281,10 +308,13 @@ pub fn learn_resolve(
     retract: &str,
     member: &str,
 ) -> Result<Value, String> {
-    valid_proposal_id(keep)?;
-    valid_proposal_id(retract)?;
+    valid_memory_ref(keep)?;
+    valid_memory_ref(retract)?;
     if keep == retract {
         return Err("a memory cannot be kept and retracted at once".into());
+    }
+    if valid_known_ref(keep) && valid_known_ref(retract) {
+        return Err("one side of a resolution must be a learned memory".into());
     }
     let v = post(
         m,
@@ -365,7 +395,8 @@ pub struct LearnedMemory {
     /// "true" | "both" (contradicted and unresolved; both memories are kept) | "false" (the
     /// member retracted it when resolving a contradiction; kept for the record).
     pub belnap: String,
-    /// Proposal ids of the learned memories this one contradicts (both directions).
+    /// What this memory contradicts and is unresolved against: proposal ids of learned memories
+    /// (both directions), and `memory:<id>` for a memory core held before (not learned here).
     pub contradicts: Vec<String>,
     pub content_sha256: String,
     pub workflow_id: String,
@@ -403,15 +434,133 @@ pub fn node_id_from_assert(text: &str) -> Option<String> {
     (id.len() >= 10 && id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| id.to_string())
 }
 
+/// How every learned memory's text starts in the memory graph ([`memory_text`]).
+const LEARNED_TEXT_PREFIX: &str = "Hermes learned from a verified workflow";
+/// The phrase the text of an unresolved learned memory carries ([`memory_text`]).
+const UNRESOLVED_TEXT: &str = "It contradicts an earlier memory and is unresolved";
+/// How the daemon prints the title of an unresolved learned memory: recall and search cut a
+/// title at 71 characters, which ends inside [`UNRESOLVED_TEXT`], so the full phrase never shows
+/// in a hit line. Every unresolved memory's text starts with this.
+const UNRESOLVED_HEAD: &str =
+    "Hermes learned from a verified workflow, accepted by you. It contradict";
+
+/// What recall and search hide (fan-out 7, L02): a learned memory with an unresolved Belnap
+/// `both` contradiction is not offered to Hermes or shown as a recall hit until the member
+/// resolves it. The memory stays in the graph and in the ledger; only reads leave it out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecallHide {
+    /// The graph nodes of learned memories that are `both` right now.
+    Nodes(Vec<String>),
+    /// The ledger could not be read: every learned memory is left out (fail closed).
+    AllLearned,
+}
+
+impl RecallHide {
+    pub fn from_ledger(l: &Ledger) -> Self {
+        RecallHide::Nodes(
+            l.entries
+                .iter()
+                .filter(|e| e.belnap == "both")
+                .filter_map(|e| e.graph.node_id.clone())
+                .collect(),
+        )
+    }
+
+    /// Read the ledger at `path` (a missing ledger hides nothing; a damaged one hides every
+    /// learned memory).
+    pub fn load(path: &Path) -> Self {
+        match Ledger::load(path) {
+            Ok(l) => Self::from_ledger(&l),
+            Err(_) => RecallHide::AllLearned,
+        }
+    }
+
+    /// Whether a recall hit (the daemon's node id prefix and its title) is left out.
+    pub fn hides(&self, hit_id: &str, title: &str) -> bool {
+        let learned = title.starts_with(LEARNED_TEXT_PREFIX);
+        // Text stored for an unresolved memory is never offered, whatever the ledger says.
+        if learned && (title.contains(UNRESOLVED_TEXT) || title.starts_with(UNRESOLVED_HEAD)) {
+            return true;
+        }
+        match self {
+            RecallHide::AllLearned => learned,
+            RecallHide::Nodes(ids) => {
+                hit_id.len() >= 6
+                    && ids
+                        .iter()
+                        .any(|n| n.starts_with(hit_id) || hit_id.starts_with(n.as_str()))
+            }
+        }
+    }
+
+    /// Leave the hidden hits out of a parsed recall or search. Returns how many were left out.
+    pub fn filter(&self, r: &mut crate::memory::MemoryResult) -> usize {
+        let before = r.hits.len();
+        r.hits.retain(|h| !self.hides(&h.id, &h.title));
+        before - r.hits.len()
+    }
+
+    /// Leave the hidden hits out of the daemon's tool text (the hit line and its `cite:` and `>`
+    /// passage lines). Every other line is kept as it was.
+    pub fn filter_text(&self, text: &str) -> String {
+        let mut out: Vec<&str> = Vec::new();
+        let mut skipping = false;
+        let mut removed = false;
+        for line in text.lines() {
+            let continuation = line.starts_with("    cite: ") || line.starts_with("    >");
+            if skipping && continuation {
+                continue;
+            }
+            skipping = false;
+            if let Some(hit) = crate::memory::parse_hit_line(line.trim_end()) {
+                if self.hides(&hit.id, &hit.title) {
+                    skipping = true;
+                    removed = true;
+                    continue;
+                }
+            } else if let Some(title) = neighbor_title(line) {
+                // `memory.neighbors` prints the full title with no node id: only the text rules
+                // (unresolved text, or every learned memory when the ledger is unreadable) apply.
+                if self.hides("", title) {
+                    removed = true;
+                    continue;
+                }
+            }
+            out.push(line);
+        }
+        if !removed {
+            return text.to_string();
+        }
+        let mut s = out.join("\n");
+        if text.ends_with('\n') {
+            s.push('\n');
+        }
+        s
+    }
+}
+
+/// The title of a `memory.neighbors` line: `  -> [<edge>]< @repo> <title>` (or `<-`).
+fn neighbor_title(line: &str) -> Option<&str> {
+    let rest = line
+        .strip_prefix("  -> [")
+        .or_else(|| line.strip_prefix("  <- ["))?;
+    let after = &rest[rest.find(']')? + 1..];
+    let after = match after.strip_prefix(" @") {
+        Some(cross) => &cross[cross.find(' ')?..],
+        None => after,
+    };
+    after.strip_prefix(' ')
+}
+
 fn memory_text(e: &LearnedMemory) -> String {
     if e.belnap == "both" {
         format!(
-            "Hermes learned from a verified workflow, accepted by you. It contradicts an earlier memory and is unresolved. {}: {}",
+            "{LEARNED_TEXT_PREFIX}, accepted by you. {UNRESOLVED_TEXT}. {}: {}",
             e.key, e.value
         )
     } else {
         format!(
-            "Hermes learned from a verified workflow, accepted by you. {}: {}",
+            "{LEARNED_TEXT_PREFIX}, accepted by you. {}: {}",
             e.key, e.value
         )
     }
@@ -625,7 +774,15 @@ impl Ledger {
             .map(|a| {
                 a.iter()
                     .filter_map(|x| x.as_str())
-                    .map(|s| s.strip_prefix("proposal:").unwrap_or(s).to_string())
+                    .filter_map(|s| match s.strip_prefix("proposal:") {
+                        // A learned memory, held in this ledger by its proposal id.
+                        Some(pid) => Some(pid.to_string()),
+                        // The sidecar names a known memory by its bare id.
+                        None => {
+                            let r = format!("{KNOWN_MEMORY_PREFIX}{s}");
+                            valid_known_ref(&r).then_some(r)
+                        }
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -790,13 +947,48 @@ impl Ledger {
         }
         let kept = str_field(res, "kept")?;
         let retracted = str_field(res, "retracted")?;
-        valid_proposal_id(kept)?;
-        valid_proposal_id(retracted)?;
+        valid_memory_ref(kept)?;
+        valid_memory_ref(retracted)?;
         if kept == retracted {
             return Err("a memory cannot be kept and retracted at once".into());
         }
+        if valid_known_ref(kept) && valid_known_ref(retracted) {
+            return Err("one side of a resolution must be a learned memory".into());
+        }
+        if valid_known_ref(retracted) {
+            return Ok(self.apply_set_aside(kept, retracted, g));
+        }
         let seq = res.get("decision_seq").and_then(|x| x.as_u64());
         Ok(self.apply_retraction(kept, retracted, seq, g))
+    }
+
+    /// The member kept the learned memory `kept` over the known memory `known` (`memory:<id>`):
+    /// the known one no longer counts against it, and when nothing else contradicts it the kept
+    /// memory settles (`true`) and is stored again as settled. When the known id is a memory
+    /// graph node, the kept memory's node supersedes it. Returns whether the ledger changed.
+    fn apply_set_aside(&mut self, kept: &str, known: &str, g: &dyn MemoryGraph) -> bool {
+        let Some(ki) = self.position(kept) else {
+            return false;
+        };
+        let settle = match self.entries.get_mut(ki) {
+            Some(k) if k.belnap != "false" && k.contradicts.iter().any(|c| c == known) => {
+                k.contradicts.retain(|c| c != known);
+                if let Some(node) = known.strip_prefix(KNOWN_MEMORY_PREFIX) {
+                    if node_id_from_assert(&format!("asserted {node}")).is_some()
+                        && !k.supersede_nodes.iter().any(|n| n == node)
+                    {
+                        k.supersede_nodes.push(node.to_string());
+                    }
+                }
+                k.belnap == "both" && k.contradicts.is_empty()
+            }
+            _ => return false,
+        };
+        if settle {
+            self.settle(ki);
+        }
+        self.store_one(ki, g);
+        true
     }
 
     /// Bring the ledger in line with the sidecar's proposal list (`/learn/proposals?all=true`):
@@ -825,11 +1017,29 @@ impl Ledger {
                 .pointer("/state/kept")
                 .and_then(|x| x.as_str())
                 .unwrap_or_default();
-            if valid_proposal_id(id).is_err() || valid_proposal_id(kept).is_err() || id == kept {
+            if valid_proposal_id(id).is_err() || valid_memory_ref(kept).is_err() || id == kept {
                 continue;
             }
             if self.apply_retraction(kept, id, None, g) {
                 n += 1;
+            }
+        }
+        // Known memories the member set aside in favour of a learned one (a resolve whose answer
+        // was lost).
+        for p in arr.iter().filter(memory) {
+            let id = p.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+            if valid_proposal_id(id).is_err() {
+                continue;
+            }
+            let asides = p
+                .get("set_aside")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for known in asides.iter().filter_map(|x| x.as_str()) {
+                if valid_known_ref(known) && self.apply_set_aside(id, known, g) {
+                    n += 1;
+                }
             }
         }
         let standing: Vec<String> = arr
@@ -1016,9 +1226,30 @@ pub fn encode_register_skill(
     out
 }
 
+/// The id the SkillRegistry assigns (HUP-S7.1 redeploy, citrate-chain PR #272):
+/// `skillHashOf(owner, name, version) = keccak256(abi.encode(owner, name, version))`, as `0x` hex.
+pub fn skill_hash_of(owner: &str, name: &str, version: &str) -> Result<String, String> {
+    use sha3::Digest as _;
+    let hexpart = owner
+        .strip_prefix("0x")
+        .filter(|h| h.len() == 40)
+        .ok_or_else(|| "the owner is not an address".to_string())?;
+    let addr = hex::decode(hexpart).map_err(|_| "the owner is not an address".to_string())?;
+    let (name_tail, version_tail) = (abi_string(name), abi_string(version));
+    let mut owner_word = [0u8; 32];
+    owner_word[12..].copy_from_slice(&addr);
+    let mut h = sha3::Keccak256::new();
+    h.update(owner_word);
+    h.update(abi_word(96));
+    h.update(abi_word(96 + name_tail.len()));
+    h.update(&name_tail);
+    h.update(&version_tail);
+    Ok(format!("0x{}", hex::encode(h.finalize())))
+}
+
 /// Check the sidecar's publish payload and turn it into a PENDING ceremony intent. Refuses a
-/// payload for another target, owner or chain, one that moves value, asks to broadcast, or is not
-/// a `registerSkill` call.
+/// payload for another target, owner or chain, one that moves value, asks to broadcast, is not
+/// a `registerSkill` call, or projects a skill id other than the registry's `skillHashOf`.
 pub fn publish_intent(
     payload: &Value,
     registry: &str,
@@ -1090,6 +1321,14 @@ pub fn publish_intent(
             "the publish calldata does not encode the skill shown; nothing was prepared".into(),
         );
     }
+    // The id the member is shown must be the one the registry will assign.
+    let id = skill_hash_of(&owner, name, field("version")?)?;
+    if field("expected_skill_hash")?.to_ascii_lowercase() != id {
+        return Err(
+            "the publish payload's skill id is not the registry's id for this owner, name and version; nothing was prepared"
+                .into(),
+        );
+    }
     let raw = json!({
         "from": owner,
         "to": to,
@@ -1113,7 +1352,8 @@ pub fn publish_intent(
 
 static LEDGER_LOCK: Mutex<()> = Mutex::new(());
 
-fn ledger_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+/// The learned-memory ledger file (`<app local data>/hermes/learned-memories.json`).
+pub(crate) fn ledger_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     use tauri::Manager;
     Ok(app
         .path()

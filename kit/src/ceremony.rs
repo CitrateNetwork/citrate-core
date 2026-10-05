@@ -294,6 +294,46 @@ pub struct BroadcastResult {
     /// (`None` if broadcast succeeded but the receipt has not yet been polled).
     #[serde(rename = "blockNumber")]
     pub block_number: Option<u64>,
+    /// HUP-S7.5 (D-27): the mined receipt's status (1 succeeded, 0 reverted), once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u64>,
+    /// HUP-S7.5 (D-27): the gas the mined transaction used, once known.
+    #[serde(rename = "gasUsed", default, skip_serializing_if = "Option::is_none")]
+    pub gas_used: Option<u64>,
+    /// HUP-S7.5 (D-27): wei per gas actually paid (decimal), once known.
+    #[serde(
+        rename = "effectiveGasPriceWei",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_gas_price_wei: Option<String>,
+    /// HUP-S7.5 (D-27): the SALT value the transaction carried (wei, decimal).
+    #[serde(rename = "valueWei", default, skip_serializing_if = "Option::is_none")]
+    pub value_wei: Option<String>,
+    /// The recipient (`0x` + 40 hex), `None` for a contract creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// The origin the ceremony displayed (who asked for the transaction).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
+}
+
+/// HUP-S7.5 (D-27): something told about every transaction [`sign_and_broadcast`] sent. The app
+/// installs one that hands Hermes's own transactions (by origin) to its metering, so the daily
+/// report carries their gas and SALT. It sees public facts only and cannot change the result.
+pub type BroadcastObserver = Box<dyn Fn(&BroadcastResult) + Send + Sync>;
+
+static BROADCAST_OBSERVER: std::sync::OnceLock<BroadcastObserver> = std::sync::OnceLock::new();
+
+/// Install the broadcast observer (once per process; a second call is refused and returns false).
+pub fn set_broadcast_observer(f: BroadcastObserver) -> bool {
+    BROADCAST_OBSERVER.set(f).is_ok()
+}
+
+fn notify_broadcast(r: &BroadcastResult) {
+    if let Some(f) = BROADCAST_OBSERVER.get() {
+        f(r);
+    }
 }
 
 /// Errors from the ceremony surface. Deliberately coarse + secret-free: no
@@ -405,6 +445,8 @@ struct Pending {
 pub struct SignatureCeremony {
     pending: Mutex<BTreeMap<u64, Pending>>,
     next_id: AtomicU64,
+    /// HUP-S6: ABIs of contracts deployed from a READY-gated artifact (see [`crate::abi_book`]).
+    abis: crate::abi_book::AbiBook,
 }
 
 impl Default for SignatureCeremony {
@@ -418,6 +460,48 @@ impl SignatureCeremony {
         SignatureCeremony {
             pending: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
+            abis: crate::abi_book::AbiBook::default(),
+        }
+    }
+
+    /// HUP-S6: let calls to `address` be decoded from `abi`. Only for a contract whose on-chain
+    /// code is exactly a READY-gated artifact's runtime code (core's `postdeploy` checks both).
+    pub fn register_gated_contract(&self, address: [u8; 20], abi: crate::abi_book::ContractAbi) {
+        self.abis.register(address, abi);
+    }
+
+    /// Gated contracts registered.
+    pub fn gated_contracts(&self) -> usize {
+        self.abis.len()
+    }
+
+    /// [`decode_intent`], plus: a transaction calling a registered gated contract whose call is
+    /// not otherwise understood is decoded from that contract's ABI. Anything the ABI does not
+    /// decode exactly stays [`UNRECOGNIZED_ACTION`] (raw-ack gated).
+    fn decode_with_book(&self, intent: &SignatureIntent) -> DecodedAction {
+        let decoded = decode_intent(intent);
+        if intent.kind != IntentKind::Transaction || decoded.action != UNRECOGNIZED_ACTION {
+            return decoded;
+        }
+        let Some((tx, display)) = crate::txdecode::decode_transaction(&intent.raw) else {
+            return decoded;
+        };
+        let Some(to) = tx.to else {
+            return decoded;
+        };
+        let Some(abi) = self.abis.get(&to) else {
+            return decoded;
+        };
+        match abi.decode_call(&tx.data, tx.value) {
+            Some(call) => DecodedAction {
+                action: format!(
+                    "Call {call} on {} at {} (a contract you deployed from a READY gated build; value {} wei)",
+                    abi.name, display.destination, tx.value
+                ),
+                cost: display.cost,
+                destination: display.destination,
+            },
+            None => decoded,
         }
     }
 
@@ -439,7 +523,7 @@ impl SignatureCeremony {
     /// touches no key material. The returned `id` is what a human must later
     /// approve/reject *explicitly* — there is no "approve latest" (B1.2-ADV-6).
     pub fn request(&self, intent: SignatureIntent) -> CeremonyView {
-        let decoded = decode_intent(&intent);
+        let decoded = self.decode_with_book(&intent);
         let requires_raw_ack = decoded.action == UNRECOGNIZED_ACTION;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let view = CeremonyView {
@@ -654,8 +738,8 @@ impl SignatureCeremony {
             .send_raw_transaction(&signed.raw)
             .map_err(|e| CeremonyError::Broadcast(e.to_string()))?;
         let receipt = rpc.poll_receipt(&tx_hash, poll_attempts, poll_interval);
-        let block_number = match receipt {
-            Ok(r) => Some(r.block_number),
+        let mined = match receipt {
+            Ok(r) => Some(r),
             // The tx WAS accepted (we have a hash); the receipt just did not land
             // within the poll budget. Return the hash honestly with no block yet
             // rather than failing (the caller can re-poll). A hard RPC error on
@@ -666,7 +750,16 @@ impl SignatureCeremony {
 
         Ok(BroadcastResult {
             tx_hash,
-            block_number,
+            block_number: mined.as_ref().map(|r| r.block_number),
+            status: mined.as_ref().and_then(|r| r.status),
+            gas_used: mined.as_ref().and_then(|r| r.gas_used),
+            effective_gas_price_wei: mined
+                .as_ref()
+                .and_then(|r| r.effective_gas_price)
+                .map(|p| p.to_string()),
+            value_wei: Some(parsed.value.to_string()),
+            to: parsed.to.map(|a| format!("0x{}", hex::encode(a))),
+            origin: pending.intent.origin.clone(),
         })
     }
 
@@ -1068,6 +1161,22 @@ pub async fn sign_and_broadcast(
     .await
 }
 
+/// HUP-S7.5 (D-27): approve, sign and broadcast a pending ceremony, then tell the broadcast
+/// observer (the app's metering) about the result. [`sign_and_broadcast_sync`] goes through here,
+/// so a test can prove the observer hears every broadcast without the Tauri state.
+pub fn approve_broadcast_and_notify<T: crate::rpc::RpcTransport>(
+    ceremony: &SignatureCeremony,
+    vault: &CustodyVault,
+    rpc: &crate::rpc::RpcClient<T>,
+    id: &str,
+    raw_ack: bool,
+    cfg: BroadcastConfig,
+) -> Result<BroadcastResult> {
+    let result = ceremony.approve_and_broadcast(vault, rpc, id, raw_ack, cfg)?;
+    notify_broadcast(&result);
+    Ok(result)
+}
+
 /// Blocking body of [`sign_and_broadcast`]; reached only through [`crate::blocking::off_main`].
 pub fn sign_and_broadcast_sync(
     ceremony: State<'_, CeremonyState>,
@@ -1079,20 +1188,21 @@ pub fn sign_and_broadcast_sync(
     // receipt-poll budget (30 attempts × 2s = up to 60s for inclusion). Blocking
     // HTTP is correct here — the command runs off the async runtime.
     let rpc = crate::rpc::RpcClient::citrate();
-    ceremony
-        .0
-        .approve_and_broadcast(
-            &custody.0,
-            &rpc,
-            &id,
-            raw_ack,
-            BroadcastConfig {
-                chain_id: crate::rpc::CITRATE_CHAIN_ID,
-                poll_attempts: 30,
-                poll_interval: std::time::Duration::from_secs(2),
-            },
-        )
-        .map_err(err_str)
+    // HUP-S7.5 (D-27): the observer (the app's metering) is told about the result before it is
+    // returned unchanged.
+    approve_broadcast_and_notify(
+        &ceremony.0,
+        &custody.0,
+        &rpc,
+        &id,
+        raw_ack,
+        BroadcastConfig {
+            chain_id: crate::rpc::CITRATE_CHAIN_ID,
+            poll_attempts: 30,
+            poll_interval: std::time::Duration::from_secs(2),
+        },
+    )
+    .map_err(err_str)
 }
 
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.
