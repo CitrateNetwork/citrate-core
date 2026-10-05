@@ -142,6 +142,33 @@ fn managed_entrypoint(root: &Path, name: &str) -> Option<PathBuf> {
     exe.is_file().then_some(exe)
 }
 
+/// HUP-S5.5: the managed Chromium and whether it may open the open web.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedBrowser {
+    pub exe: PathBuf,
+    /// `browser_may_open_web` over the last verified component manifest: false when that
+    /// manifest expired (or, which cannot happen for an installed component, none was seen).
+    pub may_open_web: bool,
+}
+
+/// HUP-S5.5: the installed managed Chromium ([`managed_chromium`]) together with the open-web
+/// rule at `now`. `None` when the managed Chromium is not installed: the rule is about the managed
+/// browser only, so a machine without one (every machine while the component key slot is empty)
+/// is not affected. Read-only: never creates the store.
+pub(crate) fn managed_browser(root: &Path, now: u64) -> Option<ManagedBrowser> {
+    let exe = managed_chromium(root)?;
+    // The state was readable a moment ago; if it no longer is, fail closed.
+    let may_open_web = read_state(root)
+        .map(|st| browser_may_open_web(&freshness(st.last_manifest.as_ref(), now)))
+        .unwrap_or(false);
+    Some(ManagedBrowser { exe, may_open_web })
+}
+
+/// [`managed_browser`] at the current time.
+pub(crate) fn managed_browser_now(root: &Path) -> Option<ManagedBrowser> {
+    managed_browser(root, now_secs())
+}
+
 /// The recorded state without creating the store.
 fn read_state(root: &Path) -> Result<StoreState, String> {
     if !root.join("state.json").exists() {

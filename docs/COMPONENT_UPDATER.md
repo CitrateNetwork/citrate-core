@@ -167,10 +167,14 @@ advisory database, and the Chromium release blog for the browser.
 
 - a manifest older than **3 days** shows "updates are stale";
 - an **expired** manifest, or none ever checked, is to keep the managed browser off the open
-  web. Today this is computed (`browserMayOpenWeb` in `components_status`) and shown in
-  Settings, but no managed browser reads it yet: the block is not enforced. Whoever wires it
-  must not block members while the component key slot is still empty (every machine is
-  "never checked" until the first signed manifest exists);
+  web. This is computed (`browserMayOpenWeb` in `components_status`), shown in Settings, and
+  enforced (HUP-S5.5): when the managed Chromium is installed and the rule says no, core starts
+  the sidecar with `CITRATE_BROWSER_OPEN_WEB=0` and the managed browser reaches only
+  developer-allowed origins on this machine (loopback, such as a site preview or an anvil fork),
+  at both the DevTools request gate and the connection-level egress gate. The rule follows the
+  managed Chromium only, so it does not block members while the component key slot is empty (no
+  managed Chromium can be installed then, and a system Chrome is not affected). Whether this is
+  a block or a warning stays an owner decision below; the shipped default is the block;
 - the manifest lifetime is capped at 31 days, so a frozen feed cannot keep a client "current".
 
 ## Decision: skills and the docs graph stay in the installer for 0.5.0 (ra-7)
