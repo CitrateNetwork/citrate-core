@@ -15,7 +15,11 @@
 //! headless Chromium with a fresh private profile. It prefers the managed Chromium installed by the
 //! signed component updater (`chromium` component, HUP-S5.5): when that is installed, core passes
 //! its executable as `CITRATE_BROWSER_CHROMIUM`. Until then the sidecar uses a Chrome already on
-//! this computer, or reports "not installed". Attaching to the member's own Chrome is never a
+//! this computer, or reports "not installed". When the component updater's last verified
+//! manifest has expired (`browserMayOpenWeb` is false), core also passes
+//! `CITRATE_BROWSER_OPEN_WEB=0` with the managed Chromium, and the sidecar keeps that browser to
+//! developer-allowed pages on this machine (HUP-S5.5). The rule follows the managed Chromium: with
+//! none installed (every machine until the component key exists) nothing changes. Attaching to the member's own Chrome is never a
 //! setting: it stays a per-session consent in the Browser pop-out.
 //!
 //! **Keys.** A Jina or TypeSafe key is a file the member chooses (absolute path, readable only by
@@ -36,6 +40,7 @@ pub const MAX_JEV_ORIGINS: usize = 32;
 pub const SIDECAR_ENV_KEYS: &[&str] = &[
     "CITRATE_HERMES_BROWSER",
     "CITRATE_BROWSER_CHROMIUM",
+    "CITRATE_BROWSER_OPEN_WEB",
     "CITRATE_HERMES_SEARCH",
     "CITRATE_HERMES_SEARXNG",
     "CITRATE_HERMES_SEARXNG_DATA",
@@ -183,12 +188,30 @@ pub fn sidecar_env(s: &HermesWebSettings, hermes_dir: &Path) -> Vec<(String, Str
     sidecar_env_with(s, hermes_dir, None)
 }
 
-/// The sidecar environment for these settings; `managed_chromium` is the installed managed
-/// Chromium's executable, passed only while the browser switch is on.
+/// The sidecar environment for these settings, with a managed Chromium whose updates are current
+/// and no SearXNG component installed.
+#[cfg(test)]
 pub fn sidecar_env_with(
     s: &HermesWebSettings,
     hermes_dir: &Path,
     managed_chromium: Option<&Path>,
+) -> Vec<(String, String)> {
+    sidecar_env_managed(s, hermes_dir, managed_chromium, true, None)
+}
+
+/// The sidecar environment for these settings; `managed_chromium` is the installed managed
+/// Chromium's executable, passed only while the browser switch is on. `may_open_web` is the
+/// component updater's open-web rule for it (HUP-S5.5): when false, the managed browser is kept
+/// off the open web (`CITRATE_BROWSER_OPEN_WEB=0`). It is passed only together with the managed
+/// Chromium, never for a system Chrome. `managed_searxng` is the installed SearXNG component's
+/// `searxng-run`, used only while web search is on and the member has not named a SearXNG of
+/// their own (theirs wins).
+pub fn sidecar_env_managed(
+    s: &HermesWebSettings,
+    hermes_dir: &Path,
+    managed_chromium: Option<&Path>,
+    may_open_web: bool,
+    managed_searxng: Option<&Path>,
 ) -> Vec<(String, String)> {
     let mut env = Vec::new();
     let mut put = |k: &str, v: String| env.push((k.to_string(), v));
@@ -196,12 +219,17 @@ pub fn sidecar_env_with(
         put("CITRATE_HERMES_BROWSER", "1".into());
         if let Some(p) = managed_chromium.filter(|p| p.is_absolute()) {
             put("CITRATE_BROWSER_CHROMIUM", p.to_string_lossy().into_owned());
+            if !may_open_web {
+                put("CITRATE_BROWSER_OPEN_WEB", "0".into());
+            }
         }
     }
     if s.search_enabled {
         put("CITRATE_HERMES_SEARCH", "1".into());
         if let Some(p) = &s.searxng_path {
             put("CITRATE_HERMES_SEARXNG", p.clone());
+        } else if let Some(p) = managed_searxng.filter(|p| p.is_absolute()) {
+            put("CITRATE_HERMES_SEARXNG", p.to_string_lossy().into_owned());
         }
         put(
             "CITRATE_HERMES_SEARXNG_DATA",
@@ -252,11 +280,25 @@ pub fn status_for(s: HermesWebSettings, load_error: Option<String>) -> HermesWeb
     status_with(s, load_error, None)
 }
 
-/// The status the Settings card renders.
+/// The status the Settings card renders, with a managed Chromium whose updates are current and no
+/// SearXNG component installed.
+#[cfg(test)]
 pub fn status_with(
     s: HermesWebSettings,
     load_error: Option<String>,
     managed_chromium: Option<&Path>,
+) -> HermesWebStatus {
+    status_managed(s, load_error, managed_chromium, true, None)
+}
+
+/// The status the Settings card renders. `may_open_web` is the component updater's open-web rule
+/// for the managed Chromium (HUP-S5.5); `managed_searxng` is the installed SearXNG component.
+pub fn status_managed(
+    s: HermesWebSettings,
+    load_error: Option<String>,
+    managed_chromium: Option<&Path>,
+    may_open_web: bool,
+    managed_searxng: Option<&Path>,
 ) -> HermesWebStatus {
     let mut notices = Vec::new();
     if s.browser_enabled {
@@ -264,17 +306,28 @@ pub fn status_with(
             Some(_) => "Hermes's browser is on. It uses the managed Chromium with a fresh private profile each time, never your own browser profile.".to_string(),
             None => "Hermes's browser is on. The managed Chromium is not installed yet (it comes with the signed component updater), so Hermes uses a Chrome already on this computer with a fresh private profile, or says it is not installed.".to_string(),
         });
+        if managed_chromium.is_some() && !may_open_web {
+            notices.push(
+                "The managed Chromium's security updates are not current (the last signed component manifest has expired), so Hermes's browser stays off the open web until the component updater checks again. Pages on this machine that a developer allowed still open.".to_string(),
+            );
+        }
         notices.push(
             "Pages Hermes opens are treated as untrusted: after it reads one, every click, entry or new address needs your approval. Attaching to your own Chrome is asked for each session in the Browser pop-out.".to_string(),
         );
     }
-    let searxng_found = file_exists(&s.searxng_path)
+    let member_searxng = file_exists(&s.searxng_path)
         || s.searxng_path
             .as_deref()
             .map(|p| Path::new(p).join("bin").join("searxng-run").is_file())
             .unwrap_or(false);
+    let uses_managed_searxng = s.searxng_path.is_none() && managed_searxng.is_some();
+    let searxng_found = member_searxng || uses_managed_searxng;
     if s.search_enabled {
-        if !searxng_found {
+        if uses_managed_searxng {
+            notices.push(
+                "Web search uses the installed private search component (SearXNG), which runs on this computer only.".to_string(),
+            );
+        } else if !searxng_found {
             notices.push(
                 "Web search is on, but no SearXNG program was found at the configured path, so web_search will say it is not installed. Reading a known URL still works.".to_string(),
             );
@@ -324,16 +377,40 @@ pub fn env_source_from(
 }
 
 /// The production env source: the stored settings at each start (a corrupt file = defaults),
-/// and the managed Chromium as installed in `components_root` at that moment.
+/// and the managed Chromium and SearXNG as installed in `components_root` at that moment.
 pub fn file_env_source(hermes_dir: PathBuf, components_root: Option<PathBuf>) -> EnvSource {
     Arc::new(move || {
         let s = load(&hermes_dir).unwrap_or_default();
         let managed = match (&components_root, s.browser_enabled) {
-            (Some(root), true) => crate::components::managed_chromium(root),
+            (Some(root), true) => crate::components::managed_browser_now(root),
             _ => None,
         };
-        sidecar_env_with(&s, &hermes_dir, managed.as_deref())
+        let searxng = match (&components_root, s.search_enabled) {
+            (Some(root), true) => crate::components::managed_searxng(root),
+            _ => None,
+        };
+        sidecar_env_managed(
+            &s,
+            &hermes_dir,
+            managed.as_ref().map(|m| m.exe.as_path()),
+            managed.as_ref().map(|m| m.may_open_web).unwrap_or(true),
+            searxng.as_deref(),
+        )
     })
+}
+
+/// The managed Chromium (with its open-web rule) and SearXNG installed now (`None` each when not
+/// installed).
+fn managed_now(
+    app: &tauri::AppHandle,
+) -> (Option<crate::components::ManagedBrowser>, Option<PathBuf>) {
+    match crate::components::components_root(app) {
+        Ok(r) => (
+            crate::components::managed_browser_now(&r),
+            crate::components::managed_searxng(&r),
+        ),
+        Err(_) => (None, None),
+    }
 }
 
 fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -349,12 +426,13 @@ fn hermes_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, S
 pub async fn hermes_web_settings_get(app: tauri::AppHandle) -> Result<HermesWebStatus, String> {
     crate::blocking::off_main(move || {
         let dir = hermes_dir(&app)?;
-        let managed = crate::components::components_root(&app)
-            .ok()
-            .and_then(|r| crate::components::managed_chromium(&r));
+        let (managed, searxng) = managed_now(&app);
+        let exe = managed.as_ref().map(|m| m.exe.as_path());
+        let open = managed.as_ref().map(|m| m.may_open_web).unwrap_or(true);
+        let x = searxng.as_deref();
         Ok(match load(&dir) {
-            Ok(s) => status_with(s, None, managed.as_deref()),
-            Err(e) => status_with(HermesWebSettings::default(), Some(e), managed.as_deref()),
+            Ok(s) => status_managed(s, None, exe, open, x),
+            Err(e) => status_managed(HermesWebSettings::default(), Some(e), exe, open, x),
         })
     })
     .await
@@ -371,10 +449,14 @@ pub async fn hermes_web_settings_set(
         let dir = hermes_dir(&app)?;
         let s = validate(settings)?;
         save(&dir, &s)?;
-        let managed = crate::components::components_root(&app)
-            .ok()
-            .and_then(|r| crate::components::managed_chromium(&r));
-        Ok(status_with(s, None, managed.as_deref()))
+        let (managed, searxng) = managed_now(&app);
+        Ok(status_managed(
+            s,
+            None,
+            managed.as_ref().map(|m| m.exe.as_path()),
+            managed.as_ref().map(|m| m.may_open_web).unwrap_or(true),
+            searxng.as_deref(),
+        ))
     })
     .await
 }

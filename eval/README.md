@@ -108,6 +108,22 @@ Write tools are derived, not listed: every `AGENT_TOOLS` entry not in `READ_ONLY
 schemas, exact or regex matches, and a substring check. A transport error aborts the run and
 writes nothing.
 
+## Citrate QA through a real sidecar (HUP-S7.7, US-9.2 AC1)
+
+`scripts/eval-qa.mjs --retrieval-mode sidecar` asks each QA question in a real
+`citrate-agent-sidecar` session, the app's path with the sidecar loop on. The sidecar loads the
+skills named by `--skills` (`CITRATE_HERMES_SKILLS`) and, with `--skills-lock` and
+`--skills-third-party`, the reviewed third-party skills, ranks them per turn and offers
+`skill_load`; the session's only core tool is `memory_search`, which the script answers from the
+memory daemon with the app's tenant rule, hit budget and formatter
+(`src/agent/eval/qaSidecar.ts`). Each item records the searches, the retrieved node ids and the
+skills read. Needs `--memory-socket`, `--sidecar-bin` (absolute) and `--context-tokens`; the reply
+cap defaults to core's `min(2048, ctx / 4)`. Result: `<date>-<set>-sidecar-<model>.json`. See
+[QA-literacy-v2.md](QA-literacy-v2.md).
+
+The eval CLIs run under Node's type stripping, so every module they load must import siblings
+with an explicit `.ts` extension; `src/agent/eval/cliLoad.test.ts` starts each CLI to prove it.
+
 ## How to run
 
 Start a model with an OpenAI-compatible endpoint and native tool templates, e.g. the bundled

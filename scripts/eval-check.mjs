@@ -125,7 +125,9 @@ export function checkPins(evalDir, pinsText) {
 // Datasets
 // ---------------------------------------------------------------------------------------------
 
-/** Every top-level dataset file's `version` equals its file name (anchor indexes: their set's). */
+/** Every top-level dataset file's `version` equals its file name (anchor indexes: their set's).
+ *  A held-out manifest (`<set>.heldout.json`, HUP-S9.3) is not a dataset: it carries
+ *  `format: "citrate-heldout-v1"` and names its set in `dataset`. */
 export function checkDatasetVersions(evalDir) {
   const problems = [];
   for (const rel of listDatasetFiles(evalDir)) {
@@ -135,6 +137,12 @@ export function checkDatasetVersions(evalDir) {
       raw = JSON.parse(fs.readFileSync(path.join(evalDir, rel), "utf8"));
     } catch (e) {
       problems.push(`${rel}: not JSON (${e.message})`);
+      continue;
+    }
+    if (rel.endsWith(".heldout.json")) {
+      const set = rel.slice(0, -".heldout.json".length);
+      if (raw?.format !== "citrate-heldout-v1") problems.push(`${rel}: format ${JSON.stringify(raw?.format)}, expected "citrate-heldout-v1"`);
+      if (raw?.dataset !== set) problems.push(`${rel}: dataset ${JSON.stringify(raw?.dataset)}, expected "${set}"`);
       continue;
     }
     const want = rel.replace(/\.anchors\.json$|\.json$/, "");

@@ -17,6 +17,7 @@ import {
   initialValues,
   medusaLine,
   renderParams,
+  toolchainGateRequest,
   type TemplateCatalog,
   type TemplateRenderView,
   type ToolchainGateResult,
@@ -114,7 +115,7 @@ export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
     setGateErr(null);
     setGate(null);
     try {
-      setGate(await ops.gateFromToolchain({ sessionId: session.trim(), project: project.trim(), artifact: artifact.trim() }));
+      setGate(await ops.gateFromToolchain(toolchainGateRequest(session, project, artifact)));
     } catch (e) {
       setGateErr(msg(e));
     } finally {

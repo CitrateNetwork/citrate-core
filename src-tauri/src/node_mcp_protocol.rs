@@ -671,6 +671,14 @@ impl McpCore {
                     .ok_or("that address is not in the precompile table (see precompile_table)")?;
                 let data = tools::parse_data(tools::arg_str(args, "data")?)?;
                 let r = self.rpc("eth_call", json!([{"to": address, "data": data}, "latest"]))?;
+                // A top-level eth_call to a precompile address answers 0x on a Citrate node: the
+                // executor runs code only at accounts that have it. Empty is not an answer.
+                if matches!(r.value.as_str(), None | Some("") | Some("0x")) {
+                    return Err(format!(
+                        "{} returned no data. On a Citrate node a top-level eth_call to a precompile address returns 0x; precompiles answer only to contract code (for example through the CitratePrecompiles library). The empty reply is not the precompile's output.",
+                        p.name
+                    ));
+                }
                 Ok(json!({"precompile": p.name, "result": r.value, "source": r.source}))
             }
             "ed25519_verify" => {
@@ -697,6 +705,15 @@ impl McpCore {
                     json!({"precompile": "ED25519_VERIFY", "address": address, "valid": valid, "source": r.source}),
                 )
             }
+            "agent_precompile_encode" => {
+                let op = tools::arg_str(args, "operation")?;
+                let a = args.get("args").ok_or("missing object argument `args`")?;
+                crate::agent_precompiles::encode_json(op, a)
+            }
+            "agent_precompile_decode" => crate::agent_precompiles::decode_json(
+                tools::arg_str(args, "operation")?,
+                tools::arg_str(args, "output")?,
+            ),
             "wallet_info" => {
                 let a = self.backend.wallet_address()?;
                 let mut v = self.balance_of(&a)?;

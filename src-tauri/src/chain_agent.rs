@@ -172,6 +172,11 @@ pub trait AnchorPort {
     fn status(&self) -> Result<serde_json::Value, String>;
     fn plan(&self, day: u64, registry: &str) -> Result<PlannedAnchor, String>;
     fn confirm(&self, day: u64, commitment: &str, tx_hash: &str, block: u64) -> Result<(), String>;
+    /// HUP-S7.5 (D-27): meter a mined anchor's gas (`POST /metering/chain-receipt`). A port that
+    /// does not meter accepts and drops it.
+    fn chain_receipt(&self, _body: &serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl AnchorPort for crate::hermes::HermesManager {
@@ -185,6 +190,21 @@ impl AnchorPort for crate::hermes::HermesManager {
         self.anchor_confirm(day, commitment, tx_hash, block)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+    fn chain_receipt(&self, body: &serde_json::Value) -> Result<(), String> {
+        self.metering_chain_receipt(body)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// HUP-S7.5 (D-27): meter a mined anchor's gas through `port`. Best effort: the anchor's own
+/// state never depends on it.
+pub fn meter_anchor(port: &dyn AnchorPort, r: &AnchorReceipt) {
+    if let Some(b) = spend::anchor_body(r) {
+        if let Err(e) = port.chain_receipt(&b) {
+            eprintln!("citrate-core: an anchor's gas was not metered: {e}");
+        }
     }
 }
 
@@ -718,6 +738,9 @@ pub async fn hermes_anchor_approve(
             .map_err(|e| e.to_string())?;
         // Signed and sent from here on: never return early and lose the transaction.
         let port = crate::hermes::chain::manager_for(&app).map(|m| m as &dyn AnchorPort);
+        if let Ok(p) = &port {
+            meter_anchor(*p, &receipt);
+        }
         let (anchored, status_line) = after_broadcast(port, &receipt, held);
         Ok(AnchorApproveView {
             receipt,
@@ -758,6 +781,8 @@ pub fn repoll_decision(
         return Repoll::Mined(AnchorReceipt {
             block_number: Some(rc.block_number),
             status: rc.status,
+            gas_used: rc.gas_used,
+            effective_gas_price_wei: rc.effective_gas_price.map(|p| p.to_string()),
             ..r.clone()
         });
     }
@@ -779,6 +804,7 @@ fn repoll_submitted(port: &dyn AnchorPort, held: &InFlightAnchors) {
         };
         match repoll_decision(&r, latest, receipt) {
             Repoll::Mined(done) => {
+                meter_anchor(port, &done);
                 if settle(port, &done).unwrap_or(false) || done.status == Some(0) {
                     held.settle_day(r.day);
                 }
@@ -875,3 +901,12 @@ pub fn start_nightly_if_ready(app: tauri::AppHandle) -> bool {
 #[cfg(test)]
 #[path = "chain_agent_tests.rs"]
 mod tests;
+
+// HUP-S7.5 (D-27): SALT spent and gas of Hermes's transactions, for the daily report. Declared
+// here so the new file needs no `mod` line in lib.rs.
+#[path = "hermes_spend.rs"]
+pub mod spend;
+
+#[cfg(test)]
+#[path = "hermes_spend_tests.rs"]
+mod spend_tests;

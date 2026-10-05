@@ -39,6 +39,12 @@ function qaDataset(sc) {
   if (!r || !Array.isArray(r.tenants)) return sc.datasetVersion;
   // The corpus digest prefix tells runs over different imported corpora apart.
   const corpus = typeof r.corpusDigest === "string" ? `corpus ${r.corpusDigest.slice(0, 12)}` : "corpus";
+  if (r.mode === "memory_search tool via sidecar") {
+    // HUP-S7.7: the app's path with the sidecar loop on (skills offered by the sidecar's loader).
+    const skills = r.sidecar && Array.isArray(r.sidecar.skills) && r.sidecar.skills.length ? " + bundled skills" : "";
+    const reviewed = r.sidecar && r.sidecar.reviewedThirdParty ? " + reviewed skills" : "";
+    return `${sc.datasetVersion} + ${corpus} (memory_search via sidecar${skills}${reviewed}, k=${r.k})`;
+  }
   if (r.mode === "memory_search tool") return `${sc.datasetVersion} + ${corpus} (memory_search tool, k=${r.k})`;
   return `${sc.datasetVersion} + ${corpus} (${r.tenants.join("+")}, k=${r.k})`;
 }

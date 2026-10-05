@@ -8,6 +8,7 @@
 import { invoke } from "./invoke";
 import type {
   ClusterDomain,
+  ClusterGroupSeed,
   ClusterMemberDevices,
   ClusterPeer,
   ClusterStatus,
@@ -76,5 +77,12 @@ export const tauriCluster: ClusterDomain = {
   },
   meshStatus(): Promise<MeshStatus> {
     return invoke<MeshStatus>("cluster_mesh_status");
+  },
+  // HUP-S8.4: group links (seeds) so members' machines find each other without typing addresses.
+  groupSeed(groupId): Promise<ClusterGroupSeed> {
+    return invoke<ClusterGroupSeed>("cluster_group_seed", { group: groupId });
+  },
+  addGroupSeed(groupId, seed): Promise<number> {
+    return invoke<number>("cluster_add_seed", { group: groupId, seed });
   },
 };

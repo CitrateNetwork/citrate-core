@@ -140,6 +140,17 @@ describe("dataset versions", () => {
     fs.writeFileSync(f, JSON.stringify(j));
     expect(checkDatasetVersions(path.join(root, "src/agent/eval")).join("\n")).toMatch(/workflow-v1\.json: version "workflow-v2"/);
   });
+  it("a held-out manifest names its set in `dataset`, not `version` (HUP-S9.3)", () => {
+    const root = path.join(tmp, "heldout");
+    copyTree(root);
+    const f = path.join(root, "src/agent/eval/toolcall-v2.heldout.json");
+    const j = JSON.parse(fs.readFileSync(f, "utf8"));
+    j.dataset = "injection-v2";
+    fs.writeFileSync(f, JSON.stringify(j));
+    expect(checkDatasetVersions(path.join(root, "src/agent/eval")).join("\n")).toMatch(
+      /toolcall-v2\.heldout\.json: dataset "injection-v2", expected "toolcall-v2"/,
+    );
+  });
 });
 
 describe("datasets are schema-checked", () => {

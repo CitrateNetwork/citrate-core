@@ -6,8 +6,10 @@
 //!
 //! 1. the CL-S4 transport sign-off (citrate-cluster Rule 8, security lead + owner):
 //!    [`TRANSPORT_SIGNED_OFF`];
-//! 2. a daemon that serves every group from one process (today a libp2p daemon serves exactly one
-//!    `CITRATE_CLUSTER_GROUP`): [`MULTI_GROUP_DAEMON`];
+//! 2. a daemon that serves every group from one process: [`MULTI_GROUP_DAEMON`]. HUP-S8.4 built it
+//!    in citrate-cluster (`hup/n7-cluster-mesh-prereqs`: one swarm per group, group seeds, opt-in
+//!    mDNS). The constant stays `false` until that branch is merged and the bundled daemon is
+//!    rebuilt from it, so this build never claims a daemon it does not ship;
 //! 3. the two-machine soak and a 50-node ladder step on separate machines (DGX team).
 //!
 //! Both constants are `false` and pending owner sign-off, so [`decide`] gives exactly today's answer:
@@ -22,7 +24,8 @@ use serde::{Deserialize, Serialize};
 /// CL-S4 transport sign-off recorded in this build. PENDING OWNER + SECURITY SIGN-OFF: `false`.
 pub(crate) const TRANSPORT_SIGNED_OFF: bool = false;
 
-/// The daemon serves every group from one process (today: one group per libp2p daemon). `false`.
+/// The bundled daemon serves every group from one process. Built in citrate-cluster (HUP-S8.4);
+/// `false` until the bundled daemon is rebuilt from that branch. PENDING OWNER SIGN-OFF.
 pub(crate) const MULTI_GROUP_DAEMON: bool = false;
 
 /// Listen address when the mesh is on by default. PENDING OWNER SIGN-OFF (port 4211, all interfaces).

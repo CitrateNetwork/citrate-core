@@ -108,26 +108,65 @@ pub(crate) fn components_root<R: tauri::Runtime>(
 /// HUP-S5.1: the name of the managed Chromium component (`components/toolchain-bundle.json`).
 pub const CHROMIUM_COMPONENT: &str = "chromium";
 
+/// HUP-S5.2: the name of the private search component (`components/toolchain-bundle.json`).
+pub const SEARXNG_COMPONENT: &str = "searxng";
+
 /// HUP-S5.1: the managed Chromium's executable when the signed `chromium` component is installed
 /// in `root` and its entrypoint for this platform exists; `None` otherwise ("not installed").
 /// Read-only: never creates the store.
 pub(crate) fn managed_chromium(root: &Path) -> Option<PathBuf> {
+    managed_entrypoint(root, CHROMIUM_COMPONENT)
+}
+
+/// HUP-S5.2: the installed SearXNG component's `bin/searxng-run`, or `None` ("not installed").
+/// Read-only: never creates the store.
+pub(crate) fn managed_searxng(root: &Path) -> Option<PathBuf> {
+    managed_entrypoint(root, SEARXNG_COMPONENT)
+}
+
+/// The first entrypoint of component `name` for this platform, when the component is recorded
+/// as installed in `root` and that file exists.
+fn managed_entrypoint(root: &Path, name: &str) -> Option<PathBuf> {
     let st = read_state(root).ok()?;
-    let installed = st.components.get(CHROMIUM_COMPONENT)?;
+    let installed = st.components.get(name)?;
     let platform = Platform::current()?;
     let bundle = Bundle::parse(BUNDLE_JSON).ok()?;
-    let tool = bundle.tools.iter().find(|t| t.name == CHROMIUM_COMPONENT)?;
+    let tool = bundle.tools.iter().find(|t| t.name == name)?;
     let eps = tool
         .artifacts
         .get(platform.as_str())
         .and_then(|a| a.entrypoints.clone())
         .unwrap_or_else(|| tool.entrypoints.clone());
     let rel = citrate_components::extract::safe_relative_path(eps.first()?).ok()?;
-    let exe = root
-        .join(CHROMIUM_COMPONENT)
-        .join(&installed.current.dir)
-        .join(rel);
+    let exe = root.join(name).join(&installed.current.dir).join(rel);
     exe.is_file().then_some(exe)
+}
+
+/// HUP-S5.5: the managed Chromium and whether it may open the open web.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedBrowser {
+    pub exe: PathBuf,
+    /// `browser_may_open_web` over the last verified component manifest: false when that
+    /// manifest expired (or, which cannot happen for an installed component, none was seen).
+    pub may_open_web: bool,
+}
+
+/// HUP-S5.5: the installed managed Chromium ([`managed_chromium`]) together with the open-web
+/// rule at `now`. `None` when the managed Chromium is not installed: the rule is about the managed
+/// browser only, so a machine without one (every machine while the component key slot is empty)
+/// is not affected. Read-only: never creates the store.
+pub(crate) fn managed_browser(root: &Path, now: u64) -> Option<ManagedBrowser> {
+    let exe = managed_chromium(root)?;
+    // The state was readable a moment ago; if it no longer is, fail closed.
+    let may_open_web = read_state(root)
+        .map(|st| browser_may_open_web(&freshness(st.last_manifest.as_ref(), now)))
+        .unwrap_or(false);
+    Some(ManagedBrowser { exe, may_open_web })
+}
+
+/// [`managed_browser`] at the current time.
+pub(crate) fn managed_browser_now(root: &Path) -> Option<ManagedBrowser> {
+    managed_browser(root, now_secs())
 }
 
 /// The recorded state without creating the store.

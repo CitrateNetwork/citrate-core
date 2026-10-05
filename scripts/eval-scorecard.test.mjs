@@ -157,6 +157,31 @@ describe("renderScorecardMarkdown", () => {
     }
   });
 
+  it("HUP-S7.7: marks a run asked through the real sidecar with the bundled skills", () => {
+    const side = {
+      ...QA,
+      scorecard: {
+        ...QA.scorecard,
+        citationNodeRate: 0.5,
+        retrieval: {
+          mode: "memory_search tool via sidecar",
+          tenants: ["citrate-docs", "methodology", "refs", "skills"],
+          k: 5,
+          corpusDigest: "6e6f5689f9566db7" + "0".repeat(48),
+          sidecar: { skills: ["src-tauri/skills"], reviewedThirdParty: true, contextTokens: 8192, maxTokens: 2048 },
+        },
+      },
+    };
+    fs.writeFileSync(path.join(tmp, "results", "2026-10-04-qa-sidecar-m-small.json"), JSON.stringify(side));
+    try {
+      expect(md()).toContain(
+        "| 2026-10-04-qa-sidecar-m-small.json | m-small | T0 | qa-v1 + corpus 6e6f5689f956 (memory_search via sidecar + bundled skills + reviewed skills, k=5) | 40 |",
+      );
+    } finally {
+      fs.rmSync(path.join(tmp, "results", "2026-10-04-qa-sidecar-m-small.json"));
+    }
+  });
+
   it("marks the g1 valid-tool-call bar per tier: met / not met, T0 held to the T1 bar (pending sign-off)", () => {
     const low = { tools: [{ file: "x.json", sc: { ...TOOLS, validToolCallRate: 0.89 } }], qa: [], skipped: [] };
     expect(renderScorecardMarkdown(low, { created: "2026-10-01", branch: "b", source: "s" })).toContain("| not met |");

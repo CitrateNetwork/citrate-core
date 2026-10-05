@@ -4,7 +4,7 @@
 //! citrate-components check-bundle [--repo <dir>]
 //! citrate-components manifest-from-bundle --sequence <n> --issued-at <unix> --expires-at <unix> --sigs <dir> [--repo <dir>]
 //! citrate-components verify-manifest --manifest <file> --sig <file> --pubkey <key line> [--now <unix>]
-//! citrate-components unpack --format <raw|tar.gz|tar.xz> --archive <file> --dest <new dir> [--name <raw file name>]
+//! citrate-components unpack --format <raw|tar.gz|tar.xz|zip> --archive <file> --dest <new dir> [--name <raw file name>]
 //! ```
 //!
 //! `--sigs` holds one `<sha256>.minisig` per measured artifact, made at the release ceremony

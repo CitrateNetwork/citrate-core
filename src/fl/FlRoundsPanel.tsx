@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import type { FlAdapterGateRecord, FlOverview, FlRoundPlan, FlRoundsDomain, FlStartReceipt } from "../bridge/domains";
 import type { CerSpec } from "../shell/state";
 import { approveAndStartRound, DEFAULT_PROPOSAL, gateSummary } from "./flRounds";
+import { TrajectoryConsent } from "./TrajectoryConsent";
 
 export interface FlRoundsPanelProps {
   fl: FlRoundsDomain;
@@ -171,6 +172,8 @@ export function FlRoundsPanel({ fl, requestSig, toast }: FlRoundsPanelProps) {
             {err}
           </p>
         )}
+
+        <TrajectoryConsent fl={fl} toast={toast} />
 
         <div data-testid="fl-coordinator" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span className="mono" style={label}>Coordinator</span>
