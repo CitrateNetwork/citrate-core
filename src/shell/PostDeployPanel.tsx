@@ -144,7 +144,7 @@ export function PostDeployPanel({ ops, lastDeployTx, openReader }: { ops: PostDe
           onClick={() =>
             void run(async () => {
               const r = await ops.postdeploySwitchSite(dir, address ?? "");
-              return { ok: true, text: `The page now targets ${r.address} on chain 40204 (${r.envPath}). Rebuild it with npm run build before pinning.` };
+              return { ok: true, text: `The page now targets ${r.address} on chain 40204 (${r.envPath}). Rebuild it with npm run build before pinning.${r.decodedCalls ? " The signature request for a mint from the page now shows the call by name (mint and its quantity), read from this contract's own ABI." : ""}` };
             }, setSw)
           }
         >

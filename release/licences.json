@@ -137,12 +137,12 @@
       "spdx": "MIT",
       "first_party": false,
       "ships_as": "installer",
-      "covers": ["resource:models/bge-base-en-v1.5"],
+      "covers": ["resource:models/bge-base-en-v1.5", "resource:models/bge-base-en-v1.5-gguf"],
       "copyleft": "none",
       "licence_texts": ["src-tauri/licenses/bge-base-en-v1.5.LICENSE"],
       "source_offer": null,
       "review": "ok",
-      "note": "The model card declares MIT; the text is the FlagEmbedding repository LICENSE (BAAI's code and model home)."
+      "note": "The model card declares MIT; the text is the FlagEmbedding repository LICENSE (BAAI's code and model home). models/bge-base-en-v1.5-gguf is the same weights (revision a5beb1e3) converted to GGUF f16 by llama.cpp's converter (scripts/build-bge-gguf.sh) for the embedding llama-server Hermes ranks tools with."
     },
     {
       "id": "gemma-4-e4b",

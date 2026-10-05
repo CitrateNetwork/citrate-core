@@ -7,13 +7,18 @@
 #   (a fresh test vault signs a real EIP-155 tx) -> local chain deploy -> code check + verifier
 #   input -> site switch -> test mint through a ceremony -> Vercel export [-> page build + IPFS].
 # Plus: no aderyn/medusa = NOT READY, and an injected unbounded mint = NOT READY.
+# Sidecar-driven (US-6.1 AC1/AC2, US-6.2): a real Hermes sidecar session runs forge_test,
+# slither_scan, aderyn_scan and medusa_fuzz; core gates the kept raw reports with the fork step
+# run in core on the Citrate-aware fork (forkInCore), counts the Dev's prompts to READY (AC1), and
+# a "deploy it anyway" after NOT READY is refused with the finding and a proposed patch, with no
+# SignatureCeremony created.
 #
 # Nothing touches the live chain 40204. The "chain" is a throwaway anvil with chain id 40204 and
 # the dry run uses an anvil fork of it. No fixed key is used: the member wallet is created fresh.
 #
 # Not covered here: the Hermes interview turn (runtime interview tests), the Browser pop-out,
-# the faucet (HUP-S6.5, not built; the local chain funds the wallet), CitrateScan verification
-# (live explorer), and a member clicking Approve in the packaged app.
+# the faucet (HUP-S6.5; the local chain funds the wallet), CitrateScan verification (live
+# explorer), and a member clicking Approve in the packaged app.
 #
 # usage: scripts/e2e-hello-mint.sh --work DIR --deps-cache DIR
 #          [--with-bundle-tools DIR]   fetch aderyn + medusa from the URLs in
@@ -24,6 +29,15 @@
 #                                      injected-bug scenarios fail at their first step.
 #          [--with-page-build]         npm install + build the page and the Vercel export, and pin
 #                                      the page to a throwaway offline IPFS node when ipfs exists.
+#          [--sidecar-bin PATH]        the citrate-agent-sidecar binary for the sidecar-driven
+#                                      scenarios (without it they fail at their first step).
+#          [--fork-bin PATH]           the citrate-fork binary for forkInCore (citrate-chain
+#                                      crates/citrate-fork); needed by the sidecar-driven scenarios.
+#          [--solc PATH]               solc 0.8.36 for the sidecar's forge runs (default: the svm
+#                                      install under the user's home when present).
+#          [--llm-url URL --llm-model NAME]  a real OpenAI-compatible model (e.g. the local
+#                                      llama-server) instead of the scripted test double, to
+#                                      measure US-6.1 AC1 with a real model.
 set -euo pipefail
 
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,13 +45,23 @@ WORK=""
 CACHE=""
 TOOLS=""
 PAGE=0
+SIDECAR_BIN=""
+FORK_BIN=""
+SOLC=""
+LLM_URL=""
+LLM_MODEL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --work) WORK="$2"; shift 2 ;;
     --deps-cache) CACHE="$2"; shift 2 ;;
     --with-bundle-tools) TOOLS="$2"; shift 2 ;;
     --with-page-build) PAGE=1; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    --sidecar-bin) SIDECAR_BIN="$2"; shift 2 ;;
+    --fork-bin) FORK_BIN="$2"; shift 2 ;;
+    --solc) SOLC="$2"; shift 2 ;;
+    --llm-url) LLM_URL="$2"; shift 2 ;;
+    --llm-model) LLM_MODEL="$2"; shift 2 ;;
+    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
     *) echo "e2e: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -117,7 +141,9 @@ for t in aderyn medusa; do
 done
 
 # 4. The local chain (chain id 40204) and an anvil fork of it for the dry run.
-anvil --chain-id 40204 --port "$CHAIN_PORT" --silent &
+# citrate-fork (forkInCore) models 40204 only from its CREATE-nonce activation (block 30000) on, so
+# the local chain's genesis is past it.
+anvil --chain-id 40204 --number 30100 --port "$CHAIN_PORT" --silent &
 PIDS+=($!)
 for _ in $(seq 1 50); do cast block-number --rpc-url "http://127.0.0.1:$CHAIN_PORT" >/dev/null 2>&1 && break; sleep 0.2; done
 anvil --fork-url "http://127.0.0.1:$CHAIN_PORT" --chain-id 40204 --port "$FORK_PORT" --silent &
@@ -145,6 +171,19 @@ export CITRATE_E2E_HM_PAGE_BUILD="$PAGE"
 [ -n "$ADERYN_BIN" ] && export CITRATE_E2E_HM_TEST_ADERYN_BIN="$ADERYN_BIN"
 [ -n "$MEDUSA_BIN" ] && export CITRATE_E2E_HM_TEST_MEDUSA_BIN="$MEDUSA_BIN"
 [ -n "$KUBO_API" ] && export CITRATE_E2E_HM_KUBO_API="$KUBO_API"
+if [ -z "$SOLC" ]; then
+  for c in "$HOME/Library/Application Support/svm/0.8.36/solc-0.8.36" "$HOME/.svm/0.8.36/solc-0.8.36"; do
+    [ -x "$c" ] && SOLC="$c" && break
+  done
+fi
+for f in "$SIDECAR_BIN" "$FORK_BIN" "$SOLC"; do
+  [ -z "$f" ] || [ -x "$f" ] || { echo "e2e: $f is not an executable file" >&2; exit 2; }
+done
+[ -n "$SIDECAR_BIN" ] && export CITRATE_E2E_HM_SIDECAR_BIN="$SIDECAR_BIN"
+[ -n "$FORK_BIN" ] && export CITRATE_E2E_HM_FORK_BIN="$FORK_BIN"
+[ -n "$SOLC" ] && export CITRATE_E2E_HM_SOLC="$SOLC"
+[ -n "$LLM_URL" ] && export CITRATE_E2E_HM_LLM_URL="$LLM_URL"
+[ -n "$LLM_MODEL" ] && export CITRATE_E2E_HM_LLM_MODEL="$LLM_MODEL"
 mkdir -p "$CITRATE_E2E_HM_WORK"
 
 # E2E_TEST_BIN: an already built `cargo test --lib --no-run` binary of this checkout (skips the

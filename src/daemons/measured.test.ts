@@ -59,17 +59,39 @@ describe("TokenMeter: measured beats estimated only when every call reported", (
 });
 
 describe("a daemon turn feeds the server's usage to its meter", () => {
-  it("on the in-app loop, from core's citrate_usage", async () => {
-    const replies = [
-      JSON.stringify({ role: "assistant", content: null, tool_calls: [{ id: "c1", function: { name: "node_status", arguments: "{}" } }], citrate_usage: { prompt_tokens: 2000, completion_tokens: 15, generation_ms: 500 } }),
-      JSON.stringify({ role: "assistant", content: "Height 1.", citrate_usage: { prompt_tokens: 2100, completion_tokens: 25 } }),
+  it("on the sidecar loop, from the session's usage events", async () => {
+    const pages = [
+      {
+        events: [
+          { seq: 1, event: { type: "usage", prompt_tokens: 2000, completion_tokens: 15, generation_ms: 500 } },
+          { seq: 2, event: { type: "tool_call", host: "core", call: { id: "c1", name: "node_status", arguments: "{}" } } },
+        ],
+        lastSeq: 2,
+        busy: true,
+      },
+      {
+        events: [
+          { seq: 3, event: { type: "tool_result", call_id: "c1" } },
+          { seq: 4, event: { type: "usage", prompt_tokens: 2100, completion_tokens: 25 } },
+          { seq: 5, event: { type: "final", content: "Height 1." } },
+          { seq: 6, event: { type: "done", outcome: "answered" } },
+        ],
+        lastSeq: 6,
+        busy: false,
+      },
     ];
     const d: DaemonTurnDeps = {
-      providerKind: "local",
+      providerKind: "sidecar",
       systemPrompt: () => "You are Hermes.",
       context: () => ctx,
-      inferLocalTools: vi.fn(async () => replies.shift() ?? ""),
-      sidecar: null,
+      sidecar: {
+        openUnattended: vi.fn(async () => "s1-ab"),
+        send: vi.fn(async () => undefined),
+        events: vi.fn(async () => pages.shift() ?? { events: [], lastSeq: 6, busy: false }),
+        toolResult: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      },
       handleTool: async () => "{}",
     };
     const meter = new TokenMeter(100_000, () => undefined);

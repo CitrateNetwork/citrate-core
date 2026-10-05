@@ -18,6 +18,7 @@ fn mem_target() -> MemBridgeTarget {
         socket: PathBuf::from(
             "/Users/m/Library/Application Support/ai.citrate.core/memory/memdag.sock",
         ),
+        ledger: None,
     }
 }
 
@@ -165,6 +166,7 @@ fn a_relative_bridge_executable_is_refused() {
     let t = MemBridgeTarget {
         exe: PathBuf::from("citrate-core"),
         socket: PathBuf::from("/s/memdag.sock"),
+        ledger: None,
     };
     let s = McpSettings {
         mem: true,
@@ -494,4 +496,25 @@ fn node_settings_round_trip_and_old_files_read_as_off() {
     };
     save_settings(&dir, &s).expect("save");
     assert_eq!(load_settings(&dir), s);
+}
+
+#[test]
+fn the_bridge_is_given_the_learned_memory_ledger_when_there_is_one() {
+    let mut t = mem_target();
+    t.ledger = Some(PathBuf::from("/Users/m/Library/Application Support/ai.citrate.core/hermes/learned-memories.json"));
+    let s = McpSettings {
+        mem: true,
+        scan: false,
+        node: false,
+    };
+    let cfg = render_config(&s, Some(&t), None).expect("one server");
+    assert_host_accepts(&cfg);
+    assert_eq!(
+        cfg["servers"][0]["args"],
+        serde_json::json!([
+            crate::mem_mcp_bridge::BRIDGE_FLAG,
+            "/Users/m/Library/Application Support/ai.citrate.core/memory/memdag.sock",
+            "/Users/m/Library/Application Support/ai.citrate.core/hermes/learned-memories.json"
+        ])
+    );
 }
