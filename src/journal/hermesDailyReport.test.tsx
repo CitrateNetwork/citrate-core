@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { HermesDailyReport, type ReportInvoke } from "./HermesDailyReport";
-import { meteringRows, utcDay, type DailyResponse, type ChainStatus } from "./meteringView";
+import { d27Rows, formatSalt, meteringRows, utcDay, type DailyResponse, type ChainStatus } from "./meteringView";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,6 +120,84 @@ describe("meteringRows", () => {
     expect(utcDay(NOW, 0)).toBe("2026-10-01");
     expect(utcDay(NOW, 1)).toBe("2026-09-30");
     expect(utcDay(new Date("2026-03-01T00:30:00Z"), 1)).toBe("2026-02-28");
+  });
+});
+
+// HUP-S7.5 (D-27, US-7.3 AC1): the measures beyond counts, from a real sidecar report.
+function d27(): DailyResponse {
+  return daily(
+    {
+      schema: 2,
+      ttft_ms: { p50: 180, p95: 420, max: 500 },
+      speed: { tokens: 900, generation_ms: 30_000, tokens_per_s_milli: 30_000, turns_reporting: 5 },
+      resources: { turns_sampled: 5, cpu_peak_bps: 8_750, ram_used_peak_bytes: 12_884_901_888, ram_total_bytes: 17_179_869_184, gpu_peak_bps: 9_100 },
+      energy_estimate: { label: "estimate", microwatt_hours: 41_667, turns_estimated: 5, turns_without_gpu: 0 },
+      self_review: { label: "opinion", pass: 3, fail: 1, unclear: 0, agreed_with_verifiers: 3, disagreed_with_verifiers: 1 },
+    },
+    {
+      notMeasured: [],
+      chain: { day: "2026-10-01", transactions: 2, reverted: 1, gasUsed: 150_000, feeWei: "150000000000000", valueWei: "500000000000000000", saltSpentWei: "500150000000000000", byPurpose: { registry_escalation: 1, benchmark: 1 } },
+    },
+  );
+}
+
+describe("D-27 measures", () => {
+  it("show real values, each labelled, instead of unknown", () => {
+    const by = Object.fromEntries(meteringRows(d27()).map((r) => [r.label, r]));
+    expect(by["Time to first token p50 / p95"].value).toBe("180 ms / 420 ms (the model server's own timing)");
+    expect(by["Tokens per second"].value).toBe("30.0 (over 5 turns)");
+    expect(by["Peak CPU / GPU / RAM (whole machine)"].value).toBe("87.50% / 91.00% / 12288 MiB of 16384 MiB");
+    expect(by["Energy (estimate, not measured)"].value).toBe("41.667 mWh, estimate over 5 turns");
+    expect(by["Self-review (opinion, not a verdict)"].value).toBe("PASS 3 / FAIL 1 / unclear 0 (opinion; agreed with verifiers 3, disagreed 1)");
+    expect(by["SALT spent on chain"].value).toBe("0.50015 SALT (gas 0.00015 SALT, value sent 0.5 SALT)");
+    expect(by["Gas used"].value).toBe("150000 over 2 transactions, 1 reverted");
+    for (const r of d27Rows(d27())) expect(r.unknown, r.label).toBe(false);
+  });
+
+  it("a day without them says unknown and why, never zero", () => {
+    const empty = daily({ schema: 2, ttft_ms: null, speed: null, resources: null, energy_estimate: null, self_review: { label: "opinion", pass: 0, fail: 0, unclear: 0, agreed_with_verifiers: 0, disagreed_with_verifiers: 0 } }, { notMeasured: [], chain: { day: "2026-10-01", transactions: 0, reverted: 0, gasUsed: 0, feeWei: "0", valueWei: "0", saltSpentWei: "0", byPurpose: {} } });
+    const by = Object.fromEntries(meteringRows(empty).map((r) => [r.label, r]));
+    expect(by["Time to first token p50 / p95"].value).toMatch(/^unknown \(the model server did not report it\)/);
+    expect(by["Tokens per second"].unknown).toBe(true);
+    expect(by["Peak CPU / GPU / RAM (whole machine)"].value).toMatch(/^unknown/);
+    expect(by["Energy (estimate, not measured)"].value).toMatch(/^unknown/);
+    expect(by["Self-review (opinion, not a verdict)"].value).toBe("none recorded");
+    expect(by["SALT spent on chain"].value).toBe("none (no Hermes transaction this day)");
+  });
+
+  it("an older sidecar without the fields shows them as not measured by that build", () => {
+    const by = Object.fromEntries(meteringRows(daily()).map((r) => [r.label, r]));
+    for (const l of ["Time to first token p50 / p95", "Tokens per second", "Energy (estimate, not measured)", "SALT spent on chain", "Gas used"]) {
+      expect(by[l].value, l).toBe("unknown (this Hermes build does not measure it)");
+      expect(by[l].unknown).toBe(true);
+    }
+  });
+
+  it("a GPU with no reading stays unknown inside the peak row", () => {
+    const d = d27();
+    d.report.resources = { ...d.report.resources!, gpu_peak_bps: null };
+    const by = Object.fromEntries(meteringRows(d).map((r) => [r.label, r]));
+    expect(by["Peak CPU / GPU / RAM (whole machine)"].value).toBe("87.50% / GPU unknown / 12288 MiB of 16384 MiB");
+  });
+
+  it("formats SALT exactly from wei and refuses anything else", () => {
+    expect(formatSalt("2000000000000000000")).toBe("2 SALT");
+    expect(formatSalt("1")).toBe("0.000000000000000001 SALT");
+    expect(formatSalt("0")).toBe("0 SALT");
+    for (const bad of ["", "-1", "1e18", "0x10", "1".repeat(40)]) expect(formatSalt(bad), bad).toBeNull();
+  });
+
+  it("the Journal panel renders them", async () => {
+    const invoke = makeInvoke({ hermes_metering_daily: () => d27(), hermes_chain_status: () => chain() });
+    const { host, root } = await mount(<HermesDailyReport mode="tauri" invoke={invoke} now={() => NOW} />);
+    const text = host.textContent ?? "";
+    expect(text).toContain("180 ms / 420 ms");
+    expect(text).toContain("41.667 mWh, estimate");
+    expect(text).toContain("0.50015 SALT");
+    expect(text).toContain("Self-review (opinion, not a verdict)");
+    expect(text).not.toMatch(/unknown \(not measured yet\)/);
+    expect(text).not.toMatch(/—/);
+    root.unmount();
   });
 });
 

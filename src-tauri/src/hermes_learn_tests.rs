@@ -358,7 +358,8 @@ fn payload(to: &str, owner: &str) -> serde_json::Value {
         "chain_id": 40204, "to": to, "value": "0x0",
         "data": register_calldata(), "function": "registerSkill(string,string,string,string,string[])",
         "name": "deploy-checklist", "version": "1.0.0", "manifest_cid": "", "description": "d",
-        "tags": ["hermes-learned"], "owner": owner, "content_sha256": "ab", "expected_skill_hash": "0x00",
+        "tags": ["hermes-learned"], "owner": owner, "content_sha256": "ab",
+        "expected_skill_hash": skill_hash_of(owner, "deploy-checklist", "1.0.0").unwrap_or_default(),
         "hic": "hic-1", "broadcast": false, "proposal_id": PID
     })
 }
@@ -420,6 +421,191 @@ fn the_publish_calldata_must_encode_exactly_the_fields_the_member_sees() {
     let mut p = payload(reg, me);
     p["name"] = serde_json::json!("");
     assert!(publish_intent(&p, reg, me).is_err());
+}
+
+// ---- the publish calldata against the SkillRegistry ABI (fan-out 7, L02) ----------------------
+
+/// The redeployed SkillRegistry's ABI (citrate-chain PR #272) and a publish vector from Foundry.
+fn registry_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("../tests/fixtures/skill-registry/SkillRegistry.json")).unwrap()
+}
+
+fn abi_fn<'a>(abi: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    abi["abi"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "function" && e["name"] == name)
+        .unwrap_or_else(|| panic!("the ABI has no function {name}"))
+}
+
+fn abi_types(f: &serde_json::Value) -> Vec<String> {
+    f["inputs"].as_array().unwrap().iter().map(|i| i["type"].as_str().unwrap().to_string()).collect()
+}
+
+fn keccak(b: &[u8]) -> [u8; 32] {
+    use sha3::Digest as _;
+    sha3::Keccak256::digest(b).into()
+}
+
+fn word_at(data: &[u8], at: usize) -> &[u8] {
+    data.get(at..at + 32).unwrap_or_else(|| panic!("calldata ends before word {at}"))
+}
+
+fn usize_at(data: &[u8], at: usize) -> usize {
+    let w = word_at(data, at);
+    assert!(w[..24].iter().all(|b| *b == 0), "a length or offset does not fit");
+    u64::from_be_bytes(w[24..].try_into().unwrap()) as usize
+}
+
+/// A strict decoder for the ABI types the registry uses (`string`, `string[]`): every offset must
+/// be the canonical one, padding must be zero, and returns the end of the tail it read.
+fn decode_string(data: &[u8], at: usize) -> (String, usize) {
+    let len = usize_at(data, at);
+    let body = data.get(at + 32..at + 32 + len).expect("string body in range");
+    let padded = len.div_ceil(32) * 32;
+    let pad = data.get(at + 32 + len..at + 32 + padded).expect("string padding in range");
+    assert!(pad.iter().all(|b| *b == 0), "string padding is zero");
+    (String::from_utf8(body.to_vec()).expect("utf-8"), at + 32 + padded)
+}
+
+#[derive(Debug, PartialEq)]
+enum AbiValue {
+    Str(String),
+    StrArray(Vec<String>),
+}
+
+fn decode_args(types: &[String], args: &[u8]) -> Vec<AbiValue> {
+    let mut out = Vec::new();
+    let mut expect_tail = 32 * types.len();
+    for (i, t) in types.iter().enumerate() {
+        let off = usize_at(args, 32 * i);
+        assert_eq!(off, expect_tail, "argument {i} ({t}) is at the canonical offset");
+        match t.as_str() {
+            "string" => {
+                let (s, end) = decode_string(args, off);
+                out.push(AbiValue::Str(s));
+                expect_tail = end;
+            }
+            "string[]" => {
+                let n = usize_at(args, off);
+                let base = off + 32;
+                let mut next = base + 32 * n;
+                let mut items = Vec::new();
+                for k in 0..n {
+                    assert_eq!(usize_at(args, base + 32 * k) + base, next, "element {k} is at the canonical offset");
+                    let (s, end) = decode_string(args, next);
+                    items.push(s);
+                    next = end;
+                }
+                out.push(AbiValue::StrArray(items));
+                expect_tail = next;
+            }
+            other => panic!("the registerSkill ABI has an unexpected type {other}"),
+        }
+    }
+    assert_eq!(expect_tail, args.len(), "no bytes after the last tail");
+    out
+}
+
+/// `abi.encode(address, string, string)` driven by the ABI's own input types.
+fn encode_args(types: &[String], owner: &str, a: &str, b: &str) -> Vec<u8> {
+    assert_eq!(types, ["address", "string", "string"]);
+    let word = |n: usize| hex::decode(format!("{n:064x}")).unwrap();
+    let tail = |s: &str| {
+        let mut t = word(s.len());
+        t.extend_from_slice(s.as_bytes());
+        t.resize(32 + s.len().div_ceil(32) * 32, 0);
+        t
+    };
+    let (ta, tb) = (tail(a), tail(b));
+    let mut out = vec![0u8; 12];
+    out.extend_from_slice(&hex::decode(owner.trim_start_matches("0x")).unwrap());
+    out.extend_from_slice(&word(96));
+    out.extend_from_slice(&word(96 + ta.len()));
+    out.extend_from_slice(&ta);
+    out.extend_from_slice(&tb);
+    out
+}
+
+#[test]
+fn the_publish_calldata_decodes_against_the_skill_registry_abi() {
+    let fx = registry_fixture();
+    let v = &fx["publish_vector"];
+    let reg = "0x2b687899ef4af05a18f4f36ce1fe9d51c017a97c";
+    let owner = v["owner"].as_str().unwrap().to_ascii_lowercase();
+    let tags: Vec<String> = v["tags"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect();
+    let payload = serde_json::json!({
+        "chain_id": 40204, "to": reg, "value": "0x0",
+        "data": v["calldata"], "function": "registerSkill(string,string,string,string,string[])",
+        "name": v["name"], "version": v["version"], "manifest_cid": v["manifest_cid"],
+        "description": v["description"], "tags": tags, "owner": owner, "content_sha256": "ab",
+        "expected_skill_hash": v["skill_hash"], "hic": "hic-1", "broadcast": false, "proposal_id": PID
+    });
+    // Core builds the same calldata the runtime and cast build.
+    let ours = encode_register_skill(
+        v["name"].as_str().unwrap(),
+        v["version"].as_str().unwrap(),
+        v["manifest_cid"].as_str().unwrap(),
+        v["description"].as_str().unwrap(),
+        &tags,
+    );
+    assert_eq!(format!("0x{}", hex::encode(&ours)), v["calldata"].as_str().unwrap());
+
+    let intent = publish_intent(&payload, reg, &owner).unwrap();
+    let tx: serde_json::Value = serde_json::from_str(&intent.raw).unwrap();
+    let data = hex::decode(tx["data"].as_str().unwrap().trim_start_matches("0x")).unwrap();
+
+    // Selector: keccak of the signature the ABI JSON describes.
+    let f = abi_fn(&fx, "registerSkill");
+    let types = abi_types(f);
+    let sig = format!("registerSkill({})", types.join(","));
+    assert_eq!(sig, "registerSkill(string,string,string,string,string[])");
+    assert_eq!(&data[..4], &keccak(sig.as_bytes())[..4]);
+    assert_eq!(hex::encode(&data[..4]), REGISTER_SKILL_SELECTOR);
+
+    // Arguments: decoded by the ABI's input types, in the ABI's order, against what the member sees.
+    let names: Vec<&str> = f["inputs"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["name", "version", "manifestCID", "description", "tags"]);
+    let args = decode_args(&types, &data[4..]);
+    assert_eq!(
+        args,
+        vec![
+            AbiValue::Str(v["name"].as_str().unwrap().into()),
+            AbiValue::Str(v["version"].as_str().unwrap().into()),
+            AbiValue::Str(v["manifest_cid"].as_str().unwrap().into()),
+            AbiValue::Str(v["description"].as_str().unwrap().into()),
+            AbiValue::StrArray(tags.clone()),
+        ]
+    );
+    assert_eq!(f["outputs"][0]["type"], "bytes32", "registerSkill returns the skill id");
+
+    // Skill id: skillHashOf(owner, name, version), encoded by the ABI's own input types.
+    let h = abi_fn(&fx, "skillHashOf");
+    assert_eq!(h["stateMutability"], "pure");
+    let id = keccak(&encode_args(&abi_types(h), &owner, v["name"].as_str().unwrap(), v["version"].as_str().unwrap()));
+    assert_eq!(format!("0x{}", hex::encode(id)), v["skill_hash"].as_str().unwrap());
+    assert_eq!(skill_hash_of(&owner, v["name"].as_str().unwrap(), v["version"].as_str().unwrap()).unwrap(), v["skill_hash"].as_str().unwrap());
+
+    // A payload that projects another id (the old packed layout, or anything else) is refused.
+    for bad in [v["packed_hash"].as_str().unwrap(), "0x00", ""] {
+        let mut p = payload.clone();
+        p["expected_skill_hash"] = serde_json::json!(bad);
+        assert!(publish_intent(&p, reg, &owner).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn the_skill_id_is_the_registrys_abi_encode_layout() {
+    // cast call skillHashOf against the #272 SkillRegistry on a local anvil.
+    assert_eq!(
+        skill_hash_of("0x1111111111111111111111111111111111111111", "deploy-checklist", "1.0.0").unwrap(),
+        "0xeb5109821083b2af6b84f255136b5be053b2124662c45731e8f3c8a3a11c4e1b"
+    );
+    // Two pairs that concatenate to the same bytes get distinct ids.
+    let o = "0x00000000000000000000000000000000000000aa";
+    assert_ne!(skill_hash_of(o, "skill1", ".0").unwrap(), skill_hash_of(o, "skill", "1.0").unwrap());
+    assert!(skill_hash_of("0x00aa", "a", "1.0.0").is_err());
 }
 
 // ---- the sidecar env ----------------------------------------------------------------------------
@@ -833,4 +1019,201 @@ fn every_bundle_config_ships_the_first_party_skills() {
             "src-tauri/skills/{name}/SKILL.md"
         );
     }
+}
+
+// ---- contradictions with a memory core already held (fan-out 7, L02) ---------------------------
+
+/// P1 accepted against a known memory `mem-7` the sidecar was given (`both`, stored).
+fn known_both(g: &FakeGraph) -> Ledger {
+    let mut l = Ledger::default();
+    l.accept_record(&record(P1, "deploy chain", "40204", "both", &["mem-7"]), g).unwrap();
+    l
+}
+
+#[test]
+fn a_known_memory_contradiction_is_kept_as_a_memory_ref() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let l = known_both(&g);
+    let e = entry(&l, P1);
+    assert_eq!(e.belnap, "both");
+    assert_eq!(e.contradicts, vec!["memory:mem-7".to_string()]);
+}
+
+#[test]
+fn keeping_the_learned_memory_over_a_known_one_settles_it() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = known_both(&g);
+    let old_node = entry(&l, P1).graph.node_id.clone().unwrap();
+    assert!(l.apply_resolution(&resolution(P1, "memory:mem-7"), &g).unwrap());
+    let e = entry(&l, P1);
+    assert_eq!(e.belnap, "true");
+    assert!(e.contradicts.is_empty());
+    assert_eq!(e.graph.state, "stored", "stored again as settled");
+    assert_ne!(e.graph.node_id.as_deref(), Some(old_node.as_str()));
+    // The node stored with the unresolved text is superseded by the settled one.
+    assert!(g.supersedes.lock().unwrap().iter().any(|(_, to)| to == &old_node));
+    // Applied once.
+    assert!(!l.apply_resolution(&resolution(P1, "memory:mem-7"), &g).unwrap());
+}
+
+#[test]
+fn keeping_the_known_memory_retracts_the_learned_one() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = known_both(&g);
+    assert!(l.apply_resolution(&resolution("memory:mem-7", P1), &g).unwrap());
+    let e = entry(&l, P1);
+    assert_eq!(e.belnap, "false");
+    assert_eq!(e.retracted_for.as_deref(), Some("memory:mem-7"));
+}
+
+#[test]
+fn a_known_memory_resolution_is_validated_before_it_reaches_the_sidecar() {
+    let rec = std::sync::Arc::new(Recorder::default());
+    let m = mgr(rec.clone());
+    rec.reply.lock().unwrap().push((200, serde_json::json!({"ok": true, "resolution": resolution(P1, "memory:mem-7")}).to_string()));
+    let r = learn_resolve(&m, P1, "memory:mem-7", "0xmember").unwrap();
+    assert_eq!(r["retracted"], "memory:mem-7");
+    let body: serde_json::Value = serde_json::from_str(&rec.calls.lock().unwrap()[0].2).unwrap();
+    assert_eq!(body, serde_json::json!({"member": "0xmember", "keep": P1, "retract": "memory:mem-7"}));
+    for (keep, retract) in [("memory:a", "memory:b"), (P1, "memory:"), (P1, "memory:a b"), ("memory:../x", "memory:../x")] {
+        assert!(learn_resolve(&m, keep, retract, "m").is_err(), "{keep} {retract}");
+    }
+    assert_eq!(rec.calls.lock().unwrap().len(), 1, "bad refs never reach the sidecar");
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = known_both(&g);
+    assert!(l.apply_resolution(&resolution("memory:a", "memory:b"), &g).is_err());
+}
+
+#[test]
+fn the_sync_applies_a_known_memory_set_aside_whose_answer_was_lost() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = known_both(&g);
+    let list = serde_json::json!({"proposals": [
+        {"id": P1, "kind": "memory", "state": {"state": "persisted"}, "set_aside": ["memory:mem-7"]}
+    ]});
+    assert!(l.sync_with_sidecar(&list, &g) >= 1);
+    assert_eq!(entry(&l, P1).belnap, "true");
+    assert!(entry(&l, P1).contradicts.is_empty());
+    // And a learned memory retracted in favour of a known one is applied from the list too.
+    let mut l = known_both(&g);
+    let list = serde_json::json!({"proposals": [
+        {"id": P1, "kind": "memory", "state": {"state": "retracted", "by": "0xm", "kept": "memory:mem-7"}}
+    ]});
+    assert_eq!(l.sync_with_sidecar(&list, &g), 1);
+    assert_eq!(entry(&l, P1).belnap, "false");
+}
+
+// ---- recall hides unresolved learned memories (fan-out 7, L02) ----------------------------------
+
+#[test]
+fn recall_hides_a_learned_memory_while_its_contradiction_is_unresolved() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let mut l = two_both(&g);
+    let n1 = entry(&l, P1).graph.node_id.clone().unwrap();
+    let n2 = entry(&l, P2).graph.node_id.clone().unwrap();
+    let hide = RecallHide::from_ledger(&l);
+    let mut r = crate::memory::MemoryResult {
+        tenant: "personal".into(),
+        total_in_tenant: 3,
+        hits: vec![
+            crate::memory::MemoryHit { id: n1[..10].to_string(), kind: "Claim".into(), title: "deploy chain: 1".into(), status: None, cite: None, passage: None },
+            crate::memory::MemoryHit { id: n2[..10].to_string(), kind: "Claim".into(), title: "deploy chain: 40204".into(), status: None, cite: None, passage: None },
+            crate::memory::MemoryHit { id: "abcdef0123".into(), kind: "Doc".into(), title: "node data dir fact".into(), status: None, cite: None, passage: None },
+        ],
+    };
+    assert_eq!(hide.filter(&mut r), 2, "both sides of the contradiction are hidden");
+    assert_eq!(r.hits.len(), 1);
+    assert_eq!(r.hits[0].id, "abcdef0123");
+
+    // Resolved: the kept memory is visible again (its settled node), the retracted one is not.
+    l.apply_resolution(&resolution(P2, P1), &g).unwrap();
+    let hide = RecallHide::from_ledger(&l);
+    let kept = entry(&l, P2).graph.node_id.clone().unwrap();
+    assert!(!hide.hides(&kept[..10], "Hermes learned from a verified workflow, accepted by you. deploy chain: 40204"));
+    assert_eq!(hide, RecallHide::Nodes(vec![]));
+}
+
+#[test]
+fn the_text_of_an_unresolved_memory_is_never_recalled_and_a_damaged_ledger_hides_every_learned_one() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let l = two_both(&g);
+    let both_text = g.asserts.lock().unwrap()[1].1.clone();
+    assert!(RecallHide::Nodes(vec![]).hides("ffffffffff", &both_text), "{both_text}");
+    let dir = std::env::temp_dir().join(format!("hl-recall-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("learned-memories.json");
+    std::fs::write(&p, b"{not json").unwrap();
+    let hide = RecallHide::load(&p);
+    assert_eq!(hide, RecallHide::AllLearned);
+    assert!(hide.hides("0000000001", "Hermes learned from a verified workflow, accepted by you. deploy chain: 1"));
+    assert!(!hide.hides("0000000001", "node data dir fact"));
+    // A missing ledger hides nothing but unresolved text.
+    assert_eq!(RecallHide::load(&dir.join("absent.json")), RecallHide::Nodes(vec![]));
+    l.save(&p).unwrap();
+    assert!(matches!(RecallHide::load(&p), RecallHide::Nodes(v) if v.len() == 2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_daemon_text_loses_the_hidden_hits_and_their_passage_lines_only() {
+    let hide = RecallHide::Nodes(vec!["0a1b2c3d4e5f".into()]);
+    let text = "freshness: HEAD abc (1 commits)\n\
+                tenant 'personal' — 3 nodes, showing 2:\n\
+                \x20 0a1b2c3d4e [Claim] deploy chain: 1\n\
+                \x20   cite: personal:x#1\n\
+                \x20   > deploy chain: 1\n\
+                \x20 9988776655 [Doc] node data dir fact\n\
+                \x20   > kept passage\n";
+    let out = hide.filter_text(text);
+    assert!(!out.contains("0a1b2c3d4e"), "{out}");
+    assert!(!out.contains("cite: personal:x#1"), "{out}");
+    assert!(!out.contains("> deploy chain: 1"), "{out}");
+    assert!(out.contains("9988776655 [Doc] node data dir fact"), "{out}");
+    assert!(out.contains("> kept passage"), "{out}");
+    assert!(out.starts_with("freshness: HEAD abc"));
+    // Nothing hidden: the text is returned unchanged, byte for byte.
+    assert_eq!(RecallHide::Nodes(vec![]).filter_text(text), text);
+}
+
+// ---- review (fan-out 7, L02): what the daemon actually prints -----------------------------------
+
+/// Recall and search print at most 71 characters of a title, then `…`. That cut ends inside the
+/// unresolved phrase, so the text rule must match the printed head, not the whole phrase.
+#[test]
+fn an_unresolved_memory_is_hidden_by_the_title_the_daemon_prints() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let _l = two_both(&g);
+    let both_text = g.asserts.lock().unwrap()[1].1.clone();
+    let printed: String = format!("{}…", both_text.chars().take(71).collect::<String>());
+    assert!(!printed.contains("is unresolved"), "{printed}");
+    assert!(RecallHide::Nodes(vec![]).hides("ffffffffff", &printed), "{printed}");
+    let text = format!("tenant 'personal' — 2 nodes, showing 2:\n  ffffffffff [Claim] {printed}\n    > deploy chain: 40204\n  9988776655 [Doc] node data dir fact\n");
+    let out = RecallHide::Nodes(vec![]).filter_text(&text);
+    assert!(!out.contains("ffffffffff"), "{out}");
+    assert!(!out.contains("deploy chain: 40204"), "{out}");
+    assert!(out.contains("9988776655 [Doc] node data dir fact"), "{out}");
+    // A settled learned memory, printed the same way, stays.
+    let settled = "Hermes learned from a verified workflow, accepted by you. deploy chain: 40204";
+    assert!(!RecallHide::Nodes(vec![]).hides("ffffffffff", settled));
+}
+
+/// `memory.neighbors` prints full titles and no node ids: an unresolved learned memory next to a
+/// recalled node is left out by its text, and every learned one when the ledger is unreadable.
+#[test]
+fn neighbor_lines_of_unresolved_learned_memories_are_left_out() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let _l = two_both(&g);
+    let both_text = g.asserts.lock().unwrap()[1].1.clone();
+    let settled = "Hermes learned from a verified workflow, accepted by you. deploy chain: 1";
+    let text = format!(
+        "neighbors of 0a1b2c3d4e5f:\n  <- [Contradicts (proposed)] {both_text}\n  -> [Supports] @team {both_text}\n  -> [Cites] {settled}\n  -> [Cites] node data dir fact\n"
+    );
+    let out = RecallHide::Nodes(vec![]).filter_text(&text);
+    assert!(!out.contains("is unresolved"), "{out}");
+    assert!(out.contains(settled), "{out}");
+    assert!(out.contains("node data dir fact"), "{out}");
+    assert!(out.starts_with("neighbors of 0a1b2c3d4e5f:\n"), "{out}");
+    let out = RecallHide::AllLearned.filter_text(&text);
+    assert!(!out.contains("Hermes learned"), "{out}");
+    assert!(out.contains("node data dir fact"), "{out}");
 }

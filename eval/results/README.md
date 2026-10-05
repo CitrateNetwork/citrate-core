@@ -20,6 +20,12 @@ T0 and T1, and `scripts/eval-sidecar.mjs` (workflow-v1 step success, live MCP an
 injection) on T0 and T1, all with the app's real serve flags and the app's server stopped. The
 `-sidecar-` files are written by `eval-sidecar.mjs` and keep its file name.
 
+[2026-10-04-qa-literacy-v2.run.md](2026-10-04-qa-literacy-v2.run.md): `qa-literacy-v2` (US-9.2 AC1)
+on T0, once through the in-app `memory_search` tool path (51.2 % pass, 70.3 % citation hit) and once
+through a real sidecar with the bundled skills (43.9 %, 59.5 %). Below the g2-knowledge bar; T1 not
+run (machine state, see the record). The `-qa-literacy-v2-sidecar-` file is written by
+`eval-qa.mjs --retrieval-mode sidecar`.
+
 ## 2026-10-01 runs (HUP-S3.5)
 
 Each run has a record with YAML frontmatter (model, quant, tier, ctx, date, hardware, commands):

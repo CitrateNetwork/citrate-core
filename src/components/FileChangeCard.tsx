@@ -8,7 +8,7 @@
 // =====================================================================
 import type { UndoCard } from "../shell/slices/agentUndo";
 
-const VERB: Record<string, string> = { fs_write: "Wrote", fs_edit: "Edited", fs_delete: "Deleted", fs_rename: "Renamed" };
+const VERB: Record<string, string> = { fs_write: "Wrote", fs_edit: "Edited", fs_delete: "Deleted", fs_rename: "Renamed", file_write: "Wrote", sheet_write: "Wrote sheet" };
 
 export function FileChangeCard({
   card,

@@ -148,7 +148,9 @@ describe("HUP-S7.6 in-app loop honours Stop", () => {
     const p = createAgentProvider("x", () => ({}) as never, async () => JSON.stringify(replies.shift()));
     const onActivity = vi.fn();
     await p.send({ messages: [{ role: "user", content: "hi" }], callbacks: { onStatus: vi.fn(), onToken: vi.fn(), onToolCall: vi.fn(async () => "r"), onActivity } });
-    expect(onActivity.mock.calls.map((c) => c[0])).toEqual([{ kind: "step", step: 1 }, { kind: "step", step: 2 }]);
+    expect(onActivity.mock.calls.map((c) => c[0]).filter((e) => e.kind === "step")).toEqual([{ kind: "step", step: 1 }, { kind: "step", step: 2 }]);
+    // The tool round also reports the turn's plan (HUP-S7.6 chat plan), before the next round.
+    expect(onActivity.mock.calls.map((c) => c[0])[1]).toEqual({ kind: "plan", source: "chat", steps: ["Step 1: node_status"] });
   });
 });
 
@@ -265,6 +267,7 @@ describe("HUP-S7.6 sidecar loop honours Stop", () => {
     const onActivity = vi.fn();
     const p = createSidecarProvider(a, () => "p", () => []);
     await p.send({ messages: [{ role: "user", content: "hi" }], callbacks: { onStatus: vi.fn(), onToken: vi.fn(), onToolCall: vi.fn(async () => "r"), onActivity } });
+    // No tool call, so no chat plan: only the steps.
     expect(onActivity.mock.calls.map((c) => c[0])).toEqual([{ kind: "step", step: 1 }, { kind: "step", step: 2 }]);
   });
 });

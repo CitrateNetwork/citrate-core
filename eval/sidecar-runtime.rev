@@ -1,0 +1,8 @@
+# The citrate-agent-runtime commit that .github/workflows/eval.yml builds the Hermes sidecar
+# (citrate-agent-sidecar) and the MCP fixture server (citrate-mcp-fixture-server) from for the
+# sidecar eval suite (scripts/eval-sidecar.mjs). A full commit, never a branch, so a CI scorecard
+# names exactly the runtime it measured. Bump it in a reviewed change when the runtime moves;
+# scripts/eval-check.mjs refuses anything but this repo and a 40-hex commit.
+# 2026-10-04: top of the runtime HUP stack (hup/n6-everyday-monitor).
+repo = CitrateNetwork/citrate-agent-runtime
+rev = 45fceda902dcaaec29060a82ffeba705dc12b0a6

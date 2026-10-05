@@ -1,7 +1,7 @@
 // HUP-S6.2 / S6.9 — the forge panel's pure helpers. Core validates and decides; these only shape
 // what the form sends and how core's answer reads.
 import { describe, it, expect } from "vitest";
-import { artifactFor, initialValues, medusaLine, renderParams, type TemplateEntry } from "./contractForge";
+import { artifactFor, initialValues, medusaLine, renderParams, toolchainGateRequest, type TemplateEntry } from "./contractForge";
 
 const ERC20: TemplateEntry = {
   id: "erc20",
@@ -38,5 +38,16 @@ describe("contract forge helpers", () => {
   it("names forge's artifact for a source file and contract", () => {
     expect(artifactFor("src/Token.sol", "LemonDrops")).toBe("Token.sol/LemonDrops.json");
     expect(artifactFor("Token.sol", "X")).toBe("Token.sol/X.json");
+  });
+});
+
+describe("HUP-S6.10: the forge panel's gate request", () => {
+  it("always asks core to run the dry run on the Citrate-aware fork (forkInCore)", () => {
+    expect(toolchainGateRequest(" s1-ab ", "/p ", " Token.sol/LemonDrops.json")).toEqual({
+      sessionId: "s1-ab",
+      project: "/p",
+      artifact: "Token.sol/LemonDrops.json",
+      forkInCore: {},
+    });
   });
 });

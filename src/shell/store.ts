@@ -29,7 +29,7 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createLocalAgentProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
+import { createDemoProvider, createSidecarDownProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
@@ -977,12 +977,10 @@ export class Store {
         return;
       }
       if (kind === "local") {
-        // REAL local inference against the healthy llama-server (Rust-owned URL). The local model
-        // runs the FULL Hermes tool loop (groups/deploy/skills/memory) out of the box — same loop as
-        // the gateway, via ai_chat_local_tools. Tool calls execute through handleTool (writes gated).
-        this.provider = createLocalAgentProvider(() => this.snapshot(), (msgs, tools, ctx) =>
-          bridge.chat.inferLocalTools(msgs, tools, ctx),
-        );
+        // HUP-S1.1 (US-1.1 AC1): the local model's agent loop runs only in the Hermes sidecar. With
+        // the sidecar down (or its loop switched off) chat is a plain local reply with NO tools,
+        // and it says so: the webview runs no tool loop for the local model.
+        this.provider = createSidecarDownProvider(() => this.snapshot(), (msgs, ctx) => bridge.chat.inferLocal(msgs, ctx));
         this.reflectProvider();
         return;
       }
@@ -2406,6 +2404,9 @@ export class Store {
               commandRan(ev);
             } else if (ev.kind === "notice") {
               this.toast(ev.text);
+            } else if (ev.kind === "plan" && !ac.signal.aborted) {
+              // HUP-S7.6: a resumed chat turn's plan, from the tool calls replayed after the saved point.
+              planReported(ev.steps, ev.source ?? "workflow");
             } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
           },
         },
@@ -2468,7 +2469,6 @@ export class Store {
       providerKind: this.provider?.kind,
       systemPrompt: () => chatSystemPrompt(this.snapshot()),
       context: () => this.snapshot(),
-      inferLocalTools: (m, t, c) => bridge.chat.inferLocalTools(m, t, c),
       sidecar: {
         openUnattended: (p, t) => h.sessionOpenUnattended(p, t),
         send: (id, text) => h.sessionSend(id, text),
@@ -2601,7 +2601,7 @@ export class Store {
             if (stopped()) return;
             if (ev.kind === "step") noteStep(ev.step);
             else if (ev.kind === "usage") usageReported(ev);
-            else if (ev.kind === "plan") planReported(ev.steps);
+            else if (ev.kind === "plan") planReported(ev.steps, ev.source ?? "workflow");
             else if (ev.kind === "verifier") verifierReported(ev);
           },
         },

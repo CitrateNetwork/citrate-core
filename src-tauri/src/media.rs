@@ -639,6 +639,94 @@ pub fn data_url_for(path: &Path) -> Result<String, String> {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// What [`generate_image`] reads: the saved settings, the effective tier, the remote provider (if
+/// one is chosen), the folder grants and the gallery.
+pub struct GenerateContext<'a> {
+    pub settings: &'a MediaSettings,
+    pub tier: Option<&'a str>,
+    pub remote: Option<&'a RemoteProvider>,
+    pub grants: &'a GrantState,
+    pub gallery: &'a GalleryStore,
+}
+
+/// One image request as the Media view sends it.
+pub struct GenerateRequest<'a> {
+    pub route: &'a str,
+    pub prompt: &'a str,
+    pub size: &'a str,
+    pub grant_id: &'a str,
+}
+
+/// The body of **media_generate_image**: pick the route (refusing one that is not available),
+/// check the destination grant before spending anything, ask the backend (the loopback server for
+/// `local`; `remote_post(provider id, body)` for `remote`, which core answers with the sealed-key
+/// provider call), then check the reply, write the file new into the granted folder and record it
+/// in the gallery with the route's cost line. `now` is the clock.
+pub fn generate_image(
+    ctx: &GenerateContext<'_>,
+    req: &GenerateRequest<'_>,
+    now: impl Fn() -> u64,
+    remote_post: impl FnOnce(&str, &Value) -> Result<String, String>,
+) -> Result<GalleryItem, String> {
+    let routes = image_routes(ctx.tier, ctx.settings, ctx.remote);
+    let r = routes
+        .into_iter()
+        .find(|r| r.id == req.route)
+        .ok_or("unknown route")?;
+    if !r.available {
+        return Err(r
+            .reason
+            .unwrap_or_else(|| "that route is not available".into()));
+    }
+    // Check the destination before spending anything.
+    let root = target_root(ctx.grants, req.grant_id, now())?;
+    let body = image_request(req.prompt, req.size, &r.model)?;
+    let reply = match r.id {
+        "local" => {
+            let base = ctx
+                .settings
+                .local_url
+                .as_deref()
+                .map(validate_local_url)
+                .transpose()?
+                .ok_or("no local image backend is set up")?;
+            post_local(&format!("{base}/images/generations"), &body)?
+        }
+        _ => {
+            let id = ctx
+                .settings
+                .remote_provider
+                .as_deref()
+                .ok_or("no image provider chosen")?;
+            remote_post(id, &body)?
+        }
+    };
+    let img = parse_image_response(&reply)?;
+    let at = now();
+    let path = write_new_file(
+        &root,
+        &output_name(MediaKind::Image, at, img.ext),
+        &img.bytes,
+    )?;
+    let item = GalleryItem {
+        id: format!("m{at}-{}", random_hex(4)),
+        kind: MediaKind::Image,
+        path: path.display().to_string(),
+        grant_id: req.grant_id.to_string(),
+        prompt: req.prompt.trim().to_string(),
+        route: r.id.to_string(),
+        destination: r.destination,
+        model: r.model,
+        created_at: at,
+        bytes: img.bytes.len() as u64,
+        mime: img.mime.to_string(),
+        cost: r.cost,
+        usage: img.usage,
+    };
+    ctx.gallery.record_item(item.clone())?;
+    Ok(item)
+}
+
 /// POST to the member's local image server (loopback only, no key). Image generation on a small
 /// machine is slow, so the deadline is generous but bounded.
 fn post_local(url: &str, body: &Value) -> Result<String, String> {
@@ -811,65 +899,27 @@ pub async fn media_generate_image(
         let s = load_settings(&app);
         let tier = effective_tier(&app);
         let remote = remote_provider(&app, &s);
-        let routes = image_routes(tier.as_deref(), &s, remote.as_ref());
-        let r = routes
-            .into_iter()
-            .find(|r| r.id == route)
-            .ok_or("unknown route")?;
-        if !r.available {
-            return Err(r
-                .reason
-                .unwrap_or_else(|| "that route is not available".into()));
-        }
-        // Check the destination before spending anything.
         let st = grant_state(&app)?;
-        let root = target_root(&st, &grant_id, now_secs())?;
-        let body = image_request(&prompt, &size, &r.model)?;
-        let reply = match r.id {
-            "local" => {
-                let base = s
-                    .local_url
-                    .as_deref()
-                    .map(validate_local_url)
-                    .transpose()?
-                    .ok_or("no local image backend is set up")?;
-                post_local(&format!("{base}/images/generations"), &body)?
-            }
-            _ => {
-                let id = s
-                    .remote_provider
-                    .as_deref()
-                    .ok_or("no image provider chosen")?;
-                let ai = tauri::Manager::try_state::<crate::ai::AiState>(&app)
-                    .ok_or("internal: managed state unavailable")?;
-                ai.0.post_to_provider(id, "/images/generations", &body)
-                    .map_err(|e| e.to_string())?
-            }
+        let store = gallery(&app)?;
+        let ctx = GenerateContext {
+            settings: &s,
+            tier: tier.as_deref(),
+            remote: remote.as_ref(),
+            grants: &st,
+            gallery: &store,
         };
-        let img = parse_image_response(&reply)?;
-        let now = now_secs();
-        let path = write_new_file(
-            &root,
-            &output_name(MediaKind::Image, now, img.ext),
-            &img.bytes,
-        )?;
-        let item = GalleryItem {
-            id: format!("m{now}-{}", random_hex(4)),
-            kind: MediaKind::Image,
-            path: path.display().to_string(),
-            grant_id,
-            prompt: prompt.trim().to_string(),
-            route: r.id.to_string(),
-            destination: r.destination,
-            model: r.model,
-            created_at: now,
-            bytes: img.bytes.len() as u64,
-            mime: img.mime.to_string(),
-            cost: r.cost,
-            usage: img.usage,
+        let req = GenerateRequest {
+            route: &route,
+            prompt: &prompt,
+            size: &size,
+            grant_id: &grant_id,
         };
-        gallery(&app)?.record_item(item.clone())?;
-        Ok(item)
+        generate_image(&ctx, &req, now_secs, |id, body| {
+            let ai = tauri::Manager::try_state::<crate::ai::AiState>(&app)
+                .ok_or("internal: managed state unavailable")?;
+            ai.0.post_to_provider(id, "/images/generations", body)
+                .map_err(|e| e.to_string())
+        })
     })
     .await
 }

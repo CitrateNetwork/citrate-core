@@ -19,5 +19,8 @@ export function simFlRounds(_host: SimHost): FlRoundsDomain {
     loadAdapter: refuse,
     unloadAdapter: refuse,
     revokeConsent: refuse,
+    trajectoryStatus: refuse,
+    setTrajectoryConsent: refuse,
+    buildTrainingSet: refuse,
   };
 }

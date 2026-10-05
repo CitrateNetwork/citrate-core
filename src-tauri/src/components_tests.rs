@@ -155,3 +155,74 @@ fn the_bundle_lists_the_browser_and_search_components_honestly() {
     assert_eq!(searxng.license, "AGPL-3.0-or-later");
     assert!(searxng.measured_platforms.is_empty(), "packed by the release step");
 }
+
+// HUP-S5.5: the open-web rule follows the installed managed Chromium and the last verified
+// manifest: never checked or expired keeps it off the open web, fresh or stale lets it open.
+#[test]
+fn the_managed_browser_carries_the_open_web_rule_of_the_last_manifest() {
+    use citrate_components::install::{InstalledComponent, InstalledVersion, StoreState};
+    use citrate_components::manifest::SeenManifest;
+    let root = tmp("open-web");
+    let now = 1_790_000_000u64;
+    assert_eq!(managed_browser(&root, now), None, "no store: no managed browser");
+    let Some(platform) = Platform::current() else {
+        return;
+    };
+    std::fs::create_dir_all(&root).expect("root");
+    let bundle = Bundle::parse(BUNDLE_JSON).expect("bundle");
+    let tool = bundle
+        .tools
+        .iter()
+        .find(|t| t.name == CHROMIUM_COMPONENT)
+        .expect("chromium is in the bundle");
+    let ep = tool
+        .artifacts
+        .get(platform.as_str())
+        .and_then(|a| a.entrypoints.clone())
+        .unwrap_or_else(|| tool.entrypoints.clone());
+    let exe = root.join(CHROMIUM_COMPONENT).join("154-ab").join(&ep[0]);
+    std::fs::create_dir_all(exe.parent().expect("parent")).expect("dirs");
+    std::fs::write(&exe, b"#!/bin/sh\n").expect("exe");
+    let mut st = StoreState::default();
+    st.components.insert(
+        CHROMIUM_COMPONENT.to_string(),
+        InstalledComponent {
+            current: InstalledVersion {
+                version: "154.0.8037.92".into(),
+                sha256: "ab".repeat(32),
+                dir: "154-ab".into(),
+                platform,
+                installed_at: now - 100,
+                manifest_sequence: 1,
+            },
+            previous: None,
+        },
+    );
+    let write = |st: &StoreState| {
+        std::fs::write(
+            root.join("state.json"),
+            serde_json::to_vec_pretty(st).expect("json"),
+        )
+        .expect("state")
+    };
+    let seen = |verified_at: u64, expires_at: u64| SeenManifest {
+        sequence: 1,
+        digest_hex: "cd".repeat(32),
+        verified_at,
+        expires_at,
+    };
+    write(&st);
+    let m = managed_browser(&root, now).expect("installed");
+    assert_eq!(m.exe, exe);
+    assert!(!m.may_open_web, "never checked: off the open web");
+    st.last_manifest = Some(seen(now - 60, now + 86_400));
+    write(&st);
+    assert!(managed_browser(&root, now).expect("installed").may_open_web, "fresh");
+    st.last_manifest = Some(seen(now - 5 * 86_400, now + 86_400));
+    write(&st);
+    assert!(managed_browser(&root, now).expect("installed").may_open_web, "stale is a warning");
+    st.last_manifest = Some(seen(now - 20 * 86_400, now - 1));
+    write(&st);
+    assert!(!managed_browser(&root, now).expect("installed").may_open_web, "expired: off the open web");
+    let _ = std::fs::remove_dir_all(&root);
+}

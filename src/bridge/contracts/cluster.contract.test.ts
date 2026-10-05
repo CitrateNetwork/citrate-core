@@ -27,6 +27,9 @@ describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
       "deviceLinksIngest",
       // HUP-S8.4 prep: mesh transport policy
       "meshStatus",
+      // HUP-S8.4: group links (seeds)
+      "groupSeed",
+      "addGroupSeed",
     ] as const) {
       expect(typeof bridge.cluster[m]).toBe("function");
     }
@@ -52,6 +55,9 @@ describe("CX bridge contract — cluster (frozen CX-S0.2)", () => {
       expect(await bridge.cluster.deviceLinksIngest("aa", "cdlink1:{}")).toEqual({ links: 0, revocations: 0, refused: [] });
       const mesh = await bridge.cluster.meshStatus();
       expect(mesh.on).toBe(false);
+      // HUP-S8.4: no daemon in the sim, so no group link is invented.
+      await expect(bridge.cluster.groupSeed("g")).rejects.toThrow(/desktop app/);
+      await expect(bridge.cluster.addGroupSeed("g", "citrate-cluster://seed?v=1")).rejects.toThrow(/desktop app/);
     }
   });
 });

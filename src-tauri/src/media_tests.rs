@@ -439,3 +439,221 @@ fn a_write_folder_in_a_protected_location_is_never_a_target() {
     assert!(target_root(&st, "1", NOW).is_err());
     assert!(write_targets(&st, NOW).is_empty());
 }
+
+// ---- the generate pipeline (media_generate_image's body) ----
+
+fn b64_png_reply() -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png());
+    serde_json::json!({"data": [{"b64_json": b64}], "usage": {"total_tokens": 7}}).to_string()
+}
+
+#[test]
+fn generate_writes_into_the_granted_folder_and_records_the_cost_line() {
+    let out = tmp();
+    let media = tmp();
+    let st = state(vec![grant("1", &out, Access::Write, GrantKind::Folder)]);
+    let store = GalleryStore::new(&media);
+    let p = remote("gateway", "https://infer.citrate.ai/v1");
+    let s = settings(None, Some("gateway"));
+    let ctx = GenerateContext {
+        settings: &s,
+        tier: Some("T0"),
+        remote: Some(&p),
+        grants: &st,
+        gallery: &store,
+    };
+    let req = GenerateRequest {
+        route: "remote",
+        prompt: "  a lemon on a table  ",
+        size: "512x512",
+        grant_id: "1",
+    };
+    let mut asked = None;
+    let item = generate_image(
+        &ctx,
+        &req,
+        || NOW,
+        |id, body| {
+            asked = Some((id.to_string(), body.clone()));
+            Ok(b64_png_reply())
+        },
+    )
+    .unwrap();
+    let (id, body) = asked.unwrap();
+    assert_eq!(id, "gateway");
+    assert_eq!(body["prompt"], "a lemon on a table");
+    assert_eq!(item.prompt, "a lemon on a table");
+    assert_eq!(item.route, "remote");
+    assert!(item.cost.contains("infer.citrate.ai"), "{}", item.cost);
+    assert_eq!(item.mime, "image/png");
+    let path = std::path::PathBuf::from(&item.path);
+    assert_eq!(path.parent().unwrap(), out.as_path());
+    assert_eq!(std::fs::read(&path).unwrap(), png());
+    assert_eq!(store.items().unwrap(), vec![item.clone()]);
+    assert!(data_url_for(&path).unwrap().starts_with("data:image/png;base64,"));
+}
+
+#[test]
+fn generate_checks_the_route_and_the_destination_before_asking_any_backend() {
+    let out = tmp();
+    let media = tmp();
+    let st = state(vec![grant("2", &out, Access::Read, GrantKind::Folder)]);
+    let store = GalleryStore::new(&media);
+    let p = remote("openai", "https://api.openai.com/v1");
+    let s = settings(None, Some("openai"));
+    let ctx = GenerateContext {
+        settings: &s,
+        tier: Some("T0"),
+        remote: Some(&p),
+        grants: &st,
+        gallery: &store,
+    };
+    let mut called = 0;
+    // A read-only grant is no destination: the provider is never asked.
+    let req = GenerateRequest {
+        route: "remote",
+        prompt: "x",
+        size: "512x512",
+        grant_id: "2",
+    };
+    assert!(generate_image(&ctx, &req, || NOW, |_, _| {
+        called += 1;
+        Ok(b64_png_reply())
+    })
+    .is_err());
+    // T0 has no local route, and an unknown route is refused.
+    for route in ["local", "video"] {
+        let req = GenerateRequest {
+            route,
+            prompt: "x",
+            size: "512x512",
+            grant_id: "2",
+        };
+        assert!(generate_image(&ctx, &req, || NOW, |_, _| {
+            called += 1;
+            Ok(b64_png_reply())
+        })
+        .is_err());
+    }
+    assert_eq!(called, 0);
+    assert!(store.items().unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+}
+
+#[test]
+fn a_provider_link_instead_of_image_bytes_saves_nothing() {
+    let out = tmp();
+    let media = tmp();
+    let st = state(vec![grant("1", &out, Access::Write, GrantKind::Folder)]);
+    let store = GalleryStore::new(&media);
+    let p = remote("custom", "https://images.example.test/v1");
+    let s = settings(None, Some("custom"));
+    let ctx = GenerateContext {
+        settings: &s,
+        tier: Some("T1"),
+        remote: Some(&p),
+        grants: &st,
+        gallery: &store,
+    };
+    let req = GenerateRequest {
+        route: "remote",
+        prompt: "x",
+        size: "512x512",
+        grant_id: "1",
+    };
+    let link = serde_json::json!({"data": [{"url": "https://images.example.test/a.png"}]}).to_string();
+    assert!(generate_image(&ctx, &req, || NOW, |_, _| Ok(link)).is_err());
+    assert!(store.items().unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+}
+
+/// LIVE proof (US-10.1 AC1..AC3, image tier): one real image from a loopback OpenAI-images server
+/// (for example stable-diffusion.cpp's `sd-server`), through the same pipeline the Media view
+/// calls, into a granted folder, recorded in the gallery with its cost line, and read back as the
+/// data URL the Media pop-out shows. Run:
+///
+/// `CITRATE_MEDIA_LIVE_URL=http://127.0.0.1:18731/v1 cargo test -p citrate-core --lib media::tests::live_ -- --ignored --nocapture`
+///
+/// Optional `CITRATE_MEDIA_LIVE_OUT=<dir>` keeps the image there (the folder is granted for this
+/// run only); otherwise a temporary folder is used.
+#[test]
+#[ignore = "live: needs a loopback OpenAI-images server in CITRATE_MEDIA_LIVE_URL"]
+fn live_local_image_generation_into_a_granted_folder() {
+    use sha2::Digest as _;
+    let Ok(url) = std::env::var("CITRATE_MEDIA_LIVE_URL") else {
+        panic!("set CITRATE_MEDIA_LIVE_URL to the loopback image server, e.g. http://127.0.0.1:18731/v1");
+    };
+    let out = match std::env::var("CITRATE_MEDIA_LIVE_OUT") {
+        Ok(d) => {
+            std::fs::create_dir_all(&d).unwrap();
+            std::path::PathBuf::from(d).canonicalize().unwrap()
+        }
+        Err(_) => tmp(),
+    };
+    let media = tmp();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut g = grant("1", &out, Access::Write, GrantKind::Folder);
+    g.granted_at = now - 1;
+    let st = state(vec![g]);
+    let store = GalleryStore::new(&media);
+    let s = MediaSettings {
+        local_url: Some(url.clone()),
+        local_model: std::env::var("CITRATE_MEDIA_LIVE_MODEL").ok(),
+        remote_provider: None,
+        remote_model: None,
+    };
+    let ctx = GenerateContext {
+        settings: &s,
+        tier: Some("T1"),
+        remote: None,
+        grants: &st,
+        gallery: &store,
+    };
+    let local = image_routes(Some("T1"), &s, None)
+        .into_iter()
+        .find(|r| r.id == "local")
+        .unwrap();
+    assert!(local.available, "{local:?}");
+    let req = GenerateRequest {
+        route: "local",
+        prompt: "a ripe lemon on a wooden table, soft daylight, photo",
+        size: "512x512",
+        grant_id: "1",
+    };
+    let started = std::time::Instant::now();
+    let item = generate_image(&ctx, &req, move || now, |_, _| {
+        Err("the remote route is not used in this proof".into())
+    })
+    .unwrap();
+    let elapsed = started.elapsed();
+    let path = std::path::PathBuf::from(&item.path);
+    assert_eq!(path.parent().unwrap(), out.as_path());
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(sniff(&bytes).map(|x| x.0), Some(item.mime.as_str()));
+    assert_eq!(store.items().unwrap()[0], item);
+    let data_url = data_url_for(&path).unwrap();
+    assert!(data_url.starts_with(&format!("data:{};base64,", item.mime)));
+    assert_eq!(item.cost, local.cost);
+    println!(
+        "{}",
+        serde_json::json!({
+            "route": item.route,
+            "destination": item.destination,
+            "model": item.model,
+            "cost": item.cost,
+            "usage": item.usage,
+            "mime": item.mime,
+            "bytes": item.bytes,
+            "sha256": hex::encode(sha2::Sha256::digest(&bytes)),
+            "file_name": path.file_name().map(|n| n.to_string_lossy().to_string()),
+            "in_granted_folder": path.parent() == Some(out.as_path()),
+            "gallery_items": store.items().unwrap().len(),
+            "data_url_prefix": &data_url[..data_url.find(',').unwrap_or(0) + 1],
+            "elapsed_ms": elapsed.as_millis() as u64,
+        })
+    );
+}

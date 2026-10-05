@@ -7,6 +7,8 @@
 //     --sidecar-bin /abs/citrate-agent-sidecar --mcp-fixture-bin /abs/citrate-mcp-fixture-server \
 //     --chromium "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
 //     [--only workflows|injection] [--out-dir eval/results] [--deadline-s 900]
+//     [--allow-remote]   (CI: a non-loopback https model endpoint, as eval.yml passes it)
+//     [--runtime-rev <sha>] (the runtime commit the binaries were built from; stamped in the scorecard)
 //
 // What it does (src/agent/eval/sidecar.ts holds the tested logic):
 //   1. writes a 0600 bearer file, an MCP allowlist naming the runtime's stdio fixture server
@@ -252,6 +254,7 @@ async function main() {
         browser: runInjection ? "managed headless browser (CITRATE_HERMES_BROWSER=1), pages on a loopback HTTP server" : "off",
         contextTokens: String(args.contextTokens),
         maxTokens: String(args.maxTokens),
+        ...(args.runtimeRev ? { runtimeRev: `CitrateNetwork/citrate-agent-runtime@${args.runtimeRev}` } : {}),
       },
     });
   } catch (e) {
