@@ -1117,6 +1117,22 @@ pub async fn sign_and_broadcast(
     .await
 }
 
+/// HUP-S7.5 (D-27): approve, sign and broadcast a pending ceremony, then tell the broadcast
+/// observer (the app's metering) about the result. [`sign_and_broadcast_sync`] goes through here,
+/// so a test can prove the observer hears every broadcast without the Tauri state.
+pub fn approve_broadcast_and_notify<T: crate::rpc::RpcTransport>(
+    ceremony: &SignatureCeremony,
+    vault: &CustodyVault,
+    rpc: &crate::rpc::RpcClient<T>,
+    id: &str,
+    raw_ack: bool,
+    cfg: BroadcastConfig,
+) -> Result<BroadcastResult> {
+    let result = ceremony.approve_and_broadcast(vault, rpc, id, raw_ack, cfg)?;
+    notify_broadcast(&result);
+    Ok(result)
+}
+
 /// Blocking body of [`sign_and_broadcast`]; reached only through [`crate::blocking::off_main`].
 pub fn sign_and_broadcast_sync(
     ceremony: State<'_, CeremonyState>,
@@ -1128,23 +1144,21 @@ pub fn sign_and_broadcast_sync(
     // receipt-poll budget (30 attempts × 2s = up to 60s for inclusion). Blocking
     // HTTP is correct here — the command runs off the async runtime.
     let rpc = crate::rpc::RpcClient::citrate();
-    let result = ceremony
-        .0
-        .approve_and_broadcast(
-            &custody.0,
-            &rpc,
-            &id,
-            raw_ack,
-            BroadcastConfig {
-                chain_id: crate::rpc::CITRATE_CHAIN_ID,
-                poll_attempts: 30,
-                poll_interval: std::time::Duration::from_secs(2),
-            },
-        )
-        .map_err(err_str)?;
-    // HUP-S7.5 (D-27): sent; tell the observer (the app's metering), then return the same result.
-    notify_broadcast(&result);
-    Ok(result)
+    // HUP-S7.5 (D-27): the observer (the app's metering) is told about the result before it is
+    // returned unchanged.
+    approve_broadcast_and_notify(
+        &ceremony.0,
+        &custody.0,
+        &rpc,
+        &id,
+        raw_ack,
+        BroadcastConfig {
+            chain_id: crate::rpc::CITRATE_CHAIN_ID,
+            poll_attempts: 30,
+            poll_interval: std::time::Duration::from_secs(2),
+        },
+    )
+    .map_err(err_str)
 }
 
 /// **Command — sign_reject.** Consume a pending ceremony with no signature.

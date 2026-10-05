@@ -1719,6 +1719,67 @@ fn d27_broadcast_result_carries_gas_price_value_and_origin() {
     assert_eq!((r.gas_used, r.effective_gas_price_wei), (None, None));
 }
 
+/// HUP-S7.5 (D-27), review fix: the production broadcast path tells the installed observer about
+/// every broadcast it sends (that is how Hermes's gas and SALT reach metering), passes the result
+/// back unchanged, and tells it nothing when nothing was sent.
+#[test]
+fn d27_the_broadcast_path_tells_the_observer_and_returns_the_same_result() {
+    static SEEN: StdMutex<Vec<(String, String, Option<u64>)>> = StdMutex::new(Vec::new());
+    assert!(set_broadcast_observer(Box::new(|r: &BroadcastResult| {
+        SEEN.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((r.tx_hash.clone(), r.origin.clone(), r.gas_used));
+    })));
+    assert!(
+        !set_broadcast_observer(Box::new(|_: &BroadcastResult| {})),
+        "a second observer is refused"
+    );
+    let (v, _p) = vault_with_wallet();
+    let c = SignatureCeremony::new();
+    let from = canonical_addr_lower();
+    let mut intent = tx_intent(&from, "0x3535353535353535353535353535353535353535", "0x0");
+    intent.origin = "agent:hermes".to_string();
+    let view = c.request(intent);
+    let tx_hash = "0xd270000000000000000000000000000000000000000000000000000000000d27";
+    let mock = MockRpc::new(vec![
+        ok(JsonValue::String("0x9".into())),
+        ok(JsonValue::String("0x77359400".into())),
+        ok(JsonValue::String(tx_hash.into())),
+        ok(serde_json::json!({ "blockNumber": "0x66", "status": "0x1", "gasUsed": "0x5208", "effectiveGasPrice": "0x77359400" })),
+    ]);
+    let r = approve_broadcast_and_notify(
+        &c,
+        &v,
+        &RpcClient::with_transport(mock),
+        &view.id,
+        false,
+        bcfg(2),
+    )
+    .expect("broadcast");
+    assert_eq!(r.tx_hash, tx_hash);
+    let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        seen.contains(&(tx_hash.to_string(), "agent:hermes".to_string(), Some(21_000))),
+        "{seen:?}"
+    );
+    // A consumed (or unknown) ceremony sends nothing, so the observer hears nothing.
+    let again = approve_broadcast_and_notify(
+        &c,
+        &v,
+        &RpcClient::with_transport(MockRpc::new(vec![])),
+        &view.id,
+        false,
+        bcfg(2),
+    );
+    assert!(again.is_err());
+    let after = SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        after.iter().filter(|(h, _, _)| h == tx_hash).count(),
+        1,
+        "told once, for the one broadcast"
+    );
+}
+
 #[test]
 fn b1_4_broadcast_result_is_serialize_and_secret_free() {
     // BroadcastResult crosses the bridge as PUBLIC facts only (hash + block).

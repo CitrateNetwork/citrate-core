@@ -50,6 +50,7 @@ fn only_hermes_origins_are_metered_and_the_router_marks_a_registry_escalation() 
         "agent:node-agent",
         "https://app.citrate.ai",
         "agent:hermesx",
+        "hermesx:benchmark",
         "",
     ] {
         assert_eq!(
