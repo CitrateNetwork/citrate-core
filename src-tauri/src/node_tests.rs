@@ -581,6 +581,7 @@ fn live_bounded_sync_proof() {
         peers: 0,
         height: 0,
         sync_pct: 0.0,
+        notice: None,
     };
     while std::time::Instant::now() < deadline {
         let st = mgr.status();
@@ -804,4 +805,89 @@ fn ensure_node_config_substitutes_the_data_dir_and_is_idempotent() {
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ---------------------------------------------------------------------------
+// 40204 reroll: node data reset on a genesis change (node_genesis)
+// ---------------------------------------------------------------------------
+
+const REROLL_OLD_GENESIS: &str =
+    "0x0f2b567f00000000000000000000000000000000000000000000000000000001";
+const REROLL_NEW_GENESIS: &str =
+    "0x1111111100000000000000000000000000000000000000000000000000000002";
+
+/// A start for a new book genesis deletes the old chain DB before the spawn,
+/// keeps the proposer and Noise keys, and surfaces the one-line notice.
+#[test]
+fn start_resets_old_genesis_chain_db_and_keeps_keys() {
+    let (mgr, _fake, data) = stub_manager("genesis-reset");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    for f in ["CURRENT", "MANIFEST-000624", "000013.sst", "000623.log", "LOCK"] {
+        std::fs::write(data.join(f), b"old chain").unwrap();
+    }
+    std::fs::write(data.join(crate::validator::PROPOSER_KEY_FILE), [7u8; 32]).unwrap();
+    std::fs::write(data.join("noise.key"), [9u8; 64]).unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    assert!(mgr.status().notice.is_none(), "no notice before a reset");
+
+    mgr.start().expect("stub node starts after the reset");
+    mgr.stop();
+
+    for f in ["CURRENT", "MANIFEST-000624", "000013.sst", "000623.log"] {
+        assert!(!data.join(f).exists(), "{f} must be deleted");
+    }
+    assert_eq!(
+        std::fs::read(data.join(crate::validator::PROPOSER_KEY_FILE)).unwrap(),
+        vec![7u8; 32]
+    );
+    assert_eq!(std::fs::read(data.join("noise.key")).unwrap(), vec![9u8; 64]);
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_NEW_GENESIS)
+    );
+    assert_eq!(
+        mgr.status().notice.as_deref(),
+        Some(crate::node_genesis::CHAIN_RESET_NOTICE)
+    );
+}
+
+/// A zero or unparsable book genesis refuses the start: no spawn, data untouched.
+#[test]
+fn start_refuses_a_bad_book_genesis() {
+    for bad in [
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "not-a-hash",
+    ] {
+        let (mgr, fake, data) = stub_manager("genesis-bad");
+        let mgr = mgr.with_book_genesis(bad);
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("CURRENT"), b"old chain").unwrap();
+        let err = mgr.start().expect_err("a bad book genesis must not start the node");
+        assert!(matches!(err, NodeError::Genesis(_)), "{err:?}");
+        assert!(err.to_string().contains("not started"), "{err}");
+        assert_eq!(mgr.status().state, "stopped");
+        assert!(data.join("CURRENT").exists(), "data untouched");
+        assert!(
+            fake.get(KEYRING_NODE_STORAGE_ACCOUNT).unwrap().is_none(),
+            "fails before the storage key is even minted"
+        );
+    }
+}
+
+/// The compiled-in book genesis is what a production manager targets.
+#[test]
+fn manager_targets_the_address_book_genesis() {
+    let (mgr, _fake, data) = stub_manager("genesis-book");
+    mgr.start().expect("stub node starts");
+    mgr.stop();
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(crate::addresses::genesis_hash())
+    );
+    assert!(mgr.status().notice.is_none(), "a fresh dir is not a reset");
 }
