@@ -55,6 +55,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
 import { buildRoleNavigator } from "../surfaces/groupsNavigator";
@@ -612,6 +613,8 @@ export class Store {
     // HUP-S3.2: the member's saved skills are SKILL.md files the sidecar also loads; move any
     // older-format skills there once, then list them.
     void this.syncLocalSkills();
+    // Hermes terminal commands: core's spawn setting follows the member's switch.
+    void this.syncHermesTerminal();
     // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
     // the default id is configured (key sealed in the OS keyring), else the honest
     // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
@@ -2299,6 +2302,50 @@ export class Store {
     this.setState({ chatStatus: "ready" });
     this.scrollChat();
     this.save();
+  }
+
+  /** The core side of "Let Hermes run terminal commands" (the sidecar's shell_run tool). */
+  private terminalIo(): TerminalAccessIo {
+    return {
+      mode: BRIDGE_MODE === "tauri" ? "tauri" : "sim",
+      invoke: async <T,>(cmd: string, a?: Record<string, unknown>) => {
+        const { invoke } = await import("../bridge/tauri/invoke");
+        return invoke<T>(cmd, a);
+      },
+    };
+  }
+
+  /** Turn Hermes's terminal commands on or off. Core restarts a running Hermes so the change
+   *  applies; the chat then opens a fresh conversation (the old one had the old tool list). On a
+   *  failure the switch goes back to what core has. */
+  async setHermesTerminal(on: boolean): Promise<void> {
+    const before = this.state.hermesTerminal;
+    this.setState({ hermesTerminal: on });
+    this.save();
+    try {
+      const st = await syncTerminalAccess(this.terminalIo(), on);
+      if (st.enabled !== on) {
+        this.setState({ hermesTerminal: st.enabled });
+        this.save();
+      }
+      if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
+      this.toast(on ? "Hermes can run terminal commands; each one asks you first" : "Hermes terminal commands are off");
+    } catch (e) {
+      this.setState({ hermesTerminal: before });
+      this.save();
+      this.toast(`Could not change terminal commands: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** Launch: core spawns Hermes from its own copy of the setting, so send it the member's choice
+   *  (what Settings shows is what applies). Quiet: nothing to report when they already agree. */
+  private async syncHermesTerminal(): Promise<void> {
+    try {
+      const st = await syncTerminalAccess(this.terminalIo(), this.state.hermesTerminal);
+      if (st.restarted && this.state.hermesSidecarLoop) await this.rebuildProvider();
+    } catch {
+      /* core older than this setting, or no Hermes yet: the spawn reads its own default */
+    }
   }
 
   /** HUP-S3.3 + S3.7 — choose the Hermes persona (its sidecar view, fragment included), or null for

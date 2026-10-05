@@ -135,6 +135,8 @@ mod hermes;
 mod hermes_headless;
 mod hermes_learn;
 mod hermes_web;
+// Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
+mod hermes_terminal;
 mod invite_seal;
 mod invites;
 mod model_catalog;
@@ -745,6 +747,8 @@ pub fn run() {
             hermes_learn::hermes_learn_publish,
             hermes_web::hermes_web_settings_get,
             hermes_web::hermes_web_settings_set,
+            hermes_terminal::hermes_terminal_get,
+            hermes_terminal::hermes_terminal_set,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
             forge_toolchain::toolchain_settings_get,
             forge_toolchain::toolchain_settings_set,

@@ -241,6 +241,8 @@ commands.allow = [
   "hermes_learn_publish",
   "hermes_web_settings_get",
   "hermes_web_settings_set",
+  "hermes_terminal_get",
+  "hermes_terminal_set",
   "node_status",
   "node_start",
   "node_stop",

@@ -510,6 +510,13 @@ export interface AppState {
   /** One-time migration marker: the 2026-10-01 default (loop on) has been applied to this install.
    * After that, the member's own choice is kept. */
   hermesSidecarLoopDefaultApplied: boolean;
+  /** Let Hermes run terminal commands (the sidecar's `shell_run` tool). On by default (owner
+   * decision 2026-10-04). Every command still needs the member's approval, runs in the OS sandbox,
+   * and only in folders the member shared. Core passes it to the sidecar (hermes_terminal.rs). */
+  hermesTerminal: boolean;
+  /** One-time migration marker: the 2026-10-04 default (terminal commands on) has been applied to
+   * this install. After that, the member's own choice is kept. */
+  hermesTerminalDefaultApplied: boolean;
   /** HUP-S1.4 — the last accepted interview brief (persisted). */
   hermesBrief: AcceptedBrief | null;
   /** HUP-S3.3 + S3.7 — the chosen Hermes persona (its sidecar view, fragment included), or null for
@@ -804,6 +811,8 @@ export function freshState(pid: string): AppState {
     aiDefault: "gateway",
     hermesSidecarLoop: true,
     hermesSidecarLoopDefaultApplied: true,
+    hermesTerminal: true,
+    hermesTerminalDefaultApplied: true,
     hermesBrief: null,
     hermesPersona: null,
     customPersonas: [],
@@ -956,7 +965,7 @@ export const PERSIST_KEYS: (keyof AppState)[] = [
   "kycOutcome", "chatBackend", "crashes", "wTab", "nTab", "cTab", "sSec", "route", "deviceId",
   // NOTE: `aiKeys` is REMOVED (AI1) — provider keys live in the OS keyring, never
   // localStorage (invariant 2). Only the non-secret `aiDefault` route id persists.
-  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
+  "pins", "userSkills", "jPages", "jSel", "connections", "aiDefault", "hermesSidecarLoop", "hermesSidecarLoopDefaultApplied", "hermesTerminal", "hermesTerminalDefaultApplied", "hermesBrief", "hermesPersona", "customPersonas", "hermesReadAloud", "journalAutoSummary", "journalAutoSummaryDay", "sponsorUnits", "blocksProposed",
 ];
 
 export function loadState(): AppState {
@@ -973,6 +982,13 @@ export function loadState(): AppState {
   if (saved && saved.hermesSidecarLoopDefaultApplied !== true) {
     base.hermesSidecarLoop = true;
     base.hermesSidecarLoopDefaultApplied = true;
+  }
+  // Owner decision 2026-10-04: Hermes may run terminal commands (each one approved by the member,
+  // sandboxed, in shared folders only). Existing installs are switched on once; a member who turns
+  // it off afterwards stays off.
+  if (saved && saved.hermesTerminalDefaultApplied !== true) {
+    base.hermesTerminal = true;
+    base.hermesTerminalDefaultApplied = true;
   }
   return base;
 }
