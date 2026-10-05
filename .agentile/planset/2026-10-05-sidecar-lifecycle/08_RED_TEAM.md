@@ -3,7 +3,7 @@ created: 2026-10-05T23:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5 (adversarial red-team pass)
 status: planset (Stage-2, red-teamed)
-updated: 2026-10-05 (owner disposition appended; findings above unchanged)
+updated: 2026-10-05 (owner disposition appended, then a second set of owner decisions; findings above unchanged)
 red_teamed: 2026-10-05 (adversarial pass in a fresh context; 29 findings, 3 blocking)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -174,3 +174,28 @@ Appended after the pass; the findings above are unchanged.
   "Owner decision (2026-10-05)".
 - RT-01 and RT-03 are resolved in the plan by S12.6 and by the re-scope to the manual
   installer path with S0.7; both are in the cut.
+
+### Owner disposition, second set (2026-10-05)
+
+Appended after the first disposition; the findings and the first disposition above are
+unchanged.
+
+- **Release path (D-2 amended again).** v0.5.0 ships right after the 40204 reroll and its
+  2,000-block soak with only SCL-S0 (S0.1, S0.3 to S0.7, including the Windows NSIS
+  pre-install stop S0.7, which resolves RT-04 for 0.5.0) and S8.5a (the startup barrier and
+  the #243 database-lock check, RT-11). Strict dependency added: S1.6a, a hosted Windows CI job
+  for the S0.7 hook test (RT-14's lane, minimum slice). The previous cut-blocking subset is
+  now the v0.5.1 gate; the rest is v0.5.x. gates.yaml uses `release:` in place of
+  `blocks_cut`.
+- **Effect on findings.** RT-01, RT-02 and RT-20 (macOS quit, Quit always ends,
+  `UpdateStaged`) are resolved in the plan for v0.5.1, not v0.5.0: v0.5.0 ships today's exit
+  paths. RT-10's boot identity and path rule (S8.5b) move to v0.5.1 with the records. RT-29's
+  split is now three-way. No finding is closed by this decision; the residuals are stated in 00
+  and 05.
+- **D-41 (HUP) amended** to allow exactly one v0.5.1, carrying the SCL v0.5.1 gate.
+- **O-19 extended (D-16 extended).** In addition to cold load and probe timeout, a `Failed`,
+  `Stopped` or `Quarantined` local model makes chat ask the member first (restart the local
+  model, or send this message to the gateway this time). Never silent. RT-12 found the silent
+  route on readiness changes; the code today also routes silently when the local server
+  process is not running, so a minimal ask-first on today's signals is in v0.5.0 (S7.5a) and
+  the full rule is in v0.5.1 (S7.5).

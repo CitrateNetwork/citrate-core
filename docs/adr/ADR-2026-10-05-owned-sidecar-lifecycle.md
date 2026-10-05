@@ -2,8 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: proposed (Stage-2, red-teamed; owner decisions O-18, O-19, O-20 and the red-team pass accepted 2026-10-05; ADR acceptance (g0-adr) still pending; changes nothing until accepted)
-updated: 2026-10-05 (owner decisions: D-2 amended to a cut-blocking subset; O-18, O-19 locked; red-team pass accepted)
+status: proposed (Stage-2, red-teamed; owner decisions O-18, O-19, O-20 and the red-team pass accepted 2026-10-05, then a second set the same day (release path v0.5.0 / v0.5.1 / v0.5.x, D-16 extended, HUP D-41 amended); ADR acceptance (g0-adr) still pending; changes nothing until accepted)
+updated: 2026-10-05 (owner decisions: D-2 amended to a cut-blocking subset; O-18, O-19 locked; red-team pass accepted; second set: D-2 amended again, D-16 extended, HUP D-41 amended for one v0.5.1)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -49,6 +49,11 @@ single-model red-team pass as the pre-Stage-2 red-team (D-17, `g0-redteam` met).
 remain recommended defaults pending sign-off. The ADR as a whole is still proposed until
 `g0-adr` flips. See "Owner decisions (2026-10-05)" below.
 
+*Owner decision (2026-10-05, second set):* D-2 amended again (v0.5.0 carries only SCL-S0 and
+the S8.5 startup barrier; the previous cut-blocking subset gates v0.5.1), D-16 extended (ask
+first when the local model is down), and the HUP D-41 cadence amended to allow one v0.5.1.
+`g0-adr` is now a v0.5.1 criterion. See "Owner decisions (2026-10-05, second set)" below.
+
 ## Context
 
 - The shared supervisor (`kit/src/supervisor.rs`) is byte-identical on `main` at `30c789e`
@@ -83,6 +88,11 @@ remain recommended defaults pending sign-off. The ADR as a whole is still propos
    gated on the SCL criteria marked `blocks_cut: true`; the rest of SC1 to SC8 and the deltas
    finish on the 0.5.x line under the same planset, still gated (`blocks_cut: false`). The
    HUP `g5-scl` line points at the cut-blocking criteria.
+   *Owner decision (2026-10-05, second set, D-2 amended again):* superseded in turn. v0.5.0
+   ships after the 40204 reroll and its 2,000-block soak with only the SCL criteria tagged
+   `release: v0.5.0` (SCL-S0, S8.5a, and the minimum they need, plus S7.5a). The previous
+   cut-blocking subset is the v0.5.1 gate (`release: v0.5.1`); the rest is `release: v0.5.x`.
+   The HUP `g5-scl` line points at the `release: v0.5.0` criteria.
 
 ### Deltas from ADR-0001 / SPEC-001
 
@@ -95,7 +105,7 @@ remain recommended defaults pending sign-off. The ADR as a whole is still propos
 | Δ-5 | Nested ownership | Not addressed | The Hermes sidecar owns its children, keeps its own anchors, writes ownership records core can read, and acknowledges child cleanup inside Hermes Stop | Children that start their own session or group are outside a group signal to Hermes |
 | Δ-6 | Drain order | All owners concurrently | Hermes and its children first, then the rest concurrently, inside one absolute deadline (O-11, pending sign-off) | Hermes depends on the node and memory |
 | Δ-7 | Exit paths covered | Quit, restart, update install | Adds factory reset, the Hermes setting-change restart and the #243 chain reset (which runs only after the node owner reports `Complete`) | Every path that ends or replaces a process |
-| Δ-8 | Release | No release approval implied | Ships in v0.5.0; SCL gates gate the cut. *Owner decision (2026-10-05): amended; only the cut-blocking subset gates the cut, the rest ships on 0.5.x* | Owner decision 2026-10-05 |
+| Δ-8 | Release | No release approval implied | Ships in v0.5.0; SCL gates gate the cut. *Owner decision (2026-10-05): amended; only the cut-blocking subset gates the cut, the rest ships on 0.5.x.* *Owner decision (2026-10-05, second set): amended again; v0.5.0 carries SCL-S0 and S8.5a, v0.5.1 carries the previous cut-blocking subset, the rest is 0.5.x* | Owner decision 2026-10-05 |
 | Δ-9 | Keeping it fixed | Future acceptance tests | A **standing fault-injection suite** as a required CI check on three OSes, a manifest tripwire so fixtures cannot be dropped without an ADR, TLA+ mutant configs that must reproduce bugs (a) to (c), a named cross-cutting owner, and a red-team pass on merged code | The prior model and tests were green while all five defects were present |
 | Δ-10 | Formal model | Not specified | Extend `SidecarSupervisor.tla` (intent and generation fencing, attested retry credit, probe permit) and add `AppExitCoordinator.tla` | Rule 9: extend, do not duplicate |
 | Δ-11 | Thread budget | 35 (43 with Windows Comms slots) | 38 (46) for 9 cells, plus a bounded bespoke reader pool; ceilings to measure (O-5) | Embed counted as its own owner |
@@ -147,6 +157,26 @@ Recorded as locked decisions in the planset's
 Estimate for the cut-blocking subset: about 165 agent-days of effort, a critical path of about
 51 to 70 agent-days, 7 to 10 calendar weeks with four to five lanes (cut about late November
 to mid-December 2026). The 0.5.x remainder is about 135 agent-days.
+*Owner decision (2026-10-05, second set): superseded by the estimate below.*
+
+## Owner decisions (2026-10-05, second set)
+
+Recorded as locked decisions in the planset's 00 (and D-41 in the HUP planset). They supersede
+the rows above where they differ; the rows above stay as the record.
+
+| # | Decision | Replaces |
+|---|---|---|
+| D-2 (amended again) | **Three releases.** v0.5.0 ships right after the 40204 reroll and its 2,000-block soak with only SCL-S0 pre-cut safety (S0.1, S0.3 to S0.7, including the Windows NSIS pre-install stop) and S8.5a (startup cleanup barrier before node admission, #243 database-lock check), plus S1.6a (the hosted Windows CI job S0.7's test needs; the only strict dependency) and S7.5a (below). The previous cut-blocking subset is the **v0.5.1** gate. Everything else is 0.5.x follow-up. gates.yaml tags every criterion `release: v0.5.0`, `v0.5.1` or `v0.5.x` in place of `blocks_cut` | D-2 (amended) above |
+| D-16 (extended) | **Ask first, never silent.** In addition to D-16: when the local model is `Failed`, `Stopped` or `Quarantined`, chat asks the member first (restart the local model, or send this message to the gateway this time), per message. Today's code routes silently to the gateway when the local server process is not running, so a minimal ask-first on today's signals ships in v0.5.0 (S7.5a); the full rule on the readiness model ships in v0.5.1 (S7.5) | D-16 above, which named only cold load and probe timeout |
+| D-41 (HUP, amended) | **One v0.5.1.** The HUP cadence allows exactly one v0.5.1 after v0.5.0, carrying the SCL v0.5.1 gate | D-41 as amended 2026-10-01 |
+
+Estimate: v0.5.0 is 9 WPs, about 19 agent-days (16 without S7.5a), 9 to 14 working days from
+2026-10-06, so about 1 to 2 weeks after the soak if the other HUP gate5 criteria and the
+Windows team's S0.7 run are ready. v0.5.1 is 47 WPs, about 150 agent-days, critical path about
+51 to 70 agent-days, about early to late December 2026. The remainder is about 135 agent-days.
+Consequences: bugs (a) to (e) ship open in v0.5.0; the 0.5.0 to 0.5.1 macOS update runs
+0.5.0's exit code; the O-17 legacy cleanup stays through v0.5.1; the remainder has no release
+slot yet under D-41 as amended.
 
 ## Consequences
 
@@ -164,6 +194,9 @@ to mid-December 2026). The 0.5.x remainder is about 135 agent-days.
 - v0.5.0 waits for the SCL gates. *Owner decision (2026-10-05): v0.5.0 waits for the
   cut-blocking SCL criteria only; the rest ships on 0.5.x. Bug (e) stays open for descendants
   of supervised services at the cut, until shared containment lands.*
+  *Owner decision (2026-10-05, second set): v0.5.0 waits only for SCL-S0, S8.5a, S1.6a and
+  S7.5a; v0.5.1 waits for the previous cut-blocking subset. All five reproduced defects ship
+  open in v0.5.0.*
 
 ## What this ADR does not claim
 

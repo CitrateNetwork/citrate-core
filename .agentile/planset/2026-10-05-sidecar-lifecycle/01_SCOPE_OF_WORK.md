@@ -3,7 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
-updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended; O-18, O-19 accepted)
+updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended; O-18, O-19 accepted; second set: D-2 amended again, D-16 extended)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -102,9 +102,10 @@ The gate criterion stays `met: false` until the named run is recorded.
 |---|---|---|---|---|
 | R-1 (amended) | Program size: about 280 agent-days total, critical path about 70 to 92 agent-days, 10 to 14 calendar weeks with parallel lanes (RT-15) | High | High | Corrected dependency graph (RT-13); two native-run windows (RT-25); O-20 offers a split of cut-blocking from 0.5.0-line gates |
 | R-1 (owner decision 2026-10-05) | O-20 accepted, D-2 amended: the cut waits for a subset of about 165 agent-days with a critical path of about 51 to 70 agent-days (7 to 10 weeks); the 0.5.x remainder is about 135 agent-days | High | Med | Cut-blocking subset in 00 and 05; `blocks_cut` tags in gates.yaml. Residual: bug (e) open for supervised-service descendants until S9 to S11 |
+| R-1 (owner decision 2026-10-05, second set) | D-2 amended again: v0.5.0 carries only SCL-S0, S8.5a, S1.6a and S7.5a (about 19 agent-days, 9 to 14 working days); v0.5.1 is the previous cut-blocking subset (about 150 agent-days, about early to late December 2026); the 0.5.x remainder is about 135 agent-days | Med | High | Three-release table in 00 and 05; `release:` tags in gates.yaml. Residuals: bugs (a) to (e) open in v0.5.0; the 0.5.0 to 0.5.1 macOS update runs 0.5.0's exit code; the O-17 legacy path stays through v0.5.1 |
 | R-14 | macOS terminations that cannot be prevented (Dock Quit, logout) bypass an async-only coordinator (RT-01) | High | High | Synchronous bounded drain in `Exit` plus a custom Quit menu item (SCL-S12.6) |
 | R-15 | Quit blocked forever by a stuck in-process worker (RT-02) | Med | High | O-18 (SCL-S12.7); owner decision 2026-10-05: accepted, locked as D-15 |
-| R-16 | Readiness changes silently move chat from the local model to the remote gateway (RT-12) | High | High | O-19 (SCL-S7.5); owner decision 2026-10-05: accepted, locked as D-16, blocks the cut |
+| R-16 | Readiness changes silently move chat from the local model to the remote gateway (RT-12) | High | High | O-19 (SCL-S7.5); owner decision 2026-10-05: accepted, locked as D-16, blocks the cut. Second set: extended to ask first when the local model is down; a minimal ask-first ships in v0.5.0 (S7.5a), the full rule in v0.5.1 (S7.5) |
 | R-17 | Runtime ownership records are trusted as authority to signal (RT-09) | Med | Med | Records are claims; core ties them to its own recorded Hermes incarnation (SCL-S11.7, @rule8) |
 | R-18 | Windows Job capture on stable Rust needs a mechanism `std` does not expose (RT-05) | High | Med | SCL-S10.0 spike and ADR addendum before S10.1 |
 | R-19 | Hosted CI has no Windows or macOS lane today, so "Windows CI" acceptance has nowhere to run (RT-14) | High | Med | SCL-S1.6 before S2 |

@@ -4,7 +4,7 @@ branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
-updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18, O-19 accepted)
+updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18, O-19 accepted; second set: D-2 amended again to v0.5.0 / v0.5.1 / v0.5.x, D-16 extended)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core + citrate-agent-runtime (via federation sprint)
@@ -30,7 +30,7 @@ items land through the private remediation route in #298 and are merged by the o
 
 | Sprint | Goal (one line) | SPEC-001 | Effort |
 |---|---|---|---|
-| SCL-S0 | Pre-cut safety fixes with regression tests, before the v0.5.0 cut | (ours) | M (6 WPs: 4 S, 2 M) |
+| SCL-S0 | Pre-cut safety fixes with regression tests, before the v0.5.0 cut. *Owner decision (2026-10-05, second set): with S1.6a, S7.5a and S8.5a this sprint is the whole SCL content of v0.5.0* | (ours) | M (6 WPs: 4 S, 2 M) |
 | SCL-S1 | Theory: extended supervisor model, exit coordinator model, fault harness, re-grounding | (gate) | L |
 | SCL-S2 | Acknowledged controls, intent sequence, generation fencing, receipts | SC1 | L |
 | SCL-S3 | Readiness separate from liveness; attested retry credit | SC2 | M |
@@ -77,6 +77,12 @@ v0.5.0 is cut when every SCL criterion marked `blocks_cut: true` in [gates.yaml]
 is met. The rest of SCL finishes on the 0.5.x line under this planset. The split, the
 dependency graph for the cut and the new estimate are in
 [Owner decision (2026-10-05): cut-blocking subset](#owner-decision-2026-10-05-cut-blocking-subset).
+
+*Owner decision (2026-10-05, second set, D-2 amended again):* the paragraph above is superseded
+in turn. v0.5.0 ships after the 40204 reroll and its 2,000-block soak when every criterion with
+`release: v0.5.0` is met (SCL-S0 plus S8.5a, S1.6a, S7.5a). The previous cut-blocking subset is
+the v0.5.1 gate (`release: v0.5.1`). See
+[Owner decision (2026-10-05, second set)](#owner-decision-2026-10-05-second-set-v050-v051-v05x).
 
 ---
 
@@ -318,6 +324,11 @@ mid-December 2026 to mid-January 2027. O-20 (08) is the lever if that is not acc
 
 ## Owner decision (2026-10-05): cut-blocking subset
 
+*Owner decision (2026-10-05, second set):* this section is superseded where it differs by
+[the second set below](#owner-decision-2026-10-05-second-set-v050-v051-v05x). Its left column,
+less SCL-S0 and S8.5a, is now the **v0.5.1** gate; "the cut" below means v0.5.1 except for S0
+and S8.5a, which ship in v0.5.0. Kept as the record.
+
 **O-20 accepted; D-2 amended** (see [00 Locked decisions](00_OVERVIEW.md#locked-decisions)).
 The v0.5.0 cut is gated on the cut-blocking subset below. Everything else in SCL finishes on
 the 0.5.x line under this same planset: still owned, still gated in
@@ -452,3 +463,152 @@ to 10), S15 remainder (10): about **47 to 54 agent-days**, **7 to 9 calendar wee
 cut if the containment lanes start then, or about **4 to 6 weeks** if S9.0 to S9.3 and S10.0 to
 S10.3 run in spare lanes before the cut (they depend only on gate0). That puts the full SCL
 program at about mid-January to mid-February 2027.
+
+## Owner decision (2026-10-05, second set): v0.5.0, v0.5.1, v0.5.x
+
+**D-2 amended again** (see [00 Locked decisions](00_OVERVIEW.md#locked-decisions)). This
+section supersedes the "cut-blocking subset" section above where they differ; that section is
+kept as the record of the previous plan.
+
+- **v0.5.0** ships right after the 40204 reroll and its 2,000-block soak, carrying only the SCL
+  work in the first column below: SCL-S0 pre-cut safety (every S0 WP that applies to 0.5.0,
+  including S0.7) and the v0.5.0 slice of S8.5, plus the minimal pieces they strictly depend
+  on and the minimal ask-first for a stopped local model (D-16 extended).
+- **v0.5.1** is gated on the previous cut-blocking subset, less what moved into v0.5.0. D-41
+  (HUP) is amended to allow exactly one v0.5.1 after v0.5.0.
+- **v0.5.x**: everything else stays follow-up on the 0.5.x line under this planset.
+
+In [gates.yaml](gates.yaml), `blocks_cut` is replaced by `release: v0.5.0 | v0.5.1 | v0.5.x` on
+every criterion; old ids are kept and the old value stays as a comment.
+
+### Three-release table
+
+| v0.5.0 (after the reroll and soak) | v0.5.1 (the previous cut-blocking subset) | v0.5.x (follow-up, same planset) |
+|---|---|---|
+| **Pre-cut safety:** S0.1, S0.3, S0.4, S0.5, S0.6, S0.7 (Windows NSIS pre-install stop of this installation's own sidecars, RT-04) | (none) | S0.2, conditional on a Windows updater feed (none in 0.5.0, RT-03) |
+| **Startup barrier and #243:** S8.5a (barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated) | S8.1 ownership registry and tripwire, S8.3 recorded-ownership cleanup, S8.5b (boot identity and per-OS path rule in S8.3's records) | S8.2 bespoke kinds, S8.4 node descendants |
+| **Strict dependency:** S1.6a minimal hosted Windows CI job for the S0.7 NSIS hook test | Theory (gate0): S1.1 to S1.5, S1.6 (the rest of the CI lanes), S1.7 | `OwnedContainment.tla` if needed |
+| **Chat routing (D-16 extended):** S7.5a ask-first on today's signals when the local server is not running | Primitive: S2, S3, S4, S5 (SC1 to SC4) | (none) |
+| | Supervised owners: S7.1, S7.5 (readiness routing plus ask-first for `Failed`, `Stopped`, `Quarantined`), S6.4a; all 9 services on the new cell through the O-2 layer | S6.1 to S6.3, S6.4b, S7.2 to S7.4 |
+| | Hermes children (minimum): S11.4, S11.5a, S11.6 | S11.1, S11.2, S11.3a, S11.3b, S11.5b, S11.7 |
+| | Containment: none (Quit's final actuation reaches direct children) | S9.0 to S9.4, S10.0 to S10.4 |
+| | Exit, quit, update: S12.1, S12.2, S12.3, S12.5a, S12.6, S12.7, S12.8 | S12.4, S12.5b |
+| | Keeping it fixed: S13.1 to S13.5 over every fixture of v0.5.0 and v0.5.1 | New fixtures join the same check |
+| **Native:** packaged macOS 0.4.2 to 0.5.0 update on the rerolled chain, DGX Linux manual update, Windows team S0.7 run (`g1-precut`, `g4-native-v050`) | Native: S14.1 cut scenarios plus the 0.5.0 to 0.5.1 in-app update, S14.4 macOS slice, S14.5, S14.6 | S14.1 to S14.4 full |
+| **Red-team:** the HUP `g5-redteam` pass covers the v0.5.0 diff; S0 items stay on the private route (#298) | S15.2, S15.3 on the merged v0.5.1 code and the packaged macOS build | S15.2, S15.3 on the remainder |
+
+### What v0.5.0 strictly depends on, and what it does not
+
+- **S0** has no dependency on SCL-S1 or later (unchanged). One acceptance item needs something
+  that does not exist: S0.7's "NSIS hook test on a hosted Windows runner". The release branch
+  has no Windows CI lane (`ci.yml` and `merge-gate.yml` run on ubuntu, `release.yml` on
+  macOS). **S1.6a** is the minimum: one hosted Windows job that builds the NSIS hook and runs
+  its test. The rest of S1.6 (kit, src-tauri lifecycle and runtime lanes) stays v0.5.1.
+- **S8.5** as written in the red-team additions has four parts. Two need nothing new: the
+  startup cleanup barrier (no node spawn admitted until the startup cleanup 0.5.0 ships has
+  finished; in 0.5.0 that cleanup is the S0.1 narrowed exact-path path, the O-17 legacy path)
+  and the #243 database-lock check. Those are **S8.5a** (v0.5.0). Boot identity in records and
+  the per-OS path rule need the records S8.3 writes, so they are **S8.5b** (v0.5.1). S8.5a
+  depends on S0.1 and shares S0.6's lock-holder fixture and UI message. It does **not** need
+  S2 receipts, the S8.1 registry, S8.3 or the S1.3 harness; its fixtures follow the same
+  owned-process guard rules (kill and reap every recorded pid, even on failure).
+- **Nothing else** from gate0 or S2 to S15 is needed by v0.5.0.
+
+### O-19 extended: why a minimal ask-first is in v0.5.0
+
+Today (`release/0.5.0-hermes-upskill` at `d16f194`) `select_inference_state` returns
+`LocalFallback` when the model is verified, a gateway key is configured and the local server
+process is not running (`server_healthy: serve.0.is_running()`), and the frontend then picks
+the gateway for chat with no prompt. That is the stopped or crashed case, and also the window
+at launch before the app's own start of the local server. It is exactly what D-16 extended
+forbids, and it happens today. Shipping v0.5.0 with it would knowingly ship a silent
+off-device route the owner has just ruled out.
+
+The cold-load half already holds today: a running process counts as healthy, so chat stays
+local and waits during a load. So v0.5.0 needs only the stopped half, on today's signals:
+
+- **S7.5a (v0.5.0, M):** when the selector would return `LocalFallback`, chat does not route to
+  the gateway. It asks the member: restart the local model, or send this message to the
+  gateway this time. The choice is per message, never preselected or remembered. While the
+  app's own startup start of the local server is pending, chat waits (bounded) and says so; it
+  does not ask and does not route. No dependency on S2 to S5.
+- **S7.5 (v0.5.1, M, unchanged id):** the same rule on the S3 readiness model: `Awaiting` and
+  `Stale` wait or fail honestly; `Failed`, `Stopped` and `Quarantined` ask first, reusing the
+  S7.5a prompt.
+
+This goes one WP beyond the owner's "S0 plus S8.5" list. It is recorded as our call under the
+owner's instruction to decide; moving it to v0.5.1 is a one-line retag of
+`g3-provider-routing-v050` in gates.yaml.
+
+### New and split WP ids (second set)
+
+Nothing is renumbered. The ids below replace their parent in tracking.
+
+| WP | Work | Repo | Effort | Acceptance (data source) | Release |
+|---|---|---|---|---|---|
+| S1.6a | Minimal hosted Windows CI job that builds the S0.7 NSIS hook and runs its test | core | S | Workflow file; first green run linked in S0 EVIDENCE | v0.5.0 |
+| S7.5a | Ask-first on today's signals: no route to the gateway when the local server is not running; per-message member choice (restart local, or send this message to the gateway); bounded wait while the app's own startup start is pending | core | M | Rust tests over `select_inference_state` (new state, no `LocalFallback` route without a choice); vitest: the prompt appears, the choice is per message, nothing is sent before the choice; macOS packaged check (`g4-native-v050`) | v0.5.0 |
+| S8.5a | Startup cleanup barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated | core | M | Owned lock-holder fixture blocks the reset; node spawn admitted only after cleanup; packaged update run on the rerolled chain (S0.6 run) | v0.5.0 |
+| S8.5b | Boot identity in ownership records; per-OS path rule (moved and deleted forms) | core | S | Boot-mismatch record removed without a signal; path-rule tests per OS | v0.5.1 |
+
+S1.6 keeps its id for the rest of the CI lanes (v0.5.1). S8.5 is tracked as S8.5a and S8.5b.
+
+### Consequences of shipping v0.5.0 before the coordinator
+
+- **The 0.5.0 to 0.5.1 update runs 0.5.0's exit code.** On macOS the in-app update from 0.5.0
+  to 0.5.1 uses 0.5.0's updater and exit path, which is today's (no coordinator, no
+  `UpdateStaged`). v0.5.1 can defend only at its own startup: the S8.5a barrier (already in
+  0.5.0) and the narrowed cleanup. The S14 v0.5.1 run adds this update path as a scenario.
+- **O-17 legacy path lasts one release longer.** 0.5.0 writes no ownership records (S8.3 is
+  v0.5.1), so v0.5.1's first launch meets 0.5.0 leftovers with no records. The S0.1 narrowed
+  cleanup must stay in v0.5.1 and can be removed no earlier than the release after v0.5.1.
+  This adjusts O-17's recommended default ("removed in the release after 0.5.0"), which is
+  still pending owner sign-off.
+- **Bug (e) and bugs (a) to (d) ship open in v0.5.0.** v0.5.0 carries none of SC1 to SC4.
+  The five reproduced supervisor defects remain until v0.5.1 (a to d) and v0.5.x (e). Known
+  cases are narrowed by S0.3, S0.4 and S0.5, as before.
+- **The v0.5.x remainder has no release slot yet.** D-41 as amended allows exactly one v0.5.1.
+  Which release carries the v0.5.x criteria is an open owner question.
+
+### Estimate (second set)
+
+Same sizing: S = 1 agent-day, M = 3, L = 7. Reviews, native runs, private-route merges and the
+release ceremony do not compress.
+
+| | v0.5.0 | v0.5.1 | v0.5.x remainder |
+|---|---|---|---|
+| Work packages | 9 (S0.1, S0.3 to S0.7, S1.6a, S7.5a, S8.5a) | 47 | 34 |
+| Total effort | about 19 agent-days (16 without S7.5a) | about 150 agent-days | about 135 agent-days |
+| Critical path | about 6 agent-days of code (S0.6 then S8.5a, same files), then native runs and the ceremony | about 51 to 70 agent-days (unchanged; S0 and S8.5 were side lanes) | about 47 to 54 agent-days |
+| Calendar | about 9 to 14 working days from a 2026-10-06 start: earliest ship about 2026-10-19 to 2026-10-23, or 1 to 2 weeks after the soak, whichever is later (see below) | 8 to 11 weeks from 2026-10-06: about early to late December 2026 | 7 to 9 weeks after v0.5.1 (4 to 6 if containment lanes start earlier): about late January to late February 2027 |
+
+**v0.5.0 calendar.** Five lanes: S0.6 then S8.5a (node startup and the #243 path, about 6
+agent-days); S0.1 and S0.5; S0.3 and S0.4 in the runtime, then the Hermes rebuild; S0.7 with
+S1.6a; S7.5a. With compression the code is done in about 4 to 5 working days. Then the owner's
+private-route review and merges (1 to 2 days), packaged builds on three OSes and the native
+runs with one fix loop (3 to 5 days), and the signed-release ceremony (1 to 2 days). Total
+about 9 to 14 working days, 2 to 3 calendar weeks. S0.6's native run needs the rerolled chain,
+so it runs during the soak.
+
+**Is "within 1 to 2 weeks after the soak" realistic?** Yes for the SCL part, if work starts on
+2026-10-06 and the soak ends no earlier than about 2026-10-09: most of the work overlaps the
+reroll and soak, and v0.5.0 can ship about 2026-10-19 to 2026-10-23. If the soak ends later,
+v0.5.0 ships about a week after it. If it ends sooner, the binding constraint is the 2 to 3
+weeks of build and native runs from the start, not the soak. Three things can
+break the target, and none is SCL code:
+
+1. **The Windows team's S0.7 run** needs a 0.5.0 Windows installer build and a machine with
+   0.4.2 installed and running. There is no Windows CI today (hence S1.6a). Book the run now
+   (S14.5's calendar, pulled forward).
+2. **The other HUP gate5 criteria** (`g5-os`, `g5-size`, `g5-redteam`, `g5-docs`) and the full
+   QA pass are unchanged by this decision and are not in this estimate. If they are not met
+   when the soak ends, they set the date.
+3. **Private-route merges** for S0.1, S0.3 and S0.4 are the owner's (#298).
+
+**v0.5.1 estimate.** The previous cut-blocking subset was 53 WPs and about 165 agent-days.
+v0.5.1 drops the six S0 WPs (12) and S8.5 (3), adds S8.5b (1), and S7.5 stays M (it reuses
+the S7.5a prompt): 47 WPs, about 150 agent-days. The critical path is unchanged at about 51 to
+70 agent-days, because S0 and S8.5 were never on it. Calendar: the previous 7 to 10 weeks plus
+about one week, because the v0.5.0 work and release take lanes and owner time in the first two
+weeks. gate0 (S1.1 to S1.7) can start on 2026-10-06 beside S0. v0.5.1 lands about early to
+late December 2026.

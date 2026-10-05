@@ -3,6 +3,7 @@ created: 2026-09-30T00:00:00Z
 branch: release/0.5.0-hermes-upskill
 author: Larry Klosowski + Claude Opus 5.5
 status: active
+updated: 2026-10-05 (owner decision: D-41 amended again, one v0.5.1 for the SCL v0.5.1 gate)
 planset: 2026-09-30-hermes-upskill
 code: HUP
 repo: citrate-core
@@ -25,6 +26,13 @@ companions: 05_SPRINTS_AND_WPS.md, gates.yaml
 > hands-on QA pass on a signed, notarized Mac build before publishing; then the DGX team builds
 > Linux and mirrors. The sidecar-loop preview stays off by default in 0.4.2. After 0.4.2, D-41
 > holds again: the next release is 0.5.0.
+>
+> **Owner decision (2026-10-05): D-41 amended again, one v0.5.1.** Exactly one **v0.5.1** is
+> allowed after v0.5.0. It carries the SCL (owned sidecar lifecycle) v0.5.1 release gate: the
+> criteria with `release: v0.5.1` in the
+> [SCL gates.yaml](../2026-10-05-sidecar-lifecycle/gates.yaml). v0.5.0 needs only the SCL
+> criteria with `release: v0.5.0` (`g5-scl`). Same signed-release ceremony as v0.5.0, tagged from `main`.
+> Nothing else changes in this plan.
 
 The Hermes Upskill program is managed as the full **0.4.x → 0.5.0** release line
 (owner, 2026-09-30). `main` is at **0.4.0** (`28a74ba`, the fresh-keys reroll build).

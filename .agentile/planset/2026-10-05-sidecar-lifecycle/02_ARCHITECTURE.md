@@ -3,7 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
-updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16)
+updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16; second set: D-16 extended, S8.5 split for v0.5.0)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -105,6 +105,15 @@ or `Stale`, local requests wait boundedly or fail honestly (SCL-S7.5).
 *Owner decision (2026-10-05, O-19 accepted, D-16, locked):* while the local model is
 cold-loading or its probe times out, chat waits or tells the member; it never routes the
 prompt to the remote gateway without the member's explicit choice. Blocks the v0.5.0 cut.
+*Owner decision (2026-10-05, second set, D-16 extended):* `LocalFallback` is no longer a route
+the app takes by itself. When the local owner is `Failed`, `Stopped` or `Quarantined`, the
+selector reports a state that makes chat ask the member first (restart the local model, or
+send this message to the gateway this time); only a per-message member choice sends a prompt to
+the gateway. v0.5.0 implements this for "model ready, server process not running" on today's
+`is_running()` signal, with a bounded wait while the app's own startup start is pending
+(S7.5a). v0.5.1 moves it onto the readiness model (S7.5). The previous sentence "Blocks the
+v0.5.0 cut" now reads: the v0.5.0 slice is `g3-provider-routing-v050`, the full rule is
+`g3-provider-routing` (v0.5.1).
 
 ## 4. Probes and adapters
 
@@ -244,6 +253,9 @@ fallback for bundle binaries after 0.5.0 (O-17) is conditional on SCL-S8.3 measu
 (4) Next-launch cleanup is a **barrier**: no spawn ticket for an owner kind is admitted until
 cleanup for that kind finishes. The #243 reset additionally requires that the chain database
 lock can be taken, not only that nothing answers on the local RPC (SCL-S8.5).
+*Owner decision (2026-10-05, second set):* (4) ships in v0.5.0 as S8.5a, as a barrier over the
+cleanup 0.5.0 has (the S0.1 narrowed exact-path cleanup, no records yet); (1) and (2) ship with
+the records in v0.5.1 (S8.5b with S8.3).
 
 ## 8. App exit coordinator (SC7, D-8)
 

@@ -3,7 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
-updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16)
+updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16; second set: D-16 extended to ask first, release tags v0.5.0 / v0.5.1)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -620,8 +620,16 @@ a cold load or a slow health check never sends my prompt to the remote gateway b
 - AC4 (owner decision 2026-10-05): the gateway is used for a waiting prompt only when the
   member explicitly chooses it for that prompt; the choice is never preselected or
   remembered silently. *Source: S7.5 vitest and command test.*
+- AC5 (owner decision 2026-10-05, second set, D-16 extended): when the local model is
+  `Failed`, `Stopped` or `Quarantined`, chat asks the member first: restart the local model,
+  or send this message to the gateway this time. Nothing is sent before the member chooses,
+  and the choice covers only that message. Never silent. *Source: S7.5a (v0.5.0, today's
+  signals: the local server process is not running) and S7.5 (v0.5.1, readiness model) Rust
+  and vitest tests; `g4-native-v050` macOS check.*
 
 **US-7.3: Cleanup after a crash is a barrier.** (RT-10, RT-11)
+*Owner decision (2026-10-05, second set):* AC1 and AC2 ship in v0.5.0 as S8.5a (over the S0.1
+cleanup); AC3 needs S8.3's records and ships in v0.5.1 as S8.5b.
 - AC1: No node spawn is admitted until startup cleanup has finished. *Source: S8.5 test.*
 - AC2: The chain reset refuses while another process holds the chain database lock, even if
   nothing answers on the local RPC. *Source: S8.5 owned lock-holder fixture.*
@@ -754,3 +762,48 @@ Feature: No silent gateway fallback (D-16)
     Then only that message is sent to the gateway
     And the next message is not sent to the gateway without a new choice
 ```
+
+### Owner decision (2026-10-05, second set): ask first, never silent (D-16 extended)
+
+These govern where they conflict with the scenarios above. Release: v0.5.0 for the stopped
+case on today's signals (S7.5a); v0.5.1 for the readiness model, including `Failed` and
+`Quarantined` (S7.5).
+
+```gherkin
+Feature: Ask first when the local model is down (D-16 extended)
+
+  Scenario: A stopped local model asks before using the gateway
+    Given a verified local model and a configured gateway key
+    And the local model server is not running
+    When the Member sends a chat message
+    Then the message is not sent anywhere yet
+    And the app asks the Member to restart the local model or send this message to the gateway this time
+
+  Scenario: The Member restarts the local model
+    Given the app is asking because the local model server is not running
+    When the Member chooses to restart the local model
+    Then the local model server is started
+    And the message is answered by the local model once it is ready
+    And nothing is sent to the gateway
+
+  Scenario: The Member sends one message to the gateway
+    Given the app is asking because the local model server is not running
+    When the Member chooses to send this message to the gateway
+    Then only that message is sent to the gateway
+    And the next message asks again while the local model is still down
+
+  Scenario: Launch does not ask or route while the app is starting the local model
+    Given a verified local model and a configured gateway key
+    And the app has just launched and is starting the local model server
+    When the Member sends a chat message
+    Then the message waits for the local model, within a bound, and the app says it is starting
+    And the message is not sent to the gateway
+
+  Scenario: A failed or quarantined local model asks first (v0.5.1)
+    Given a verified local model and a configured gateway key
+    And the local model owner is Failed or Quarantined
+    When the Member sends a chat message
+    Then the app asks the Member to restart the local model or send this message to the gateway this time
+    And nothing is sent before the Member chooses
+```
+
