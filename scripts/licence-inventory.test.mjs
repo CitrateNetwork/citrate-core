@@ -286,3 +286,70 @@ describe("CLI", () => {
     expect(noCorpus.status).toBe(2);
   });
 });
+
+describe("third-party notices (scripts/third-party-notices.mjs output)", () => {
+  /** The fixture plus a first-party sidecar, an app entry and a generated notices file. */
+  function withSidecar({ notices = true, appNotices = true } = {}) {
+    const root = fixtureRepo();
+    write(root, "src-tauri/tauri.bundle-lite.conf.json", {
+      bundle: { externalBin: ["binaries/ipfs", "binaries/hermes"], resources: ["llama/*", "licenses/*", "knowledge-corpus/**/*"] },
+    });
+    write(root, "src-tauri/licenses/THIRD-PARTY-NOTICES.txt", "Citrate Core: third-party notices\n");
+    const inv = fixtureInventory();
+    const n = { file: "src-tauri/licenses/THIRD-PARTY-NOTICES.txt", source: "repo@abc", packages: 3 };
+    inv.app = { name: "app", spdx: "BUSL-1.1", licence_texts: [], ...(appNotices ? { third_party_notices: n } : {}) };
+    inv.components.push({
+      id: "hermes",
+      spdx: "Apache-2.0",
+      first_party: true,
+      ships_as: "installer",
+      covers: ["externalBin:binaries/hermes"],
+      copyleft: "none",
+      licence_texts: [],
+      source_offer: null,
+      review: "ok",
+      ...(notices ? { third_party_notices: n } : {}),
+    });
+    return { root, inv };
+  }
+
+  it("accepts a notices file under src-tauri/licenses and counts it as named", () => {
+    const { root, inv } = withSidecar();
+    expect(errorsOf(inv, root)).toEqual([]);
+    expect(errorsOf(inv, root, { requireNotices: true })).toEqual([]);
+  });
+
+  it("fails a notices file that does not exist or lies outside the bundled licence dir", () => {
+    const { root, inv } = withSidecar();
+    fs.rmSync(path.join(root, "src-tauri/licenses/THIRD-PARTY-NOTICES.txt"));
+    expect(errorsOf(inv, root).join("\n")).toMatch(/hermes: third-party notices .* do not exist/);
+
+    const b = withSidecar();
+    b.inv.components.at(-1).third_party_notices = { file: "release/NOTICES.txt" };
+    expect(errorsOf(b.inv, b.root).join("\n")).toMatch(/hermes: third_party_notices\.file must be a file under src-tauri\/licenses/);
+  });
+
+  it("fails an unnamed notices file like any other bundled text", () => {
+    const { root, inv } = withSidecar({ notices: false, appNotices: false });
+    expect(errorsOf(inv, root)).toContain("src-tauri/licenses/THIRD-PARTY-NOTICES.txt: bundled licence text, but no entry names it");
+  });
+
+  it("--require-notices fails a first-party sidecar or an app without notices, and only then", () => {
+    const a = withSidecar({ notices: false });
+    expect(errorsOf(a.inv, a.root)).toEqual([]);
+    expect(errorsOf(a.inv, a.root, { requireNotices: true })).toEqual(["hermes: no third_party_notices for the packages compiled into this sidecar"]);
+
+    const b = withSidecar({ appNotices: false });
+    expect(errorsOf(b.inv, b.root, { requireNotices: true })).toEqual(["app: no third_party_notices for the crates compiled into the app"]);
+  });
+
+  it("the committed inventory carries notices for the app and every first-party sidecar", () => {
+    expect(checkInventory(committed, { repoRoot, requireNotices: true }).errors).toEqual([]);
+  });
+
+  it("CLI: --require-notices is accepted on the committed repo", () => {
+    const r = spawnSync(process.execPath, [SCRIPT, "--require-notices"], { cwd: repoRoot, encoding: "utf8" });
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+  });
+});

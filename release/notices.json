@@ -1,0 +1,43 @@
+{
+  "$comment": [
+    "HUP gate g3-licence: what scripts/third-party-notices.mjs scans for the third-party notices of the code compiled into the installer.",
+    "rust: one entry per Rust sidecar crate (and the app), scanned with cargo-about (release/about.toml) at <federation-root>/<repo>/<manifest> for target, with the features the release build uses. repo '.' is this repo.",
+    "go: Kubo's cmd/ipfs at the pinned version (keep in step with the kubo entry in release/licences.json), plus the Go standard library. clarify resolves modules go-licenses cannot classify: spdx plus the licence file inside the module (GOROOT/LICENSE for code under the Go authors' BSD licence that ships no file).",
+    "first_party_sources: package sources that are Citrate's own (left out of the notices; the inventory entry covers them). Path crates are always first party.",
+    "Re-run collect and render whenever a sidecar is rebuilt for a release (docs/RELEASE.md, Cutting a release)."
+  ],
+  "version": 1,
+  "output": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
+  "target": "aarch64-apple-darwin",
+  "first_party_sources": [
+    "git+https://github.com/CitrateNetwork/",
+    "git+ssh://git@github.com/CitrateNetwork/",
+    "git+https://github.com/SaulBuilds/",
+    "git+ssh://git@github.com/SaulBuilds/"
+  ],
+  "rust": [
+    { "component": "app", "repo": ".", "manifest": "src-tauri/Cargo.toml" },
+    { "component": "citrate-node", "repo": "citrate-chain", "manifest": "node/Cargo.toml" },
+    { "component": "node-agent", "repo": "citrate-node-agent", "manifest": "crates/node-agent/Cargo.toml" },
+    { "component": "mem-mcp", "repo": "citrate-memories", "manifest": "crates/mem-mcp/Cargo.toml", "features": ["rocksdb", "transformer"] },
+    { "component": "comms-member-daemon", "repo": "citrate-comms", "manifest": "crates/comms-member-daemon/Cargo.toml" },
+    { "component": "cluster-daemon", "repo": "citrate-cluster", "manifest": "crates/cluster-daemon/Cargo.toml" },
+    { "component": "hermes-sidecar", "repo": "citrate-agent-runtime", "manifest": "agent-sidecar/Cargo.toml" }
+  ],
+  "go": [
+    {
+      "component": "kubo",
+      "module": "github.com/ipfs/kubo",
+      "version": "v0.42.0",
+      "package": "./cmd/ipfs",
+      "goos": "darwin",
+      "goarch": "arm64",
+      "clarify": {
+        "github.com/jackpal/go-nat-pmp": { "spdx": "Apache-2.0", "file": "LICENSE" },
+        "github.com/multiformats/go-base36": { "spdx": "Apache-2.0", "file": "LICENSE.md" },
+        "github.com/whyrusleeping/cbor": { "spdx": "Apache-2.0", "file": "LICENSE" },
+        "github.com/whyrusleeping/base32": { "spdx": "BSD-3-Clause", "file": "GOROOT/LICENSE" }
+      }
+    }
+  ]
+}
