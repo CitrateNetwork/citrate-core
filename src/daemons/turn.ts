@@ -2,8 +2,9 @@
 // citrate-core — one daemon turn (HUP-S10.3, US-10.3 AC2; HIC-3 in planset §4)
 //
 // A daemon run is a Hermes turn nobody is watching, so:
-//   - it runs on the LOCAL model only (the local llama-server, through the in-app loop or the
-//     Hermes sidecar loop). A daemon's spend budget is 0, so it never uses a paid gateway.
+//   - it runs on the LOCAL model only, in the Hermes sidecar loop (HUP-S1.1: the webview has no
+//     tool loop for the local model). A daemon's spend budget is 0, so it never uses a paid
+//     gateway. While the sidecar is down, daemon runs wait and say why.
 //   - it gets every agent tool except `app_navigate` (it never moves the member's screen).
 //   - read-only tools run as in chat. EVERY other tool call is marked HIC-required, so it goes to
 //     the member as an explicit decision (an approval card or the SignatureCeremony), with the
@@ -18,7 +19,6 @@ import {
   AGENT_SYSTEM_PROMPT,
   AGENT_TOOLS,
   READ_ONLY_AGENT_TOOLS,
-  createLocalAgentProvider,
   throwIfStopped,
   type AgentContext,
   type ChatProvider,
@@ -52,17 +52,20 @@ export interface DaemonTurnDeps {
   /** The chat system prompt with its live context (the daemon preamble is appended here). */
   systemPrompt(): string;
   context(): AgentContext;
-  inferLocalTools(messagesJson: string, toolsJson: string, contextJson: string): Promise<string>;
   sidecar: SidecarDaemonApi | null;
   /** The store's gated tool handler (the same approval gates as chat). */
   /** `signal` is the run's: approval cards it raises close when the run ends. */
   handleTool(call: ToolCall, meta?: ToolCallMeta, signal?: AbortSignal): Promise<string>;
 }
 
+/** HUP-S1.1: why a daemon waits while the local model serves but the Hermes sidecar is down. */
+export const DAEMON_NEEDS_HERMES = "daemons run in Hermes on the local model, and Hermes is not running right now";
+
 /** Whether a daemon may run now, and why not. */
 export function daemonAvailability(providerKind: string | undefined, mode: string): { ok: true } | { ok: false; why: string } {
   if (mode !== "tauri") return { ok: false, why: "daemons run only in the desktop app" };
-  if (providerKind === "local" || providerKind === "sidecar") return { ok: true };
+  if (providerKind === "sidecar") return { ok: true };
+  if (providerKind === "local") return { ok: false, why: DAEMON_NEEDS_HERMES };
   return { ok: false, why: "daemons run only on the local model, which is not serving right now (start it from Models)" };
 }
 
@@ -114,20 +117,12 @@ export async function runDaemonTurn(claim: Claim, signal: AbortSignal, meter: To
       () => annotatedDaemonTools(),
     );
   } else if (deps.providerKind === "local") {
-    // The in-app loop's system prompt comes from Rust (ai.rs), which merges a system-role message
-    // from the history into it: the daemon preamble rides that way.
-    provider = createLocalAgentProvider(deps.context, (m, _tools, c) => deps.inferLocalTools(m, toolsJson, c));
+    throw new Error(DAEMON_NEEDS_HERMES);
   } else {
     throw new Error("daemons run only on the local model, which is not serving right now");
   }
   meter.begin(system.length + toolsJson.length + JSON.stringify(deps.context()).length, task.length);
-  const messages =
-    deps.providerKind === "local"
-      ? [
-          { role: "system", content: DAEMON_PREAMBLE.trim() },
-          { role: "user", content: task },
-        ]
-      : [{ role: "user", content: task }];
+  const messages = [{ role: "user", content: task }];
   try {
     const reply = await provider.send({
       messages,

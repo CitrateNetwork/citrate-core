@@ -935,6 +935,26 @@ export interface ClusterDomain {
   deviceLinksIngest(sender: string, body: string): Promise<DeviceLinkIngest>;
   /** HUP-S8.4 prep: whether the cross-machine mesh transport is on, and why. */
   meshStatus(): Promise<MeshStatus>;
+  /**
+   * HUP-S8.4: this machine's link (or QR text) for `groupId`: where another member's machine can
+   * reach it. Needs the cross-machine mesh; without it the daemon says so and nothing is invented.
+   */
+  groupSeed(groupId: string): Promise<ClusterGroupSeed>;
+  /**
+   * HUP-S8.4: dial the machines named in a group link another member shared. Resolves to how many
+   * addresses are being dialed. A link says where to knock, nothing more: each machine is still
+   * admitted only by the group's roster and DeviceLinks.
+   */
+  addGroupSeed(groupId: string, seed: string): Promise<number>;
+}
+
+/** HUP-S8.4: a group link (mirrors Rust `cluster::ClusterGroupSeedDto`). */
+export interface ClusterGroupSeed {
+  groupId: string;
+  /** `citrate-cluster://seed?v=1&g=...&a=...`, short enough for a QR code. */
+  seed: string;
+  /** The multiaddrs in the link, each ending in this machine's peer id. */
+  addrs: string[];
 }
 
 /** Group-message prefix of a DeviceLink share (a control message; never shown in chat). It starts
@@ -1124,6 +1144,30 @@ export interface FlRoundsDomain {
   unloadAdapter(): Promise<void>;
   /** Withdraw this device's consent for one round. Returns the rounds still consented. */
   revokeConsent(roundId: string): Promise<string[]>;
+  /** HUP-S9.3: the "train on my verified conversations" switch (default off) and what is stored. */
+  trajectoryStatus(): Promise<FlTrajectoryStatus>;
+  /** Turn the switch on or off. Off deletes assembled training sets now (and, if asked, recordings). */
+  setTrajectoryConsent(enabled: boolean, deleteRecorded: boolean): Promise<FlTrajectoryStatus>;
+  /** Assemble the newest verified conversations (at most `maxTrajectories`) into one training set.
+   *  Core refuses when the switch is off. */
+  buildTrainingSet(maxTrajectories: number): Promise<FlTrainingSet>;
+}
+/** HUP-S9.3 (core fl_trajectories.rs TrajectoryStatus). */
+export interface FlTrajectoryStatus {
+  settings: { enabled: boolean; changedAtMs: number | null };
+  recordedFiles: number;
+  datasets: number;
+  appliesOnRestart: boolean;
+  loadError: string | null;
+}
+/** HUP-S9.3 (core fl_trajectories.rs DatasetSummary). */
+export interface FlTrainingSet {
+  path: string;
+  sha256: string;
+  examples: number;
+  filesRead: number;
+  skippedLines: number;
+  overCap: number;
 }
 
 // ── C-22 agent/Hermes harness: skills, code, comms (lane s6) ──
@@ -1769,7 +1813,7 @@ export interface ContractsDomain {
   /** HUP-S6.6 — submit the project contract's source to CitrateScan's verifier. */
   postdeployVerify(projectDir: string, address: string, constructorArgsHex?: string): Promise<VerifyOutcomeView>;
   /** HUP-S6.6 — point the page at chain 40204 and the deployed contract. */
-  postdeploySwitchSite(projectDir: string, address: string): Promise<{ envPath: string; address: string }>;
+  postdeploySwitchSite(projectDir: string, address: string): Promise<{ envPath: string; address: string; decodedCalls?: boolean; decodeNote?: string }>;
   /** HUP-S6.6 — pin the built page to the app's IPFS daemon. */
   postdeployPinSite(projectDir: string): Promise<SitePinView>;
   /** HUP-S6.6 — write the Vercel-ready export folder (no account actions). */

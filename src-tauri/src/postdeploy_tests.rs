@@ -656,3 +656,132 @@ fn verify_refuses_a_project_whose_build_config_could_run_other_programs() {
     p2.solc = "../../bin/solc".into();
     assert!(forge_verify_env(&p2).is_err());
 }
+
+// ---- HUP-S6: the gated ABI the ceremony decodes calls from ----
+
+/// Runtime code of the fixture contract (any bytes; only equality and embedding are checked).
+const RUNTIME_HEX: &str = "6080604052348015600e575f5ffd5b50";
+/// Constructor code in front of the runtime, as solc lays out a contract without immutables.
+const CTOR_HEX: &str = "6080604052600a600c";
+
+/// Write `contracts/out/Token.sol/LemonDrops.json` with `mint(uint256)` (payable) in its ABI.
+fn write_artifact(p: &HelloMintProject, init_hex: &str, runtime_hex: &str, immutables: bool) {
+    let dir = p.contracts_dir.join("out/Token.sol");
+    std::fs::create_dir_all(&dir).unwrap();
+    let refs = if immutables {
+        serde_json::json!({"7": [{"start": 1, "length": 32}]})
+    } else {
+        serde_json::json!({})
+    };
+    let art = serde_json::json!({
+        "abi": [{"type": "function", "name": "mint", "stateMutability": "payable",
+            "inputs": [{"name": "quantity", "type": "uint256"}], "outputs": []}],
+        "bytecode": {"object": format!("0x{init_hex}")},
+        "deployedBytecode": {"object": format!("0x{runtime_hex}"), "immutableReferences": refs},
+    });
+    std::fs::write(dir.join("LemonDrops.json"), art.to_string()).unwrap();
+}
+
+fn gate_record(init_hex: &str, verdict: crate::deploy_gate::Verdict) -> crate::deploy_gate::GateRecord {
+    crate::deploy_gate::GateRecord {
+        initcode_hash: crate::deploy_gate::initcode_hash(&hex::decode(init_hex).unwrap()),
+        binding_hash: "0xbb".into(),
+        compiler: crate::deploy_gate::CompilerSettings {
+            solc_version: "0.8.36".into(),
+            optimizer: true,
+            optimizer_runs: 200,
+            evm_version: "cancun".into(),
+            via_ir: false,
+        },
+        verdict,
+        items: vec![],
+        evaluated_at_ms: 1,
+    }
+}
+
+fn mint_intent() -> crate::ceremony::SignatureIntent {
+    let mut data = "a0712d68".to_string(); // mint(uint256)
+    data.push_str(&format!("{:064x}", 1));
+    crate::ceremony::SignatureIntent {
+        origin: "hello-mint page".into(),
+        kind: crate::ceremony::IntentKind::Transaction,
+        chain_id: 40204,
+        raw: serde_json::json!({
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": ADDR, "value": "0x5", "data": format!("0x{data}"),
+            "gas": "0x7a120", "chainId": "0x9d0c",
+        })
+        .to_string(),
+    }
+}
+
+#[test]
+fn the_ceremony_decodes_the_mint_only_for_the_ready_gated_build_on_chain() {
+    let d = project();
+    let p = open_project(d.path()).unwrap();
+    let init = format!("{CTOR_HEX}{RUNTIME_HEX}");
+    write_artifact(&p, &init, RUNTIME_HEX, false);
+    let on_chain: &'static str = Box::leak(format!("0x{RUNTIME_HEX}").into_boxed_str());
+    let client = crate::rpc::RpcClient::with_transport(CodeRpc(on_chain));
+    let cer = crate::ceremony::SignatureCeremony::new();
+    let gate = crate::deploy_gate::GateStore::default();
+
+    // No gate record: nothing registered, the mint stays raw-ack gated.
+    let e = register_gated_abi(&client, &p, ADDR, &gate, &cer).unwrap_err();
+    assert!(e.contains("no READY"), "{e}");
+    gate.record(gate_record(&init, crate::deploy_gate::Verdict::NotReady)).unwrap();
+    let e = register_gated_abi(&client, &p, ADDR, &gate, &cer).unwrap_err();
+    assert!(e.contains("no READY"), "{e}");
+    assert_eq!(cer.gated_contracts(), 0);
+    assert!(cer.request(mint_intent()).requires_raw_ack);
+
+    // READY and the code on chain is the artifact's runtime: the mint is decoded by name.
+    gate.record(gate_record(&init, crate::deploy_gate::Verdict::Ready)).unwrap();
+    register_gated_abi(&client, &p, ADDR, &gate, &cer).unwrap();
+    assert_eq!(cer.gated_contracts(), 1);
+    let v = cer.request(mint_intent());
+    assert!(!v.requires_raw_ack);
+    assert!(v.decoded.action.contains("mint(quantity=1)"), "{}", v.decoded.action);
+}
+
+#[test]
+fn other_code_on_chain_or_immutables_are_never_registered() {
+    let d = project();
+    let p = open_project(d.path()).unwrap();
+    let init = format!("{CTOR_HEX}{RUNTIME_HEX}");
+    let gate = crate::deploy_gate::GateStore::default();
+    gate.record(gate_record(&init, crate::deploy_gate::Verdict::Ready)).unwrap();
+    let cer = crate::ceremony::SignatureCeremony::new();
+
+    write_artifact(&p, &init, RUNTIME_HEX, false);
+    let other = crate::rpc::RpcClient::with_transport(CodeRpc("0x6080604052deadbeef"));
+    let e = register_gated_abi(&other, &p, ADDR, &gate, &cer).unwrap_err();
+    assert!(e.contains("not the gated build"), "{e}");
+
+    write_artifact(&p, &init, RUNTIME_HEX, true);
+    let on_chain: &'static str = Box::leak(format!("0x{RUNTIME_HEX}").into_boxed_str());
+    let same = crate::rpc::RpcClient::with_transport(CodeRpc(on_chain));
+    let e = register_gated_abi(&same, &p, ADDR, &gate, &cer).unwrap_err();
+    assert!(e.contains("immutables"), "{e}");
+    assert_eq!(cer.gated_contracts(), 0);
+}
+
+#[test]
+fn a_runtime_that_the_ready_init_code_does_not_carry_is_never_registered() {
+    // An artifact whose creation code is a READY build but whose runtime field names some other
+    // contract's code (the one at the address): the ABI must not be trusted for that address.
+    let d = project();
+    let p = open_project(d.path()).unwrap();
+    let init = format!("{CTOR_HEX}{RUNTIME_HEX}");
+    let foreign = "6080604052deadbeefcafe";
+    write_artifact(&p, &init, foreign, false);
+    let gate = crate::deploy_gate::GateStore::default();
+    gate.record(gate_record(&init, crate::deploy_gate::Verdict::Ready)).unwrap();
+    let cer = crate::ceremony::SignatureCeremony::new();
+    let on_chain: &'static str = Box::leak(format!("0x{foreign}").into_boxed_str());
+    let client = crate::rpc::RpcClient::with_transport(CodeRpc(on_chain));
+    let e = register_gated_abi(&client, &p, ADDR, &gate, &cer).unwrap_err();
+    assert!(e.contains("not the gated build"), "{e}");
+    assert_eq!(cer.gated_contracts(), 0);
+    assert!(cer.request(mint_intent()).requires_raw_ack);
+}

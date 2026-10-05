@@ -17,10 +17,11 @@ import { MEMORY_SEARCH_TOOL, formatMemoryHits, memorySearchBudget, memorySearchT
 import { memoryResultFromSearchText } from "./retrieval.ts";
 
 /**
- * Model requests per question: the app's AGENT_MAX_TURNS (src/agent/harness.ts). harness.ts cannot
- * be loaded by the Node CLI, so the value is repeated here and a test pins the two together.
+ * Model requests per question: the app's AGENT_MAX_TURNS (src/agent/harness.ts), 8 since HUP-S1.1
+ * (the sidecar's step budget; owner default pending sign-off). harness.ts cannot be loaded by the
+ * Node CLI, so the value is repeated here and a test pins the two together.
  */
-export const QA_TOOL_MAX_TURNS = 6;
+export const QA_TOOL_MAX_TURNS = 8;
 
 export interface ToolCallLike {
   id?: string;

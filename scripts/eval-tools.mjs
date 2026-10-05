@@ -6,9 +6,10 @@
 //        [--api-key-env VAR] [--tier T0|T1|T2] [--out-dir eval/results] [--allow-remote]
 //        [--adapter-sha256 <hex>]   (HUP-S9.4: the endpoint serves this LoRA; stamped into the
 //                                    scorecard so the app's eval gate can bind it to the file)
-//        [--datasets v1|v2]         (A50: v1 = the frozen sets every v1 scorecard used (default);
-//                                    v2 = v1 + the fragment files in toolcall-v2.d / injection-v2.d.
-//                                    v2's live MCP/browser cases run in scripts/eval-sidecar.mjs)
+//        [--datasets v1|v2]         (A50: v2 = v1 + the fragment files in toolcall-v2.d /
+//                                    injection-v2.d (default since HUP-S11.2); v1 = the frozen
+//                                    sets every v1 scorecard used. v2's live MCP/browser cases run
+//                                    in scripts/eval-sidecar.mjs)
 //
 // Runs src/agent/eval/{toolcall,injection}-<gen> against a LIVE OpenAI-compatible
 // /chat/completions endpoint (llama-server --jinja, or a user endpoint) and writes the

@@ -26,6 +26,24 @@ describe("parseSidecarEvalArgs", () => {
     const noCtx = BASE.filter((v, i) => v !== "--context-tokens" && BASE[i - 1] !== "--context-tokens");
     expect(() => parseSidecarEvalArgs(noCtx)).toThrow(/--context-tokens is required/);
   });
+  it("--allow-remote admits an https endpoint (CI, eval.yml) but never plain http off loopback", () => {
+    const remote = (url: string) => BASE.map((v) => (v.startsWith("http") ? url : v));
+    const a = parseSidecarEvalArgs([...remote("https://eval.example/v1/"), "--allow-remote"]);
+    expect(a.baseUrl).toBe("https://eval.example/v1");
+    expect(a.allowRemote).toBe(true);
+    // The sidecar itself refuses plain http to a non-loopback host (sessions.rs validate_endpoint).
+    expect(() => parseSidecarEvalArgs([...remote("http://10.0.0.5:8080/v1"), "--allow-remote"])).toThrow(/https/);
+    expect(() => parseSidecarEvalArgs([...remote("ftp://eval.example/v1"), "--allow-remote"])).toThrow(/https/);
+    // Loopback needs no flag and stays allowRemote=false.
+    expect(parseSidecarEvalArgs(BASE).allowRemote).toBe(false);
+  });
+  it("--runtime-rev stamps the runtime commit the sidecar was built from (a full sha only)", () => {
+    const rev = "45fceda902dcaaec29060a82ffeba705dc12b0a6";
+    expect(parseSidecarEvalArgs([...BASE, "--runtime-rev", rev]).runtimeRev).toBe(rev);
+    expect(parseSidecarEvalArgs(BASE).runtimeRev).toBeUndefined();
+    expect(() => parseSidecarEvalArgs([...BASE, "--runtime-rev", "45fceda"])).toThrow(/--runtime-rev/);
+    expect(() => parseSidecarEvalArgs([...BASE, "--runtime-rev", "main"])).toThrow(/--runtime-rev/);
+  });
   it("needs a browser for injection cases unless only workflows run", () => {
     const noChrome = BASE.slice(0, -2);
     expect(() => parseSidecarEvalArgs(noChrome)).toThrow(/--chromium/);

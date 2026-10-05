@@ -3,7 +3,7 @@
 // AC3: publishing to the SkillRegistry is HIC-1 (and off until signed off). AC4: contradictions
 // are surfaced and must be acknowledged, never silently merged.
 import { describe, it, expect } from "vitest";
-import { acknowledgedFor, memoryRowModel, proposalCardModel, resolveChoice, type LearnedMemory, type LearnProposal } from "./learn";
+import { acknowledgedFor, isKnownRef, memoryRowModel, proposalCardModel, resolveChoice, setAsideChoice, type LearnedMemory, type LearnProposal } from "./learn";
 
 const SKILL = "---\nname: deploy-checklist\ndescription: Checks a contract before deploy\n---\n\n1. Run the tests.\n";
 
@@ -124,7 +124,8 @@ describe("Feature: contradictions are surfaced, never merged (AC4)", () => {
     const r = memoryRowModel(mem);
     expect(r.belnapLabel).toMatch(/unresolved/);
     expect(r.belnapLabel).toMatch(/both are kept/);
-    // Nothing hides a contradicted memory from recall yet, so the label must not promise it.
+    // Recall leaves an unresolved memory out (core, fan-out 7), and the label says exactly that.
+    expect(r.belnapLabel).toMatch(/Hermes does not recall it until you resolve it/);
     expect(r.belnapLabel).not.toMatch(/rel(y|ied) on/);
     expect(r.tone).toBe("warn");
     expect(memoryRowModel({ ...mem, belnap: "true" }).belnapLabel).toBeNull();
@@ -192,7 +193,7 @@ describe("Feature: resolving a contradiction (AC4)", () => {
     expect(resolveChoice([lm(A, "1", { belnap: "true" })], lm(A, "1", { belnap: "true" }))).toBeNull();
     const gone = lm(A, "1", { belnap: "false", retractedFor: B });
     expect(resolveChoice([gone], gone)).toBeNull();
-    // A contradiction with a memory this ledger does not hold (a non-learned memory) cannot be
+    // A partner this ledger does not hold and that is not a `memory:<id>` the app held cannot be
     // settled here.
     const orphan = lm(A, "1", { contradicts: ["mem-7"] });
     expect(resolveChoice([orphan], orphan)).toBeNull();
@@ -206,5 +207,42 @@ describe("Feature: resolving a contradiction (AC4)", () => {
     expect(r.tone).toBe("muted");
     const never = memoryRowModel(lm(A, "1", { belnap: "false", retractedFor: B, graph: { state: "retracted" } }), mems);
     expect(never.graphLabel).toMatch(/not stored/i);
+  });
+});
+
+describe("Feature: resolving against a memory the app already held (fan-out 7)", () => {
+  const A = "lp-000000000000000000000001";
+  const B = "lp-000000000000000000000002";
+
+  it("Given a learned memory that contradicts a memory the app held, then keeping it sets that one aside", () => {
+    const m = lm(A, "40204", { contradicts: ["memory:mem-7"] });
+    const c = resolveChoice([m], m);
+    expect(c?.keep).toBe(A);
+    expect(c?.retract).toEqual(["memory:mem-7"]);
+    expect(c?.confirm).toContain("set aside the memory you already had");
+  });
+
+  it("Given learned and held partners, then keeping one sets every partner aside", () => {
+    const mems = [lm(A, "1", { contradicts: [B, "memory:mem-7"] }), lm(B, "2", { contradicts: [A] })];
+    expect(resolveChoice(mems, mems[0])?.retract).toEqual([B, "memory:mem-7"]);
+  });
+
+  it("Given a learned memory that contradicts a memory the app held, then it can be set aside for it", () => {
+    const m = lm(A, "40204", { contradicts: ["memory:mem-7"] });
+    expect(setAsideChoice(m)).toEqual({
+      keep: "memory:mem-7",
+      retract: [A],
+      confirm: expect.stringContaining('Set aside "40204" for deploy chain and keep the memory you already had'),
+    });
+    expect(setAsideChoice(lm(A, "1", { contradicts: [B] }))).toBeNull();
+    expect(setAsideChoice(lm(A, "1", { belnap: "true", contradicts: ["memory:mem-7"] }))).toBeNull();
+  });
+
+  it("Given a ref, then only a well-formed memory:<id> counts as a memory the app held", () => {
+    expect(isKnownRef("memory:mem-7")).toBe(true);
+    expect(isKnownRef("memory:")).toBe(false);
+    expect(isKnownRef("memory:a b")).toBe(false);
+    expect(isKnownRef("mem-7")).toBe(false);
+    expect(isKnownRef(undefined)).toBe(false);
   });
 });

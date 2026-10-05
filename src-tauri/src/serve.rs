@@ -541,7 +541,7 @@ impl LlamaServerManager {
 }
 
 /// PBA-L7b-001: mint a fresh 256-bit API key (hex) for one llama-server session.
-fn mint_api_key() -> Zeroizing<String> {
+pub(crate) fn mint_api_key() -> Zeroizing<String> {
     use rand::RngCore;
     let mut b = Zeroizing::new([0u8; 32]);
     rand::rngs::OsRng.fill_bytes(&mut b[..]);
@@ -559,7 +559,7 @@ pub(crate) fn loopback_port_is_free(port: u16) -> bool {
 /// A best-effort HTTP GET liveness probe: `true` iff the URL answers 2xx quickly.
 /// Bounded so a wedged server does not stall the probe (the supervisor's off-
 /// thread probe runner also bounds it). Uses the existing `ureq` client.
-fn http_health_ok(url: &str) -> bool {
+pub(crate) fn http_health_ok(url: &str) -> bool {
     ureq::get(url)
         .config()
         .timeout_global(Some(Duration::from_secs(3)))
@@ -576,7 +576,7 @@ pub struct ServeState(pub LlamaServerManager);
 /// as node.rs/memory.rs): `CITRATE_LLAMA_SERVER_BIN` override first (dev/tests),
 /// else the Tauri resource dir (`externalBin` strips the target-triple suffix to
 /// `llama-server`). Honest error if neither is present (the WO-2 packaging gap).
-fn resolve_llama_bin<R: tauri::Runtime>(
+pub(crate) fn resolve_llama_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
     use tauri::Manager;

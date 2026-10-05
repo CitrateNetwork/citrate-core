@@ -324,6 +324,12 @@ pub struct AnchorReceipt {
     /// The anchor key's address that sent it (absent in records from before it was kept).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// HUP-S7.5 (D-27): gas the mined transaction used, once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas_used: Option<u64>,
+    /// HUP-S7.5 (D-27): wei per gas actually paid (decimal), once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_gas_price_wei: Option<String>,
 }
 
 /// A day may be marked anchored only on a mined receipt whose status is 1.
@@ -548,6 +554,8 @@ impl AnchorCeremony {
             status: None,
             nonce: Some(nonce),
             from: Some(from.clone()),
+            gas_used: None,
+            effective_gas_price_wei: None,
         };
         if let Err(e) = (guards.before_send)(&in_flight) {
             return Err(keep(p, AnchorError::NotRecorded(e)));
@@ -567,13 +575,18 @@ impl AnchorCeremony {
                 return Err(rpc_err(e));
             }
         };
-        let (block_number, status) =
+        let (block_number, status, gas_used, gas_price) =
             match rpc.poll_receipt(&tx_hash, cfg.poll_attempts, cfg.poll_interval) {
-                Ok(r) => (Some(r.block_number), r.status),
+                Ok(r) => (
+                    Some(r.block_number),
+                    r.status,
+                    r.gas_used,
+                    r.effective_gas_price,
+                ),
                 // The transaction is already sent: whether the receipt poll timed out or failed,
                 // report the hash with the receipt unknown, so the caller can keep waiting on it
                 // instead of raising a second anchor for the same day.
-                Err(_) => (None, None),
+                Err(_) => (None, None, None, None),
             };
         Ok(AnchorReceipt {
             day: p.req.day,
@@ -583,6 +596,8 @@ impl AnchorCeremony {
             status,
             nonce: Some(nonce),
             from: Some(from),
+            gas_used,
+            effective_gas_price_wei: gas_price.map(|p| p.to_string()),
         })
     }
 }

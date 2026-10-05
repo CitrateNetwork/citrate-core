@@ -84,7 +84,31 @@ gh release create runtime-deps --prerelease --title "Runtime deps (bundle inputs
 tar -czf /tmp/llama-runtime-arm64.tar.gz -C src-tauri/llama .
 gh release upload runtime-deps /tmp/llama-runtime-arm64.tar.gz
 ```
+
+The staged llama runtime carries each dylib three times (`libggml.dylib`, `libggml.0.dylib`,
+`libggml.0.23.0.dylib`) plus llama.cpp tool libraries llama-server never loads. Before a build,
+`node scripts/prune-llama-runtime.mjs --dir src-tauri/llama` keeps only llama-server's dependency
+closure (read with `otool -L`; it refuses if a needed library is missing) and saves about 34 MB.
+release.yml runs it after extracting the tarball; run it on a local staging too (HUP-S11.0).
+`scripts/build-hermes.sh` installs the Hermes sidecar with `strip -x` (about 4 MB; `--no-strip`
+keeps the symbols for debugging).
 Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
+
+#### The BGE embedding GGUF (`bge-base-en-v1.5-f16.gguf`, HUP-S1.2 / US-1.4)
+
+Hermes ranks the tools it offers per request, and the skills it surfaces per turn, with a second
+loopback `llama-server` the app starts in embedding mode (`--embeddings --pooling cls`, its own
+API key; `src-tauri/src/embed_serve.rs`). It loads the same BGE weights as `models/bge-base-en-v1.5`,
+converted to GGUF. The conversion is deterministic and checked against the pin (already in
+`src-tauri/runtime-deps.sha256`, pending owner sign-off):
+
+```bash
+# a llama.cpp checkout at tag b8640, with its converter's Python packages installed
+LLAMA_CPP_DIR=/tmp/llama.cpp scripts/build-bge-gguf.sh /tmp/bge-base-en-v1.5 /tmp/bge-gguf
+gh release upload runtime-deps /tmp/bge-gguf/bge-base-en-v1.5-f16.gguf --clobber -R CitrateNetwork/citrate-core
+```
+
+Without it (for example a lite bundle) the app still runs: Hermes sessions rank lexically and say so.
 
 #### The Hermes knowledge corpus (`knowledge-corpus.tar.gz`, HUP-S3.1)
 
@@ -113,6 +137,11 @@ node scripts/stage-knowledge-corpus.mjs /tmp/knowledge-corpus \
   --bge-dir src-tauri/models/bge-base-en-v1.5 \
   --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
 ```
+
+Build the release corpus from clean checkouts. mem-corpus records a source whose work tree had
+local changes as `<commit>-dirty` and a source outside any git work tree as `unpinned`; the stager
+refuses a corpus with either on an included source (its text and NOTICE cannot be reproduced from
+the recorded commit); `--allow-dirty` stages it for a dev build, with a warning.
 
 The corpus depends on the bundled BGE model, so `--bge-dir` is required. The stager
 refuses a missing or partial model (the first-run import would be skipped as
@@ -147,6 +176,19 @@ Without a staged corpus the app still builds (the committed
    corpus source has a licence entry and its texts ship in `licenses/`). Before the first
    public 0.5.0 release add `--require-sign-off`, which fails until the owner signs
    [`LICENCE_REVIEW.md`](LICENCE_REVIEW.md).
+7. Third-party notices (g3-licence, LICENCE_REVIEW 4.7): with the sidecar sources checked out at
+   the revisions the bundled sidecars were built from, regenerate the notices of every crate and Go
+   module compiled into the app, the sidecars and Kubo, then check them:
+   ```sh
+   cargo install cargo-about --locked --features cli            # once; 0.9.2 used 2026-10-04
+   go install github.com/google/go-licenses/v2@v2.0.1           # once
+   node scripts/third-party-notices.mjs collect --federation-root ..   # about 5 min per Rust component
+   node scripts/third-party-notices.mjs render                  # writes src-tauri/licenses/THIRD-PARTY-NOTICES.txt
+   node scripts/third-party-notices.mjs check
+   node scripts/licence-inventory.mjs --require-notices
+   ```
+   `render` refuses a third-party package under a licence outside its permissive list, so a new
+   copyleft dependency is a reviewed change. What is scanned is `release/notices.json`.
 
 ### Distribution — the DO Space is the public origin
 

@@ -18,7 +18,8 @@
 import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
-import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch";
+import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch.ts";
+import { ChatPlan } from "./chatPlan.ts";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
 
@@ -74,9 +75,11 @@ export type TurnActivityEvent =
   | { kind: "notice"; text: string }
   /** HUP-S7.6 (US-7.4 AC1): the token usage the model server reported for one model call, with
    *  its generation time when the server reports one (llama-server `timings.predicted_ms`). */
-  | { kind: "usage"; promptTokens: number; completionTokens: number; generationMs: number | null }
-  /** HUP-S7.6: a workflow run's plan (its step ids, in order), reported once before it starts. */
-  | { kind: "plan"; steps: string[] }
+  | { kind: "usage"; promptTokens: number; completionTokens: number; generationMs: number | null; promptMs?: number | null }
+  /** HUP-S7.6: a workflow run's plan (its step ids, in order), reported once before it starts.
+   *  `source: "chat"`: a plain chat turn's plan so far, one row per model step that asked for tools
+   *  (src/agent/chatPlan.ts), reported again each time the model asks for another tool. */
+  | { kind: "plan"; steps: string[]; source?: "chat" }
   /** HUP-S7.6: an approval the member is asked for (pending) and its decision. */
   | { kind: "approval"; callId: string; tool: string; state: "pending" | "approved" | "declined" | "failed" };
 
@@ -89,7 +92,15 @@ export function usageEventOf(raw: unknown): Extract<TurnActivityEvent, { kind: "
   const whole = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 0;
   if (!whole(u.prompt_tokens) || !whole(u.completion_tokens)) return null;
   const ms = whole(u.generation_ms) ? (u.generation_ms as number) : null;
-  return { kind: "usage", promptTokens: u.prompt_tokens as number, completionTokens: u.completion_tokens as number, generationMs: ms };
+  // HUP-S7.5 (D-27): llama-server's prompt time, i.e. the server's time to first token.
+  const promptMs = whole(u.prompt_ms) ? (u.prompt_ms as number) : null;
+  return {
+    kind: "usage",
+    promptTokens: u.prompt_tokens as number,
+    completionTokens: u.completion_tokens as number,
+    generationMs: ms,
+    ...(promptMs !== null ? { promptMs } : {}),
+  };
 }
 
 /** HUP-S3.3 — what a track workflow run needs from its caller (the same callbacks as a turn). */
@@ -752,8 +763,65 @@ export const AGENT_TOOLS = [
 ] as const;
 
 /// Max model↔tool round-trips before we stop (a misbehaving model can't loop
-/// forever). Generous enough for multi-step reasoning (search → navigate → answer).
-export const AGENT_MAX_TURNS = 6;
+/// forever). HUP-S1.1 (US-1.1, owner default pending sign-off): 8, the same step budget as the
+/// Hermes sidecar loop.
+export const AGENT_MAX_TURNS = 8;
+
+/// HUP-S1.2 / US-1.4 AC1: the most tool schemas one model request carries, as on the sidecar loop.
+export const TOOL_SCHEMA_CEILING = 8;
+
+type AgentToolSpec = (typeof AGENT_TOOLS)[number];
+
+const STOP_WORDS = new Set(["the", "and", "for", "with", "this", "that", "what", "you", "your", "are", "can", "how", "has", "have", "from", "into", "about", "please", "show", "tell"]);
+const words = (t: string): string[] => (t.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+
+/**
+ * HUP-S1.2 / US-1.4 AC1: the tool schemas one request offers, at most `max`: the tools this turn
+ * already called (most recent first), then the catalog ranked by how many of the request's words
+ * appear in each tool's name and description (ties keep catalog order). The same rule the sidecar
+ * applies (pinned and in-use tools first, then the best matches).
+ */
+export function selectToolSchemas(
+  tools: readonly AgentToolSpec[],
+  request: string,
+  usedRecentFirst: readonly string[] = [],
+  max: number = TOOL_SCHEMA_CEILING,
+): AgentToolSpec[] {
+  const byName = new Map(tools.map((t) => [t.function.name as string, t]));
+  const out: AgentToolSpec[] = [];
+  const taken = new Set<string>();
+  for (const n of usedRecentFirst) {
+    const t = byName.get(n);
+    if (t && !taken.has(n) && out.length < max) {
+      out.push(t);
+      taken.add(n);
+    }
+  }
+  const q = new Set(words(request));
+  const ranked = tools
+    .map((t, i) => {
+      const hay = new Set(words(`${t.function.name.replace(/_/g, " ")} ${t.function.description}`));
+      let score = 0;
+      for (const w of q) if (hay.has(w)) score++;
+      return { t, i, score };
+    })
+    .filter((r) => !taken.has(r.t.function.name))
+    .sort((a, b) => b.score - a.score || a.i - b.i);
+  for (const r of ranked) {
+    if (out.length >= max) break;
+    out.push(r.t);
+  }
+  return out;
+}
+
+/** The text of the latest user message (what the tool ranking reads). */
+function lastUserText(messages: readonly { role: string; content?: string | null }[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "user" && typeof m.content === "string") return m.content;
+  }
+  return "";
+}
 
 export type InferToolsFn = (
   providerId: string,
@@ -783,6 +851,11 @@ export function createAgentProvider(
       callbacks.onStatus("thinking");
       const contextJson = JSON.stringify(getContext());
       const convo: ConvoMsg[] = messages.map((m) => ({ role: m.role, content: m.content }));
+      const request = lastUserText(messages);
+      // Tools this turn called, most recent first (kept in the offered set while in use).
+      const used: string[] = [];
+      // HUP-S7.6 (US-7.4 AC1): the turn's plan, from the tool calls the model asks for.
+      const plan = new ChatPlan();
 
       for (let turn = 0; turn < AGENT_MAX_TURNS; turn++) {
         // HUP-S7.6: Stop ends the loop before the next model request.
@@ -790,7 +863,9 @@ export function createAgentProvider(
         callbacks.onActivity?.({ kind: "step", step: turn + 1 });
         let raw: string;
         try {
-          raw = await untilStopped(inferTools(providerId, JSON.stringify(convo), JSON.stringify(AGENT_TOOLS), contextJson), signal);
+          // HUP-S1.2 / US-1.4 AC1: at most TOOL_SCHEMA_CEILING schemas per request.
+          const offered = selectToolSchemas(AGENT_TOOLS, request, used);
+          raw = await untilStopped(inferTools(providerId, JSON.stringify(convo), JSON.stringify(offered), contextJson), signal);
         } catch (e) {
           if (e instanceof TurnStopped) throw e;
           callbacks.onStatus("error");
@@ -826,16 +901,25 @@ export function createAgentProvider(
         // Execute each tool call through the store's gated handlers, then feed the
         // results back to the model as tool-role messages and loop.
         convo.push({ role: "assistant", content: msg.content ?? null, tool_calls: toolCalls });
-        for (const tcRaw of toolCalls) {
+        const calls: ToolCall[] = toolCalls.map((tcRaw) => {
           const tc = tcRaw as { id?: string; function?: { name?: string; arguments?: string } };
-          const call: ToolCall = {
+          return {
             id: tc.id || "call_" + Math.random().toString(36).slice(2, 10),
             name: tc.function?.name || "",
             arguments: tc.function?.arguments || "{}",
           };
+        });
+        // The whole step's requested calls are the plan for this step, reported before the first runs.
+        let planned = false;
+        for (const c of calls) planned = plan.note(turn + 1, c.id, c.name) || planned;
+        if (planned) callbacks.onActivity?.({ kind: "plan", steps: plan.steps(), source: "chat" });
+        for (const call of calls) {
           callbacks.onStatus("tool");
           // HUP-S7.6: Stop ends the loop before the next tool call runs.
           throwIfStopped(signal);
+          const at = used.indexOf(call.name);
+          if (at >= 0) used.splice(at, 1);
+          used.unshift(call.name);
           let result: string;
           try {
             result = await untilStopped(callbacks.onToolCall(call), signal);
@@ -856,17 +940,22 @@ export function createAgentProvider(
   };
 }
 
-/// The AGENTIC LOCAL provider: the full Hermes tool loop (same as the gateway agent), but run
-/// against the bundled local `llama-server` via `inferLocalTools` — so the built-in agent uses its
-/// tools out of the box on the local model, with no configured provider. Reuses `createAgentProvider`
-/// by adapting the local infer fn (which has no providerId) to the loop's signature.
-export type InferLocalToolsFn = (messagesJson: string, toolsJson: string, contextJson: string) => Promise<string>;
-export function createLocalAgentProvider(
-  getContext: () => AgentContext,
-  inferLocalTools: InferLocalToolsFn,
-): ChatProvider {
-  const inner = createAgentProvider("local", getContext, (_pid, m, t, c) => inferLocalTools(m, t, c));
-  return { ...inner, kind: "local", label: "local model · llama-server · agentic" };
+/// HUP-S1.1 (US-1.1 AC1): the agent loop for the local model runs in the Hermes sidecar, and the
+/// webview has no tool loop for it. When the sidecar is down, chat on the local model is a plain
+/// reply with NO tools, and says so first. Nothing is run, approved or signed on this path.
+export const SIDECAR_DOWN_NOTICE =
+  "Hermes is not running right now, so this reply comes straight from the local model with no tools: it cannot read your node, wallet, memory or files, or change anything.";
+
+export function createSidecarDownProvider(getContext: () => AgentContext, inferLocal: InferLocalFn): ChatProvider {
+  const inner = createLocalProvider(getContext, inferLocal);
+  return {
+    kind: "local",
+    label: "local model · llama-server · Hermes offline (no tools)",
+    async send(opts) {
+      opts.callbacks.onActivity?.({ kind: "notice", text: SIDECAR_DOWN_NOTICE });
+      return inner.send(opts);
+    },
+  };
 }
 
 interface Plan {

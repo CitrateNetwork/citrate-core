@@ -43,6 +43,9 @@ export interface UsageReport {
   completionTokens: number;
   /** Generation time of the completion in ms, or null when the server does not report it. */
   generationMs: number | null;
+  /** HUP-S7.5 (D-27): the server's time to first token for this turn's FIRST model call
+   *  (llama-server `timings.prompt_ms`); null when that call did not report it. Absent = unknown. */
+  firstTokenMs?: number | null;
   /** Model calls this turn that reported usage. */
   calls: number;
 }
@@ -81,8 +84,12 @@ export interface TurnActivity {
   outcome: "answered" | "failed" | "stopped" | null;
   /** HUP-S7.6: the latest model call's reported usage, or null when none was reported. */
   usage?: UsageReport | null;
-  /** HUP-S7.6: a workflow run's step ids, or null for a chat turn (no plan). */
+  /** HUP-S7.6: a workflow run's step ids, or a chat turn's plan rows (one per model step that
+   *  asked for tools); null before any plan is reported. */
   plan?: string[] | null;
+  /** Where `plan` came from: a workflow's `plan` event, or the chat turn's tool calls. Absent from
+   *  an older sender = workflow. */
+  planSource?: "workflow" | "chat";
   /** HUP-S7.6: approvals asked this turn (most recent last). */
   approvals?: ApprovalRow[];
   /** HUP-S7.6: verifier verdicts this turn (most recent last). */
@@ -114,6 +121,7 @@ export const IDLE_ACTIVITY: TurnActivity = {
   outcome: null,
   usage: null,
   plan: null,
+  planSource: "workflow",
   approvals: [],
   verifiers: [],
 };
@@ -204,20 +212,44 @@ export function commandRan(ev: Extract<TurnActivityEvent, { kind: "command_run" 
  */
 export function usageReported(ev: Extract<TurnActivityEvent, { kind: "usage" }>): void {
   if (!live()) return;
-  turnActivity.set((s) => ({
-    usage: {
-      promptTokens: ev.promptTokens,
-      completionTokens: ev.completionTokens,
-      generationMs: ev.generationMs,
-      calls: (s.usage?.calls ?? 0) + 1,
-    },
-  }));
+  turnActivity.set((s) => {
+    // HUP-S7.5 (D-27): the turn's first token waits on its first call; a later call's time is not
+    // substituted, so it is kept only when the first call reported it.
+    const first = s.usage ? s.usage.firstTokenMs : ev.promptMs;
+    return {
+      usage: {
+        promptTokens: ev.promptTokens,
+        completionTokens: ev.completionTokens,
+        generationMs: ev.generationMs,
+        ...(typeof first === "number" ? { firstTokenMs: first } : {}),
+        calls: (s.usage?.calls ?? 0) + 1,
+      },
+    };
+  });
 }
 
-/** HUP-S7.6 — a workflow run's plan (step ids in order). */
-export function planReported(steps: string[]): void {
+/** HUP-S7.6 — a workflow run's plan (step ids in order), or a chat turn's plan so far. */
+export function planReported(steps: string[], source: "workflow" | "chat" = "workflow"): void {
   if (!live()) return;
-  turnActivity.set({ plan: steps.slice(0, MAX_PLAN_STEPS) });
+  // A workflow's own plan is never replaced by chat rows from the same turn.
+  if (source === "chat" && turnActivity.get().planSource === "workflow" && (turnActivity.get().plan ?? null) !== null) return;
+  turnActivity.set({ plan: steps.slice(0, MAX_PLAN_STEPS), planSource: source });
+}
+
+/**
+ * HUP-S7.6 — the state of each row of a chat turn's plan. A row is `done` once the model moved on
+ * to a later step or the turn was answered; the latest row is `running` while the turn runs, and
+ * `stopped` when the turn was stopped or failed before the model answered.
+ */
+export function chatPlanStates(
+  plan: string[],
+  turn: Pick<TurnActivity, "state" | "outcome">,
+): { step: string; state: "running" | "done" | "stopped" }[] {
+  return plan.map((step, i) => {
+    if (i < plan.length - 1) return { step, state: "done" as const };
+    if (turn.state !== "idle") return { step, state: "running" as const };
+    return { step, state: turn.outcome === "answered" ? ("done" as const) : ("stopped" as const) };
+  });
 }
 
 /** HUP-S7.6 — an approval was asked for (pending) or decided. A decision updates its pending row. */

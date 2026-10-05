@@ -74,3 +74,54 @@ The other lesson is about cost. The owner asked for CI that does not waste minut
 cheapest CI is a test that pins the trigger list. `eval-workflow.test.mjs` fails the moment
 anyone adds `push`, `pull_request` or `schedule` to the eval workflow, and it runs inside the
 existing vitest job, so the guard itself costs nothing extra.
+
+## Update 2026-10-04 (US-11.2, branch hup/n7-eval-ci, fan-out 7 lane L09)
+
+What changed:
+
+- `.github/workflows/eval.yml` (still `workflow_dispatch` only): new `suites=sidecar` and
+  `datasets` (default `v2`) and `context_tokens` inputs. The sidecar suite checks out
+  citrate-agent-runtime at the commit pinned in `eval/sidecar-runtime.rev` (never a branch or an
+  input), builds `citrate-agent-sidecar` and `citrate-mcp-fixture-server`, and runs
+  `scripts/eval-sidecar.mjs` (workflow-v1 step success, live injection-v2) with the runner's
+  Chrome. Per-tier secrets `EVAL_BASE_URL_<tier>` / `EVAL_API_KEY_<tier>` with single-secret
+  fallback. Renders and uploads `SCORECARD-<tier>.md` as `eval-scorecard-<tier>-<run id>`. Runs
+  `scripts/eval-check.mjs` first and gates the suites on it.
+- `.github/workflows/eval-check.yml` (new): on pull requests into `main` and `release/**`, no
+  model, no secret, no package install. `scripts/eval-check.mjs` validates every dataset through
+  the CLIs' own validators, checks `src/agent/eval/datasets.sha256` (new, every dataset file) and
+  the frozen v1 pins (`src/agent/eval/frozenPins.ts`, now the one source for them), recomputes
+  `skills.lock` from shallow fetches of the four public source repos at their pinned commits,
+  checks `SCORECARD.md` against its JSON and renders each tier, and checks the runtime pin.
+- `--datasets` defaults to `v2`; `eval-sidecar.mjs` gained `--allow-remote` (https only, as the
+  sidecar requires) and `--runtime-rev`; `eval-scorecard.mjs` gained `--tier`.
+- Pending owner sign-off (ra-20 recommended default): T0 is held to the T1 bars in the scorecard
+  (`met*` / `not met*` with a footnote). `SCORECARD.md` regenerated.
+- Found and fixed: `src/agent/harness.ts` imported `./knowledgeSearch` without the `.ts`
+  extension, so every eval CLI (and the eval workflow) crashed at import under plain Node with
+  `ERR_MODULE_NOT_FOUND` since the g2-knowledge merge. The new CLI test runs the check under plain
+  Node, so this cannot regress silently.
+- `eval/README.md` "Running in CI": both workflows, the check table, and the per-tier secrets.
+
+Proof:
+
+| Gate | Before | After |
+|---|---|---|
+| `npx vitest run` | 246 files, 2188 passed, 33 skipped | 247 files, 2225 passed, 33 skipped |
+| `npx tsc --noEmit` | clean | clean |
+| actionlint 1.7.12 (release binary, checksum verified) | n/a | clean on eval.yml and eval-check.yml |
+| `scripts/ci/check-release-pins.sh` | OK | OK |
+| PR job, run locally step by step | n/a | fetch 4 sources, 6/6 checks ok (skills.lock recomputed), SCORECARD-T0.md and SCORECARD-T1.md rendered |
+
+Red first: `scripts/eval-check.test.mjs` failed on the missing module; the CLI failed `dataset
+pins` before the manifest existed; the v2-default, `--allow-remote` and `--runtime-rev` tests
+failed before the code. Mutants (each reverted): frozen-pin check removed, skill commit check
+removed, scorecard body compare removed, unpinned-file check removed, runtime 40-hex check
+removed: all killed. The QA anchor check survived at first; a new test now kills it.
+
+Not done here:
+
+- The PR job has not run on GitHub: it starts when a pull request into `main` or `release/**`
+  carries it (the stacked HUP PRs target other branches).
+- No `workflow_dispatch` run yet: GitHub offers dispatch only for a workflow on the default
+  branch, and no runner-reachable https T0/T1 endpoint exists. DGX ask on federation #288.
