@@ -45,11 +45,13 @@
 
 use crate::ceremony::{CeremonyView, IntentKind, SignatureIntent};
 
-/// The `LiquidStakingPool` contract on 40204 (canonical address book:
-/// `contracts/addresses/40204.json` + node-agent `generated/addresses.json`).
+/// The `LiquidStakingPool` contract on 40204, from the generated address book
+/// (`crate::addresses`, synced from citrate-chain `contracts/addresses/40204.json`).
 /// Lowercase `0x`-hex; the `eth_call` target for `balanceOf` and the `to` of the
 /// `deposit()` stake tx.
-pub const LIQUID_STAKING_POOL: &str = "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e";
+pub fn liquid_staking_pool() -> &'static str {
+    crate::addresses::liquid_staking_pool()
+}
 
 /// The Citrate chain id (40204).
 const CITRATE_CHAIN_ID: u64 = 40204;
@@ -221,7 +223,7 @@ fn encode_balance_of_calldata(addr: &str) -> Vec<u8> {
 fn balance_of_call(addr: &str) -> serde_json::Value {
     let calldata = encode_balance_of_calldata(addr);
     serde_json::json!({
-        "to": LIQUID_STAKING_POOL,
+        "to": liquid_staking_pool(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -282,7 +284,7 @@ fn encode_shares_calldata(addr: &str) -> Vec<u8> {
 fn shares_call(addr: &str) -> serde_json::Value {
     let calldata = encode_shares_calldata(addr);
     serde_json::json!({
-        "to": LIQUID_STAKING_POOL,
+        "to": liquid_staking_pool(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -418,7 +420,7 @@ fn encode_uint_calldata(selector: [u8; 4], arg: u128) -> Vec<u8> {
 fn encode_pool_call_json(from: &str, data: &[u8], gas: u64) -> String {
     serde_json::json!({
         "from": from,
-        "to": LIQUID_STAKING_POOL,
+        "to": liquid_staking_pool(),
         "value": "0x0",
         "data": format!("0x{}", hex::encode(data)),
         "gas": format!("0x{gas:x}"),
@@ -532,7 +534,7 @@ pub fn read_pending_withdrawals<T: crate::rpc::RpcTransport>(
     let staker_topic = address_topic(&addr);
     // topic2 = staker (the SECOND indexed arg → topics[2]); topic1 (id) left null.
     let filter = serde_json::json!({
-        "address": LIQUID_STAKING_POOL,
+        "address": liquid_staking_pool(),
         "topics": [
             WITHDRAWAL_REQUESTED_TOPIC0,
             serde_json::Value::Null,
@@ -589,7 +591,7 @@ pub fn read_pending_withdrawals<T: crate::rpc::RpcTransport>(
 fn withdrawals_call(id: u128) -> serde_json::Value {
     let calldata = encode_uint_calldata(withdrawals_selector(), id);
     serde_json::json!({
-        "to": LIQUID_STAKING_POOL,
+        "to": liquid_staking_pool(),
         "data": format!("0x{}", hex::encode(calldata)),
     })
 }
@@ -614,7 +616,7 @@ fn encode_stake_json(from: &str, value_wei: u128) -> String {
     let data = format!("0x{}", hex::encode(deposit_selector()));
     serde_json::json!({
         "from": from,
-        "to": LIQUID_STAKING_POOL,
+        "to": liquid_staking_pool(),
         "value": format!("0x{value_wei:x}"),
         "data": data,
         "gas": format!("0x{DEPOSIT_GAS:x}"),

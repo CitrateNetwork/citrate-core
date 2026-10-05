@@ -1029,7 +1029,7 @@ pub async fn user_claim(
             .claimable_wei
             .parse()
             .map_err(|_| "earnings: claimable is not a u128 wei value".to_string())?;
-        (crate::earnings::CONTRIBUTION_ACCOUNTING.to_string(), wei)
+        (crate::earnings::contribution_accounting().to_string(), wei)
     };
 
     // Bridge the REAL claim into a pending ceremony (honest 0 → NoPending error).

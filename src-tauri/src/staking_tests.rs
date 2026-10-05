@@ -71,13 +71,17 @@ const STAKER_ADDR: &str = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
 // ===========================================================================
 
 /// The pool address MUST be the canonical 40204.json value. A paste error here
-/// would send staked SALT to the wrong contract (@rule8) — pin it exactly.
+/// would send staked SALT to the wrong contract (@rule8). Re-earned 2026-10-04: the
+/// module literal had drifted from the book (`0xfd27…685e`, while the canonical book and
+/// the live chain carry `LiquidStakingPool` elsewhere), so the pin is now the generated
+/// book itself, which `scripts/sync-addresses.py --rpc` verifies has code on 40204 and
+/// `generated_book_is_not_hand_edited` keeps machine-written.
 #[test]
 fn pool_address_is_the_canonical_40204_value() {
-    assert_eq!(
-        LIQUID_STAKING_POOL,
-        "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e"
-    );
+    let a = liquid_staking_pool();
+    assert_eq!(a, crate::addresses::liquid_staking_pool());
+    assert!(a.len() == 42 && a.starts_with("0x"), "{a}");
+    assert_ne!(a, "0xfd272195b55cb4f5a240a5be75aabab0d1c5685e", "the drifted literal");
 }
 
 /// The pinned `deposit()` selector is the REAL keccak of the signature AND the
@@ -161,7 +165,7 @@ fn read_self_stake_reads_pool_balance_over_mock_rpc() {
     let params = &body["params"][0];
     assert_eq!(
         params["to"].as_str().unwrap().to_ascii_lowercase(),
-        LIQUID_STAKING_POOL,
+        liquid_staking_pool(),
         "read targets the LiquidStakingPool"
     );
     let data = params["data"].as_str().unwrap();
@@ -194,7 +198,7 @@ fn stake_json_decodes_to_the_expected_deposit_call() {
         crate::txdecode::decode_transaction(&json).expect("deposit json must decode");
 
     // to = the pool (not a fabricated address).
-    let pool_bytes = hex::decode(&LIQUID_STAKING_POOL[2..]).unwrap();
+    let pool_bytes = hex::decode(&liquid_staking_pool()[2..]).unwrap();
     let mut pool = [0u8; 20];
     pool.copy_from_slice(&pool_bytes);
     assert_eq!(parsed.to, Some(pool), "to = LiquidStakingPool");
@@ -368,7 +372,7 @@ fn request_withdrawal_json_decodes_to_the_expected_call() {
     let (parsed, display) =
         crate::txdecode::decode_transaction(&json).expect("requestWithdrawal json must decode");
 
-    let pool_bytes = hex::decode(&LIQUID_STAKING_POOL[2..]).unwrap();
+    let pool_bytes = hex::decode(&liquid_staking_pool()[2..]).unwrap();
     let mut pool = [0u8; 20];
     pool.copy_from_slice(&pool_bytes);
     assert_eq!(parsed.to, Some(pool), "to = LiquidStakingPool");
@@ -395,7 +399,7 @@ fn claim_withdrawal_json_decodes_to_the_expected_call() {
     let (parsed, _display) =
         crate::txdecode::decode_transaction(&json).expect("claimWithdrawal json must decode");
 
-    let pool_bytes = hex::decode(&LIQUID_STAKING_POOL[2..]).unwrap();
+    let pool_bytes = hex::decode(&liquid_staking_pool()[2..]).unwrap();
     let mut pool = [0u8; 20];
     pool.copy_from_slice(&pool_bytes);
     assert_eq!(parsed.to, Some(pool), "to = LiquidStakingPool");
@@ -472,7 +476,7 @@ fn withdrawal_log(id: u128, block: u64) -> JsonValue {
     let mut staker_word = [0u8; 32];
     staker_word[12..32].copy_from_slice(&hex::decode(&STAKER_ADDR[2..]).unwrap());
     serde_json::json!({
-        "address": LIQUID_STAKING_POOL,
+        "address": liquid_staking_pool(),
         "topics": [
             WITHDRAWAL_REQUESTED_TOPIC0,
             format!("0x{}", hex::encode(id_word)),
@@ -529,7 +533,7 @@ fn read_pending_withdrawals_lists_unclaimed_and_gates_claimable() {
     let body = &rpc.transport().requests()[0];
     assert_eq!(body["method"], "eth_getLogs");
     let filter = &body["params"][0];
-    assert_eq!(filter["address"], LIQUID_STAKING_POOL);
+    assert_eq!(filter["address"], liquid_staking_pool());
     assert_eq!(filter["topics"][0], WITHDRAWAL_REQUESTED_TOPIC0);
     assert!(
         filter["topics"][2].as_str().unwrap().to_ascii_lowercase().contains(&STAKER_ADDR[2..]),
