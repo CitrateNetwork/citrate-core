@@ -165,6 +165,25 @@ describe("the sidecar loop reports a chat turn's plan", () => {
     await p.send({ messages: [{ role: "user", content: "x" }], callbacks: { onStatus: vi.fn(), onToken: vi.fn(), onToolCall: vi.fn(), onActivity: (e) => events.push(e) } });
     expect(events.filter((e) => e.kind === "plan")).toEqual([{ kind: "plan", steps: ["write-test", "implement"] }]);
   });
+
+  it("a workflow run's own tool calls add no chat rows to its plan", async () => {
+    const pages: Ev[][] = [
+      [
+        { seq: 1, event: { type: "plan", steps: ["write-test", "implement"] } },
+        { seq: 2, event: { type: "step_start", step: 1 } },
+        { seq: 3, event: { type: "tool_call", step: 1, host: "sidecar", call: { id: "call_0", name: "fs_write", arguments: "{}" } } },
+        { seq: 4, event: { type: "tool_result", step: 1, call_id: "call_0", status: "ok", content: "{}" } },
+      ],
+    ];
+    const api = pagedApi(pages);
+    api.trackWorkflowRun = vi.fn(async () => ({ run_id: "r1" }));
+    api.workflowStatus = vi.fn(async () => ({ run_id: "r1", workflow_id: "w", state: "verified" }) as const);
+    const events: TurnActivityEvent[] = [];
+    const p = createSidecarProvider(api, () => "p", () => []);
+    const view = await p.runWorkflow!("w", { callbacks: { onStatus: vi.fn(), onToken: vi.fn(), onToolCall: vi.fn(), onActivity: (e) => events.push(e) } });
+    expect(view.state).toBe("verified");
+    expect(events.filter((e) => e.kind === "plan")).toEqual([{ kind: "plan", steps: ["write-test", "implement"] }]);
+  });
 });
 
 describe("a chat plan in the turn slice and the monitor", () => {

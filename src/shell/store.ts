@@ -2407,7 +2407,7 @@ export class Store {
             } else if (ev.kind === "notice") {
               this.toast(ev.text);
             } else if (ev.kind === "plan" && !ac.signal.aborted) {
-              // HUP-S7.6: a resumed chat turn's plan, rebuilt from the replayed tool calls.
+              // HUP-S7.6: a resumed chat turn's plan, from the tool calls replayed after the saved point.
               planReported(ev.steps, ev.source ?? "workflow");
             } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
           },

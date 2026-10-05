@@ -3,13 +3,16 @@
 // BDD:
 //   Given Hermes wrote a sheet in a granted folder this session, when the member opens
 //     Journal > Sheets, then that sheet write is listed there with Undo.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+//   When the member presses Undo there, then the app's agent undo (hermes_undo_step) runs for
+//     that session and step.
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Journal } from "./Journal";
 import { freshState } from "../shell/state";
 import type { Store } from "../shell/store";
 import { recordFileChange, resetAgentUndo } from "../shell/slices/agentUndo";
+import { bridge } from "../bridge";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -22,6 +25,7 @@ afterEach(() => {
   root = null;
   host = null;
   resetAgentUndo();
+  vi.restoreAllMocks();
 });
 
 describe("Journal > Sheets", () => {
@@ -41,6 +45,12 @@ describe("Journal > Sheets", () => {
     });
     const list = host.querySelector('[data-testid="agent-sheet-changes"]');
     expect(list?.textContent).toContain("/w/budget.csv");
-    expect(list?.querySelector('[data-testid="file-change-undo"]')).not.toBeNull();
+    const undoStep = vi
+      .spyOn(bridge.agentHarness, "undoStep")
+      .mockResolvedValue({ ok: true, undone: [2], restored: ["/w/budget.csv"], prunedThrough: null, kind: null, reason: null, conflicts: [] });
+    await act(async () => {
+      (list!.querySelector('[data-testid="file-change-undo"]') as HTMLButtonElement).click();
+    });
+    expect(undoStep).toHaveBeenCalledWith("s1-ab", 2);
   });
 });

@@ -33,7 +33,8 @@ shows the reason as an alert and Undo stays available. The card now says "Wrote 
 
 Tests: `src/agent/sheets/agentSheetChanges.test.tsx` (4: empty state, only sheet writes and newest
 first, undo restores and says so, a refusal shows its reason), `src/surfaces/journalSheetsUndo.test.tsx`
-(1: opening Journal > Sheets shows a recorded sheet write with Undo).
+(1: opening Journal > Sheets shows a recorded sheet write with Undo, and pressing Undo there calls
+the app's `undoStep` for that session and step; the reviewer added that last check).
 
 ## 2. Plan events for plain chat turns (built)
 
@@ -56,7 +57,8 @@ the model's tool call, so the plan never lists a step the model did not take.
 - The snapshot validator accepts the new row states (`running`, `done`, `stopped`) and still refuses
   unknown ones. The resumed-turn path (`store.ts`) now forwards plan events too.
 
-Tests: `src/agent/chatPlan.test.tsx` (12). Existing tests updated for the new behaviour:
+Tests: `src/agent/chatPlan.test.tsx` (13; the reviewer added the 13th, which runs a real workflow
+run with `tool_call` events and checks that no chat rows are added to its plan). Existing tests updated for the new behaviour:
 `ActivityMonitor.usage.test.tsx` (the empty-plan wording, plus a malformed-state check that now uses
 a state that is still invalid) and `stopTurn.test.ts` (the in-app step test now also checks the plan
 event between the two steps).
@@ -66,8 +68,8 @@ event between the two steps).
 `media_generate_image` was a single Tauri command. Its body is now `media::generate_image`, which the
 command calls. The behaviour is the same: pick the route, refuse one that is not available, check the
 destination grant before spending anything, ask the backend, check the reply, write a new file into
-the granted folder, and record it in the gallery with its cost line. The only difference is that a
-corrupt grants file is now reported before an unknown route. Moving the body into a function lets a
+the granted folder, and record it in the gallery with its cost line. The only differences are that a
+corrupt grants file or a gallery that cannot be opened is now reported before an unknown route. Moving the body into a function lets a
 test drive the real pipeline without a window.
 
 New tests in `src-tauri/src/media_tests.rs`:
@@ -101,7 +103,7 @@ recorded above.
 | Gate | Before | After | Command |
 |---|---|---|---|
 | tsc | clean | clean | `npx tsc --noEmit` |
-| vitest | 2,188 passed, 33 skipped (computed: after minus the 17 new tests) | 2,205 passed, 33 skipped (251 files). In the full run, `scripts/stage-knowledge-corpus.test.mjs` timed out once under machine load and passes on its own (23/23); it is not touched here | `npx vitest run` |
+| vitest | 2,188 passed, 33 skipped (computed: after minus the 17 new tests) | 2,205 passed, 33 skipped (251 files) at the builder's commit; the review adds 1 test and 1 assertion. In the full run, `scripts/stage-knowledge-corpus.test.mjs` timed out once under machine load and passes on its own (23/23); it is not touched here | `npx vitest run` |
 | cargo fmt | clean | clean | `cargo fmt --all -- --check` |
 | clippy | clean | clean (citrate-core, all targets) | `rustup run 1.98.1 cargo clippy --locked --no-deps -p citrate-core --all-targets -- -D warnings` |
 | core lib tests | 1,716 passed, 15 ignored (computed: after minus 3 new passing and 1 new ignored) | 1,719 passed, 0 failed, 16 ignored | `cargo test --locked -p citrate-core --lib` |
