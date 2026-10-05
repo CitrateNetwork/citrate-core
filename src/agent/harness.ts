@@ -74,7 +74,7 @@ export type TurnActivityEvent =
   | { kind: "notice"; text: string }
   /** HUP-S7.6 (US-7.4 AC1): the token usage the model server reported for one model call, with
    *  its generation time when the server reports one (llama-server `timings.predicted_ms`). */
-  | { kind: "usage"; promptTokens: number; completionTokens: number; generationMs: number | null }
+  | { kind: "usage"; promptTokens: number; completionTokens: number; generationMs: number | null; promptMs?: number | null }
   /** HUP-S7.6: a workflow run's plan (its step ids, in order), reported once before it starts. */
   | { kind: "plan"; steps: string[] }
   /** HUP-S7.6: an approval the member is asked for (pending) and its decision. */
@@ -89,7 +89,15 @@ export function usageEventOf(raw: unknown): Extract<TurnActivityEvent, { kind: "
   const whole = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 0;
   if (!whole(u.prompt_tokens) || !whole(u.completion_tokens)) return null;
   const ms = whole(u.generation_ms) ? (u.generation_ms as number) : null;
-  return { kind: "usage", promptTokens: u.prompt_tokens as number, completionTokens: u.completion_tokens as number, generationMs: ms };
+  // HUP-S7.5 (D-27): llama-server's prompt time, i.e. the server's time to first token.
+  const promptMs = whole(u.prompt_ms) ? (u.prompt_ms as number) : null;
+  return {
+    kind: "usage",
+    promptTokens: u.prompt_tokens as number,
+    completionTokens: u.completion_tokens as number,
+    generationMs: ms,
+    ...(promptMs !== null ? { promptMs } : {}),
+  };
 }
 
 /** HUP-S3.3 — what a track workflow run needs from its caller (the same callbacks as a turn). */

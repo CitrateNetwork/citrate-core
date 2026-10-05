@@ -19,7 +19,8 @@
 //     outcome recorded through POST /decide/outcomes)
 //   - usage (HUP-S7.6, US-7.4 AC1): the model server's own report for the latest model call of the
 //     turn (core's `citrate_usage` on the in-app loop, the sidecar's `usage` event), giving context
-//     used (prompt + completion tokens) and tokens per second (llama-server `timings.predicted_ms`)
+//     used (prompt + completion tokens) and tokens per second (llama-server `timings.predicted_ms`);
+//     HUP-S7.5 (D-27): first-token time from the turn's first call (llama-server `timings.prompt_ms`)
 //   - plan, approvals, verifier verdicts (HUP-S7.6): the turn activity slice, from the sidecar's
 //     `plan` and `verifier` events, the store's approval cards and the sidecar's held commands
 // Where the app has no real number the field is null and the monitor says "unknown" with the
@@ -118,6 +119,8 @@ export interface MonitorSnapshot {
   };
   /** HUP-S7.6: generation speed of the latest model call. Absent from an older sender = unknown. */
   speed?: { tokensPerSecond: number | null; note: string };
+  /** HUP-S7.5 (D-27): time to first token of this turn. Absent from an older sender = unknown. */
+  firstToken?: { ms: number | null; note: string };
   spend: { amount: number | null; unit: string; note: string };
   /** HUP-S1.9: null rows = could not be read (unknown); [] = Hermes is not running. */
   workers: { rows: WorkerRow[] | null; note: string };
@@ -252,6 +255,15 @@ export function speedFor(usage: UsageReport | null | undefined): NonNullable<Mon
   return { tokensPerSecond: null, note: "the model server has not reported a generation time for this turn" };
 }
 
+/** HUP-S7.5 (D-27) — the turn's time to first token, or why it is unknown. */
+export function firstTokenFor(usage: UsageReport | null | undefined): NonNullable<MonitorSnapshot["firstToken"]> {
+  if (usage && typeof usage.firstTokenMs === "number") {
+    return { ms: usage.firstTokenMs, note: "measured: the model server's own time reading the prompt before its first token" };
+  }
+  if (usage) return { ms: null, note: "the model server reported usage but not its prompt time" };
+  return { ms: null, note: "the model server has not reported a first-token time for this turn" };
+}
+
 const WORKER_STATE_TEXT: Record<string, string> = {
   starting: "starting",
   running: "running",
@@ -363,6 +375,7 @@ export function buildMonitorSnapshot(i: MonitorInputs): MonitorSnapshot {
     tier: i.tier,
     context: contextFor(kind, i.localCtxTokens, a.usage ?? null),
     speed: speedFor(a.usage),
+    firstToken: firstTokenFor(a.usage),
     turn: {
       state: a.state,
       phase: a.phase,
@@ -498,6 +511,8 @@ export function isMonitorSnapshot(v: unknown): v is MonitorSnapshot {
   if (!(turn.verifiers === undefined || (Array.isArray(turn.verifiers) && turn.verifiers.every(isVerifierRow)))) return false;
   const { speed } = v;
   if (!(speed === undefined || (isObj(speed) && numOrNull(speed.tokensPerSecond) && typeof speed.note === "string"))) return false;
+  const { firstToken } = v;
+  if (!(firstToken === undefined || (isObj(firstToken) && numOrNull(firstToken.ms) && typeof firstToken.note === "string"))) return false;
   if (!isObj(spend) || !numOrNull(spend.amount) || typeof spend.unit !== "string" || typeof spend.note !== "string") return false;
   const { workers } = v;
   if (!isObj(workers) || typeof workers.note !== "string") return false;

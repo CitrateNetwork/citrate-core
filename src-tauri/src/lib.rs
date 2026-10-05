@@ -322,6 +322,9 @@ pub fn run() {
             // HUP-S7.3 — the nightly anchor scheduler starts only when AnchorRegistry is deployed
             // AND the member turned anchoring on. Neither holds in this build, so this is a no-op.
             chain_agent::start_nightly_if_ready(app.handle().clone());
+            // HUP-S7.5 (D-27) — meter Hermes's own transactions (gas, SALT) once mined. Installs an
+            // observer only; nothing is signed or sent by it.
+            chain_agent::spend::install(app.handle().clone());
             // CORE-A2 — build the process-wide custody vault (real OS keyring +
             // app-data envelope), seeded with the persisted config.autolock (the
             // A1 single source of truth). @rule8: no secret bytes cross invoke.
