@@ -45,10 +45,12 @@ gates:
           - citrate-cluster formal/DeviceLink.tla
         note: >-
           Met 2026-10-04 (paperwork flip, HUP fan-out 7 lane L19). All eight specs are on
-          citrate-core hup/forward-merge-main-0.4.3 and on citrate-agent-runtime main and
-          citrate-cluster main, each with a .cfg and a recorded TLC run with no error. AgentLoop
-          (1,258 distinct states) and FolderGrant (153,484) were re-run with TLC 2.19 on 2026-10-04;
-          the other six cite their recorded runs (EVIDENCE file). Small bounds only; mutation
+          citrate-core hup/forward-merge-main-0.4.3 (not merged yet), citrate-agent-runtime main and
+          citrate-cluster main (DeviceLink's ADR-003 revision is on cluster PR #10, not merged), each
+          with a .cfg and a recorded TLC run with no error. AgentLoop
+          (1,258 distinct states), FolderGrant (153,484) and DeviceLink (8,248 on main, 21,456 on
+          the ADR-003 revision) were re-run with TLC 2.19 on 2026-10-04; the other five cite their
+          recorded runs (EVIDENCE file). Small bounds only; mutation
           checks are recorded per spec in each formal/README.md. Owner is the listed reviewer.
     reviewers: [Larry Klosowski (owner)]
   - id: gate1

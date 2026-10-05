@@ -1336,8 +1336,8 @@ export interface AgentHarnessDomain {
   /** HUP-S3.4 — publish a saved skill to the SkillRegistry (HIC-1 ceremony). Rejects with
    *  `PUBLISH_DISABLED: ` while publishing is off. */
   learnPublish(id: string, version: string): Promise<void>;
-  /** HUP-S3.3 + S3.7 — the shipped personas with their prompt fragments (names are placeholders
-   *  pending owner sign-off). Rejects when the sidecar isn't running. */
+  /** HUP-S3.3 + S3.7 — the shipped personas with their prompt fragments (names owner-approved
+   *  2026-10-01; `name_pending_sign_off` marks any that are not). Rejects when the sidecar isn't running. */
   personas(): Promise<HermesPersona[]>;
   /** HUP-S3.3 — the sidecar validates a member-defined persona and renders its fragment. A refusal
    *  rejects with a message starting `PERSONA_REFUSED: `. */
