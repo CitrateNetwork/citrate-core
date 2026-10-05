@@ -392,6 +392,39 @@ describe("committed release/budgets.json", () => {
     expect(b.components["macos-aarch64/resources/licenses"].baselineBytes).toBe(MEASURED_2026_10_04.licenses);
   });
 
+  // L14 release prep, 2026-10-04: the same build line re-measured after the llama runtime prune
+  // (scripts/prune-llama-runtime.mjs) and the Hermes strip -x (scripts/build-hermes.sh). Recorded
+  // as measuredBytes; the budgets themselves are unchanged (owner sign-off).
+  const MEASURED_AFTER_PREP = {
+    "artifacts/macos-aarch64/dmg": 420_878_903,
+    "artifacts/macos-aarch64/app.tar.gz": 424_350_415,
+    "components/macos-aarch64/app": 818_552_274,
+    "components/macos-aarch64/bin/hermes": 25_974_928,
+    "components/macos-aarch64/bin/citrate-core": 38_834_896,
+    "components/macos-aarch64/resources/llama": 25_515_197,
+    "components/macos-aarch64/resources/licenses": 798_515,
+  };
+
+  it("records the post-prep re-measurement within the unchanged budgets", () => {
+    const b = loadBudgets(file);
+    for (const [key, bytes] of Object.entries(MEASURED_AFTER_PREP)) {
+      const [section, ...rest] = key.split("/");
+      const row = b[section][rest.join("/")];
+      expect(row.measuredBytes, key).toBe(bytes);
+      expect(row.measured, key).toMatch(/pending owner sign-off/);
+      expect(row.maxBytes, key).toBeGreaterThanOrEqual(bytes);
+    }
+    // The budgets were not moved by the re-measurement.
+    expect(b.artifacts["macos-aarch64/dmg"].maxBytes).toBe(455_000_000);
+    expect(b.artifacts["macos-aarch64/app.tar.gz"].maxBytes).toBe(460_000_000);
+    expect(b.components["macos-aarch64/app"].maxBytes).toBe(938_000_000);
+    // The savings the prep was for: the llama runtime and the Hermes sidecar.
+    const llama = b.components["macos-aarch64/resources/llama"];
+    expect(llama.baselineBytes - llama.measuredBytes).toBeGreaterThan(30_000_000);
+    expect(MEASURED_2026_10_04.hermes - b.components["macos-aarch64/bin/hermes"].measuredBytes).toBeGreaterThan(3_000_000);
+    expect(MEASURED_2026_10_04.app - b.components["macos-aarch64/app"].measuredBytes).toBeGreaterThan(30_000_000);
+  });
+
   it("names a budget row for every OS the release plan ships (macOS, Linux, Windows)", () => {
     const ids = Object.keys(loadBudgets(file).artifacts);
     expect(ids.some((i) => i.startsWith("macos-"))).toBe(true);

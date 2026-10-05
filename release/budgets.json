@@ -5,6 +5,7 @@
     "Artifact baselines are the shipped v0.4.2 GitHub release assets; maxBytes = baseline + about 5%, rounded.",
     "Component baselines are a local v0.4.2 macOS aarch64 build (target/release/bundle, 2026-09-30); maxBytes = baseline + 10%, rounded up to the next MB.",
     "2026-10-04 (HUP-S11.0, pending owner sign-off): the macOS rows a local 0.5.0-line bundle-lite build pushed over budget were re-set from that build: installer and updater = measured + about 5%, rounded up to the next 5 MB; components = measured + 10%, rounded up to the next MB. See release/README.md.",
+    "2026-10-04 (L14 release prep, pending owner sign-off): measuredBytes/measured record a re-measurement after the llama prune and the Hermes strip; maxBytes and baselineBytes (what each budget was set from) are unchanged. See release/README.md.",
     "Raising a budget is a reviewed change: say why in the PR and update baselineBytes when a new release ships."
   ],
   "version": 1,
@@ -12,12 +13,16 @@
     "macos-aarch64/dmg": {
       "maxBytes": 455000000,
       "baselineBytes": 431684435,
-      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off; v0.4.2 shipped asset was 394,782,331"
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off; v0.4.2 shipped asset was 394,782,331",
+      "measuredBytes": 420878903,
+      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off"
     },
     "macos-aarch64/app.tar.gz": {
       "maxBytes": 460000000,
       "baselineBytes": 435081567,
-      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off; estimate: tar -czf of the .app (built without the updater key); v0.4.2 shipped asset was 366,205,330"
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off; estimate: tar -czf of the .app (built without the updater key); v0.4.2 shipped asset was 366,205,330",
+      "measuredBytes": 424350415,
+      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off; estimate: tar -czf of the signed .app (no updater key)"
     },
     "linux-x86_64/appimage": {
       "maxBytes": null,
@@ -45,7 +50,9 @@
     "macos-aarch64/bin/citrate-core": {
       "maxBytes": 40000000,
       "baselineBytes": 35851840,
-      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off"
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off",
+      "measuredBytes": 38834896,
+      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off; the app binary grew with the forward merge (97.1% of its budget)"
     },
     "macos-aarch64/bin/cluster-daemon": {
       "maxBytes": 6000000,
@@ -60,7 +67,9 @@
     "macos-aarch64/bin/hermes": {
       "maxBytes": 33000000,
       "baselineBytes": 29442128,
-      "source": "hup/m2-runtime @ d10f0ee citrate-agent-sidecar, release profile, unstripped; local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off"
+      "source": "hup/m2-runtime @ d10f0ee citrate-agent-sidecar, release profile, unstripped; local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off",
+      "measuredBytes": 25974928,
+      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off"
     },
     "macos-aarch64/bin/ipfs": {
       "maxBytes": 96000000,
@@ -100,7 +109,9 @@
     "macos-aarch64/resources/licenses": {
       "maxBytes": 1000000,
       "baselineBytes": 142493,
-      "source": "g3-licence third-party licence texts (src-tauri/licenses), measured 2026-10-04"
+      "source": "g3-licence third-party licence texts (src-tauri/licenses), measured 2026-10-04",
+      "measuredBytes": 798515,
+      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off; now includes THIRD-PARTY-NOTICES.txt (656,022 bytes)"
     },
     "macos-aarch64/resources/icon.icns": {
       "maxBytes": 1000000,
@@ -110,7 +121,9 @@
     "macos-aarch64/resources/llama": {
       "maxBytes": 66000000,
       "baselineBytes": 59637533,
-      "source": "local v0.4.2 build 2026-09-30"
+      "source": "local v0.4.2 build 2026-09-30",
+      "measuredBytes": 25515197,
+      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off"
     },
     "macos-aarch64/resources/models": {
       "maxBytes": 483000000,
@@ -130,7 +143,9 @@
     "macos-aarch64/app": {
       "maxBytes": 938000000,
       "baselineBytes": 852410676,
-      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off"
+      "source": "local 0.5.0-line bundle-lite build 2026-10-04 (core hup/m2-core + this branch); budget pending owner sign-off",
+      "measuredBytes": 818552274,
+      "measured": "local bundle-lite build 2026-10-04 after the L14 prep (core hup/n7-size-licence-release-prep @ b81a39d: llama runtime pruned to llama-server's dependency closure, Hermes sidecar (runtime hup/n6-everyday-monitor @ 45fceda) strip -x, third-party notices bundled); maxBytes unchanged, budget pending owner sign-off"
     }
   }
 }

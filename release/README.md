@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01
-branch: hup/n3-release-gates (updated on hup/n6-size-licence, 2026-10-04)
+branch: hup/n3-release-gates (updated on hup/n6-size-licence and hup/n7-size-licence-release-prep, 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
 status: active
 ---
@@ -76,10 +76,55 @@ Caveats, honestly:
   `node-agent`), and `mem-mcp` is the 2026-10-01 build with `import-corpus`, because the bundled
   sidecars have not been rebuilt from the merged mains yet (A45). Their rows may move when they are.
 - **Linux and Windows** stay `null` until the DGX team measures the first builds.
-- **Not acted on, two savings found:** `strip -x` on the Hermes sidecar takes it from 29.4 MB to
-  25.4 MB; the llama dylib triplication noted below is still about 40 MB.
+- **Two savings found:** `strip -x` on the Hermes sidecar and the llama dylib triplication noted
+  below. Both are now applied; see the re-measurement that follows.
 
 Owner sign-off: accept these budgets, or ask for the savings first and keep the 0.4.2 budgets.
+
+## Re-measured after the savings (2026-10-04, L14 release prep, pending owner sign-off)
+
+Two changes, both in the release path:
+
+- `scripts/prune-llama-runtime.mjs` keeps only llama-server's dependency closure in the staged
+  llama runtime (walked with `otool -L` from `llama-server`; it refuses if a needed library is
+  missing). It removed 25 files, 34,122,336 bytes: the unversioned and full-version copies of
+  every dylib and seven llama.cpp tool libraries. The 11 Mach-O files it keeps are exactly the ones the
+  runtime's own `llama-server.sha256` lists. The pruned runtime lists the Metal and BLAS devices
+  and completes a prompt on CPU with the bundled Gemma model. release.yml runs it after
+  extracting the runtime tarball.
+- `scripts/build-hermes.sh` installs the sidecar with `strip -x`: 30,072,976 to 25,956,680 bytes
+  for runtime `hup/n6-everyday-monitor` @ 45fceda; the stripped binary starts normally.
+
+A bundle-lite build of this branch (same method as above: lite overlay, `createUpdaterArtifacts:
+false`, Developer ID signed, not notarised; the updater row again a `tar -czf` estimate) with the
+same staged corpus, skills, sidecars (`mem-mcp` the 2026-10-01 `import-corpus` build) and the new
+third-party notices, measured with `node scripts/size-budget.mjs --bundle-dir <copy> --arch aarch64`:
+PASS, 0 over budget.
+
+| Id | Before (2026-10-04) | After | Budget | Use |
+|---|---:|---:|---:|---:|
+| `macos-aarch64/dmg` | 431,684,435 | 420,878,903 | 455,000,000 | 92.5% |
+| `macos-aarch64/app.tar.gz` | 435,081,567 | 424,350,415 | 460,000,000 | 92.3% |
+| `macos-aarch64/app` | 852,410,676 | 818,552,274 | 938,000,000 | 87.3% |
+| `macos-aarch64/resources/llama` | 59,637,533 | 25,515,197 | 66,000,000 | 38.7% |
+| `macos-aarch64/bin/hermes` | 29,442,128 | 25,974,928 | 33,000,000 | 78.7% |
+| `macos-aarch64/bin/citrate-core` | 35,851,840 | 38,834,896 | 40,000,000 | 97.1% |
+| `macos-aarch64/resources/licenses` | 142,493 | 798,515 | 1,000,000 | 79.9% |
+
+Recorded in `budgets.json` as `measuredBytes`; no `maxBytes` changed. Notes:
+
+- The DMG and updater fall by about 10.8 MB, less than the 34 MB the payload loses, because the
+  duplicate dylibs compressed well.
+- `bin/citrate-core` grew 3 MB with the forward merge of main's 0.4.3 line and is at 97.1% of its
+  budget; the next feature on the app binary may need that row raised (owner call).
+- `resources/licenses` now carries `THIRD-PARTY-NOTICES.txt` (656,022 bytes; docs/RELEASE.md step 7).
+- A new resource row, `resources/_up_` (83,798 bytes, the contract templates Tauri copies from
+  `../templates`), has no budget; it reports as `unbudgeted` and only fails under `--strict`.
+- The four v0.4.2 sidecars are still the old builds (A45), as before.
+
+With these savings, a lower budget is now possible (for example DMG and updater 445 MB); the
+recommended default stays the budgets above, approved as they are, CI gating on bundle-lite, and
+Linux and Windows set to the first DGX measurement +5%, rounded up to 5 MB.
 
 ## Budgets (proposed 2026-10-01, superseded for the rows above)
 
@@ -102,7 +147,7 @@ payload 724.5 MB, of which `resources/models` (the bundled BGE embedder) is 438.
 The locally built DMG (362,917,500 bytes) is smaller than the shipped v0.4.2 DMG
 (394,782,331 bytes), so the artifact budgets are set from the shipped assets, the larger of the two.
 
-### Observation, not yet acted on
+### Observation (acted on 2026-10-04, see "Re-measured after the savings")
 
 `resources/llama` holds each llama.cpp dylib three times (`libggml.dylib`, `libggml.0.dylib`,
 `libggml.0.23.0.dylib`, and so on), as regular files of the same size rather than symlinks. They
