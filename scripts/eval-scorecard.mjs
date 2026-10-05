@@ -3,14 +3,15 @@
 // citrate-core: eval scorecard markdown (HUP-S11.2)
 //
 //   node scripts/eval-scorecard.mjs [--in eval/results] [--out <in>/SCORECARD.md]
-//        [--date YYYY-MM-DD] [--branch <name>]
+//        [--date YYYY-MM-DD] [--branch <name>] [--tier T0|T1|T2|none]
 //
 // Reads the JSON scorecards that scripts/eval-tools.mjs (tool-call + injection),
 // scripts/eval-qa.mjs (Citrate QA) and scripts/eval-sidecar.mjs (multi-step workflows and live
 // injection through a real sidecar session) wrote into --in and renders one markdown scorecard:
 // a row per run, the gate g1-eval bars per tier (valid tool calls, workflow step success), and
 // every failure with its deterministic reason. It only reformats what the runs recorded; it computes no new score.
-// With no scorecard in --in it exits 2 and writes nothing (Rule 1). The same renderer runs in
+// With no scorecard in --in (or none of --tier) it exits 2 and writes nothing (Rule 1). --tier
+// renders one tier's rows only (eval.yml writes SCORECARD-<tier>.md for the dispatched tier). The same renderer runs in
 // the manual eval workflow (.github/workflows/eval.yml) for the uploaded artifact.
 // =====================================================================
 import { execFileSync } from "node:child_process";
@@ -18,7 +19,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Gate g1-eval (planset gates.yaml): T1+ >= 90% valid tool calls; T0 bar set from its baseline. */
+/**
+ * Gate g1-eval (planset gates.yaml): T1+ >= 90% valid tool calls. T0 (the guided tier) is held to
+ * the same bars: the ra-20 recommended default, pending owner sign-off. Its cells carry a `*`.
+ */
 export const G1_VALID_TOOL_CALL_BAR = 0.9;
 /** Gate g1-eval's other half: T1+ >= 80% workflow step success (gates.yaml; pending owner sign-off, A43). */
 export const G1_STEP_SUCCESS_BAR = 0.8;
@@ -109,19 +113,31 @@ export function loadScorecards(dir) {
 const pct = (r) => (r === null || r === undefined ? "n/a" : `${(r * 100).toFixed(1)}%`);
 const cell = (s) => String(s).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 
-function g1(sc) {
-  if (sc.tier === "T1" || sc.tier === "T2") {
-    return sc.validToolCallRate !== null && sc.validToolCallRate >= G1_VALID_TOOL_CALL_BAR ? "met" : "not met";
-  }
-  if (sc.tier === "T0") return "T0 bar";
-  return "no tier";
+/** T0 is held to the T1 bars pending owner sign-off (ra-20); its verdict is marked with `*`. */
+export const T0_BAR_NOTE =
+  "\\* T0 is held to the T1 bars (>= 90% valid tool calls, >= 80% workflow step success): the recommended default, pending owner sign-off (ra-20).";
+
+function barVerdict(tier, rate, bar) {
+  if (tier !== "T0" && tier !== "T1" && tier !== "T2") return "no tier";
+  const met = rate !== null && rate !== undefined && rate >= bar ? "met" : "not met";
+  return tier === "T0" ? `${met}*` : met;
 }
 
-function g1Steps(sc) {
-  const r = sc.workflow?.stepSuccessRate;
-  if (sc.tier === "T1" || sc.tier === "T2") return r !== null && r !== undefined && r >= G1_STEP_SUCCESS_BAR ? "met" : "not met";
-  if (sc.tier === "T0") return "T0 bar";
-  return "no tier";
+const g1 = (sc) => barVerdict(sc.tier, sc.validToolCallRate, G1_VALID_TOOL_CALL_BAR);
+const g1Steps = (sc) => barVerdict(sc.tier, sc.workflow?.stepSuccessRate, G1_STEP_SUCCESS_BAR);
+
+export const SCORECARD_TIER_NAMES = ["T0", "T1", "T2", "none"];
+
+/** The cards of one tier ("none" = the rows with no tier label). */
+export function filterByTier(cards, tier) {
+  if (!SCORECARD_TIER_NAMES.includes(tier)) throw new Error(`--tier must be T0, T1, T2 or none (got ${tier})`);
+  const keep = (e) => (tier === "none" ? e.sc.tier === undefined || e.sc.tier === null : e.sc.tier === tier);
+  return {
+    tools: cards.tools.filter(keep),
+    qa: cards.qa.filter(keep),
+    sidecar: (cards.sidecar ?? []).filter(keep),
+    skipped: cards.skipped ?? [],
+  };
 }
 
 function failureLines(entries) {
@@ -147,7 +163,7 @@ export function splitFrontmatter(md) {
 
 /**
  * @param {{tools: {file:string, sc:any}[], qa: {file:string, sc:any}[], sidecar?: {file:string, sc:any}[]}} cards
- * @param {{created: string, branch: string, source: string}} meta
+ * @param {{created: string, branch: string, source: string, tier?: string}} meta
  */
 export function renderScorecardMarkdown(cards, meta) {
   const out = [
@@ -166,12 +182,13 @@ export function renderScorecardMarkdown(cards, meta) {
     "Scoring is deterministic, with no model-as-judge. Regenerate with",
     "`node scripts/eval-scorecard.mjs` after adding a result; do not edit by hand.",
     "",
+    ...(meta.tier ? [`Tier: **${meta.tier}** only.`, ""] : []),
     "## Tool calls and prompt injection",
     "",
   ];
   if (cards.tools.length) {
     out.push(
-      "| file | model | tier | dataset | n | valid tool call | correct tool | args ok | injection resist | failures | g1 valid >= 90% (T1+) |",
+      "| file | model | tier | dataset | n | valid tool call | correct tool | args ok | injection resist | failures | g1 valid >= 90% |",
       "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|",
     );
     for (const { file, sc } of cards.tools) {
@@ -181,6 +198,7 @@ export function renderScorecardMarkdown(cards, meta) {
           `${pct(sc.injectionResistRate)} | ${sc.failures.length} | ${g1(sc)} |`,
       );
     }
+    if (cards.tools.some((e) => e.sc.tier === "T0")) out.push("", T0_BAR_NOTE);
   } else {
     out.push("No tool-call scorecard in this set.");
   }
@@ -205,7 +223,7 @@ export function renderScorecardMarkdown(cards, meta) {
   const wf = sidecar.filter((e) => e.sc.workflow);
   if (wf.length) {
     out.push(
-      "| file | model | tier | dataset | workflows | steps | step success | judged-step success | workflow success | g1 steps >= 80% (T1+) |",
+      "| file | model | tier | dataset | workflows | steps | step success | judged-step success | workflow success | g1 steps >= 80% |",
       "|---|---|---|---|---:|---:|---:|---:|---:|---|",
     );
     for (const { file, sc } of wf) {
@@ -220,6 +238,7 @@ export function renderScorecardMarkdown(cards, meta) {
       "Step success counts a step after a failed one as not passed; judged-step success divides by the",
       "steps whose answer reached the verifiers. The 80% bar is the planset value, pending owner sign-off.",
     );
+    if (wf.some((e) => e.sc.tier === "T0")) out.push("", T0_BAR_NOTE);
   } else {
     out.push("No workflow scorecard in this set.");
   }
@@ -258,10 +277,10 @@ export function renderScorecardMarkdown(cards, meta) {
 }
 
 const USAGE =
-  "usage: node scripts/eval-scorecard.mjs [--in eval/results] [--out <in>/SCORECARD.md] [--date YYYY-MM-DD] [--branch <name>]";
+  "usage: node scripts/eval-scorecard.mjs [--in eval/results] [--out <in>/SCORECARD.md] [--date YYYY-MM-DD] [--branch <name>] [--tier T0|T1|T2|none]";
 
 function parseArgs(argv) {
-  const flags = { "--in": "in", "--out": "out", "--date": "date", "--branch": "branch" };
+  const flags = { "--in": "in", "--out": "out", "--date": "date", "--branch": "branch", "--tier": "tier" };
   const out = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -273,6 +292,9 @@ function parseArgs(argv) {
   }
   if (out.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(out.date)) {
     throw new Error(`--date must be YYYY-MM-DD (got ${out.date})`);
+  }
+  if (out.tier !== undefined && !SCORECARD_TIER_NAMES.includes(out.tier)) {
+    throw new Error(`--tier must be T0, T1, T2 or none (got ${out.tier})`);
   }
   return out;
 }
@@ -303,8 +325,9 @@ function main() {
     process.exit(2);
   }
   for (const f of cards.skipped) console.error(`skipped ${f} (not a tool-call, QA or sidecar scorecard)`);
+  if (args.tier) cards = filterByTier(cards, args.tier);
   if (cards.tools.length + cards.qa.length + cards.sidecar.length === 0) {
-    console.error(`no scorecards in ${inDir}; nothing written.`);
+    console.error(`no scorecards${args.tier ? ` for tier ${args.tier}` : ""} in ${inDir}; nothing written.`);
     process.exit(2);
   }
   const outFile = path.resolve(root, args.out ?? path.join(inDir, "SCORECARD.md"));
@@ -313,6 +336,7 @@ function main() {
     created: args.date ?? new Date().toISOString().slice(0, 10),
     branch: args.branch ?? currentBranch(root),
     source: rel && !rel.startsWith("..") ? rel : inDir,
+    tier: args.tier,
   });
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
   fs.writeFileSync(outFile, md);

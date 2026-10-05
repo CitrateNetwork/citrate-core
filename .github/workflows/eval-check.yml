@@ -1,0 +1,82 @@
+# created: 2026-10-04 | branch: hup/n7-eval-ci
+# author: Larry Klosowski + Claude Opus 5.5
+# status: active
+#
+# HUP-S11.2 (US-11.2): the deterministic eval check, on every pull request into main or a release
+# branch. It calls NO model and holds NO secret, so it is cheap, fast and safe on any PR:
+#
+#   - the eval datasets (toolcall v1/v2, injection v1/v2, workflow-v1, every qa-* set) load
+#     through the same validators the eval CLIs use, against the real AGENT_TOOLS;
+#   - src/agent/eval/datasets.sha256 pins every dataset file, and the frozen v1 pins (A50) hold;
+#   - skills.lock is recomputed from the third-party skill sources at the commits it pins
+#     (shallow public fetches) and must match byte for byte;
+#   - the committed eval/results/SCORECARD.md matches a fresh render of its JSON, and a
+#     SCORECARD-<tier>.md renders for every tier with results (uploaded as an artifact);
+#   - eval/sidecar-runtime.rev pins a full runtime commit for the sidecar suite.
+#
+# All of it is scripts/eval-check.mjs; run it locally with `node scripts/eval-check.mjs`.
+# The model runs themselves stay manual (eval.yml, workflow_dispatch only).
+
+name: eval-check
+
+on:
+  pull_request:
+    branches: [main, "release/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval-check:
+    name: eval-check (datasets, pins, skills.lock, scorecard; no model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Node >= 22.18 strips TypeScript types natively: no package install, nothing from the registry.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Fetch the skill sources skills.lock pins
+        run: node scripts/eval-check.mjs --fetch-skill-sources "$RUNNER_TEMP/skill-sources"
+
+      - name: Eval check
+        run: node scripts/eval-check.mjs --skills-sources "$RUNNER_TEMP/skill-sources"
+
+      - name: Render SCORECARD-<tier>.md from the committed results
+        run: |
+          out="$RUNNER_TEMP/scorecards"
+          mkdir -p "$out"
+          rendered=0
+          for tier in T0 T1 T2 none; do
+            set +e
+            node scripts/eval-scorecard.mjs --in eval/results --out "$out/SCORECARD-$tier.md" \
+              --tier "$tier" --branch "$GITHUB_REF_NAME"
+            status=$?
+            set -e
+            # Exit 2 = no scorecard for this tier (nothing written); anything else is a failure.
+            if [ "$status" -eq 0 ]; then
+              rendered=$((rendered + 1))
+              cat "$out/SCORECARD-$tier.md" >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+          done
+          [ "$rendered" -gt 0 ] || { echo "::error::no tier rendered a scorecard"; exit 1; }
+
+      - name: Upload the per-tier scorecards
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: eval-check-scorecards-${{ github.run_id }}
+          path: ${{ runner.temp }}/scorecards/
+          if-no-files-found: error
+          retention-days: 14

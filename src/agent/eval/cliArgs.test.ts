@@ -52,12 +52,13 @@ describe("parseEvalCliArgs", () => {
       allowRemote: false,
       tier: "T1",
       outDir: "eval/results",
-      datasets: "v1",
+      datasets: "v2",
     });
   });
-  it("--datasets picks v1 (default) or v2 and refuses anything else (A50)", () => {
+  it("--datasets picks v2 (default, HUP-S11.2) or v1 and refuses anything else (A50)", () => {
     const base = ["--base-url", "http://127.0.0.1:1/v1", "--model", "m"];
-    expect(parseEvalCliArgs(base).datasets).toBe("v1");
+    expect(parseEvalCliArgs(base).datasets).toBe("v2");
+    expect(parseEvalCliArgs([...base, "--datasets", "v1"]).datasets).toBe("v1");
     expect(parseEvalCliArgs([...base, "--datasets", "v2"]).datasets).toBe("v2");
     expect(() => parseEvalCliArgs([...base, "--datasets", "v3"])).toThrow(/--datasets/);
   });
