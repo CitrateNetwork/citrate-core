@@ -3,6 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
+updated: 2026-10-05 (owner decision: O-18 accepted as D-15; AppExitCoordinator invariants restated)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -166,6 +167,25 @@ external kill), `RepeatTrigger`.
   reports `Complete` for an owner it did not observe. Mutant: `Terminate` exits without a
   drain; X-10 must fail.
 - These changes are SCL-S1.7.
+
+*Owner decision (2026-10-05, O-18 accepted, D-15): Quit always ends.* The corrections above
+are now the locked rule, not a proposal. The normative invariant set for
+`AppExitCoordinator.tla` is the table above with these restatements (the original rows stay
+visible for the record):
+
+| Id | Name | Statement (governs) |
+|---|---|---|
+| X-2 | `NoFinalBeforeComplete` | `final \in {Restart, Installer}` implies every owner is `Complete` and `deadlineLeft > 0` at admission. It does not constrain `final = Exit` |
+| X-5 | `ExpiredNeverAuthorizes` | after `Expire`, `FinalAction` with `final \in {Restart, Installer}` is disabled until an explicit retry trigger |
+| X-11 | `QuitAlwaysTerminates` | under weak fairness of `Tick`, a `Quit` or `Reset` trigger reaches `app = Exited` with `reported \in {Complete, Incomplete}`; `reported = Complete` only if every owner and `hermesChildren` are `Complete` |
+| X-12 | `QuitActuatesHeldScopes` | (new) `app = Exited` after an expired `Quit` or `Reset` implies a `FinalActuation` step on every owner still in `Draining` occurred first, and `reported = Incomplete`. Mutant `AppExitCoordinator_MutQuitNoActuation.cfg`: exit at the deadline without the final actuation; X-12 must fail |
+| L-1 | `CloseTerminates` | restated: `<>(app = Exited)` for `Quit` and `Reset`; `<>(app = Exited \/ reported = Incomplete)` for `Restart` and `Installer` |
+
+X-8 (`ForceExitNeverComplete`) is unchanged and still holds: neither an expired Quit nor a
+force exit is ever reported `Complete`. Model `FinalActuation(o)` as an action enabled only
+after `Expire` on a `Quit` or `Reset` trigger. In the v0.5.0 cut (D-2 amended) the actuation
+reaches direct children only; the group and Job forms arrive with S9 and S10 and do not change
+the invariant. These are part of SCL-S1.7 and of `g0-formal`.
 
 ## 3. Optional third module
 

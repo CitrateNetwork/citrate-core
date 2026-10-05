@@ -3,6 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: scl/s0-precut-safety (PRs into release/0.5.0-hermes-upskill; private items through the #298 route)
 author: Larry Klosowski + Claude Opus 5.5
 status: active
+updated: 2026-10-05 (owner decision: SCL-S0 is in the v0.5.0 cut-blocking subset, D-2 amended)
 sprint: SCL-S0
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -50,6 +51,11 @@ on a Windows feed and is not part of `g1-precut`; S0.7 covers the path Windows m
 S0.6's per-OS update run means the macOS in-app update and the manual Linux and Windows
 installs.
 
+*Owner decision (2026-10-05, O-20 accepted, D-2 amended):* every WP of this sprint is in the
+v0.5.0 cut-blocking subset, including S0.7. S0.2 stays conditional (no Windows updater feed in
+0.5.0), so it has nothing to gate at the cut and is tracked as 0.5.x follow-up until a Windows
+feed exists. `g1-precut` is tagged `blocks_cut: true`.
+
 ## Exit criteria
 
 Gate criterion `g1-precut` in the SCL [gates.yaml](../../../planset/2026-10-05-sidecar-lifecycle/gates.yaml):
@@ -77,3 +83,5 @@ PR in `EVIDENCE.md`. Baseline: taken at the first PR from `release/0.5.0-hermes-
 - 2026-10-05: sprint opened with the Stage-1 planset (docs only). No code yet.
 - 2026-10-05: planset red-teamed (08_RED_TEAM, 29 findings, 3 blocking). S0.7 added, S0.2
   made conditional. Still docs only.
+- 2026-10-05: owner decisions recorded (O-20 accepted: SCL-S0 blocks the v0.5.0 cut; O-18 and
+  O-19 accepted; red-team pass accepted). No change to the S0 WPs. Still docs only.

@@ -3,6 +3,7 @@ created: 2026-10-05T23:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5 (adversarial red-team pass)
 status: planset (Stage-2, red-teamed)
+updated: 2026-10-05 (owner disposition appended; findings above unchanged)
 red_teamed: 2026-10-05 (adversarial pass in a fresh context; 29 findings, 3 blocking)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -152,3 +153,24 @@ Gates that need hardware the program may not control:
 | O-18 | What happens when Quit's deadline expires with an owner `Incomplete`? | Quit and the factory-reset exit proceed after a final actuation of every OS-process scope still held, record `Incomplete`, and report it at next launch. Install and restart still require `Complete` (RT-02) |
 | O-19 | Can readiness changes switch chat from the local model to the remote gateway? | No. Only a `Failed`, `Stopped` or `Quarantined` local owner allows `LocalFallback`; `Awaiting` and `Stale` wait or fail honestly (RT-12) |
 | O-20 | Keep every SCL gate cut-blocking, or split cut-blocking from 0.5.0-line follow-up? | Owner's call (D-2 stands until changed). The split in RT-29 is offered as the schedule lever |
+
+## Owner disposition (2026-10-05)
+
+Appended after the pass; the findings above are unchanged.
+
+- **This pass is accepted** as the pre-Stage-2 red-team. The owner accepted a single-model
+  red-team pass on 2026-10-05 (commit `2db312f`); `g0-redteam` is met (D-17). The
+  independence note above still describes how the pass ran. The red-team on merged code
+  (SCL-S15.2) is unchanged.
+- **O-18 accepted** (D-15): install and restart require `Complete`; Quit force-stops what it
+  still owns and exits, reporting `Incomplete`. Resolves RT-02.
+- **O-19 accepted** (D-16): while the local model is cold-loading or its probe times out, chat
+  waits or tells the member; it never routes the prompt to the remote gateway without the
+  member's explicit choice. Resolves RT-12; `g3-provider-routing` blocks the cut.
+- **O-20 accepted** (D-2 amended): the v0.5.0 cut is gated on a cut-blocking subset; the rest
+  finishes on 0.5.x under this planset. The subset differs from the RT-29 suggestion: the
+  shared containment crate and Unix group containment (S9) and most of the manager migrations
+  are 0.5.x, and a minimum Hermes child report (S11.4, S11.5a, S11.6) is in the cut. See 05
+  "Owner decision (2026-10-05)".
+- RT-01 and RT-03 are resolved in the plan by S12.6 and by the re-scope to the manual
+  installer path with S0.7; both are in the cut.

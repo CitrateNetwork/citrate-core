@@ -4,6 +4,7 @@ branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
+updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18 and O-19 accepted as D-15 and D-16; red-team pass accepted as D-17)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core (primary); citrate-agent-runtime (Hermes-sidecar children, shared containment crate, via federation sprint)
@@ -66,7 +67,7 @@ Locked 2026-10-05 by the owner. Reversing any of these requires a superseding AD
 | # | Decision | Choice | Date |
 |---|---|---|---|
 | D-1 | Base design | **Adopt ADR-0001 / SPEC-001** (lifecycle cell per service, intent sequence and generation fencing, acknowledged controls, bounded probes, byte-bounded diagnostics, exit coordinator, retained-anchor Unix containment) by reference. Our deltas live in the adoption ADR | 2026-10-05 |
-| D-2 | Release | **All of SC1 to SC8 ship in v0.5.0.** The 0.5.0 cut is gated on the SCL gates in [gates.yaml](gates.yaml). The 40204 reroll proceeds independently and is not gated on SCL | 2026-10-05 |
+| D-2 | Release | **All of SC1 to SC8 ship in v0.5.0.** The 0.5.0 cut is gated on the SCL gates in [gates.yaml](gates.yaml). The 40204 reroll proceeds independently and is not gated on SCL. *Owner decision (2026-10-05): superseded by D-2 (amended) below* | 2026-10-05 |
 | D-3 | Home | Separate planset at `.agentile/planset/2026-10-05-sidecar-lifecycle/` (code **SCL**) in citrate-core, plus the adoption ADR `docs/adr/ADR-2026-10-05-owned-sidecar-lifecycle.md`. The contributor's `docs/adr/0001-owned-sidecar-lifecycle.md` and `docs/specs/001-owned-sidecar-lifecycle.md` merge to core `main` from #241 and reach the release line by forward merge. We never edit them (they carry a `content_sha256` lock) | 2026-10-05 |
 | D-4 | Runtime model | Keep the std monitor thread per service. **No Tokio migration**, no generic durable operation registry, no new process-management crate | 2026-10-05 |
 | D-5 | Scope | **All 34 process kinds.** The 9 supervised kinds use the lifecycle cell. The 25 bespoke kinds use a registered ownership handle: 12 in core, 3 node descendants through the node's containment, 10 Hermes-sidecar children through the same contract in citrate-agent-runtime | 2026-10-05 |
@@ -79,8 +80,16 @@ Locked 2026-10-05 by the owner. Reversing any of these requires a superseding AD
 | D-12 | Status DTO | Phase adds `stopping` and `quarantined`; readiness is a separate field (`NotAssessed`, `Awaiting`, `Ready`, `Stale`, `Unavailable`); counters cross to JavaScript as decimal strings and are compared numerically; `Accepted` never means `Complete` | 2026-10-05 |
 | D-13 | Diagnostics | Byte-bounded capture and crash sink, using the contributor's numbers (16 KiB line, 256 KiB and 500 entries per ring, 64 KiB snapshot, 2 concurrent snapshots, 8 KiB crash record, 64 queued, 2 x 16 MiB rotated files) as **starting values**, measured on packaged builds before the gate flips | 2026-10-05 |
 | D-14 | Keeping it fixed | A **standing lifecycle fault-injection suite** is a required CI check; a named cross-cutting owner for the supervisor contract; a red-team pass on merged code, not only on plans (see "How this was missed") | 2026-10-05 |
+| D-2 (amended) | Release (O-20 accepted) | **Owner decision (2026-10-05).** The v0.5.0 cut is gated on a **cut-blocking subset** of SCL: every criterion marked `blocks_cut: true` in [gates.yaml](gates.yaml). Everything else in SCL finishes on the 0.5.x line under this same planset (still owned, still gated, not blocking the cut). The subset is in [Cut-blocking subset](#owner-decision-2026-10-05-cut-blocking-subset). The 40204 reroll stays independent of SCL | 2026-10-05 |
+| D-15 | Quit always ends (O-18 accepted) | **Owner decision (2026-10-05).** Install and restart require `Complete`. Quit (and the factory-reset exit) force-stops every OS-process scope it still owns at the deadline and exits, reporting `Incomplete`; ownership records of anything not observed absent stay for next-launch cleanup, and the next launch tells the member. In-process threads never keep the app alive | 2026-10-05 |
+| D-16 | No silent gateway fallback (O-19 accepted) | **Owner decision (2026-10-05).** While the local model is cold-loading or its probe times out, chat waits or tells the member; it never routes the prompt to the remote gateway without the member's explicit choice. Readiness gates admission to the local server and never switches provider by itself. Criterion `g3-provider-routing` blocks the cut | 2026-10-05 |
+| D-17 | Red-team gate | **Owner decision (2026-10-05).** The single-model adversarial pass in [08_RED_TEAM](08_RED_TEAM.md) (commit `2db312f`) is accepted as the pre-Stage-2 red-team; `g0-redteam` is met. The red-team on merged code (SCL-S15.2) is unchanged | 2026-10-05 |
 
 ## Owner decisions (recommended default, pending owner sign-off)
+
+*Owner decision (2026-10-05):* O-1 to O-17 below remain recommended defaults, pending owner
+sign-off. O-18, O-19 and O-20 (raised in 08) are decided and locked as D-15, D-16 and D-2
+(amended).
 
 These came out of the reconciliation research. Each row is the **recommended default,
 pending owner sign-off**. The planset is written to these defaults; a different owner answer
@@ -145,10 +154,58 @@ native-run windows (RT-25, S14.5); Hermes-first drain with a sub-deadline (RT-26
 **Owner decisions added (recommended defaults, pending sign-off):** O-18 (quit with
 `Incomplete`), O-19 (no silent local-to-gateway switch), O-20 (optionally split cut-blocking
 gates from 0.5.0-line follow-up; D-2 stands until the owner changes it). Text in 08.
+*Owner decision (2026-10-05):* all three accepted, locked as D-15 (O-18), D-16 (O-19) and D-2
+(amended) (O-20). The owner also accepted this pass as the pre-Stage-2 red-team (D-17).
 
 **Estimate:** about 280 agent-days of total effort; a critical path of about 70 to 92
 agent-days, which is roughly 10 to 14 calendar weeks with parallel lanes. A cut that waits on
 every SCL gate lands about mid-December 2026 to mid-January 2027 (08 "Critical path").
+*Owner decision (2026-10-05):* superseded for the cut by the cut-blocking estimate below.
+
+## Owner decision (2026-10-05): cut-blocking subset
+
+O-20 accepted, D-2 amended. The v0.5.0 cut waits only for the left column. The right column
+finishes on the 0.5.x line under this planset, gated by the `blocks_cut: false` criteria in
+[gates.yaml](gates.yaml). WP-level detail, the reasons for every move between columns and
+the dependency graph are in
+[05 "Owner decision (2026-10-05)"](05_SPRINTS_AND_WPS.md#owner-decision-2026-10-05-cut-blocking-subset).
+
+| Cut-blocking (v0.5.0) | 0.5.x follow-up (same planset, still gated) |
+|---|---|
+| **Pre-cut safety:** all of SCL-S0 that applies to 0.5.0 (S0.1, S0.3 to S0.7), including the Windows NSIS pre-install stop of this installation's own sidecars (S0.7, RT-04) | S0.2, conditional on a Windows updater feed (none in 0.5.0, RT-03) |
+| **Theory (gate0):** supervisor TLA extension, `AppExitCoordinator.tla`, fault harness, re-grounding and baseline, Windows and macOS CI lanes (S1.6), TLA corrections (S1.7) | `OwnedContainment.tla`, if needed |
+| **Primitive:** SC1 acknowledged controls (S2), SC2 readiness and retry credit (S3), SC3 bounded probes (S4), SC4 bounded diagnostics (S5) | (none) |
+| **Supervised owners:** llama chat and embed readiness (S7.1), provider routing under D-16 (S7.5), node watchdog maps the real Stop receipt (S6.4a); all 9 services on the new cell through the O-2 compatibility layer | Node, node agent, memory, IPFS, Comms, Cluster and Hermes manager migrations and their consumers (S6.1 to S6.3, S6.4b, S7.2 to S7.4) |
+| **Core cleanup:** ownership registry and spawn tripwire (S8.1), recorded-ownership cleanup replaces the name/path sweep for core-spawned processes (S8.3), startup barrier and database-lock check for #243 (S8.5) | Bespoke kinds onto the registry (S8.2), node descendants contained (S8.4) |
+| **Hermes children (minimum):** runtime Closing gate and child report so Hermes can be observed `Complete` (S11.4, S11.5a, S11.6) | All 25 bespoke and Hermes-sidecar children under the full contract (S11.1 to S11.3b, S11.5b, S11.7) |
+| **Containment:** none; Quit's final actuation reaches direct children | Shared containment crate and Unix group containment (S9), Windows Job objects (S10) |
+| **Exit, quit, update:** coordinator (S12.1), raw `process:default` and `updater:default` removed (S12.2), factory reset and #243 reset through `Complete` (S12.3), cut exit-path matrix (S12.5a), synchronous macOS quit fallback (S12.6, RT-01), Quit always ends (S12.7, D-15), `UpdateStaged` and the other Closing edges (S12.8, RT-20) | Frontend observer (S12.4), exit-matrix rows for Hermes children and Windows Job (S12.5b) |
+| **Keeping it fixed:** standing fault-injection suite as a required CI check on three OSes for every fixture of the cut, tripwire, mutation pass, TLC in CI, CODEOWNERS (S13) | New fixtures join the same check as 0.5.x WPs land |
+| **Native:** packaged macOS acceptance of the subset (S14.1 cut, S14.4 macOS budgets), Linux smoke on the DGX (S14.6), Windows S0.7 run, native-run calendar (S14.5) | Full three-OS native acceptance (S14.1 to S14.4) |
+| **Red-team:** pre-Stage-2 pass accepted (D-17); red-team of the merged cut code (S15.2, S15.3 slice) | Red-team of the 0.5.x remainder |
+
+**Moved by dependency** (not on the owner's list): S1.4 and S1.5, S6.4a, S8.1, S11.4, S11.5a
+and S11.6, S12.1, S12.3, all of S12.8, S13.5, the S14.4 macOS slice and S14.5. The one that
+matters most: D-15 keeps Restart and install requiring `Complete`, and Hermes is `Complete`
+only when its children are (X-7), so without the runtime's child report the macOS update
+restart would be refused whenever Hermes runs. **Moved out:** S0.2 (no Windows feed in
+0.5.0). **Residual at the cut:** bug (e) stays open for descendants of supervised services
+until S9 to S11.
+
+**Estimate** (S = 1, M = 3, L = 7 agent-days; reviews, native runs and sign-offs do not
+compress):
+
+| | Cut-blocking subset | 0.5.x remainder |
+|---|---|---|
+| Work packages | 53 | 34 |
+| Total effort | about 165 agent-days | about 135 agent-days |
+| Critical path | about 51 to 70 agent-days | about 47 to 54 agent-days |
+| Calendar, 4 to 5 parallel lanes | 7 to 10 weeks: cut about late November to mid-December 2026 | 7 to 9 weeks after the cut (4 to 6 if containment lanes start before it): about mid-January to mid-February 2027 |
+
+The single-cut plan landed the cut about mid-December 2026 to mid-January 2027. The split
+saves three to four weeks on the cut, because the longest chain (gate0, S2 to S4, owners,
+coordinator, native, red-team) is shared. The larger gain is risk: the cut no longer waits on
+the Windows Job mechanism or a full Windows native window.
 
 ## Architecture at a glance
 
@@ -237,6 +294,7 @@ The app **refuses** an action unless all of these hold:
    installer launch**. Quit and the factory-reset exit proceed at the deadline after a final
    actuation of every OS-process scope still held, and are reported `Incomplete`, never
    `Complete`.
+   *Owner decision (2026-10-05):* O-18 accepted (D-15); this correction is the locked rule.
 5. **Custody unchanged.** Generation-owned cleanup never deletes a key or credential that
    a newer generation uses, and preserves the #243 keep-list. Nothing in SCL signs.
 6. **@rule8 review** for the WPs that change process-spawn-sensitive code (SCL-S8.3, S9,
@@ -245,7 +303,8 @@ The app **refuses** an action unless all of these hold:
 
 ## Release coupling
 
-D-2 makes the SCL gates part of the v0.5.0 cut. The HUP release gates carry one added line
+D-2 makes the SCL gates part of the v0.5.0 cut. *Owner decision (2026-10-05): D-2 amended;
+only the criteria marked `blocks_cut: true` are part of the cut, and `g5-scl` says so.* The HUP release gates carry one added line
 (`g5-scl` in [HUP gates.yaml](../2026-09-30-hermes-upskill/gates.yaml)) that points here.
 Nothing else in the HUP planset changes. The SCL program's own gates are in
 [gates.yaml](gates.yaml). The 40204 reroll is not gated on SCL.

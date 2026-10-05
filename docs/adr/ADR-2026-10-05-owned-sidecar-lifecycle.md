@@ -2,7 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: proposed (Stage-2, red-teamed; pending owner sign-off; changes nothing until accepted)
+status: proposed (Stage-2, red-teamed; owner decisions O-18, O-19, O-20 and the red-team pass accepted 2026-10-05; ADR acceptance (g0-adr) still pending; changes nothing until accepted)
+updated: 2026-10-05 (owner decisions: D-2 amended to a cut-blocking subset; O-18, O-19 locked; red-team pass accepted)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -42,6 +43,12 @@ the links resolve only in #241, and `g0-adr` cannot flip.
 home, base design and the deltas below). Acceptance of this ADR is gate criterion `g0-adr`.
 Owner decisions O-1 to O-17 in the planset are recommended defaults, pending owner sign-off.
 
+*Owner decision (2026-10-05):* the owner accepted O-20 (D-2 amended: the v0.5.0 cut is gated
+on a cut-blocking subset), O-18 (locked as D-15) and O-19 (locked as D-16), and accepted the
+single-model red-team pass as the pre-Stage-2 red-team (D-17, `g0-redteam` met). O-1 to O-17
+remain recommended defaults pending sign-off. The ADR as a whole is still proposed until
+`g0-adr` flips. See "Owner decisions (2026-10-05)" below.
+
 ## Context
 
 - The shared supervisor (`kit/src/supervisor.rs`) is byte-identical on `main` at `30c789e`
@@ -72,6 +79,10 @@ Owner decisions O-1 to O-17 in the planset are recommended defaults, pending own
 3. **Ship in v0.5.0** (owner, 2026-10-05). All of SC1 to SC8, plus the deltas, are gated by
    the SCL gates; the HUP v0.5.0 release gate depends on them. The 40204 reroll is not gated
    on SCL.
+   *Owner decision (2026-10-05, O-20 accepted, D-2 amended):* superseded. The v0.5.0 cut is
+   gated on the SCL criteria marked `blocks_cut: true`; the rest of SC1 to SC8 and the deltas
+   finish on the 0.5.x line under the same planset, still gated (`blocks_cut: false`). The
+   HUP `g5-scl` line points at the cut-blocking criteria.
 
 ### Deltas from ADR-0001 / SPEC-001
 
@@ -84,7 +95,7 @@ Owner decisions O-1 to O-17 in the planset are recommended defaults, pending own
 | Δ-5 | Nested ownership | Not addressed | The Hermes sidecar owns its children, keeps its own anchors, writes ownership records core can read, and acknowledges child cleanup inside Hermes Stop | Children that start their own session or group are outside a group signal to Hermes |
 | Δ-6 | Drain order | All owners concurrently | Hermes and its children first, then the rest concurrently, inside one absolute deadline (O-11, pending sign-off) | Hermes depends on the node and memory |
 | Δ-7 | Exit paths covered | Quit, restart, update install | Adds factory reset, the Hermes setting-change restart and the #243 chain reset (which runs only after the node owner reports `Complete`) | Every path that ends or replaces a process |
-| Δ-8 | Release | No release approval implied | Ships in v0.5.0; SCL gates gate the cut | Owner decision 2026-10-05 |
+| Δ-8 | Release | No release approval implied | Ships in v0.5.0; SCL gates gate the cut. *Owner decision (2026-10-05): amended; only the cut-blocking subset gates the cut, the rest ships on 0.5.x* | Owner decision 2026-10-05 |
 | Δ-9 | Keeping it fixed | Future acceptance tests | A **standing fault-injection suite** as a required CI check on three OSes, a manifest tripwire so fixtures cannot be dropped without an ADR, TLA+ mutant configs that must reproduce bugs (a) to (c), a named cross-cutting owner, and a red-team pass on merged code | The prior model and tests were green while all five defects were present |
 | Δ-10 | Formal model | Not specified | Extend `SidecarSupervisor.tla` (intent and generation fencing, attested retry credit, probe permit) and add `AppExitCoordinator.tla` | Rule 9: extend, do not duplicate |
 | Δ-11 | Thread budget | 35 (43 with Windows Comms slots) | 38 (46) for 9 cells, plus a bounded bespoke reader pool; ceilings to measure (O-5) | Embed counted as its own owner |
@@ -105,11 +116,13 @@ where it conflicts):*
 - **Δ-6 (RT-26):** Hermes-first drain keeps a sub-deadline so a slow Hermes cannot consume the
   whole close deadline.
 - **D-8 / SPEC-001 shutdown (RT-01, RT-02):** the coordinator also needs a synchronous drain
-  mode for unpreventable macOS terminations, and Quit must always end (proposed O-18).
+  mode for unpreventable macOS terminations, and Quit must always end (proposed O-18;
+  *accepted by the owner 2026-10-05 as D-15*).
 - **SC6 routing (RT-12):** fresh `Ready` must not move chat to the remote gateway by itself
-  (proposed O-19).
+  (proposed O-19; *accepted by the owner 2026-10-05 as D-16*).
 - **Δ-13:** the pass recorded in 08 ran in a fresh context on the same model family that wrote
   Stage-1; the owner decides whether it satisfies "second model" (`g0-redteam`).
+  *Owner decision (2026-10-05):* accepted as sufficient (D-17); `g0-redteam` is met.
 
 Unchanged from SPEC-001 and adopted as written: no Tokio migration; no generic durable
 operation registry; no new process-management crate; std monitor as sole process writer;
@@ -118,6 +131,22 @@ locked exactly this split); the status DTO with `stopping` and `quarantined` and
 string counters; the diagnostic budgets as starting values to be measured; removal of the
 raw `process:default` and `updater:default` capabilities in favor of native coordinated
 commands; force exit and crashes are never reported as `Complete`.
+
+## Owner decisions (2026-10-05)
+
+Recorded as locked decisions in the planset's
+[00_OVERVIEW](../../.agentile/planset/2026-10-05-sidecar-lifecycle/00_OVERVIEW.md#locked-decisions).
+
+| # | Decision | Replaces |
+|---|---|---|
+| D-2 (amended) | **Split the gates (O-20).** The v0.5.0 cut is gated on a cut-blocking subset: SCL-S0; the gate0 theory items it needs; SC1 to SC4 (S2 to S5); the exit, quit and update correctness for 0.5.0 (synchronous macOS quit fallback, Quit always ends, macOS updater coordination with `UpdateStaged`, raw process and updater capabilities removed, the Windows NSIS pre-install stop); the #243 startup barrier and database-lock check; recorded-ownership cleanup for core-spawned processes; provider routing and llama readiness; the standing fault suite for the subset; red-team of the merged subset; packaged macOS acceptance and a Linux smoke. The rest (remaining manager migrations, the Hermes-sidecar children beyond a minimum child report, shared containment and Unix group containment, Windows Job objects, full three-OS acceptance) finishes on 0.5.x under the same planset. Table and estimate: planset 00 and 05 | Decision 3 and Δ-8 as first written |
+| D-15 | **Quit always ends (O-18).** Install and restart require `Complete`. Quit force-stops what it still owns and exits, reporting `Incomplete` | Safety gate 4 as first written; X-2, X-5 for Quit |
+| D-16 | **No silent gateway fallback (O-19).** While the local model is cold-loading or its probe times out, chat waits or tells the member; it never routes the prompt to the remote gateway without the member's explicit choice. Blocks the cut | Implicit `LocalFallback` on readiness |
+| D-17 | **Red-team gate.** The single-model red-team pass (planset 08, commit `2db312f`) is accepted as the pre-Stage-2 red-team | Δ-13's "second model" condition for `g0-redteam` |
+
+Estimate for the cut-blocking subset: about 165 agent-days of effort, a critical path of about
+51 to 70 agent-days, 7 to 10 calendar weeks with four to five lanes (cut about late November
+to mid-December 2026). The 0.5.x remainder is about 135 agent-days.
 
 ## Consequences
 
@@ -132,7 +161,9 @@ commands; force exit and crashes are never reported as `Complete`.
   them carry a recorded @rule8 review.
 - One new cross-repo dependency (core's kit on the shared containment crate), added through
   the drift map first.
-- v0.5.0 waits for the SCL gates.
+- v0.5.0 waits for the SCL gates. *Owner decision (2026-10-05): v0.5.0 waits for the
+  cut-blocking SCL criteria only; the rest ships on 0.5.x. Bug (e) stays open for descendants
+  of supervised services at the cut, until shared containment lands.*
 
 ## What this ADR does not claim
 

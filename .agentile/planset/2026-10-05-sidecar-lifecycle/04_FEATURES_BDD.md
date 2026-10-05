@@ -3,6 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
+updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -484,6 +485,8 @@ Feature: Hermes-sidecar children
   matrix (S12.5); TLC X-1.*
 - AC2: No exit, restart or installer before `Complete` inside the deadline. *Source: S12.1
   tests; X-2, X-5.*
+  *Owner decision (2026-10-05, O-18 accepted, D-15):* for exit this AC is superseded by
+  US-11.4. Restart and installer keep it; Quit always ends.
 - AC3: The webview cannot call raw exit, restart or install. *Source: capability test.*
 - AC4: The UI never freezes during close. *Source: frame-timing check in S14.*
 
@@ -601,7 +604,11 @@ Feature: Packaged native acceptance
 Added by the red-team pass ([08_RED_TEAM](08_RED_TEAM.md)). They supersede conflicting text
 above.
 
-**US-6.2: Chat stays where the member put it.** (RT-12, O-19) As a Member with a local model,
+**US-6.2: Chat stays where the member put it.** (RT-12, O-19)
+*Owner decision (2026-10-05, O-19 accepted, D-16, locked):* while the local model is
+cold-loading or its probe times out, chat waits or tells the member; it never routes the
+prompt to the remote gateway without the member's explicit choice. `g3-provider-routing`
+blocks the cut. As a Member with a local model,
 a cold load or a slow health check never sends my prompt to the remote gateway by itself.
 - AC1: While the local owner is `Awaiting` or `Stale`, local requests wait boundedly or fail
   honestly; the route is not `LocalFallback`. *Source: S7.5 tests over `select_inference_state`
@@ -610,6 +617,9 @@ a cold load or a slow health check never sends my prompt to the remote gateway b
   *Source: S7.5 tests.*
 - AC3: Under generation load, a timed-out probe does not change the route. *Source: S14
   packaged run under load.*
+- AC4 (owner decision 2026-10-05): the gateway is used for a waiting prompt only when the
+  member explicitly chooses it for that prompt; the choice is never preselected or
+  remembered silently. *Source: S7.5 vitest and command test.*
 
 **US-7.3: Cleanup after a crash is a barrier.** (RT-10, RT-11)
 - AC1: No node spawn is admitted until startup cleanup has finished. *Source: S8.5 test.*
@@ -630,11 +640,15 @@ a cold load or a slow health check never sends my prompt to the remote gateway b
 - AC2: The app menu's Quit takes the async coordinated path. *Source: S12.6 test.*
 
 **US-11.4: Quit always ends.** (RT-02, O-18)
+*Owner decision (2026-10-05, O-18 accepted, D-15, locked):* install and restart require
+`Complete`; Quit force-stops what it still owns and exits, reporting `Incomplete`.
 - AC1: When an owner is still `Incomplete` at the deadline, Quit performs a final actuation of
   every OS-process scope still held, records `Incomplete` and exits. *Source: S12.7 test with a
   never-returning probe worker.*
 - AC2: Restart and update install still require `Complete`. *Source: S12.7 test.*
 - AC3: The next launch says cleanup was incomplete when it was. *Source: S12.7 test.*
+- AC4 (owner decision 2026-10-05): an expired Quit is never reported `Complete`, and the
+  final actuation happens before the process exits. *Source: S12.7 test; TLC X-11, X-12.*
 
 **US-11.5: Edges of closing.** (RT-18, RT-20, RT-22)
 - AC1: After a macOS update is installed and restart is postponed, no bundle binary is spawned
@@ -683,4 +697,60 @@ Feature: Red-team additions
     When the model server exits and would be retried
     Then it is not restarted from the new bundle
     And the app asks the Member to restart to finish the update
+```
+
+## Owner decisions (2026-10-05)
+
+Scenarios for the locked decisions D-15 (O-18) and D-16 (O-19). They govern where they
+conflict with scenarios above; both are in the v0.5.0 cut-blocking subset (D-2 amended).
+
+```gherkin
+Feature: Quit always ends (D-15)
+
+  Scenario: Quit with a stuck owner ends and reports Incomplete
+    Given the node, memory and the model server are running
+    And the model-server health check never returns
+    When the Member chooses Quit
+    And the close deadline passes
+    Then the app force-stops every process it still owns
+    And the app exits
+    And the cleanup is recorded as Incomplete, never Complete
+    And the next launch tells the Member that cleanup was incomplete
+
+  Scenario: Restart waits for Complete
+    Given an update is installed and one owner cannot finish before the close deadline
+    When the Member chooses Restart
+    Then the app does not restart
+    And the app says which service did not stop
+    And Quit is still available and ends the app
+
+  Scenario: Install waits for Complete
+    Given the Hermes runtime reports a child it cannot observe
+    When the Member chooses to install an update
+    Then the installer does not start
+    And the app says Hermes cleanup is not complete
+
+  Scenario: Factory reset still ends the app
+    Given one owner cannot finish before the close deadline
+    When the Member runs a factory reset
+    Then the app force-stops every process it still owns, deletes the data and exits
+    And the cleanup is recorded as Incomplete
+
+Feature: No silent gateway fallback (D-16)
+
+  Scenario: A probe timeout under load keeps chat local
+    Given a verified local model and a configured gateway key
+    And the local model server is generating and its health check times out
+    When the Member sends a chat message
+    Then the message is not sent to the gateway
+    And the message waits for the local model or the app tells the Member it is busy
+
+  Scenario: The Member chooses the gateway explicitly
+    Given a verified local model and a configured gateway key
+    And the local model server is still loading
+    When the Member sends a chat message
+    And the app tells the Member the local model is still loading
+    And the Member explicitly chooses to send this message to the gateway
+    Then only that message is sent to the gateway
+    And the next message is not sent to the gateway without a new choice
 ```

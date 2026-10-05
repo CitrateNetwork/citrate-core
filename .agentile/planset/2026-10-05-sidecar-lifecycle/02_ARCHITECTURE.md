@@ -3,6 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
+updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -101,6 +102,9 @@ every cold load (`Awaiting`) and after any single timed-out probe (`Stale`). Rul
 gates admission to the local server; it never switches provider by itself. `LocalFallback`
 is chosen only when the local owner is `Failed`, `Stopped` or `Quarantined`. While `Awaiting`
 or `Stale`, local requests wait boundedly or fail honestly (SCL-S7.5).
+*Owner decision (2026-10-05, O-19 accepted, D-16, locked):* while the local model is
+cold-loading or its probe times out, chat waits or tells the member; it never routes the
+prompt to the remote gateway without the member's explicit choice. Blocks the v0.5.0 cut.
 
 ## 4. Probes and adapters
 
@@ -278,6 +282,9 @@ Adopted from SPEC-001 "Shutdown and frontend observation", with SCL deltas:
   and installer launch. Quit and the factory-reset exit proceed at the deadline after a final
   actuation of every OS-process scope still held, record `Incomplete`, and report it at next
   launch. In-process threads never keep the app alive (SCL-S12.7).
+  *Owner decision (2026-10-05, O-18 accepted, D-15, locked):* install and restart require
+  `Complete`; Quit force-stops what it still owns and exits, reporting `Incomplete`. In the
+  v0.5.0 cut the force-stop reaches direct children; group and Job forms follow with S9, S10.
 - **RT-26.** Hermes drains first with a sub-deadline (proposed 7 s of the 15 s); the other
   owners start when Hermes finishes or at the sub-deadline, whichever comes first.
 - **RT-20.** After a successful macOS install the coordinator enters `UpdateStaged`: new

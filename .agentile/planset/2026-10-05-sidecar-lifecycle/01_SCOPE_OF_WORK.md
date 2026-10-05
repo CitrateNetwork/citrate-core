@@ -3,6 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
+updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended; O-18, O-19 accepted)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -81,7 +82,7 @@ The gate criterion stays `met: false` until the named run is recorded.
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R-1 | The program is large and gates the 0.5.0 cut (D-2) | High | High | Scoped by work; SCL-S0 lands first so the most important fixes do not wait for the rest; sprints are ordered so P2 unblocks parallel lanes (S6, S7, S8, S9, S10) |
+| R-1 | The program is large and gates the 0.5.0 cut (D-2; amended 2026-10-05, see R-1 owner decision below) | High | High | Scoped by work; SCL-S0 lands first so the most important fixes do not wait for the rest; sprints are ordered so P2 unblocks parallel lanes (S6, S7, S8, S9, S10) |
 | R-2 | The DTO change touches every manager command and `store.ts`; regressions in unrelated UI | High | Med | Compatibility layer (O-2); consumers migrated per manager group with the fault suite and the existing vitest suite green at every PR |
 | R-3 | Changing the formally modelled retry reset (F-1) breaks the "recovering daemon never permanently fails" property | Med | High | Extend `SidecarSupervisor.tla` first (SCL-S1); keep INV-1 for liveness-only profiles and add an attested variant for probed ones; negative controls for both |
 | R-4 | Nested ownership: the Hermes sidecar starts children in their own sessions or groups, so a group signal to Hermes does not reach them | High | High | The runtime keeps its own anchors for its sub-groups and reports them; core's Hermes stop waits for the runtime's acknowledgement; on Windows, nested Jobs inside the Hermes Job die with it; on Unix, runtime ownership records feed next-launch cleanup (02 §6) |
@@ -100,9 +101,10 @@ The gate criterion stays `met: false` until the named run is recorded.
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
 | R-1 (amended) | Program size: about 280 agent-days total, critical path about 70 to 92 agent-days, 10 to 14 calendar weeks with parallel lanes (RT-15) | High | High | Corrected dependency graph (RT-13); two native-run windows (RT-25); O-20 offers a split of cut-blocking from 0.5.0-line gates |
+| R-1 (owner decision 2026-10-05) | O-20 accepted, D-2 amended: the cut waits for a subset of about 165 agent-days with a critical path of about 51 to 70 agent-days (7 to 10 weeks); the 0.5.x remainder is about 135 agent-days | High | Med | Cut-blocking subset in 00 and 05; `blocks_cut` tags in gates.yaml. Residual: bug (e) open for supervised-service descendants until S9 to S11 |
 | R-14 | macOS terminations that cannot be prevented (Dock Quit, logout) bypass an async-only coordinator (RT-01) | High | High | Synchronous bounded drain in `Exit` plus a custom Quit menu item (SCL-S12.6) |
-| R-15 | Quit blocked forever by a stuck in-process worker (RT-02) | Med | High | O-18 (SCL-S12.7) |
-| R-16 | Readiness changes silently move chat from the local model to the remote gateway (RT-12) | High | High | O-19 (SCL-S7.5) |
+| R-15 | Quit blocked forever by a stuck in-process worker (RT-02) | Med | High | O-18 (SCL-S12.7); owner decision 2026-10-05: accepted, locked as D-15 |
+| R-16 | Readiness changes silently move chat from the local model to the remote gateway (RT-12) | High | High | O-19 (SCL-S7.5); owner decision 2026-10-05: accepted, locked as D-16, blocks the cut |
 | R-17 | Runtime ownership records are trusted as authority to signal (RT-09) | Med | Med | Records are claims; core ties them to its own recorded Hermes incarnation (SCL-S11.7, @rule8) |
 | R-18 | Windows Job capture on stable Rust needs a mechanism `std` does not expose (RT-05) | High | Med | SCL-S10.0 spike and ADR addendum before S10.1 |
 | R-19 | Hosted CI has no Windows or macOS lane today, so "Windows CI" acceptance has nowhere to run (RT-14) | High | Med | SCL-S1.6 before S2 |
