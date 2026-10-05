@@ -19,6 +19,7 @@ import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
 import type { ShellPendingView, McpPendingView } from "../bridge/domains";
 import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch.ts";
+import { ChatPlan } from "./chatPlan.ts";
 
 export type ChatStatus = "thinking" | "streaming" | "tool" | "done" | "error";
 
@@ -75,8 +76,10 @@ export type TurnActivityEvent =
   /** HUP-S7.6 (US-7.4 AC1): the token usage the model server reported for one model call, with
    *  its generation time when the server reports one (llama-server `timings.predicted_ms`). */
   | { kind: "usage"; promptTokens: number; completionTokens: number; generationMs: number | null; promptMs?: number | null }
-  /** HUP-S7.6: a workflow run's plan (its step ids, in order), reported once before it starts. */
-  | { kind: "plan"; steps: string[] }
+  /** HUP-S7.6: a workflow run's plan (its step ids, in order), reported once before it starts.
+   *  `source: "chat"`: a plain chat turn's plan so far, one row per model step that asked for tools
+   *  (src/agent/chatPlan.ts), reported again each time the model asks for another tool. */
+  | { kind: "plan"; steps: string[]; source?: "chat" }
   /** HUP-S7.6: an approval the member is asked for (pending) and its decision. */
   | { kind: "approval"; callId: string; tool: string; state: "pending" | "approved" | "declined" | "failed" };
 
@@ -851,6 +854,8 @@ export function createAgentProvider(
       const request = lastUserText(messages);
       // Tools this turn called, most recent first (kept in the offered set while in use).
       const used: string[] = [];
+      // HUP-S7.6 (US-7.4 AC1): the turn's plan, from the tool calls the model asks for.
+      const plan = new ChatPlan();
 
       for (let turn = 0; turn < AGENT_MAX_TURNS; turn++) {
         // HUP-S7.6: Stop ends the loop before the next model request.
@@ -896,13 +901,19 @@ export function createAgentProvider(
         // Execute each tool call through the store's gated handlers, then feed the
         // results back to the model as tool-role messages and loop.
         convo.push({ role: "assistant", content: msg.content ?? null, tool_calls: toolCalls });
-        for (const tcRaw of toolCalls) {
+        const calls: ToolCall[] = toolCalls.map((tcRaw) => {
           const tc = tcRaw as { id?: string; function?: { name?: string; arguments?: string } };
-          const call: ToolCall = {
+          return {
             id: tc.id || "call_" + Math.random().toString(36).slice(2, 10),
             name: tc.function?.name || "",
             arguments: tc.function?.arguments || "{}",
           };
+        });
+        // The whole step's requested calls are the plan for this step, reported before the first runs.
+        let planned = false;
+        for (const c of calls) planned = plan.note(turn + 1, c.id, c.name) || planned;
+        if (planned) callbacks.onActivity?.({ kind: "plan", steps: plan.steps(), source: "chat" });
+        for (const call of calls) {
           callbacks.onStatus("tool");
           // HUP-S7.6: Stop ends the loop before the next tool call runs.
           throwIfStopped(signal);

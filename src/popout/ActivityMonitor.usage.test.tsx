@@ -262,10 +262,10 @@ describe("the snapshot and the pop-out", () => {
     expect(focusable[0].getAttribute("data-testid")).toBe("mon-stop");
   });
 
-  it("a chat turn says it has no plan", () => {
+  it("a chat turn with no tool step yet says it has no plan yet", () => {
     beginTurn("local", "local", 1000);
     const h = render(buildMonitorSnapshot(inputs()));
-    expect(text(h, "mon-plan")).toMatch(/no plan; steps show as they run/);
+    expect(text(h, "mon-plan")).toMatch(/No plan yet: a plan shows when the model asks for tools/);
   });
 
   it("a snapshot from an older sender (no speed, plan or approvals) still validates and renders", () => {
@@ -285,7 +285,7 @@ describe("the snapshot and the pop-out", () => {
     const s = JSON.parse(JSON.stringify(buildMonitorSnapshot(inputs())));
     expect(isMonitorSnapshot({ ...s, speed: { tokensPerSecond: "fast", note: "x" } })).toBe(false);
     expect(isMonitorSnapshot({ ...s, turn: { ...s.turn, approvals: [{ callId: "c", tool: "t", state: "maybe", at: 1 }] } })).toBe(false);
-    expect(isMonitorSnapshot({ ...s, turn: { ...s.turn, plan: [{ step: "a", state: "done" }] } })).toBe(false);
+    expect(isMonitorSnapshot({ ...s, turn: { ...s.turn, plan: [{ step: "a", state: "finished" }] } })).toBe(false);
   });
 
   it("a daemon whose last run was measured says so; otherwise its tokens read as estimated", () => {

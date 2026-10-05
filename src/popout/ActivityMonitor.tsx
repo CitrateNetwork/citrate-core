@@ -318,13 +318,25 @@ export function ActivityMonitor({
           Plan
         </span>
         {plan === null ? (
-          <div style={{ ...note, paddingTop: 4 }}>{turn.state === "idle" && turn.outcome === null ? "Nothing has run yet." : "This turn has no plan; steps show as they run."}</div>
+          <div style={{ ...note, paddingTop: 4 }}>{turn.state === "idle" && turn.outcome === null ? "Nothing has run yet." : "No plan yet: a plan shows when the model asks for tools, or when a workflow runs."}</div>
         ) : (
           <ol aria-labelledby={planId} style={{ margin: 0, padding: "4px 0 0 18px", display: "flex", flexDirection: "column", gap: 3 }}>
             {plan.map((p, i) => (
               <li key={p.step + ":" + i} data-testid="mon-plan-row" style={{ fontSize: 12, color: "var(--tx-1)" }}>
                 <span className="mono">{p.step}</span>{" "}
-                <span className="mono" style={{ color: p.state === "passed" ? "var(--ok)" : p.state === "failed" ? "var(--danger)" : "var(--tx-3)" }}>
+                <span
+                  className="mono"
+                  style={{
+                    color:
+                      p.state === "passed" || p.state === "done"
+                        ? "var(--ok)"
+                        : p.state === "failed"
+                          ? "var(--danger)"
+                          : p.state === "running"
+                            ? "var(--accent-text)"
+                            : "var(--tx-3)",
+                  }}
+                >
                   {p.state}
                 </span>
               </li>
