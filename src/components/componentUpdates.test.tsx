@@ -76,11 +76,20 @@ describe("ComponentUpdatesView", () => {
     expect(html).not.toContain("foundry");
   });
 
-  it("does not claim a browser block that nothing enforces yet", () => {
-    // The open-web rule is computed (browserMayOpenWeb) but no managed browser reads it yet.
+  it("states the open-web rule without claiming a block when no managed browser is installed", () => {
+    // HUP-S5.5: the rule follows the managed Chromium; with none installed nothing is held back.
     const html = render(status());
-    expect(html).not.toContain("The managed browser stays off the open web");
-    expect(html).toContain("not enforced yet");
+    expect(html).toContain("The managed browser is not installed");
+    expect(html).not.toContain("kept off the open web now");
+  });
+
+  it("says the managed browser is kept off the open web while its manifest is not current", () => {
+    const chromium = { name: "chromium", version: "154.0.8037.92", previous: null, installedAt: 1_790_000_000 };
+    const blocked = render(status({ installed: [chromium], browserMayOpenWeb: false, freshness: "expired" }));
+    expect(blocked).toContain("kept off the open web now");
+    const open = render(status({ installed: [chromium], browserMayOpenWeb: true, freshness: "fresh" }));
+    expect(open).toContain("may open the web");
+    expect(open).not.toContain("kept off the open web now");
   });
 
   it("uses no em-dashes in member-facing text", () => {

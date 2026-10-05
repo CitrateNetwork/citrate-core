@@ -1789,7 +1789,7 @@ export interface ContractsDomain {
   /** HUP-S6.6 — submit the project contract's source to CitrateScan's verifier. */
   postdeployVerify(projectDir: string, address: string, constructorArgsHex?: string): Promise<VerifyOutcomeView>;
   /** HUP-S6.6 — point the page at chain 40204 and the deployed contract. */
-  postdeploySwitchSite(projectDir: string, address: string): Promise<{ envPath: string; address: string }>;
+  postdeploySwitchSite(projectDir: string, address: string): Promise<{ envPath: string; address: string; decodedCalls?: boolean; decodeNote?: string }>;
   /** HUP-S6.6 — pin the built page to the app's IPFS daemon. */
   postdeployPinSite(projectDir: string): Promise<SitePinView>;
   /** HUP-S6.6 — write the Vercel-ready export folder (no account actions). */

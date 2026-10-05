@@ -165,6 +165,18 @@ impl HermesManager {
         )?)
     }
 
+    /// `POST /metering/chain-receipt` (HUP-S7.5, D-27): one mined Hermes transaction's public
+    /// facts (hash, purpose, status, gas used, gas price, value), so the day's report carries its
+    /// gas and the SALT it spent. Built by `chain_agent::spend`.
+    pub fn metering_chain_receipt(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let bearer = self.bearer()?;
+        Self::decode(self.control.post(
+            &format!("{}/metering/chain-receipt", self.control_url()),
+            &bearer,
+            &body.to_string(),
+        )?)
+    }
+
     /// `POST /metering/benchmark`: the unsigned BenchmarkRegistry calls for one day's
     /// aggregates. Naming the agent id and the registry is the member's opt-in; core rechecks
     /// every call before any of it reaches a ceremony (`benchmark_share`).

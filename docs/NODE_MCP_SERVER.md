@@ -1,6 +1,6 @@
 ---
 created: 2026-10-01
-branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest and hup/n6-mcp-host, 2026-10-01 and 2026-10-04)
+branch: hup/n4-node-mcp (updated on hup/n5-nodemcp-rest, hup/n6-mcp-host and hup/n7-chain-precompile-followups, 2026-10-01 and 2026-10-04)
 author: Larry Klosowski + Claude Opus 5.5
 status: implemented (HUP-S4.2 + S8.5; HUP-S4.1 Hermes entry); off by default; port, personal-memory scope, Hermes write tools and task TTL pending owner sign-off
 ---
@@ -103,10 +103,21 @@ partial match, or not verified. The source text is left out; no ABI is ever gues
 `chain_call` (eth_call), `estimate_gas`, `get_logs` (one contract, at most 5,000 blocks),
 `precompile_table`,
 `precompile_call` (read-only eth_call to a precompile in the table: 0x0107-0x0109, 0x0110,
-0x0111, 0x0120, 0x0130, 0x0200-0x0202), `ed25519_verify` (a typed helper for ED25519_VERIFY
+0x0111, 0x0120, 0x0130, 0x0200-0x0202; an empty reply is an error, never a result. A Citrate node
+answers a top-level eth_call to a precompile address with `0x` because precompiles answer only to
+contract code, so on a real node this tool and `ed25519_verify` report an error today; calling
+them through a contract is open work), `ed25519_verify` (a typed helper for ED25519_VERIFY
 at 0x0120: it encodes `public key (32 bytes) || signature (64 bytes) || message (at most 8 KiB)`,
 calls the precompile read-only and returns `valid`; an answer that is not a 32-byte word is an
-error, never "valid"), `wallet_info`, `address_book`, `memory_search`,
+error, never "valid"), `agent_precompile_encode` and `agent_precompile_decode` (typed helpers for
+the agent precompile fork, HUP-S7.2: 0x0112 LORA_APPLY, 0x0113 LORA_MERGE, 0x0121
+MEMORY_ANCHOR_VERIFY, 0x0122 AGENT_OPS. Encode builds the exact input bytes, the scheduled gas and
+the `CitratePrecompiles` helper to pass them to, from Q16.16 tensors, the sidecar's anchor proof, or
+a stored device link or revocation; decode reads an answer back, and empty output is an error, never
+a verdict. Both are pure, with no RPC call: the four precompiles answer only to contract code and only
+from the fork height, which is not scheduled on 40204. Encodings are pinned to the chain's encoders by
+`src-tauri/tests/fixtures/precompiles/agent_precompile_vectors.json`, generated in citrate-chain),
+`wallet_info`, `address_book`, `memory_search`,
 `groups_list`, `cluster_status`, `cluster_peers`, `cluster_devices` (each member's linked
 machines and whether they are connected; HUP-S8.3), `invites_list` (ids only, never links or
 tokens), `devices_list` (linked devices and revoked device addresses; no signatures), `pins_list`
@@ -210,8 +221,8 @@ input requests, and `x-mcp-header` parameters.
   write behind it on this server today (node sync runs by itself; FL rounds are not exposed over
   MCP), so there is nothing for a task to track yet.
 - Typed helpers for the other precompiles (tensor commit, Merkle, Belnap Q16, routing, CommD
-  fold, x402): their input formats need the chain-side precompile work (HUP-S7.2) to settle.
-  `precompile_call` reaches them with raw calldata.
+  fold, x402). The agent fork precompiles have them (`agent_precompile_encode` / `_decode`);
+  `precompile_call` reaches the rest with raw calldata.
 - Server-initiated messages (SSE streams, `subscriptions/listen`, elicitation). Approvals happen in
   the app, and the client polls.
 - An end-to-end approval of a real `tx_propose` or `deploy_propose` in the packaged app (needs a

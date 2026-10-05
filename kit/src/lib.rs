@@ -22,6 +22,7 @@
 //! or citrate-quorum except through `ceremony::approve`. A source-scan test in
 //! each consuming crate asserts no sibling signing site exists.
 
+pub mod abi_book;
 pub mod blocking;
 pub mod ceremony;
 pub mod config;

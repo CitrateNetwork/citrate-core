@@ -14,7 +14,7 @@
 // =====================================================================
 import { createMainEnd, type BridgeTransport, type MainEnd } from "./bridge";
 import { isPopoutKind, type PopoutKind } from "./kinds";
-import { buildMonitorSnapshot, type MonitorInputs, type WorkerRow } from "./monitorSnapshot";
+import { buildMonitorSnapshot, type DecideMetering, type MonitorInputs, type WorkerRow } from "./monitorSnapshot";
 import type { UndoPanel } from "./undoPanel";
 import { BROWSER_OFF, parseBrowserFrame, parseBrowserStatus, type BrowserFrame, type BrowserState } from "./browserView";
 
@@ -38,7 +38,7 @@ export interface PopoutHostDeps {
   /** Ask Rust to open (or focus) the pop-out window of this kind. */
   openWindow(kind: PopoutKind): Promise<void>;
   /** The live inputs for a monitor snapshot (everything except the context window and the clock). */
-  inputs(): Omit<MonitorInputs, "localCtxTokens" | "now" | "workers">;
+  inputs(): Omit<MonitorInputs, "localCtxTokens" | "now" | "workers" | "decide">;
   /** Subscribe to changes of anything `inputs()` reads; returns an unsubscribe. */
   subscribe(fn: () => void): () => void;
   /** The existing stop path (store.stopAgentTurn). */
@@ -53,8 +53,11 @@ export interface PopoutHostDeps {
   /** HUP-S1.9: the agent sidecar's worker processes, from Rust (hermes_workers). A worker crash
    *  is not a store change, so the host polls this while the monitor is open. */
   workers?(): Promise<WorkerRow[]>;
-  /** How often to poll `workers` while the monitor is open (default 5000 ms). */
+  /** How often to poll `workers` (and `decide`) while the monitor is open (default 5000 ms). */
   workersPollMs?: number;
+  /** HUP-S5.3: the decide() slot's per-backend metering, from Rust (hermes_decide_stats). Polled
+   *  with `workers` while the monitor is open; null = Hermes is not running. */
+  decide?(): Promise<DecideMetering | null>;
   /** Coalesce bursts of changes into one snapshot per this many ms. */
   throttleMs?: number;
   /** HUP-S2.9: the undo panel (its changes must reach `subscribe`), its refresh from the sidecar,
@@ -84,6 +87,28 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
   let workers: WorkerRow[] | null = null; // null = not read (or the read failed)
   let workersKey = "";
   let poll: ReturnType<typeof setInterval> | null = null;
+  let decide: DecideMetering | null | "error" | undefined = undefined; // undefined = not read
+  let decideKey = "";
+
+  const readDecide = async (): Promise<boolean> => {
+    if (!deps.decide) return false;
+    let next: DecideMetering | null | "error";
+    try {
+      const v = await deps.decide();
+      next = v === null || (typeof v === "object" && Array.isArray(v.backends)) ? v : "error";
+    } catch {
+      next = "error"; // honest: could not be read, shown as such
+    }
+    const key = JSON.stringify(next);
+    if (key === decideKey) return false;
+    decideKey = key;
+    decide = next;
+    return true;
+  };
+  const readPolled = async (): Promise<boolean> => {
+    const [w, d] = await Promise.all([readWorkers(), readDecide()]);
+    return w || d;
+  };
 
   const readWorkers = async (): Promise<boolean> => {
     if (!deps.workers) return false;
@@ -117,7 +142,7 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
     if (disposed || !monitorOpen || !end) return;
     const localCtxTokens = await readCtx();
     if (disposed) return;
-    await end.sendSnapshot(buildMonitorSnapshot({ ...deps.inputs(), localCtxTokens, workers, now: deps.now() })).catch(() => undefined);
+    await end.sendSnapshot(buildMonitorSnapshot({ ...deps.inputs(), localCtxTokens, workers, decide, now: deps.now() })).catch(() => undefined);
     if (deps.undo && !disposed) await end.sendUndoPanel(deps.undo.panel()).catch(() => undefined);
   };
   const schedule = () => {
@@ -200,13 +225,13 @@ export async function createPopoutHost(deps: PopoutHostDeps): Promise<PopoutHost
       monitorOpen = true;
       deps.undo?.refresh();
       void (async () => {
-        await readWorkers();
+        await readPolled();
         await publish();
       })();
-      if (deps.workers && poll === null) {
+      if ((deps.workers || deps.decide) && poll === null) {
         poll = setInterval(() => {
           if (disposed) return;
-          void readWorkers().then((changed) => {
+          void readPolled().then((changed) => {
             if (changed) schedule();
           });
         }, deps.workersPollMs ?? 5000);

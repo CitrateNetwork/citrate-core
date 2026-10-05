@@ -5,7 +5,7 @@
 // first, core stores memories).
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { bridge } from "../bridge";
-import { acknowledgedFor, memoryRowModel, resolveChoice, type LearnedMemory, type LearnProposal, type LearnStatus } from "../agent/learn";
+import { acknowledgedFor, memoryRowModel, resolveChoice, setAsideChoice, type LearnedMemory, type LearnProposal, type LearnStatus } from "../agent/learn";
 import { LearnProposalCard } from "./LearnProposalCard";
 import { TeachHermesCard } from "./TeachHermesCard";
 
@@ -36,6 +36,7 @@ export function LearnedPanelView({
   teach,
   confirming = null,
   onKeep,
+  onSetAside,
   onConfirmKeep,
   onCancelKeep,
 }: {
@@ -49,9 +50,12 @@ export function LearnedPanelView({
   onStorePending(): void;
   /** The "Teach Hermes" card (the live panel passes it; static renders may leave it out). */
   teach?: ReactNode;
-  /** The memory whose "Keep this one" is waiting for the member's confirmation. */
+  /** The memory whose "Keep this one" is waiting for the member's confirmation (its proposal id),
+   *  or whose "Set this one aside" is (`aside:` + its proposal id). */
   confirming?: string | null;
   onKeep?(m: LearnedMemory): void;
+  /** Set a learned memory aside in favour of the memory the app already had. */
+  onSetAside?(m: LearnedMemory): void;
   onConfirmKeep?(keep: string, retract: string[]): void;
   onCancelKeep?(): void;
 }) {
@@ -122,8 +126,11 @@ export function LearnedPanelView({
             {view.memories.map((mem) => {
               const r = memoryRowModel(mem, view.memories);
               const color = r.tone === "ok" || r.tone === "muted" ? "var(--tx-3)" : r.tone === "warn" ? "var(--warn)" : "var(--danger)";
-              const choice = enabled ? resolveChoice(view.memories, mem) : null;
-              const asking = choice !== null && confirming === mem.proposalId;
+              const keepChoice = enabled ? resolveChoice(view.memories, mem) : null;
+              const asideChoice = enabled ? setAsideChoice(mem) : null;
+              const askingAside = asideChoice !== null && confirming === `aside:${mem.proposalId}`;
+              const choice = askingAside ? asideChoice : keepChoice;
+              const asking = askingAside || (keepChoice !== null && confirming === mem.proposalId);
               return (
                 <div key={mem.proposalId} data-testid="learned-memory" data-belnap={mem.belnap} style={{ display: "flex", flexDirection: "column", gap: 1, opacity: mem.belnap === "false" ? 0.7 : 1 }}>
                   <span style={{ fontSize: 12.5, color: "var(--tx-1)", overflowWrap: "anywhere", textDecoration: mem.belnap === "false" ? "line-through" : undefined }}>
@@ -133,17 +140,26 @@ export function LearnedPanelView({
                   <span className="mono" style={{ fontSize: 10.5, color }}>
                     {r.graphLabel}
                   </span>
-                  {choice && !asking && onKeep && (
-                    <button data-testid="learned-keep" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => onKeep(mem)} style={{ alignSelf: "flex-start" }}>
-                      Keep this one
-                    </button>
+                  {!asking && (keepChoice || asideChoice) && (onKeep || onSetAside) && (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {keepChoice && onKeep && (
+                        <button data-testid="learned-keep" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => onKeep(mem)}>
+                          Keep this one
+                        </button>
+                      )}
+                      {asideChoice && onSetAside && (
+                        <button data-testid="learned-set-aside" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => onSetAside(mem)}>
+                          Set this one aside
+                        </button>
+                      )}
+                    </div>
                   )}
                   {choice && asking && (
                     <div data-testid="learned-keep-confirm" role="group" aria-label="Resolve the contradiction" style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 8px", border: "1px solid var(--line-2)", borderRadius: "var(--r-1)" }}>
                       <span style={{ fontSize: 11.5, color: "var(--tx-2)" }}>{choice.confirm}</span>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button data-testid="learned-keep-yes" className="btn btn-sm" disabled={busy} onClick={() => onConfirmKeep?.(choice.keep, choice.retract)}>
-                          Keep it
+                          {askingAside ? "Set it aside" : "Keep it"}
                         </button>
                         <button data-testid="learned-keep-no" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => onCancelKeep?.()}>
                           Cancel
@@ -247,6 +263,7 @@ export function LearnedPanel({ store, running }: { store: Toaster; running: bool
       teach={<TeachHermesCard enabled={view.status?.sidecar.enabled === true} running={running} onFinished={() => void load()} />}
       confirming={confirming}
       onKeep={(m) => setConfirming(m.proposalId)}
+      onSetAside={(m) => setConfirming(`aside:${m.proposalId}`)}
       onCancelKeep={() => setConfirming(null)}
       onConfirmKeep={(keep, retract) =>
         void act(async () => {

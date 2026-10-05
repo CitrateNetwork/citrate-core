@@ -90,7 +90,16 @@ export interface ToolchainGateRequest {
   /** `File.sol/Contract.json` under the project's `out/`. */
   artifact: string;
   constructorArgsHex?: string;
+  /** A fork run the caller produced (send this or `forkInCore`). */
   forkDryRun?: DeployGateInputs["forkDryRun"];
+  /** HUP-S6.10: core runs the dry run on the Citrate-aware fork. The forge panel always sends
+   *  it; core also defaults to it, and fills the template's own test mint when none is named. */
+  forkInCore?: DeployGateInputs["forkInCore"];
+}
+
+/** The gate request the forge panel sends: the dry run always on the Citrate-aware fork. */
+export function toolchainGateRequest(sessionId: string, project: string, artifact: string): ToolchainGateRequest {
+  return { sessionId: sessionId.trim(), project: project.trim(), artifact: artifact.trim(), forkInCore: {} };
 }
 
 export interface MedusaBudgetCheck {

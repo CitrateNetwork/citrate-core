@@ -92,6 +92,28 @@ fn precompile_schema() -> Value {
     )
 }
 
+fn agent_precompile_encode_schema() -> Value {
+    obj(
+        json!({
+            "operation": {"type": "string", "enum": crate::agent_precompiles::OPERATIONS,
+                "description": "which agent precompile input to build"},
+            "args": {"type": "object", "description": "LORA_APPLY: {w, b, a, alpha} with tensors {shape, q16} (q16 = raw Q16.16 integers, value x 65536); LORA_MERGE: {adapters: [{b, a, alpha, weight}]}; MEMORY_ANCHOR_VERIFY: {proof} in the sidecar's /anchor/proof shape; DEVICE_LINK_VERIFY: a stored device link {member, device, wallet, index, label, issuedAt, memberSig, deviceSig, walletSig}; DEVICE_REVOCATION_VERIFY: {member, device, revokedAt, memberSig}"},
+        }),
+        &["operation", "args"],
+    )
+}
+
+fn agent_precompile_decode_schema() -> Value {
+    obj(
+        json!({
+            "operation": {"type": "string", "enum": crate::agent_precompiles::OPERATIONS,
+                "description": "which agent precompile produced the output"},
+            "output": {"type": "string", "description": "0x-prefixed bytes the precompile returned (through a contract)"},
+        }),
+        &["operation", "output"],
+    )
+}
+
 fn memory_schema() -> Value {
     obj(
         json!({
@@ -221,9 +243,13 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef { name: "precompile_table", title: "Precompile table", kind: ToolKind::Read, input_schema: no_args,
         description: "The Citrate precompiles a client may call read-only with precompile_call, with their addresses and what they do." },
     ToolDef { name: "precompile_call", title: "Precompile call", kind: ToolKind::Read, input_schema: precompile_schema,
-        description: "Call a Citrate precompile read-only (eth_call) and return its output bytes. Only addresses in the precompile table are accepted." },
+        description: "Call a Citrate precompile read-only (eth_call) and return its output bytes. Only addresses in the precompile table are accepted. A Citrate node answers a top-level call to a precompile address with empty data, so an empty reply is an error, never a result; precompiles answer to contract code." },
     ToolDef { name: "ed25519_verify", title: "Verify an Ed25519 signature", kind: ToolKind::Read, input_schema: ed25519_schema,
         description: "Check an Ed25519 signature with the chain's ED25519_VERIFY precompile (0x0120), read-only. Encodes public key, signature and message for the precompile and returns whether the chain accepts the signature." },
+    ToolDef { name: "agent_precompile_encode", title: "Encode an agent precompile input", kind: ToolKind::Read, input_schema: agent_precompile_encode_schema,
+        description: "Build the exact input bytes, gas and Solidity helper for the agent precompile fork (0x0112 LORA_APPLY, 0x0113 LORA_MERGE, 0x0121 MEMORY_ANCHOR_VERIFY, 0x0122 AGENT_OPS device link and revocation checks). Pure: no RPC, no signing. These precompiles answer only from the fork height (not scheduled on 40204) and only to contract code." },
+    ToolDef { name: "agent_precompile_decode", title: "Decode an agent precompile answer", kind: ToolKind::Read, input_schema: agent_precompile_decode_schema,
+        description: "Read an agent precompile's output: the LoRA result tensor, the anchor day commitment (or invalid), or the device link / revocation verdict. Empty output means the precompile was not active and is an error, never a verdict." },
     ToolDef { name: "wallet_info", title: "Wallet (public)", kind: ToolKind::Read, input_schema: no_args,
         description: "This member's public wallet address and SALT balance. Never returns key material." },
     ToolDef { name: "address_book", title: "Address book", kind: ToolKind::Read, input_schema: no_args,
@@ -406,6 +432,16 @@ pub fn precompile_table() -> Value {
             "summary": p.summary,
         })).collect::<Vec<_>>(),
         "note": "Called read-only with eth_call. Results depend on the node's chain rules; a precompile that is not active returns an error.",
+        "agent_fork": {
+            "precompiles": crate::agent_precompiles::FORK_PRECOMPILES.iter().map(|(short, name, summary)| json!({
+                "address": precompile_address(*short),
+                "short": format!("0x{short:04x}"),
+                "name": name,
+                "summary": summary,
+            })).collect::<Vec<_>>(),
+            "note": crate::agent_precompiles::FORK_NOTE,
+            "tools": ["agent_precompile_encode", "agent_precompile_decode"],
+        },
     })
 }
 

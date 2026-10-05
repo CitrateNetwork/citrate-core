@@ -224,6 +224,7 @@ commands.allow = [
   "hermes_mcp_settings",
   "hermes_mcp_set",
   "hermes_workers",
+  "hermes_decide_stats",
   "hermes_workflow_run",
   "hermes_workflow_status",
   "hermes_learn_status",

@@ -25,8 +25,14 @@
 //! at least that many calls, and its line coverage of the project's `src/` files (from medusa's
 //! own lcov report) must reach the tier's minimum.
 //!
-//! **Fork dry run.** This module does not produce the fork dry run (lane CH-fork does). The
-//! caller passes its result; without one, that item fails.
+//! **Fork dry run (HUP-S6.10).** Unless the caller hands in a fork run of its own
+//! (`forkDryRun`), core runs the fork step itself on the Citrate-aware fork (`forkInCore`, the
+//! same step `deploy_gate_submit` runs), on exactly the gated init code. A request that sends
+//! neither gets `forkInCore` automatically, so the hello-mint flow's dry run always uses the
+//! Citrate-aware fork. For a project rendered from the `erc721` / `hello-mint` template, the dry
+//! run also performs the template's own test mint (1 token at the rendered `PRICE`), unless the
+//! request names a different one. Without the `citrate-fork` binary the fork item fails as not
+//! installed; it is never skipped.
 //!
 //! Rule 3: nothing here signs or holds a key.
 
@@ -40,6 +46,7 @@ use sha2::Digest as _;
 use crate::deploy_gate::{
     CompilerSettings, ForkDryRunInput, GateInputs, GateRecord, MedusaInput, ToolRun,
 };
+use crate::fork_dry_run::{ForkInCore, TestMint};
 
 /// The four sidecar tool names, in gate order.
 pub const FORGE_TEST: &str = "forge_test";
@@ -95,9 +102,66 @@ pub struct ToolchainGateRequest {
     pub artifact: String,
     #[serde(default)]
     pub constructor_args_hex: Option<String>,
-    /// The fork dry run for this init code, when one was produced (lane CH-fork).
+    /// A fork dry run the caller produced for this init code. Send this or `forkInCore`.
     #[serde(default)]
     pub fork_dry_run: Option<ForkDryRunInput>,
+    /// HUP-S6.10: core runs the fork step on the Citrate-aware fork. Sent by the hello-mint flow;
+    /// a request with neither field gets it anyway ([`fork_in_core_for`]).
+    #[serde(default)]
+    pub fork_in_core: Option<ForkInCore>,
+}
+
+/// The render lock a template project carries (citrate-templates `LOCK_FILE`).
+const TEMPLATE_LOCK: &str = "citrate-template.lock.json";
+/// The largest lock file read.
+const MAX_LOCK_BYTES: u64 = 256 * 1024;
+/// Templates whose contract is the `erc721` paid mint (`mint(uint256)` at `PRICE` each).
+const MINT_TEMPLATES: [&str; 2] = ["erc721", "hello-mint"];
+
+/// The template's own test mint for a project rendered from the `erc721` or `hello-mint`
+/// template: 1 token at the rendered `PRICE` (decimal wei), read from the project's
+/// `citrate-template.lock.json` (the Foundry folder's own, else its parent's). `None` for any
+/// other project, or a lock that does not parse.
+pub fn template_test_mint(project: &Path) -> Option<TestMint> {
+    let read = |dir: &Path| -> Option<serde_json::Value> {
+        let p = dir.join(TEMPLATE_LOCK);
+        let meta = std::fs::symlink_metadata(&p).ok()?;
+        if !meta.is_file() || meta.len() > MAX_LOCK_BYTES {
+            return None;
+        }
+        serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+    };
+    let lock = read(project).or_else(|| project.parent().and_then(read))?;
+    let template = lock.get("template")?.as_str()?;
+    if !MINT_TEMPLATES.contains(&template) {
+        return None;
+    }
+    let price = lock.pointer("/params/price")?.as_str()?.trim();
+    let ok = !price.is_empty() && price.len() <= 39 && price.chars().all(|c| c.is_ascii_digit());
+    ok.then(|| TestMint {
+        quantity: 1,
+        price_wei: price.to_string(),
+    })
+}
+
+/// The `forkInCore` a toolchain gate run uses: the request's own, or (when the caller sent no
+/// fork run either) core's default run on 40204 state from the dry-run sender. Either way, a
+/// missing test mint is filled with the template's own ([`template_test_mint`]). `None` only when
+/// the caller sent a fork run of its own.
+pub fn fork_in_core_for(req: &ToolchainGateRequest, project: &Path) -> Option<ForkInCore> {
+    let mut f = match (&req.fork_in_core, &req.fork_dry_run) {
+        (Some(f), _) => f.clone(),
+        (None, Some(_)) => return None,
+        (None, None) => ForkInCore {
+            state_rpc: None,
+            from: None,
+            test_mint: None,
+        },
+    };
+    if f.test_mint.is_none() {
+        f.test_mint = template_test_mint(project);
+    }
+    Some(f)
 }
 
 /// How the Medusa item was held to the tier budget.
@@ -284,6 +348,8 @@ pub struct GateBuild<'a> {
     pub tier: &'a str,
     pub budget: &'a MedusaBudget,
     pub fork_dry_run: Option<ForkDryRunInput>,
+    /// Core runs the fork step itself ([`crate::deploy_gate::evaluate_submission`]).
+    pub fork_in_core: Option<ForkInCore>,
 }
 
 /// Build the gate's input from the sidecar's raw reports. `Err` only when the artifact itself is
@@ -398,13 +464,19 @@ pub fn gate_inputs(
         }
     }
 
-    let fork_dry_run = b.fork_dry_run.unwrap_or(ForkDryRunInput {
-        run: ToolRun::Error {
-            message: "no fork dry run was produced for this bytecode yet".into(),
-        },
-        tx_input_hex: String::new(),
-        citrate_precompiles: crate::deploy_gate::PrecompileUse::Unknown,
-    });
+    // With `forkInCore` core produces the fork item itself (a caller run sent as well is refused
+    // by `evaluate_submission`); otherwise the caller's run, or the honest "none yet".
+    let fork_dry_run = match (&b.fork_in_core, b.fork_dry_run) {
+        (Some(_), caller) => caller,
+        (None, Some(f)) => Some(f),
+        (None, None) => Some(ForkDryRunInput {
+            run: ToolRun::Error {
+                message: "no fork dry run was produced for this bytecode yet".into(),
+            },
+            tx_input_hex: String::new(),
+            citrate_precompiles: crate::deploy_gate::PrecompileUse::Unknown,
+        }),
+    };
 
     let inputs = GateInputs {
         bytecode_hex: bytecode,
@@ -418,10 +490,8 @@ pub fn gate_inputs(
             run: medusa_run,
             call_budget: b.budget.test_limit,
         },
-        // A caller-supplied fork run (or the honest "none yet" error above); this path does not
-        // ask core to run citrate-fork itself (`forkInCore`, HUP-S6.10) yet.
-        fork_dry_run: Some(fork_dry_run),
-        fork_in_core: None,
+        fork_dry_run,
+        fork_in_core: b.fork_in_core,
     };
     Ok((inputs, reference, check))
 }
@@ -495,6 +565,7 @@ pub fn build_from_sidecar(
         tier,
         budget,
         fork_dry_run: req.fork_dry_run.clone(),
+        fork_in_core: fork_in_core_for(req, project),
     })
 }
 
@@ -510,7 +581,8 @@ fn now_secs() -> u64 {
 }
 
 /// **Command — deploy_gate_submit_toolchain.** Run the deploy gate on a Hermes session's
-/// toolchain reports for one forge artifact, store the record (replacing any earlier record for
+/// toolchain reports for one forge artifact (running the fork step on the Citrate-aware fork
+/// unless the caller sent a fork run of its own), store the record (replacing any earlier record for
 /// the same init code; a NOT READY one rejects any deploy ceremony still open for it) and return
 /// it with the tier-budget check.
 #[tauri::command]
@@ -543,7 +615,14 @@ pub async fn deploy_gate_submit_toolchain(
         let cer = app_h
             .try_state::<crate::ceremony::CeremonyState>()
             .ok_or_else(|| "internal: managed state unavailable".to_string())?;
-        let rec = crate::deploy_gate::evaluate(&inputs, now_ms())?;
+        // HUP-S6.10: with `forkInCore` (the default) core runs the fork step itself here.
+        let bin = crate::fork_dry_run::resolve_fork_bin_for_app(&app_h);
+        let rec = crate::deploy_gate::evaluate_submission(
+            &inputs,
+            bin.as_deref(),
+            crate::fork_dry_run::FORK_TIMEOUT,
+            now_ms(),
+        )?;
         // An already-decided ceremony cannot be rejected again; that error is expected and moot.
         st.0.record_and_revoke(rec.clone(), |id| {
             let _ = cer.0.reject(id);

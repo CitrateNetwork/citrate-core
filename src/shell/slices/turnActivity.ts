@@ -43,6 +43,9 @@ export interface UsageReport {
   completionTokens: number;
   /** Generation time of the completion in ms, or null when the server does not report it. */
   generationMs: number | null;
+  /** HUP-S7.5 (D-27): the server's time to first token for this turn's FIRST model call
+   *  (llama-server `timings.prompt_ms`); null when that call did not report it. Absent = unknown. */
+  firstTokenMs?: number | null;
   /** Model calls this turn that reported usage. */
   calls: number;
 }
@@ -204,14 +207,20 @@ export function commandRan(ev: Extract<TurnActivityEvent, { kind: "command_run" 
  */
 export function usageReported(ev: Extract<TurnActivityEvent, { kind: "usage" }>): void {
   if (!live()) return;
-  turnActivity.set((s) => ({
-    usage: {
-      promptTokens: ev.promptTokens,
-      completionTokens: ev.completionTokens,
-      generationMs: ev.generationMs,
-      calls: (s.usage?.calls ?? 0) + 1,
-    },
-  }));
+  turnActivity.set((s) => {
+    // HUP-S7.5 (D-27): the turn's first token waits on its first call; a later call's time is not
+    // substituted, so it is kept only when the first call reported it.
+    const first = s.usage ? s.usage.firstTokenMs : ev.promptMs;
+    return {
+      usage: {
+        promptTokens: ev.promptTokens,
+        completionTokens: ev.completionTokens,
+        generationMs: ev.generationMs,
+        ...(typeof first === "number" ? { firstTokenMs: first } : {}),
+        calls: (s.usage?.calls ?? 0) + 1,
+      },
+    };
+  });
 }
 
 /** HUP-S7.6 — a workflow run's plan (step ids in order). */

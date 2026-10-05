@@ -158,6 +158,28 @@ describe("driveSession", () => {
     expect(r.run?.state).toBe("verified");
   });
 
+  it("HUP-S7.7: answers core calls with an async answerer when one is given (QA through the sidecar)", async () => {
+    const call = { id: "c1", name: "memory_search", arguments: '{"query":"q"}' };
+    const s = scripted([
+      { events: [ev(1, { type: "tool_call", step: 0, call, host: "core" })], busy: true },
+      { events: [ev(2, { type: "final", content: "ok" }), ev(3, { type: "done", outcome: "answered" })], busy: false },
+    ]);
+    const seen: [string, string][] = [];
+    const r = await driveSession(s.http, "s1", { fixtures: { memory_search: "fixture text" }, approve: [] }, {
+      deadlineMs: 5000,
+      browser: false,
+      answerCore: async (name, args) => {
+        seen.push([name, args]);
+        return { status: "ok", content: "from the daemon" };
+      },
+    });
+    expect(r.events).toHaveLength(3);
+    expect(seen).toEqual([["memory_search", '{"query":"q"}']]);
+    expect(s.posts.filter((p) => p.path.endsWith("/tool_results"))).toEqual([
+      { path: "/sessions/s1/tool_results", body: { callId: "c1", status: "ok", content: "from the daemon" } },
+    ]);
+  });
+
   it("throws at the deadline instead of scoring an unfinished run", async () => {
     const s = scripted([{ events: [], busy: true }]);
     let t = 0;

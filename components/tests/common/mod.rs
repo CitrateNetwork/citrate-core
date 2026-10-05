@@ -262,3 +262,101 @@ pub fn manifest_json(
 pub fn sign_manifest(key: &TestKey, json: &str) -> String {
     key.sign(json.as_bytes(), "citrate-components-manifest seq")
 }
+
+/// One zip entry for [`zip_bytes`].
+pub enum ZEntry<'a> {
+    /// A deflated file with these permission bits.
+    File(&'a str, &'a [u8], u32),
+    /// A stored (uncompressed) file with these permission bits.
+    Stored(&'a str, &'a [u8], u32),
+    Dir(&'a str),
+    Symlink(&'a str, &'a str),
+}
+
+pub fn zip_bytes(entries: &[ZEntry]) -> Vec<u8> {
+    use zip::write::SimpleFileOptions;
+    use zip::CompressionMethod;
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for e in entries {
+        match e {
+            ZEntry::File(p, data, mode) | ZEntry::Stored(p, data, mode) => {
+                let method = if matches!(e, ZEntry::File(..)) {
+                    CompressionMethod::Deflated
+                } else {
+                    CompressionMethod::Stored
+                };
+                let o = SimpleFileOptions::default()
+                    .compression_method(method)
+                    .unix_permissions(*mode);
+                w.start_file(*p, o).unwrap();
+                w.write_all(data).unwrap();
+            }
+            ZEntry::Dir(p) => {
+                w.add_directory(*p, SimpleFileOptions::default()).unwrap();
+            }
+            ZEntry::Symlink(p, target) => {
+                w.add_symlink(*p, *target, SimpleFileOptions::default())
+                    .unwrap();
+            }
+        }
+    }
+    w.finish().unwrap().into_inner()
+}
+
+/// The central-directory records of a zip: (offset, name).
+fn zip_central_records(z: &[u8]) -> Vec<(usize, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 46 <= z.len() {
+        if z[i..i + 4] == *b"PK\x01\x02" {
+            let n = u16::from_le_bytes([z[i + 28], z[i + 29]]) as usize;
+            out.push((i, z[i + 46..i + 46 + n].to_vec()));
+            i += 46 + n;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Rewrites the full unix mode (file type and permission bits) of `name` in the central
+/// directory, the way a hostile archiver could (the writer only lets tests set permission bits).
+pub fn zip_set_mode(mut z: Vec<u8>, name: &str, mode: u32) -> Vec<u8> {
+    let (at, _) = zip_central_records(&z)
+        .into_iter()
+        .find(|(_, n)| n == name.as_bytes())
+        .unwrap();
+    z[at + 5] = 3; // made by: unix
+    z[at + 38..at + 42].copy_from_slice(&(mode << 16).to_le_bytes());
+    z
+}
+
+/// Sets the "encrypted" flag on `name` in both its local and its central header.
+pub fn zip_mark_encrypted(mut z: Vec<u8>, name: &str) -> Vec<u8> {
+    let (at, _) = zip_central_records(&z)
+        .into_iter()
+        .find(|(_, n)| n == name.as_bytes())
+        .unwrap();
+    z[at + 8] |= 1;
+    let local = u32::from_le_bytes([z[at + 42], z[at + 43], z[at + 44], z[at + 45]]) as usize;
+    z[local + 6] |= 1;
+    z
+}
+
+/// Replaces every occurrence of the name `from` with `to` (same length) in the headers, to
+/// smuggle names the writer would refuse (duplicates, traversal) into an otherwise valid zip.
+pub fn zip_rename(z: Vec<u8>, from: &str, to: &str) -> Vec<u8> {
+    assert_eq!(from.len(), to.len());
+    let (f, t) = (from.as_bytes(), to.as_bytes());
+    let mut out = z;
+    let mut i = 0;
+    while i + f.len() <= out.len() {
+        if out[i..i + f.len()] == *f {
+            out[i..i + f.len()].copy_from_slice(t);
+            i += f.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
