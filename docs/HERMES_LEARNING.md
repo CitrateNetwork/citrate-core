@@ -1,7 +1,7 @@
 ---
 created: 2026-10-01
 branch: hup/n4-learn-e2e
-updated: 2026-10-04 (hup/n7-skill-publish-abi)
+updated: 2026-10-04 (hup/n7-skill-publish-abi, review)
 author: Larry Klosowski + Claude Opus 5.5
 status: active
 ---
@@ -97,6 +97,10 @@ Memory recall and search (the app's own and the read-only memory tools Hermes us
 leave out every learned memory that is `both`, on both sides of the contradiction, and any node
 whose stored text says it is unresolved. The ledger is read on every call, so a resolution shows
 on the next one. If the ledger cannot be read, every learned memory is left out until it can.
+`memory.neighbors` prints titles without node ids, so there only the stored text counts: a
+neighbor whose text says it is unresolved is left out, but the older side of a contradiction
+between two learned memories (stored as settled before the newer one contradicted it) can still
+show there by its title.
 
 ## Publishing to the SkillRegistry
 
@@ -130,5 +134,6 @@ keeps it disabled if the registry is missing.
   operator, federation #289).
 - "Teach Hermes" checks answers with `answer_contains` only. Track workflows (forge, slither and
   the other toolchain verifiers) are not launched from this card.
-- `memory.neighbors` titles are not filtered (they carry no node id); recall and search are.
+- `memory.neighbors` lines are filtered by their text only (they carry no node id), so the older
+  side of a contradiction between two learned memories can still show there by title.
 - Nothing here was run in the packaged app yet (the teach card needs the local model running).

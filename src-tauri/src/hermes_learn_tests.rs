@@ -1174,3 +1174,46 @@ fn the_daemon_text_loses_the_hidden_hits_and_their_passage_lines_only() {
     // Nothing hidden: the text is returned unchanged, byte for byte.
     assert_eq!(RecallHide::Nodes(vec![]).filter_text(text), text);
 }
+
+// ---- review (fan-out 7, L02): what the daemon actually prints -----------------------------------
+
+/// Recall and search print at most 71 characters of a title, then `…`. That cut ends inside the
+/// unresolved phrase, so the text rule must match the printed head, not the whole phrase.
+#[test]
+fn an_unresolved_memory_is_hidden_by_the_title_the_daemon_prints() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let _l = two_both(&g);
+    let both_text = g.asserts.lock().unwrap()[1].1.clone();
+    let printed: String = format!("{}…", both_text.chars().take(71).collect::<String>());
+    assert!(!printed.contains("is unresolved"), "{printed}");
+    assert!(RecallHide::Nodes(vec![]).hides("ffffffffff", &printed), "{printed}");
+    let text = format!("tenant 'personal' — 2 nodes, showing 2:\n  ffffffffff [Claim] {printed}\n    > deploy chain: 40204\n  9988776655 [Doc] node data dir fact\n");
+    let out = RecallHide::Nodes(vec![]).filter_text(&text);
+    assert!(!out.contains("ffffffffff"), "{out}");
+    assert!(!out.contains("deploy chain: 40204"), "{out}");
+    assert!(out.contains("9988776655 [Doc] node data dir fact"), "{out}");
+    // A settled learned memory, printed the same way, stays.
+    let settled = "Hermes learned from a verified workflow, accepted by you. deploy chain: 40204";
+    assert!(!RecallHide::Nodes(vec![]).hides("ffffffffff", settled));
+}
+
+/// `memory.neighbors` prints full titles and no node ids: an unresolved learned memory next to a
+/// recalled node is left out by its text, and every learned one when the ledger is unreadable.
+#[test]
+fn neighbor_lines_of_unresolved_learned_memories_are_left_out() {
+    let g = FakeGraph { running: true, ..Default::default() };
+    let _l = two_both(&g);
+    let both_text = g.asserts.lock().unwrap()[1].1.clone();
+    let settled = "Hermes learned from a verified workflow, accepted by you. deploy chain: 1";
+    let text = format!(
+        "neighbors of 0a1b2c3d4e5f:\n  <- [Contradicts (proposed)] {both_text}\n  -> [Supports] @team {both_text}\n  -> [Cites] {settled}\n  -> [Cites] node data dir fact\n"
+    );
+    let out = RecallHide::Nodes(vec![]).filter_text(&text);
+    assert!(!out.contains("is unresolved"), "{out}");
+    assert!(out.contains(settled), "{out}");
+    assert!(out.contains("node data dir fact"), "{out}");
+    assert!(out.starts_with("neighbors of 0a1b2c3d4e5f:\n"), "{out}");
+    let out = RecallHide::AllLearned.filter_text(&text);
+    assert!(!out.contains("Hermes learned"), "{out}");
+    assert!(out.contains("node data dir fact"), "{out}");
+}

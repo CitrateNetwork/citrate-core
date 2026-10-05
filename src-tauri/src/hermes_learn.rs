@@ -438,6 +438,11 @@ pub fn node_id_from_assert(text: &str) -> Option<String> {
 const LEARNED_TEXT_PREFIX: &str = "Hermes learned from a verified workflow";
 /// The phrase the text of an unresolved learned memory carries ([`memory_text`]).
 const UNRESOLVED_TEXT: &str = "It contradicts an earlier memory and is unresolved";
+/// How the daemon prints the title of an unresolved learned memory: recall and search cut a
+/// title at 71 characters, which ends inside [`UNRESOLVED_TEXT`], so the full phrase never shows
+/// in a hit line. Every unresolved memory's text starts with this.
+const UNRESOLVED_HEAD: &str =
+    "Hermes learned from a verified workflow, accepted by you. It contradict";
 
 /// What recall and search hide (fan-out 7, L02): a learned memory with an unresolved Belnap
 /// `both` contradiction is not offered to Hermes or shown as a recall hit until the member
@@ -474,7 +479,7 @@ impl RecallHide {
     pub fn hides(&self, hit_id: &str, title: &str) -> bool {
         let learned = title.starts_with(LEARNED_TEXT_PREFIX);
         // Text stored for an unresolved memory is never offered, whatever the ledger says.
-        if learned && title.contains(UNRESOLVED_TEXT) {
+        if learned && (title.contains(UNRESOLVED_TEXT) || title.starts_with(UNRESOLVED_HEAD)) {
             return true;
         }
         match self {
@@ -513,6 +518,13 @@ impl RecallHide {
                     removed = true;
                     continue;
                 }
+            } else if let Some(title) = neighbor_title(line) {
+                // `memory.neighbors` prints the full title with no node id: only the text rules
+                // (unresolved text, or every learned memory when the ledger is unreadable) apply.
+                if self.hides("", title) {
+                    removed = true;
+                    continue;
+                }
             }
             out.push(line);
         }
@@ -525,6 +537,19 @@ impl RecallHide {
         }
         s
     }
+}
+
+/// The title of a `memory.neighbors` line: `  -> [<edge>]< @repo> <title>` (or `<-`).
+fn neighbor_title(line: &str) -> Option<&str> {
+    let rest = line
+        .strip_prefix("  -> [")
+        .or_else(|| line.strip_prefix("  <- ["))?;
+    let after = &rest[rest.find(']')? + 1..];
+    let after = match after.strip_prefix(" @") {
+        Some(cross) => &cross[cross.find(' ')?..],
+        None => after,
+    };
+    after.strip_prefix(' ')
 }
 
 fn memory_text(e: &LearnedMemory) -> String {
