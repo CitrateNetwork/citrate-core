@@ -806,4 +806,3 @@ Feature: Ask first when the local model is down (D-16 extended)
     Then the app asks the Member to restart the local model or send this message to the gateway this time
     And nothing is sent before the Member chooses
 ```
-
