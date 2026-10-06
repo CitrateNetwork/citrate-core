@@ -37,6 +37,26 @@
 //!
 //! A crash anywhere before step 3's rename leaves the old marker or none, so
 //! the next start runs the reset again; it is idempotent.
+//!
+//! ## Who may hold the database (SCL-S8.5a, red-team RT-11)
+//! Before deleting anything the reset takes the chain database lock (RocksDB's
+//! `LOCK` file, the way RocksDB takes it; [`crate::node_holder`]) and holds it
+//! until the marker is written. A process holding that lock refuses the reset
+//! with [`GenesisGateError::ChainDbHeld`], naming the holder, even when it does
+//! not answer on the local RPC (a starting or wedged orphan). The RPC check is
+//! kept as a second signal. The app's startup cleanup runs before any node
+//! start is admitted ([`crate::startup_barrier`]), so the lock is normally free.
+//!
+//! **Residual crash window.** `LOCK` is itself a RocksDB file and is deleted
+//! (the set of deleted files is unchanged); it is deleted last. From that
+//! unlink until the lock handle closes after the marker write, a process that
+//! starts a node in that instant can create a new `LOCK` and open the
+//! database; on macOS and Linux the lock still held is on the unlinked file.
+//! Core's own node is not started until this function returns. Only a process
+//! outside this app's control (another copy of the app, a hand-started node)
+//! can use the window, and the next start's holder check names it. A crash of
+//! core during the reset releases the lock with the process and leaves the
+//! old marker, so the next start repeats the reset under the lock.
 
 use std::path::{Path, PathBuf};
 
@@ -54,6 +74,9 @@ pub enum GenesisGateError {
     BadBookGenesis(String),
     /// A node still answers on the local RPC, so its database may be open.
     NodeStillRunning,
+    /// Another process holds the chain database lock (SCL-S8.5a), whether or not it answers
+    /// on the local RPC. Nothing was deleted.
+    ChainDbHeld(crate::node_holder::NodeBlocker),
     /// A filesystem step failed; the start is refused and retried next time.
     Io(String),
 }
@@ -72,6 +95,7 @@ impl std::fmt::Display for GenesisGateError {
                  be removed, but a Citrate node is still answering on the local RPC; quit it \
                  and start again"
             ),
+            GenesisGateError::ChainDbHeld(b) => write!(f, "{b}"),
             GenesisGateError::Io(m) => write!(
                 f,
                 "the node was not started: preparing the node data for the new chain failed: {m}"
@@ -143,7 +167,8 @@ pub fn is_chain_db_entry(name: &str) -> bool {
     false
 }
 
-/// The chain DB entries currently in `data_dir`, sorted, `CURRENT` first.
+/// The chain DB entries currently in `data_dir`, sorted, `CURRENT` first and `LOCK` last (the
+/// reset holds the database lock while it deletes, so the lock file goes last).
 fn chain_db_entries(data_dir: &Path) -> Result<Vec<String>, GenesisGateError> {
     let rd = match std::fs::read_dir(data_dir) {
         Ok(rd) => rd,
@@ -164,7 +189,13 @@ fn chain_db_entries(data_dir: &Path) -> Result<Vec<String>, GenesisGateError> {
             names.push(name);
         }
     }
-    names.sort_by_key(|n| (n != "CURRENT", n.clone()));
+    names.sort_by_key(|n| {
+        (
+            n != "CURRENT",
+            n == crate::node_holder::CHAIN_DB_LOCK_FILE,
+            n.clone(),
+        )
+    });
     Ok(names)
 }
 
@@ -216,7 +247,9 @@ fn write_marker(data_dir: &Path, genesis: &str) -> Result<(), GenesisGateError> 
 /// Make `data_dir` safe to start a node for `book_genesis`.
 ///
 /// `node_running` is asked only when a reset is needed; when it reports a live
-/// node the reset is refused rather than deleting a database in use.
+/// node the reset is refused rather than deleting a database in use. The reset
+/// also requires the chain database lock (SCL-S8.5a): a process holding it
+/// refuses the reset even when `node_running` reports nothing.
 pub fn reconcile_genesis(
     data_dir: &Path,
     book_genesis: &str,
@@ -232,11 +265,23 @@ pub fn reconcile_genesis(
         write_marker(data_dir, &book)?;
         return Ok(GenesisOutcome::FreshMarked);
     }
+    // SCL-S8.5a: the database lock must be ours before anything is deleted, whether or not a
+    // holder answers on the RPC. Held until the marker is written (see the module doc).
+    let lock = match crate::node_holder::acquire_chain_db_lock(data_dir) {
+        Ok(lock) => lock,
+        Err(crate::node_holder::DbLockError::Held(holder)) => {
+            return Err(GenesisGateError::ChainDbHeld(
+                crate::node_holder::NodeBlocker::chain_database(holder, data_dir),
+            ))
+        }
+        Err(crate::node_holder::DbLockError::Io(e)) => return Err(GenesisGateError::Io(e)),
+    };
     if has_chain_data && node_running() {
         return Err(GenesisGateError::NodeStillRunning);
     }
     let (removed, bytes) = wipe_chain_db(data_dir)?;
     write_marker(data_dir, &book)?;
+    drop(lock);
     Ok(GenesisOutcome::Reset {
         previous: marker,
         removed,
@@ -490,6 +535,65 @@ mod tests {
             assert!(d.join(f).exists(), "{f} untouched while a node runs");
         }
         assert_eq!(read_marker(&d).unwrap().as_deref(), Some(OLD));
+    }
+
+    /// SCL-S8.5a / RT-11: an orphan that holds the chain database lock but never answers on
+    /// the local RPC must block the reset. Nothing is deleted, the marker is unchanged, and
+    /// the holder is named.
+    #[test]
+    fn an_orphan_holding_the_db_lock_blocks_the_reset_even_when_rpc_is_silent() {
+        let d = tmp("orphan-lock");
+        populate(&d);
+        write_marker(&d, OLD).unwrap();
+        let fx = crate::node_holder::tests::hold_chain_db_lock(&d);
+        let err = reconcile_genesis(&d, NEW, never_running).expect_err("held lock refuses");
+        let GenesisGateError::ChainDbHeld(blocker) = &err else {
+            panic!("expected ChainDbHeld, got {err:?}");
+        };
+        assert_eq!(
+            blocker.resource,
+            crate::node_holder::BlockedResource::ChainDatabase
+        );
+        #[cfg(unix)]
+        assert_eq!(blocker.pid, Some(fx.pid), "the holder is named");
+        assert!(
+            err.to_string().contains("no chain data was deleted"),
+            "{err}"
+        );
+        for f in DB {
+            assert!(d.join(f).exists(), "{f} untouched while the lock is held");
+        }
+        assert_keys_kept(&d);
+        assert_eq!(read_marker(&d).unwrap().as_deref(), Some(OLD));
+
+        // Once the holder is gone the reset proceeds as before.
+        fx.stop();
+        let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+        assert!(matches!(out, GenesisOutcome::Reset { .. }), "{out:?}");
+        assert_db_gone(&d);
+        assert_keys_kept(&d);
+    }
+
+    /// A free lock (LOCK present, nobody holding it) lets the reset proceed, and LOCK is
+    /// deleted last so the lock is held over every other deletion.
+    #[test]
+    fn a_free_lock_proceeds_and_lock_is_deleted_last() {
+        let d = tmp("free-lock");
+        populate(&d);
+        write_marker(&d, OLD).unwrap();
+        let out = reconcile_genesis(&d, NEW, never_running).unwrap();
+        let GenesisOutcome::Reset { removed, .. } = out else {
+            panic!("expected a reset, got {out:?}");
+        };
+        assert_eq!(removed.first().map(String::as_str), Some("CURRENT"));
+        assert_eq!(removed.last().map(String::as_str), Some("LOCK"));
+        let mut sorted = removed.clone();
+        sorted.sort();
+        let mut expected: Vec<String> = DB.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(sorted, expected, "the deleted set is unchanged");
+        assert_db_gone(&d);
+        assert_keys_kept(&d);
     }
 
     #[test]

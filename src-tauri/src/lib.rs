@@ -90,6 +90,7 @@ mod model_register;
 mod model_registry;
 mod node;
 mod node_genesis;
+mod node_holder;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
 mod postdeploy;
 // HUP-S4.2 + S8.5 — the citrate-node MCP server (loopback, connect token, writes via approval).
@@ -101,6 +102,7 @@ mod node_mcp_live;
 mod node_mcp_protocol;
 mod node_mcp_token;
 mod node_mcp_tools;
+mod startup_barrier;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
 mod grant_deny;
 mod popout;
@@ -327,7 +329,11 @@ pub fn run() {
             // so the fresh node fails with "Resource temporarily unavailable". Single-instance (above)
             // stops the double-LAUNCH case; this sweep stops the crash-orphan case. Only processes
             // under THIS bundle's binary dir are touched, never us.
-            sweep_orphan_sidecars();
+            //
+            // SCL-S8.5a: the cleanup runs through the startup barrier. No node spawn is admitted
+            // (NodeManager::start waits on it) until the cleanup has returned; a panicking
+            // cleanup leaves it closed. The barrier does not depend on what the cleanup does.
+            startup_barrier::StartupBarrier::global().run_cleanup(sweep_orphan_sidecars);
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());

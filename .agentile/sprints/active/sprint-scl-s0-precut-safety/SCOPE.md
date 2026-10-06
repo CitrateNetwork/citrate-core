@@ -42,7 +42,7 @@ Each WP is red, then green, then close-with-proof. Definitions and acceptance cr
 | S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | not started |
 | S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | not started |
 | S0.5 | Shutdown coverage check: embed stops with Hermes, workers exit on stdin close | (QA) | S | all three OSes | code + tests in PR (one gap fixed); per-OS process-list record pending ([EVIDENCE](EVIDENCE.md)) |
-| S0.6 | Genesis-change update check: no old node left holding the chain database or ports; if one is, the UI names it | US-0.4 | M | all three OSes | not started |
+| S0.6 | Genesis-change update check: no old node left holding the chain database or ports; if one is, the UI names it | US-0.4 | M | all three OSes | code in review (#256, [EVIDENCE](EVIDENCE.md)); native runs owed |
 | S0.7 | Windows installer stops this installation's own sidecars before copying files (red-team addition RT-04) | US-0.2 (amended) | M | Windows team: manual 0.4.2 to 0.5.0 install with the old app running | NSIS hook + script test in PR; Windows team native run pending ([EVIDENCE](EVIDENCE.md)) |
 
 *Red-team correction (2026-10-05, RT-03):* S0.2 targets the Windows in-app update install path,
@@ -64,7 +64,7 @@ sprint for v0.5.0 (definitions and acceptance in
 | WP | Summary | Stories | Effort | Native run | Status |
 |---|---|---|---|---|---|
 | S1.6a | Minimal hosted Windows CI job that builds the S0.7 NSIS hook and runs its test (no Windows CI lane exists today; the only strict dependency of S0) | (CI) | S | (hosted runner) | workflow in PR; first green run linked in [EVIDENCE](EVIDENCE.md) |
-| S8.5a | Startup cleanup barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated | US-7.3 AC1, AC2 | M | with the S0.6 runs | not started |
+| S8.5a | Startup cleanup barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated | US-7.3 AC1, AC2 | M | with the S0.6 runs | code in review (#256, [EVIDENCE](EVIDENCE.md)); native runs owed |
 | S7.5a | Ask first when the local server is not running (restart the local model, or send this message to the gateway this time; per message); bounded wait while the app's own startup start is pending (D-16 extended) | US-6.2 AC5 | M | macOS packaged | not started |
 
 `g1-precut`, `g3-recorded-cleanup-v050`, `g3-provider-routing-v050`, `g4-native-v050` and
@@ -85,7 +85,8 @@ this sprint's `EVIDENCE.md` (created with the first WP PR).
 
 Test counts (`cargo test --workspace --locked`, vitest, runtime workspace) are recorded per
 PR in `EVIDENCE.md`. Baseline: taken at the first PR from `release/0.5.0-hermes-upskill`
-`d16f194` or its successor.
+`d16f194` or its successor. Taken 2026-10-06 at `6ab289e`: Rust 2314 passed / 18 ignored,
+vitest 2428 passed (see [EVIDENCE](EVIDENCE.md)).
 
 ## Dependencies and coordination
 
@@ -113,3 +114,9 @@ PR in `EVIDENCE.md`. Baseline: taken at the first PR from `release/0.5.0-hermes-
 - 2026-10-05: S0.5, S0.7 and S1.6a implemented on `scl/s0.5-s0.7-s1.6a` (one PR). S0.5 found and
   fixed one gap (a Hermes start failure left the embedding server running). Rule-2 baseline and
   results in [EVIDENCE.md](EVIDENCE.md). Native runs (S0.5 per OS, S0.7 Windows team) pending.
+- 2026-10-06: S0.6 and S8.5a coded in one lane (#256): startup barrier
+  around the existing startup cleanup, holder check (chain database lock, node ports) before
+  every node start with the holder named in the UI, and the #243 reset now takes the chain
+  database lock before deleting. Red then green; Rust 2333 / vitest 2432 after. Cross-checked
+  on macOS against a real node holding its database. Native update runs on the rerolled chain
+  still owed (EVIDENCE.md).
