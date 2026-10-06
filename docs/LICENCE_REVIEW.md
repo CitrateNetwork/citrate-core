@@ -162,6 +162,15 @@ The staged corpus records `gradient-papers` and `agentile` at commit `ca5b2e7…
 build read a working tree with local changes. The release corpus should be built from clean
 checkouts so its NOTICE names a commit anyone can fetch.
 
+**Update 2026-10-06 (v0.5.0, A9):** `gradient-papers` is **deferred to 0.5.1 by owner decision
+2026-10-06**. The v0.5.0 corpus ships without it, because the papers still have no repository
+and so no fetchable commit. The spec block is kept, commented out, in citrate-memories
+`corpus/hermes-knowledge.toml` (citrate-memories#20). Restore it in 0.5.1 once the papers have
+their own repository. `agentile` no longer records `-dirty`: mem-corpus now limits the dirty
+check to what a source reads (its `include` list, here only `AGENTILE.md`), so untracked child
+checkouts next to it in the metarepo no longer mark it dirty (citrate-memories#20). The v0.5.0
+corpus is built from clean, pinned checkouts, and every included source records a plain commit.
+
 ## 5. Draft source offer (for owner sign-off)
 
 Proposed text for the app's Settings, About, Licences panel and for a public page (location to be
@@ -255,4 +264,6 @@ makes dirty. Owner decision needed: put `gradient-papers` under version control 
 own private repository), after which mem-corpus records a clean commit for it. Follow-up for
 citrate-memories: scope mem-corpus's dirty check to the files a source includes (for `agentile`,
 only `AGENTILE.md`), so untracked child checkouts beside it do not mark it dirty.
+*(2026-10-06: both resolved for v0.5.0. `gradient-papers` is deferred to 0.5.1 by owner decision
+2026-10-06, and the dirty-check follow-up is done in citrate-memories#20. See the update under 4.8.)*
 

@@ -61,7 +61,7 @@ work/
 ├── citrate-core            # this repo
 ├── citrate-chain           # → citrate node   (bin: citrate)
 ├── citrate-node-agent      # → node-agent
-├── citrate-memories        # → mem-mcp   (branch ff12cab, features rocksdb,transformer)
+├── citrate-memories        # → mem-mcp   (main @ 0e9d488, features rocksdb,transformer; has import-corpus)
 ├── citrate-comms           # → comms-member-daemon
 ├── citrate-cluster         # → cluster-daemon
 └── citrate-agent-runtime   # → hermes (agent-sidecar)
@@ -101,7 +101,7 @@ DEST=citrate-core/src-tauri/binaries
 ( cd ../citrate-node-agent && cargo build --release --bin node-agent )
 cp ../citrate-node-agent/target/release/node-agent "$DEST/node-agent-$TRIPLE"
 
-# mem-mcp — from citrate-memories @ ff12cab, rocksdb+transformer features
+# mem-mcp — from citrate-memories @ 0e9d488 (main; implements `import-corpus`), rocksdb+transformer features
 ( cd ../citrate-memories && cargo build --release -p mem-mcp --bin mem-mcp --features rocksdb,transformer )
 cp ../citrate-memories/target/release/mem-mcp "$DEST/mem-mcp-$TRIPLE"
 
