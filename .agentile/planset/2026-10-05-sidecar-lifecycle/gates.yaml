@@ -1,4 +1,4 @@
-# created: 2026-10-05T18:30:00Z · updated: 2026-10-05 (owner decisions: O-18, O-19, O-20 accepted; red-team pass accepted; second set: release path v0.5.0 / v0.5.1 / v0.5.x, D-41 amended, D-16 extended) · branch: docs/scl-planset · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed) · red_teamed: 2026-10-05 (see 08_RED_TEAM.md)
+# created: 2026-10-05T18:30:00Z · updated: 2026-10-05 (owner decisions: O-18, O-19, O-20 accepted; red-team pass accepted; second set: release path v0.5.0 / v0.5.1 / v0.5.x, D-41 amended, D-16 extended; third set: minimum viable v0.5.0, S7.5a to v0.5.1, v0.5.x renamed v0.5.2, D-41 amended again; 2026-10-06: S7.5a and g3-provider-routing-v050 back to release v0.5.0) · branch: docs/scl-planset · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed) · red_teamed: 2026-10-05 (see 08_RED_TEAM.md)
 # planset: 2026-10-05-sidecar-lifecycle · code: SCL · repo: citrate-core (+ citrate-agent-runtime) · companions: 00_OVERVIEW.md, 05_SPRINTS_AND_WPS.md
 # (YAML files carry Rule-12 frontmatter as a comment header so the file stays valid YAML.)
 # Rule: a criterion flips to met: true only with an evidence path AND a note saying what the
@@ -31,6 +31,17 @@
 # No id is renumbered or removed. Where a criterion mixes v0.5.0 and v0.5.1 work, the original id
 # keeps its scope with release v0.5.1 and a new `-v050` id carries the v0.5.0 slice. The
 # three-column table is in 00_OVERVIEW and 05.
+#
+# Owner decision (2026-10-05, third set; supersedes the second-set semantics above where they differ):
+# D-2 amended a third time. v0.5.0 is the minimum viable release: SCL-S0 only (S0.1, S0.3..S0.7, S1.6a,
+# S8.5a). S7.5a moves to v0.5.1 (g3-provider-routing-v050 keeps its id, release: v0.5.1). Every
+# release: v0.5.x is now release: v0.5.2 (the previous value stays as a comment). HUP D-41 is amended
+# again to allow exactly one v0.5.1 and one v0.5.2 after v0.5.0.
+#   release: v0.5.0 -> SCL-S0, S1.6a, S8.5a.
+#   release: v0.5.1 -> the second-set v0.5.1 set plus S7.5a.
+#   release: v0.5.2 -> the second-set v0.5.x remainder.
+# Owner decision (2026-10-06): S7.5a (g3-provider-routing-v050) is back in release v0.5.0, to close
+# the open High RT-12 in the 0.5.0 red-team slice. v0.5.0 -> SCL-S0, S1.6a, S8.5a and S7.5a.
 version: 1
 program: SCL
 release_coupling:
@@ -45,6 +56,8 @@ release_coupling:
     planset and do not hold the cut." And before that: "The v0.5.0 cut requires every SCL gate below
     to be met (owner decision 2026-10-05, D-2)."
   v0_5_1_rule: The v0.5.1 release requires every SCL exit criterion with release v0.5.1 to be met (and the v0.5.0 ones, already met at v0.5.0).
+  v0_5_2_rule: Owner decision (2026-10-05, third set) - the v0.5.2 release requires every SCL exit criterion with release v0.5.2 to be met (and the v0.5.0 and v0.5.1 ones, already met). HUP D-41, amended again, allows exactly one v0.5.1 and one v0.5.2 after v0.5.0.
+  third_set: Owner decision (2026-10-05, third set) - v0.5.0 is the minimum viable release (SCL-S0, S1.6a, S8.5a); S7.5a (g3-provider-routing-v050) moves to v0.5.1; the v0.5.x criteria are renamed v0.5.2. The rule above stays as written for v0.5.0, which now excludes g3-provider-routing-v050.
   hup_gate_line: ".agentile/planset/2026-09-30-hermes-upskill/gates.yaml (gate5, g5-scl)"
   not_gated: The 40204 reroll proceeds independently of SCL. v0.5.0 ships after the reroll and its 2,000-block soak.
 gates:
@@ -123,7 +136,7 @@ gates:
           - "bug-d: SCL-S5.1"
       - id: g2-bugs
         desc: The five reproduced defects (a) Stop respawn, (b) elapsed retry credit, (c) unbounded probe threads, (d) unbounded log bytes, (e) surviving descendants are fixed, each with a regression test that failed first
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/planset/2026-10-05-sidecar-lifecycle/06_BUG_TRIAGE.md
         paths:
@@ -156,7 +169,7 @@ gates:
         evidence: .agentile/sprints/active/sprint-scl-s7-owners-b/EVIDENCE.md
       - id: g3-supervised
         desc: All 9 supervised services migrated to the lifecycle cell with consumers (SC5, SC6)
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s6-owners-a/EVIDENCE.md and .agentile/sprints/active/sprint-scl-s7-owners-b/EVIDENCE.md
       - id: g3-recorded-cleanup-cut
@@ -173,7 +186,7 @@ gates:
         note: Depends only on S0.1 (the cleanup the barrier waits for) and shares the S0.6 lock-holder fixture and UI message. It does not need S2 receipts, the S8.1 registry, S8.3 records or the S1.3 harness; its fixtures follow the same owned-process guard rules (kill and reap every recorded pid). Boot identity in records waits for S8.3 (S8.5b, v0.5.1).
       - id: g3-bespoke
         desc: Core's 12 bespoke kinds owned with deadlines (or removed); Command::new tripwire green; recorded-ownership cleanup replaces the startup sweep (O-17 legacy path only); node's 3 descendant kinds contained
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s8-bespoke/EVIDENCE.md
         note: Red-team correction (RT-10, RT-11) - includes SCL-S8.5 (cleanup barrier before node admission, boot identity, database-lock check before the chain reset). Owner decision (2026-10-05) - S8.1, S8.3 and S8.5 block the cut through g3-recorded-cleanup-cut; S8.2 (bespoke migrations) and S8.4 (node descendants) finish on 0.5.x.
@@ -185,7 +198,7 @@ gates:
         note: Moved into the cut by dependency (see 05 "Owner decision (2026-10-05)"). Without the report, Hermes can never be observed Complete, so Restart and the macOS update restart (which require Complete under D-15) would be refused whenever Hermes runs.
       - id: g3-runtime-children
         desc: The Hermes sidecar's 10 child kinds owned under the same contract in citrate-agent-runtime; Hermes receipt includes the child report; hard-kill recovery proven
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: citrate-federation .agentile/sprints/active/2026-10-05-scl-sidecar-lifecycle.md (runtime EVIDENCE section)
         note: Red-team correction (RT-08, RT-09) - includes SCL-S11.6 (runtime Closing gate before the child report) and SCL-S11.7 (runtime records are claims, not authority; @rule8).
@@ -197,7 +210,7 @@ gates:
         note: Raw process:default and updater:default capabilities removed (S12.2). Restart and install require Complete; Quit and the factory-reset exit end with Incomplete reported when they must (D-15).
       - id: g3-exit-paths
         desc: Every exit path in 07_PROCESS_INVENTORY section D drains every owner (including Hermes children) before its final action, one proof per row
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s12-exit/EVIDENCE.md
         note: Rows marked native need the named OS run, not only a unit test. Red-team correction (RT-01, RT-02, RT-03) - adds the Dock Quit and logout rows (synchronous drain, S12.6) and Quit-with-Incomplete (S12.7); the Windows and Linux in-app install rows are code-path tests only in 0.5.0 (no updater artifacts), and their native proof is the manual installer run (S0.7, S14).
@@ -206,13 +219,13 @@ gates:
         release: v0.5.1  # was blocks_cut: true
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s7-owners-b/EVIDENCE.md
-        note: Owner decision (2026-10-05, O-19 accepted, D-16) - while the local model is cold-loading or its probe times out, chat waits or tells the member; it never routes the prompt to the remote gateway without the member's explicit choice. Blocks the cut. Owner decision (2026-10-05, second set, D-16 extended) - release v0.5.1 (S7.5 on the S3 readiness model). When the local owner is Failed, Stopped or Quarantined, chat asks the member first (restart the local model, or send this message to the gateway this time); the choice is per message and never preselected or remembered. The v0.5.0 slice on today's signals is g3-provider-routing-v050.
+        note: Owner decision (2026-10-05, O-19 accepted, D-16) - while the local model is cold-loading or its probe times out, chat waits or tells the member; it never routes the prompt to the remote gateway without the member's explicit choice. Blocks the cut. Owner decision (2026-10-05, second set, D-16 extended) - release v0.5.1 (S7.5 on the S3 readiness model). When the local owner is Failed, Stopped or Quarantined, chat asks the member first (restart the local model, or send this message to the gateway this time); the choice is per message and never preselected or remembered. The v0.5.0 slice on today's signals is g3-provider-routing-v050. Owner decision (2026-10-05, third set) - that slice is now release v0.5.1 too, so both ship in v0.5.1.
       - id: g3-provider-routing-v050
         desc: "Owner decision (2026-10-05, second set, D-16 extended) - v0.5.0 slice (S7.5a) on today's signals: when the local model is verified but its server process is not running, chat never routes to the gateway by itself; it asks the member first (restart the local model, or send this message to the gateway this time), per message; while the app's own startup start of the local server is pending, chat waits (bounded) and says so"
-        release: v0.5.0
+        release: v0.5.0  # Owner decision (2026-10-06): back to v0.5.0 to close the open High RT-12 in the 0.5.0 red-team slice; was v0.5.1 (third set), v0.5.0 (second set)
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s0-precut-safety/EVIDENCE.md
-        note: Today select_inference_state returns LocalFallback when the model is ready, a gateway key is configured and the server process is not running, and the frontend then routes chat to the gateway with no prompt. That silent route is what D-16 extended forbids, so a minimal ask-first ships in v0.5.0. Cold load is already local today (a running process counts as healthy), so the cold-load half needs no change in v0.5.0. Readiness inputs (Awaiting, Stale, Quarantined) arrive with S3 and S7.5 in v0.5.1.
+        note: Today select_inference_state returns LocalFallback when the model is ready, a gateway key is configured and the server process is not running, and the frontend then routes chat to the gateway with no prompt. That silent route is what D-16 extended forbids, so a minimal ask-first ships in v0.5.0. Cold load is already local today (a running process counts as healthy), so the cold-load half needs no change in v0.5.0. Readiness inputs (Awaiting, Stale, Quarantined) arrive with S3 and S7.5 in v0.5.1. Owner decision (2026-10-05, third set) - release v0.5.1, because the owner asked for the minimum viable v0.5.0 and S7.5a is not a safety fix. The silent route described above ships in v0.5.0 as a known issue (release notes list it); S7.5a lands first in v0.5.1, then S7.5 on the readiness model. The evidence path moves with it when the v0.5.1 sprint file exists.
       - id: g3-diagnostics-cut
         desc: "Owner decision (2026-10-05) - cut slice: diagnostic and thread budgets measured on the packaged macOS arm64 build and confirmed or re-gated (S14.4 macOS slice)"
         release: v0.5.1  # was blocks_cut: true
@@ -220,7 +233,7 @@ gates:
         evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
       - id: g3-diagnostics
         desc: Diagnostic and thread budgets measured on packaged builds and confirmed or re-gated
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
   - id: gate4
@@ -229,12 +242,12 @@ gates:
     exit_criteria:
       - id: g4-unix
         desc: Shared containment Unix backend (retained anchor) adopted by every supervised profile that passes compatibility (O-10) and by the runtime; native fixtures on Linux and macOS
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s9-unix/EVIDENCE.md
       - id: g4-windows
         desc: Windows Job backend (suspend, assign, resume; no breakaway; kill-on-job-close; ActiveProcesses == 0 completion) adopted by core and the runtime
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s10-windows/EVIDENCE.md
         note: Needs the Windows team's native run (@RDCTart69, @kurtatwork). CI on hosted Windows runners is necessary, not sufficient. Red-team correction (RT-05, RT-06) - includes the S10.0 stable-Rust mechanism, assignment-failure and non-inheritable-handle tests, and the real managed browser and an npx-launched MCP server inside a no-breakaway Job.
@@ -243,16 +256,16 @@ gates:
         release: v0.5.0
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s0-precut-safety/EVIDENCE.md
-        note: Overlaps g1-precut by design; this line names the S8.5a and S7.5a native checks so they are not left to unit tests.
+        note: Overlaps g1-precut by design; this line names the S8.5a and S7.5a native checks so they are not left to unit tests. Owner decision (2026-10-05, third set) - S7.5a moved to v0.5.1, so the "chat with the local server stopped asks first" check is no longer part of this criterion; it joins g4-native-macos-cut (v0.5.1). Owner decision (2026-10-06) - S7.5a is back in v0.5.0, so the "chat with the local server stopped asks first" macOS check is part of this criterion again.
       - id: g4-native-macos-cut
         desc: "Owner decision (2026-10-05) - packaged macOS arm64 acceptance of the cut-blocking subset (SCL-S14.1 cut scenarios: quit, Dock Quit, logout, restart, update install with Later and with Restart, factory reset, force quit then relaunch, chat under cold load and probe timeout stays local)"
         release: v0.5.1  # was blocks_cut: true
-        note: Owner decision (2026-10-05, second set) - adds the 0.5.0 to 0.5.1 in-app update, which runs 0.5.0's exit code (no coordinator); after relaunch no 0.5.0-started process is left, and a stopped local model asks first under the readiness model.
+        note: Owner decision (2026-10-05, second set) - adds the 0.5.0 to 0.5.1 in-app update, which runs 0.5.0's exit code (no coordinator); after relaunch no 0.5.0-started process is left, and a stopped local model asks first under the readiness model. Owner decision (2026-10-05, third set) - also the S7.5a check moved out of g4-native-v050 (model verified and local server stopped, chat asks first, per message).
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
       - id: g4-native-macos
         desc: Packaged macOS arm64 acceptance (SCL-S14.1)
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
       - id: g4-linux-smoke-cut
@@ -262,13 +275,13 @@ gates:
         evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
       - id: g4-native-linux
         desc: Packaged Linux x64 acceptance on the DGX, AppImage and .deb (SCL-S14.2)
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
         note: Red-team correction (RT-03) - "update" here is a manual package install; the Linux bundle ships no updater artifacts in 0.5.0.
       - id: g4-native-windows
         desc: Packaged Windows x64 acceptance by the Windows team, including the update install path (SCL-S14.3)
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s14-native/EVIDENCE.md
         note: Red-team correction (RT-03, RT-04) - the update install path in 0.5.0 is the manual NSIS installer run with the old version running (S0.7); there is no Windows in-app update feed. Owner decision (2026-10-05) - the S0.7 native run blocks the cut through g1-precut; full Windows acceptance is 0.5.x.
@@ -284,7 +297,7 @@ gates:
         note: Findings private (#298); public corrections only.
       - id: g5-redteam
         desc: Red-team on merged code and the packaged build; no open High
-        release: v0.5.x  # was blocks_cut: false
+        release: v0.5.2  # was v0.5.x (second set); was blocks_cut: false
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s15-redteam/EVIDENCE.md
         note: Findings private (#298); public corrections only. Owner decision (2026-10-05) - covers the 0.5.x remainder (containment, Windows Job, Hermes children) after g5-redteam-cut.
@@ -293,4 +306,4 @@ gates:
         release: v0.5.0  # was blocks_cut: true
         met: false
         evidence: .agentile/planset/2026-09-30-hermes-upskill/gates.yaml
-        note: The g5-scl line is added by the PR that introduces this planset. Flips to met when that PR merges into release/0.5.0-hermes-upskill. Owner decision (2026-10-05) - g5-scl requires the criteria marked blocks_cut true, not all SCL criteria. Owner decision (2026-10-05, second set) - superseded; g5-scl requires only the criteria with release v0.5.0; the v0.5.1 criteria gate v0.5.1 (D-41 amended).
+        note: The g5-scl line is added by the PR that introduces this planset. Flips to met when that PR merges into release/0.5.0-hermes-upskill. Owner decision (2026-10-05) - g5-scl requires the criteria marked blocks_cut true, not all SCL criteria. Owner decision (2026-10-05, second set) - superseded; g5-scl requires only the criteria with release v0.5.0; the v0.5.1 criteria gate v0.5.1 (D-41 amended). Owner decision (2026-10-05, third set) - g3-provider-routing-v050 is no longer a v0.5.0 criterion; the v0.5.2 criteria gate the one v0.5.2 that D-41, amended again, allows.

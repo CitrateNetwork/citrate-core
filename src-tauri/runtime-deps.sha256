@@ -5,9 +5,11 @@
 #
 # Format: `shasum -a 256` output — "<64 lowercase hex>  <asset name>" (two spaces).
 #
-# OWNER: only the BGE GGUF below is pinned so far (the prerelease does not currently hold the Apple
-# sidecars, the llama runtime tarball or the Gemma GGUF), so the release workflow fails closed until
-# the exact files that will be uploaded are pinned here. Procedure (docs/RELEASE.md §3):
+# OWNER: pinned so far: the BGE GGUF and the four Apple sidecars (v0.5.0-rc.1, 2026-10-06, uploaded
+# to `runtime-deps` with these digests; sources in the comment above their lines). Still unpinned,
+# so the release workflow fails closed until they are uploaded and pinned: the llama runtime
+# tarball, the Gemma GGUF, bge-base-en-v1.5.tar.gz and knowledge-corpus.tar.gz (checklist A9).
+# Procedure (docs/RELEASE.md §3):
 #   shasum -a 256 citrate-aarch64-apple-darwin mem-mcp-aarch64-apple-darwin \
 #     node-agent-aarch64-apple-darwin llama-server-aarch64-apple-darwin \
 #     llama-runtime-arm64.tar.gz gemma-4-E4B-it-Q4_0.gguf bge-base-en-v1.5.tar.gz \
@@ -19,3 +21,11 @@
 # llama-server (src-tauri/src/embed_serve.rs pins the same digest). Reproducible from the BAAI
 # weights with scripts/build-bge-gguf.sh, which checks its output against this line.
 fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1.5-f16.gguf
+# v0.5.0-rc.1 Apple sidecars (macOS arm64, built 2026-10-06 on the release Mac): citrate from
+# citrate-chain 2979a157 (scripts/build-sidecar.sh, LZMA_API_STATIC=1); mem-mcp from
+# citrate-memories 0e9d488 (--features rocksdb,transformer, implements import-corpus); node-agent
+# from citrate-node-agent 1d8cb8e; llama-server is the llama.cpp build staged for 0.4.x, unchanged.
+9ad56eda5af2dbdd8f1bef44a890f3adb23cdcfba4c75774bb72ea47763736e8  citrate-aarch64-apple-darwin
+315984355eb9652118c457248d907661f877d8516f7fe0193f01dc85e29bf8e6  mem-mcp-aarch64-apple-darwin
+2435a484c54deb2d7c93180d3a8c1534cc68ec825b24719829139e1d3af177c7  node-agent-aarch64-apple-darwin
+ff931bc315f7cea369ad7d0b25024311df8c3e3352c1273f17abf7953c8ea2d4  llama-server-aarch64-apple-darwin

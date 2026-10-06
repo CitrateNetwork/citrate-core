@@ -35,6 +35,7 @@ import { desktopScheduleIo } from "../agent/schedule/schedule";
 import { HermesDailyReport } from "../journal/HermesDailyReport";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { invoke as bridgeInvoke } from "../bridge/tauri/invoke";
+import { LocalModelAsk } from "../components/LocalModelAsk";
 
 // HUP-S7.3: approving an anchor waits for its receipt (up to about a minute), so that one command
 // gets a longer UI deadline than the default.
@@ -334,7 +335,8 @@ export function Journal({ store, s }: SurfaceProps) {
   }));
   const jMsgs = msgs.slice(-6);
   const jMsgsEmpty = msgs.length === 0;
-  const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
+  // SCL-S7.5a: a message held for the local model shows its question instead of a spinner.
+  const chatThinking = (s.chatStatus === "thinking" || s.chatStatus === "tool") && !s.chatRouteHold;
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
 
@@ -570,6 +572,9 @@ export function Journal({ store, s }: SurfaceProps) {
                 {m.text}
                 {m.streaming && <span style={{ display: "inline-block", width: 6, height: 12, background: "var(--accent)", marginLeft: 2, verticalAlign: -2, animation: "ccCaret 1s step-end infinite" }}></span>}
               </span>
+              {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
+                <LocalModelAsk compact phase={s.chatRouteHold.phase} onChoose={(c) => store.answerLocalModelAsk(c)} />
+              )}
             </div>
           ))}
           {chatThinking && (

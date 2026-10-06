@@ -4,7 +4,7 @@ branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
-updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18, O-19 accepted; second set: D-2 amended again to v0.5.0 / v0.5.1 / v0.5.x, D-16 extended)
+updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18, O-19 accepted; second set: D-2 amended again to v0.5.0 / v0.5.1 / v0.5.x, D-16 extended; third set: minimum viable v0.5.0 with S7.5a moved to v0.5.1, v0.5.x renamed v0.5.2, owners assigned; 2026-10-06: S7.5a back in v0.5.0)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core + citrate-agent-runtime (via federation sprint)
@@ -30,7 +30,7 @@ items land through the private remediation route in #298 and are merged by the o
 
 | Sprint | Goal (one line) | SPEC-001 | Effort |
 |---|---|---|---|
-| SCL-S0 | Pre-cut safety fixes with regression tests, before the v0.5.0 cut. *Owner decision (2026-10-05, second set): with S1.6a, S7.5a and S8.5a this sprint is the whole SCL content of v0.5.0* | (ours) | M (6 WPs: 4 S, 2 M) |
+| SCL-S0 | Pre-cut safety fixes with regression tests, before the v0.5.0 cut. *Owner decision (2026-10-05, second set): with S1.6a, S7.5a and S8.5a this sprint is the whole SCL content of v0.5.0. Owner decision (2026-10-05, third set): S7.5a moves to v0.5.1; with S1.6a and S8.5a this sprint is the whole SCL content of v0.5.0* | (ours) | M (6 WPs: 4 S, 2 M) |
 | SCL-S1 | Theory: extended supervisor model, exit coordinator model, fault harness, re-grounding | (gate) | L |
 | SCL-S2 | Acknowledged controls, intent sequence, generation fencing, receipts | SC1 | L |
 | SCL-S3 | Readiness separate from liveness; attested retry credit | SC2 | M |
@@ -83,6 +83,11 @@ in turn. v0.5.0 ships after the 40204 reroll and its 2,000-block soak when every
 `release: v0.5.0` is met (SCL-S0 plus S8.5a, S1.6a, S7.5a). The previous cut-blocking subset is
 the v0.5.1 gate (`release: v0.5.1`). See
 [Owner decision (2026-10-05, second set)](#owner-decision-2026-10-05-second-set-v050-v051-v05x).
+
+*Owner decision (2026-10-05, third set, D-2 amended a third time):* S7.5a leaves the v0.5.0 list
+(v0.5.0 is SCL-S0 plus S1.6a and S8.5a) and joins v0.5.1; the `release: v0.5.x` criteria are now
+`release: v0.5.2`. See
+[Owner decision (2026-10-05, third set)](#owner-decision-2026-10-05-third-set-v050-v051-v052).
 
 ---
 
@@ -540,6 +545,12 @@ This goes one WP beyond the owner's "S0 plus S8.5" list. It is recorded as our c
 owner's instruction to decide; moving it to v0.5.1 is a one-line retag of
 `g3-provider-routing-v050` in gates.yaml.
 
+*Owner decision (2026-10-05, third set):* the owner moved S7.5a to v0.5.1 (minimum viable
+v0.5.0; S7.5a is not a safety fix). The retag is done; the id is kept. The silent route above
+ships in v0.5.0 as a known issue.
+
+*Owner decision (2026-10-06):* S7.5a and `g3-provider-routing-v050` are back in release v0.5.0, to close the open High RT-12 (R-16) in the 0.5.0 red-team slice. This supersedes the third-set move of S7.5a to v0.5.1; everything else in the third set stands. The silent route is closed in v0.5.0 (no known issue).
+
 ### New and split WP ids (second set)
 
 Nothing is renumbered. The ids below replace their parent in tracking.
@@ -547,7 +558,7 @@ Nothing is renumbered. The ids below replace their parent in tracking.
 | WP | Work | Repo | Effort | Acceptance (data source) | Release |
 |---|---|---|---|---|---|
 | S1.6a | Minimal hosted Windows CI job that builds the S0.7 NSIS hook and runs its test | core | S | Workflow file; first green run linked in S0 EVIDENCE | v0.5.0 |
-| S7.5a | Ask-first on today's signals: no route to the gateway when the local server is not running; per-message member choice (restart local, or send this message to the gateway); bounded wait while the app's own startup start is pending | core | M | Rust tests over `select_inference_state` (new state, no `LocalFallback` route without a choice); vitest: the prompt appears, the choice is per message, nothing is sent before the choice; macOS packaged check (`g4-native-v050`) | v0.5.0 |
+| S7.5a | Ask-first on today's signals: no route to the gateway when the local server is not running; per-message member choice (restart local, or send this message to the gateway); bounded wait while the app's own startup start is pending | core | M | Rust tests over `select_inference_state` (new state, no `LocalFallback` route without a choice); vitest: the prompt appears, the choice is per message, nothing is sent before the choice; macOS packaged check (`g4-native-v050`; *third set: moves to the v0.5.1 macOS run, `g4-native-macos-cut`*) | v0.5.0; *owner decision (2026-10-05, third set): v0.5.1* |
 | S8.5a | Startup cleanup barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated | core | M | Owned lock-holder fixture blocks the reset; node spawn admitted only after cleanup; packaged update run on the rerolled chain (S0.6 run) | v0.5.0 |
 | S8.5b | Boot identity in ownership records; per-OS path rule (moved and deleted forms) | core | S | Boot-mismatch record removed without a signal; path-rule tests per OS | v0.5.1 |
 
@@ -569,6 +580,8 @@ S1.6 keeps its id for the rest of the CI lanes (v0.5.1). S8.5 is tracked as S8.5
   cases are narrowed by S0.3, S0.4 and S0.5, as before.
 - **The v0.5.x remainder has no release slot yet.** D-41 as amended allows exactly one v0.5.1.
   Which release carries the v0.5.x criteria is an open owner question.
+  *Owner decision (2026-10-05, third set):* answered. The remainder is v0.5.2; HUP D-41 now allows
+  exactly one v0.5.1 and one v0.5.2.
 
 ### Estimate (second set)
 
@@ -612,3 +625,120 @@ the S7.5a prompt): 47 WPs, about 150 agent-days. The critical path is unchanged 
 about one week, because the v0.5.0 work and release take lanes and owner time in the first two
 weeks. gate0 (S1.1 to S1.7) can start on 2026-10-06 beside S0. v0.5.1 lands about early to
 late December 2026.
+
+## Owner decision (2026-10-05, third set): v0.5.0, v0.5.1, v0.5.2
+
+**D-2 amended a third time; HUP D-41 amended again; owners assigned (D-18).** See
+[00 Locked decisions](00_OVERVIEW.md#locked-decisions). This section supersedes the second set
+above where they differ; the second set stays as the record.
+
+- **v0.5.0 is the minimum viable release:** SCL-S0 only, which is S0.1, S0.3, S0.4, S0.5, S0.6,
+  S0.7, S1.6a and S8.5a. **S7.5a moves to v0.5.1.** The owner asked for the minimum viable
+  0.5.0, and S7.5a is not a safety fix.
+- **v0.5.1** is the second set's v0.5.1 plus S7.5a.
+
+*Owner decision (2026-10-06):* S7.5a and `g3-provider-routing-v050` are back in release v0.5.0, to close the open High RT-12 (R-16) in the 0.5.0 red-team slice. This supersedes the third-set move of S7.5a to v0.5.1; everything else in the third set stands. v0.5.0 is SCL-S0 plus S7.5a (9 WPs); v0.5.1 is the second set's v0.5.1 (S7.5 reuses the
+S7.5a prompt).
+- **v0.5.2** is the second set's v0.5.x remainder, unchanged in content. HUP D-41 now allows
+  exactly one v0.5.1 and one v0.5.2 after v0.5.0.
+
+In [gates.yaml](gates.yaml): every `release: v0.5.x` is now `release: v0.5.2`, and
+`g3-provider-routing-v050` is now `release: v0.5.1`. No id is renumbered; the previous value
+stays as a comment.
+
+### What changes with S7.5a out of v0.5.0
+
+- `g4-native-v050` no longer includes the "chat with the local server stopped asks first"
+  check. That check joins the v0.5.1 macOS run (`g4-native-macos-cut`).
+- **Known issue in v0.5.0:** today's silent route to the gateway when the local model is
+  verified, a gateway key is set and the local server process is not running (see "O-19
+  extended" above). The v0.5.0 release notes should list it and must not claim ask-first.
+- S7.5a and S7.5 run in one Mac lane in v0.5.1: S7.5a first (no dependency on S2 to S5), then
+  S7.5 on the S3 readiness model, reusing the S7.5a prompt. S7.5a is not on the v0.5.1
+  critical path.
+
+### Owners (third set)
+
+Issues carry the lane scope; the WP list below is the planset's mapping of each issue. "Mac
+lane" is the owner's Mac with agents (@SaulBuilds). "Proposed" means not yet accepted on the
+issue.
+
+| Release | Owner | Issue | WPs |
+|---|---|---|---|
+| v0.5.0 | Mac lane (agents): build | #249 | S0.1, S0.3, S0.4, S0.5, S0.6, S0.7, S1.6a, S8.5a |
+| v0.5.0 | @kurtatwork (+ @RDCTart69): Windows native run | #249 | S0.7 native run (manual NSIS install over 0.4.2 with the app open); review of the S0.7 and S1.6a PR |
+| v0.5.1 | @mfarzanansari, **proposed, pending his acceptance** | #247 | S3.1 to S3.3 (SC2), S4.1 to S4.3 (SC3), S5.1, S5.2 (SC4); their S13 fixtures (port of the contributor's reproduction appendix) |
+| v0.5.1 | @kurtatwork | #250 | S1.6 (Windows and macOS CI lanes for kit, src-tauri lifecycle and runtime); the Windows halves of S12 (S12.2 Windows install only after `Complete`, the Windows rows of S12.5a and S12.7); Windows Comms ownership (the Windows foreground-slot items v0.5.1 needs for Comms on the new cell through the O-2 layer, re-grounded on #180) |
+| v0.5.1 | Mac lane | #251 | S1.1 to S1.5, S1.7 (gate0); S2.1 to S2.4 (SC1); S6.4a; S7.1, S7.5a, S7.5 (readiness and O-19); S8.1, S8.3, S8.5b; S11.4, S11.5a, S11.6 (Hermes child report); S12.1, S12.3, S12.6, S12.8 and the macOS rows of S12.2, S12.5a, S12.7; S13.1 to S13.5; S14.1 cut scenarios, S14.4 macOS slice, S14.5, S14.6; S15.2, S15.3 |
+| v0.5.2 | @kurtatwork | #252 | S10.0 to S10.4 (Windows Job objects), the Windows rows of S14 |
+| v0.5.2 | @mfarzanansari, **proposed, pending his acceptance** | #248 | S9.0 to S9.4 (shared containment crate and Unix backend; `[[drift]]` entry first), S11.1, S11.2, S11.3a, S11.3b, S11.5b, S11.7 (Hermes children) |
+| v0.5.2 | Mac lane | #253 | S6.1 to S6.3, S6.4b, S7.2 to S7.4, S8.2, S8.4, S12.4, S12.5b, remaining S14 and S15 |
+
+Notes:
+
+- **Windows Comms and S7.2.** S7.2 (Comms and Cluster owners) is tagged v0.5.2 through
+  `g3-supervised`, while #250 puts Windows Comms ownership in v0.5.1. The planset reads this as:
+  the Windows Comms work v0.5.1 needs (Comms on the new cell under O-2, the Windows foreground
+  slots re-grounded on #180) is @kurtatwork's in v0.5.1, and the rest of S7.2 stays v0.5.2 with
+  the Mac lane (#253). If the owner meant all of S7.2 in v0.5.1, that is a scope addition of
+  about 7 agent-days to v0.5.1 and needs a gates.yaml split.
+- **Cross-cutting owner.** O-16 stands: the owner holds the lifecycle contract and CODEOWNERS
+  whatever the lane split. Reviews of contributor PRs on the supervisor are on the Mac lane.
+- **If a proposed assignment is not accepted** (recommended default, pending owner sign-off):
+  if @mfarzanansari has not accepted #247 by the time S2 (SC1) is merged, the Mac lane takes S3
+  to S5 so the v0.5.1 critical path does not wait; the same rule applies to #248 at the v0.5.1
+  release. Outside code needs at least a DCO sign-off (O-8).
+
+### Estimate (third set)
+
+Same sizing as before: S = 1 agent-day, M = 3, L = 7. Reviews, native runs, private-route
+merges and the release ceremony do not compress. "Agent pace" assumes agent lanes working
+full time; human lanes are slower and less parallel, and this planset has no measured pace
+for either outside contributor yet.
+
+| | v0.5.0 | v0.5.1 | v0.5.2 |
+|---|---|---|---|
+| Work packages | 8 (S0.1, S0.3 to S0.7, S1.6a, S8.5a) | 48 (the second set's 47 plus S7.5a) | 34 (unchanged) |
+| Total effort | about 16 agent-days | about 153 agent-days | about 135 agent-days |
+| Critical path | about 6 agent-days of code (S0.6 then S8.5a), then native runs and the ceremony | about 51 to 70 agent-days at agent pace (unchanged; S7.5a is a side lane) | about 47 to 54 agent-days at agent pace |
+| Calendar | 8 to 13 working days from 2026-10-06: about 2026-10-16 to 2026-10-22, or 1 to 2 weeks after the soak, whichever is later | best case early to late December 2026; expected mid-December 2026 to mid-January 2027 | best case 4 to 6 weeks after v0.5.1 (about late January to late February 2027); expected 10 to 14 weeks after v0.5.1 (about late March to late April 2027) |
+
+**v0.5.0.** Removing S7.5a takes out one M lane (3 agent-days) and one macOS packaged check. It
+was never on the critical path (S0.6 then S8.5a), so the date moves by about one day at most
+(less review and one fewer native check). Four code lanes remain: S0.6 then S8.5a; S0.1 and
+S0.5; S0.3 and S0.4 in the runtime, then the Hermes rebuild; S0.7 with S1.6a. The binding
+constraints are unchanged and none is SCL code: the Windows S0.7 run (#249 needs a 0.5.0
+Windows installer and a machine with 0.4.2 installed and running), the other HUP gate5
+criteria and the QA pass, and the owner's private-route merges (#298).
+
+**v0.5.1.** The critical path is gate0 (including S1.6, because RT-14 puts the Windows and
+macOS CI lanes before S2 starts), then S2, then S3 and S4 (S5 beside them), then the owners
+(S7.1, S7.5), the coordinator (S12), the suite (S13), macOS acceptance (S14) and the red-team
+(S15). Two of those links are now human lanes: S1.6 (@kurtatwork) and S3 to S5
+(@mfarzanansari, proposed).
+
+- *Best case, early to late December 2026 (unchanged):* @mfarzanansari accepts #247 by mid
+  October and starts S3 as soon as S2 merges; S1.6 lands before gate0 closes (about three
+  weeks from 2026-10-06); both contributors work close to full time on their slice.
+- *Expected, mid-December 2026 to mid-January 2027:* both contributors are part time. S3 to S5
+  is about 20 agent-days of work; at one to two WPs a week it spans about 4 to 6 weeks instead
+  of 2 to 3, adding 2 to 3 weeks. Late December holidays slow human lanes further. S1.6 is
+  smaller and can run beside gate0; it delays S2 only if it is not done when gate0 closes.
+- *Fallback:* if #247 is not accepted by the time S2 merges, the Mac lane takes S3 to S5 and the
+  date returns to the best case less a few days of handover.
+
+**v0.5.2.** At agent pace the remainder is 7 to 9 weeks after v0.5.1, or 4 to 6 weeks if the
+containment lanes start right after gate0 (S9.0 to S9.3 and S10.0 to S10.3 depend only on
+gate0, RT-13). Under the owner split, the critical path is S10.0 to S10.2 (@kurtatwork, about
+13 agent-days, starting with the S10.0 mechanism spike) beside S9 then S11 (@mfarzanansari,
+proposed: about 17 agent-days for S9 and about 35 for the Hermes children). One person cannot
+run S11's lanes in parallel the way agents do, so S11 is the long pole.
+
+- *Best case, 4 to 6 weeks after v0.5.1 (about late January to late February 2027):* both
+  contributors start their containment work after gate0, before v0.5.1 ships, and the Mac lane
+  takes part of S11 (S11.2 or S11.3a and S11.3b) to run it in parallel.
+- *Expected, 10 to 14 weeks after v0.5.1 (about late March to late April 2027):* part-time
+  contributors, containment work starting only after v0.5.1, S9 then S11 serial in one lane.
+- The recommended mitigation is the best-case shape: start S9.0 (the `[[drift]]` entry and the
+  federation sprint file) and S10.0 (the spike) right after gate0, and split S11 between
+  #248 and the Mac lane. That is an owner call; this planset does not change #248's scope.

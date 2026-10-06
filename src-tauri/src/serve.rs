@@ -733,7 +733,8 @@ pub fn model_serve_status_sync(
 }
 
 /// **Command — model_inference_state.** The HONEST inference-routing state the
-/// frontend renders: LOCAL (`ready`) → gateway (`gatewayOnly`/`localFallback`) →
+/// frontend renders: LOCAL (`ready`) → ask first (`local-stopped`, SCL-S7.5a) → gateway
+/// (`gateway-only`, no local model) →
 /// downloading → demo. Computed from the real model status + serve health + the
 /// gateway-key presence. `gateway_configured` is passed from the frontend's
 /// providerStatus read (the gateway provider is configured iff a cgk_ key is

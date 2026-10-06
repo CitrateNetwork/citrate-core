@@ -2,8 +2,8 @@
 created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
-status: proposed (Stage-2, red-teamed; owner decisions O-18, O-19, O-20 and the red-team pass accepted 2026-10-05, then a second set the same day (release path v0.5.0 / v0.5.1 / v0.5.x, D-16 extended, HUP D-41 amended); ADR acceptance (g0-adr) still pending; changes nothing until accepted)
-updated: 2026-10-05 (owner decisions: D-2 amended to a cut-blocking subset; O-18, O-19 locked; red-team pass accepted; second set: D-2 amended again, D-16 extended, HUP D-41 amended for one v0.5.1)
+status: proposed (Stage-2, red-teamed; owner decisions O-18, O-19, O-20 and the red-team pass accepted 2026-10-05, then a second set the same day (release path v0.5.0 / v0.5.1 / v0.5.x, D-16 extended, HUP D-41 amended), then a third set (minimum viable v0.5.0, S7.5a to v0.5.1, v0.5.x renamed v0.5.2, HUP D-41 amended again, owners assigned); ADR acceptance (g0-adr) still pending; changes nothing until accepted)
+updated: 2026-10-05 (owner decisions: D-2 amended to a cut-blocking subset; O-18, O-19 locked; red-team pass accepted; second set: D-2 amended again, D-16 extended, HUP D-41 amended for one v0.5.1; third set: D-2 amended a third time, HUP D-41 amended for one v0.5.1 and one v0.5.2, D-18 owners)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -53,6 +53,10 @@ remain recommended defaults pending sign-off. The ADR as a whole is still propos
 the S8.5 startup barrier; the previous cut-blocking subset gates v0.5.1), D-16 extended (ask
 first when the local model is down), and the HUP D-41 cadence amended to allow one v0.5.1.
 `g0-adr` is now a v0.5.1 criterion. See "Owner decisions (2026-10-05, second set)" below.
+
+*Owner decision (2026-10-05, third set):* v0.5.0 is the minimum viable release (SCL-S0, S1.6a,
+S8.5a); S7.5a moves to v0.5.1; the v0.5.x remainder is v0.5.2; HUP D-41 allows one v0.5.1 and one
+v0.5.2; owners are assigned (D-18). See "Owner decisions (2026-10-05, third set)" below.
 
 ## Context
 
@@ -177,6 +181,28 @@ Windows team's S0.7 run are ready. v0.5.1 is 47 WPs, about 150 agent-days, criti
 Consequences: bugs (a) to (e) ship open in v0.5.0; the 0.5.0 to 0.5.1 macOS update runs
 0.5.0's exit code; the O-17 legacy cleanup stays through v0.5.1; the remainder has no release
 slot yet under D-41 as amended.
+*Owner decision (2026-10-05, third set): superseded where it differs by the third set below.*
+
+## Owner decisions (2026-10-05, third set)
+
+Recorded as locked decisions in the planset's 00 (and D-41 in the HUP planset). They supersede
+the second set where they differ; the rows above stay as the record.
+
+| # | Decision | Replaces |
+|---|---|---|
+| D-2 (amended a third time) | **Minimum viable v0.5.0.** v0.5.0 is SCL-S0 only: S0.1, S0.3, S0.4, S0.5, S0.6, S0.7, S1.6a, S8.5a. **S7.5a moves to v0.5.1** (the owner asked for the minimum viable 0.5.0; S7.5a is not a safety fix). v0.5.1 is the second set's v0.5.1 plus S7.5a. The v0.5.x remainder becomes **v0.5.2**. gates.yaml: `release: v0.5.x` becomes `release: v0.5.2`; `g3-provider-routing-v050` becomes `release: v0.5.1` (ids kept) | D-2 (amended again) |
+| D-16 (extended), timing | Unchanged rule; the v0.5.0 slice (S7.5a) now ships in v0.5.1 with S7.5. v0.5.0 ships today's silent route for a stopped local server as a known issue | The "S7.5a ships in v0.5.0" part of D-16 (extended) |
+| D-41 (HUP, amended again) | **One v0.5.1 and one v0.5.2.** The HUP cadence allows exactly one v0.5.1 and one v0.5.2 after v0.5.0, carrying the SCL v0.5.1 and v0.5.2 gates | D-41 (HUP, amended) above |
+| D-18 | **Owners.** v0.5.0: S0 build on the Mac lane (agents), Windows native S0.7 run by @kurtatwork with @RDCTart69 (#249). v0.5.1: SC2 to SC4 (SCL-S3, S4, S5) and their fault fixtures proposed for @mfarzanansari (#247, pending his acceptance); Windows and macOS CI lanes, Windows exit paths and Windows Comms ownership by @kurtatwork (#250); gate0, SC1, readiness and O-19 including S7.5a, the macOS exit coordinator, the Hermes child report, the fault suite, macOS acceptance and the red-team on the Mac lane (#251). v0.5.2: Windows Job objects by @kurtatwork (#252); Unix containment, the shared crate and Hermes children proposed for @mfarzanansari (#248); remaining managers and bespoke processes on the Mac lane (#253). O-16 (the owner holds the cross-cutting contract) is unchanged | (new) |
+
+Estimate: v0.5.0 is 8 WPs, about 16 agent-days, 8 to 13 working days from 2026-10-06 (about
+2026-10-16 to 2026-10-22, or 1 to 2 weeks after the soak, whichever is later); S7.5a was a side
+lane, so the date barely moves. v0.5.1 is 48 WPs, about 153 agent-days; best case early to late
+December 2026, expected mid-December 2026 to mid-January 2027 with part-time contributors on S1.6
+and S3 to S5. v0.5.2 is 34 WPs, about 135 agent-days; best case 4 to 6 weeks after v0.5.1,
+expected 10 to 14 weeks after v0.5.1 (about late March to late April 2027) with S9 then S11 in
+one contributor lane. Assumptions and the fallback when a proposed owner does not accept are
+in planset 05 "Owner decision (2026-10-05, third set)".
 
 ## Consequences
 
@@ -197,6 +223,9 @@ slot yet under D-41 as amended.
   *Owner decision (2026-10-05, second set): v0.5.0 waits only for SCL-S0, S8.5a, S1.6a and
   S7.5a; v0.5.1 waits for the previous cut-blocking subset. All five reproduced defects ship
   open in v0.5.0.*
+  *Owner decision (2026-10-05, third set): v0.5.0 waits only for SCL-S0, S1.6a and S8.5a; S7.5a
+  moves to v0.5.1, so v0.5.0 also ships today's silent route to the gateway for a stopped local
+  server, as a known issue. The remainder ships as v0.5.2.*
 
 ## What this ADR does not claim
 

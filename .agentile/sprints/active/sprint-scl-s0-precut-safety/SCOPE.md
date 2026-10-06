@@ -39,8 +39,8 @@ Each WP is red, then green, then close-with-proof. Definitions and acceptance cr
 |---|---|---|---|---|---|
 | S0.1 | Startup cleanup matches exact owned executable paths only (pre-cut safety fix tracked privately) | US-0.1 | S | each OS's installed package | in review (private route); native runs pending |
 | S0.2 | Windows update install drains sidecars before the installer runs | US-0.2 | S | Windows team (@RDCTart69, @kurtatwork) | not started |
-| S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | not started |
-| S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | not started |
+| S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | in review (private route; runtime and core) |
+| S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | in review (private route; runtime) |
 | S0.5 | Shutdown coverage check: embed stops with Hermes, workers exit on stdin close | (QA) | S | all three OSes | code + tests in PR (one gap fixed); per-OS process-list record pending ([EVIDENCE](EVIDENCE.md)) |
 | S0.6 | Genesis-change update check: no old node left holding the chain database or ports; if one is, the UI names it | US-0.4 | M | all three OSes | code in review (#256, [EVIDENCE](EVIDENCE.md)); native runs owed |
 | S0.7 | Windows installer stops this installation's own sidecars before copying files (red-team addition RT-04) | US-0.2 (amended) | M | Windows team: manual 0.4.2 to 0.5.0 install with the old app running | NSIS hook + script test in PR; Windows team native run pending ([EVIDENCE](EVIDENCE.md)) |
@@ -65,7 +65,14 @@ sprint for v0.5.0 (definitions and acceptance in
 |---|---|---|---|---|---|
 | S1.6a | Minimal hosted Windows CI job that builds the S0.7 NSIS hook and runs its test (no Windows CI lane exists today; the only strict dependency of S0) | (CI) | S | (hosted runner) | workflow in PR; first green run linked in [EVIDENCE](EVIDENCE.md) |
 | S8.5a | Startup cleanup barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated | US-7.3 AC1, AC2 | M | with the S0.6 runs | code in review (#256, [EVIDENCE](EVIDENCE.md)); native runs owed |
-| S7.5a | Ask first when the local server is not running (restart the local model, or send this message to the gateway this time; per message); bounded wait while the app's own startup start is pending (D-16 extended) | US-6.2 AC5 | M | macOS packaged | not started |
+| S7.5a | Ask first when the local server is not running (restart the local model, or send this message to the gateway this time; per message); bounded wait while the app's own startup start is pending (D-16 extended). *Owner decision (2026-10-05, third set): removed from this sprint, moved to v0.5.1 (Mac lane, #251).* *Owner decision (2026-10-06): back in this sprint and release v0.5.0, to close the open High RT-12 in the 0.5.0 red-team slice* | US-6.2 AC5 | M | macOS packaged (the v0.5.0 run) | code in review (PR `scl/s7.5a-ask-before-gateway`); macOS packaged check owed |
+
+*Owner decision (2026-10-05, third set):* S7.5a is removed from this sprint and moves to v0.5.1
+(the owner asked for the minimum viable v0.5.0; S7.5a is not a safety fix). Its criterion
+`g3-provider-routing-v050` keeps its id with `release: v0.5.1`. v0.5.0 is this sprint's S0 WPs
+plus S1.6a and S8.5a: 8 WPs, about 16 agent-days. Today's silent route to the gateway when
+the local server is not running ships in v0.5.0 as a known issue. See
+[05 "Owner decision (2026-10-05, third set)"](../../../planset/2026-10-05-sidecar-lifecycle/05_SPRINTS_AND_WPS.md#owner-decision-2026-10-05-third-set-v050-v051-v052).
 
 `g1-precut`, `g3-recorded-cleanup-v050`, `g3-provider-routing-v050`, `g4-native-v050` and
 `g5-release-coupling` are the criteria tagged `release: v0.5.0`. Estimate: 9 WPs, about 19
@@ -116,6 +123,9 @@ vitest 2428 passed (see [EVIDENCE](EVIDENCE.md)).
 - 2026-10-05: S0.5, S0.7 and S1.6a implemented on `scl/s0.5-s0.7-s1.6a` (one PR). S0.5 found and
   fixed one gap (a Hermes start failure left the embedding server running). Rule-2 baseline and
   results in [EVIDENCE.md](EVIDENCE.md). Native runs (S0.5 per OS, S0.7 Windows team) pending.
+- 2026-10-05: S0.3 and S0.4 built red-then-green and sent through the private route (runtime
+  and core); the owner merges. Test counts and native runs go in `EVIDENCE.md` after merge. The
+  Hermes binary is rebuilt from runtime `main` once the runtime change is merged.
 - 2026-10-06: S0.6 and S8.5a coded in one lane (#256): startup barrier
   around the existing startup cleanup, holder check (chain database lock, node ports) before
   every node start with the holder named in the UI, and the #243 reset now takes the chain

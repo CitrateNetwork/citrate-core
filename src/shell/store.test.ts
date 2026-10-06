@@ -248,8 +248,11 @@ describe("AI1 — provider selection + key-never-in-state", () => {
     // ready → local, even though a gateway key is configured (local wins).
     expect(pickChatProviderKind(configured, "gateway", "tauri", "ready")).toBe("local");
     // NEGATIVE CONTROL: server NOT healthy (any non-"ready" state) → NOT local.
-    // local-fallback means the model is ready but the server is down → gateway.
-    expect(pickChatProviderKind(configured, "gateway", "tauri", "local-fallback")).toBe("real");
+    // SCL-S7.5a (D-16 extended): local-stopped means the model is ready but its server is not
+    // running. That is NOT a gateway route: chat asks the member first ("ask"), never "real".
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "local-stopped")).toBe("ask");
+    // The old wire value no longer exists; were it ever seen it must not route to the gateway either.
+    expect(pickChatProviderKind(configured, "gateway", "tauri", "local-fallback")).toBe("ask");
     expect(pickChatProviderKind(configured, "gateway", "tauri", "gateway-only")).toBe("real");
     // downloading with a gateway key → gateway (not local, not demo).
     expect(pickChatProviderKind(configured, "gateway", "tauri", "downloading")).toBe("real");

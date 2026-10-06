@@ -4,7 +4,7 @@ branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
-updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18 and O-19 accepted as D-15 and D-16; red-team pass accepted as D-17; second set: D-2 amended again to v0.5.0 / v0.5.1 / v0.5.x, D-16 extended to ask first for a stopped local model, HUP D-41 amended for one v0.5.1)
+updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18 and O-19 accepted as D-15 and D-16; red-team pass accepted as D-17; second set: D-2 amended again to v0.5.0 / v0.5.1 / v0.5.x, D-16 extended to ask first for a stopped local model, HUP D-41 amended for one v0.5.1; third set: minimum viable v0.5.0 (S7.5a moves to v0.5.1), v0.5.x renamed v0.5.2, HUP D-41 amended for one v0.5.1 and one v0.5.2, owners assigned; 2026-10-06: S7.5a back in v0.5.0)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core (primary); citrate-agent-runtime (Hermes-sidecar children, shared containment crate, via federation sprint)
@@ -84,9 +84,12 @@ Locked 2026-10-05 by the owner. Reversing any of these requires a superseding AD
 | D-15 | Quit always ends (O-18 accepted) | **Owner decision (2026-10-05).** Install and restart require `Complete`. Quit (and the factory-reset exit) force-stops every OS-process scope it still owns at the deadline and exits, reporting `Incomplete`; ownership records of anything not observed absent stay for next-launch cleanup, and the next launch tells the member. In-process threads never keep the app alive | 2026-10-05 |
 | D-16 | No silent gateway fallback (O-19 accepted) | **Owner decision (2026-10-05).** While the local model is cold-loading or its probe times out, chat waits or tells the member; it never routes the prompt to the remote gateway without the member's explicit choice. Readiness gates admission to the local server and never switches provider by itself. Criterion `g3-provider-routing` blocks the cut. *Owner decision (2026-10-05, second set): extended by D-16 (extended) below* | 2026-10-05 |
 | D-17 | Red-team gate | **Owner decision (2026-10-05).** The single-model adversarial pass in [08_RED_TEAM](08_RED_TEAM.md) (commit `2db312f`) is accepted as the pre-Stage-2 red-team; `g0-redteam` is met. The red-team on merged code (SCL-S15.2) is unchanged | 2026-10-05 |
-| D-2 (amended again) | Release path | **Owner decision (2026-10-05, second set).** v0.5.0 ships right after the 40204 reroll and its 2,000-block soak with **only** SCL-S0 pre-cut safety (S0.1, S0.3 to S0.7, including the Windows NSIS pre-install stop S0.7) and the v0.5.0 slice of S8.5 (S8.5a: startup barrier before node admission, #243 database-lock check), plus the minimum they strictly depend on (S1.6a, a hosted Windows CI job for the S0.7 hook test) and the minimal ask-first S7.5a (D-16 extended). The previous cut-blocking subset becomes the **v0.5.1** release gate. Everything else stays 0.5.x follow-up. gates.yaml carries `release: v0.5.0 / v0.5.1 / v0.5.x` per criterion in place of `blocks_cut`. Table: [Three releases](#owner-decision-2026-10-05-second-set-three-releases) | 2026-10-05 |
-| D-16 (extended) | Ask first, never silent | **Owner decision (2026-10-05, second set).** In addition to D-16 (cold load or probe timeout never routes to the gateway silently): when the local model is `Failed`, `Stopped` or `Quarantined`, chat asks the member first: restart the local model, or send this message to the gateway this time. The choice is per message, never preselected or remembered. Never silent. v0.5.0 ships the stopped case on today's signals (S7.5a, `g3-provider-routing-v050`); v0.5.1 ships the full rule on the readiness model (S7.5, `g3-provider-routing`) | 2026-10-05 |
-| D-41 (HUP, amended) | One v0.5.1 | **Owner decision (2026-10-05, second set).** The HUP release cadence D-41 is amended to allow exactly one v0.5.1 after v0.5.0, carrying the SCL v0.5.1 gate. Recorded in the HUP planset (00 D-41, 10_RELEASE_PLAN, `g5-scl`) | 2026-10-05 |
+| D-2 (amended again) | Release path | **Owner decision (2026-10-05, second set).** v0.5.0 ships right after the 40204 reroll and its 2,000-block soak with **only** SCL-S0 pre-cut safety (S0.1, S0.3 to S0.7, including the Windows NSIS pre-install stop S0.7) and the v0.5.0 slice of S8.5 (S8.5a: startup barrier before node admission, #243 database-lock check), plus the minimum they strictly depend on (S1.6a, a hosted Windows CI job for the S0.7 hook test) and the minimal ask-first S7.5a (D-16 extended). The previous cut-blocking subset becomes the **v0.5.1** release gate. Everything else stays 0.5.x follow-up. gates.yaml carries `release: v0.5.0 / v0.5.1 / v0.5.x` per criterion in place of `blocks_cut`. Table: [Three releases](#owner-decision-2026-10-05-second-set-three-releases). *Owner decision (2026-10-05, third set): superseded by D-2 (amended a third time) below; S7.5a moves to v0.5.1 and v0.5.x becomes v0.5.2* | 2026-10-05 |
+| D-16 (extended) | Ask first, never silent | **Owner decision (2026-10-05, second set).** In addition to D-16 (cold load or probe timeout never routes to the gateway silently): when the local model is `Failed`, `Stopped` or `Quarantined`, chat asks the member first: restart the local model, or send this message to the gateway this time. The choice is per message, never preselected or remembered. Never silent. v0.5.0 ships the stopped case on today's signals (S7.5a, `g3-provider-routing-v050`); v0.5.1 ships the full rule on the readiness model (S7.5, `g3-provider-routing`). *Owner decision (2026-10-05, third set): S7.5a moves to v0.5.1 with S7.5 (`g3-provider-routing-v050` keeps its id, `release: v0.5.1`); v0.5.0 ships today's silent route for a stopped local server as a known issue* | 2026-10-05 |
+| D-41 (HUP, amended) | One v0.5.1 | **Owner decision (2026-10-05, second set).** The HUP release cadence D-41 is amended to allow exactly one v0.5.1 after v0.5.0, carrying the SCL v0.5.1 gate. Recorded in the HUP planset (00 D-41, 10_RELEASE_PLAN, `g5-scl`). *Owner decision (2026-10-05, third set): superseded by D-41 (HUP, amended again) below* | 2026-10-05 |
+| D-2 (amended a third time) | Minimum viable v0.5.0 | **Owner decision (2026-10-05, third set).** v0.5.0 is the minimum viable release: SCL-S0 only (S0.1, S0.3, S0.4, S0.5, S0.6, S0.7, S1.6a, S8.5a). **S7.5a moves to v0.5.1**: the owner asked for the minimum viable 0.5.0, and S7.5a is not a safety fix. **v0.5.1** is the previous v0.5.1 set plus S7.5a. The previous **v0.5.x** remainder becomes **v0.5.2**. gates.yaml: every `release: v0.5.x` becomes `release: v0.5.2`, and `g3-provider-routing-v050` becomes `release: v0.5.1` (ids kept). Table: [Third set](#owner-decision-2026-10-05-third-set-v050-v051-v052). *Owner decision (2026-10-06):* S7.5a and `g3-provider-routing-v050` are back in release v0.5.0, to close the open High RT-12 (R-16) in the 0.5.0 red-team slice. This supersedes the third-set move of S7.5a to v0.5.1; everything else in the third set stands. | 2026-10-05 |
+| D-41 (HUP, amended again) | One v0.5.1 and one v0.5.2 | **Owner decision (2026-10-05, third set).** The HUP release cadence D-41 allows exactly one v0.5.1 **and** exactly one v0.5.2 after v0.5.0, carrying the SCL v0.5.1 and v0.5.2 gates respectively. Recorded in the HUP planset (00 D-41, 10_RELEASE_PLAN, `g5-scl`). This answers the second set's open question ("the v0.5.x remainder has no release slot") | 2026-10-05 |
+| D-18 | Owners | **Owner decision (2026-10-05, third set).** Each release's work has a named owner, tracked on one issue per lane (#247 to #253). Table: [Owners](#owners-owner-decision-2026-10-05-third-set); WP-level detail in [05](05_SPRINTS_AND_WPS.md#owners-third-set). Assignments marked *proposed* wait on the contributor's acceptance | 2026-10-05 |
 
 ## Owner decisions (recommended default, pending owner sign-off)
 
@@ -247,6 +250,62 @@ Windows installer and a machine running 0.4.2), the other HUP gate5 criteria and
 (unchanged by this decision), and the owner's private-route merges. Residuals v0.5.0 ships with:
 bugs (a) to (e) stay open (SC1 to SC4 are v0.5.1); the 0.5.0 to 0.5.1 macOS update runs 0.5.0's
 exit code; the v0.5.x remainder has no release slot yet under D-41 as amended (owner question).
+*Owner decision (2026-10-05, third set):* answered; the remainder is v0.5.2 (D-41 amended again), and
+S7.5a left v0.5.0 for v0.5.1. See the third-set section below.
+
+## Owner decision (2026-10-05, third set): v0.5.0, v0.5.1, v0.5.2
+
+D-2 amended a third time and HUP D-41 amended again. This section supersedes "Owner decision
+(2026-10-05, second set): three releases" above where they differ; that section stays as the
+record. Two changes only: **S7.5a moves from v0.5.0 to v0.5.1** (the owner asked for the minimum
+viable 0.5.0; S7.5a is not a safety fix), and the **v0.5.x remainder is now v0.5.2**, the one
+v0.5.2 that D-41 now allows. Detail and the re-estimate are in
+[05 "Owner decision (2026-10-05, third set)"](05_SPRINTS_AND_WPS.md#owner-decision-2026-10-05-third-set-v050-v051-v052).
+
+| v0.5.0 (minimum viable, after the reroll and 2,000-block soak) | v0.5.1 | v0.5.2 |
+|---|---|---|
+| SCL-S0: S0.1, S0.3, S0.4, S0.5, S0.6, S0.7 | (none) | S0.2, conditional on a Windows updater feed |
+| S8.5a startup barrier and #243 database-lock check | S8.1, S8.3, S8.5b | S8.2, S8.4 |
+| S1.6a hosted Windows CI job for the S0.7 hook test | gate0: S1.1 to S1.5, the rest of S1.6, S1.7 | `OwnedContainment.tla` if needed |
+| (none; S7.5a moved out) | **S7.5a** (moved from v0.5.0) and S7.5; SC1 to SC4 (S2 to S5); S7.1, S6.4a; all 9 services on the new cell through the O-2 layer | S6.1 to S6.3, S6.4b, S7.2 to S7.4 |
+| | Hermes child report minimum: S11.4, S11.5a, S11.6 | S11.1, S11.2, S11.3a, S11.3b, S11.5b, S11.7 |
+| | Exit, quit, update: S12.1 to S12.3, S12.5a, S12.6 to S12.8 | S12.4, S12.5b |
+| | (no containment) | S9 Unix containment, S10 Windows Job objects |
+| | S13 fault suite over every v0.5.0 and v0.5.1 fixture | New fixtures join the same check |
+| Native: macOS 0.4.2 to 0.5.0 update on the rerolled chain, DGX Linux manual update, Windows S0.7 run | Native: S14.1 cut scenarios (now including the S7.5a stopped-model check) plus the 0.5.0 to 0.5.1 update, S14.4 macOS slice, S14.5, S14.6 | Full three-OS acceptance |
+| Red-team: HUP `g5-redteam`; S0 private route (#298) | S15.2, S15.3 on the v0.5.1 code | S15 on the remainder |
+
+**Known issue v0.5.0 ships with (owner accepted):** today's silent route to the gateway when the
+local model is verified, a gateway key is set and the local server process is not running
+(05, "O-19 extended"). v0.5.0 release notes should list it and must not claim ask-first;
+v0.5.1 fixes it (S7.5a, then S7.5).
+
+| | v0.5.0 | v0.5.1 | v0.5.2 |
+|---|---|---|---|
+| Work packages | 8 | 48 | 34 |
+| Effort | about 16 agent-days | about 153 agent-days | about 135 agent-days |
+| Critical path | about 6 agent-days of code (S0.6 then S8.5a), then native runs and the ceremony | about 51 to 70 agent-days at agent pace; SC2 to SC4 and the CI lanes now sit with human contributors | about 47 to 54 agent-days at agent pace; S9, S10 and S11 now sit with human contributors |
+| Calendar | 8 to 13 working days from 2026-10-06: about 2026-10-16 to 2026-10-22, or 1 to 2 weeks after the soak, whichever is later | best case early to late December 2026; expected mid-December 2026 to mid-January 2027 (assumptions in 05) | best case 4 to 6 weeks after v0.5.1 (late January to late February 2027); expected 10 to 14 weeks after v0.5.1 (about late March to late April 2027) |
+
+### Owners (owner decision 2026-10-05, third set)
+
+"Mac lane" is the owner's Mac with agents (@SaulBuilds). "Proposed" means the contributor has
+not yet accepted on the issue.
+
+| Release | Work | Owner | Issue |
+|---|---|---|---|
+| v0.5.0 | SCL-S0 build (S0.1, S0.3 to S0.7, S1.6a, S8.5a) | Mac lane (agents) | #249 |
+| v0.5.0 | Windows native S0.7 run (and review of the S0.7 and S1.6a PR) | @kurtatwork, with @RDCTart69 | #249 |
+| v0.5.1 | Supervisor contract SC2 to SC4 (SCL-S3, S4, S5) and their fault fixtures | @mfarzanansari, **proposed, pending his acceptance** | #247 |
+| v0.5.1 | Windows and macOS CI lanes (S1.6), Windows exit paths (Windows halves of S12), Windows Comms ownership | @kurtatwork | #250 |
+| v0.5.1 | gate0, SC1 (S2), readiness and O-19 including S7.5a (S7.1, S7.5a, S7.5), S6.4a, S8.1, S8.3, S8.5b, macOS exit coordinator (S12), Hermes child report (S11.4, S11.5a, S11.6), fault suite (S13), macOS acceptance (S14), red-team (S15) | Mac lane | #251 |
+| v0.5.2 | Windows Job objects (S10) | @kurtatwork | #252 |
+| v0.5.2 | Unix containment (S9), the shared containment crate, Hermes children (S11 remainder) | @mfarzanansari, **proposed, pending his acceptance** | #248 |
+| v0.5.2 | Remaining managers (S6.1 to S6.3, S6.4b, S7.2 to S7.4), bespoke processes (S8.2, S8.4), S12.4, S12.5b, remaining S14 and S15 | Mac lane | #253 |
+
+The cross-cutting owner of the lifecycle contract stays the owner (O-16) whatever the lane
+split. If a proposed assignment is not accepted, the Mac lane holds that work (recommended
+default in 05, pending owner sign-off).
 
 ## Architecture at a glance
 
@@ -348,7 +407,9 @@ D-2 makes the SCL gates part of the v0.5.0 cut. *Owner decision (2026-10-05): D-
 only the criteria marked `blocks_cut: true` are part of the cut, and `g5-scl` says so.*
 *Owner decision (2026-10-05, second set): superseded; v0.5.0 needs only the criteria with
 `release: v0.5.0`, `g5-scl` says so, and the `release: v0.5.1` criteria gate v0.5.1 (HUP D-41
-amended).* The HUP release gates carry one added line
+amended).* *Owner decision (2026-10-05, third set): the v0.5.0 criteria no longer include
+`g3-provider-routing-v050` (now `release: v0.5.1`); the `release: v0.5.2` criteria gate the one
+v0.5.2 that D-41, amended again, allows.* The HUP release gates carry one added line
 (`g5-scl` in [HUP gates.yaml](../2026-09-30-hermes-upskill/gates.yaml)) that points here.
 Nothing else in the HUP planset changes. The SCL program's own gates are in
 [gates.yaml](gates.yaml). The 40204 reroll is not gated on SCL.
