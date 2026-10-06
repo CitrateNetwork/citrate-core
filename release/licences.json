@@ -20,7 +20,7 @@
     "note": "The app is source-available under BUSL-1.1. Copyleft tools are separate programs it runs as subprocesses or downloads on request; none is linked into the app.",
     "third_party_notices": {
       "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-      "source": "citrate-core@835bef62e710b10251bf948b9cbd3fb293662c8a",
+      "source": "citrate-core@4bfd666f279c041c85b4f1f931d1c74089eacb1a",
       "packages": 379
     }
   },
@@ -213,7 +213,7 @@
       "note": "Added 2026-10-06 (v0.5.0 gate prep): the webview carries the npm packages it imports (React, viem, wagmi, TanStack Query, jose, the Tauri JS API and plugins) and the @fontsource font files (OFL-1.1, unmodified). Their notices are generated from the actual Vite output by scripts/third-party-notices.mjs (release/notices.json npm). MPL-2.0 and proprietary packages in node_modules (for example the MetaMask SDK pulled in by wagmi's connectors) are not in the output, which the generator checks on every run.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-core@835bef62e710b10251bf948b9cbd3fb293662c8a-dirty",
+        "source": "citrate-core@4bfd666f279c041c85b4f1f931d1c74089eacb1a",
         "packages": 24
       }
     },
