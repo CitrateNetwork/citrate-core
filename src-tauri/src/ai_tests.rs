@@ -510,7 +510,7 @@ fn local_inference_rejects_non_loopback_url_no_egress() {
 }
 
 /// The provider-selection state machine: LOCAL (ready+healthy) wins; a ready
-/// model with a dead server falls back to the gateway; a download in flight is
+/// model with a dead server asks the member first (SCL-S7.5a); a download in flight is
 /// honestly Downloading; a gateway key alone is gateway-only; nothing → demo.
 #[test]
 fn inference_state_selection_is_honest_per_branch() {
@@ -524,7 +524,7 @@ fn inference_state_selection_is_honest_per_branch() {
         }),
         InferenceState::Ready
     );
-    // Ready model, dead server, gateway present → local-fallback.
+    // Ready model, dead server, gateway present → ask first (SCL-S7.5a; was local-fallback).
     assert_eq!(
         select_inference_state(ProviderInputs {
             model_ready: true,
@@ -532,7 +532,7 @@ fn inference_state_selection_is_honest_per_branch() {
             downloading: false,
             gateway_key_configured: true,
         }),
-        InferenceState::LocalFallback
+        InferenceState::LocalStopped
     );
     // No local model, downloading → downloading (over gateway-only).
     assert_eq!(

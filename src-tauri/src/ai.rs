@@ -227,8 +227,12 @@ pub struct ProviderInputs {
 pub enum InferenceState {
     /// Local model ready + server healthy → chat runs LOCALLY.
     Ready,
-    /// Local model ready but the server is not healthy → fall back to the gateway.
-    LocalFallback,
+    /// Local model ready but its server is not running, and a gateway key is configured.
+    /// SCL-S7.5a (D-16 extended): this is NOT a route. Chat never sends to the gateway by
+    /// itself here; it asks the member first, per message (restart the local model, or send
+    /// this message to the gateway this time). It replaces the old `LocalFallback`, which the
+    /// frontend treated as a silent route to the gateway.
+    LocalStopped,
     /// A download is in flight (no ready local server) → gateway meanwhile.
     Downloading,
     /// No local model, but a gateway key is configured → gateway-only.
@@ -245,7 +249,7 @@ impl InferenceState {
     pub fn as_str(&self) -> &'static str {
         match self {
             InferenceState::Ready => "ready",
-            InferenceState::LocalFallback => "local-fallback",
+            InferenceState::LocalStopped => "local-stopped",
             InferenceState::Downloading => "downloading",
             InferenceState::GatewayOnly => "gateway-only",
             InferenceState::NoModel => "no-model",
@@ -254,21 +258,22 @@ impl InferenceState {
     }
 }
 
-/// Decide the honest inference state. Priority: LOCAL (ready + healthy) → gateway
-/// (local-fallback if the model is ready but the server is down, else
-/// gateway-only) → downloading (in flight) → demo (nothing else). This is the
-/// ONE place the real-vs-fallback route is decided (Rule 1 — no fabricated route).
+/// Decide the honest inference state. Priority: LOCAL (ready + healthy) → ask first
+/// (local-stopped, if the model is ready but its server is down and a gateway key exists;
+/// SCL-S7.5a, never a silent gateway route) → downloading (in flight) → gateway-only (no
+/// local model) → demo (nothing else). This is the ONE place the real-vs-fallback route is
+/// decided (Rule 1 — no fabricated route).
 pub fn select_inference_state(i: ProviderInputs) -> InferenceState {
     // 1) The best path: a ready local model with a healthy server → run locally.
     if i.model_ready && i.server_healthy {
         return InferenceState::Ready;
     }
-    // 2) A ready model but no healthy server: honest local-fallback iff a gateway
-    //    key exists; otherwise it is still "ready-but-not-serving" — route to demo
-    //    only if there is no gateway (we never claim a local model that isn't
-    //    actually serving).
+    // 2) A ready model but no running server, with a gateway key: ask the member first
+    //    (SCL-S7.5a, D-16 extended). The gateway is used only on the member's explicit
+    //    per-message choice, never by this selector. Without a gateway key nothing changes:
+    //    there is nothing to offer, and we never claim a local model that isn't serving.
     if i.model_ready && i.gateway_key_configured {
-        return InferenceState::LocalFallback;
+        return InferenceState::LocalStopped;
     }
     // 3) No usable local model. If a download is in flight, say so (the UI shows
     //    progress + routes to the gateway/demo meanwhile).

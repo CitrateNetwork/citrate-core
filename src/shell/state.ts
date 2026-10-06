@@ -414,6 +414,11 @@ export interface AppState {
   walletReview: WalletReview | null;
   chatMsgs: ChatMsg[];
   chatStatus: "ready" | "thinking" | "streaming" | "tool";
+  /** SCL-S7.5a (D-16 extended) — a chat message held because the local model is configured but
+   *  its server is not running. `waiting`: the app's own startup start is pending (bounded wait);
+   *  `ask`: the member chooses, for this message only, to restart the local model or send it to
+   *  the gateway; `restarting`: the member chose restart. Null when nothing is held. */
+  chatRouteHold: { msgId: string; phase: "waiting" | "ask" | "restarting" } | null;
   chatBackend: "gateway" | "local";
   /** Honest live label for the CURRENT chat provider (set by rebuildProvider from provider.label).
    *  Reflects what actually answers — local llama-server, the gateway, or the built-in demo. */
@@ -765,6 +770,7 @@ export function freshState(pid: string): AppState {
     walletReview: null,
     chatMsgs: [],
     chatStatus: "ready",
+    chatRouteHold: null,
     chatBackend: "gateway",
     chatProviderLabel: "starting…",
     chatProviderKind: "demo",
@@ -983,7 +989,7 @@ export function loadState(): AppState {
     saved = null;
   }
   const base = freshState((saved && saved.persona) || "p1");
-  if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready" });
+  if (saved) Object.assign(base, saved, { queue: [], toast: null, demoOpen: false, chatStatus: "ready", chatRouteHold: null });
   // Owner decision 2026-10-01: the sidecar agent loop is on for members. Installs that saved the
   // old default (off) are switched on once; a member who turns it off afterwards stays off.
   if (saved && saved.hermesSidecarLoopDefaultApplied !== true) {

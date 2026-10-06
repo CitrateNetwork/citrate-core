@@ -281,6 +281,10 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async serveStart(): Promise<void> {
         await invoke("model_serve_start");
       },
+      // SCL-S7.5a: data source = the model_serve_stop command (serve.rs, the llama supervisor).
+      async serveStop(): Promise<void> {
+        await invoke("model_serve_stop");
+      },
     },
     // ---- agent: the node-agent under the SidecarSupervisor (C1.2) ----
     // status returns the supervisor state + whether a bearer session exists

@@ -4,7 +4,7 @@ branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
-updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18, O-19 accepted; second set: D-2 amended again to v0.5.0 / v0.5.1 / v0.5.x, D-16 extended; third set: minimum viable v0.5.0 with S7.5a moved to v0.5.1, v0.5.x renamed v0.5.2, owners assigned)
+updated: 2026-10-05 (owner decisions: O-20 accepted, D-2 amended to a cut-blocking subset; O-18, O-19 accepted; second set: D-2 amended again to v0.5.0 / v0.5.1 / v0.5.x, D-16 extended; third set: minimum viable v0.5.0 with S7.5a moved to v0.5.1, v0.5.x renamed v0.5.2, owners assigned; 2026-10-06: S7.5a back in v0.5.0)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
 repo: citrate-core + citrate-agent-runtime (via federation sprint)
@@ -549,6 +549,8 @@ owner's instruction to decide; moving it to v0.5.1 is a one-line retag of
 v0.5.0; S7.5a is not a safety fix). The retag is done; the id is kept. The silent route above
 ships in v0.5.0 as a known issue.
 
+*Owner decision (2026-10-06):* S7.5a and `g3-provider-routing-v050` are back in release v0.5.0, to close the open High RT-12 (R-16) in the 0.5.0 red-team slice. This supersedes the third-set move of S7.5a to v0.5.1; everything else in the third set stands. The silent route is closed in v0.5.0 (no known issue).
+
 ### New and split WP ids (second set)
 
 Nothing is renumbered. The ids below replace their parent in tracking.
@@ -634,6 +636,9 @@ above where they differ; the second set stays as the record.
   S0.7, S1.6a and S8.5a. **S7.5a moves to v0.5.1.** The owner asked for the minimum viable
   0.5.0, and S7.5a is not a safety fix.
 - **v0.5.1** is the second set's v0.5.1 plus S7.5a.
+
+*Owner decision (2026-10-06):* S7.5a and `g3-provider-routing-v050` are back in release v0.5.0, to close the open High RT-12 (R-16) in the 0.5.0 red-team slice. This supersedes the third-set move of S7.5a to v0.5.1; everything else in the third set stands. v0.5.0 is SCL-S0 plus S7.5a (9 WPs); v0.5.1 is the second set's v0.5.1 (S7.5 reuses the
+S7.5a prompt).
 - **v0.5.2** is the second set's v0.5.x remainder, unchanged in content. HUP D-41 now allows
   exactly one v0.5.1 and one v0.5.2 after v0.5.0.
 

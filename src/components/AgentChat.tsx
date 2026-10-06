@@ -24,6 +24,7 @@ import { choicesFromSources, registryModelsToChoiceInput } from "../agent/modelR
 import { appendFinal, createDictation, type Dictation } from "../agent/dictation";
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
+import { LocalModelAsk } from "./LocalModelAsk";
 
 const SUGGESTIONS = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
 
@@ -37,7 +38,8 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const undo = agentUndo.use();
   // HUP-S2.3: sign-in requests from the managed browser go to core by id (stable handler).
   const signInHandler = useCallback((id: string) => void store.handleWebSignIn(id), [store]);
-  const chatThinking = s.chatStatus === "thinking" || s.chatStatus === "tool";
+  // SCL-S7.5a: a message held for the local model shows its question instead of a spinner.
+  const chatThinking = (s.chatStatus === "thinking" || s.chatStatus === "tool") && !s.chatRouteHold;
   const chatThinkingLabel = s.chatStatus === "tool" ? "running tools" : "reasoning";
   const chatBusy = s.chatStatus !== "ready";
   const showSuggestions = s.chatMsgs.length <= 1 && s.chatStatus === "ready";
@@ -174,6 +176,10 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
                   Retry
                 </button>
               </span>
+            )}
+            {/* SCL-S7.5a: the local model is not running; ask before this message goes anywhere. */}
+            {s.chatRouteHold && s.chatRouteHold.msgId === m.id && (
+              <LocalModelAsk phase={s.chatRouteHold.phase} onChoose={(c) => store.answerLocalModelAsk(c)} />
             )}
             {/* HUP-S2.9: the files the agent changed in this reply, each with Undo. */}
             {undo.cards

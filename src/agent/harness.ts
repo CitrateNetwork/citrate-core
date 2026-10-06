@@ -947,6 +947,25 @@ export function createAgentProvider(
 export const SIDECAR_DOWN_NOTICE =
   "Hermes is not running right now, so this reply comes straight from the local model with no tools: it cannot read your node, wallet, memory or files, or change anything.";
 
+/**
+ * SCL-S7.5a (D-16 extended) — the provider while the local model is configured but its server is
+ * not running and a gateway key exists. The store holds each message and asks the member first
+ * (restart the local model, or send this message to the gateway this time), so this provider is
+ * never meant to answer. If anything ever reaches `send` it fails honestly: it never routes to
+ * the gateway and never fabricates a local reply.
+ */
+export const LOCAL_STOPPED_LABEL = "local model · not running";
+export function createLocalStoppedProvider(): ChatProvider {
+  return {
+    kind: "local-stopped",
+    label: LOCAL_STOPPED_LABEL,
+    async send({ callbacks }) {
+      callbacks.onStatus("error");
+      throw new Error("the local model is not running; nothing was sent to the gateway");
+    },
+  };
+}
+
 export function createSidecarDownProvider(getContext: () => AgentContext, inferLocal: InferLocalFn): ChatProvider {
   const inner = createLocalProvider(getContext, inferLocal);
   return {
