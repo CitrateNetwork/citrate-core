@@ -29,3 +29,8 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 315984355eb9652118c457248d907661f877d8516f7fe0193f01dc85e29bf8e6  mem-mcp-aarch64-apple-darwin
 2435a484c54deb2d7c93180d3a8c1534cc68ec825b24719829139e1d3af177c7  node-agent-aarch64-apple-darwin
 ff931bc315f7cea369ad7d0b25024311df8c3e3352c1273f17abf7953c8ea2d4  llama-server-aarch64-apple-darwin
+# HUP-S3.2 skills-bundle.tar.gz (v0.5.0-rc.1, 2026-10-06): `node scripts/stage-skills-bundle.mjs build`
+# from the five skills.lock sources at their pinned commits (fresh clones via
+# `node scripts/eval-check.mjs --fetch-skill-sources`), 240 skills / 1,055 files + skills.lock,
+# packed reproducibly (sorted entries, mtime 2026-10-06T00:00Z, uid/gid 0, no xattrs, gzip -n -9).
+ea95d49d2a01e1ff8f4d161413bca7746712dac36aa99f79b85ebc3ee9561cb0  skills-bundle.tar.gz

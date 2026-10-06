@@ -125,6 +125,27 @@ ls src-tauri/binaries/*-x86_64-unknown-linux-gnu    # expect 8 files
 Missing any → `npx tauri build` fails honestly (the overlay validates every
 `externalBin` path at packaging time). That is the intended behaviour, not a bug.
 
+### Stage the Hermes resources (skills bundle, BGE embedding GGUF)
+
+The Linux config bundles `skills-bundle/**/*` and `models/bge-base-en-v1.5-gguf/*` (the embedding
+model Hermes ranks tools and skills with; `src-tauri/src/embed_serve.rs` pins its digest). Pull both
+from `runtime-deps` into a scratch dir and verify them against the reviewed pins before staging,
+exactly as `.github/workflows/release.yml` does:
+
+```bash
+DL="$(mktemp -d)"
+for a in skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf; do
+  gh release download runtime-deps -R CitrateNetwork/citrate-core -p "$a" -D "$DL" --clobber
+done
+scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf
+node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
+```
+
+A missing GGUF fails `npx tauri build` (the resource glob matches nothing); do not drop the line
+from the config to get a build, Hermes would ship without embedding retrieval.
+
 ## 3. Package the AppImage + deb
 
 ```bash
