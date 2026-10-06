@@ -37,7 +37,7 @@ Each WP is red, then green, then close-with-proof. Definitions and acceptance cr
 
 | WP | Summary | Stories | Effort | Native run | Status |
 |---|---|---|---|---|---|
-| S0.1 | Startup cleanup matches exact owned executable paths only (pre-cut safety fix tracked privately) | US-0.1 | S | each OS's installed package | not started |
+| S0.1 | Startup cleanup matches exact owned executable paths only (pre-cut safety fix tracked privately) | US-0.1 | S | each OS's installed package | in review (private route); native runs pending |
 | S0.2 | Windows update install drains sidecars before the installer runs | US-0.2 | S | Windows team (@RDCTart69, @kurtatwork) | not started |
 | S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | not started |
 | S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | not started |
@@ -110,3 +110,5 @@ PR in `EVIDENCE.md`. Baseline: taken at the first PR from `release/0.5.0-hermes-
 - 2026-10-05: owner decisions, second set: v0.5.0 ships after the reroll and soak with only this
   sprint's SCL content; S1.6a, S8.5a and S7.5a join the sprint; the previous cut-blocking subset
   is the v0.5.1 gate (HUP D-41 amended for one v0.5.1). Still docs only.
+- 2026-10-05: S0.1 red then green (12 new tests; workspace 2,314 to 2,326 passed). In review
+  through the private route; native runs on each OS's installed package still to record.

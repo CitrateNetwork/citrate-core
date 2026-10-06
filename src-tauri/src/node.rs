@@ -771,7 +771,9 @@ pub struct NodeState(pub NodeManager);
 /// triple suffix at bundle time). In dev, and for the stub-node CI path, an
 /// override env var `CITRATE_NODE_BIN` points directly at a binary so the app
 /// (and the tests) can run without a full bundle.
-fn resolve_node_bin<R: Runtime>(app: &AppHandle<R>) -> std::result::Result<PathBuf, String> {
+pub(crate) fn resolve_node_bin<R: Runtime>(
+    app: &AppHandle<R>,
+) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CITRATE_NODE_BIN") {
         let path = PathBuf::from(p);
         if path.exists() {

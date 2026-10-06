@@ -849,7 +849,7 @@ pub struct AgentState(pub AgentManager);
 /// approach as the node): `CITRATE_NODE_AGENT_BIN` override first (dev/tests),
 /// else the Tauri resource dir (`externalBin` strips the target-triple suffix to
 /// `node-agent`).
-fn resolve_agent_bin<R: tauri::Runtime>(
+pub(crate) fn resolve_agent_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CITRATE_NODE_AGENT_BIN") {
