@@ -109,6 +109,8 @@ fn the_pinned_digest_matches_the_runtime_deps_pin() {
 fn every_bundle_that_ships_the_bge_model_ships_the_gguf_too() {
     for (name, conf) in [
         ("tauri.bundle-node.conf.json", include_str!("../tauri.bundle-node.conf.json")),
+        // macOS release bundle (owner decision 2026-10-06: ship the GGUF on Mac, budget raised).
+        ("tauri.bundle-lite.conf.json", include_str!("../tauri.bundle-lite.conf.json")),
         ("tauri.local-run.conf.json", include_str!("../tauri.local-run.conf.json")),
         // Hermes runs on Linux and Windows too; without the GGUF its embedding server never starts.
         ("tauri.bundle-linux.conf.json", include_str!("../tauri.bundle-linux.conf.json")),

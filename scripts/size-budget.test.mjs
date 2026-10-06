@@ -358,9 +358,10 @@ describe("committed release/budgets.json", () => {
     expect(tgz.maxBytes).toBeGreaterThanOrEqual(V042_SHIPPED.appTarGz);
     expect(dmg.maxBytes).toBeGreaterThanOrEqual(MEASURED_2026_10_04.dmg);
     expect(tgz.maxBytes).toBeGreaterThanOrEqual(MEASURED_2026_10_04.appTarGz);
-    // headroom stays tight: a budget is a tripwire, not a ceiling nobody reaches
-    expect(dmg.maxBytes).toBeLessThanOrEqual(Math.ceil(MEASURED_2026_10_04.dmg * 1.1));
-    expect(tgz.maxBytes).toBeLessThanOrEqual(Math.ceil(MEASURED_2026_10_04.appTarGz * 1.1));
+    // Owner decision 2026-10-06: the Mac bundle ships the BGE GGUF and the embedded corpus, so the
+    // installer budgets were raised to these exact values (re-measure and tighten at the v0.5.0 build).
+    expect(dmg.maxBytes).toBe(700_000_000);
+    expect(tgz.maxBytes).toBe(710_000_000);
     expect(dmg.baselineBytes).toBe(MEASURED_2026_10_04.dmg);
     expect(tgz.baselineBytes).toBe(MEASURED_2026_10_04.appTarGz);
   });
@@ -378,8 +379,11 @@ describe("committed release/budgets.json", () => {
       expect(row, id).toBeDefined();
       expect(Number.isInteger(row.maxBytes), id).toBe(true);
     }
+    // Owner decision 2026-10-06: the app now carries the BGE GGUF and the embedded corpus, so its
+    // budget was raised on purpose (re-measure and tighten at the v0.5.0 build).
+    expect(b.components["macos-aarch64/app"].baselineBytes).toBe(MEASURED_2026_10_04.app);
+    expect(b.components["macos-aarch64/app"].maxBytes).toBe(1_200_000_000);
     const tight = [
-      ["app", MEASURED_2026_10_04.app],
       ["bin/hermes", MEASURED_2026_10_04.hermes],
       ["bin/citrate-core", MEASURED_2026_10_04.citrateCore],
     ];
@@ -414,10 +418,11 @@ describe("committed release/budgets.json", () => {
       expect(row.measured, key).toMatch(/pending owner sign-off/);
       expect(row.maxBytes, key).toBeGreaterThanOrEqual(bytes);
     }
-    // The budgets were not moved by the re-measurement.
-    expect(b.artifacts["macos-aarch64/dmg"].maxBytes).toBe(455_000_000);
-    expect(b.artifacts["macos-aarch64/app.tar.gz"].maxBytes).toBe(460_000_000);
-    expect(b.components["macos-aarch64/app"].maxBytes).toBe(938_000_000);
+    // The re-measurement did not move the budgets; the owner decision of 2026-10-06 (GGUF + embedded
+    // corpus on macOS) raised them to these values.
+    expect(b.artifacts["macos-aarch64/dmg"].maxBytes).toBe(700_000_000);
+    expect(b.artifacts["macos-aarch64/app.tar.gz"].maxBytes).toBe(710_000_000);
+    expect(b.components["macos-aarch64/app"].maxBytes).toBe(1_200_000_000);
     // The savings the prep was for: the llama runtime and the Hermes sidecar.
     const llama = b.components["macos-aarch64/resources/llama"];
     expect(llama.baselineBytes - llama.measuredBytes).toBeGreaterThan(30_000_000);
