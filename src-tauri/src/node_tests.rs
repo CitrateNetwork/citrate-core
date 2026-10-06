@@ -243,9 +243,10 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     // address book synced at `2d88191`; live `eth_getCode` is 26,054 bytes here
     // and `0x` at the previous pin.
     // Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (13,026 bytes).
+    // Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (13,026 bytes); `0x` at the previous pin.
     assert_eq!(
         get(NODE_VALIDATOR_REGISTRY_ENV),
-        Some("0xba4abd4f3fca5365b2451b4e9662e4cfd22b3ad5"),
+        Some("0xde4f679632be7810d915f637cc6a72bf076a3bd9"),
         "ValidatorRegistry must be the live 40204 address the fleet runs",
     );
     // INVERTED 2026-07-30. This previously asserted the retain window MUST be

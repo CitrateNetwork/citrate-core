@@ -82,17 +82,18 @@ fn optional_pins_are_read_only_when_well_formed() {
 
 /// Honest-state tripwire (flipped by HUP fan-out 6): the shipped book pins both registries, the
 /// addresses citrate-chain's canonical 40204 book names and `scripts/sync-addresses.py --rpc`
-/// found code at (2026-10-04). A reroll or redeploy that moves them fails this on purpose: the
+/// found code at (2026-10-04; re-earned 2026-10-06 for the r1005 reroll, genesis 0x1dcfc490…,
+/// live eth_getCode 1,880 / 1,530 bytes). A reroll or redeploy that moves them fails this on purpose: the
 /// surface, the schedule and the anvil rehearsal must then be rechecked.
 #[test]
 fn the_shipped_book_pins_the_anchor_and_benchmark_registries() {
     assert_eq!(
         anchor_registry().as_deref(),
-        Some("0x41e0f9a4dcd29c650dc58ee569bf267fd9ba4817")
+        Some("0xab87534ef027b52bb6233e889f758767127bf47a")
     );
     assert_eq!(
         benchmark_registry().as_deref(),
-        Some("0x84247a5f65370947c792181a3afed5ac0f452ec8")
+        Some("0x1231b7629d7febd3bf24b0ce8788b944b10242c5")
     );
 }
 
