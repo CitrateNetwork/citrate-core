@@ -159,6 +159,28 @@ validates every sidecar path. That is the honesty gate, not a bug to work around
 - rocksdb (mem-mcp) on MSVC needs the C++ toolchain from Step 0; if it can't find
   a compiler, the VS Build Tools workload is incomplete.
 
+### Stage the Hermes resources (skills bundle, BGE embedding GGUF)
+
+The Windows config bundles `skills-bundle/**/*` and `models/bge-base-en-v1.5-gguf/*` (the embedding
+model Hermes ranks tools and skills with; `src-tauri/src/embed_serve.rs` pins its digest). Pull both
+from `runtime-deps` into a scratch dir and verify them against the reviewed pins before staging,
+exactly as `.github/workflows/release.yml` does:
+
+```bash
+# Git Bash (or WSL with the same checkout)
+DL="$(mktemp -d)"
+for a in skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf; do
+  gh release download runtime-deps -R CitrateNetwork/citrate-core -p "$a" -D "$DL" --clobber
+done
+scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 "$DL" skills-bundle.tar.gz bge-base-en-v1.5-f16.gguf
+node scripts/stage-skills-bundle.mjs from-tarball "$DL/skills-bundle.tar.gz" --out src-tauri/skills-bundle
+mkdir -p src-tauri/models/bge-base-en-v1.5-gguf
+cp "$DL/bge-base-en-v1.5-f16.gguf" src-tauri/models/bge-base-en-v1.5-gguf/
+```
+
+A missing GGUF fails `npx tauri build` (the resource glob matches nothing); do not drop the line
+from the config to get a build, Hermes would ship without embedding retrieval.
+
 ## 3. Package the NSIS installer
 
 ```powershell
