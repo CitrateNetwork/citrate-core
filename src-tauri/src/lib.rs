@@ -160,6 +160,12 @@ mod privacy_contract_tests;
 // HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
 #[cfg(test)]
 mod hello_mint_e2e_tests;
+// SCL-S0.5: shutdown coverage (embedding server stops with Hermes; workers exit on stdin close).
+#[cfg(test)]
+mod shutdown_coverage_tests;
+// SCL-S0.7: the Windows installer's pre-install hook (inputs checked on every OS).
+#[cfg(test)]
+mod windows_installer_hook_tests;
 
 use tauri::Manager;
 

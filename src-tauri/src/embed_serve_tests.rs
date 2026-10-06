@@ -23,14 +23,6 @@ fn server(dir: &Path, bin: PathBuf, model: PathBuf, port: u16) -> EmbedServer {
     )
 }
 
-impl EmbedServer {
-    /// Test hook: treat the model as the pinned file (only the real 220 MB file has the digest).
-    fn assume_verified_for_test(self) -> Self {
-        *self.verified.lock().unwrap() = Some(true);
-        self
-    }
-}
-
 #[test]
 fn the_argv_is_loopback_embedding_only_with_cls_pooling_and_no_key() {
     let d = tmp("argv");
