@@ -3,7 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
-updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16; second set: D-16 extended, S8.5 split for v0.5.0)
+updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16; second set: D-16 extended, S8.5 split for v0.5.0; third set: S7.5a moves to v0.5.1)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -114,6 +114,8 @@ the gateway. v0.5.0 implements this for "model ready, server process not running
 (S7.5a). v0.5.1 moves it onto the readiness model (S7.5). The previous sentence "Blocks the
 v0.5.0 cut" now reads: the v0.5.0 slice is `g3-provider-routing-v050`, the full rule is
 `g3-provider-routing` (v0.5.1).
+*Owner decision (2026-10-05, third set):* S7.5a moves to v0.5.1 (minimum viable v0.5.0), so
+both slices ship in v0.5.1; `g3-provider-routing-v050` keeps its id with `release: v0.5.1`.
 
 ## 4. Probes and adapters
 

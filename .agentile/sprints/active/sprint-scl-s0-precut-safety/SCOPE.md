@@ -65,7 +65,14 @@ sprint for v0.5.0 (definitions and acceptance in
 |---|---|---|---|---|---|
 | S1.6a | Minimal hosted Windows CI job that builds the S0.7 NSIS hook and runs its test (no Windows CI lane exists today; the only strict dependency of S0) | (CI) | S | (hosted runner) | workflow in PR; first green run linked in [EVIDENCE](EVIDENCE.md) |
 | S8.5a | Startup cleanup barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated | US-7.3 AC1, AC2 | M | with the S0.6 runs | code in review (#256, [EVIDENCE](EVIDENCE.md)); native runs owed |
-| S7.5a | Ask first when the local server is not running (restart the local model, or send this message to the gateway this time; per message); bounded wait while the app's own startup start is pending (D-16 extended) | US-6.2 AC5 | M | macOS packaged | not started |
+| S7.5a | Ask first when the local server is not running (restart the local model, or send this message to the gateway this time; per message); bounded wait while the app's own startup start is pending (D-16 extended). *Owner decision (2026-10-05, third set): removed from this sprint, moved to v0.5.1 (Mac lane, #251)* | US-6.2 AC5 | M | macOS packaged (now the v0.5.1 run) | moved to v0.5.1 |
+
+*Owner decision (2026-10-05, third set):* S7.5a is removed from this sprint and moves to v0.5.1
+(the owner asked for the minimum viable v0.5.0; S7.5a is not a safety fix). Its criterion
+`g3-provider-routing-v050` keeps its id with `release: v0.5.1`. v0.5.0 is this sprint's S0 WPs
+plus S1.6a and S8.5a: 8 WPs, about 16 agent-days. Today's silent route to the gateway when
+the local server is not running ships in v0.5.0 as a known issue. See
+[05 "Owner decision (2026-10-05, third set)"](../../../planset/2026-10-05-sidecar-lifecycle/05_SPRINTS_AND_WPS.md#owner-decision-2026-10-05-third-set-v050-v051-v052).
 
 `g1-precut`, `g3-recorded-cleanup-v050`, `g3-provider-routing-v050`, `g4-native-v050` and
 `g5-release-coupling` are the criteria tagged `release: v0.5.0`. Estimate: 9 WPs, about 19

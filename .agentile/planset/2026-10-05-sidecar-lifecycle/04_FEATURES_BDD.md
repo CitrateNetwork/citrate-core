@@ -3,7 +3,7 @@ created: 2026-10-05T18:30:00Z
 branch: docs/scl-planset
 author: Larry Klosowski + Claude Opus 5.5
 status: planset (Stage-2, red-teamed)
-updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16; second set: D-16 extended to ask first, release tags v0.5.0 / v0.5.1)
+updated: 2026-10-05 (owner decisions: O-18 accepted as D-15, O-19 accepted as D-16; second set: D-16 extended to ask first, release tags v0.5.0 / v0.5.1; third set: S7.5a moves to v0.5.1, v0.5.x renamed v0.5.2)
 red_teamed: 2026-10-05 (adversarial pass, 29 findings, 3 blocking; corrections in 08_RED_TEAM.md supersede conflicting text)
 planset: 2026-10-05-sidecar-lifecycle
 code: SCL
@@ -625,7 +625,8 @@ a cold load or a slow health check never sends my prompt to the remote gateway b
   or send this message to the gateway this time. Nothing is sent before the member chooses,
   and the choice covers only that message. Never silent. *Source: S7.5a (v0.5.0, today's
   signals: the local server process is not running) and S7.5 (v0.5.1, readiness model) Rust
-  and vitest tests; `g4-native-v050` macOS check.*
+  and vitest tests; `g4-native-v050` macOS check.* *Owner decision (2026-10-05, third set): S7.5a
+  ships in v0.5.1, not v0.5.0; its macOS check moves to `g4-native-macos-cut`.*
 
 **US-7.3: Cleanup after a crash is a barrier.** (RT-10, RT-11)
 *Owner decision (2026-10-05, second set):* AC1 and AC2 ship in v0.5.0 as S8.5a (over the S0.1
@@ -768,6 +769,7 @@ Feature: No silent gateway fallback (D-16)
 These govern where they conflict with the scenarios above. Release: v0.5.0 for the stopped
 case on today's signals (S7.5a); v0.5.1 for the readiness model, including `Failed` and
 `Quarantined` (S7.5).
+*Owner decision (2026-10-05, third set):* both ship in v0.5.1; S7.5a moved out of v0.5.0.
 
 ```gherkin
 Feature: Ask first when the local model is down (D-16 extended)
