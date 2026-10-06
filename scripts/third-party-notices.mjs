@@ -19,7 +19,10 @@
 //   rust: `cargo about generate --format json` (config release/about.toml) on each sidecar crate
 //         (and the app itself) at the federation checkout, for the release target triple;
 //   go:   `go-licenses report` on Kubo's `cmd/ipfs` at the pinned version, plus the Go standard
-//         library (compiled into every Go binary).
+//         library (compiled into every Go binary);
+//   npm:  a Vite build of the webview (frontendDist) with write off, recording the npm packages
+//         whose modules (after tree shaking) or assets (fonts) end up in the output, with each
+//         package's licence file from node_modules (run `npm ci` first).
 //
 // First-party packages (path crates and Citrate git dependencies, by source) are left out: the
 // inventory entry covers them. Every third-party package must resolve to a licence in PERMISSIVE
@@ -38,7 +41,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, "..");
@@ -137,7 +141,7 @@ export function readConfig(repoRoot = REPO) {
   }
   if (typeof cfg.target !== "string" || !cfg.target) throw new Usage(`${CONFIG}: target (a Rust target triple) is required`);
   const ids = new Set();
-  for (const c of [...(cfg.rust ?? []), ...(cfg.go ?? [])]) {
+  for (const c of [...(cfg.rust ?? []), ...(cfg.go ?? []), ...(cfg.npm ?? [])]) {
     if (!c.component || ids.has(c.component)) throw new Usage(`${CONFIG}: missing or duplicate component ${c.component}`);
     ids.add(c.component);
   }
@@ -228,6 +232,57 @@ function moduleOf(pkg, licencePath) {
   if (!m) return pkg;
   // The cache escapes upper case as "!x".
   return m[1].replace(/!([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+/** The package root ("…/node_modules/<name>" or "…/node_modules/@scope/<name>", innermost) of a bundled module id or asset path; null for app code. */
+export function packageRootOf(id) {
+  const i = id.lastIndexOf("node_modules/");
+  if (i < 0) return null;
+  const rest = id.slice(i + "node_modules/".length).split("/");
+  const n = rest[0]?.startsWith("@") ? 2 : 1;
+  if (rest.length <= n) return null;
+  return id.slice(0, i) + "node_modules/" + rest.slice(0, n).join("/");
+}
+
+/** SPDX ids of an npm `license` expression ("(MIT AND BSD-3-Clause)", "MIT OR Apache-2.0"). */
+const spdxIds = (expr) =>
+  String(expr)
+    .replace(/[()]/g, " ")
+    .split(/\s+(?:OR|AND)\s+|\s+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+/**
+ * Normalise a collected npm component into { packages, texts }. Every SPDX id of a package's
+ * licence must be on PERMISSIVE or on the component's `allow` list (reviewed per component, for
+ * example bundled fonts under OFL-1.1). A package with no licence file of its own needs a
+ * `clarify` entry naming the files (collected into raw.clarified) that carry its licence.
+ */
+export function normaliseNpm(raw, entry) {
+  const allow = new Set(entry.allow ?? []);
+  const clarify = entry.clarify ?? {};
+  const texts = {};
+  const packages = [];
+  for (const p of raw.packages ?? []) {
+    const label = `${p.name} ${p.version}`;
+    const c = clarify[p.name];
+    const licence = c?.spdx ?? (typeof p.license === "string" ? p.license : null);
+    if (!licence) throw new Refused(`${label}: no licence in package.json; add it to clarify in ${CONFIG}`);
+    for (const l of spdxIds(licence)) {
+      if (!PERMISSIVE.has(l) && !allow.has(l)) throw new Refused(`${label}: ships under ${l}, which is not on the permissive list (needs a licence review)`);
+    }
+    let files = Object.entries(p.files ?? {});
+    if (c?.files?.length) {
+      files = c.files.map((f) => {
+        if (!(f in (raw.clarified ?? {}))) throw new Refused(`${label}: clarified licence file ${f} was not collected; re-run collect`);
+        return [f, raw.clarified[f]];
+      });
+    }
+    if (files.length === 0) throw new Refused(`${label}: no licence file in the package; add it to clarify in ${CONFIG}`);
+    const keys = files.map(([, text]) => addText(texts, spdxIds(licence)[0], text, label));
+    packages.push({ name: p.name, version: p.version, licence, texts: [...new Set(keys)].sort(), url: p.url ?? null });
+  }
+  return { packages: sortPackages(packages), texts };
 }
 
 const sortPackages = (ps) => ps.sort((a, b) => (a.name === b.name ? a.version.localeCompare(b.version) : a.name < b.name ? -1 : 1));
@@ -397,10 +452,78 @@ function collectGo(cfg, entry) {
   return { component: entry.component, kind: "go", source: `${entry.module}@${entry.version} ${entry.package}`, tool: `go-licenses, ${goVersion}, ${entry.goos}/${entry.goarch}`, tsv, files, goroot, goVersion, modCache };
 }
 
+const LICENCE_FILE = /^(licen[cs]e|copying)([._-].*)?$/i;
+
+/** Build the webview with Vite (nothing written) and collect the npm packages in its output. */
+async function collectNpm(cfg, entry) {
+  const req = createRequire(path.join(REPO, "package.json"));
+  let vite;
+  try {
+    vite = await import(pathToFileURL(req.resolve("vite")).href);
+  } catch (e) {
+    throw new Usage(`${entry.component}: cannot load vite from this repo (run npm ci first): ${e.message}`);
+  }
+  const ids = new Set();
+  await vite.build({
+    root: REPO,
+    configFile: path.join(REPO, entry.config ?? "vite.config.ts"),
+    logLevel: "error",
+    build: { write: false, emptyOutDir: false },
+    plugins: [
+      {
+        name: "citrate-third-party-notices",
+        generateBundle(_opts, bundle) {
+          for (const f of Object.values(bundle)) {
+            if (f.type === "chunk") {
+              for (const [id, m] of Object.entries(f.modules)) if (m.renderedLength > 0) ids.add(id);
+            } else {
+              for (const o of f.originalFileNames ?? []) ids.add(path.resolve(REPO, o));
+            }
+          }
+        },
+      },
+    ],
+  });
+  const roots = new Set();
+  for (const id of ids) {
+    const r = packageRootOf(id.replace(/^\0/, "").split("?")[0]);
+    if (r) roots.add(path.resolve(REPO, r));
+  }
+  const packages = [];
+  for (const dir of [...roots].sort()) {
+    const pj = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    const files = {};
+    for (const f of fs.readdirSync(dir).sort()) if (LICENCE_FILE.test(f) && !/\.spdx$/i.test(f)) files[f] = fs.readFileSync(path.join(dir, f), "utf8");
+    packages.push({
+      name: pj.name,
+      version: pj.version,
+      license: typeof pj.license === "string" ? pj.license : null,
+      url: `https://www.npmjs.com/package/${pj.name}/v/${pj.version}`,
+      files,
+    });
+  }
+  const clarified = {};
+  for (const c of Object.values(entry.clarify ?? {})) for (const f of c.files ?? []) clarified[f] = fs.readFileSync(path.join(REPO, f), "utf8");
+  const viteVersion = JSON.parse(fs.readFileSync(path.join(path.dirname(req.resolve("vite/package.json")), "package.json"), "utf8")).version;
+  return {
+    component: entry.component,
+    kind: "npm",
+    source: sourceRev(REPO, "citrate-core"),
+    tool: `vite ${viteVersion} build (${entry.config ?? "vite.config.ts"}), ${ids.size} bundled modules and assets`,
+    packages,
+    clarified,
+  };
+}
+
 /** Turn one collected component into { component, source, tool, packages, texts } (clarifications from the config). */
 export function normaliseCollected(raw, cfg) {
   const meta = { component: raw.component, source: raw.source, tool: raw.tool };
   if (raw.kind === "rust") return { ...meta, ...normaliseCargoAbout(raw.about, { firstPartySources: cfg.first_party_sources ?? [] }) };
+  if (raw.kind === "npm") {
+    const npmEntry = (cfg.npm ?? []).find((e) => e.component === raw.component);
+    if (!npmEntry) throw new Refused(`${raw.component}: not configured in ${CONFIG}`);
+    return { ...meta, ...normaliseNpm(raw, npmEntry) };
+  }
   if (raw.kind !== "go") throw new Refused(`${raw.component}: unknown collected kind ${raw.kind}`);
   const entry = (cfg.go ?? []).find((e) => e.component === raw.component);
   if (!entry) throw new Refused(`${raw.component}: not configured in ${CONFIG}`);
@@ -442,7 +565,7 @@ function parseArgs(argv) {
 
 function loadCollected(work, cfg) {
   const comps = [];
-  for (const e of [...(cfg.rust ?? []), ...(cfg.go ?? [])]) {
+  for (const e of [...(cfg.rust ?? []), ...(cfg.go ?? []), ...(cfg.npm ?? [])]) {
     const f = path.join(work, `${e.component}.json`);
     if (!fs.existsSync(f)) throw new Refused(`${e.component}: not collected yet (${f}); run collect first`);
     comps.push(normaliseCollected(JSON.parse(fs.readFileSync(f, "utf8")), cfg));
@@ -464,7 +587,7 @@ export function noticeComponents(text) {
   return out;
 }
 
-function main(argv) {
+async function main(argv) {
   const a = parseArgs(argv);
   const cfg = readConfig();
   if (a.cmd === "collect") {
@@ -483,6 +606,13 @@ function main(argv) {
       fs.writeFileSync(path.join(a.work, `${e.component}.json`), JSON.stringify(c));
       process.stdout.write(`${e.component}: collected from ${c.source}\n`);
     }
+    for (const e of cfg.npm ?? []) {
+      if (a.only && a.only !== e.component) continue;
+      process.stderr.write(`collecting ${e.component} (vite build)\n`);
+      const c = await collectNpm(cfg, e);
+      fs.writeFileSync(path.join(a.work, `${e.component}.json`), JSON.stringify(c));
+      process.stdout.write(`${e.component}: collected ${c.packages.length} packages from ${c.source}\n`);
+    }
     return 0;
   }
   if (a.cmd === "render") {
@@ -498,7 +628,7 @@ function main(argv) {
   // check: the committed file names exactly the configured components, and the inventory points at it.
   const file = path.join(REPO, cfg.output);
   if (!fs.existsSync(file)) throw new Refused(`${cfg.output} does not exist; run collect and render`);
-  const want = [...(cfg.rust ?? []), ...(cfg.go ?? [])].map((e) => e.component).sort();
+  const want = [...(cfg.rust ?? []), ...(cfg.go ?? []), ...(cfg.npm ?? [])].map((e) => e.component).sort();
   const got = noticeComponents(fs.readFileSync(file, "utf8")).sort();
   if (JSON.stringify(want) !== JSON.stringify(got)) throw new Refused(`${cfg.output} covers [${got.join(", ")}], ${CONFIG} configures [${want.join(", ")}]; re-run collect and render`);
   const inv = JSON.parse(fs.readFileSync(path.join(REPO, "release", "licences.json"), "utf8"));
@@ -511,10 +641,13 @@ function main(argv) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try {
-    process.exitCode = main(process.argv.slice(2));
-  } catch (e) {
-    process.stderr.write(`third-party-notices: ${e.message}\n${e instanceof Usage ? `${USAGE}\n` : ""}`);
-    process.exitCode = e instanceof Refused ? 1 : 2;
-  }
+  main(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (e) => {
+      process.stderr.write(`third-party-notices: ${e.message}\n${e instanceof Usage ? `${USAGE}\n` : ""}`);
+      process.exitCode = e instanceof Refused ? 1 : 2;
+    },
+  );
 }

@@ -4,6 +4,7 @@
     "rust: one entry per Rust sidecar crate (and the app), scanned with cargo-about (release/about.toml) at <federation-root>/<repo>/<manifest> for target, with the features the release build uses. repo '.' is this repo.",
     "go: Kubo's cmd/ipfs at the pinned version (keep in step with the kubo entry in release/licences.json), plus the Go standard library. clarify resolves modules go-licenses cannot classify: spdx plus the licence file inside the module (GOROOT/LICENSE for code under the Go authors' BSD licence that ships no file).",
     "first_party_sources: package sources that are Citrate's own (left out of the notices; the inventory entry covers them). Path crates are always first party.",
+    "npm: the webview bundle (tauri.conf.json frontendDist), built by Vite with nothing written; only the packages whose modules or assets end up in the output are listed. allow: licences reviewed for this component only (OFL-1.1: the @fontsource fonts, bundled unmodified with their licence and copyright, which OFL-1.1 section 2 permits). clarify: a package with no licence file of its own (the Tauri JS plugins ship only LICENSE.spdx, declaring MIT OR Apache-2.0 for the Tauri Programme) takes the named files; run npm ci first.",
     "Re-run collect and render whenever a sidecar is rebuilt for a release (docs/RELEASE.md, Cutting a release)."
   ],
   "version": 1,
@@ -23,6 +24,20 @@
     { "component": "comms-member-daemon", "repo": "citrate-comms", "manifest": "crates/comms-member-daemon/Cargo.toml" },
     { "component": "cluster-daemon", "repo": "citrate-cluster", "manifest": "crates/cluster-daemon/Cargo.toml" },
     { "component": "hermes-sidecar", "repo": "citrate-agent-runtime", "manifest": "agent-sidecar/Cargo.toml" }
+  ],
+  "npm": [
+    {
+      "component": "app-webview",
+      "config": "vite.config.ts",
+      "allow": ["OFL-1.1"],
+      "clarify": {
+        "@tauri-apps/plugin-deep-link": { "spdx": "MIT OR Apache-2.0", "files": ["node_modules/@tauri-apps/api/LICENSE_MIT", "node_modules/@tauri-apps/api/LICENSE_APACHE-2.0"] },
+        "@tauri-apps/plugin-dialog": { "spdx": "MIT OR Apache-2.0", "files": ["node_modules/@tauri-apps/api/LICENSE_MIT", "node_modules/@tauri-apps/api/LICENSE_APACHE-2.0"] },
+        "@tauri-apps/plugin-process": { "spdx": "MIT OR Apache-2.0", "files": ["node_modules/@tauri-apps/api/LICENSE_MIT", "node_modules/@tauri-apps/api/LICENSE_APACHE-2.0"] },
+        "@tauri-apps/plugin-updater": { "spdx": "MIT OR Apache-2.0", "files": ["node_modules/@tauri-apps/api/LICENSE_MIT", "node_modules/@tauri-apps/api/LICENSE_APACHE-2.0"] },
+        "@tauri-apps/plugin-opener": { "spdx": "MIT OR Apache-2.0", "files": ["node_modules/@tauri-apps/api/LICENSE_MIT", "node_modules/@tauri-apps/api/LICENSE_APACHE-2.0"] }
+      }
+    }
   ],
   "go": [
     {
