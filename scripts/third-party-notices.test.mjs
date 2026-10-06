@@ -17,6 +17,8 @@ import {
   normaliseCargoAbout,
   normaliseCollected,
   normaliseGoLicenses,
+  normaliseNpm,
+  packageRootOf,
   readConfig,
   renderNotices,
   splitCopyright,
@@ -293,6 +295,7 @@ describe("the committed config and notices", () => {
     const cfg = readConfig(repoRoot);
     const ids = [...cfg.rust, ...cfg.go].map((e) => e.component).sort();
     expect(ids).toEqual(["app", "citrate-node", "cluster-daemon", "comms-member-daemon", "hermes-sidecar", "kubo", "mem-mcp", "node-agent"]);
+    expect((cfg.npm ?? []).map((e) => e.component)).toEqual(["app-webview"]);
     expect(cfg.output).toBe("src-tauri/licenses/THIRD-PARTY-NOTICES.txt");
   });
 
@@ -316,5 +319,61 @@ describe("the committed config and notices", () => {
   it("CLI exits 2 on a usage error", () => {
     expect(spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" }).status).toBe(2);
     expect(spawnSync(process.execPath, [SCRIPT, "render", "--bogus"], { encoding: "utf8" }).status).toBe(2);
+  });
+});
+
+// v0.5.0 gate prep (g3-licence): the webview bundle. `collect` builds it with Vite and records the
+// npm packages whose modules or assets end up in the output (tree-shaken, so a dependency that
+// is installed but never imported is not listed); these tests feed the normaliser that shape.
+describe("normaliseNpm", () => {
+  const pkg = (name, version, license, files, extra = {}) => ({ name, version, license, url: `https://www.npmjs.com/package/${name}/v/${version}`, files, ...extra });
+  const raw = (packages, clarified = {}) => ({ component: "app-webview", kind: "npm", source: "citrate-core@abc", tool: "vite 7", packages, clarified });
+
+  it("keeps every bundled package with its licence file and shares one MIT body", () => {
+    const n = normaliseNpm(
+      raw([pkg("react", "19.2.7", "MIT", { LICENSE: MIT("Meta Platforms, Inc.") }), pkg("viem", "2.55.0", "MIT", { LICENSE: MIT("weth, LLC") })]),
+      { component: "app-webview" },
+    );
+    expect(n.packages.map((p) => `${p.name} ${p.version} ${p.licence}`)).toEqual(["react 19.2.7 MIT", "viem 2.55.0 MIT"]);
+    expect(Object.keys(n.texts)).toHaveLength(1);
+    expect(Object.values(n.texts)[0].notices).toEqual({
+      "Copyright (c) Meta Platforms, Inc.": ["react 19.2.7"],
+      "Copyright (c) weth, LLC": ["viem 2.55.0"],
+    });
+  });
+
+  it("checks every SPDX id of an expression against the permissive list", () => {
+    const ok = normaliseNpm(raw([pkg("sha.js", "2.4.12", "(MIT AND BSD-3-Clause)", { LICENSE: MIT("x") })]), { component: "app-webview" });
+    expect(ok.packages[0].licence).toBe("(MIT AND BSD-3-Clause)");
+    expect(() => normaliseNpm(raw([pkg("evil", "1.0.0", "MIT OR GPL-3.0-only", { LICENSE: MIT("x") })]), { component: "app-webview" })).toThrow(
+      /evil 1\.0\.0: ships under GPL-3\.0-only/,
+    );
+    expect(() => normaliseNpm(raw([pkg("anon", "1.0.0", undefined, { LICENSE: MIT("x") })]), { component: "app-webview" })).toThrow(/anon 1\.0\.0: no licence/);
+  });
+
+  it("refuses a licence outside the permissive list unless the component allows it (bundled fonts)", () => {
+    const fonts = raw([pkg("@fontsource/geist-sans", "5.3.0", "OFL-1.1", { LICENSE: "Copyright 2024 The Geist Project Authors\n\nSIL OPEN FONT LICENSE Version 1.1" })]);
+    expect(() => normaliseNpm(fonts, { component: "app-webview" })).toThrow(/OFL-1\.1, which is not on the permissive list/);
+    const n = normaliseNpm(fonts, { component: "app-webview", allow: ["OFL-1.1"] });
+    expect(n.packages[0].licence).toBe("OFL-1.1");
+  });
+
+  it("refuses a package with no licence file unless clarified, and a clarified package takes the named files", () => {
+    const tauri = pkg("@tauri-apps/plugin-dialog", "2.7.3", "MIT OR Apache-2.0", {});
+    expect(() => normaliseNpm(raw([tauri]), { component: "app-webview" })).toThrow(/@tauri-apps\/plugin-dialog 2\.7\.3: no licence file/);
+    const entry = { component: "app-webview", clarify: { "@tauri-apps/plugin-dialog": { spdx: "MIT OR Apache-2.0", files: ["node_modules/@tauri-apps/api/LICENSE_MIT"] } } };
+    expect(() => normaliseNpm(raw([tauri]), entry)).toThrow(/was not collected/);
+    const n = normaliseNpm(raw([tauri], { "node_modules/@tauri-apps/api/LICENSE_MIT": MIT("Tauri Apps Contributors") }), entry);
+    expect(n.packages[0].texts).toHaveLength(1);
+  });
+});
+
+describe("packageRootOf", () => {
+  it("maps a bundled module or asset to its package root, nested and scoped included", () => {
+    expect(packageRootOf("/r/node_modules/react/cjs/react.production.js")).toBe("/r/node_modules/react");
+    expect(packageRootOf("/r/node_modules/@wagmi/core/node_modules/zustand/esm/vanilla.mjs")).toBe("/r/node_modules/@wagmi/core/node_modules/zustand");
+    expect(packageRootOf("node_modules/@fontsource/geist-sans/files/a.woff2")).toBe("node_modules/@fontsource/geist-sans");
+    expect(packageRootOf("/r/src/App.tsx")).toBeNull();
+    expect(packageRootOf("\0vite/preload-helper.js")).toBeNull();
   });
 });

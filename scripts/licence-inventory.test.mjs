@@ -353,3 +353,45 @@ describe("third-party notices (scripts/third-party-notices.mjs output)", () => {
     expect(r.status).toBe(0);
   });
 });
+
+// v0.5.0 gate prep (g3-licence): the webview bundle (the frontendDist Vite builds) ships the npm
+// packages it imports, so the inventory must know it ships and carry its third-party notices.
+describe("the webview bundle (frontendDist)", () => {
+  function withWebview({ notices = true } = {}) {
+    const root = fixtureRepo();
+    write(root, "src-tauri/tauri.conf.json", { build: { frontendDist: "../dist" }, bundle: { resources: [] } });
+    write(root, "src-tauri/licenses/THIRD-PARTY-NOTICES.txt", "Citrate Core: third-party notices\n");
+    const inv = fixtureInventory();
+    const n = { file: "src-tauri/licenses/THIRD-PARTY-NOTICES.txt", source: "repo@abc", packages: 3 };
+    inv.app = { name: "app", spdx: "BUSL-1.1", licence_texts: [], third_party_notices: n };
+    inv.components.push({
+      id: "app-webview",
+      spdx: "BUSL-1.1",
+      first_party: true,
+      ships_as: "installer",
+      covers: ["frontendDist:../dist"],
+      copyleft: "none",
+      licence_texts: [],
+      source_offer: null,
+      review: "ok",
+      ...(notices ? { third_party_notices: n } : {}),
+    });
+    return { root, inv };
+  }
+
+  it("requires the frontendDist of tauri.conf.json, so the webview cannot ship without an entry", () => {
+    expect(requiredKeys(repoRoot).get("frontendDist:../dist")).toBe("tauri.conf.json");
+    const { root, inv } = withWebview();
+    expect(errorsOf(inv, root)).toEqual([]);
+    inv.components.pop();
+    expect(errorsOf(inv, root)).toContain("frontendDist:../dist (from tauri.conf.json): no licence entry");
+  });
+
+  it("--require-notices fails a webview entry with no third-party notices", () => {
+    const { root, inv } = withWebview({ notices: false });
+    expect(errorsOf(inv, root)).toEqual([]);
+    expect(errorsOf(inv, root, { requireNotices: true })).toEqual([
+      "app-webview: no third_party_notices for the packages compiled into this bundle",
+    ]);
+  });
+});

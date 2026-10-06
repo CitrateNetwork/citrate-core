@@ -10,6 +10,7 @@
 //   toolchain:<name>                     components/toolchain-bundle.json tools[]
 //   library:<name>                       templates/deps.lock.json deps
 //   skills:<label>                       skills.lock [[source]] labels
+//   frontendDist:<path>                  src-tauri/tauri.conf.json build.frontendDist (the webview)
 //   corpus:<id>                          a staged corpus manifest.json (--corpus), included sources
 // Every key must be covered by exactly one entry; a cover that matches nothing is stale (except
 // planned:<name>, and corpus:<id> when no corpus is given). Every licence text an entry names
@@ -21,7 +22,8 @@
 // third_party_notices (on a component or on app) points at the generated notices of the packages
 // compiled into that program (scripts/third-party-notices.mjs): its file must exist under
 // src-tauri/licenses/ and counts as named. --require-notices also fails while the app or a
-// first-party component that ships a sidecar (an externalBin cover) has none (release checklist).
+// first-party component that ships a sidecar (an externalBin cover) or the webview bundle (a
+// frontendDist cover) has none (release checklist).
 //
 // review states (ok / action / owner) are reported, not failed: they are the review's findings.
 // --require-sign-off also fails while sign_off.status is not "signed" (for a release checklist).
@@ -97,6 +99,12 @@ export function requiredKeys(repoRoot) {
     for (const b of json.bundle?.externalBin ?? []) add(`externalBin:${b}`, name);
     for (const r of json.bundle?.resources ?? []) add(`resource:${resourceKey(r)}`, name);
   }
+  // The webview bundle Vite builds (the npm packages it imports ship inside it).
+  const base = path.join(repoRoot, "src-tauri", "tauri.conf.json");
+  if (fs.existsSync(base)) {
+    const dist = readJson(base).build?.frontendDist;
+    if (typeof dist === "string" && dist) add(`frontendDist:${dist}`, "tauri.conf.json");
+  }
   const tb = path.join(repoRoot, "components", "toolchain-bundle.json");
   if (fs.existsSync(tb)) for (const t of readJson(tb).tools ?? []) add(`toolchain:${t.name}`, "components/toolchain-bundle.json");
   const dl = path.join(repoRoot, "templates", "deps.lock.json");
@@ -171,6 +179,10 @@ export function checkInventory(inv, { repoRoot, corpusSources = null, requireNot
     const shipsSidecar = (c.covers ?? []).some((k) => k.startsWith("externalBin:"));
     if (requireNotices && c.first_party === true && c.ships_as === "installer" && shipsSidecar && !hasNotices) {
       errors.push(`${id}: no third_party_notices for the packages compiled into this sidecar`);
+    }
+    const shipsWebview = (c.covers ?? []).some((k) => k.startsWith("frontendDist:"));
+    if (requireNotices && c.first_party === true && c.ships_as === "installer" && shipsWebview && !hasNotices) {
+      errors.push(`${id}: no third_party_notices for the packages compiled into this bundle`);
     }
     if (!Array.isArray(c.covers) || c.covers.length === 0) errors.push(`${id}: covers is empty`);
     for (const k of c.covers ?? []) {
