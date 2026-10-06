@@ -291,3 +291,27 @@ fn delete_is_member_only_never_an_agent_tool() {
         assert!(!src.contains("model_delete"), "{name} must not expose model_delete");
     }
 }
+
+/// v0.5.0 approval audit (HUP g1-approval-audit re-run): the node MCP tool table itself, by
+/// name, and the other agent-facing tool modules. The text check above reads the protocol and
+/// live files; the table lives in node_mcp_tools.rs.
+#[test]
+fn no_agent_tool_table_offers_a_model_delete() {
+    assert!(crate::node_mcp_tools::tool("model_delete").is_none());
+    for t in crate::node_mcp_tools::TOOLS {
+        let n = t.name.to_ascii_lowercase();
+        assert!(
+            !(n.contains("delete") || n.contains("remove") || n.contains("uninstall")),
+            "node MCP tool {} must not delete anything on the member's machine",
+            t.name
+        );
+    }
+    for (name, src) in [
+        ("node_mcp_tools.rs", include_str!("node_mcp_tools.rs")),
+        ("node_mcp_hermes.rs", include_str!("node_mcp_hermes.rs")),
+        ("hermes_mcp.rs", include_str!("hermes_mcp.rs")),
+        ("hermes.rs", include_str!("hermes.rs")),
+    ] {
+        assert!(!src.contains("model_delete"), "{name} must not expose model_delete");
+    }
+}

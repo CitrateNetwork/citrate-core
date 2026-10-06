@@ -18,6 +18,8 @@ import { bridge } from "../bridge";
 import { AGENT_TOOLS, READ_ONLY_AGENT_TOOLS } from "../agent/harness";
 import type { ToolCall } from "../agent/harness";
 import { livePlan } from "../fl/fixtures/plan";
+import fs from "node:fs";
+import path from "node:path";
 
 const call = (name: string, args: Record<string, unknown> = {}): ToolCall => ({
   id: "c1",
@@ -307,5 +309,107 @@ describe("PBA-L7b-003 — a 409 after a chain broadcast is reported honestly", (
     vi.spyOn(store, "requestSig").mockResolvedValue("declined");
     await store.reviewAgentApproval({ id: "c", kind: "code", summary: "x" });
     expect(toast).toHaveBeenLastCalledWith(expect.stringMatching(/rejection was not needed/));
+  });
+});
+
+// v0.5.0 approval audit (HUP g1-approval-audit re-run, 2026-10-06). The release head adds terminal
+// access (core #236: the sidecar's shell_run, on by default) and model delete (core #237: a
+// member-only Models screen action). These pin both against the agent tool surfaces core owns.
+describe("v0.5.0 approval audit: terminal access (#236) and model delete (#237)", () => {
+  const SRC = path.resolve(__dirname, "..");
+  /** Every non-test TypeScript source under src/, as [relative path, text]. */
+  function sources(): Array<[string, string]> {
+    const out: Array<[string, string]> = [];
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.(ts|tsx)$/.test(e.name)) out.push([path.relative(SRC, p), fs.readFileSync(p, "utf8")]);
+      }
+    };
+    walk(SRC);
+    return out;
+  }
+
+  it("model delete is not a chat or Hermes tool: no tool is named for it", () => {
+    const names = AGENT_TOOLS.map((t) => t.function.name);
+    for (const n of ["model_delete", "model_delete_states", "models_delete", "model_remove"]) expect(names).not.toContain(n);
+    expect(names.filter((n) => /delete|remove|uninstall/i.test(n))).toEqual([]);
+  });
+
+  it("no agent tool reaches the model delete command, even with every approval granted", async () => {
+    const del = vi.fn().mockResolvedValue({ file: "m.gguf", freedBytes: 1, selectionCleared: false });
+    for (const name of [...AGENT_TOOLS.map((t) => t.function.name), "model_delete", "models_delete"]) {
+      vi.restoreAllMocks();
+      del.mockClear();
+      vi.spyOn(bridge.modelsCatalog, "deleteLocal").mockImplementation(del);
+      vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+      vi.spyOn(store, "openWalletReview").mockImplementation((_k, _l, _v, _s, cb) => {
+        void (cb as ((approved: boolean) => Promise<void>) | undefined)?.(true);
+      });
+      vi.spyOn(bridge.invites, "create").mockResolvedValue({ token: "t", link: "l" });
+      vi.spyOn(bridge.groups, "create").mockResolvedValue({ id: "g", name: "n" } as never);
+      vi.spyOn(bridge.agentSkills, "write").mockResolvedValue({ name: "n", description: "", slug: "n" });
+      vi.spyOn(bridge.contracts, "deploy").mockResolvedValue({ id: "cer1" } as never);
+      vi.spyOn(bridge.flRounds, "lookupPlan").mockResolvedValue(livePlan());
+      vi.spyOn(store, "everydayInvoke").mockReturnValue((async (cmd: string) =>
+        cmd === "google_workspace_status" ? [{ service: "gsheets", configured: true, connected: true, note: null }] : {}) as never);
+      vi.spyOn(store, "copy").mockImplementation(() => {});
+      await store
+        .handleTool(call(name, { file: "m.gguf", group: "g", name: "m.gguf", fact: "f", entry: "e", html: "<p>x</p>", bytecodeHex: "0x00" }), "m1", noop)
+        .catch(() => undefined);
+      expect(del, `tool ${name} must never delete a model`).not.toHaveBeenCalled();
+    }
+  });
+
+  it("only the Models screen reaches the delete command (static: no agent, store or sidecar path names it)", () => {
+    const callers = sources()
+      .filter(([, t]) => /\bdeleteLocal\(|"model_delete"|\bdeleteLocalModel\b/.test(t))
+      .map(([p]) => p)
+      .sort();
+    // The bridge (interface, Tauri and preview implementations), the models slice that wraps it,
+    // and the Models screen. Nothing under src/agent, the store's tool loop or the daemons.
+    expect(callers).toEqual(["bridge/domains.ts", "bridge/sim/models.ts", "bridge/tauri/models.ts", "shell/slices/models.ts", "surfaces/Models.tsx"]);
+  });
+
+  it("shell_run is not a core-hosted tool: the in-app loop and the idle-view path cannot run a command", async () => {
+    const names = AGENT_TOOLS.map((t) => t.function.name);
+    expect(names).not.toContain("shell_run");
+    expect(names.filter((n) => /shell|exec|terminal|command|spawn/i.test(n))).toEqual([]);
+    vi.restoreAllMocks();
+    const sig = vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+    const resolve = vi.spyOn(bridge.agentHarness, "resolve").mockResolvedValue(undefined);
+    const out = await store.handleTool(call("shell_run", { argv: ["rm", "-rf", "/"], cwd: "/" }), "m1", noop);
+    expect(resolve).not.toHaveBeenCalled();
+    // Nothing is asked for a tool core does not host (there is nothing to approve), and nothing
+    // reports a command run. (Today the reply is a bare "ok"; a clearer "not a tool here" reply is
+    // a follow-up, recorded with the g1-approval-audit evidence.)
+    expect(sig).not.toHaveBeenCalled();
+    expect(out).not.toMatch(/exit|exited|ran |completed|stdout/i);
+  });
+
+  it("a held shell_run runs only on an explicit Approve: every other outcome is a decline (fail closed)", async () => {
+    const pending = {
+      id: "sh-1",
+      callId: "c1",
+      tool: "shell_run",
+      hic: "required",
+      argv: ["git", "status"],
+      resolvedProgram: "/usr/bin/git",
+      cwd: "/Users/m/app",
+      timeoutSecs: 60,
+      expiresInSecs: 300,
+      sandbox: { backend: "seatbelt", enforced: true, network: "denied", writable: ["/Users/m/app"], readable_extra: [], summary: "macOS Seatbelt: no network" },
+    } as const;
+    for (const outcome of ["declined", "expired", "cancelled", "", "APPROVED"]) {
+      vi.restoreAllMocks();
+      const sig = vi.spyOn(store, "requestSig").mockResolvedValue(outcome);
+      expect(await store.approveShellRun(pending as never), `outcome ${JSON.stringify(outcome)}`).toBe(false);
+      expect(sig).toHaveBeenCalledTimes(1);
+      expect(sig.mock.calls[0][0].hic?.reason).toMatch(/explicit decision/);
+    }
+    vi.restoreAllMocks();
+    vi.spyOn(store, "requestSig").mockResolvedValue("approved");
+    expect(await store.approveShellRun(pending as never)).toBe(true);
   });
 });
