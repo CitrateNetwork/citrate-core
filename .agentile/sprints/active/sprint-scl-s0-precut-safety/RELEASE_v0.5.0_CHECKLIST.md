@@ -20,7 +20,8 @@ done; this file links to them and does not repeat them.
 Scope (owner decisions 2026-10-05, third set, recorded on #254): v0.5.0 is the minimum viable
 release, the HUP work already merged on `release/0.5.0-hermes-upskill` plus SCL-S0 (S0.1, S0.3 to
 S0.7, S1.6a, S8.5a) plus the 40204 reroll pin. S7.5a and the supervisor contract ship in v0.5.1;
-the rest of SCL in v0.5.2. Private items are named here only generically (S0.1, S0.3, S0.4: process
+the rest of SCL in v0.5.2. *Owner decision (2026-10-06): S7.5a is back in v0.5.0 (closes the open
+High RT-12 in the 0.5.0 red-team slice); `g3-provider-routing-v050` is release v0.5.0.* Private items are named here only generically (S0.1, S0.3, S0.4: process
 cleanup safety improvements; specifics on federation #298).
 
 Owners: **Owner** = Larry Klosowski (@SaulBuilds). **Mac lane** = the owner's Mac with agents.
@@ -120,7 +121,7 @@ gate0 and gate2 are met in full.
 | g5-size | carried to 0.5.1 | Budgets await owner sign-off; record the measured 0.5.0 sizes at D2 |
 | g5-os | carried to 0.5.1 | Clean-install hello-mint on three OSes; 0.5.0's native runs are C2 to C4 |
 | g5-redteam | **needed for 0.5.0 (slice)** | Safety: the release plan never ships with an open High in the red-team register; confirm none is open for anything 0.5.0 ships. The full final multi-repo pass carries to 0.5.1 |
-| g5-scl | **needed for 0.5.0** | This is the v0.5.0 SCL content: SCL criteria with `release: v0.5.0` (g1-precut, g3-recorded-cleanup-v050, g4-native-v050, g5-release-coupling); g3-provider-routing-v050 (S7.5a) moved to v0.5.1 (#254) |
+| g5-scl | **needed for 0.5.0** | This is the v0.5.0 SCL content: SCL criteria with `release: v0.5.0` (g1-precut, g3-recorded-cleanup-v050, g4-native-v050, g5-release-coupling); g3-provider-routing-v050 (S7.5a) moved to v0.5.1 (#254); *Owner decision (2026-10-06): back in v0.5.0, so g3-provider-routing-v050 is also needed* |
 | g5-docs | carried to 0.5.1 | Retro "at close" and the essay follow the release; the release notes are in this PR |
 
 Release hygiene items from the release plan that still apply to 0.5.0: test counts recorded (A8,

@@ -500,6 +500,10 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // No llama-server in the web preview — the real spawn is Tauri-only. This
         // resolves so the sim flow proceeds; it never claims a running local model.
       },
+      async serveStop(): Promise<void> {
+        assertSimAllowed("model.serveStop");
+        // No llama-server in the web preview: nothing to stop.
+      },
     },
 
     agent: {

@@ -238,15 +238,72 @@ fn selection_prefers_local_when_ready_and_healthy() {
 }
 
 #[test]
-fn selection_falls_back_to_gateway_when_local_unhealthy_but_key_present() {
-    // Model ready but the server is NOT healthy → local-fallback to the gateway.
+fn selection_asks_first_when_local_unhealthy_but_key_present() {
+    // SCL-S7.5a (D-16 extended): model ready but the server is NOT running, with a gateway key.
+    // This used to be `LocalFallback` (a silent route to the gateway). It is now `LocalStopped`:
+    // not a route at all; chat asks the member first.
     let st = select_inference_state(ProviderInputs {
         model_ready: true,
         server_healthy: false,
         downloading: false,
         gateway_key_configured: true,
     });
-    assert_eq!(st, InferenceState::LocalFallback);
+    assert_eq!(st, InferenceState::LocalStopped);
+}
+
+/// SCL-S7.5a (D-16 extended, US-6.2 AC5): over every input, a verified local model whose
+/// server is not running never yields a state the frontend routes to the gateway by itself
+/// (`gateway-only`, `downloading`, or the old `local-fallback`). With a gateway key it is
+/// `LocalStopped` (ask first); without one the result is unchanged from before (no gateway).
+#[test]
+fn selection_never_routes_a_stopped_local_model_to_the_gateway() {
+    for downloading in [false, true] {
+        for gateway in [false, true] {
+            let st = select_inference_state(ProviderInputs {
+                model_ready: true,
+                server_healthy: false,
+                downloading,
+                gateway_key_configured: gateway,
+            });
+            assert_ne!(st, InferenceState::GatewayOnly, "dl={downloading} gw={gateway}");
+            assert_ne!(st.as_str(), "local-fallback", "dl={downloading} gw={gateway}");
+            if gateway {
+                assert_eq!(st, InferenceState::LocalStopped, "dl={downloading}");
+            } else {
+                assert_ne!(st, InferenceState::LocalStopped, "no key: unchanged, dl={downloading}");
+            }
+        }
+    }
+}
+
+/// SCL-S7.5a: no gateway key means behaviour is unchanged for a stopped local model (the
+/// selector never offers the gateway; the frontend never asks).
+#[test]
+fn selection_without_a_gateway_key_is_unchanged_for_a_stopped_local_model() {
+    let st = select_inference_state(ProviderInputs {
+        model_ready: true,
+        server_healthy: false,
+        downloading: false,
+        gateway_key_configured: false,
+    });
+    assert_eq!(st, InferenceState::Demo);
+}
+
+/// SCL-S7.5a: a running server (including one still cold-loading: `is_running` counts it) stays
+/// local whatever else is configured.
+#[test]
+fn selection_keeps_a_running_local_server_local() {
+    for downloading in [false, true] {
+        for gateway in [false, true] {
+            let st = select_inference_state(ProviderInputs {
+                model_ready: true,
+                server_healthy: true,
+                downloading,
+                gateway_key_configured: gateway,
+            });
+            assert_eq!(st, InferenceState::Ready, "dl={downloading} gw={gateway}");
+        }
+    }
 }
 
 #[test]
@@ -294,7 +351,7 @@ fn selection_no_model_when_no_key_and_not_downloading_but_model_absent() {
     // onboarding step — asserted here via the serialization contract.
     assert_eq!(InferenceState::NoModel.as_str(), "no-model");
     assert_eq!(InferenceState::Ready.as_str(), "ready");
-    assert_eq!(InferenceState::LocalFallback.as_str(), "local-fallback");
+    assert_eq!(InferenceState::LocalStopped.as_str(), "local-stopped");
     assert_eq!(InferenceState::Downloading.as_str(), "downloading");
     assert_eq!(InferenceState::GatewayOnly.as_str(), "gateway-only");
     assert_eq!(InferenceState::Demo.as_str(), "demo");

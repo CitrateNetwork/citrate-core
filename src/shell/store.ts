@@ -29,7 +29,7 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createSidecarDownProvider, createAgentProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
+import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
@@ -370,6 +370,37 @@ export function mapNodeState(state: string, syncPct: number, staked: number): Ap
 }
 
 /**
+ * SCL-S7.5a — how long a held chat message waits for the app's own startup start of the local
+ * server (and for a member-chosen restart) before the chat asks or fails honestly. It matches the
+ * llama-server cold-load grace (`LLAMA_START_GRACE`, 180 s, serve.rs).
+ */
+export const LOCAL_START_WAIT_MS = 180_000;
+/** SCL-S7.5a — how often a held message re-reads the routing state while it waits. */
+export const LOCAL_ROUTE_POLL_MS = 1_000;
+
+/** SCL-S7.5a — the error shown on a held message the member cancelled (Retry asks again). */
+export const LOCAL_ASK_NOT_SENT = "not sent; you cancelled before choosing where it goes";
+
+/** SCL-S7.5a — wait `ms`, or less if `signal` aborts first. */
+function sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+/** SCL-S7.5a — the member's answer for one held message. */
+export type LocalModelChoice = "restart" | "gateway" | "cancel";
+
+/**
  * CORE-AI1 / BC-3.2 — the pure LOCAL → GATEWAY → DEMO provider SELECTION rule,
  * extracted so it is unit-tested independently of the store singleton + bridge.
  *
@@ -385,17 +416,25 @@ export function mapNodeState(state: string, syncPct: number, staked: number): Ap
  *
  * `inferenceState` is the kebab string from `model_inference_state` (Rust); only
  * `"ready"` means the local server is actually serving.
+ *
+ * SCL-S7.5a (D-16 extended): `"local-stopped"` (the local model is configured, its server is not
+ * running, and a gateway key exists) is **not** a route. It returns `"ask"`: the store holds each
+ * message and asks the member first. The gateway is reached in that state only by the member's
+ * explicit choice for one message, never by this rule. (The retired `"local-fallback"` value is
+ * treated the same way, so an older backend can never route silently.)
  */
 export function pickChatProviderKind(
   statuses: { id: string; configured: boolean }[],
   aiDefault: string,
   mode: "sim" | "tauri",
   inferenceState?: string,
-): "local" | "real" | "demo" {
+): "local" | "ask" | "real" | "demo" {
   if (mode !== "tauri") return "demo";
   // 1) LOCAL: only when the real Rust state says the model is ready AND the
   //    llama-server is healthy — any other state falls through (honest).
   if (inferenceState === "ready") return "local";
+  // 1b) SCL-S7.5a: the local model is configured but not running → ask first, never the gateway.
+  if (inferenceState === "local-stopped" || inferenceState === "local-fallback") return "ask";
   // 2) GATEWAY (real): the default provider id has a sealed key.
   if (statuses.some((p) => p.id === aiDefault && p.configured)) return "real";
   // 3) DEMO: the honest built-in agent.
@@ -620,6 +659,9 @@ export class Store {
     // CORE-AI1 — select the chat provider: a REAL OpenAI-compatible provider if
     // the default id is configured (key sealed in the OS keyring), else the honest
     // built-in demo agent. Web-dev has no keyring, so this always resolves to demo.
+    // SCL-S7.5a: until the app's own startup start of the local server settles, a message sent
+    // while the local model is not running waits (bounded) instead of asking.
+    if (BRIDGE_MODE === "tauri") this.launchLocalStartPending = true;
     void this.rebuildProvider();
     // CORE (Phase 1) — in a Tauri build, poll the REAL node vitals (height/peers/
     // syncPct/state) from the supervisor + local RPC every 2s and fold them into
@@ -663,6 +705,8 @@ export class Store {
       // activity (observed 2026-08-05). If we resolve to "downloading" and the
       // member hasn't skipped, kick the streamed (Range-resumable) fetch again.
       void this.refreshModel().then(() => {
+        // SCL-S7.5a: no verified model means no startup start is coming.
+        if (this.state.modelState !== "ready") this.launchLocalStartPending = false;
         if (this.state.modelState === "downloading" && !this.state.modelSkipped) {
           this.startModelDownload();
         }
@@ -923,6 +967,7 @@ export class Store {
         inferenceState = "demo";
       }
       const kind = pickChatProviderKind(statuses, def, BRIDGE_MODE, inferenceState);
+      this.routeKind = kind;
       // HUP-S1.1c (preview): the SAME local model, but the loop runs in the Hermes sidecar and this
       // webview is a view over it. Core-hosted tools still execute through handleTool's gates.
       // The sidecar loop is used only while the sidecar answers; otherwise the app's own loop runs
@@ -981,6 +1026,13 @@ export class Store {
         if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
         return;
       }
+      if (kind === "ask") {
+        // SCL-S7.5a (D-16 extended): the local model is configured but its server is not running.
+        // No provider is chosen for the gateway: sendChat holds each message and asks the member.
+        this.provider = createLocalStoppedProvider();
+        this.reflectProvider();
+        return;
+      }
       if (kind === "local") {
         // HUP-S1.1 (US-1.1 AC1): the local model's agent loop runs only in the Hermes sidecar. With
         // the sidecar down (or its loop switched off) chat is a plain local reply with NO tools,
@@ -1004,6 +1056,7 @@ export class Store {
     } catch {
       // Honest no-op: providerStatus unavailable (web shim / failed read) — keep
       // the built-in demo agent rather than a fabricated provider.
+      this.routeKind = "demo";
       this.provider = createDemoProvider(() => this.snapshot());
       this.reflectProvider();
     }
@@ -1015,9 +1068,15 @@ export class Store {
     const p = this.provider;
     if (!p) return;
     // local (the app's own loop or the Hermes sidecar loop, both on the local model) → local;
-    // gateway (real/agentic) → real; anything else → the honest demo.
+    // gateway (real/agentic) → real; anything else → the honest demo. SCL-S7.5a: the local model
+    // that is configured but not running stays on the local side (its label says "not running");
+    // it is never shown as the gateway.
     const kind: "local" | "real" | "demo" =
-      p.kind === "local" || p.kind === "sidecar" ? "local" : p.kind === "real" || p.kind === "agent" ? "real" : "demo";
+      p.kind === "local" || p.kind === "sidecar" || p.kind === "local-stopped"
+        ? "local"
+        : p.kind === "real" || p.kind === "agent"
+          ? "real"
+          : "demo";
     this.setState({ chatProviderLabel: p.label, chatProviderKind: kind });
   }
 
@@ -2491,6 +2550,12 @@ export class Store {
 
   /** HUP-S7.6 — the running turn's Stop handle (null when no turn is running). */
   private turnAbort: AbortController | null = null;
+  /** SCL-S7.5a — the route the last `rebuildProvider` chose ("ask" = local model not running). */
+  private routeKind: "local" | "ask" | "real" | "demo" = "demo";
+  /** SCL-S7.5a — true from launch until the app's own startup start of the local server settles. */
+  private launchLocalStartPending = false;
+  /** SCL-S7.5a — resolves the question for the held message (null when nothing is asked). */
+  private localModelChoice: ((c: LocalModelChoice) => void) | null = null;
   /** HUP-S3.1: the in-flight knowledge import, shared by overlapping callers. */
   private knowledgeImportRun: Promise<void> | null = null;
 
@@ -2510,6 +2575,111 @@ export class Store {
     if (!ac || ac.signal.aborted) return;
     markStopping();
     ac.abort();
+  }
+
+  /**
+   * SCL-S7.5a (D-16 extended, US-6.2 AC5) — decide where one held message goes while the local
+   * model is configured but its server is not running. In order:
+   *  1. a fresh routing read: a local server that came back on its own is used directly;
+   *  2. while the app's own startup start of the local server is pending, wait (bounded by
+   *     `LOCAL_START_WAIT_MS`) and send locally once it is ready, without asking;
+   *  3. otherwise ask the member: restart the local model, or send this message to the gateway
+   *     this time. The gateway provider is built for this message only; the held route stays, so
+   *     the next message asks again. Restart never falls back to the gateway.
+   * Stop (the turn's abort signal) cancels at any point; nothing is sent.
+   */
+  private async routeHeldMessage(
+    msgId: string,
+    signal: AbortSignal,
+  ): Promise<{ ok: true; provider: ChatProvider } | { ok: false; error: string }> {
+    const hold = (phase: "waiting" | "ask" | "restarting") => this.setState({ chatRouteHold: { msgId, phase } });
+    const cancelled = { ok: false as const, error: LOCAL_ASK_NOT_SENT };
+    const gone = { ok: false as const, error: "the local model is no longer set up, so this message was not sent" };
+    const localNow = async (): Promise<ChatProvider | null> => {
+      await this.rebuildProvider();
+      return this.routeKind === "local" && this.provider ? this.provider : null;
+    };
+    try {
+      let local = await localNow();
+      if (local) return { ok: true, provider: local };
+      if (this.routeKind !== "ask") return gone;
+      if (this.launchLocalStartPending) {
+        hold("waiting");
+        const deadline = Date.now() + LOCAL_START_WAIT_MS;
+        while (this.launchLocalStartPending && Date.now() < deadline && !signal.aborted) {
+          await sleepOrAbort(LOCAL_ROUTE_POLL_MS, signal);
+          if (signal.aborted) break;
+          local = await localNow();
+          if (local) return { ok: true, provider: local };
+          if (this.routeKind !== "ask") return gone;
+        }
+        if (signal.aborted) return cancelled;
+        local = await localNow();
+        if (local) return { ok: true, provider: local };
+        if (this.routeKind !== "ask") return gone;
+      }
+      hold("ask");
+      const choice = await new Promise<LocalModelChoice>((resolve) => {
+        this.localModelChoice = resolve;
+        if (signal.aborted) resolve("cancel");
+        signal.addEventListener("abort", () => resolve("cancel"), { once: true });
+      });
+      this.localModelChoice = null;
+      if (choice === "cancel" || signal.aborted) return cancelled;
+      if (choice === "gateway") {
+        // The member's explicit choice, for this one message only.
+        const def = this.state.aiDefault;
+        return {
+          ok: true,
+          provider: createAgentProvider(def, () => this.snapshot(), (pid, msgs, tools, ctx) => bridge.chat.inferTools(pid, msgs, tools, ctx)),
+        };
+      }
+      hold("restarting");
+      const started = await this.restartLocalModel(signal);
+      if (signal.aborted) return cancelled;
+      // `restartLocalModel` is true only once the routing state is local again.
+      if (started && this.provider) return { ok: true, provider: this.provider };
+      return { ok: false, error: "the local model did not start, and nothing was sent to the gateway" };
+    } finally {
+      this.localModelChoice = null;
+      this.setState({ chatRouteHold: null });
+    }
+  }
+
+  /** SCL-S7.5a — the member's answer to the question for the held message. A no-op unless the
+   *  chat is asking right now. */
+  answerLocalModelAsk(choice: LocalModelChoice): void {
+    const resolve = this.localModelChoice;
+    if (!resolve || this.state.chatRouteHold?.phase !== "ask") return;
+    this.localModelChoice = null;
+    resolve(choice);
+  }
+
+  /**
+   * SCL-S7.5a — "Restart the local model": release the llama-server supervisor (it may be failed or
+   * backing off, which `serveStart` would refuse as already running), start it again, then wait
+   * (bounded) until the routing state is local. True only when chat now routes locally.
+   */
+  async restartLocalModel(signal?: AbortSignal): Promise<boolean> {
+    if (BRIDGE_MODE !== "tauri") return false;
+    try {
+      await bridge.model.serveStop();
+    } catch {
+      /* nothing to stop: the start below decides */
+    }
+    try {
+      await bridge.model.serveStart();
+    } catch {
+      await this.rebuildProvider();
+      return false;
+    }
+    const deadline = Date.now() + LOCAL_START_WAIT_MS;
+    for (;;) {
+      await this.rebuildProvider();
+      if (this.routeKind === "local") return true;
+      if (Date.now() >= deadline || signal?.aborted) return false;
+      await sleepOrAbort(LOCAL_ROUTE_POLL_MS, signal);
+    }
   }
 
   /** HUP-S10.3 — whether a daemon run may start now (the local model only: daemons spend 0). */
@@ -2555,14 +2725,33 @@ export class Store {
       return this.runTrackWorkflow(cmd.id);
     }
     if (!this.provider) return;
-    const provider = this.provider;
+    let provider = this.provider;
     const ac = new AbortController();
     this.turnAbort = ac;
     const stopped = () => ac.signal.aborted;
-    beginTurn(provider.kind, provider.label);
     const userMsg: ChatMsg = { id: "m" + ++this.mid, who: "You", text, chips: [], streaming: false };
     this.setState((s) => ({ chatMsgs: s.chatMsgs.concat([userMsg]), chatStatus: "thinking" }));
     if (this.chatInputEl) this.chatInputEl.value = "";
+    // SCL-S7.5a (D-16 extended): the local model is configured but its server is not running.
+    // Hold this message: wait for the app's own startup start, or ask the member. Nothing is sent
+    // to the gateway unless the member chooses that for this message.
+    if (this.routeKind === "ask") {
+      const routed = await this.routeHeldMessage(userMsg.id, ac.signal);
+      if (!routed.ok) {
+        this.setState((s) => ({
+          chatMsgs: s.chatMsgs.concat([
+            { id: "m" + ++this.mid, who: "Agent", text: "", chips: [], streaming: false, error: routed.error, retryText: text },
+          ]),
+          chatStatus: "ready",
+        }));
+        if (this.turnAbort === ac) this.turnAbort = null;
+        this.scrollChat();
+        this.save();
+        return;
+      }
+      provider = routed.provider;
+    }
+    beginTurn(provider.kind, provider.label);
     const asstId = "m" + ++this.mid;
     let started = false;
     const ensure = () => {
@@ -3748,9 +3937,13 @@ export class Store {
       await bridge.model.serveStart();
     } catch {
       // No local server (binary missing / spawn failed) — leave chat on its honest fallback.
+      // SCL-S7.5a: the startup start has settled (failed), so a held message asks now.
+      this.launchLocalStartPending = false;
       await this.rebuildProvider();
       return;
     }
+    // SCL-S7.5a: the startup start has settled (spawned; a cold load counts as running).
+    this.launchLocalStartPending = false;
     if (this.serveRouteTimer) return; // a poll is already waiting for the server to warm up
     let tries = 0;
     const check = async () => {

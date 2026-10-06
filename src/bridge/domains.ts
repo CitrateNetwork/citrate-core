@@ -329,6 +329,9 @@ export interface ModelDomain {
   verify(): Promise<void>;
   /** Spawn the llama-server sidecar on the verified-Ready model (fails closed). */
   serveStart(): Promise<void>;
+  /** SCL-S7.5a: release the llama-server supervisor (graceful stop, idempotent). Used by
+   *  "Restart the local model" so a supervisor that is not running is started fresh. */
+  serveStop(): Promise<void>;
 }
 
 // The node-agent under the SidecarSupervisor (CORE-C1.2). `status` returns the

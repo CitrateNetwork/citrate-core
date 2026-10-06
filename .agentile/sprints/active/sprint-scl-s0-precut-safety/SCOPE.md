@@ -65,7 +65,7 @@ sprint for v0.5.0 (definitions and acceptance in
 |---|---|---|---|---|---|
 | S1.6a | Minimal hosted Windows CI job that builds the S0.7 NSIS hook and runs its test (no Windows CI lane exists today; the only strict dependency of S0) | (CI) | S | (hosted runner) | workflow in PR; first green run linked in [EVIDENCE](EVIDENCE.md) |
 | S8.5a | Startup cleanup barrier before node admission over the S0.1 cleanup; #243 reset also requires the chain database lock; crash-window residual stated | US-7.3 AC1, AC2 | M | with the S0.6 runs | code in review (#256, [EVIDENCE](EVIDENCE.md)); native runs owed |
-| S7.5a | Ask first when the local server is not running (restart the local model, or send this message to the gateway this time; per message); bounded wait while the app's own startup start is pending (D-16 extended). *Owner decision (2026-10-05, third set): removed from this sprint, moved to v0.5.1 (Mac lane, #251)* | US-6.2 AC5 | M | macOS packaged (now the v0.5.1 run) | moved to v0.5.1 |
+| S7.5a | Ask first when the local server is not running (restart the local model, or send this message to the gateway this time; per message); bounded wait while the app's own startup start is pending (D-16 extended). *Owner decision (2026-10-05, third set): removed from this sprint, moved to v0.5.1 (Mac lane, #251).* *Owner decision (2026-10-06): back in this sprint and release v0.5.0, to close the open High RT-12 in the 0.5.0 red-team slice* | US-6.2 AC5 | M | macOS packaged (the v0.5.0 run) | code in review (PR `scl/s7.5a-ask-before-gateway`); macOS packaged check owed |
 
 *Owner decision (2026-10-05, third set):* S7.5a is removed from this sprint and moves to v0.5.1
 (the owner asked for the minimum viable v0.5.0; S7.5a is not a safety fix). Its criterion

@@ -1,4 +1,4 @@
-# created: 2026-10-05T18:30:00Z · updated: 2026-10-05 (owner decisions: O-18, O-19, O-20 accepted; red-team pass accepted; second set: release path v0.5.0 / v0.5.1 / v0.5.x, D-41 amended, D-16 extended; third set: minimum viable v0.5.0, S7.5a to v0.5.1, v0.5.x renamed v0.5.2, D-41 amended again) · branch: docs/scl-planset · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed) · red_teamed: 2026-10-05 (see 08_RED_TEAM.md)
+# created: 2026-10-05T18:30:00Z · updated: 2026-10-05 (owner decisions: O-18, O-19, O-20 accepted; red-team pass accepted; second set: release path v0.5.0 / v0.5.1 / v0.5.x, D-41 amended, D-16 extended; third set: minimum viable v0.5.0, S7.5a to v0.5.1, v0.5.x renamed v0.5.2, D-41 amended again; 2026-10-06: S7.5a and g3-provider-routing-v050 back to release v0.5.0) · branch: docs/scl-planset · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed) · red_teamed: 2026-10-05 (see 08_RED_TEAM.md)
 # planset: 2026-10-05-sidecar-lifecycle · code: SCL · repo: citrate-core (+ citrate-agent-runtime) · companions: 00_OVERVIEW.md, 05_SPRINTS_AND_WPS.md
 # (YAML files carry Rule-12 frontmatter as a comment header so the file stays valid YAML.)
 # Rule: a criterion flips to met: true only with an evidence path AND a note saying what the
@@ -40,6 +40,8 @@
 #   release: v0.5.0 -> SCL-S0, S1.6a, S8.5a.
 #   release: v0.5.1 -> the second-set v0.5.1 set plus S7.5a.
 #   release: v0.5.2 -> the second-set v0.5.x remainder.
+# Owner decision (2026-10-06): S7.5a (g3-provider-routing-v050) is back in release v0.5.0, to close
+# the open High RT-12 in the 0.5.0 red-team slice. v0.5.0 -> SCL-S0, S1.6a, S8.5a and S7.5a.
 version: 1
 program: SCL
 release_coupling:
@@ -220,7 +222,7 @@ gates:
         note: Owner decision (2026-10-05, O-19 accepted, D-16) - while the local model is cold-loading or its probe times out, chat waits or tells the member; it never routes the prompt to the remote gateway without the member's explicit choice. Blocks the cut. Owner decision (2026-10-05, second set, D-16 extended) - release v0.5.1 (S7.5 on the S3 readiness model). When the local owner is Failed, Stopped or Quarantined, chat asks the member first (restart the local model, or send this message to the gateway this time); the choice is per message and never preselected or remembered. The v0.5.0 slice on today's signals is g3-provider-routing-v050. Owner decision (2026-10-05, third set) - that slice is now release v0.5.1 too, so both ship in v0.5.1.
       - id: g3-provider-routing-v050
         desc: "Owner decision (2026-10-05, second set, D-16 extended) - v0.5.0 slice (S7.5a) on today's signals: when the local model is verified but its server process is not running, chat never routes to the gateway by itself; it asks the member first (restart the local model, or send this message to the gateway this time), per message; while the app's own startup start of the local server is pending, chat waits (bounded) and says so"
-        release: v0.5.1  # was v0.5.0 (second set); owner decision (2026-10-05, third set): S7.5a moves to v0.5.1, id kept
+        release: v0.5.0  # Owner decision (2026-10-06): back to v0.5.0 to close the open High RT-12 in the 0.5.0 red-team slice; was v0.5.1 (third set), v0.5.0 (second set)
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s0-precut-safety/EVIDENCE.md
         note: Today select_inference_state returns LocalFallback when the model is ready, a gateway key is configured and the server process is not running, and the frontend then routes chat to the gateway with no prompt. That silent route is what D-16 extended forbids, so a minimal ask-first ships in v0.5.0. Cold load is already local today (a running process counts as healthy), so the cold-load half needs no change in v0.5.0. Readiness inputs (Awaiting, Stale, Quarantined) arrive with S3 and S7.5 in v0.5.1. Owner decision (2026-10-05, third set) - release v0.5.1, because the owner asked for the minimum viable v0.5.0 and S7.5a is not a safety fix. The silent route described above ships in v0.5.0 as a known issue (release notes list it); S7.5a lands first in v0.5.1, then S7.5 on the readiness model. The evidence path moves with it when the v0.5.1 sprint file exists.
@@ -254,7 +256,7 @@ gates:
         release: v0.5.0
         met: false
         evidence: .agentile/sprints/active/sprint-scl-s0-precut-safety/EVIDENCE.md
-        note: Overlaps g1-precut by design; this line names the S8.5a and S7.5a native checks so they are not left to unit tests. Owner decision (2026-10-05, third set) - S7.5a moved to v0.5.1, so the "chat with the local server stopped asks first" check is no longer part of this criterion; it joins g4-native-macos-cut (v0.5.1).
+        note: Overlaps g1-precut by design; this line names the S8.5a and S7.5a native checks so they are not left to unit tests. Owner decision (2026-10-05, third set) - S7.5a moved to v0.5.1, so the "chat with the local server stopped asks first" check is no longer part of this criterion; it joins g4-native-macos-cut (v0.5.1). Owner decision (2026-10-06) - S7.5a is back in v0.5.0, so the "chat with the local server stopped asks first" macOS check is part of this criterion again.
       - id: g4-native-macos-cut
         desc: "Owner decision (2026-10-05) - packaged macOS arm64 acceptance of the cut-blocking subset (SCL-S14.1 cut scenarios: quit, Dock Quit, logout, restart, update install with Later and with Restart, factory reset, force quit then relaunch, chat under cold load and probe timeout stays local)"
         release: v0.5.1  # was blocks_cut: true

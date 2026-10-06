@@ -154,6 +154,7 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "model_download":
     case "model_verify":
     case "model_serve_start":
+    case "model_serve_stop":
       return undefined;
     // CORE-C1.2 node-agent — under the SidecarSupervisor. status returns the
     // supervisor state + whether a bearer session exists (NEVER the token);
@@ -964,6 +965,12 @@ describe("tauri adapter — model domain is wired to the real download+verify+se
     expect(invokeMock).toHaveBeenCalledWith("model_download", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_verify", undefined);
     expect(invokeMock).toHaveBeenCalledWith("model_serve_start", undefined);
+  });
+
+  it("SCL-S7.5a: serveStop invokes model_serve_stop and returns void", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.model.serveStop()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("model_serve_stop", undefined);
   });
 });
 
