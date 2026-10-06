@@ -233,6 +233,19 @@ export function Node({ store, s }: SurfaceProps) {
         </span>
       </div>
 
+      {/* SCL-S0.6 — the node start was refused: another process holds the chain database or a
+          node port. The message (from node.rs) names the holder (pid, path) and what to do. */}
+      {s.nodeBlocked && (
+        <div
+          role="alert"
+          className="surface"
+          style={{ padding: "12px 16px", borderLeft: "3px solid " + nodeColors.error, display: "flex", flexDirection: "column", gap: 4 }}
+        >
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>The node cannot start yet</span>
+          <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>{s.nodeBlocked}</span>
+        </div>
+      )}
+
       {/* ===================== OPERATIONS ===================== */}
       {s.nTab === "ops" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

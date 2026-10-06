@@ -1331,6 +1331,10 @@ export class Store {
         this.nodeStallCycles = 0;
         this.nodeStalledNotified = false;
       }
+      // SCL-S0.6: a start refused by a holder of the chain database or a node port is an error
+      // the member can act on (the message names the holder), not a silent "off".
+      patch.nodeBlocked = st.blocked?.message ?? null;
+      if (st.blocked && st.state === "stopped") nextNode = "error";
       if (!this.nodeStarting) patch.node = nextNode;
       // Q-A.2/Q-B.2 — fold the REAL streamed node log tail. Best-effort: a failed
       // logs read must not clobber the vitals fold above, so it is caught

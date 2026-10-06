@@ -155,8 +155,19 @@ fn stub_manager(tag: &str) -> (NodeManager, std::sync::Arc<FakeKeyring>, PathBuf
         // No live RPC in the stub path — status uses the supervisor state and
         // an unreachable RPC (which honestly yields 0/0).
         "http://127.0.0.1:59999",
-    );
+    )
+    // The app's startup cleanup has run (SCL-S8.5a) and no node port is checked: the stub
+    // node binds nothing, and the host's real 8545/8546/30303 are not this test's business.
+    .with_startup_barrier(opened_barrier(), std::time::Duration::ZERO)
+    .with_node_ports(Vec::new());
     (mgr, fake, data_dir)
+}
+
+/// A startup barrier whose cleanup has already run.
+fn opened_barrier() -> std::sync::Arc<StartupBarrier> {
+    let b = std::sync::Arc::new(StartupBarrier::new());
+    b.run_cleanup(|| {});
+    b
 }
 
 // ---------------------------------------------------------------------------
@@ -243,9 +254,10 @@ fn spawn_env_carries_the_fleet_consensus_vars() {
     // address book synced at `2d88191`; live `eth_getCode` is 26,054 bytes here
     // and `0x` at the previous pin.
     // Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (13,026 bytes).
+    // Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (13,026 bytes); `0x` at the previous pin.
     assert_eq!(
         get(NODE_VALIDATOR_REGISTRY_ENV),
-        Some("0xba4abd4f3fca5365b2451b4e9662e4cfd22b3ad5"),
+        Some("0xde4f679632be7810d915f637cc6a72bf076a3bd9"),
         "ValidatorRegistry must be the live 40204 address the fleet runs",
     );
     // INVERTED 2026-07-30. This previously asserted the retain window MUST be
@@ -381,7 +393,9 @@ fn dead_keyring_blocks_start_fail_closed() {
         data_dir,
         crash,
         "http://127.0.0.1:59998",
-    );
+    )
+    .with_startup_barrier(opened_barrier(), std::time::Duration::ZERO)
+    .with_node_ports(Vec::new());
     let r = mgr.start();
     assert!(matches!(r, Err(NodeError::Keyring(_))), "got: {r:?}");
 }
@@ -499,7 +513,9 @@ fn missing_binary_fails_closed() {
         data_dir,
         PathBuf::from("/tmp/x.jsonl"),
         "http://127.0.0.1:59997",
-    );
+    )
+    .with_startup_barrier(opened_barrier(), std::time::Duration::ZERO)
+    .with_node_ports(Vec::new());
     let r = mgr.start();
     assert!(matches!(r, Err(NodeError::BinaryNotFound(_))), "got: {r:?}");
 }
@@ -597,7 +613,8 @@ fn live_bounded_sync_proof() {
         data_dir.clone(),
         crash,
         "http://127.0.0.1:8545",
-    );
+    )
+    .with_startup_barrier(opened_barrier(), std::time::Duration::ZERO);
     mgr.start().expect("real node starts under the supervisor");
 
     // Bounded window: sample height for up to ~120s; require it to advance.
@@ -609,6 +626,7 @@ fn live_bounded_sync_proof() {
         height: 0,
         sync_pct: 0.0,
         notice: None,
+        blocked: None,
     };
     while std::time::Instant::now() < deadline {
         let st = mgr.status();
@@ -917,4 +935,164 @@ fn manager_targets_the_address_book_genesis() {
         Some(crate::addresses::genesis_hash())
     );
     assert!(mgr.status().notice.is_none(), "a fresh dir is not a reset");
+}
+
+// ---------------------------------------------------------------------------
+// SCL-S0.6 / S8.5a — holders of the chain database and ports; startup barrier
+// ---------------------------------------------------------------------------
+
+/// S0.6 + S8.5a (RT-11): an orphan that holds the chain database lock and never answers on
+/// the local RPC blocks a genesis-change start: no reset, no spawn, and the UI state names the
+/// holder (pid and path) with the action.
+#[test]
+fn genesis_change_start_is_refused_while_an_orphan_holds_the_db_and_names_it() {
+    let (mgr, fake, data) = stub_manager("s06-orphan");
+    let mgr = mgr.with_book_genesis(REROLL_NEW_GENESIS);
+    std::fs::create_dir_all(&data).unwrap();
+    for f in ["CURRENT", "MANIFEST-000624", "000013.sst", "LOCK"] {
+        std::fs::write(data.join(f), b"old chain").unwrap();
+    }
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        REROLL_OLD_GENESIS,
+    )
+    .unwrap();
+    let fx = crate::node_holder::tests::hold_chain_db_lock(&data);
+
+    let err = mgr.start().expect_err("a held chain database refuses the start");
+    assert!(err.to_string().contains("not started"), "{err}");
+    assert_eq!(mgr.status().state, "stopped", "nothing spawned");
+    for f in ["CURRENT", "MANIFEST-000624", "000013.sst", "LOCK"] {
+        assert!(data.join(f).exists(), "{f} untouched");
+    }
+    assert_eq!(
+        crate::node_genesis::read_marker(&data).unwrap().as_deref(),
+        Some(REROLL_OLD_GENESIS),
+        "marker unchanged"
+    );
+    assert!(
+        fake.get(KEYRING_NODE_STORAGE_ACCOUNT).unwrap().is_none(),
+        "refused before the storage key is touched"
+    );
+    let blocked = mgr.status().blocked.expect("UI state names the holder");
+    assert_eq!(
+        blocked.resource,
+        crate::node_holder::BlockedResource::ChainDatabase
+    );
+    #[cfg(unix)]
+    {
+        assert_eq!(blocked.pid, Some(fx.pid));
+        assert!(blocked.message.contains(&format!("process {}", fx.pid)), "{}", blocked.message);
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert_eq!(
+        blocked.path.as_deref().map(PathBuf::from),
+        Some(crate::node_holder::tests::HolderFixture::exe())
+    );
+    assert!(blocked.message.contains("Quit that process"), "{}", blocked.message);
+
+    // The holder exits: the next start resets and runs, and the blocked state clears.
+    fx.stop();
+    mgr.start().expect("free lock: reset, then start");
+    assert!(mgr.status().blocked.is_none(), "cleared by the next start");
+    mgr.stop();
+    assert!(!data.join("CURRENT").exists(), "old chain data reset");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// S0.6: an old node left holding the database blocks a normal start too (it would make the
+/// new node fail to open its database), named the same way.
+#[test]
+fn a_normal_start_is_refused_while_an_orphan_holds_the_db() {
+    let (mgr, _fake, data) = stub_manager("s06-normal");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join(crate::node_genesis::GENESIS_MARKER_FILE),
+        crate::addresses::genesis_hash(),
+    )
+    .unwrap();
+    let fx = crate::node_holder::tests::hold_chain_db_lock(&data);
+    let err = mgr.start().expect_err("held database refuses the start");
+    assert!(matches!(err, NodeError::Blocked(_)), "{err:?}");
+    assert_eq!(mgr.status().state, "stopped");
+    assert!(mgr.status().blocked.is_some());
+    fx.stop();
+    mgr.start().expect("starts once the holder exits");
+    mgr.stop();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// S0.6: an owned fixture listener on a node port (standing in for an old node's RPC port)
+/// blocks the start and is named.
+#[test]
+fn a_start_is_refused_while_a_node_port_is_in_use_and_names_it() {
+    let fx = crate::node_holder::tests::listen_on_loopback();
+    let (mgr, _fake, data) = stub_manager("s06-port");
+    let mgr = mgr.with_node_ports(vec![fx.port]);
+    let err = mgr.start().expect_err("a held node port refuses the start");
+    let NodeError::Blocked(b) = &err else {
+        panic!("expected Blocked, got {err:?}");
+    };
+    assert_eq!(b.port, Some(fx.port));
+    assert_eq!(mgr.status().state, "stopped");
+    let blocked = mgr.status().blocked.expect("UI state names the port holder");
+    assert!(blocked.message.contains(&format!("port {}", fx.port)), "{}", blocked.message);
+    if let Some(pid) = blocked.pid {
+        assert_eq!(pid, fx.pid);
+    }
+    fx.stop();
+    mgr.start().expect("starts once the port is free");
+    assert!(mgr.status().blocked.is_none());
+    mgr.stop();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// S8.5a (US-7.3 AC1): no node spawn is admitted until the startup cleanup has finished.
+#[test]
+fn node_spawn_is_admitted_only_after_the_startup_cleanup() {
+    let (mgr, fake, data) = stub_manager("s85a-barrier");
+    let barrier = std::sync::Arc::new(StartupBarrier::new());
+    let mgr = mgr.with_startup_barrier(barrier.clone(), std::time::Duration::from_millis(50));
+    let err = mgr.start().expect_err("closed barrier: no spawn");
+    assert!(matches!(err, NodeError::StartupCleanupPending), "{err:?}");
+    assert_eq!(mgr.status().state, "stopped");
+    assert!(
+        fake.get(KEYRING_NODE_STORAGE_ACCOUNT).unwrap().is_none(),
+        "refused before anything else runs"
+    );
+    assert!(
+        crate::node_genesis::read_marker(&data).unwrap().is_none(),
+        "the data dir is not touched before admission"
+    );
+
+    // A start waiting on the barrier is admitted as soon as the cleanup returns.
+    let mgr = std::sync::Arc::new(
+        mgr.with_startup_barrier(barrier.clone(), std::time::Duration::from_secs(20)),
+    );
+    let m2 = mgr.clone();
+    let starter = std::thread::spawn(move || m2.start());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(mgr.status().state, "stopped", "still waiting on the cleanup");
+    barrier.run_cleanup(|| {});
+    starter
+        .join()
+        .expect("starter thread")
+        .expect("admitted after cleanup");
+    mgr.stop();
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// Production managers are gated on the app's own startup barrier.
+#[test]
+fn production_managers_use_the_app_startup_barrier() {
+    let mgr = NodeManager::new(
+        Box::new(DeadKeyring),
+        stub_bin(),
+        tmp_dir("s85a-global"),
+        PathBuf::from("/tmp/x.jsonl"),
+        "http://127.0.0.1:59996",
+    );
+    assert!(std::sync::Arc::ptr_eq(&mgr.admission, &StartupBarrier::global()));
+    assert_eq!(mgr.admission_wait, ADMISSION_WAIT);
+    assert!(mgr.node_ports.is_none(), "ports come from node.toml");
 }

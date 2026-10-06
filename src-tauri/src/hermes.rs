@@ -678,6 +678,16 @@ impl HermesManager {
         self.embed.as_ref()
     }
 
+    /// Test hook: the sidecar child's pid while the supervisor holds one (SCL-S0.5 coverage).
+    #[cfg(test)]
+    pub fn sidecar_pid_for_test(&self) -> Option<u32> {
+        self.sup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|s| s.status().pid)
+    }
+
     /// Test hook: expose the spec env for the wiring proof (addr + token-file path, never a token).
     #[cfg(test)]
     pub fn spec_env_for_test(&self) -> Vec<(String, String)> {
@@ -716,12 +726,24 @@ impl HermesManager {
             }
         }
         let token = mint_bearer();
-        persist_bearer(&self.token_path, &token)?;
-        let spec = self.build_spec();
-        let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
-        config.backoff = BackoffPolicy::new();
-        config.healthy_after = HERMES_HEALTHY_AFTER;
-        let sup = Supervisor::start(config).map_err(|e| HermesError::Spawn(e.to_string()))?;
+        let started = persist_bearer(&self.token_path, &token).and_then(|()| {
+            let spec = self.build_spec();
+            let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
+            config.backoff = BackoffPolicy::new();
+            config.healthy_after = HERMES_HEALTHY_AFTER;
+            Supervisor::start(config).map_err(|e| HermesError::Spawn(e.to_string()))
+        });
+        let sup = match started {
+            Ok(sup) => sup,
+            Err(e) => {
+                // SCL-S0.5: the embedding server lives and dies with Hermes. A Hermes that did not
+                // start must not leave it running until the app quits.
+                if let Some(embed) = &self.embed {
+                    embed.stop();
+                }
+                return Err(e);
+            }
+        };
         *guard = Some(sup);
         *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
         Ok(())

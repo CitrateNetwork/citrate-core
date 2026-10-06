@@ -345,7 +345,9 @@ fn persist_secret_0600(path: &Path, secret: &str) -> Result<()> {
 }
 
 /// Resolve the bundled `cluster-daemon` binary (env override → resource dir).
-pub fn resolve_cluster_daemon_bin(app: &tauri::AppHandle) -> std::result::Result<PathBuf, String> {
+pub fn resolve_cluster_daemon_bin<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var(CLUSTER_DAEMON_BIN_ENV) {
         let path = PathBuf::from(p);
         if path.exists() {
