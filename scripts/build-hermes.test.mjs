@@ -73,7 +73,9 @@ const localSymbols = (file) =>
     .stdout.split("\n")
     .filter((l) => /local_helper_\d+/.test(l)).length;
 
-describe.skipIf(!CAN_RUN)("build-hermes.sh strip step", () => {
+// Each case runs the real build script (and a C fixture build) synchronously; shared CI
+// runners routinely exceed vitest's 5 s default, so give the block a realistic bound.
+describe.skipIf(!CAN_RUN)("build-hermes.sh strip step", { timeout: 60_000 }, () => {
   it("installs a stripped copy that still runs, and records it in the provenance", () => {
     const f = fixture();
     const r = run(f);
