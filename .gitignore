@@ -91,8 +91,10 @@ handoffs/
 **/*COUNSEL*
 **/*DEPLOY_LOG*
 
-# HUP-S3.1: the staged Hermes knowledge corpus (about 17 MB, built in citrate-memories,
-# staged by scripts/stage-knowledge-corpus.mjs at release time) is NOT committed.
+# HUP-S3.1: the staged Hermes knowledge corpus (about 100 MB embedded, built in citrate-memories,
+# staged by scripts/stage-knowledge-corpus.mjs at release time) is NOT committed, nor is the
+# stager's record beside it (read by scripts/check-staged-corpus.mjs before bundling).
 # Keep the directory's README so the bundle resource glob always matches.
 src-tauri/knowledge-corpus/*
 !src-tauri/knowledge-corpus/README.md
+src-tauri/knowledge-corpus.staged.json

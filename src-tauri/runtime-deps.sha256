@@ -5,10 +5,12 @@
 #
 # Format: `shasum -a 256` output — "<64 lowercase hex>  <asset name>" (two spaces).
 #
-# OWNER: pinned so far: the BGE GGUF and the four Apple sidecars (v0.5.0-rc.1, 2026-10-06, uploaded
-# to `runtime-deps` with these digests; sources in the comment above their lines). Still unpinned,
-# so the release workflow fails closed until they are uploaded and pinned: the llama runtime
-# tarball, the Gemma GGUF, bge-base-en-v1.5.tar.gz and knowledge-corpus.tar.gz (checklist A9).
+# OWNER: pinned so far: the BGE GGUF, the four Apple sidecars and skills-bundle.tar.gz (v0.5.0-rc.1,
+# 2026-10-06), and bge-base-en-v1.5.tar.gz + knowledge-corpus.tar.gz (checklist A9, 2026-10-06), all uploaded to
+# `runtime-deps` with these digests; sources in the comment above their lines. Still unpinned, so
+# the release workflow fails closed until they are uploaded and pinned: the llama runtime tarball
+# and the Gemma GGUF. scripts/ci/verify-runtime-deps.sh refuses any manifest without the
+# knowledge-corpus.tar.gz pin.
 # Procedure (docs/RELEASE.md §3):
 #   shasum -a 256 citrate-aarch64-apple-darwin mem-mcp-aarch64-apple-darwin \
 #     node-agent-aarch64-apple-darwin llama-server-aarch64-apple-darwin \
@@ -34,3 +36,11 @@ ff931bc315f7cea369ad7d0b25024311df8c3e3352c1273f17abf7953c8ea2d4  llama-server-a
 # `node scripts/eval-check.mjs --fetch-skill-sources`), 240 skills / 1,055 files + skills.lock,
 # packed reproducibly (sorted entries, mtime 2026-10-06T00:00Z, uid/gid 0, no xattrs, gzip -n -9).
 ea95d49d2a01e1ff8f4d161413bca7746712dac36aa99f79b85ebc3ee9561cb0  skills-bundle.tar.gz
+# Checklist A9 (2026-10-06, release Mac). bge-base-en-v1.5.tar.gz: the asset already on
+# `runtime-deps` since 2026-09-11 (config.json, tokenizer.json, model.safetensors sha256 c7c1988a...);
+# the corpus vectors were made with exactly these weights. knowledge-corpus.tar.gz: format
+# citrate-corpus/2, bundle_digest 815eda93c4886927cddf16381abf3a77ebb07d90acdf27e5914c6b300b754b9a,
+# 32,754 nodes, every node embedded, built by citrate-memories 0e9d488 scripts/build-corpus.sh from
+# clean checkouts (sources and commits in its manifest.json and in SCL-S0 EVIDENCE.md, A9).
+cea05ebe680cf315e41c965caec9d8e009dd9085b622d4cb9c62fe4faf026c3b  bge-base-en-v1.5.tar.gz
+91de29274251aa0e7d0934ebb2e2c8b3ebf3d010804ed6a798eef8c4655acd9b  knowledge-corpus.tar.gz
