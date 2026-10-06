@@ -39,8 +39,8 @@ Each WP is red, then green, then close-with-proof. Definitions and acceptance cr
 |---|---|---|---|---|---|
 | S0.1 | Startup cleanup matches exact owned executable paths only (pre-cut safety fix tracked privately) | US-0.1 | S | each OS's installed package | in review (private route); native runs pending |
 | S0.2 | Windows update install drains sidecars before the installer runs | US-0.2 | S | Windows team (@RDCTart69, @kurtatwork) | not started |
-| S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | not started |
-| S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | not started |
+| S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | in review (private route; runtime and core) |
+| S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | in review (private route; runtime) |
 | S0.5 | Shutdown coverage check: embed stops with Hermes, workers exit on stdin close | (QA) | S | all three OSes | code + tests in PR (one gap fixed); per-OS process-list record pending ([EVIDENCE](EVIDENCE.md)) |
 | S0.6 | Genesis-change update check: no old node left holding the chain database or ports; if one is, the UI names it | US-0.4 | M | all three OSes | code in review (#256, [EVIDENCE](EVIDENCE.md)); native runs owed |
 | S0.7 | Windows installer stops this installation's own sidecars before copying files (red-team addition RT-04) | US-0.2 (amended) | M | Windows team: manual 0.4.2 to 0.5.0 install with the old app running | NSIS hook + script test in PR; Windows team native run pending ([EVIDENCE](EVIDENCE.md)) |
@@ -116,6 +116,9 @@ vitest 2428 passed (see [EVIDENCE](EVIDENCE.md)).
 - 2026-10-05: S0.5, S0.7 and S1.6a implemented on `scl/s0.5-s0.7-s1.6a` (one PR). S0.5 found and
   fixed one gap (a Hermes start failure left the embedding server running). Rule-2 baseline and
   results in [EVIDENCE.md](EVIDENCE.md). Native runs (S0.5 per OS, S0.7 Windows team) pending.
+- 2026-10-05: S0.3 and S0.4 built red-then-green and sent through the private route (runtime
+  and core); the owner merges. Test counts and native runs go in `EVIDENCE.md` after merge. The
+  Hermes binary is rebuilt from runtime `main` once the runtime change is merged.
 - 2026-10-06: S0.6 and S8.5a coded in one lane (#256): startup barrier
   around the existing startup cleanup, holder check (chain database lock, node ports) before
   every node start with the holder named in the UI, and the #243 reset now takes the chain
