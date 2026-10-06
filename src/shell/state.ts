@@ -354,6 +354,12 @@ export interface AppState {
    * auto-start WITHOUT overriding a deliberate stop.
    */
   nodeIntent: "run" | "stopped";
+  /**
+   * SCL-S0.6 — set while the node start is refused because another process holds the chain
+   * database or a node port: the holder (pid, path) and the action, from `node_status.blocked`.
+   * Observed state, never persisted.
+   */
+  nodeBlocked: string | null;
   syncPct: number;
   hb: number;
   cpu: number;
@@ -730,6 +736,7 @@ export function freshState(pid: string): AppState {
     node: "off",
     // Default RUN: a fresh install should bring its node up on first launch.
     nodeIntent: "run",
+    nodeBlocked: null,
     syncPct: 0,
     hb: 4,
     cpu: 0,

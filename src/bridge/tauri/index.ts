@@ -34,6 +34,7 @@ import type {
   GrantStatus,
   ModelStatus,
   NodeLogLine,
+  NodeStatusView,
   ConnectionInfo,
 } from "../domains";
 import { Unavailable } from "../types";
@@ -222,7 +223,7 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
     // encrypted data dir (@rule8 keyring storage key); stop releases the
     // supervisor (no orphan). No secret ever crosses this boundary.
     node: {
-      async status(): Promise<{ state: string; peers: number; height: number; syncPct: number; notice?: string }> {
+      async status(): Promise<NodeStatusView> {
         return invoke("node_status");
       },
       async start() {
