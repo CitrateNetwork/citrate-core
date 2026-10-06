@@ -356,3 +356,50 @@ Separate builder finding, filed as CitrateNetwork/citrate-memories#21: mem-corpu
 pin for an ignored, untracked directory inside another repository's work tree (it takes that
 repository's HEAD). Not hit by this build: every source root is its own checkout or tracked in
 the recorded commit.
+
+## v0.5.0-rc.2: Hermes rebuild on runtime #72, gates (A7, B7)
+
+Recorded 2026-10-06 on the release Mac (macOS arm64), branch `release/v0.5.0-rc2-runtime-pin` from
+`release/0.5.0-hermes-upskill` `2d3de50`. The only change from rc.1 is the citrate-agent-runtime
+pin; every other sidecar and every `runtime-deps` asset is unchanged.
+
+### A7: Hermes sidecar (the rc.2 runtime pin for every OS)
+
+`scripts/build-hermes.sh --target aarch64-apple-darwin` from citrate-agent-runtime `main`
+`626486b8a7db0ab85cbe62f8a251abfd30677c3d` (#72, Windows agent-shell: Job Object process control,
+owner-only scratch HOME DACL, `.exe`/`.com` lookup; the Unix path is behind `#[cfg(unix)]` and
+unchanged). The only commit after rc.1's `c2f394c`. `cargo build --release --locked` (no lockfile
+change in the checkout; #72 adds no crate, `windows-sys 0.61.2` was already locked, so the
+third-party notices are unaffected). `strip -x` 30,299,088 to 26,156,536 bytes; links `/System`
+and `/usr/lib` only (otool).
+
+| Sidecar | Source | sha256 |
+|---|---|---|
+| hermes | citrate-agent-runtime `626486b` (`scripts/build-hermes.sh`) | `3d68420d08ddc3e2d4aa9eeee293e785e834de1ed8b22a3682c36eaa049af99e` |
+
+The other seven macOS sidecars are the rc.1 builds in the table above (citrate `9ad56eda...`,
+comms-member-daemon `adeacdd2...`, cluster-daemon `7de3c557...`, mem-mcp `31598435...`,
+node-agent `2435a484...`, ipfs `f254fedf...`, llama-server `ff931bc3...`).
+
+### Inputs
+
+All eight pinned `runtime-deps` assets downloaded fresh and checked:
+`scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256 <dl> <8 assets>`: "8 assets
+verified". The corpus staged from the downloaded tarball against the pinned mem-mcp with the full
+BGE (no `--allow-*` flag): bundle digest `815eda93...754b9a`, 32,754 nodes, vectors match
+bge-base-en-v1.5 (weights `c7c1988aae20`); `node scripts/check-staged-corpus.mjs --pins
+src-tauri/runtime-deps.sha256`: exit 0.
+
+### B7: gates on this branch
+
+- `cargo +1.98.1 fmt --all -- --check`: clean.
+- `cargo +1.98.1 clippy --workspace --all-targets --locked -- -D warnings`: clean.
+- `cargo +1.98.1 test --workspace --locked`: 2,366 passed, 0 failed, 19 ignored (21 suites).
+  Up from 2,365 at rc.1 (Rule 2).
+- `npm run typecheck`: clean.
+- vitest: 2,470 passed, 24 skipped (268 files passed, 2 skipped). Up from 2,446 at rc.1.
+- `scripts/ci/check-release-pins.sh`: OK.
+
+Not changed: `eval/sidecar-runtime.rev` (the eval suite's runtime, `45fceda`, a separate pin bumped
+with the eval scorecard) and `release/licences.json` (notices source `397a6b1`; no dependency
+change since).

@@ -40,7 +40,7 @@ Status words: **done**, **in PR** (open, named), **blocked on X**, **pending**.
 | A4 | SCL-S0.6 + S8.5a (genesis-change startup barrier and chain database lock check) | Mac lane; Reviewers | in PR #256 |
 | A5 | Process cleanup safety improvements in core | Mac lane; Owner merges | in PR #257, #258 |
 | A6 | Process cleanup safety improvements in the Hermes runtime, through the private remediation route (#298) | Mac lane; Owner merges | pending |
-| A7 | Rebuild the Hermes sidecar (`scripts/build-hermes.sh`) from citrate-agent-runtime `main` after A6 lands; record the runtime commit in [EVIDENCE.md](EVIDENCE.md) and here: runtime commit `c2f394c973a617c8144fd0bca7821c13e882d365` (includes runtime #71 and #70) | Mac lane | done (2026-10-06, v0.5.0-rc.1; EVIDENCE.md "v0.5.0-rc.1") |
+| A7 | Rebuild the Hermes sidecar (`scripts/build-hermes.sh`) from citrate-agent-runtime `main` after A6 lands; record the runtime commit in [EVIDENCE.md](EVIDENCE.md) and here: runtime commit `626486b8a7db0ab85cbe62f8a251abfd30677c3d` (runtime #72, Windows agent-shell; includes #71 and #70), the one runtime pin for every OS from v0.5.0-rc.2 (rc.1 used `c2f394c973a617c8144fd0bca7821c13e882d365`) | Mac lane | done (2026-10-06, v0.5.0-rc.2; EVIDENCE.md "v0.5.0-rc.2") |
 | A8 | Rule-2 record on the release head after A3 to A6: `cargo test --workspace --locked` and vitest counts in [EVIDENCE.md](EVIDENCE.md) | Mac lane | done (2026-10-06, v0.5.0-rc.1; EVIDENCE.md) |
 | A9 | Upload the knowledge corpus tarball and the import-corpus `mem-mcp` to `runtime-deps`, pinned in `src-tauri/runtime-deps.sha256` (the release notes claim the bundled corpus) | DGX | pending |
 | A10 | Book the Windows team's S0.7 native run (#249): needs a 0.5.0 Windows installer and a machine running 0.4.2 | Owner, Windows team | pending |
@@ -59,7 +59,7 @@ commit.
 | B4 | Rebuild the node sidecar from G (`scripts/build-sidecar.sh`); `citrate consensus` fingerprint of the bundled node equals the fingerprint DGX posts for G; record both: fingerprint `[ ]` | Mac lane, DGX | blocked on B1 |
 | B5 | Rebuild every sidecar from current mains (runbook: 09-13 binaries predated R2) and refresh `runtime-deps` with sha256 pins; `scripts/ci/check-release-pins.sh` green | Mac lane, DGX | Mac part done (2026-10-06, v0.5.0-rc.1: all 8 macOS sidecars rebuilt or verified; citrate, mem-mcp, node-agent, llama-server uploaded and pinned; tripwire green); llama runtime tarball, Gemma GGUF, BGE tarball and knowledge corpus still unpinned (A9) |
 | B6 | Federation consumers after G: citrate-docs #33, citrate-landing #86, citrate-sdk-js #21 regenerated from the same book and merged | Owner merges | in PR (each), blocked on B1 |
-| B7 | Gates on the pinned head: `cargo fmt --all -- --check`, `cargo +1.98.1 clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, `npm run typecheck`, vitest, `scripts/ci/check-release-pins.sh` | Mac lane | done for v0.5.0-rc.1 (2026-10-06; EVIDENCE.md); re-run on the final head if anything lands after the tag |
+| B7 | Gates on the pinned head: `cargo fmt --all -- --check`, `cargo +1.98.1 clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, `npm run typecheck`, vitest, `scripts/ci/check-release-pins.sh` | Mac lane | done for v0.5.0-rc.1 and re-run for v0.5.0-rc.2 (2026-10-06; EVIDENCE.md); re-run on the final head if anything lands after the tag |
 | B8 | Rule-6 benchmark on the chain core for G (citrate-chain `tests/load` benchmark-suite) | DGX | blocked on B1 |
 
 ## C. Prove it
