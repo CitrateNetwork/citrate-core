@@ -66,4 +66,10 @@ no other process signalled.
 `.github/workflows/windows-installer-hook.yml` (`windows-latest`, path-filtered to the hook, its
 script, the Windows bundle config and the workflow). First run: recorded below once it has run.
 
-- First run: pending.
+- First run, `37399094707` (head `e49be10`): failed. The NSIS hook path passed every check, but one
+  test call passed a quoted argument ending in a single `\`, which Windows argv parsing reads as an
+  escaped quote. That was a test-only defect, fixed in `a889d0c`.
+- First green run: https://github.com/CitrateNetwork/citrate-core/actions/runs/37399211383
+  (head `a889d0c`, 1m0s). 26 of 26 checks: direct script (exact paths stopped; same name
+  elsewhere, sub-folder, prefix sibling and non-sidecar left running; case and trailing separator;
+  no-op; refused names) and through the hook compiled by makensis into the harness.
