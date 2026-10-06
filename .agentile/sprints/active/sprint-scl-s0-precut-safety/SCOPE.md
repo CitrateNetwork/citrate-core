@@ -39,8 +39,8 @@ Each WP is red, then green, then close-with-proof. Definitions and acceptance cr
 |---|---|---|---|---|---|
 | S0.1 | Startup cleanup matches exact owned executable paths only (pre-cut safety fix tracked privately) | US-0.1 | S | each OS's installed package | not started |
 | S0.2 | Windows update install drains sidecars before the installer runs | US-0.2 | S | Windows team (@RDCTart69, @kurtatwork) | not started |
-| S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | not started |
-| S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | not started |
+| S0.3 | Managed-browser cleanup on Hermes stop and at the next start (pre-cut safety fix tracked privately) | US-0.3 | M | macOS, Linux | in review (private route; runtime and core) |
+| S0.4 | Runtime-side containment correction (pre-cut safety fix tracked privately) | (rt) | S | Linux, macOS CI | in review (private route; runtime) |
 | S0.5 | Shutdown coverage check: embed stops with Hermes, workers exit on stdin close | (QA) | S | all three OSes | not started |
 | S0.6 | Genesis-change update check: no old node left holding the chain database or ports; if one is, the UI names it | US-0.4 | M | all three OSes | not started |
 | S0.7 | Windows installer stops this installation's own sidecars before copying files (red-team addition RT-04) | US-0.2 (amended) | M | Windows team: manual 0.4.2 to 0.5.0 install with the old app running | not started |
@@ -110,3 +110,6 @@ PR in `EVIDENCE.md`. Baseline: taken at the first PR from `release/0.5.0-hermes-
 - 2026-10-05: owner decisions, second set: v0.5.0 ships after the reroll and soak with only this
   sprint's SCL content; S1.6a, S8.5a and S7.5a join the sprint; the previous cut-blocking subset
   is the v0.5.1 gate (HUP D-41 amended for one v0.5.1). Still docs only.
+- 2026-10-05: S0.3 and S0.4 built red-then-green and sent through the private route (runtime
+  and core); the owner merges. Test counts and native runs go in `EVIDENCE.md` after merge. The
+  Hermes binary is rebuilt from runtime `main` once the runtime change is merged.
