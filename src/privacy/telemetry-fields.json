@@ -6,7 +6,7 @@
   "sends": "Only when you prepare a report, review it, and press Send. Nothing is sent in the background.",
   "fields": [
     { "key": "reportId", "what": "A random id made for this one report. It is not stored and not linked to you." },
-    { "key": "appVersion", "what": "The app version, for example 0.4.2." },
+    { "key": "appVersion", "what": "The app version, for example 0.5.0." },
     { "key": "os", "what": "The operating system family: macos, linux or windows." },
     { "key": "crashTail", "what": "The last lines of the app's own crash log, if it crashed." },
     { "key": "nodeLogTail", "what": "The last lines of the node's crash records, if it crashed." },
