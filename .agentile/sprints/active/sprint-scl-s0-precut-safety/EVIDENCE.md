@@ -214,3 +214,48 @@ arm64): 2,314 passed, 0 failed, 18 ignored.
 - Every fixture process is recorded and stopped by a guard; no fixture process remained after
   any run (process list checked).
 - Open: native run on each OS's installed package (US-0.1 AC2), recorded on #298.
+
+## v0.5.0-rc.1: Hermes and sidecar rebuild, pins, gates (A7, A8, B5, B7)
+
+Recorded 2026-10-06 on the release Mac (macOS arm64), branch `release/v0.5.0-rc-pins` from
+`release/0.5.0-hermes-upskill` `98c846a` (after #267, S7.5a). The only tracked changes are the
+`runtime-deps` pins and this record; the gates below ran on that tree.
+
+### A7: Hermes sidecar
+
+`scripts/build-hermes.sh --target aarch64-apple-darwin` from citrate-agent-runtime `main`
+`c2f394c973a617c8144fd0bca7821c13e882d365` (includes #71, the SCL-S0 child-process cleanup, and
+#70). `strip -x` 30,299,088 to 26,156,536 bytes; links system libraries only.
+
+### B5: macOS sidecars (aarch64-apple-darwin)
+
+| Sidecar | Source | sha256 |
+|---|---|---|
+| citrate (node) | citrate-chain `2979a157` (staged earlier with `scripts/build-sidecar.sh`, `LZMA_API_STATIC=1`; md5 and consensus fingerprint `0x0daa463069843ea3884371baf903ddf7` per its provenance; not rebuilt) | `9ad56eda5af2dbdd8f1bef44a890f3adb23cdcfba4c75774bb72ea47763736e8` |
+| hermes | citrate-agent-runtime `c2f394c` (`scripts/build-hermes.sh`) | `6baa8440196a68c9811b4fb7b151c247f6ab269d317e338411b3717d9ff4813f` |
+| comms-member-daemon | citrate-comms `9cd12c4` (`scripts/build-comms-daemon.sh`) | `adeacdd2e335ec0bba8034a33af8f64fbcc78df9cfba335028799de457853367` |
+| cluster-daemon | citrate-cluster `755cf21` (`scripts/build-cluster-daemon.sh`) | `7de3c5576c1d44828ed7152d704b7b5242ca59fe0aabfc06153ed7f61163e411` |
+| mem-mcp | citrate-memories `0e9d488`, `--features rocksdb,transformer` (src-tauri/binaries/README.md); carries `import-corpus` and the `CITRATE_BGE_MODEL_DIR` / `CITRATE_MEM_EMBED` intake | `315984355eb9652118c457248d907661f877d8516f7fe0193f01dc85e29bf8e6` |
+| node-agent | citrate-node-agent `1d8cb8e` (src-tauri/binaries/README.md) | `2435a484c54deb2d7c93180d3a8c1534cc68ec825b24719829139e1d3af177c7` |
+| ipfs | Kubo 0.42.0 (upstream, `ipfs version` checked; unchanged from 0.4.x) | `f254fedf3766c25867d6e33dacea635505ddefe73606872efd9de9bf28884cbc` |
+| llama-server | llama.cpp build staged for 0.4.x (upstream, links the bundled `llama/` runtime; unchanged) | `ff931bc315f7cea369ad7d0b25024311df8c3e3352c1273f17abf7953c8ea2d4` |
+
+Every built sidecar used `--locked` (no lockfile in any source checkout changed) and links only
+`/System` and `/usr/lib` (otool). citrate, mem-mcp, node-agent and llama-server (the four
+`release.yml` stages) are uploaded to `runtime-deps` and pinned in `src-tauri/runtime-deps.sha256`;
+the downloaded assets pass `scripts/ci/verify-runtime-deps.sh`.
+
+Not pinned (A9, DGX): `knowledge-corpus.tar.gz` (not on `runtime-deps`), and the llama runtime
+tarball, the Gemma GGUF and `bge-base-en-v1.5.tar.gz` (the last is uploaded but unpinned). The
+release workflow fails closed until they are pinned. When the corpus lands, stage it against the
+mem-mcp above with `scripts/stage-knowledge-corpus.mjs` before pinning.
+
+### A8 / B7: gates on the release head plus the pins
+
+- `cargo +1.98.1 fmt --all -- --check`: clean.
+- `cargo +1.98.1 clippy --workspace --all-targets --locked -- -D warnings`: clean.
+- `cargo +1.98.1 test --workspace --locked`: 2,365 passed, 0 failed, 19 ignored (21 suites).
+  Up from 2,362 recorded on #265 before S7.5a (Rule 2).
+- `npm run typecheck`: clean.
+- vitest: 2,446 passed, 24 skipped (267 files passed, 2 skipped).
+- `scripts/ci/check-release-pins.sh`: OK.
