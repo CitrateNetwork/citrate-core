@@ -450,7 +450,6 @@ mod os {
 #[cfg(target_os = "linux")]
 mod os {
     use super::{BrowserRecord, ProcInfo};
-    use std::path::PathBuf;
 
     /// `ppid`, `pgrp` and `starttime` from `/proc/<pid>/stat` (fields 4, 5 and 22; the command
     /// name in field 2 may contain spaces and parentheses, so fields are counted after the last `)`).
@@ -491,7 +490,7 @@ mod os {
         let (_, _, again) = stat(pid)?;
         (again == start).then_some(ProcInfo {
             start,
-            exe: PathBuf::from(exe),
+            exe,
             pgid,
             argv,
         })
