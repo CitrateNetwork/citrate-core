@@ -133,9 +133,11 @@ mod cluster_mesh;
 mod comms;
 mod embed_serve;
 mod hermes;
+// SCL-S0.3: the managed browser does not outlive the Hermes sidecar.
 mod hermes_headless;
 mod hermes_learn;
 mod hermes_web;
+mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
 // Deleting a downloaded model (member-only, Models screen; never an agent tool).
@@ -322,6 +324,9 @@ pub fn run() {
             // stops the double-LAUNCH case; this sweep stops the crash-orphan case. Only processes
             // under THIS bundle's binary dir are touched, never us.
             sweep_orphan_sidecars();
+            // SCL-S0.3: a managed browser left by an earlier Hermes sidecar is stopped and its
+            // profile removed, from the record this app kept (never from anything the sidecar wrote).
+            hermes::clean_leftover_browser(app.handle());
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());

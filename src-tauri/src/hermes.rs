@@ -390,6 +390,9 @@ pub struct HermesManager {
     /// `None` (tests, or no bundled model) = sessions rank lexically and report it.
     embed: Option<crate::embed_serve::EmbedServer>,
     health_interval: Duration,
+    /// SCL-S0.3: where core records the sidecar's managed browsers (see `owned_browser`). A
+    /// core-only folder that is never passed to the sidecar; `None` = next to the crash log.
+    browser_record: Option<PathBuf>,
     #[cfg(test)]
     spawn_args_override: Option<Vec<String>>,
     /// The current session bearer (minted on start; wiped on drop). Held for control calls (S6.2+).
@@ -442,6 +445,7 @@ impl HermesManager {
             env_source: None,
             embed: None,
             health_interval: HEALTH_INTERVAL,
+            browser_record: None,
             #[cfg(test)]
             spawn_args_override: None,
             token: Mutex::new(None),
@@ -451,6 +455,21 @@ impl HermesManager {
             bridged_by_call: Mutex::new(HashMap::new()),
             grant_sessions: Mutex::new(std::collections::BTreeSet::new()),
         }
+    }
+
+    /// SCL-S0.3: keep the managed-browser record at `path` (a core-only folder the sidecar is never
+    /// told about) instead of next to the crash log.
+    pub fn with_browser_record(mut self, path: PathBuf) -> Self {
+        self.browser_record = Some(path);
+        self
+    }
+
+    /// SCL-S0.3: the managed-browser record file core keeps for this sidecar.
+    fn browser_record_path(&self) -> PathBuf {
+        self.browser_record.clone().unwrap_or_else(|| {
+            self.crash_record_path
+                .with_file_name(crate::owned_browser::RECORD_FILE)
+        })
     }
 
     /// Point the child at a capsule (skill) directory (`CITRATE_HERMES_CAPSULES`). Prod calls this
@@ -647,6 +666,9 @@ impl HermesManager {
             grace: HERMES_START_GRACE,
             probe: std::sync::Arc::new(move || http_health_ok(&health_url)),
         });
+        // SCL-S0.3: record the sidecar's managed browsers while it runs, clean them up after it
+        // ends (including core's hard kill after the stop grace).
+        spec.child_watch = crate::owned_browser::watch(self.browser_record_path());
         spec
     }
 
@@ -673,6 +695,9 @@ impl HermesManager {
         if !self.bin.exists() {
             return Err(HermesError::BinaryNotFound(self.bin.display().to_string()));
         }
+        // SCL-S0.3: a managed browser an earlier sidecar left behind (it ended while this app was
+        // not running, or this app was killed) is stopped and its profile removed first.
+        crate::owned_browser::apply(&self.browser_record_path());
         // PBA-L7b-009: every control call carries the session bearer to the fixed loopback port. If
         // another process already holds it, refuse to start instead of handing it the bearer.
         if let Some(port) = self
@@ -1504,6 +1529,28 @@ pub(crate) fn push_grants_to_sessions(doc: &crate::agent_grants::GrantState) -> 
     }
 }
 
+/// SCL-S0.3: the managed-browser record core keeps for the Hermes sidecar, in a core-only folder
+/// of the app's data that is never passed to the sidecar.
+fn browser_record_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::result::Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("core-lifecycle")
+        .join(crate::owned_browser::RECORD_FILE))
+}
+
+/// SCL-S0.3: at app launch, stop a managed browser an earlier Hermes sidecar left behind and
+/// remove its profile (the sidecar or this app ended without cleaning it up).
+pub(crate) fn clean_leftover_browser<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Ok(path) = browser_record_path(app) {
+        crate::owned_browser::apply(&path);
+    }
+}
+
 /// HUP-S5.1 + S4.4: the Hermes manager for sibling modules (`browser.rs`, `mcp_servers.rs`).
 pub(crate) fn manager_for<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1555,6 +1602,7 @@ pub(crate) fn manager<R: tauri::Runtime>(
     // `hermes/learn`, accepted skills under `hermes/skills`. Nothing is learned unless the member
     // accepts a proposal backed by a verified workflow run.
     let mgr = HermesManager::new(bin, token_path, crash_path)
+        .with_browser_record(browser_record_path(app)?)
         .with_capsules_dir(capsules_dir)
         .with_mcp_config_path(crate::hermes_mcp::config_path(&base))
         .with_checkpoints_dir(base.join("checkpoints"))
@@ -2309,4 +2357,9 @@ mod tests {
 #[cfg(test)]
 mod daemon_session_tests {
     include!("hermes_daemon_tests.rs");
+}
+
+#[cfg(all(test, unix))]
+mod browser_cleanup_tests {
+    include!("hermes_browser_tests.rs");
 }
