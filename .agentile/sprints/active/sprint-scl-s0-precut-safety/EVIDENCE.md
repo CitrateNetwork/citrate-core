@@ -26,7 +26,7 @@ macOS arm64, 2026-10-06.
 
 ## S0.6 + S8.5a (one lane: node startup and the #243 reset)
 
-PR: "SCL-S0.6 + S8.5a: genesis-change startup barrier and DB-lock check", branch
+PR #256: "SCL-S0.6 + S8.5a: genesis-change startup barrier and DB-lock check", branch
 `scl/s0.6-s8.5a`. Stories: US-0.4 AC1; US-7.3 AC1, AC2. Red-team: RT-11.
 
 ### What changed
