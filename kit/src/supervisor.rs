@@ -278,6 +278,35 @@ pub struct SidecarSpec {
     pub workdir: Option<PathBuf>,
     /// Optional periodic liveness probe (see [`HealthCheck`]).
     pub health_check: Option<HealthCheck>,
+    /// Optional hooks for the processes the child itself starts (see [`ChildWatch`]).
+    pub child_watch: Option<ChildWatch>,
+}
+
+/// Hooks for the processes a supervised child starts on its own (SCL-S0.3).
+///
+/// The supervisor never signals those processes; it gives the caller the two moments when it can
+/// act on facts it observed itself:
+///
+/// - `observe(pid)` runs on the monitor thread with the child's pid while the child is this
+///   process's own **unreaped** child, so `pid` names that child and no other process (an exited
+///   child keeps its id until it is reaped). It runs every `interval` while the child runs, and
+///   right before each stop signal (SIGTERM, and SIGKILL when the grace runs out).
+/// - `ended()` runs on the monitor thread after the child has ended and been reaped, on every path
+///   (stop, shutdown, crash, health failure, kill after the grace), before the supervisor reports
+///   the stop as done or starts a new child.
+#[derive(Clone)]
+pub struct ChildWatch {
+    pub interval: Duration,
+    pub observe: Arc<dyn Fn(u32) + Send + Sync>,
+    pub ended: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl std::fmt::Debug for ChildWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildWatch")
+            .field("interval", &self.interval)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for SidecarSpec {
@@ -292,6 +321,7 @@ impl std::fmt::Debug for SidecarSpec {
             )
             .field("workdir", &self.workdir)
             .field("has_health_check", &self.health_check.is_some())
+            .field("child_watch", &self.child_watch)
             .finish()
     }
 }
@@ -307,6 +337,7 @@ impl SidecarSpec {
             env: Vec::new(),
             workdir: None,
             health_check: None,
+            child_watch: None,
         }
     }
 
@@ -870,10 +901,14 @@ fn pid_alive(pid: u32) -> bool {
 /// SIGKILL. On Windows (out of beta scope) there is no SIGTERM: fall back to a
 /// hard kill. Reaps the child so no zombie remains. Returns once the child is
 /// dead.
-fn terminate_child(child: &mut Child, grace: Duration) {
+fn terminate_child(child: &mut Child, grace: Duration, watch: Option<&ChildWatch>) {
     #[cfg(unix)]
     {
         let pid = child.id();
+        // Not reaped yet, so `pid` still names this child (see `ChildWatch`).
+        if let Some(w) = watch {
+            (w.observe)(pid);
+        }
         signal_pid(pid, libc::SIGTERM);
         let deadline = std::time::Instant::now() + grace;
         loop {
@@ -888,7 +923,11 @@ fn terminate_child(child: &mut Child, grace: Duration) {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        // Escalate: SIGKILL (cannot be caught) and reap.
+        // Escalate: SIGKILL (cannot be caught) and reap. The child is still unreaped here (a reap
+        // above returns early), so observe once more: its own children are still its children.
+        if let Some(w) = watch {
+            (w.observe)(pid);
+        }
         signal_pid(pid, libc::SIGKILL);
         let _ = child.wait();
     }
@@ -896,6 +935,9 @@ fn terminate_child(child: &mut Child, grace: Duration) {
     {
         // Windows fallback (O-4: out of beta scope): no SIGTERM. Hard-kill.
         let _ = grace;
+        if let Some(w) = watch {
+            (w.observe)(child.id());
+        }
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -921,6 +963,13 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
     // Failed — while a fast crash-loop (which never reaches `healthy_after`)
     // never resets and still hits the cap.
     let mut consecutive_failures: u32 = 0;
+    let watch = spec.child_watch.clone();
+    // After every end of a child (reaped): the caller's cleanup of what the child started.
+    let ended = |w: &Option<ChildWatch>| {
+        if let Some(w) = w {
+            (w.ended)();
+        }
+    };
 
     loop {
         // --- spawn ---
@@ -976,6 +1025,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
             &mut child,
             &control,
             spec.health_check.as_ref(),
+            watch.as_ref(),
             healthy_after,
             clock.as_ref(),
         );
@@ -989,7 +1039,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
         match report.outcome {
             RunOutcome::Stopped => {
                 // Intentional stop: NOT a crash. No record, no restart. Off.
-                terminate_child(&mut child, stop_grace);
+                terminate_child(&mut child, stop_grace, watch.as_ref());
+                ended(&watch);
                 clear_pid(&shared);
                 shared.set_state(SupervisorState::Off);
                 // Wait for a resume/shutdown; C1.0 has no resume, so we block on
@@ -1004,7 +1055,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
                 }
             }
             RunOutcome::Shutdown => {
-                terminate_child(&mut child, stop_grace);
+                terminate_child(&mut child, stop_grace, watch.as_ref());
+                ended(&watch);
                 clear_pid(&shared);
                 shared.set_state(SupervisorState::Off);
                 return;
@@ -1016,6 +1068,7 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
                 // derive the bounded tail from the ring's `err` lines (the reader
                 // owns the pipe now — we no longer re-read child.stderr).
                 let _ = child.wait(); // reap (already exited)
+                ended(&watch);
                 drain_grace(&shared);
                 let stderr_tail = stderr_tail_from_ring(&shared);
                 let record = CrashRecord {
@@ -1046,7 +1099,8 @@ fn run_monitor(config: SupervisorConfig, shared: Arc<Shared>, control: Receiver<
             RunOutcome::Unhealthy => {
                 // Health check failed: stop the (still-alive) child and treat it
                 // as a crash so the same bounded backoff applies.
-                terminate_child(&mut child, stop_grace);
+                terminate_child(&mut child, stop_grace, watch.as_ref());
+                ended(&watch);
                 let record = CrashRecord {
                     name: spec.name.clone(),
                     at_unix_ms: clock.now_unix_ms(),
@@ -1150,11 +1204,13 @@ fn supervise_running(
     child: &mut Child,
     control: &Receiver<ControlMsg>,
     health: Option<&HealthCheck>,
+    watch: Option<&ChildWatch>,
     healthy_after: Duration,
     clock: &dyn Clock,
 ) -> RunReport {
     let poll = Duration::from_millis(20);
     let mut since_probe = Duration::ZERO;
+    let mut since_watch = Duration::ZERO;
     let started_ms = clock.now_unix_ms();
     let healthy_after_ms = healthy_after.as_millis() as u64;
     let mut sustained_healthy = false;
@@ -1223,7 +1279,16 @@ fn supervise_running(
                     sustained_healthy,
                 }
             }
-            Ok(None) => {}
+            Ok(None) => {
+                // Still running and not reaped: `child.id()` names this child.
+                if let Some(w) = watch {
+                    since_watch += poll;
+                    if since_watch >= w.interval {
+                        since_watch = Duration::ZERO;
+                        (w.observe)(child.id());
+                    }
+                }
+            }
             Err(_) => {
                 // Cannot query the child; treat as crashed so we recover.
                 return RunReport {
