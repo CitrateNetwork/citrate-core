@@ -107,7 +107,9 @@ try {
 
     # 2. A trailing separator and a different letter case name the same folder.
     $pids = Start-All
-    $code = Invoke-Script @('-InstallDir', ($install.ToUpperInvariant() + '\'), '-Names', $names, '-GraceSeconds', '1')
+    # Two backslashes: the argument is quoted (it has a space), and a single trailing backslash
+    # would escape the closing quote in Windows argv parsing. The script then sees exactly one.
+    $code = Invoke-Script @('-InstallDir', ($install.ToUpperInvariant() + '\\'), '-Names', $names, '-GraceSeconds', '1')
     Check ($code -eq 0) "script accepts a trailing separator and other case (got $code)"
     Assert-Outcome $pids 'script (case, trailing \)'
     Stop-All
