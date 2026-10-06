@@ -93,12 +93,12 @@ echo "    OK — post-re-roll source"
 echo
 
 # ── activation-hardening gate ───────────────────────────────────────────────
-# The node must carry the activation hardening (citrate-chain f9f6257b, #240):
+# The node must carry the activation hardening (citrate-chain f9f6257b, #240; re-pinned to the r1005 reroll G + book, 2979a157):
 # chain-bound V2 native signatures and the block body commitment at the
 # activation height, protocol 1.1 relay gating, and the release-pinned
 # activation table. A node without it rejects nothing at the activation height
 # and forks from the fleet there. Same rev the workspace Cargo.toml pins.
-MIN_CHAIN_REV="80c1781cc39c4edf2a7253a0adf08616c34d2215"
+MIN_CHAIN_REV="2979a1576d12dc75375ae30be5c37a2cdd866c87"
 echo "▶ verifying citrate-chain source carries the activation hardening"
 if git -C "$CHAIN_DIR" rev-parse --git-dir >/dev/null 2>&1; then
   head_rev="$(git -C "$CHAIN_DIR" rev-parse HEAD)"

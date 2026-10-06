@@ -88,11 +88,13 @@ const EXPECTED_IMAGE_DATA_URI: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0
 /// `2d88191`, confirmed live on-chain.
 ///
 /// Re-earned 2026-09-30 for the fresh-keys reroll (genesis 0x0f2b567f…): DGX core-pin harvest (federation#253), live eth_getCode non-empty (10,219 bytes).
+///
+/// Re-earned 2026-10-06 for the r1005 reroll (genesis 0x1dcfc490…, chain 2979a157): DGX core-pin, book via sync-addresses.py --rpc, live eth_getCode non-empty (10,219 bytes); `0x` at the previous pin.
 #[test]
 fn sbt_address_is_the_canonical_reroll_value() {
     assert_eq!(
         citrate_member_sbt(),
-        "0xa24aa35fba269f8755c2173779cc3dbc9690c4c9"
+        "0xf8ad11f6d3aefa605e2ebf7c81ed08a2b38b3a3c"
     );
 }
 
