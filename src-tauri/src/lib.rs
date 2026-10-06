@@ -90,6 +90,7 @@ mod model_register;
 mod model_registry;
 mod node;
 mod node_genesis;
+mod node_holder;
 // SCL-S0.1 — startup cleanup of this installation's own leftover sidecars (exact paths only).
 mod owned_cleanup;
 // HUP-S6.6 — after the deploy: receipt, verify, site switch, IPFS pin, Vercel export.
@@ -103,6 +104,7 @@ mod node_mcp_live;
 mod node_mcp_protocol;
 mod node_mcp_token;
 mod node_mcp_tools;
+mod startup_barrier;
 // HUP-S5.4 — pop-out windows (allowlisted kinds, least-privilege capability, persisted geometry).
 mod grant_deny;
 mod popout;
@@ -160,6 +162,12 @@ mod privacy_contract_tests;
 // HUP-S6 US-6.1 / g3-gate / g3-e2e (local): the hello-mint Gherkin, end to end on a local chain.
 #[cfg(test)]
 mod hello_mint_e2e_tests;
+// SCL-S0.5: shutdown coverage (embedding server stops with Hermes; workers exit on stdin close).
+#[cfg(test)]
+mod shutdown_coverage_tests;
+// SCL-S0.7: the Windows installer's pre-install hook (inputs checked on every OS).
+#[cfg(test)]
+mod windows_installer_hook_tests;
 
 use tauri::Manager;
 
@@ -276,7 +284,12 @@ pub fn run() {
             // so the fresh node fails with "Resource temporarily unavailable". Single-instance (above)
             // stops the double-LAUNCH case; this sweep stops the crash-orphan case. Only processes
             // running one of THIS installation's sidecar binaries (exact path) are touched.
-            sweep_orphan_sidecars(app.handle());
+            //
+            // SCL-S8.5a: the cleanup runs through the startup barrier. No node spawn is admitted
+            // (NodeManager::start waits on it) until the cleanup has returned; a panicking
+            // cleanup leaves it closed. The barrier does not depend on what the cleanup does.
+            let handle = app.handle();
+            startup_barrier::StartupBarrier::global().run_cleanup(|| sweep_orphan_sidecars(handle));
             // WP-T.2 — install the local panic hook (appends crash context to a local file the
             // diagnostics bundle later reads). No network; nothing egresses without consent (WP-T.1).
             telemetry::install_panic_hook(&app.handle().clone());

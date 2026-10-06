@@ -47,7 +47,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,9 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use zeroize::Zeroizing;
 
 use crate::custody::{Keyring, OsKeyring};
+use crate::node_holder::NodeBlocker;
 use crate::rpc::{HttpTransport, RpcClient};
+use crate::startup_barrier::StartupBarrier;
 use crate::supervisor::{
     BackoffPolicy, LogLine, SidecarSpec, Supervisor, SupervisorConfig, SupervisorState,
 };
@@ -192,6 +194,15 @@ pub enum NodeError {
     /// genesis, a live node holding the old chain, or a failed reset). Fail
     /// closed: the node is not started.
     Genesis(crate::node_genesis::GenesisGateError),
+    /// SCL-S0.6: another process holds the chain database or a node port. The node was not
+    /// started and nothing was deleted; the holder is named in the message and in
+    /// [`NodeStatus::blocked`].
+    Blocked(NodeBlocker),
+    /// SCL-S8.5a: the startup cleanup of processes from an earlier run has not finished, so
+    /// no node spawn is admitted yet.
+    StartupCleanupPending,
+    /// The holder check itself failed (for example the lock file could not be opened).
+    HolderCheck(String),
 }
 
 impl std::fmt::Display for NodeError {
@@ -202,6 +213,17 @@ impl std::fmt::Display for NodeError {
             NodeError::Spawn(m) => write!(f, "node spawn error: {m}"),
             NodeError::AlreadyRunning => write!(f, "node already running"),
             NodeError::Genesis(e) => write!(f, "{e}"),
+            NodeError::Blocked(b) => write!(f, "{b}"),
+            NodeError::StartupCleanupPending => write!(
+                f,
+                "the node was not started: startup cleanup of processes from an earlier run \
+                 has not finished yet; try again in a moment"
+            ),
+            NodeError::HolderCheck(m) => write!(
+                f,
+                "the node was not started: could not check whether another process holds the \
+                 chain database: {m}"
+            ),
         }
     }
 }
@@ -231,6 +253,11 @@ pub struct NodeStatus {
     /// the chain data for a new genesis ([`crate::node_genesis::CHAIN_RESET_NOTICE`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
+    /// SCL-S0.6: set when the last start was refused because another process holds the chain
+    /// database or a node port; names the holder (pid, path) and the action. Cleared by the
+    /// next start attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<NodeBlocker>,
 }
 
 /// Map a [`SupervisorState`] to the bridge state vocabulary the surface renders.
@@ -290,7 +317,20 @@ pub struct NodeManager {
     /// Set when a start in this session reset the chain data for a new
     /// genesis; surfaced once to the member through [`NodeStatus::notice`].
     chain_reset_notice: Mutex<Option<String>>,
+    /// SCL-S0.6: why the last start was refused by a holder, for [`NodeStatus::blocked`].
+    blocked: Mutex<Option<NodeBlocker>>,
+    /// SCL-S8.5a: no spawn is admitted until the startup cleanup opens this barrier.
+    admission: Arc<StartupBarrier>,
+    /// How long a start waits for [`Self::admission`] before it is refused.
+    admission_wait: Duration,
+    /// The node TCP ports to check before a start. `None`: read them from the `node.toml` the
+    /// node is launched with (production). Tests inject their own.
+    node_ports: Option<Vec<u16>>,
 }
+
+/// How long a node start waits for the startup cleanup barrier (SCL-S8.5a). The cleanup runs
+/// in `setup` before any command is served, so in practice the wait is zero.
+const ADMISSION_WAIT: Duration = Duration::from_secs(30);
 
 impl NodeManager {
     /// Build a manager over an explicit keyring, binary path, data dir, and RPC
@@ -315,7 +355,26 @@ impl NodeManager {
             tip_cache: Mutex::new(None),
             book_genesis: crate::addresses::genesis_hash().to_string(),
             chain_reset_notice: Mutex::new(None),
+            blocked: Mutex::new(None),
+            admission: StartupBarrier::global(),
+            admission_wait: ADMISSION_WAIT,
+            node_ports: None,
         }
+    }
+
+    /// Tests: use their own startup barrier and admission wait.
+    #[cfg(test)]
+    pub fn with_startup_barrier(mut self, barrier: Arc<StartupBarrier>, wait: Duration) -> Self {
+        self.admission = barrier;
+        self.admission_wait = wait;
+        self
+    }
+
+    /// Tests: check these ports instead of the ones in `node.toml`.
+    #[cfg(test)]
+    pub fn with_node_ports(mut self, ports: Vec<u16>) -> Self {
+        self.node_ports = Some(ports);
+        self
     }
 
     /// Tests: target another genesis than the compiled-in address book's.
@@ -337,6 +396,10 @@ impl NodeManager {
         })
         .map_err(|e| {
             eprintln!("[node] {e}");
+            // SCL-S8.5a: a lock holder that blocked the reset is named in the UI too.
+            if let crate::node_genesis::GenesisGateError::ChainDbHeld(b) = &e {
+                self.set_blocked(Some(b.clone()));
+            }
             NodeError::Genesis(e)
         })?;
         if let GenesisOutcome::Reset {
@@ -360,6 +423,22 @@ impl NodeManager {
                 .unwrap_or_else(|e| e.into_inner()) = Some(CHAIN_RESET_NOTICE.to_string());
         }
         Ok(())
+    }
+
+    fn set_blocked(&self, blocker: Option<NodeBlocker>) {
+        *self.blocked.lock().unwrap_or_else(|e| e.into_inner()) = blocker;
+    }
+
+    /// The node TCP ports to check before a start: injected (tests), or read from the
+    /// `node.toml` the node is launched with, falling back to the compiled-in member config
+    /// when that file does not exist yet (the first start writes it from the same text).
+    fn ports_to_check(&self) -> Vec<u16> {
+        if let Some(ports) = &self.node_ports {
+            return ports.clone();
+        }
+        let cfg = std::fs::read_to_string(crate::node_holder::node_config_path(&self.data_dir))
+            .unwrap_or_else(|_| MEMBER_NODE_CONFIG.to_string());
+        crate::node_holder::node_ports_from_config(&cfg)
     }
 
     /// W1.5 — set the coinbase (the member's wallet address) the node mines to.
@@ -596,13 +675,35 @@ impl NodeManager {
     /// Start the node under the supervisor. Idempotent-ish: returns
     /// `AlreadyRunning` if a supervisor is already live. @rule8: the storage key
     /// is minted/loaded from the keyring and handed to the child via env.
+    ///
+    /// Order (SCL-S0.6, S8.5a): wait for the startup cleanup barrier (no spawn is admitted
+    /// before the app's startup cleanup has finished); then refuse, naming the holder, while
+    /// another process holds the chain database lock or a node port; then the genesis gate,
+    /// whose reset takes the database lock itself before deleting anything.
     pub fn start(&self) -> Result<()> {
+        // Waited on without holding `sup`, so status polls are never blocked by it.
+        if !self.admission.wait_open(self.admission_wait) {
+            return Err(NodeError::StartupCleanupPending);
+        }
         let mut guard = self.sup.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             return Err(NodeError::AlreadyRunning);
         }
         if !self.bin.exists() {
             return Err(NodeError::BinaryNotFound(self.bin.display().to_string()));
+        }
+        self.set_blocked(None);
+        // SCL-S0.6: an older node (or anything else) holding the chain database or a node
+        // port is named in the UI instead of a silent wedge. Nothing is deleted or signalled.
+        let ports = self.ports_to_check();
+        match crate::node_holder::find_blocker(&self.data_dir, &ports) {
+            Ok(None) => {}
+            Ok(Some(blocker)) => {
+                eprintln!("[node] {blocker}");
+                self.set_blocked(Some(blocker.clone()));
+                return Err(NodeError::Blocked(blocker));
+            }
+            Err(e) => return Err(NodeError::HolderCheck(e)),
         }
         // Consensus safety (40204 reroll): never open another genesis's chain DB.
         self.prepare_data_dir_for_genesis()?;
@@ -679,6 +780,11 @@ impl NodeManager {
             sync_pct,
             notice: self
                 .chain_reset_notice
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            blocked: self
+                .blocked
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),

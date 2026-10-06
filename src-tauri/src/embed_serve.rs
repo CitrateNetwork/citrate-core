@@ -258,6 +258,24 @@ impl EmbedServer {
     }
 }
 
+#[cfg(test)]
+impl EmbedServer {
+    /// Test hook: the server child's pid while the supervisor holds one (SCL-S0.5 coverage).
+    pub(crate) fn pid_for_test(&self) -> Option<u32> {
+        self.sup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|s| s.status().pid)
+    }
+
+    /// Test hook: treat the model as the pinned file (only the real 220 MB file has the digest).
+    pub(crate) fn assume_verified_for_test(self) -> Self {
+        *self.verified.lock().unwrap_or_else(|e| e.into_inner()) = Some(true);
+        self
+    }
+}
+
 /// The bundled model path: [`EMBED_MODEL_ENV`] when set, else under the resource dir.
 pub fn resolve_model(resource_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(EMBED_MODEL_ENV).filter(|p| !p.is_empty()) {

@@ -227,9 +227,33 @@ export interface NodeLogLine {
   line: string;
 }
 
+/**
+ * SCL-S0.6 — why the last node start was refused: another process holds the chain database or a
+ * node port. Mirrors the Rust `NodeBlocker` (serde camelCase). `message` names the holder (pid,
+ * path) and the action; it is what the UI shows.
+ */
+export interface NodeBlocker {
+  resource: "chainDatabase" | "port";
+  port?: number;
+  pid?: number;
+  path?: string;
+  message: string;
+}
+
+/** The `node_status` shape. */
+export interface NodeStatusView {
+  state: string;
+  peers: number;
+  height: number;
+  syncPct: number;
+  /** Set after a start reset the node's chain data for a new genesis (40204 reroll). */
+  notice?: string;
+  /** Set while the last start was refused by a holder of the chain database or a node port. */
+  blocked?: NodeBlocker;
+}
+
 export interface NodeDomain {
-  /** `notice` is set after a start reset the node's chain data for a new genesis (40204 reroll). */
-  status(): Promise<{ state: string; peers: number; height: number; syncPct: number; notice?: string }>;
+  status(): Promise<NodeStatusView>;
   start(): Promise<void>;
   stop(): Promise<void>;
   /**
