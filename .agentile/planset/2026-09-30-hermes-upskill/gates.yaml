@@ -1,4 +1,4 @@
-# created: 2026-09-30T00:00:00Z · branch: release/0.5.0-hermes-upskill · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed 2026-09-30)
+# created: 2026-09-30T00:00:00Z · updated: 2026-10-05 (g5-scl: owner decision, v0.5.0 requires only SCL release v0.5.0 criteria; D-41 amended for one v0.5.1) · branch: release/0.5.0-hermes-upskill · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed 2026-09-30)
 # (YAML files carry Rule-12 frontmatter as a comment header so the file stays valid YAML.)
 version: 1
 program: HUP
@@ -191,6 +191,7 @@ gates:
       - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false, evidence: "release/README.md (macOS arm64 0.5.0-line build PASS 2026-10-04 at budgets pending owner sign-off; Linux and Windows not measured)"}
       - {id: g5-os, desc: "hello-mint e2e on macOS arm64, Linux x64, Windows x64 clean installs", met: false}
       - {id: g5-redteam, desc: "Red-team pass: no open High", met: false}
+      - {id: g5-scl, desc: "Owner decision 2026-10-05 (amended twice the same day, SCL D-2): the v0.5.0 release requires only the SCL (owned sidecar lifecycle) exit criteria with release v0.5.0 (SCL-S0 pre-cut safety incl. the Windows NSIS pre-install stop, the S8.5a startup barrier and #243 database-lock check, the S1.6a Windows CI job S0.7 needs, the S7.5a ask-first for a stopped local model); the SCL criteria with release v0.5.1 gate the one v0.5.1 that D-41 (amended 2026-10-05) allows; the rest finishes on the 0.5.x line; the 40204 reroll is not gated on SCL", met: false, evidence: ".agentile/planset/2026-10-05-sidecar-lifecycle/gates.yaml", note: "Superseded wording (kept for the record), newest first. (2) the v0.5.0 cut also requires every SCL exit criterion marked blocks_cut true to be met, not all SCL gates; the rest of SCL finishes on the 0.5.x line under the same planset. (1) the v0.5.0 cut also requires every SCL gate to be met."}
       - id: g5-docs
         desc: Document pass + retro + essay
         met: false
