@@ -1,4 +1,4 @@
-# created: 2026-09-30T00:00:00Z · updated: 2026-10-05 (g5-scl: owner decision, v0.5.0 requires only SCL release v0.5.0 criteria; D-41 amended for one v0.5.1) · branch: release/0.5.0-hermes-upskill · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed 2026-09-30)
+# created: 2026-09-30T00:00:00Z · updated: 2026-10-06 (g1-approval-audit re-run met for v0.5.0; g3-licence prepared for the owner's signature) · 2026-10-05 (g5-scl: owner decision, v0.5.0 requires only SCL release v0.5.0 criteria; D-41 amended for one v0.5.1) · branch: release/0.5.0-hermes-upskill · author: Larry Klosowski + Claude Opus 5.5 · status: planset (Stage-2, red-teamed 2026-09-30)
 # (YAML files carry Rule-12 frontmatter as a comment header so the file stays valid YAML.)
 version: 1
 program: HUP
@@ -57,7 +57,23 @@ gates:
     name: Stable + one agent (S0, S1)
     status: partial
     exit_criteria:
-      - {id: g1-approval-audit, desc: "Every effectful chat tool routes through approval (enumeration test)", met: false}
+      - id: g1-approval-audit
+        desc: Every effectful chat tool routes through approval (enumeration test)
+        met: true
+        evidence: .agentile/sprints/active/sprint-hup-s11-prove-it/EVIDENCE-g1-approval-audit-v050-2026-10-06.md
+        note: >-
+          Re-run 2026-10-06 for the v0.5.0 cut on release/0.5.0-hermes-upskill @ 144b4dc plus the
+          gate-prep branch, which adds terminal access (#236, shell_run on by default) and model
+          delete (#237). The enumeration tripwire (src/shell/agentToolGates.test.ts) and the
+          annotation tripwire (src/agent/toolAnnotations.test.ts) pass, with five new tests:
+          no tool is named for deleting a model, no agent tool reaches the delete command even with
+          every approval granted, only the Models screen names it, shell_run is not a core-hosted
+          tool, and a held shell_run runs only on an explicit Approve (fail closed). Rust:
+          model_delete_tests.rs checks the node MCP tool table by name. Five mutants killed, two of
+          them caught only by the new tests. vitest 2,444 passed; cargo test --workspace 2,343
+          passed. Runtime shell_run hold: agent-sidecar shell_run tests 26/26 and the taint suite
+          on runtime main 397a6b1; re-run on the runtime commit the 0.5.0 Hermes is built from
+          (checklist A7).
       - {id: g1-injection, desc: "Injection eval v1 scored per tier", met: false}
       - {id: g1-no-block, desc: "Tripwire covers all command files; no sync I/O commands", met: false}
       - id: g1-downloads
@@ -129,7 +145,22 @@ gates:
     status: pending
     exit_criteria:
       - {id: g3-updater, desc: "Signed component updater live w/ CVE SLA before the browser ships (@rule8)", met: false}
-      - {id: g3-licence, desc: "Licence review for bundled/first-run tools complete; source offer published", met: false, evidence: "docs/LICENCE_REVIEW.md + release/licences.json (review drafted, check green; pending owner sign-off and source offer publication)"}
+      - id: g3-licence
+        desc: Licence review for bundled/first-run tools complete; source offer published
+        met: false
+        evidence: docs/LICENCE_REVIEW.md (sections 9 and 10) + release/licences.json + src-tauri/licenses/THIRD-PARTY-NOTICES.txt
+        note: >-
+          Prepared 2026-10-06 for the owner's signature (owner decision 2026-10-06: signed for
+          0.5.0, not waived); not met until the owner signs LICENCE_REVIEW.md section 10 and the
+          source offer is published at citrate.ai/source-offer. The 0.5.0 re-check found and fixed
+          two gaps: the webview's bundled npm packages and fonts had no notices (new app-webview
+          entry; the notices generator now builds the webview and lists the 24 packages in its
+          output) and llama.cpp's vendored libraries had none (llama.cpp-vendored.LICENSE). Notices
+          regenerated from the release head and current federation mains; licence-inventory
+          --require-notices OK. Before the signature: build llama-server without its embedded web
+          UI (or generate its notices), regenerate the notices from the revisions actually
+          bundled (checklist B5), and run --corpus on the staged release corpus (A9). Open and not
+          attested: the node and Hermes binary licence (counsel), the frontend-skills LICENSE.
       - id: g3-browser
         desc: "Browser pop-out + search + decide() slot scored"
         met: false
@@ -190,7 +221,7 @@ gates:
       - {id: g5-everyday, desc: "Media, office, widgets, daemons, journal export pass BDD", met: false}
       - {id: g5-size, desc: "Core installer within the size budget on every OS", met: false, evidence: "release/README.md (macOS arm64 0.5.0-line build PASS 2026-10-04 at budgets pending owner sign-off; Linux and Windows not measured)"}
       - {id: g5-os, desc: "hello-mint e2e on macOS arm64, Linux x64, Windows x64 clean installs", met: false}
-      - {id: g5-redteam, desc: "Red-team pass: no open High", met: false}
+      - {id: g5-redteam, desc: "Red-team pass: no open High", met: false, note: "2026-10-06: the v0.5.0 slice (no open High for what 0.5.0 ships) was reviewed against the private registers; not met yet, with the open items and recommendations tracked privately."}
       - {id: g5-scl, desc: "Owner decision 2026-10-05 (amended twice the same day, SCL D-2): the v0.5.0 release requires only the SCL (owned sidecar lifecycle) exit criteria with release v0.5.0 (SCL-S0 pre-cut safety incl. the Windows NSIS pre-install stop, the S8.5a startup barrier and #243 database-lock check, the S1.6a Windows CI job S0.7 needs, the S7.5a ask-first for a stopped local model); the SCL criteria with release v0.5.1 gate the one v0.5.1 that D-41 (amended 2026-10-05) allows; the rest finishes on the 0.5.x line; the 40204 reroll is not gated on SCL", met: false, evidence: ".agentile/planset/2026-10-05-sidecar-lifecycle/gates.yaml", note: "Superseded wording (kept for the record), newest first. (2) the v0.5.0 cut also requires every SCL exit criterion marked blocks_cut true to be met, not all SCL gates; the rest of SCL finishes on the 0.5.x line under the same planset. (1) the v0.5.0 cut also requires every SCL gate to be met."}
       - id: g5-docs
         desc: Document pass + retro + essay
