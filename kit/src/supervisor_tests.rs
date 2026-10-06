@@ -1231,3 +1231,117 @@ fn sidecar_candidates_try_exe_suffix_first_on_windows() {
         })
     );
 }
+
+// ---------------------------------------------------------------------------
+// SCL-S0.3: ChildWatch hooks (observe the live, unreaped child; `ended` after every end)
+// ---------------------------------------------------------------------------
+
+/// Whether `pid` is still this process's unreaped child (running or exited). `waitid` with
+/// `WNOWAIT` looks without reaping and fails with `ECHILD` once the child was reaped.
+#[cfg(unix)]
+fn unreaped_child(pid: u32) -> bool {
+    // SAFETY: zeroed is a valid siginfo_t; waitid writes into it and reaps nothing (WNOWAIT).
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        ) == 0
+    }
+}
+
+#[derive(Default)]
+struct WatchLog {
+    /// (pid, still our unreaped child at that moment, stop already requested)
+    observed: Mutex<Vec<(u32, bool, bool)>>,
+    ended: AtomicU64,
+    stopping: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(unix)]
+fn watch_for(log: &Arc<WatchLog>) -> ChildWatch {
+    let o = log.clone();
+    let e = log.clone();
+    ChildWatch {
+        interval: Duration::from_millis(50),
+        observe: Arc::new(move |pid| {
+            let held = unreaped_child(pid);
+            let stopping = o.stopping.load(Ordering::SeqCst);
+            o.observed
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((pid, held, stopping));
+        }),
+        ended: Arc::new(move || {
+            e.ended.fetch_add(1, Ordering::SeqCst);
+        }),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn child_watch_observes_the_unreaped_child_and_runs_ended_after_a_hard_kill() {
+    let tmp = TmpDir::new("watch-kill");
+    let log = Arc::new(WatchLog::default());
+    // A child that ignores SIGTERM, so the stop has to escalate to SIGKILL.
+    let mut spec = SidecarSpec::new(
+        "watched",
+        sh_bin(),
+        vec!["-c".into(), "trap '' TERM; while :; do sleep 1; done".into()],
+    );
+    spec.child_watch = Some(watch_for(&log));
+    let mut cfg = SupervisorConfig::new(spec, tmp.path("crash.jsonl"));
+    cfg.stop_grace = Duration::from_millis(300);
+    let sup = Supervisor::start(cfg).expect("start");
+    let st = sup.wait_until(|s| *s == SupervisorState::Running, Duration::from_secs(5));
+    let pid = st.pid.expect("a running child has a pid");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while log.observed.lock().unwrap_or_else(|p| p.into_inner()).len() < 2
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    log.stopping.store(true, Ordering::SeqCst);
+    sup.stop();
+    let ended = log.ended.load(Ordering::SeqCst);
+    let observed = log.observed.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    drop(sup);
+
+    assert!(!pid_alive(pid), "the child was killed");
+    assert_eq!(ended, 1, "`ended` ran once, after the hard kill, before stop returned");
+    assert!(
+        observed.iter().filter(|(_, _, stopping)| !stopping).count() >= 2,
+        "observed periodically while running: {observed:?}"
+    );
+    assert!(
+        observed.iter().filter(|(_, _, stopping)| *stopping).count() >= 2,
+        "observed before SIGTERM and again before SIGKILL: {observed:?}"
+    );
+    for (p, held, _) in &observed {
+        assert_eq!(*p, pid, "only the supervised child is observed");
+        assert!(held, "observed only while the child was still unreaped");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn child_watch_ended_runs_after_a_crash() {
+    let tmp = TmpDir::new("watch-crash");
+    let log = Arc::new(WatchLog::default());
+    let mut spec = SidecarSpec::new("watched-crash", false_bin(), vec![]);
+    spec.child_watch = Some(watch_for(&log));
+    let mut cfg = SupervisorConfig::new(spec, tmp.path("crash.jsonl"));
+    cfg.backoff = BackoffPolicy {
+        base_delay: Duration::from_millis(10),
+        multiplier: 1,
+        max_delay: Duration::from_millis(10),
+        max_retries: 1,
+    };
+    let sup = Supervisor::start(cfg).expect("start");
+    sup.wait_until(|s| *s == SupervisorState::Failed, Duration::from_secs(5));
+    let ended = log.ended.load(Ordering::SeqCst);
+    drop(sup);
+    assert_eq!(ended, 2, "`ended` ran after each of the two crashes");
+}

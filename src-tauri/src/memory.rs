@@ -1062,7 +1062,7 @@ pub struct MemoryState(pub MemoryManager);
 /// approach as the node/agent): `CITRATE_MEM_MCP_BIN` override first (dev/tests),
 /// else the Tauri resource dir (`externalBin` strips the target-triple suffix to
 /// `mem-mcp`).
-fn resolve_mem_mcp_bin<R: tauri::Runtime>(
+pub(crate) fn resolve_mem_mcp_bin<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> std::result::Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CITRATE_MEM_MCP_BIN") {
