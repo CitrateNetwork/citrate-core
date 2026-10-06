@@ -70,7 +70,7 @@ gates:
           every approval granted, only the Models screen names it, shell_run is not a core-hosted
           tool, and a held shell_run runs only on an explicit Approve (fail closed). Rust:
           model_delete_tests.rs checks the node MCP tool table by name. Five mutants killed, two of
-          them caught only by the new tests. vitest 2,444 passed; cargo test --workspace 2,343
+          them caught only by the new tests. vitest 2,444 passed; cargo test --workspace 2,355
           passed. Runtime shell_run hold: agent-sidecar shell_run tests 26/26 and the taint suite
           on runtime main 397a6b1; re-run on the runtime commit the 0.5.0 Hermes is built from
           (checklist A7).

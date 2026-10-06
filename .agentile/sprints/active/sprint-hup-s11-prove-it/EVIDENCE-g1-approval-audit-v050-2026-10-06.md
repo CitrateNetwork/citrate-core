@@ -60,7 +60,7 @@ plus `node_mcp_hermes.rs`, `hermes_mcp.rs` and `hermes.rs`.
 ## Results on this head
 
 - `npx vitest run`: 2,444 passed, 24 skipped (265 files); the approval-audit files alone: 68 passed.
-- `cargo +1.98.1 test --workspace --locked`: 2,343 passed, 0 failed, 19 ignored (both
+- `cargo +1.98.1 test --workspace --locked`: 2,343 passed, 0 failed, 19 ignored on the branch at 144b4dc, and 2,355 passed, 0 failed, 19 ignored after merging #259 and #257 (f260f49); both
   model-delete agent-tool tests pass).
 - `cargo +1.98.1 fmt --all -- --check`, `cargo +1.98.1 clippy --workspace --all-targets --locked
   -- -D warnings`, `npm run typecheck`: clean.
