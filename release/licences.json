@@ -345,12 +345,12 @@
       "spdx": "LicenseRef-Citrate-first-party",
       "first_party": true,
       "ships_as": "corpus-text",
-      "covers": ["planned:corpus:gradient-papers", "corpus:agentile"],
+      "covers": ["corpus:gradient-papers", "corpus:agentile"],
       "copyleft": "none",
       "licence_texts": [],
       "source_offer": null,
       "review": "action",
-      "gap": "v0.5.0: gradient-papers deferred to 0.5.1 by owner decision 2026-10-06 (no repository yet, so no fetchable commit); agentile now records a clean commit (citrate-memories#20 scopes the dirty check to AGENTILE.md). Re-add corpus:gradient-papers when the papers have a repository."
+      "gap": "The staged corpus records these two sources at a '-dirty' commit (built from a working tree with local changes). Rebuild the release corpus from clean checkouts so the NOTICE commit is reproducible."
     },
     {
       "id": "openzeppelin-contracts",
