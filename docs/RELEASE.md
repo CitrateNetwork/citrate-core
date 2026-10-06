@@ -150,9 +150,38 @@ refuses a missing or partial model (the first-run import would be skipped as
 member's CPU, about two hours for the full corpus on an Apple M2 Max). A dev build may
 pass `--allow-unembedded`; the stager then warns how many nodes members will embed.
 
-Without a staged corpus the app still builds (the committed
-`src-tauri/knowledge-corpus/README.md` keeps the resource glob valid) and reports
-`skipped: no-bundle` on first run.
+Without a staged corpus `tauri build` itself still succeeds (the committed
+`src-tauri/knowledge-corpus/README.md` keeps the resource glob valid) and the app reports
+`skipped: no-bundle` on first run, so a release build must not rely on the build failing. The
+release path fails closed instead:
+
+- `scripts/ci/verify-runtime-deps.sh` refuses a pins manifest without a
+  `knowledge-corpus.tar.gz` pin, and any call that stages a `mem-mcp` without the corpus.
+- The stager writes a record beside the directory (`src-tauri/knowledge-corpus.staged.json`,
+  git-ignored: bundle digest, node count, the input asset's sha256). Right before bundling,
+  on every platform, run
+
+  ```bash
+  node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+  ```
+
+  It refuses a README-only directory, a corpus the stager did not record or that changed after
+  staging (digest, node count, file hashes), a dev-staged corpus (`--allow-dirty`,
+  `--allow-unembedded`; pass `--allow-dev` for a dev build), and one not staged from the pinned
+  `knowledge-corpus.tar.gz`. release.yml runs it before `tauri-action`, and
+  `scripts/ci/check-release-pins.sh` fails CI if that step is removed or moved after the build.
+  Linux and Windows: [`RELEASE_LINUX.md`](RELEASE_LINUX.md) and
+  [`RELEASE_WINDOWS.md`](RELEASE_WINDOWS.md) step 2b.
+
+For a local Mac DMG, stage from the pinned asset exactly as release.yml does:
+
+```bash
+gh release download runtime-deps -p knowledge-corpus.tar.gz -D /tmp/rd -R CitrateNetwork/citrate-core
+node scripts/stage-knowledge-corpus.mjs /tmp/rd/knowledge-corpus.tar.gz \
+  --bge-dir src-tauri/models/bge-base-en-v1.5 \
+  --mem-mcp src-tauri/binaries/mem-mcp-aarch64-apple-darwin
+node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256
+```
 
 ## Cutting a release
 1. Bump `version` in `src-tauri/tauri.conf.json` **and** `src-tauri/Cargo.toml`

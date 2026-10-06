@@ -11,7 +11,8 @@ This directory is the app resource `knowledge-corpus/`. Every build ships this R
 so the bundle resource glob (`knowledge-corpus/**/*` in the `tauri.bundle-*.conf.json`
 and `tauri.local-run.conf.json` overlays) always matches. A directory without a
 `manifest.json` is an honest "no bundle": the first-run import reports
-`skipped: no-bundle`.
+`skipped: no-bundle`. A release must not ship that way:
+`scripts/check-staged-corpus.mjs` runs before bundling and refuses this README alone.
 
 A release stages the Hermes knowledge corpus here, verified, with:
 

@@ -259,3 +259,100 @@ mem-mcp above with `scripts/stage-knowledge-corpus.mjs` before pinning.
 - `npm run typecheck`: clean.
 - vitest: 2,446 passed, 24 skipped (267 files passed, 2 skipped).
 - `scripts/ci/check-release-pins.sh`: OK.
+
+## A9: Hermes knowledge corpus (`knowledge-corpus.tar.gz`) built, uploaded, pinned; fails closed
+
+Recorded 2026-10-06 on the release Mac (macOS arm64), branch `release/v0.5.0-knowledge-corpus` on
+`release/0.5.0-hermes-upskill` `ac7bb1a` (built at `773ad50`; skills.lock is identical in both). The Mac
+took A9 over from the DGX.
+
+### Build
+
+Procedure: docs/RELEASE.md section 3, "The Hermes knowledge corpus". Every source was cloned fresh
+from GitHub into a scratch federation root; no working copy was used. The root is a clone of
+citrate-labs `main` `c0179c7` (#56, which git-ignores the child checkouts that live in their own
+repos), so the `agentile` source (root `.`) records a clean commit.
+
+- Builder: citrate-memories `main` `0e9d488`, `scripts/fetch-corpus-refs.sh` then
+  `EMBED_BGE_DIR=<bge> scripts/build-corpus.sh <root> <out>` (`SOURCE_DATE_MS` from that HEAD:
+  `1791174749000`). Embedding took 9,518 s; `mem-corpus verify` passed.
+- Spec `corpus/hermes-knowledge.toml` sha256 `aa7b332244f6b9b39f2959ab3b7f359c64d456c96fc65e9f45f49d379af2c16e`;
+  skills.lock (this branch, `773ad50`) sha256 `0b50825a2a18f267f69d02845444d595cc0f7503c01ba4b6f61fb247f9a1b105`.
+- BGE: `bge-base-en-v1.5.tar.gz` downloaded from `runtime-deps` (sha256
+  `cea05ebe680cf315e41c965caec9d8e009dd9085b622d4cb9c62fe4faf026c3b`, equal to the release asset's
+  digest); `model.safetensors` `c7c1988aae201f80cf91a5dbbd5866409503b89dcaba877ca6dba7dd0a5167d7`,
+  equal to the copy the local build bundles. Every tenant's vectors carry this weights hash.
+
+| Source | Tenant | Repo | Commit | Files | Bytes | Chunks |
+|---|---|---|---|---|---|---|
+| `citrate-docs` | citrate-docs | citrate-docs | `61e6455e7ee1` | 104 | 832,414 | 1,238 |
+| `gradient-papers` | citrate-docs | gradient-papers | `d480bb99fa33` | 12 | 287,118 | 386 |
+| `agentile` | methodology | citrate-labs | `c0179c7034ce` | 1 | 9,034 | 13 |
+| `agentile-docs` | methodology | agentile-skills | `59dbd75490db` | 2 | 17,114 | 21 |
+| `trailofbits` | skills | trailofbits-skills | `a56045e9ae00` | 264 | 2,262,302 | 4,595 |
+| `frontend-skills` | skills | frontend-skills | `c5c5dea7ceba` | 215 | 1,290,103 | 2,525 |
+| `agentile-skills` | skills | agentile-skills | `59dbd75490db` | 20 | 83,331 | 169 |
+| `hermes-skills` | skills | testing-hermes-design | `5445e42b87b9` | 253 | 2,461,170 | 5,486 |
+| `hermes-optional` | skills | testing-hermes-design | `5445e42b87b9` | 301 | 1,915,347 | 4,419 |
+| `openzeppelin` | refs | openzeppelin-contracts | `cab19933c33c` | 21 | 203,128 | 265 |
+| `solady` | refs | solady | `2afba69bf67b` | 178 | 2,657,091 | 4,275 |
+| `forge-std` | refs | forge-std (vendored in citrate-chain) | `2979a1576d12` | 34 | 896,415 | 797 |
+| `foundry-book` | refs | foundry-book | `fa7c378defe6` | 722 | 2,871,501 | 5,174 |
+| `medusa-docs` | refs | medusa | `87f65e2e9c2b` | 60 | 157,932 | 389 |
+| `slither-docs` | refs | slither | `eef5df948b89` | 31 | 186,529 | 784 |
+
+No included source is `-dirty` or `unpinned`. Skills sources are at their skills.lock commits;
+Solady, the Foundry book, Medusa and Slither at the `fetch-corpus-refs.sh` pins; citrate-docs and
+citrate-chain at `main`; gradient-papers at the commit of the new public
+CitrateNetwork/gradient-papers repository (owner decision 2026-10-06).
+
+### Result
+
+| | |
+|---|---|
+| Format | `citrate-corpus/2`, name `hermes-knowledge` |
+| bundle_digest | `815eda93c4886927cddf16381abf3a77ebb07d90acdf27e5914c6b300b754b9a` |
+| Nodes / edges | 32,754 / 31,349 (citrate-docs 1,740; methodology 37; refs 12,730; skills 18,247), every node embedded |
+| Corpus directory | 11 files, 99,826,763 bytes |
+| `knowledge-corpus.tar.gz` | 58,592,427 bytes, sha256 `91de29274251aa0e7d0934ebb2e2c8b3ebf3d010804ed6a798eef8c4655acd9b` |
+
+- `node scripts/stage-knowledge-corpus.mjs <dir | tar.gz> --bge-dir <bge> --mem-mcp
+  src-tauri/binaries/mem-mcp-aarch64-apple-darwin` (the rc.1 mem-mcp, sha256 `31598435...e8e6`),
+  no `--allow-*` flag: staged from both the directory and the tarball, identical output, "vectors
+  for every node match the bundled bge-base-en-v1.5 (dim 768, weights c7c1988aae20)".
+- Uploaded to `runtime-deps` (`--clobber`); the re-downloaded asset hashes to the pin above.
+  `scripts/ci/verify-runtime-deps.sh src-tauri/runtime-deps.sha256` passes for
+  `bge-base-en-v1.5.tar.gz` and `knowledge-corpus.tar.gz` (both pinned in this PR).
+- `node scripts/licence-inventory.mjs --corpus src-tauri/knowledge-corpus`: OK (corpus checked).
+
+### Fail closed (DGX finding: README-only corpus still bundled)
+
+The overlays' `knowledge-corpus/**/*` glob matches the committed README.md, so a build that never
+staged the corpus bundled and shipped README-only. Now:
+
+- `scripts/ci/verify-runtime-deps.sh` refuses a pins manifest without exactly one
+  `knowledge-corpus.tar.gz` pin, and any call that stages a `mem-mcp-*` without the corpus.
+- `scripts/stage-knowledge-corpus.mjs` writes `src-tauri/knowledge-corpus.staged.json` (outside
+  the bundled directory; git-ignored): bundle digest, node count, input asset sha256, dev
+  allowances.
+- New `scripts/check-staged-corpus.mjs` (pre-bundle): refuses README-only, a corpus without a
+  stager record, a digest or node count different from the record, changed files, a dev-staged
+  corpus (unless `--allow-dev`), and with `--pins` one not staged from the pinned asset.
+  release.yml runs it with `--pins` before `tauri-action`; `scripts/ci/check-release-pins.sh`
+  fails if that step is missing, lacks `--pins`, or runs after the build, and self-tests the
+  verifier's new refusals.
+- docs/RELEASE.md (local Mac DMG), docs/RELEASE_LINUX.md and docs/RELEASE_WINDOWS.md step 2b:
+  download, verify, stage against that platform's mem-mcp, check.
+
+Red first: `scripts/check-staged-corpus.test.mjs` (12 tests) failed against the base stager (10
+fail: no record) before the change; the tripwire failed on "verifier accepted a manifest with no
+knowledge-corpus.tar.gz pin", then on the missing release.yml step. After (on `ac7bb1a`): vitest 2,459 passed,
+35 skipped (base 2,447 + 12); `scripts/ci/check-release-pins.sh` OK. On this branch with the
+staged corpus, `node scripts/check-staged-corpus.mjs --pins src-tauri/runtime-deps.sha256` prints
+`knowledge corpus staged: 815eda93... (32754 nodes, 99826763 bytes)`; on the README-only
+directory it exits 1. No Rust change (cargo test count unchanged).
+
+Separate builder finding, filed as CitrateNetwork/citrate-memories#21: mem-corpus records a clean
+pin for an ignored, untracked directory inside another repository's work tree (it takes that
+repository's HEAD). Not hit by this build: every source root is its own checkout or tracked in
+the recorded commit.

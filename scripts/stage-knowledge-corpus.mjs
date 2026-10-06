@@ -33,7 +33,10 @@
 //     --allow-dirty, which is warned, never silent.
 //
 // On success the destination keeps its README.md and receives the verified files; anything else
-// in it is replaced. The importer re-verifies everything on the member's machine; this gate
+// in it is replaced. The stager then writes a record beside the destination (`<dest>.staged.json`:
+// bundle digest, node count, the input asset's sha256, any dev-build allowances), which
+// scripts/check-staged-corpus.mjs compares against the directory right before bundling, so a
+// build whose corpus was never staged (README only) or was changed afterwards fails closed. The importer re-verifies everything on the member's machine; this gate
 // stops a wrong corpus from being signed into a release. Exit 0 staged, 1 refused, 2 usage.
 // No dependencies beyond Node's standard library (and `tar` for a .tar.gz input).
 // =====================================================================
@@ -247,6 +250,12 @@ export function memMcpSupportsImport(binPath) {
   return fs.readFileSync(binPath).includes(Buffer.from("mem-mcp import-corpus <store-path> <corpus-dir>"));
 }
 
+/** Where the stager records what it staged into `dest`: beside it, never inside the bundled directory. */
+export const recordPath = (dest) => `${path.resolve(dest).replace(/[\\/]+$/, "")}.staged.json`;
+
+/** Format of the stager record read by scripts/check-staged-corpus.mjs. */
+export const RECORD_FORMAT = "citrate-corpus-staged/1";
+
 /** Replace everything in `dest` except README.md with the verified corpus files from `src`. */
 export function stageInto(src, dest, files) {
   fs.mkdirSync(dest, { recursive: true });
@@ -307,7 +316,9 @@ function main() {
   let tmp;
   try {
     let src = path.resolve(args.input);
+    let inputSha256 = null;
     if (src.endsWith(".tar.gz") || src.endsWith(".tgz")) {
+      inputSha256 = sha256(fs.readFileSync(src));
       tmp = fs.mkdtempSync(path.join(os.tmpdir(), "knowledge-corpus-"));
       execFileSync("tar", ["-xzf", src, "-C", tmp]);
       src = findCorpusRoot(tmp);
@@ -318,7 +329,29 @@ function main() {
     if (args.memMcp && !memMcpSupportsImport(args.memMcp)) {
       throw new Error(`${args.memMcp} predates \`mem-mcp import-corpus\`; stage a mem-mcp built from citrate-memories with mem-corpus`);
     }
+    const record = recordPath(args.dest);
+    fs.rmSync(record, { force: true });
     stageInto(src, path.resolve(args.dest), files);
+    const nodes = manifest.tenants.reduce((n, t) => n + t.nodes, 0);
+    fs.writeFileSync(
+      record,
+      JSON.stringify(
+        {
+          format: RECORD_FORMAT,
+          bundle_digest: manifest.bundle_digest,
+          nodes,
+          tenants: Object.fromEntries(manifest.tenants.map((t) => [t.tenant, t.nodes])),
+          files: files.length,
+          bytes,
+          input: path.basename(path.resolve(args.input)),
+          input_sha256: inputSha256,
+          dirty_sources: dirty,
+          unembedded_nodes: nodes - emb.embeddedNodes,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
     for (const d of dirty) {
       console.error(`warning: source ${d.id} was ${dirtyReason(d.commit)} (${d.commit}); not reproducible, dev build only`);
     }
