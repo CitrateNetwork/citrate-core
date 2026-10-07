@@ -409,13 +409,15 @@ impl NodeManager {
         } = outcome
         {
             eprintln!(
-                "[node] chain genesis changed ({} -> {}): removed {} chain database file(s),                  {} bytes, from {}; key material kept: {}",
-                previous.as_deref().unwrap_or("unrecorded"),
-                self.book_genesis,
-                removed.len(),
-                bytes,
-                self.data_dir.display(),
-                removed.join(", ")
+                "{}",
+                crate::node_genesis::reset_log_message(
+                    previous.as_deref(),
+                    &self.book_genesis,
+                    &removed,
+                    bytes,
+                    &self.data_dir,
+                    &crate::node_genesis::kept_entries(&self.data_dir),
+                )
             );
             *self
                 .chain_reset_notice

@@ -497,8 +497,10 @@ pub struct SupervisorStatus {
 // ---------------------------------------------------------------------------
 
 /// How long to wait after SIGTERM before escalating to SIGKILL on a graceful
-/// stop. Bounded so `stop()` always returns promptly.
-const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(5);
+/// stop. Bounded so `stop()` always returns promptly. Public so a one-shot child
+/// that is not supervised (see [`terminate_unsupervised`]) stops within the same
+/// grace on app quit.
+pub const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// Default sustained-healthy window: once a respawned child has stayed `Running`
 /// this long (measured on the injected [`Clock`]), the consecutive-failure
@@ -941,6 +943,17 @@ fn terminate_child(child: &mut Child, grace: Duration, watch: Option<&ChildWatch
         let _ = child.kill();
         let _ = child.wait();
     }
+}
+
+/// Gracefully terminate a one-shot child that is not under a [`Supervisor`]
+/// (for example the knowledge importer): SIGTERM, wait up to `grace`, SIGKILL,
+/// reap. A child that has already exited and been reaped is left alone (its pid
+/// may have been reused), so this is safe to call more than once.
+pub fn terminate_unsupervised(child: &mut Child, grace: Duration) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    terminate_child(child, grace, None);
 }
 
 /// The monitor loop. Owns the child. Spawns → waits → on unexpected exit records

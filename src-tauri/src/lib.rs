@@ -1019,6 +1019,10 @@ pub fn run() {
 /// on exit regardless of what the session actually launched.
 pub(crate) fn shutdown_all_sidecars(app: &tauri::AppHandle) {
     use tauri::Manager;
+    // v0.5.0 C3: the knowledge importer (`mem-mcp import-corpus`) is a one-shot child, not a
+    // supervised sidecar. Stop it first (it holds the memory store's RocksDB LOCK), which also
+    // closes the import registry so no import starts and the memory daemon is not restarted.
+    knowledge_import::shutdown();
     if let Some(s) = app.try_state::<node::NodeState>() {
         s.0.stop();
     }
