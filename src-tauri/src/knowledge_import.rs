@@ -21,15 +21,32 @@
 //! - **Honest failure.** Any `error` line, a non-zero exit, a missing `done`
 //!   line, or a digest mismatch is reported as `failed` with the reason, and no
 //!   marker is written, so the next launch retries.
+//! - **Owned by core (v0.5.0 C3).** The importer is a one-shot child, not a
+//!   supervised sidecar, so [`ImportRegistry`] owns its handle while it runs. App
+//!   quit ([`shutdown`], called first by `shutdown_all_sidecars`) closes the
+//!   registry, stops every running importer (SIGTERM, then SIGKILL after the
+//!   supervisor's stop grace) and reaps it, so none outlives the app holding the
+//!   store's RocksDB `LOCK`. Once closed, no importer starts and the memory daemon
+//!   is not restarted after an interrupted import. While an importer holds a store
+//!   the memory daemon refuses to start on it (it could not take the lock).
+//! - **Resume (tenant granularity).** `mem-mcp import-corpus` (memories 0e9d488)
+//!   records each tenant's bundle hash in the store only after the whole tenant
+//!   landed and skips recorded tenants on the next run; re-merging nodes it already
+//!   wrote is a CRDT no-op. So an interrupted import continues on the next launch
+//!   with the first tenant that did not finish; that tenant starts over. Core keeps
+//!   `memory/knowledge-corpus.progress.json` ([`ImportProgress`]) with the tenants
+//!   finished so far and whether the last run was interrupted, and removes it when
+//!   the completion marker is written.
 //!
 //! Nothing here signs, holds a key, or touches the chain (Rule 3): it is a local
 //! memory-store write of release content.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +55,12 @@ pub const PROGRESS_EVENT: &str = "memory://knowledge-import-progress";
 
 /// Marker file (next to the store) holding the last imported `bundle_digest`.
 pub const MARKER_FILE: &str = "knowledge-corpus.imported";
+
+/// Progress file (next to the store) for an import that has not completed yet.
+pub const PROGRESS_FILE: &str = "knowledge-corpus.progress.json";
+
+/// The failure reason when app quit stopped a running import.
+pub const INTERRUPTED_ERROR: &str = "the knowledge import was stopped because the app quit; it continues on the next launch (tenants already imported are skipped)";
 
 /// The app resource directory holding the bundled corpus.
 pub const RESOURCE_DIR: &str = "knowledge-corpus";
@@ -68,6 +91,169 @@ impl Drop for ImportGuard {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.0);
+    }
+}
+
+/// Owns every running importer process (v0.5.0 C3 finding 1).
+///
+/// `gate` holds the closed flag: [`ImportRegistry::adopt`] checks it and inserts
+/// under it, and [`ImportRegistry::shutdown`] sets it before collecting the
+/// children, so a child is either adopted before the shutdown (and stopped by it)
+/// or refused after it. Lock order is always `gate` then `children`.
+#[derive(Debug, Default)]
+pub struct ImportRegistry {
+    gate: Mutex<bool>,
+    children: Mutex<BTreeMap<PathBuf, Arc<Mutex<Child>>>>,
+}
+
+static GLOBAL_REGISTRY: LazyLock<Arc<ImportRegistry>> = LazyLock::new(Default::default);
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl ImportRegistry {
+    /// The app-wide registry (tests build their own).
+    pub fn global() -> Arc<ImportRegistry> {
+        GLOBAL_REGISTRY.clone()
+    }
+
+    /// Whether app quit has closed the registry.
+    pub fn is_closed(&self) -> bool {
+        *lock(&self.gate)
+    }
+
+    /// Take ownership of a just-spawned importer for `store`. Refused (the child
+    /// is handed back for the caller to stop) once the registry is closed.
+    fn adopt(&self, store: &Path, child: Child) -> Result<Arc<Mutex<Child>>, Child> {
+        let closed = lock(&self.gate);
+        if *closed {
+            return Err(child);
+        }
+        let child = Arc::new(Mutex::new(child));
+        lock(&self.children).insert(store.to_path_buf(), child.clone());
+        Ok(child)
+    }
+
+    /// Forget a reaped importer.
+    fn release(&self, store: &Path) {
+        lock(&self.children).remove(store);
+    }
+
+    /// Whether an importer process currently holds `store` (its RocksDB lock).
+    pub fn holds_store(&self, store: &Path) -> bool {
+        lock(&self.children).contains_key(store)
+    }
+
+    /// Run `f` unless the registry is closed, holding the gate so a concurrent
+    /// [`Self::shutdown`] waits for `f` (and the caller's later stops see its effect).
+    fn unless_closed<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
+        let closed = lock(&self.gate);
+        (!*closed).then(f)
+    }
+
+    /// App quit: close the registry, then stop and reap every running importer
+    /// (SIGTERM, SIGKILL after `grace`). Idempotent. Returns how many were stopped.
+    pub fn shutdown(&self, grace: Duration) -> usize {
+        *lock(&self.gate) = true;
+        let running: Vec<Arc<Mutex<Child>>> = lock(&self.children).values().cloned().collect();
+        let mut stopped = 0;
+        for child in running {
+            let mut c = lock(&child);
+            if !matches!(c.try_wait(), Ok(Some(_))) {
+                crate::supervisor::terminate_unsupervised(&mut c, grace);
+                stopped += 1;
+            }
+        }
+        stopped
+    }
+}
+
+/// App quit (called first by `shutdown_all_sidecars`): stop every running
+/// importer within the supervisor's stop grace. See [`ImportRegistry::shutdown`].
+pub fn shutdown() {
+    let stopped = ImportRegistry::global().shutdown(crate::supervisor::DEFAULT_STOP_GRACE);
+    if stopped > 0 {
+        eprintln!("[memory] knowledge import stopped for app quit ({stopped} importer process(es)); it continues on the next launch");
+    }
+}
+
+/// Reap `child` without holding its lock across a blocking wait, so a concurrent
+/// [`ImportRegistry::shutdown`] can always take it to signal the process.
+fn reap(child: &Mutex<Child>) -> std::io::Result<ExitStatus> {
+    loop {
+        if let Some(status) = lock(child).try_wait()? {
+            return Ok(status);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// What core records about an import that has not completed (see the module docs).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportProgress {
+    pub bundle_digest: String,
+    /// "running" | "interrupted" | "failed".
+    pub state: String,
+    /// Tenants the importer finished (or reported as already imported), so a re-run skips them.
+    pub tenants_done: BTreeSet<String>,
+    /// The tenant in flight and how far it got (it starts over on a re-run).
+    pub tenant: Option<String>,
+    pub done: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
+/// The progress path for a store.
+pub fn progress_path(store_path: &Path) -> PathBuf {
+    marker_path(store_path).with_file_name(PROGRESS_FILE)
+}
+
+/// The recorded progress for `digest`, if a previous run of this corpus left one.
+pub fn read_progress(store_path: &Path, digest: &str) -> Option<ImportProgress> {
+    let text = std::fs::read_to_string(progress_path(store_path)).ok()?;
+    let p: ImportProgress = serde_json::from_str(&text).ok()?;
+    (p.bundle_digest == digest).then_some(p)
+}
+
+fn write_progress(store_path: &Path, p: &ImportProgress) {
+    let path = progress_path(store_path);
+    let tmp = path.with_extension("json.tmp");
+    // Best effort: the record is for resume reporting; the store's own tenant
+    // hashes are what make a re-run skip finished work.
+    if let Ok(text) = serde_json::to_vec_pretty(p) {
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+impl ImportProgress {
+    /// Fold one importer line into the record.
+    fn apply(&mut self, line: &ImportLine) {
+        match line {
+            ImportLine::TenantStart { tenant, nodes, .. } => {
+                self.tenant = Some(tenant.clone());
+                self.done = 0;
+                self.total = *nodes;
+            }
+            ImportLine::Progress {
+                tenant,
+                done,
+                total,
+            } => {
+                self.tenant = Some(tenant.clone());
+                self.done = *done;
+                self.total = *total;
+            }
+            ImportLine::TenantDone { tenant } | ImportLine::TenantSkipped { tenant, .. } => {
+                self.tenants_done.insert(tenant.clone());
+                self.tenant = None;
+                self.done = 0;
+                self.total = 0;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -183,6 +369,8 @@ pub struct ImportPlan {
     /// How long to wait for the importer's first line (it verifies the manifest
     /// and prints `verified` or `error` long before any embedding starts).
     pub first_line_timeout: std::time::Duration,
+    /// Owns the importer process while it runs ([`ImportRegistry::global`] in production).
+    pub registry: Arc<ImportRegistry>,
 }
 
 /// Production bound for [`ImportPlan::first_line_timeout`]: verification of a
@@ -289,17 +477,74 @@ fn needs_run(plan: &ImportPlan) -> bool {
     matches!(decide(plan), Decision::Run { .. })
 }
 
+/// Run the importer and keep [`ImportProgress`] beside the store: removed when
+/// the import completes, else left saying how far it got and whether app quit
+/// interrupted it.
 fn run_importer(
     plan: &ImportPlan,
     corpus_dir: &Path,
     digest: &str,
     mut on_line: impl FnMut(&ImportLine),
 ) -> KnowledgeImportReport {
-    let fail = |e: String| KnowledgeImportReport::failed(e, Some(digest.to_string()));
     if let Some(parent) = plan.store_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            return fail(format!("cannot create the memory directory: {e}"));
+            return KnowledgeImportReport::failed(
+                format!("cannot create the memory directory: {e}"),
+                Some(digest.to_string()),
+            );
         }
+    }
+    let mut progress =
+        match read_progress(&plan.store_path, digest) {
+            Some(prev) => {
+                if !prev.tenants_done.is_empty() {
+                    eprintln!(
+                    "[memory] knowledge import continues a previous {} run; finished tenants: {}",
+                    prev.state,
+                    prev.tenants_done.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+                }
+                ImportProgress {
+                    state: "running".into(),
+                    tenant: None,
+                    done: 0,
+                    total: 0,
+                    error: None,
+                    ..prev
+                }
+            }
+            None => ImportProgress {
+                bundle_digest: digest.to_string(),
+                state: "running".into(),
+                ..Default::default()
+            },
+        };
+    write_progress(&plan.store_path, &progress);
+    let report = run_importer_child(plan, corpus_dir, digest, |line| {
+        progress.apply(line);
+        write_progress(&plan.store_path, &progress);
+        on_line(line);
+    });
+    if report.state == "imported" {
+        let _ = std::fs::remove_file(progress_path(&plan.store_path));
+    } else {
+        let interrupted = report.error.as_deref() == Some(INTERRUPTED_ERROR);
+        progress.state = if interrupted { "interrupted" } else { "failed" }.into();
+        progress.error = report.error.clone();
+        write_progress(&plan.store_path, &progress);
+    }
+    report
+}
+
+fn run_importer_child(
+    plan: &ImportPlan,
+    corpus_dir: &Path,
+    digest: &str,
+    mut on_line: impl FnMut(&ImportLine),
+) -> KnowledgeImportReport {
+    let fail = |e: String| KnowledgeImportReport::failed(e, Some(digest.to_string()));
+    if plan.registry.is_closed() {
+        return fail(INTERRUPTED_ERROR.into());
     }
     let mut cmd = Command::new(&plan.importer);
     cmd.arg("import-corpus")
@@ -320,9 +565,33 @@ fn run_importer(
             ))
         }
     };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    // Core owns the process from here: app quit stops it (C3 finding 1).
+    let child = match plan.registry.adopt(&plan.store_path, child) {
+        Ok(c) => c,
+        Err(mut c) => {
+            crate::supervisor::terminate_unsupervised(&mut c, Duration::ZERO);
+            return fail(INTERRUPTED_ERROR.into());
+        }
+    };
+    let report = read_importer(plan, digest, &child, stdout, stderr, &mut on_line);
+    plan.registry.release(&plan.store_path);
+    report
+}
+
+fn read_importer(
+    plan: &ImportPlan,
+    digest: &str,
+    child: &Mutex<Child>,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
+    on_line: &mut impl FnMut(&ImportLine),
+) -> KnowledgeImportReport {
+    let fail = |e: String| KnowledgeImportReport::failed(e, Some(digest.to_string()));
     // Drain stderr on its own thread so a chatty importer can never block on a
     // full pipe; keep only the tail for the error message.
-    let stderr_tail = child.stderr.take().map(|mut err| {
+    let stderr_tail = stderr.map(|mut err| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = err.read_to_end(&mut buf);
@@ -334,7 +603,7 @@ fn run_importer(
     // a bundled mem-mcp that predates `import-corpus` would take the arguments as a
     // store path and serve forever instead of answering.
     let (tx, rx) = std::sync::mpsc::channel::<String>();
-    if let Some(out) = child.stdout.take() {
+    if let Some(out) = stdout {
         std::thread::spawn(move || {
             for line in BufReader::new(out).lines() {
                 let Ok(line) = line else { break };
@@ -354,8 +623,7 @@ fn run_importer(
                 Ok(l) => Some(l),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    crate::supervisor::terminate_unsupervised(&mut lock(child), Duration::ZERO);
                     return fail(format!(
                         "memory importer did not respond within {} s (is the bundled mem-mcp older than the corpus?)",
                         plan.first_line_timeout.as_secs()
@@ -376,11 +644,15 @@ fn run_importer(
             _ => {}
         }
     }
-    let status = child.wait();
+    let status = reap(child);
     let stderr = stderr_tail.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit_ok = matches!(&status, Ok(s) if s.success());
     if let Some(e) = error {
         return fail(e);
+    }
+    // Stopped by app quit before it finished: an interruption, resumed next launch.
+    if plan.registry.is_closed() && !(exit_ok && done.is_some()) {
+        return fail(INTERRUPTED_ERROR.into());
     }
     if !exit_ok {
         let code = match &status {
@@ -450,23 +722,38 @@ pub fn import_with_manager(
         semantic: mgr.status().semantic,
         env: mgr.embedder_env(),
         first_line_timeout: FIRST_LINE_TIMEOUT,
+        registry: ImportRegistry::global(),
     };
+    import_plan_with_manager(mgr, &plan, on_line)
+}
+
+/// [`import_with_manager`] over an explicit plan (tests pass their own registry).
+fn import_plan_with_manager(
+    mgr: &crate::memory::MemoryManager,
+    plan: &ImportPlan,
+    on_line: impl FnMut(&ImportLine),
+) -> KnowledgeImportReport {
     // Take the store's import slot BEFORE touching the daemon: a caller that loses
     // the race must neither stop nor restart a daemon around someone else's import.
     let Some(_gate) = ImportGuard::acquire(&plan.store_path) else {
         return KnowledgeImportReport::skipped("in-progress", None);
     };
     // Only stop the daemon when there is real work to do.
-    if !needs_run(&plan) {
-        return run_plan_locked(&plan, on_line);
+    if !needs_run(plan) {
+        return run_plan_locked(plan, on_line);
+    }
+    // App quit already began: touch nothing.
+    if plan.registry.is_closed() {
+        return KnowledgeImportReport::failed(INTERRUPTED_ERROR.into(), None);
     }
     let was_running = mgr.is_running_now();
     if was_running {
         mgr.stop();
     }
-    let mut report = run_plan_locked(&plan, on_line);
+    let mut report = run_plan_locked(plan, on_line);
     if was_running {
-        if let Err(e) = mgr.start() {
+        // Never restart the daemon once app quit began (it would outlive the quit).
+        if let Some(Err(e)) = plan.registry.unless_closed(|| mgr.start()) {
             let note = format!("memory daemon restart after import failed: {e}");
             report.error = Some(match report.error.take() {
                 Some(prev) => format!("{prev}; {note}"),

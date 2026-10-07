@@ -199,6 +199,51 @@ fn chain_db_entries(data_dir: &Path) -> Result<Vec<String>, GenesisGateError> {
     Ok(names)
 }
 
+/// The entries a reset left in `data_dir` (everything that is not chain DB:
+/// key material, `node.toml`, the marker, ...), sorted. For the reset log line.
+pub fn kept_entries(data_dir: &Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(data_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| !is_chain_db_entry(n))
+        .collect();
+    names.sort();
+    names
+}
+
+/// The support-log line for a genesis reset (v0.5.0 C3 finding 2): the removed
+/// chain DB files under `removed:` and what is still in the data dir under `kept:`.
+pub fn reset_log_message(
+    previous: Option<&str>,
+    book_genesis: &str,
+    removed: &[String],
+    bytes: u64,
+    data_dir: &Path,
+    kept: &[String],
+) -> String {
+    let list = |v: &[String]| {
+        if v.is_empty() {
+            "none".to_string()
+        } else {
+            v.join(", ")
+        }
+    };
+    format!(
+        "[node] chain genesis changed ({} -> {}): removed {} chain database file(s), {} bytes, \
+         from {}; removed: {}; kept: {}",
+        previous.unwrap_or("unrecorded"),
+        book_genesis,
+        removed.len(),
+        bytes,
+        data_dir.display(),
+        list(removed),
+        list(kept)
+    )
+}
+
 /// Delete the chain DB entries in `data_dir` and return their names. Exposed
 /// to the tests so they can stop between the delete and the marker write.
 pub(crate) fn wipe_chain_db(data_dir: &Path) -> Result<(Vec<String>, u64), GenesisGateError> {
@@ -340,6 +385,55 @@ mod tests {
         for f in KEPT.iter().chain(DB.iter()) {
             std::fs::write(dir.join(f), f.as_bytes()).unwrap();
         }
+    }
+
+    /// C3 finding 2: the reset log line names removed files as removed and the
+    /// files still in the data dir as kept, with single spaces throughout.
+    #[test]
+    fn the_reset_log_line_lists_removed_and_kept_files_correctly() {
+        let d = tmp("logline");
+        populate(&d);
+        let out = reconcile_genesis(&d, NEW, || false).unwrap();
+        let GenesisOutcome::Reset {
+            previous,
+            removed,
+            bytes,
+        } = out
+        else {
+            panic!("expected a reset: {out:?}");
+        };
+        let kept = kept_entries(&d);
+        let msg = reset_log_message(previous.as_deref(), NEW, &removed, bytes, &d, &kept);
+        assert!(!msg.contains("  "), "no run of spaces: {msg:?}");
+        assert!(!msg.contains("key material kept"), "{msg}");
+        let (head, kept_part) = msg.split_once("; kept: ").expect("a kept section");
+        let removed_part = head.split_once("; removed: ").expect("a removed section").1;
+        for f in DB {
+            assert!(
+                removed_part.split(", ").any(|x| x == *f),
+                "{f} listed as removed: {msg}"
+            );
+            assert!(
+                !kept_part.split(", ").any(|x| x == *f),
+                "{f} not listed as kept: {msg}"
+            );
+        }
+        for f in KEPT.iter().chain([&GENESIS_MARKER_FILE]) {
+            assert!(
+                kept_part.split(", ").any(|x| x == *f),
+                "{f} listed as kept: {msg}"
+            );
+            assert!(
+                !removed_part.split(", ").any(|x| x == *f),
+                "{f} not listed as removed: {msg}"
+            );
+        }
+        assert!(msg.starts_with(&format!(
+            "[node] chain genesis changed (unrecorded -> {NEW}): removed {} chain database file(s), {bytes} bytes, from {};",
+            DB.len(),
+            d.display()
+        )), "{msg}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn assert_keys_kept(dir: &Path) {

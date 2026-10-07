@@ -65,6 +65,7 @@ fn plan(dir: &Path, importer: PathBuf) -> ImportPlan {
         semantic: true,
         env: vec![("CITRATE_MEM_EMBED".into(), "bge".into())],
         first_line_timeout: std::time::Duration::from_secs(10),
+        registry: Arc::new(ImportRegistry::default()),
     }
 }
 
@@ -526,6 +527,344 @@ fn a_stopped_daemon_stays_stopped() {
     assert!(!mgr.is_running_now());
 }
 
+// ---------------------------------------------------------------- lifecycle (v0.5.0 C3 finding 1)
+
+/// Whether `pid` names a live process (signal 0 sends nothing).
+#[cfg(unix)]
+fn alive(pid: u32) -> bool {
+    // SAFETY: kill(pid, 0) only checks existence and permission.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// Kills any pid it was given that is still alive (cleanup when an assertion fails).
+#[cfg(unix)]
+struct Reaper(Vec<u32>);
+
+#[cfg(unix)]
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        for &pid in &self.0 {
+            if alive(pid) {
+                // SAFETY: a pid this test's own importer held; SIGKILL ends a leftover.
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
+/// Wait until `cond` holds (bounded); panics with `what` otherwise.
+fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !cond() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn read_pid(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// A fake importer with the real importer's resume rule: tenants run in order, a
+/// tenant is recorded in the store (a file) only after it finished, and a recorded
+/// tenant is skipped. While `<dir>/block` exists it stops inside `refs` (after
+/// one progress line) and waits to be killed; `ignore_term` makes it ignore SIGTERM.
+#[cfg(unix)]
+fn resumable_importer(dir: &Path, ignore_term: bool) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("resumable-mem-mcp.sh");
+    let trap = if ignore_term { "trap '' TERM\n" } else { "" };
+    let block = if ignore_term {
+        "while :; do :; done"
+    } else {
+        "exec sleep 30"
+    };
+    let body = format!(
+        r#"#!/bin/sh
+{trap}store="$2"
+echo $$ > '{pid}'
+echo "run" >> '{runs}'
+echo '{{"event":"verified","bundle_digest":"{d}","tenants":4,"nodes":19,"edges":13}}'
+imported=""
+skipped=""
+for t in citrate-docs methodology refs skills; do
+  if [ -f "$store/tenant-$t" ]; then
+    echo "{{\"event\":\"tenant_skipped\",\"tenant\":\"$t\",\"reason\":\"already-imported\"}}"
+    skipped="$skipped,\"$t\""
+    continue
+  fi
+  echo "{{\"event\":\"tenant_start\",\"tenant\":\"$t\",\"nodes\":4,\"edges\":3}}"
+  echo "start $t" >> '{runs}'
+  echo "{{\"event\":\"progress\",\"tenant\":\"$t\",\"done\":2,\"total\":4}}"
+  if [ "$t" = "refs" ] && [ -f '{blockf}' ]; then
+    {block}
+  fi
+  touch "$store/tenant-$t"
+  echo "{{\"event\":\"tenant_done\",\"tenant\":\"$t\"}}"
+  imported="$imported,\"$t\""
+done
+echo "{{\"event\":\"done\",\"bundle_digest\":\"{d}\",\"embed_model\":\"bge-base-en-v1.5\",\"nodes_added\":8,\"nodes_merged\":0,\"edges_added\":6,\"tenants_imported\":[${{imported#,}}],\"tenants_skipped\":[${{skipped#,}}]}}"
+exit 0
+"#,
+        pid = dir.join("importer.pid").display(),
+        runs = dir.join("runs.log").display(),
+        blockf = dir.join("block").display(),
+        d = FIXTURE_DIGEST,
+    );
+    std::fs::write(&p, body).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+/// Start `run_plan` on a thread and wait until its importer is blocked inside `refs`.
+#[cfg(unix)]
+fn start_blocked_import(
+    dir: &Path,
+    p: &ImportPlan,
+) -> (std::thread::JoinHandle<KnowledgeImportReport>, u32) {
+    std::fs::write(dir.join("block"), b"").unwrap();
+    let plan2 = p.clone();
+    let handle = std::thread::spawn(move || run_plan(&plan2, |_| {}));
+    wait_for("the importer to reach refs", || {
+        read_progress(&p.store_path, FIXTURE_DIGEST)
+            .is_some_and(|pr| pr.tenant.as_deref() == Some("refs") && pr.done == 2)
+    });
+    let pid = read_pid(&dir.join("importer.pid")).expect("importer pid");
+    assert!(p.registry.holds_store(&p.store_path));
+    (handle, pid)
+}
+
+#[cfg(unix)]
+#[test]
+fn app_quit_stops_a_running_importer_and_reaps_it() {
+    let dir = tmp_dir("quit");
+    let p = plan(&dir, resumable_importer(&dir, false));
+    let (handle, pid) = start_blocked_import(&dir, &p);
+    let _reaper = Reaper(vec![pid]);
+    assert!(alive(pid));
+
+    let t0 = std::time::Instant::now();
+    assert_eq!(p.registry.shutdown(std::time::Duration::from_secs(5)), 1);
+    assert!(!alive(pid), "the importer is gone (and reaped) when shutdown returns");
+    assert!(t0.elapsed() < std::time::Duration::from_secs(5), "SIGTERM was enough");
+
+    let r = handle.join().unwrap();
+    assert_eq!(r.state, "failed");
+    assert_eq!(r.error.as_deref(), Some(INTERRUPTED_ERROR));
+    assert!(!marker_path(&p.store_path).exists(), "no completion marker");
+    assert!(!p.registry.holds_store(&p.store_path), "released after the reap");
+    let pr = read_progress(&p.store_path, FIXTURE_DIGEST).expect("progress kept");
+    assert_eq!(pr.state, "interrupted");
+    assert_eq!(
+        pr.tenants_done.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["citrate-docs", "methodology"]
+    );
+    assert_eq!(pr.tenant.as_deref(), Some("refs"));
+    // A second shutdown (ExitRequested then Exit) is a no-op.
+    assert_eq!(p.registry.shutdown(std::time::Duration::from_secs(5)), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_importer_that_ignores_sigterm_is_killed_after_the_grace() {
+    let dir = tmp_dir("quitkill");
+    let p = plan(&dir, resumable_importer(&dir, true));
+    let (handle, pid) = start_blocked_import(&dir, &p);
+    let _reaper = Reaper(vec![pid]);
+    let t0 = std::time::Instant::now();
+    assert_eq!(p.registry.shutdown(std::time::Duration::from_millis(300)), 1);
+    let took = t0.elapsed();
+    assert!(!alive(pid), "SIGKILL after the grace");
+    assert!(took >= std::time::Duration::from_millis(300), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    assert_eq!(handle.join().unwrap().error.as_deref(), Some(INTERRUPTED_ERROR));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interrupted_import_continues_on_the_next_launch_without_redoing_finished_tenants() {
+    let dir = tmp_dir("resume");
+    let importer = resumable_importer(&dir, false);
+    let p = plan(&dir, importer.clone());
+    let (handle, pid) = start_blocked_import(&dir, &p);
+    let _reaper = Reaper(vec![pid]);
+    p.registry.shutdown(std::time::Duration::from_secs(5));
+    assert_eq!(handle.join().unwrap().error.as_deref(), Some(INTERRUPTED_ERROR));
+
+    // Next launch: a fresh registry, nothing blocks.
+    std::fs::remove_file(dir.join("block")).unwrap();
+    std::fs::remove_file(dir.join("runs.log")).unwrap();
+    let next = plan(&dir, importer);
+    let mut lines = Vec::new();
+    let r = run_plan(&next, |l| lines.push(l.clone()));
+    assert_eq!(r.state, "imported", "{r:?}");
+    assert_eq!(r.tenants_skipped, ["citrate-docs", "methodology"]);
+    assert_eq!(r.tenants_imported, ["refs", "skills"]);
+    let runs = std::fs::read_to_string(dir.join("runs.log")).unwrap();
+    assert_eq!(runs, "run\nstart refs\nstart skills\n", "finished tenants were not redone");
+    assert!(marker_path(&next.store_path).exists());
+    assert!(
+        !progress_path(&next.store_path).exists(),
+        "the progress record is removed once the marker is written"
+    );
+    assert!(!next.registry.holds_store(&next.store_path));
+    // And the launch after that skips without running the importer.
+    assert_eq!(
+        run_plan(&next, |_| {}).skipped.as_deref(),
+        Some("already-imported")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn no_importer_starts_once_app_quit_began() {
+    let dir = tmp_dir("closed");
+    let p = plan(&dir, fake_importer(&dir, &done_lines(FIXTURE_DIGEST), 0));
+    p.registry.shutdown(std::time::Duration::from_secs(1));
+    let r = run_plan(&p, |_| {});
+    assert_eq!(r.error.as_deref(), Some(INTERRUPTED_ERROR));
+    assert!(!dir.join("argv.txt").exists(), "the importer was never spawned");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// As [`daemon_and_importer`], but the importer prints `verified` and then waits to be killed.
+#[cfg(unix)]
+fn daemon_and_slow_importer(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("mem-mcp-slow.sh");
+    let body = format!(
+        r#"#!/bin/sh
+if [ "$1" = "import-corpus" ]; then
+  echo $$ > '{ipid}'
+  echo '{{"event":"verified","bundle_digest":"{d}","tenants":4,"nodes":19,"edges":13}}'
+  exec sleep 30
+fi
+echo $$ > '{dpid}'
+exec sleep 30
+"#,
+        ipid = dir.join("importer.pid").display(),
+        dpid = dir.join("daemon.pid").display(),
+        d = FIXTURE_DIGEST,
+    );
+    std::fs::write(&p, body).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+#[cfg(unix)]
+#[test]
+fn app_quit_during_an_import_does_not_restart_the_memory_daemon() {
+    let dir = tmp_dir("norestart");
+    let bin = daemon_and_slow_importer(&dir);
+    let model = dir.join("bge");
+    std::fs::create_dir_all(&model).unwrap();
+    let store = dir.join("memory/store.bge.memdag");
+    let mgr = Arc::new(
+        crate::memory::MemoryManager::new(
+            Box::new(MemKeyring::default()),
+            bin.clone(),
+            store.clone(),
+            dir.join("memory/memdag.sock"),
+            dir.join("memory/crash.jsonl"),
+            Box::new(NoTransport),
+        )
+        .with_model_dir(Some(model)),
+    );
+    mgr.start().unwrap();
+    wait_for("the daemon", || dir.join("daemon.pid").exists());
+    let daemon_pid = read_pid(&dir.join("daemon.pid")).unwrap();
+    let mut p = plan(&dir, bin);
+    p.env = mgr.embedder_env();
+    let (m2, p2) = (mgr.clone(), p.clone());
+    let handle = std::thread::spawn(move || import_plan_with_manager(&m2, &p2, |_| {}));
+    wait_for("the importer", || p.registry.holds_store(&store));
+    wait_for("the importer pid", || read_pid(&dir.join("importer.pid")).is_some());
+    let importer_pid = read_pid(&dir.join("importer.pid")).unwrap();
+    let _reaper = Reaper(vec![daemon_pid, importer_pid]);
+    assert!(!mgr.is_running_now(), "the daemon was stopped for the import");
+
+    p.registry.shutdown(std::time::Duration::from_secs(5));
+    let r = handle.join().unwrap();
+    assert_eq!(r.error.as_deref(), Some(INTERRUPTED_ERROR), "{r:?}");
+    assert!(!alive(importer_pid));
+    assert!(
+        !mgr.is_running_now(),
+        "the daemon is not restarted once app quit began"
+    );
+    mgr.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_memory_daemon_refuses_to_start_while_an_importer_holds_the_store() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp_dir("refuse");
+    // Finishes on its own after a short wait (the global registry is never shut down in tests).
+    let bin = dir.join("slow-done.sh");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"import-corpus\" ]; then\n  echo $$ > '{}'\n  sleep 2\n  cat <<'LINES'\n{}\nLINES\n  exit 0\nfi\nexec sleep 30\n",
+            dir.join("importer.pid").display(),
+            done_lines(FIXTURE_DIGEST)
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let model = dir.join("bge");
+    std::fs::create_dir_all(&model).unwrap();
+    let store = dir.join("memory/store.bge.memdag");
+    let mgr = crate::memory::MemoryManager::new(
+        Box::new(MemKeyring::default()),
+        bin.clone(),
+        store.clone(),
+        dir.join("memory/memdag.sock"),
+        dir.join("memory/crash.jsonl"),
+        Box::new(NoTransport),
+    )
+    .with_model_dir(Some(model));
+    let mut p = plan(&dir, bin);
+    p.registry = ImportRegistry::global();
+    let p2 = p.clone();
+    let handle = std::thread::spawn(move || run_plan(&p2, |_| {}));
+    wait_for("the importer", || ImportRegistry::global().holds_store(&store));
+    wait_for("the importer pid", || read_pid(&dir.join("importer.pid")).is_some());
+    let _reaper = Reaper(read_pid(&dir.join("importer.pid")).into_iter().collect());
+    let err = mgr.start().expect_err("the store is held by the importer");
+    assert!(err.to_string().contains("knowledge import"), "{err}");
+    assert!(!mgr.is_running_now());
+    assert_eq!(handle.join().unwrap().state, "imported");
+    assert!(!ImportRegistry::global().holds_store(&store));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_quit_hook_stops_the_importer_before_any_sidecar() {
+    let lib = include_str!("lib.rs");
+    let hook = lib
+        .split("pub(crate) fn shutdown_all_sidecars")
+        .nth(1)
+        .and_then(|s| s.split("\n}\n").next())
+        .expect("shutdown_all_sidecars exists");
+    let at = hook
+        .find("knowledge_import::shutdown();")
+        .expect("the quit hook stops the importer");
+    let first_stop = hook.find(".stop();").expect("sidecar stops");
+    assert!(at < first_stop, "the importer stops first: {hook}");
+    let src = include_str!("knowledge_import.rs");
+    assert!(
+        src.contains("registry.adopt(&plan.store_path, child)"),
+        "the importer child is owned by the registry"
+    );
+    assert!(src.contains("crate::supervisor::DEFAULT_STOP_GRACE"));
+}
+
 // ---------------------------------------------------------------- tripwire
 
 #[test]
@@ -577,4 +916,83 @@ fn live_real_mem_mcp_imports_the_fixture_corpus_once() {
     assert_eq!(again.state, "imported");
     assert_eq!(again.nodes_added, 0);
     assert_eq!(again.tenants_imported.len(), 0);
+}
+
+/// Live proof of v0.5.0 C3 finding 1 against the real importer and a real corpus: app quit stops
+/// `mem-mcp import-corpus` mid-run (after at least one tenant finished), the store is left
+/// consistent, and the next run continues with the tenants that did not finish.
+/// `CITRATE_MEM_MCP_BIN=<mem-mcp, rocksdb> CITRATE_KNOWLEDGE_CORPUS_DIR=<staged corpus> \
+///  [CITRATE_BGE_MODEL_DIR=<bge dir>] cargo test --lib knowledge_import::tests::live_interrupted -- --ignored`
+#[test]
+#[ignore]
+fn live_interrupted_real_import_resumes_and_leaves_the_store_consistent() {
+    let (Ok(bin), Ok(corpus)) = (
+        std::env::var("CITRATE_MEM_MCP_BIN"),
+        std::env::var(CORPUS_DIR_ENV),
+    ) else {
+        panic!("set CITRATE_MEM_MCP_BIN and {CORPUS_DIR_ENV}");
+    };
+    let dir = tmp_dir("live-resume");
+    let mut p = plan(&dir, PathBuf::from(bin));
+    std::fs::remove_dir_all(&p.store_path).unwrap();
+    p.corpus_dir = Some(PathBuf::from(corpus));
+    p.first_line_timeout = std::time::Duration::from_secs(600);
+    p.env = match std::env::var("CITRATE_BGE_MODEL_DIR") {
+        Ok(m) => vec![
+            ("CITRATE_BGE_MODEL_DIR".into(), m),
+            ("CITRATE_MEM_EMBED".into(), "bge".into()),
+        ],
+        Err(_) => vec![],
+    };
+    let digest = read_bundle_digest(p.corpus_dir.as_ref().unwrap()).unwrap();
+
+    // Run 1: stop it once a tenant finished and the next one is in flight.
+    let t0 = std::time::Instant::now();
+    let p1 = p.clone();
+    let handle = std::thread::spawn(move || run_plan(&p1, |_| {}));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    loop {
+        let pr = read_progress(&p.store_path, &digest);
+        if pr.as_ref().is_some_and(|pr| !pr.tenants_done.is_empty() && pr.done > 0) {
+            break;
+        }
+        assert!(!handle.is_finished(), "the import finished before it could be interrupted");
+        assert!(std::time::Instant::now() < deadline, "no tenant finished within an hour");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let stopped = p.registry.shutdown(crate::supervisor::DEFAULT_STOP_GRACE);
+    let r1 = handle.join().unwrap();
+    let pr = read_progress(&p.store_path, &digest).unwrap();
+    eprintln!(
+        "run 1: stopped {stopped} after {:?}; {:?}; progress {:?}",
+        t0.elapsed(),
+        r1.error,
+        pr
+    );
+    assert_eq!(stopped, 1);
+    assert_eq!(r1.error.as_deref(), Some(INTERRUPTED_ERROR));
+    assert_eq!(pr.state, "interrupted");
+    assert!(!p.registry.holds_store(&p.store_path));
+
+    // Run 2 (next launch): the store opens (the lock was released), finished tenants are skipped.
+    let t1 = std::time::Instant::now();
+    let mut p2 = p.clone();
+    p2.registry = Arc::new(ImportRegistry::default());
+    let r2 = run_plan(&p2, |_| {});
+    eprintln!("run 2: {:?} after {:?}", r2, t1.elapsed());
+    assert_eq!(r2.state, "imported", "{r2:?}");
+    for t in &pr.tenants_done {
+        assert!(r2.tenants_skipped.contains(t), "{t} was redone: {r2:?}");
+        assert!(!r2.tenants_imported.contains(t), "{t} was redone: {r2:?}");
+    }
+    assert!(!progress_path(&p.store_path).exists());
+
+    // Run 3, marker removed: the store already holds everything (consistent, nothing added).
+    std::fs::remove_file(marker_path(&p.store_path)).unwrap();
+    let r3 = run_plan(&p2, |_| {});
+    eprintln!("run 3: {r3:?}");
+    assert_eq!(r3.state, "imported", "{r3:?}");
+    assert_eq!(r3.nodes_added, 0);
+    assert!(r3.tenants_imported.is_empty(), "{r3:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

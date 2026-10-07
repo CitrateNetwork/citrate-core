@@ -687,6 +687,14 @@ impl MemoryManager {
         if guard.is_some() {
             return Err(MemoryError::AlreadyRunning);
         }
+        // v0.5.0 C3: a running knowledge importer holds the store's RocksDB lock, so a
+        // daemon started now could not open it (and would crash-loop). The import
+        // restarts the daemon itself when it finishes.
+        if crate::knowledge_import::ImportRegistry::global().holds_store(&self.store_path) {
+            return Err(MemoryError::Spawn(
+                "the knowledge import is still writing the memory store; the memory daemon starts when it finishes".into(),
+            ));
+        }
         if !self.bin.exists() {
             return Err(MemoryError::BinaryNotFound(self.bin.display().to_string()));
         }

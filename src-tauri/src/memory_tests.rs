@@ -476,7 +476,9 @@ fn restart_is_safe_with_a_leftover_socket_file() {
     // endpoint before staying alive, so this asserts the supervised start returns
     // Ok past the stale path without changing production process spawning.
     mgr.start().expect("start 2 must survive a leftover socket file");
-    for _ in 0..20 {
+    // Bounded at 5 s: under a parallel test run the fixture shell can take longer
+    // than 500 ms to start (this was flaky on the release branch before v0.5.0-rc.3).
+    for _ in 0..200 {
         if !sock.exists() {
             break;
         }
