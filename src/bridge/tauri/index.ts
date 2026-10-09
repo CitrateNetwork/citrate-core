@@ -30,6 +30,7 @@ import type {
   SeedFacts,
   SeedReport,
   PendingWithdrawal,
+  LinkedWallet,
   AiProviderStatus,
   GrantStatus,
   ModelStatus,
@@ -215,6 +216,12 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       },
       async linkReject(id: string): Promise<void> {
         return invoke<void>("wallet_link_reject", { id });
+      },
+      async linkedList(): Promise<LinkedWallet[]> {
+        return invoke<LinkedWallet[]>("wallet_linked_list");
+      },
+      async unlink(address: string): Promise<void> {
+        return invoke<void>("wallet_unlink", { address });
       },
     },
     // ---- node: REAL citrate-node under the SidecarSupervisor (C1.1) ----

@@ -195,6 +195,12 @@ struct CodeGrant {
 
 #[derive(Clone, Default)]
 struct Behavior {
+    /// Every `/identity/*` request the authority received: (method, path, Authorization header).
+    identity_calls: Vec<(String, String, Option<String>)>,
+    /// Force this status for `/identity/*` requests (default 200 `{"ok":true}`).
+    identity_status: Option<u16>,
+    /// Replace the 200 body of `GET /identity/*` (default: a two-wallet list).
+    identity_get_body: Option<String>,
     /// Forge the id_token nonce (ADV-7 nonce).
     forge_nonce: bool,
     /// Sign the id_token with a WRONG key (ADV-7 signature).
@@ -372,7 +378,7 @@ struct ServerCtx {
 impl ServerCtx {
     /// Handle one connection. Returns true if it was the shutdown sentinel.
     fn handle_conn(&self, mut stream: TcpStream) -> bool {
-        let (method, target, body) = match read_http(&mut stream) {
+        let (method, target, body, authorization) = match read_http(&mut stream) {
             Some(v) => v,
             None => return false,
         };
@@ -392,6 +398,9 @@ impl ServerCtx {
             ("GET", "/jwks") => self.handle_jwks(stream),
             ("GET", "/me") => self.handle_userinfo(stream),
             ("POST", "/token/revocation") => self.handle_revoke(stream, &body),
+            (m, p) if p.starts_with("/identity/") => {
+                self.handle_identity(stream, m, p, authorization)
+            }
             _ => write_resp(stream, 404, "text/plain", "not found"),
         }
         false
@@ -615,6 +624,36 @@ impl ServerCtx {
         write_resp(stream, 200, "application/json", &claims.to_string());
     }
 
+    /// The identity registry surface (`/identity/:sub/wallets…`): record the call
+    /// exactly as received so a test can assert method, path and bearer, then
+    /// answer 200 `{"ok":true}` unless a test forced another status.
+    fn handle_identity(
+        &self,
+        stream: &mut TcpStream,
+        method: &str,
+        path: &str,
+        authorization: Option<String>,
+    ) {
+        let mut b = self.behavior.lock().unwrap();
+        b.identity_calls
+            .push((method.to_string(), path.to_string(), authorization));
+        let status = b.identity_status.unwrap_or(200);
+        let get_body = b.identity_get_body.clone();
+        drop(b);
+        if let (200, "GET", Some(body)) = (status, method, get_body) {
+            write_resp(stream, 200, "application/json", &body);
+        } else if status == 200 && method == "GET" {
+            let body = format!(
+                r#"{{"sub":"usr_2af4c19e","wallets":[{{"address":"{UNLINK_ADDR}","canonical":true,"linked_at":"2026-09-30T01:00:00.000Z"}},{{"address":"{LIST_SECOND_ADDR}","canonical":false,"linked_at":"2026-09-30T02:00:00.000Z"}}]}}"#
+            );
+            write_resp(stream, 200, "application/json", &body);
+        } else if status == 200 {
+            write_resp(stream, 200, "application/json", r#"{"ok":true}"#);
+        } else {
+            write_resp(stream, status, "application/json", r#"{"error":"forced"}"#);
+        }
+    }
+
     fn handle_revoke(&self, stream: &mut TcpStream, body: &str) {
         let form = parse_query(&format!("?{body}"));
         if let Some(tok) = form.get("token") {
@@ -626,7 +665,7 @@ impl ServerCtx {
 
 // --- tiny HTTP helpers for the mock server ---------------------------------
 
-fn read_http(stream: &mut TcpStream) -> Option<(String, String, String)> {
+fn read_http(stream: &mut TcpStream) -> Option<(String, String, String, Option<String>)> {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .ok()?;
@@ -638,6 +677,7 @@ fn read_http(stream: &mut TcpStream) -> Option<(String, String, String)> {
     let method = parts.next()?.to_string();
     let target = parts.next()?.to_string();
     let mut content_length = 0usize;
+    let mut authorization: Option<String> = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).ok()? == 0 {
@@ -650,6 +690,8 @@ fn read_http(stream: &mut TcpStream) -> Option<(String, String, String)> {
         if let Some((name, value)) = trimmed.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value.trim().parse().unwrap_or(0);
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_string());
             }
         }
     }
@@ -659,7 +701,7 @@ fn read_http(stream: &mut TcpStream) -> Option<(String, String, String)> {
         reader.read_exact(&mut buf).ok()?;
         body = String::from_utf8_lossy(&buf).to_string();
     }
-    Some((method, target, body))
+    Some((method, target, body, authorization))
 }
 
 fn write_resp(stream: &mut TcpStream, status: u16, ctype: &str, body: &str) {
@@ -1688,4 +1730,113 @@ fn post_form_sends_accept_application_json() {
         "post_form must send Accept: application/json (GitHub returns form-encoded otherwise); got:\n{req}"
     );
     assert!(req.contains("content-type: application/x-www-form-urlencoded"));
+}
+
+// --- wallet unlink (DELETE /identity/:sub/wallets/:address) -------------------
+
+const UNLINK_ADDR: &str = "0x339aB336AC6a6B1b8B7C1c0f76b3a9C1D6f0a771";
+const LIST_SECOND_ADDR: &str = "0xf1E877868efFD0a3B79417bc0B7Ac98f89F5d837";
+
+#[test]
+fn wallet_unlink_sends_a_bearer_delete_scoped_to_the_signed_in_sub() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _fake, _path) = fresh_vault();
+    mgr.login_with(&vault, |url| auth.drive_browser(url))
+        .expect("login should succeed");
+
+    mgr.wallet_unlink(UNLINK_ADDR)
+        .expect("a 200 from the authority must be a success");
+
+    let calls = auth.behavior().identity_calls.clone();
+    assert_eq!(calls.len(), 1, "exactly one identity call, got {calls:?}");
+    let (method, path, bearer) = &calls[0];
+    assert_eq!(method, "DELETE");
+    // Own sub only: the path is built from the SESSION's sub, never from input.
+    assert_eq!(path, &format!("/identity/usr_2af4c19e/wallets/{UNLINK_ADDR}"));
+    let bearer = bearer.as_deref().expect("the call must carry the access token");
+    assert!(
+        bearer.starts_with("Bearer ") && bearer.len() > "Bearer ".len(),
+        "expected a Bearer token, got {bearer:?}"
+    );
+}
+
+#[test]
+fn wallet_unlink_without_a_session_fails_before_any_network_call() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let err = mgr
+        .wallet_unlink(UNLINK_ADDR)
+        .expect_err("unlink must refuse without a signed-in session");
+    assert!(
+        matches!(err, AuthError::NotSignedIn),
+        "expected NotSignedIn, got {err:?}"
+    );
+    assert!(
+        auth.behavior().identity_calls.is_empty(),
+        "no request may reach the authority without a session"
+    );
+}
+
+#[test]
+fn wallet_unlink_surfaces_a_non_2xx_as_an_error_never_a_silent_success() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _fake, _path) = fresh_vault();
+    mgr.login_with(&vault, |url| auth.drive_browser(url))
+        .expect("login should succeed");
+    auth.behavior().identity_status = Some(403);
+
+    mgr.wallet_unlink(UNLINK_ADDR)
+        .expect_err("a 403 must not be reported as unlinked");
+    assert_eq!(auth.behavior().identity_calls.len(), 1);
+}
+
+#[test]
+fn wallet_list_reads_every_link_with_the_authoritys_canonical_flag() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _fake, _path) = fresh_vault();
+    mgr.login_with(&vault, |url| auth.drive_browser(url))
+        .expect("login should succeed");
+
+    let wallets = mgr.wallet_list().expect("a 200 list must parse");
+    assert_eq!(wallets.len(), 2);
+    assert_eq!(wallets[0].address, UNLINK_ADDR);
+    assert!(wallets[0].canonical);
+    assert_eq!(wallets[1].address, LIST_SECOND_ADDR);
+    assert!(!wallets[1].canonical);
+
+    let calls = auth.behavior().identity_calls.clone();
+    assert_eq!(calls.len(), 1);
+    let (method, path, bearer) = &calls[0];
+    assert_eq!(method, "GET");
+    assert_eq!(path, "/identity/usr_2af4c19e/wallets");
+    assert!(bearer.as_deref().is_some_and(|b| b.starts_with("Bearer ")));
+}
+
+#[test]
+fn wallet_list_error_is_an_error_never_an_empty_list() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _fake, _path) = fresh_vault();
+    mgr.login_with(&vault, |url| auth.drive_browser(url))
+        .expect("login should succeed");
+    auth.behavior().identity_status = Some(500);
+    mgr.wallet_list()
+        .expect_err("a 500 must not read as \"no linked wallets\"");
+}
+
+#[test]
+fn wallet_list_unparseable_200_is_an_error_never_an_empty_list() {
+    let auth = MockAuthority::start();
+    let mgr = manager_for(&auth);
+    let (vault, _fake, _path) = fresh_vault();
+    mgr.login_with(&vault, |url| auth.drive_browser(url))
+        .expect("login should succeed");
+    // A 2xx whose body is not the list shape (no `wallets`) is an unknown
+    // answer, not "no other wallets".
+    auth.behavior().identity_get_body = Some(r#"{"ok":true}"#.to_string());
+    mgr.wallet_list()
+        .expect_err("an unparseable 200 must not read as \"no linked wallets\"");
 }

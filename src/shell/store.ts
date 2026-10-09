@@ -4308,6 +4308,45 @@ export class Store {
   }
 
   /**
+   * Read every wallet linked to the signed-in identity from the authority. A
+   * failure clears the list and records why: a stale list could offer to unlink
+   * a wallet that is already gone, and an empty one would claim "no links".
+   */
+  async refreshLinkedWallets(): Promise<void> {
+    if (!this.state.signedIn) {
+      this.setState({ linkedWallets: null, linkedWalletsErr: null });
+      return;
+    }
+    try {
+      const list = await bridge.wallet.linkedList();
+      this.setState({ linkedWallets: list, linkedWalletsErr: null });
+    } catch (err) {
+      this.setState({ linkedWallets: null, linkedWalletsErr: String((err as Error).message ?? err) });
+    }
+  }
+
+  /**
+   * Unlink a wallet from the signed-in identity. The Wallet surface confirms
+   * first (and says so when it is the pay-to wallet). Afterwards the claim is
+   * RE-READ, never assumed: if this device's wallet was the one removed,
+   * walletIsLinked() turns false on the real read and the link flow reopens.
+   */
+  async unlinkWallet(address: string): Promise<void> {
+    try {
+      await bridge.wallet.unlink(address);
+    } catch (err) {
+      this.toast("Wallet not unlinked: " + String((err as Error).message ?? err));
+      return;
+    }
+    this.addActivity("Unlinked wallet " + address.slice(0, 10) + "…", "no funds moved", "");
+    await this.authUserinfo();
+    await this.refreshWallet();
+    await this.refreshLinkedWallets();
+    this.save();
+    this.toast("Wallet " + address.slice(0, 10) + "… unlinked. Pay-to is now " + (this.state.walletAddr ? this.state.walletAddr.slice(0, 10) + "…" : "being re-read") + ".");
+  }
+
+  /**
    * True when the authority already serves THIS device's custody wallet as the
    * member's `wallet_address`. Only meaningful once both reads have landed — an
    * unknown either side reads false (never an optimistic yes).
@@ -4667,6 +4706,7 @@ export class Store {
         // asserting it: walletIsLinked() must be earned by a real read.
         await this.authUserinfo();
         await this.refreshWallet();
+        await this.refreshLinkedWallets();
         this.save();
       } catch (err) {
         try {

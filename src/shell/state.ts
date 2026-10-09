@@ -10,7 +10,7 @@
 // wired separately in the Dashboard via wagmi useBlockNumber.
 // =====================================================================
 
-import type { Brief, HermesPersona, LocalSkill, PendingWithdrawal } from "../bridge/domains";
+import type { Brief, HermesPersona, LinkedWallet, LocalSkill, PendingWithdrawal } from "../bridge/domains";
 import type { Person } from "../surfaces/peopleDirectory";
 import type { GroupRoleRow } from "../surfaces/groupsNavigator";
 import type { CeremonyView } from "../bridge/types";
@@ -412,6 +412,10 @@ export interface AppState {
   cerHash: string;
   /** Q-E.1 (@rule8, P0) — the pending wallet money-action review (null = none). */
   walletReview: WalletReview | null;
+  /** Wallets linked to the signed-in identity, from the authority (null = not read yet). */
+  linkedWallets: LinkedWallet[] | null;
+  /** Why the last linked-wallets read failed (null = it did not). */
+  linkedWalletsErr: string | null;
   chatMsgs: ChatMsg[];
   chatStatus: "ready" | "thinking" | "streaming" | "tool";
   /** SCL-S7.5a (D-16 extended) — a chat message held because the local model is configured but
@@ -768,6 +772,8 @@ export function freshState(pid: string): AppState {
     cerStep: 0,
     cerHash: "",
     walletReview: null,
+    linkedWallets: null,
+    linkedWalletsErr: null,
     chatMsgs: [],
     chatStatus: "ready",
     chatRouteHold: null,

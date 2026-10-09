@@ -70,6 +70,8 @@ commands.allow = [
   "wallet_link_request",
   "wallet_link_approve",
   "wallet_link_reject",
+  "wallet_unlink",
+  "wallet_linked_list",
   "model_catalog_local",
   "model_catalog_partials",
   "model_catalog_search",
