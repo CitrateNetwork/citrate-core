@@ -1,0 +1,76 @@
+# created: 2026-10-09 | SCL-S1.6 partial core-kit lane
+# status: partial — this workflow covers citrate-core-kit supervisor tests only.
+# Explicitly excluded: src-tauri/runtime and the remaining SCL-S1.6 platform scope.
+name: lifecycle-platforms
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "kit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lifecycle-platforms.yml"
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "kit/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lifecycle-platforms.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifecycle-platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-kit-supervisor:
+    name: core-kit supervisor tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            expected: 3
+          - os: macos-14
+            expected: 24
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CHAIN_TOKEN: ${{ secrets.CITRATE_CHAIN_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to private federation repos (citrate-chain)
+        if: ${{ env.CHAIN_TOKEN != '' }}
+        shell: bash
+        run: |
+          git config --global \
+            url."https://x-access-token:${CHAIN_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # pinned toolchain action
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Run core-kit supervisor tests and verify pass count
+        shell: bash
+        env:
+          EXPECTED: ${{ matrix.expected }}
+        run: |
+          set -o pipefail
+          cargo test --locked -p citrate-core-kit --lib supervisor::tests -- --nocapture \
+            2>&1 | tee supervisor-tests.log
+          cargo_status=${PIPESTATUS[0]}
+          if [ "$cargo_status" -ne 0 ]; then
+            exit "$cargo_status"
+          fi
+          grep -Fq "test result: ok. ${EXPECTED} passed; 0 failed; 0 ignored" supervisor-tests.log
