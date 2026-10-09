@@ -1,0 +1,276 @@
+name: src-tauri lifecycle platforms
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [release/0.5.0-hermes-upskill]
+    paths:
+      - ".github/workflows/src-tauri-lifecycle-platforms.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src-tauri/**"
+      - "kit/**"
+      - "components/**"
+      - "templates/renderer/**"
+      - ".cargo/**"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+  push:
+    branches: [release/0.5.0-hermes-upskill]
+    paths:
+      - ".github/workflows/src-tauri-lifecycle-platforms.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src-tauri/**"
+      - "kit/**"
+      - "components/**"
+      - "templates/renderer/**"
+      - ".cargo/**"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: src-tauri-lifecycle-platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle-tests:
+    name: src-tauri lifecycle (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-latest
+            shutdown: 2
+            owned: 7
+            comms: 30
+            cluster: 21
+            total: 60
+            hermes_self_skips: 1
+          - platform: macOS-14
+            runner: macos-14
+            shutdown: 5
+            owned: 12
+            comms: 31
+            cluster: 21
+            total: 69
+            hermes_self_skips: 2
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.98.1
+
+      - name: Verify Rust toolchain
+        shell: bash
+        run: |
+          set -uo pipefail
+          version="$(rustc --version)"
+          case "$version" in
+            "rustc 1.98.1 "*) ;;
+            *)
+              echo "expected rustc 1.98.1, got: $version" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Test shutdown coverage
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/shutdown_coverage_tests.log"
+          rm -f "$log"
+          unset CITRATE_E2E_HERMES_BIN
+
+          set +e
+          cargo test --locked -p citrate-core --lib shutdown_coverage_tests -- --test-threads=1 --nocapture 2>&1 | tee "$log"
+          cargo_status=${PIPESTATUS[0]}
+          set -e
+
+          summary_count="$(grep -c '^test result: ' "$log" || true)"
+          if [[ "$summary_count" != "1" ]]; then
+            echo "shutdown_coverage_tests: expected exactly one test summary, found $summary_count" >&2
+            exit 1
+          fi
+          summary="$(grep '^test result: ' "$log")"
+          if [[ "$summary" =~ ^test\ result:\ ok\.\ ([0-9]+)\ passed\;\ ([0-9]+)\ failed\;\ ([0-9]+)\ ignored\; ]]; then
+            passed=${BASH_REMATCH[1]}
+            failed=${BASH_REMATCH[2]}
+            ignored=${BASH_REMATCH[3]}
+          else
+            echo "shutdown_coverage_tests: unrecognized test summary: $summary" >&2
+            exit 1
+          fi
+          if (( cargo_status != 0 )); then
+            echo "shutdown_coverage_tests: cargo exited with status $cargo_status" >&2
+            exit "$cargo_status"
+          fi
+          if (( passed <= 0 || passed != ${{ matrix.shutdown }} || failed != 0 || ignored != 0 )); then
+            echo "shutdown_coverage_tests: expected ${{ matrix.shutdown }} passed, 0 failed, 0 ignored; got $passed passed, $failed failed, $ignored ignored" >&2
+            exit 1
+          fi
+
+          skip_count="$( { grep -Fo 'skipped: set CITRATE_E2E_HERMES_BIN' "$log" || true; } | wc -l | tr -d '[:space:]')"
+          if (( skip_count != ${{ matrix.hermes_self_skips }} )); then
+            echo "shutdown_coverage_tests: expected ${{ matrix.hermes_self_skips }} Hermes self-skips, found $skip_count" >&2
+            exit 1
+          fi
+
+      - name: Test owned cleanup
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/owned_cleanup_tests.log"
+          rm -f "$log"
+
+          set +e
+          cargo test --locked -p citrate-core --lib owned_cleanup::tests -- --test-threads=1 --nocapture 2>&1 | tee "$log"
+          cargo_status=${PIPESTATUS[0]}
+          set -e
+
+          summary_count="$(grep -c '^test result: ' "$log" || true)"
+          if [[ "$summary_count" != "1" ]]; then
+            echo "owned_cleanup::tests: expected exactly one test summary, found $summary_count" >&2
+            exit 1
+          fi
+          summary="$(grep '^test result: ' "$log")"
+          if [[ "$summary" =~ ^test\ result:\ ok\.\ ([0-9]+)\ passed\;\ ([0-9]+)\ failed\;\ ([0-9]+)\ ignored\; ]]; then
+            passed=${BASH_REMATCH[1]}
+            failed=${BASH_REMATCH[2]}
+            ignored=${BASH_REMATCH[3]}
+          else
+            echo "owned_cleanup::tests: unrecognized test summary: $summary" >&2
+            exit 1
+          fi
+          if (( cargo_status != 0 )); then
+            echo "owned_cleanup::tests: cargo exited with status $cargo_status" >&2
+            exit "$cargo_status"
+          fi
+          if (( passed <= 0 || passed != ${{ matrix.owned }} || failed != 0 || ignored != 0 )); then
+            echo "owned_cleanup::tests: expected ${{ matrix.owned }} passed, 0 failed, 0 ignored; got $passed passed, $failed failed, $ignored ignored" >&2
+            exit 1
+          fi
+
+      - name: Test comms lifecycle
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/comms_tests.log"
+          rm -f "$log"
+
+          set +e
+          cargo test --locked -p citrate-core --lib comms::tests -- --test-threads=1 --nocapture 2>&1 | tee "$log"
+          cargo_status=${PIPESTATUS[0]}
+          set -e
+
+          summary_count="$(grep -c '^test result: ' "$log" || true)"
+          if [[ "$summary_count" != "1" ]]; then
+            echo "comms::tests: expected exactly one test summary, found $summary_count" >&2
+            exit 1
+          fi
+          summary="$(grep '^test result: ' "$log")"
+          if [[ "$summary" =~ ^test\ result:\ ok\.\ ([0-9]+)\ passed\;\ ([0-9]+)\ failed\;\ ([0-9]+)\ ignored\; ]]; then
+            passed=${BASH_REMATCH[1]}
+            failed=${BASH_REMATCH[2]}
+            ignored=${BASH_REMATCH[3]}
+          else
+            echo "comms::tests: unrecognized test summary: $summary" >&2
+            exit 1
+          fi
+          if (( cargo_status != 0 )); then
+            echo "comms::tests: cargo exited with status $cargo_status" >&2
+            exit "$cargo_status"
+          fi
+          if (( passed <= 0 || passed != ${{ matrix.comms }} || failed != 0 || ignored != 0 )); then
+            echo "comms::tests: expected ${{ matrix.comms }} passed, 0 failed, 0 ignored; got $passed passed, $failed failed, $ignored ignored" >&2
+            exit 1
+          fi
+
+      - name: Test cluster lifecycle
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/cluster_tests.log"
+          rm -f "$log"
+
+          set +e
+          cargo test --locked -p citrate-core --lib cluster::tests -- --test-threads=1 --nocapture 2>&1 | tee "$log"
+          cargo_status=${PIPESTATUS[0]}
+          set -e
+
+          summary_count="$(grep -c '^test result: ' "$log" || true)"
+          if [[ "$summary_count" != "1" ]]; then
+            echo "cluster::tests: expected exactly one test summary, found $summary_count" >&2
+            exit 1
+          fi
+          summary="$(grep '^test result: ' "$log")"
+          if [[ "$summary" =~ ^test\ result:\ ok\.\ ([0-9]+)\ passed\;\ ([0-9]+)\ failed\;\ ([0-9]+)\ ignored\; ]]; then
+            passed=${BASH_REMATCH[1]}
+            failed=${BASH_REMATCH[2]}
+            ignored=${BASH_REMATCH[3]}
+          else
+            echo "cluster::tests: unrecognized test summary: $summary" >&2
+            exit 1
+          fi
+          if (( cargo_status != 0 )); then
+            echo "cluster::tests: cargo exited with status $cargo_status" >&2
+            exit "$cargo_status"
+          fi
+          if (( passed <= 0 || passed != ${{ matrix.cluster }} || failed != 0 || ignored != 0 )); then
+            echo "cluster::tests: expected ${{ matrix.cluster }} passed, 0 failed, 0 ignored; got $passed passed, $failed failed, $ignored ignored" >&2
+            exit 1
+          fi
+
+      - name: Summarize lifecycle counts
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          passed_count() {
+            local log=$1
+            local summary
+            summary="$(grep '^test result: ' "$log")"
+            if [[ "$summary" =~ ^test\ result:\ ok\.\ ([0-9]+)\ passed\;\ ([0-9]+)\ failed\;\ ([0-9]+)\ ignored\; ]]; then
+              printf '%s\n' "${BASH_REMATCH[1]}"
+            else
+              echo "unrecognized test summary in $log: $summary" >&2
+              return 1
+            fi
+          }
+
+          shutdown="$(passed_count "$RUNNER_TEMP/shutdown_coverage_tests.log")"
+          owned="$(passed_count "$RUNNER_TEMP/owned_cleanup_tests.log")"
+          comms="$(passed_count "$RUNNER_TEMP/comms_tests.log")"
+          cluster="$(passed_count "$RUNNER_TEMP/cluster_tests.log")"
+          total=$((shutdown + owned + comms + cluster))
+
+          if (( total != ${{ matrix.total }} )); then
+            echo "expected total ${{ matrix.total }} passed tests, got $total" >&2
+            exit 1
+          fi
+
+          {
+            echo "## src-tauri lifecycle tests (${{ matrix.platform }})"
+            echo
+            echo "| Module filter | Passed |"
+            echo "| --- | ---: |"
+            echo "| shutdown_coverage_tests | $shutdown |"
+            echo "| owned_cleanup::tests | $owned |"
+            echo "| comms::tests | $comms |"
+            echo "| cluster::tests | $cluster |"
+            echo "| **Total** | **$total** |"
+            echo
+            echo "Hermes live tests self-skipped; no live Hermes evidence"
+          } >> "$GITHUB_STEP_SUMMARY"
