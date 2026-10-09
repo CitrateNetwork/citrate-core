@@ -3,7 +3,6 @@ name: src-tauri lifecycle platforms
 on:
   workflow_dispatch:
   pull_request:
-    branches: [release/0.5.0-hermes-upskill]
     paths:
       - ".github/workflows/src-tauri-lifecycle-platforms.yml"
       - "Cargo.toml"
@@ -16,7 +15,7 @@ on:
       - "rust-toolchain"
       - "rust-toolchain.toml"
   push:
-    branches: [release/0.5.0-hermes-upskill]
+    branches: [main, "release/**"]
     paths:
       - ".github/workflows/src-tauri-lifecycle-platforms.yml"
       - "Cargo.toml"
