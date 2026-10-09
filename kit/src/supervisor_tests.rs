@@ -260,21 +260,31 @@ fn fork_bomb_bound_is_load_bearing() {
     };
     let sup = Supervisor::start(cfg).expect("supervisor starts");
 
-    // Give it time to restart at least once.
-    let st = sup.wait_until(
-        |s| matches!(s, SupervisorState::Failed),
-        Duration::from_millis(400),
-    );
+    // The initial crash increments `restarts` before respawn, so wait for a
+    // second increment to prove that the child actually restarted.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let st = loop {
+        let s = sup.status();
+        if s.restarts >= 2 || matches!(s.state, SupervisorState::Failed) {
+            break s;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "supervisor did not respawn within 5 seconds (restarts {}, state {:?})",
+            s.restarts,
+            s.state
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_ne!(
         st.state,
         SupervisorState::Failed,
         "reached Failed with an unbounded cap — the cap is NOT the load-bearing bound"
     );
-    // It restarted but never entered Failed during the bounded observation
-    // window.
+    // A second crash record means the child was respawned at least once.
     assert!(
-        st.restarts > 0,
-        "expected at least one restart under an unbounded cap, got {}",
+        st.restarts >= 2,
+        "expected at least one respawn under an unbounded cap, got {}",
         st.restarts
     );
 
