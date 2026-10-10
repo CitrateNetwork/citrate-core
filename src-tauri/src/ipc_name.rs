@@ -224,6 +224,14 @@ mod tests {
         assert!(odd.ends_with("-a_b.c-d-e-f.sock"), "{odd}");
     }
 
+    #[test]
+    fn pipe_name_matches_comms_golden_vector() {
+        assert_eq!(
+            windows_pipe_name("/tmp/citrate/comms/member.sock", &[0x11u8; 32]),
+            "citrate-5fcf8fcf99579dd1e993f1710d0595c3-member.sock"
+        );
+    }
+
     /// The nonce is created once (owner-only) and then read back identically by every caller.
     #[test]
     fn pba_l7b_004_pipe_nonce_is_stable_and_owner_only() {
