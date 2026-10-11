@@ -229,12 +229,20 @@ export function normaliseCargoAbout(json, { firstPartySources = [], elect = {} }
       if (!PERMISSIVE.has(g.id)) throw new Refused(`${p.name} ${p.version}: ships under ${g.id}, which is not on the permissive list (needs a licence review)`);
     }
     const label = `${p.name} ${p.version}`;
-    const expr = String(c.license ?? "").replace(/\s+/g, " ");
-    const elected = electedLicence(label, p.name, expr, got.map((g) => g.id), elect);
+    const expr = String(c.license ?? "").replace(/\s+/g, " ").trim();
+    const resolved = got.map((g) => g.id);
+    let licence;
+    if (expr === "" || expr === "Unknown" || expr === "NOASSERTION") {
+      // No SPDX expression in Cargo.toml (only `license-file`): cargo-about identified the file's text.
+      licence = `${[...new Set(resolved)].sort().join(" AND ")} (identified from its licence file; Cargo.toml names no SPDX licence)`;
+    } else {
+      const elected = electedLicence(label, p.name, expr, resolved, elect);
+      licence = elected ? `${expr} (used under ${elected})` : expr;
+    }
     packages.push({
       name: p.name,
       version: p.version,
-      licence: elected ? `${expr} (used under ${elected})` : expr,
+      licence,
       texts: [...new Set(got.map((g) => addText(texts, g.id, g.text, label)))].sort(),
       url: p.repository ?? (p.source?.startsWith("registry+") ? `https://crates.io/crates/${p.name}/${p.version}` : null),
     });

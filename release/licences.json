@@ -20,8 +20,8 @@
     "note": "The app is source-available under BUSL-1.1. Copyleft tools are separate programs it runs as subprocesses or downloads on request; none is linked into the app.",
     "third_party_notices": {
       "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-      "source": "citrate-core@02cc32814e58af4f9b384b1b2136e67c50e26495",
-      "packages": 379
+      "source": "citrate-core@037ba445e25bb5bb0893e2f69ed1cb8e41596578",
+      "packages": 502
     }
   },
   "components": [
@@ -40,7 +40,7 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-chain@2979a1576d12dc75375ae30be5c37a2cdd866c87",
-        "packages": 471
+        "packages": 501
       }
     },
     {
@@ -58,7 +58,7 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-node-agent@1d8cb8e4e24a3d60fb6e8b63cedc2a3c58e2a524",
-        "packages": 105
+        "packages": 107
       }
     },
     {
@@ -76,7 +76,7 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-memories@0e9d48822054f6c9d644e691909569d0bc19be02",
-        "packages": 258
+        "packages": 283
       }
     },
     {
@@ -94,7 +94,7 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-comms@9cd12c41ae1cd19b24614ddc6cd15a91eccd8b12",
-        "packages": 181
+        "packages": 193
       }
     },
     {
@@ -112,7 +112,7 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-cluster@755cf217226094147e4e67909ab96ccbb5aeeb2a",
-        "packages": 195
+        "packages": 217
       }
     },
     {
@@ -130,7 +130,7 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "citrate-agent-runtime@626486b8a7db0ab85cbe62f8a251abfd30677c3d",
-        "packages": 457
+        "packages": 493
       }
     },
     {
@@ -144,9 +144,8 @@
       "copyleft": "none",
       "licence_texts": ["src-tauri/licenses/llama.cpp.LICENSE", "src-tauri/licenses/llama.cpp-vendored.LICENSE"],
       "source_offer": null,
-      "review": "action",
-      "gap": "Checked 2026-10-08 on the v0.5.0 artifacts: the macOS app (Resources/llama/libllama-server-impl.dylib, llama.cpp b10909 / a2878d30d) and the Windows installer (llama/llama-server-impl.dll, byte-identical to the upstream llama-b10909-bin-win-cpu-x64.zip on runtime-deps) embed llama.cpp's web UI (gzip assets: index.html, an 8.9 MB SvelteKit bundle with mermaid, KaTeX, highlight.js, pdfjs-dist and others, CSS, icons, a workbox service worker), with no licence comments kept and no notices in the app. The Linux packages (b9438 built with LLAMA_BUILD_WEBUI=OFF, PROVENANCE-linux.txt) do not. Core never serves it (serve.rs and embed_serve.rs pass --no-webui). Fix (recommended): rebuild the macOS and Windows llama-server from source with -DLLAMA_BUILD_WEBUI=OFF, re-pin, and rebuild those installers; otherwise generate notices for the packages in the b10909 tools/ui build output (its package-lock lists every package as a devDependency, so the lockfile alone cannot say what is bundled) and ship them in licenses/.",
-      "note": "The llama runtime tarball also carries LICENSE-llama.cpp.txt beside the dylibs. Added 2026-10-06 (v0.5.0 gate prep): llama.cpp-vendored.LICENSE carries the texts of the vendored libraries compiled into llama-server and libmtmd (cpp-httplib, nlohmann/json, stb_image, miniaudio, subprocess.h), checked at tag b8640; the Mac build is staged locally and the Windows asset is b10909, so re-check vendor/ when the bundled llama.cpp version changes."
+      "review": "ok",
+      "note": "v0.5.0-rc.4 (2026-10-11): the macOS runtime is llama.cpp b10909 (a2878d30d) built from source with -DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF and upstream's macos-arm64 options otherwise (runtime-deps llama-runtime-arm64-b10909-nowebui.tar.gz and llama-server-aarch64-apple-darwin-b10909-nowebui, pinned in src-tauri/runtime-deps.sha256; docs/RELEASE.md section 3). Checked: the build embeds 0 UI assets (libllama-server-impl __TEXT,__const 0.2 MB against 3.3 MB upstream, no gzip streams; b10909 always compiles the empty llama_ui_* accessors), GET / answers 404, health, chat completion and embeddings work. This closes the 2026-10-08 finding that the macOS and Windows llama-server embedded the web UI (an 8.9 MB SvelteKit bundle with no notices). Windows must also be built WEBUI=OFF: for rc.4 the Windows lane builds llama-server from source at the same tag with the same two options (docs/RELEASE_WINDOWS.md) instead of the upstream llama-b10909-bin-win-cpu-x64.zip; the Linux packages (b9438, LLAMA_BUILD_WEBUI=OFF, PROVENANCE-linux.txt) already have no UI. The runtime tarball carries LICENSE-llama.cpp.txt beside the dylibs. llama.cpp-vendored.LICENSE carries the texts of the code compiled into llama-server and its libraries, re-checked at b10909: cpp-httplib, nlohmann/json, stb_image, miniaudio, subprocess.h, the vendor/hash SHA-256 code and rotate-bits (libmtmd), and BoringSSL 0.20260903.0 with fiat-crypto (statically linked for TLS, LLAMA_BUILD_BORINGSSL=ON, as in every upstream release build; added at rc.4). Re-check vendor/ and the BoringSSL version when the bundled llama.cpp tag changes."
     },
     {
       "id": "kubo",
@@ -168,7 +167,7 @@
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
         "source": "github.com/ipfs/kubo@v0.42.0 ./cmd/ipfs",
-        "packages": 247
+        "packages": 250
       }
     },
     {
@@ -213,7 +212,7 @@
       "note": "Added 2026-10-06 (v0.5.0 gate prep): the webview carries the npm packages it imports (React, viem, wagmi, TanStack Query, jose, the Tauri JS API and plugins) and the @fontsource font files (OFL-1.1, unmodified). Their notices are generated from the actual Vite output by scripts/third-party-notices.mjs (release/notices.json npm). MPL-2.0 and proprietary packages in node_modules (for example the MetaMask SDK pulled in by wagmi's connectors) are not in the output, which the generator checks on every run.",
       "third_party_notices": {
         "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-        "source": "citrate-core@02cc32814e58af4f9b384b1b2136e67c50e26495",
+        "source": "citrate-core@037ba445e25bb5bb0893e2f69ed1cb8e41596578",
         "packages": 24
       }
     },
@@ -308,15 +307,15 @@
       "id": "skills-frontend",
       "name": "frontend-skills",
       "upstream": "https://github.com/saulbuilds/frontend-skills",
-      "spdx": "MIT AND Apache-2.0",
+      "spdx": "Apache-2.0",
       "first_party": false,
       "ships_as": "skills-bundle",
       "covers": ["skills:frontend-skills", "corpus:frontend-skills"],
       "copyleft": "none",
       "licence_texts": ["src-tauri/licenses/hyperframes.LICENSE"],
       "source_offer": null,
-      "review": "owner",
-      "gap": "The top-level MIT grant is a README statement with no LICENSE file (HUP-S3.6, A18). impeccable and frontend-design ship their own LICENSE and NOTICE inside skills-bundle; the hyperframes Apache text ships here. Owner: add a LICENSE file upstream or confirm the README grant."
+      "review": "ok",
+      "note": "Owner decision 2026-10-11 (core #266): Apache-2.0, as the upstream repository states (GitHub reports Apache-2.0 for saulbuilds/frontend-skills; supersedes the earlier MIT intent and the HUP-S3.6 / A18 gap). The owner is the copyright holder. The Apache-2.0 text ships here (hyperframes.LICENSE); impeccable and frontend-design ship their own LICENSE and NOTICE inside skills-bundle. Upstream housekeeping, not blocking: at the pinned commit c5c5dea7 the README's License section still says MIT and the only licence file is LICENSE-hyperframes; skills.lock keeps its recorded licence string because it ships inside the pinned skills-bundle.tar.gz."
     },
     {
       "id": "skills-agentile",

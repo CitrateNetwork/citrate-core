@@ -13,7 +13,8 @@
   "targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
   "elect": {
     "ittapi": "BSD-3-Clause",
-    "ittapi-sys": "BSD-3-Clause"
+    "ittapi-sys": "BSD-3-Clause",
+    "priority-queue": "MPL-2.0"
   },
   "first_party_sources": [
     "git+https://github.com/CitrateNetwork/",

@@ -126,6 +126,11 @@ describe("licence elections", () => {
     expect(licenceIds("(MIT OR Apache-2.0 WITH LLVM-exception) AND  ISC")).toEqual(["MIT", "Apache-2.0 WITH LLVM-exception", "ISC"]);
   });
 
+  it("names the identified licence of a crate that declares only a licence file", () => {
+    const n = normaliseCargoAbout(about("Unknown", ["MIT"]));
+    expect(n.packages[0].licence).toBe("MIT (identified from its licence file; Cargo.toml names no SPDX licence)");
+  });
+
   it("records the elected licence next to the expression", () => {
     const n = normaliseCargoAbout(about("GPL-2.0-only OR BSD-3-Clause", ["BSD-3-Clause"]), { elect: { ittapi: "BSD-3-Clause" } });
     expect(n.packages[0].licence).toBe("GPL-2.0-only OR BSD-3-Clause (used under BSD-3-Clause)");
@@ -408,7 +413,11 @@ describe("the committed config and notices", () => {
     // The rc.4 licence findings are recorded, not Unknown.
     expect(text).toMatch(/^ittapi 0\.4\.0  GPL-2\.0-only OR BSD-3-Clause \(used under BSD-3-Clause\)/m);
     expect(text).toMatch(/^github\.com\/alexbrainman\/goissue34681 \S+  BSD-3-Clause /m);
-    expect(text).not.toMatch(/\bUnknown\b/);
+    expect(text).toMatch(/^priority-queue \S+  LGPL-3\.0-or-later OR MPL-2\.0 \(used under MPL-2\.0\)/m);
+    // No package line says Unknown (a crate with only a licence file names the licence identified).
+    const packageLines = lines.slice(0, lines.indexOf("## Licence texts"));
+    expect(packageLines.filter((l) => /  Unknown  /.test(l))).toEqual([]);
+    expect(text).toMatch(/^nova-snark 0\.75\.0  MIT \(identified from its licence file; Cargo\.toml names no SPDX licence\)/m);
   });
 
   it("CLI check passes on the committed notices", () => {
