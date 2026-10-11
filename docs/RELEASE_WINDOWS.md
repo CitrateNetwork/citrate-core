@@ -131,8 +131,13 @@ Copy-Item target\$TRIPLE\release\citrate-agent-sidecar.exe "..\citrate-core\src-
 Third-party binaries — fetch the Windows x64 builds and copy them in:
 
 ```powershell
-# llama-server — llama.cpp Windows x64 (ggml-org/llama.cpp releases). Match the
-# version bundled on Mac (see citrate-core\src-tauri\llama\ for the pinned sha256).
+# llama-server — llama.cpp Windows x64, built FROM SOURCE at the tag bundled on Mac (b10909 for
+# v0.5.0-rc.4) with the web UI off: upstream's windows-cpu x64 options (.github/workflows/release.yml
+# at that tag: clang toolchain cmake/x64-windows-llvm.cmake, LLAMA_BUILD_BORINGSSL=ON,
+# GGML_NATIVE=OFF, GGML_BACKEND_DL=ON, GGML_CPU_ALL_VARIANTS=ON, GGML_OPENMP=ON) plus
+# -DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF, and no tools/ui/dist in the tree. The
+# configure/build log must say "UI: embedded 0 assets". Do not use the upstream
+# llama-*-bin-win-cpu-x64.zip: it embeds the web UI (docs/LICENCE_REVIEW.md 9.3 a).
 Copy-Item path\to\llama-server.exe "citrate-core\src-tauri\binaries\llama-server-$TRIPLE.exe"
 
 # ipfs — kubo for windows-amd64 (https://dist.ipfs.tech/kubo). Same major as the

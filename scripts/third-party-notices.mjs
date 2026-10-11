@@ -4,7 +4,8 @@
 // (HUP gate g3-licence, release step)
 //
 //   node scripts/third-party-notices.mjs collect [--federation-root ..] [--only <component>]
-//        [--work <dir>]                      run cargo-about / go-licenses, keep their raw output
+//        [--target <triple>] [--work <dir>]  run cargo-about / go-licenses (once per release target),
+//                                            keep their raw output
 //   node scripts/third-party-notices.mjs render [--work <dir>]
 //                                            normalise, write the notices file, update release/licences.json
 //   node scripts/third-party-notices.mjs check
@@ -17,17 +18,25 @@
 // release/notices.json:
 //
 //   rust: `cargo about generate --format json` (config release/about.toml) on each sidecar crate
-//         (and the app itself) at the federation checkout, for the release target triple;
-//   go:   `go-licenses report` on Kubo's `cmd/ipfs` at the pinned version, plus the Go standard
-//         library (compiled into every Go binary);
+//         (and the app itself) at the federation checkout, once for every target triple an
+//         installer ships (release/notices.json targets: macOS, Linux and Windows pull in different
+//         crates, for example GTK on Linux and windows-sys / webview2-com on Windows);
+//   go:   `go-licenses report` on Kubo's `cmd/ipfs` at the pinned version, once per platform (one
+//         GOOS/GOARCH per target), plus the Go standard library (compiled into every Go binary);
 //   npm:  a Vite build of the webview (frontendDist) with write off, recording the npm packages
 //         whose modules (after tree shaking) or assets (fonts) end up in the output, with each
 //         package's licence file from node_modules (run `npm ci` first).
+//
+// The scans of one component are merged: the union of its packages, each listed once with the
+// targets it is on when that is not every target. The header lists the targets covered.
 //
 // First-party packages (path crates and Citrate git dependencies, by source) are left out: the
 // inventory entry covers them. Every third-party package must resolve to a licence in PERMISSIVE
 // (else refused, so a copyleft or unknown licence is a reviewed change, not a silent one); Go
 // modules the scanner cannot classify are resolved by the `clarify` table in release/notices.json.
+// A crate offered under a choice that includes a licence outside PERMISSIVE (for example ittapi,
+// GPL-2.0-only OR BSD-3-Clause) needs an `elect` entry naming the permissive licence it is used
+// under; the notices print that choice next to the expression.
 //
 // Output (committed, bundled through the `licenses/*` resource): src-tauri/licenses/
 // THIRD-PARTY-NOTICES.txt, with every distinct licence text once (deduplicated across components
@@ -48,7 +57,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, "..");
 export const CONFIG = "release/notices.json";
 const USAGE = [
-  "usage: node scripts/third-party-notices.mjs collect [--federation-root <dir>] [--only <component>] [--work <dir>]",
+  "usage: node scripts/third-party-notices.mjs collect [--federation-root <dir>] [--only <component>] [--target <triple>] [--work <dir>]",
   "       node scripts/third-party-notices.mjs render [--work <dir>]",
   "       node scripts/third-party-notices.mjs check",
 ].join("\n");
@@ -139,7 +148,16 @@ export function readConfig(repoRoot = REPO) {
   if (typeof cfg.output !== "string" || !cfg.output.startsWith("src-tauri/licenses/")) {
     throw new Usage(`${CONFIG}: output must be a file under src-tauri/licenses/`);
   }
-  if (typeof cfg.target !== "string" || !cfg.target) throw new Usage(`${CONFIG}: target (a Rust target triple) is required`);
+  if (!Array.isArray(cfg.targets) || cfg.targets.length === 0 || cfg.targets.some((t) => typeof t !== "string" || !t)) {
+    throw new Usage(`${CONFIG}: targets (the Rust target triples the installers ship) is required`);
+  }
+  if (new Set(cfg.targets).size !== cfg.targets.length) throw new Usage(`${CONFIG}: duplicate target in targets`);
+  for (const g of cfg.go ?? []) {
+    const got = (g.platforms ?? []).map((p) => p.target);
+    if (JSON.stringify([...got].sort()) !== JSON.stringify([...cfg.targets].sort()) || (g.platforms ?? []).some((p) => !p.goos || !p.goarch)) {
+      throw new Usage(`${CONFIG}: go ${g.component} platforms must give goos/goarch for exactly the targets [${cfg.targets.join(", ")}]`);
+    }
+  }
   const ids = new Set();
   for (const c of [...(cfg.rust ?? []), ...(cfg.go ?? []), ...(cfg.npm ?? [])]) {
     if (!c.component || ids.has(c.component)) throw new Usage(`${CONFIG}: missing or duplicate component ${c.component}`);
@@ -154,12 +172,41 @@ export function isFirstParty(source, prefixes) {
   return prefixes.some((p) => source.startsWith(p));
 }
 
+/** The licence ids of an SPDX expression, "X WITH exception" kept whole ("(MIT OR Apache-2.0) AND ISC" -> 3 ids). */
+export function licenceIds(expr) {
+  return String(expr)
+    .replace(/[()]/g, " ")
+    .split(/\s+(?:OR|AND)\s+/)
+    .map((x) => x.trim().replace(/\s+/g, " "))
+    .filter(Boolean);
+}
+
+/**
+ * The licence a crate is used under when its expression offers a licence outside PERMISSIVE:
+ * null when every alternative is permissive; else the `elect` entry, which must be one of the
+ * alternatives of a plain choice (no AND), on PERMISSIVE, and the only licence cargo-about
+ * resolved for the crate. Refuses otherwise, so a copyleft choice is a reviewed change.
+ */
+export function electedLicence(label, name, expr, resolvedIds, elect = {}) {
+  const ids = licenceIds(expr);
+  const outside = ids.filter((id) => !PERMISSIVE.has(id));
+  if (outside.length === 0) return null;
+  const e = elect[name];
+  if (!e) throw new Refused(`${label}: offered under ${expr}, which includes ${outside.join(", ")}; add the licence it is used under to elect in ${CONFIG}`);
+  if (/\bAND\b/.test(expr) || !ids.includes(e) || !PERMISSIVE.has(e)) {
+    throw new Refused(`${label}: elect ${e} is not a permissive alternative of ${expr}`);
+  }
+  if (resolvedIds.some((id) => id !== e)) throw new Refused(`${label}: elected ${e}, but cargo-about resolved ${[...new Set(resolvedIds)].join(", ")}`);
+  return e;
+}
+
 /**
  * Normalise cargo-about JSON into { packages, texts }. `packages` are third-party crates
  * [{ name, version, licence, texts: [key], url }]; `texts` maps key -> { id, text }.
- * Refuses a third-party crate whose licence texts are missing or outside PERMISSIVE.
+ * Refuses a third-party crate whose licence texts are missing or outside PERMISSIVE, or whose
+ * licence choice includes a non-permissive licence without an election (`elect`).
  */
-export function normaliseCargoAbout(json, { firstPartySources = [] } = {}) {
+export function normaliseCargoAbout(json, { firstPartySources = [], elect = {} } = {}) {
   if (!json || !Array.isArray(json.crates) || !Array.isArray(json.licenses)) throw new Refused("cargo-about output has no crates[] / licenses[]");
   const textsByCrate = new Map();
   for (const l of json.licenses) {
@@ -182,10 +229,20 @@ export function normaliseCargoAbout(json, { firstPartySources = [] } = {}) {
       if (!PERMISSIVE.has(g.id)) throw new Refused(`${p.name} ${p.version}: ships under ${g.id}, which is not on the permissive list (needs a licence review)`);
     }
     const label = `${p.name} ${p.version}`;
+    const expr = String(c.license ?? "").replace(/\s+/g, " ").trim();
+    const resolved = got.map((g) => g.id);
+    let licence;
+    if (expr === "" || expr === "Unknown" || expr === "NOASSERTION") {
+      // No SPDX expression in Cargo.toml (only `license-file`): cargo-about identified the file's text.
+      licence = `${[...new Set(resolved)].sort().join(" AND ")} (identified from its licence file; Cargo.toml names no SPDX licence)`;
+    } else {
+      const elected = electedLicence(label, p.name, expr, resolved, elect);
+      licence = elected ? `${expr} (used under ${elected})` : expr;
+    }
     packages.push({
       name: p.name,
       version: p.version,
-      licence: String(c.license ?? "").replace(/\s+/g, " "),
+      licence,
       texts: [...new Set(got.map((g) => addText(texts, g.id, g.text, label)))].sort(),
       url: p.repository ?? (p.source?.startsWith("registry+") ? `https://crates.io/crates/${p.name}/${p.version}` : null),
     });
@@ -288,10 +345,58 @@ export function normaliseNpm(raw, entry) {
 const sortPackages = (ps) => ps.sort((a, b) => (a.name === b.name ? a.version.localeCompare(b.version) : a.name < b.name ? -1 : 1));
 
 /**
- * Render the notices file from normalised components [{ component, source, tool, packages, texts }].
- * Returns the text. Text ids are T1.. in order of first use by sorted component, then package.
+ * Merge the per-target scans of one component ([{ target, platform, component, source, tool,
+ * packages, texts }], tool without the target) into one normalised component: the union of the
+ * packages (by name and version; each keeps the targets it is on) and of the texts. The scans must
+ * come from one source revision and one tool, and cover exactly `targets`.
  */
-export function renderNotices(components) {
+export function mergeTargets(scans, targets) {
+  if (scans.length === 0) throw new Refused("nothing to merge");
+  const { component, source, tool } = scans[0];
+  const got = scans.map((s) => s.target);
+  if (JSON.stringify([...got].sort()) !== JSON.stringify([...targets].sort())) {
+    throw new Refused(`${component}: scanned for [${got.join(", ")}], configured targets are [${targets.join(", ")}]; re-run collect`);
+  }
+  for (const s of scans) {
+    if (s.component !== component || s.source !== source || s.tool !== tool) {
+      throw new Refused(`${component}: the ${s.target} scan is from ${s.source} (${s.tool}), the ${scans[0].target} scan from ${source} (${tool}); re-run collect`);
+    }
+  }
+  const order = new Map(targets.map((t, i) => [t, i]));
+  const ordered = [...scans].sort((a, b) => order.get(a.target) - order.get(b.target));
+  const byKey = new Map();
+  const texts = {};
+  for (const s of ordered) {
+    for (const [k, t] of Object.entries(s.texts)) {
+      texts[k] ??= { id: t.id, body: t.body, notices: {} };
+      for (const [cr, pkgs] of Object.entries(t.notices)) {
+        const list = (texts[k].notices[cr] ??= []);
+        for (const p of pkgs) if (!list.includes(p)) list.push(p);
+      }
+    }
+    for (const p of s.packages) {
+      const key = `${p.name} ${p.version}`;
+      const have = byKey.get(key);
+      if (!have) {
+        byKey.set(key, { ...p, texts: [...p.texts], targets: [s.target] });
+        continue;
+      }
+      if (have.licence !== p.licence) throw new Refused(`${component}: ${key} is ${have.licence} on ${have.targets[0]} but ${p.licence} on ${s.target}`);
+      have.texts = [...new Set([...have.texts, ...p.texts])].sort();
+      have.targets.push(s.target);
+    }
+  }
+  const platforms = ordered.map((s) => s.platform ?? s.target);
+  return { component, source, tool: `${tool}, ${platforms.join(", ")}`, targets: [...targets], packages: sortPackages([...byKey.values()]), texts };
+}
+
+/**
+ * Render the notices file from normalised components [{ component, source, tool, packages, texts }].
+ * `targets` (the release targets) is listed in the header; a package whose `targets` is not all of
+ * them is marked with the ones it is on. Returns the text. Text ids are T1.. in order of first use
+ * by sorted component, then package.
+ */
+export function renderNotices(components, { targets = [] } = {}) {
   const comps = [...components].sort((a, b) => (a.component < b.component ? -1 : 1));
   // Merge texts across components: one body, the union of copyright blocks and their packages.
   const all = {};
@@ -314,6 +419,10 @@ export function renderNotices(components) {
   out.push("the packages it applies to. Generated by");
   out.push("scripts/third-party-notices.mjs from release/notices.json; do not edit by hand.");
   out.push("");
+  if (targets.length) {
+    out.push(`Targets: ${targets.join(", ")}`);
+    out.push("");
+  }
   out.push("Components:");
   for (const c of comps) out.push(`  ${c.component}: ${c.source}, ${c.tool}, ${c.packages.length} third-party packages`);
   out.push("");
@@ -321,7 +430,8 @@ export function renderNotices(components) {
     out.push(`## ${c.component}`);
     out.push("");
     for (const p of c.packages) {
-      out.push(`${p.name} ${p.version}  ${p.licence}  [${p.texts.map((k) => ids.get(k)).join(", ")}]${p.url ? `  ${p.url}` : ""}`);
+      const only = p.targets && targets.length && p.targets.length < targets.length ? `  (on ${p.targets.join(", ")} only)` : "";
+      out.push(`${p.name} ${p.version}  ${p.licence}  [${p.texts.map((k) => ids.get(k)).join(", ")}]${p.url ? `  ${p.url}` : ""}${only}`);
     }
     out.push("");
   }
@@ -403,21 +513,21 @@ export function sourceRev(dir, label) {
 
 const escapeModule = (m) => m.replace(/[A-Z]/g, (c) => `!${c.toLowerCase()}`);
 
-/** Scan one Rust component; returns the raw cargo-about output with where it came from. */
-function collectRust(cfg, entry, fedRoot) {
+/** Scan one Rust component for one target; returns the raw cargo-about output with where it came from. */
+function collectRust(cfg, entry, fedRoot, target) {
   const repoDir = entry.repo === "." ? REPO : path.join(fedRoot, entry.repo);
   const manifest = path.join(repoDir, entry.manifest);
   if (!fs.existsSync(manifest)) throw new Usage(`${entry.component}: ${manifest} not found (pass --federation-root)`);
-  const args = ["about", "generate", "--format", "json", "--fail", "-c", path.join(REPO, "release", "about.toml"), "-m", manifest, "--locked", "--target", cfg.target];
+  const args = ["about", "generate", "--format", "json", "--fail", "-c", path.join(REPO, "release", "about.toml"), "-m", manifest, "--locked", "--target", target];
   if (entry.no_default_features) args.push("--no-default-features");
   if (entry.features?.length) args.push("--features", entry.features.join(" "));
   const about = JSON.parse(run("cargo", args, { cwd: repoDir }));
   const version = run("cargo", ["about", "--version"]).trim();
-  return { component: entry.component, kind: "rust", source: sourceRev(repoDir, entry.repo === "." ? "citrate-core" : entry.repo), tool: `${version}, ${cfg.target}`, about };
+  return { component: entry.component, kind: "rust", target, source: sourceRev(repoDir, entry.repo === "." ? "citrate-core" : entry.repo), tool: version, about };
 }
 
-/** Scan one Go component; returns the raw report plus every licence file it may need. */
-function collectGo(cfg, entry) {
+/** Scan one Go component for one platform ({ target, goos, goarch }); returns the raw report plus every licence file it may need. */
+function collectGo(cfg, entry, platform) {
   const dl = JSON.parse(run("go", ["mod", "download", "-json", `${entry.module}@${entry.version}`]));
   if (!dl.Dir) throw new Usage(`${entry.module}@${entry.version}: go mod download gave no Dir`);
   // Ask inside the module: its go.mod may select a newer toolchain, and the scanner must see that
@@ -427,7 +537,7 @@ function collectGo(cfg, entry) {
   const modCache = run("go", ["env", "GOMODCACHE"]).trim();
   const tpl = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "notices-go-")), "report.tpl");
   fs.writeFileSync(tpl, "{{range .}}{{.Name}}\t{{.Version}}\t{{.LicenseName}}\t{{.LicensePath}}\t{{.LicenseURL}}\n{{end}}");
-  const env = { ...process.env, GOROOT: goroot, GOOS: entry.goos, GOARCH: entry.goarch, CGO_ENABLED: "0", GOFLAGS: "-mod=readonly" };
+  const env = { ...process.env, GOROOT: goroot, GOOS: platform.goos, GOARCH: platform.goarch, CGO_ENABLED: "0", GOFLAGS: "-mod=readonly" };
   const tool = entry.tool ?? "go-licenses";
   let tsv;
   try {
@@ -449,7 +559,19 @@ function collectGo(cfg, entry) {
     }
   }
   keep(path.join(goroot, "LICENSE"));
-  return { component: entry.component, kind: "go", source: `${entry.module}@${entry.version} ${entry.package}`, tool: `go-licenses, ${goVersion}, ${entry.goos}/${entry.goarch}`, tsv, files, goroot, goVersion, modCache };
+  return {
+    component: entry.component,
+    kind: "go",
+    target: platform.target,
+    platform: `${platform.goos}/${platform.goarch}`,
+    source: `${entry.module}@${entry.version} ${entry.package}`,
+    tool: `go-licenses, ${goVersion}`,
+    tsv,
+    files,
+    goroot,
+    goVersion,
+    modCache,
+  };
 }
 
 const LICENCE_FILE = /^(licen[cs]e|copying)([._-].*)?$/i;
@@ -518,7 +640,9 @@ async function collectNpm(cfg, entry) {
 /** Turn one collected component into { component, source, tool, packages, texts } (clarifications from the config). */
 export function normaliseCollected(raw, cfg) {
   const meta = { component: raw.component, source: raw.source, tool: raw.tool };
-  if (raw.kind === "rust") return { ...meta, ...normaliseCargoAbout(raw.about, { firstPartySources: cfg.first_party_sources ?? [] }) };
+  if (raw.target) meta.target = raw.target;
+  if (raw.platform) meta.platform = raw.platform;
+  if (raw.kind === "rust") return { ...meta, ...normaliseCargoAbout(raw.about, { firstPartySources: cfg.first_party_sources ?? [], elect: cfg.elect ?? {} }) };
   if (raw.kind === "npm") {
     const npmEntry = (cfg.npm ?? []).find((e) => e.component === raw.component);
     if (!npmEntry) throw new Refused(`${raw.component}: not configured in ${CONFIG}`);
@@ -547,7 +671,7 @@ export function normaliseCollected(raw, cfg) {
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (!["collect", "render", "check"].includes(cmd)) throw new Usage(cmd ? `unknown command ${cmd}` : "a command is required");
-  const a = { cmd, fedRoot: path.resolve(REPO, ".."), only: null, work: path.join(REPO, "target", "third-party-notices") };
+  const a = { cmd, fedRoot: path.resolve(REPO, ".."), only: null, target: null, work: path.join(REPO, "target", "third-party-notices") };
   for (let i = 0; i < rest.length; i++) {
     const k = rest[i];
     const v = () => {
@@ -557,20 +681,34 @@ function parseArgs(argv) {
     };
     if (k === "--federation-root") a.fedRoot = path.resolve(v());
     else if (k === "--only") a.only = v();
+    else if (k === "--target") a.target = v();
     else if (k === "--work") a.work = path.resolve(v());
     else throw new Usage(`unknown argument ${k}`);
   }
   return a;
 }
 
+/** Where collect keeps one raw scan: `<component>@<target>.json` for rust and go, `<component>.json` for npm. */
+const collectedFile = (work, component, target = null) => path.join(work, target ? `${component}@${target}.json` : `${component}.json`);
+
 function loadCollected(work, cfg) {
+  const read = (component, target) => {
+    const f = collectedFile(work, component, target);
+    if (!fs.existsSync(f)) throw new Refused(`${component}${target ? ` (${target})` : ""}: not collected yet (${f}); run collect first`);
+    return normaliseCollected(JSON.parse(fs.readFileSync(f, "utf8")), cfg);
+  };
   const comps = [];
-  for (const e of [...(cfg.rust ?? []), ...(cfg.go ?? []), ...(cfg.npm ?? [])]) {
-    const f = path.join(work, `${e.component}.json`);
-    if (!fs.existsSync(f)) throw new Refused(`${e.component}: not collected yet (${f}); run collect first`);
-    comps.push(normaliseCollected(JSON.parse(fs.readFileSync(f, "utf8")), cfg));
+  for (const e of [...(cfg.rust ?? []), ...(cfg.go ?? [])]) {
+    comps.push(mergeTargets(cfg.targets.map((t) => read(e.component, t)), cfg.targets));
   }
+  for (const e of cfg.npm ?? []) comps.push(read(e.component, null));
   return comps;
+}
+
+/** Target triples on the notices file's "Targets:" header line ([] when it has none). */
+export function noticeTargets(text) {
+  const line = text.split("\n").find((l) => l.startsWith("Targets: "));
+  return line ? line.slice("Targets: ".length).split(", ").filter(Boolean) : [];
 }
 
 /** Components named in the committed notices file's header, for `check`. */
@@ -592,51 +730,63 @@ async function main(argv) {
   const cfg = readConfig();
   if (a.cmd === "collect") {
     fs.mkdirSync(a.work, { recursive: true });
+    if (a.target && !cfg.targets.includes(a.target)) throw new Usage(`--target ${a.target} is not one of the configured targets [${cfg.targets.join(", ")}]`);
+    const targets = a.target ? [a.target] : cfg.targets;
     for (const e of cfg.rust ?? []) {
       if (a.only && a.only !== e.component) continue;
-      process.stderr.write(`collecting ${e.component} (cargo-about)\n`);
-      const c = collectRust(cfg, e, a.fedRoot);
-      fs.writeFileSync(path.join(a.work, `${e.component}.json`), JSON.stringify(c));
-      process.stdout.write(`${e.component}: collected from ${c.source}\n`);
+      for (const t of targets) {
+        process.stderr.write(`collecting ${e.component} for ${t} (cargo-about)\n`);
+        const c = collectRust(cfg, e, a.fedRoot, t);
+        fs.writeFileSync(collectedFile(a.work, e.component, t), JSON.stringify(c));
+        process.stdout.write(`${e.component} (${t}): collected from ${c.source}\n`);
+      }
     }
     for (const e of cfg.go ?? []) {
       if (a.only && a.only !== e.component) continue;
-      process.stderr.write(`collecting ${e.component} (go-licenses)\n`);
-      const c = collectGo(cfg, e);
-      fs.writeFileSync(path.join(a.work, `${e.component}.json`), JSON.stringify(c));
-      process.stdout.write(`${e.component}: collected from ${c.source}\n`);
+      for (const p of e.platforms.filter((x) => targets.includes(x.target))) {
+        process.stderr.write(`collecting ${e.component} for ${p.goos}/${p.goarch} (go-licenses)\n`);
+        const c = collectGo(cfg, e, p);
+        fs.writeFileSync(collectedFile(a.work, e.component, p.target), JSON.stringify(c));
+        process.stdout.write(`${e.component} (${p.goos}/${p.goarch}): collected from ${c.source}\n`);
+      }
     }
     for (const e of cfg.npm ?? []) {
       if (a.only && a.only !== e.component) continue;
       process.stderr.write(`collecting ${e.component} (vite build)\n`);
       const c = await collectNpm(cfg, e);
-      fs.writeFileSync(path.join(a.work, `${e.component}.json`), JSON.stringify(c));
+      fs.writeFileSync(collectedFile(a.work, e.component), JSON.stringify(c));
       process.stdout.write(`${e.component}: collected ${c.packages.length} packages from ${c.source}\n`);
     }
     return 0;
   }
   if (a.cmd === "render") {
     const comps = loadCollected(a.work, cfg);
-    const text = renderNotices(comps);
+    const text = renderNotices(comps, { targets: cfg.targets });
     fs.writeFileSync(path.join(REPO, cfg.output), text);
     const invPath = path.join(REPO, "release", "licences.json");
     const inv = updateInventory(JSON.parse(fs.readFileSync(invPath, "utf8")), comps, cfg.output);
     fs.writeFileSync(invPath, formatInventory(inv) + "\n");
-    process.stdout.write(`wrote ${cfg.output} (${Buffer.byteLength(text)} bytes, ${comps.length} components) and updated release/licences.json\n`);
+    process.stdout.write(`wrote ${cfg.output} (${Buffer.byteLength(text)} bytes, ${comps.length} components, ${cfg.targets.length} targets) and updated release/licences.json\n`);
     return 0;
   }
-  // check: the committed file names exactly the configured components, and the inventory points at it.
+  // check: the committed file names exactly the configured components and targets, and the
+  // inventory points at it.
   const file = path.join(REPO, cfg.output);
   if (!fs.existsSync(file)) throw new Refused(`${cfg.output} does not exist; run collect and render`);
+  const committed = fs.readFileSync(file, "utf8");
+  const gotTargets = noticeTargets(committed);
+  if (JSON.stringify(gotTargets) !== JSON.stringify(cfg.targets)) {
+    throw new Refused(`${cfg.output} covers targets [${gotTargets.join(", ")}], ${CONFIG} configures [${cfg.targets.join(", ")}]; re-run collect and render`);
+  }
   const want = [...(cfg.rust ?? []), ...(cfg.go ?? []), ...(cfg.npm ?? [])].map((e) => e.component).sort();
-  const got = noticeComponents(fs.readFileSync(file, "utf8")).sort();
+  const got = noticeComponents(committed).sort();
   if (JSON.stringify(want) !== JSON.stringify(got)) throw new Refused(`${cfg.output} covers [${got.join(", ")}], ${CONFIG} configures [${want.join(", ")}]; re-run collect and render`);
   const inv = JSON.parse(fs.readFileSync(path.join(REPO, "release", "licences.json"), "utf8"));
   for (const id of want) {
     const target = id === "app" ? inv.app : inv.components.find((c) => c.id === id);
     if (target?.third_party_notices?.file !== cfg.output) throw new Refused(`release/licences.json ${id} does not point at ${cfg.output}; re-run render`);
   }
-  process.stdout.write(`third-party notices: OK (${want.length} components in ${cfg.output})\n`);
+  process.stdout.write(`third-party notices: OK (${want.length} components, ${cfg.targets.length} targets in ${cfg.output})\n`);
   return 0;
 }
 

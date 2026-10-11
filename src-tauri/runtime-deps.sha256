@@ -7,14 +7,14 @@
 #
 # OWNER: pinned so far: the BGE GGUF, the four Apple sidecars and skills-bundle.tar.gz (v0.5.0-rc.1,
 # 2026-10-06), and bge-base-en-v1.5.tar.gz + knowledge-corpus.tar.gz (checklist A9, 2026-10-06), all uploaded to
-# `runtime-deps` with these digests; sources in the comment above their lines. Still unpinned, so
-# the release workflow fails closed until they are uploaded and pinned: the llama runtime tarball
-# and the Gemma GGUF. scripts/ci/verify-runtime-deps.sh refuses any manifest without the
+# `runtime-deps` with these digests; sources in the comment above their lines. The llama runtime
+# (tarball and llama-server) is pinned since v0.5.0-rc.4 (2026-10-11, below). Still unpinned, so
+# the release workflow fails closed until it is uploaded and pinned: the Gemma GGUF. scripts/ci/verify-runtime-deps.sh refuses any manifest without the
 # knowledge-corpus.tar.gz pin.
 # Procedure (docs/RELEASE.md §3):
 #   shasum -a 256 citrate-aarch64-apple-darwin mem-mcp-aarch64-apple-darwin \
-#     node-agent-aarch64-apple-darwin llama-server-aarch64-apple-darwin \
-#     llama-runtime-arm64.tar.gz gemma-4-E4B-it-Q4_0.gguf bge-base-en-v1.5.tar.gz \
+#     node-agent-aarch64-apple-darwin llama-server-aarch64-apple-darwin-<llama> \
+#     llama-runtime-arm64-<llama>.tar.gz gemma-4-E4B-it-Q4_0.gguf bge-base-en-v1.5.tar.gz \
 #     bge-base-en-v1.5-f16.gguf knowledge-corpus.tar.gz >> src-tauri/runtime-deps.sha256
 # then upload exactly those files to `runtime-deps` and open a PR with the pins.
 # HUP-S3.1: knowledge-corpus.tar.gz is the Hermes knowledge corpus (docs/RELEASE.md section 3);
@@ -26,11 +26,23 @@ fa9e1f6c0109aa2507a09d97d02aad84774d5b2ba6d3199f7af7e0fba4c6eaee  bge-base-en-v1
 # v0.5.0-rc.1 Apple sidecars (macOS arm64, built 2026-10-06 on the release Mac): citrate from
 # citrate-chain 2979a157 (scripts/build-sidecar.sh, LZMA_API_STATIC=1); mem-mcp from
 # citrate-memories 0e9d488 (--features rocksdb,transformer, implements import-corpus); node-agent
-# from citrate-node-agent 1d8cb8e; llama-server is the llama.cpp build staged for 0.4.x, unchanged.
+# from citrate-node-agent 1d8cb8e.
 9ad56eda5af2dbdd8f1bef44a890f3adb23cdcfba4c75774bb72ea47763736e8  citrate-aarch64-apple-darwin
 315984355eb9652118c457248d907661f877d8516f7fe0193f01dc85e29bf8e6  mem-mcp-aarch64-apple-darwin
 2435a484c54deb2d7c93180d3a8c1534cc68ec825b24719829139e1d3af177c7  node-agent-aarch64-apple-darwin
-ff931bc315f7cea369ad7d0b25024311df8c3e3352c1273f17abf7953c8ea2d4  llama-server-aarch64-apple-darwin
+# v0.5.0-rc.4 llama runtime for macOS arm64 (2026-10-11, release Mac): llama.cpp tag b10909 (commit
+# a2878d30df0130dde503a7d9ba30d3d21bd71b9f) built from source with upstream's macos-arm64 release
+# options (GGML_METAL_EMBED_LIBRARY, deployment target 13.3, @loader_path rpath, BoringSSL, RPC,
+# tools + server, no tests/examples) plus -DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF, so
+# llama-server embeds no web UI (0 assets; at b10909 LLAMA_BUILD_WEBUI alone still downloads the
+# prebuilt UI). CPU probes pinned to the upstream M1 runner's result (dotprod, no i8mm/SVE/SME) so
+# it runs on every Apple Silicon Mac. Developer ID signed (hardened runtime, timestamp).
+# The tarball is the flat dependency closure of llama-server (11 Mach-O files, LICENSE-llama.cpp.txt
+# and llama-server.sha256); the sidecar is the same llama-server with the extra rpath
+# @loader_path/../Resources/llama. Replaces llama-server-aarch64-apple-darwin (ff931bc3..., b10909
+# upstream with the web UI), which stays on runtime-deps unpinned.
+1ee692d5bb142d64d1a53ed2567b4a17033bf99034a9c406dc83ac73dd6204a6  llama-runtime-arm64-b10909-nowebui.tar.gz
+ce6a8fd65a82aab00e08f80f567bfcf35e217111a3ce96a05402b4dab28c37cd  llama-server-aarch64-apple-darwin-b10909-nowebui
 # HUP-S3.2 skills-bundle.tar.gz (v0.5.0-rc.1, 2026-10-06): `node scripts/stage-skills-bundle.mjs build`
 # from the five skills.lock sources at their pinned commits (fresh clones via
 # `node scripts/eval-check.mjs --fetch-skill-sources`), 240 skills / 1,055 files + skills.lock,

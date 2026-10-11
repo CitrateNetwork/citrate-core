@@ -119,8 +119,8 @@ jobs:
             citrate-aarch64-apple-darwin
             mem-mcp-aarch64-apple-darwin
             node-agent-aarch64-apple-darwin
-            llama-server-aarch64-apple-darwin
-            llama-runtime-arm64.tar.gz
+            llama-server-aarch64-apple-darwin-b10909-nowebui
+            llama-runtime-arm64-b10909-nowebui.tar.gz
             gemma-4-E4B-it-Q4_0.gguf
             bge-base-en-v1.5.tar.gz
             bge-base-en-v1.5-f16.gguf
@@ -133,12 +133,14 @@ jobs:
 
           mkdir -p src-tauri/binaries src-tauri/llama src-tauri/models
           # Sidecars (Apple Silicon target triple).
-          for b in citrate mem-mcp node-agent llama-server; do
+          for b in citrate mem-mcp node-agent; do
             cp "$DL/$b-aarch64-apple-darwin" src-tauri/binaries/
           done
+          # llama.cpp b10909 built with the web UI off (v0.5.0-rc.4, runtime-deps.sha256).
+          cp "$DL/llama-server-aarch64-apple-darwin-b10909-nowebui" src-tauri/binaries/llama-server-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
           # llama runtime dylibs (packed as a tarball asset) + the model.
-          tar -xzf "$DL/llama-runtime-arm64.tar.gz" -C src-tauri/llama
+          tar -xzf "$DL/llama-runtime-arm64-b10909-nowebui.tar.gz" -C src-tauri/llama
           # HUP-S11.0 (g5-size): keep only llama-server's dependency closure. The tarball holds
           # each dylib three times (dereferenced version symlinks) plus unused tool libraries,
           # about 34 MB the loader never opens. Refuses (fails the job) if a needed library is

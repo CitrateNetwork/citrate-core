@@ -11,9 +11,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PERMISSIVE,
+  electedLicence,
   formatInventory,
   isFirstParty,
+  licenceIds,
+  mergeTargets,
   noticeComponents,
+  noticeTargets,
   normaliseCargoAbout,
   normaliseCollected,
   normaliseGoLicenses,
@@ -103,6 +107,87 @@ describe("normaliseCargoAbout", () => {
 
   it("refuses output that is not cargo-about JSON", () => {
     expect(() => normaliseCargoAbout({})).toThrow(/no crates/);
+  });
+});
+
+// v0.5.0-rc.4 (g3-licence): a crate offered under a choice that includes a non-permissive licence
+// (ittapi: GPL-2.0-only OR BSD-3-Clause, pulled in by wasmtime on Linux and Windows) is recorded
+// with the licence it is used under, and only through an explicit election.
+describe("licence elections", () => {
+  const ittapi = crate("ittapi", "0.4.0");
+  const about = (license, textIds) => ({
+    overview: [],
+    crates: [{ package: ittapi, license }],
+    licenses: textIds.map((id) => ({ id, name: id, text: `${id} text`, used_by: [{ crate: ittapi }] })),
+  });
+
+  it("splits an SPDX expression into its licence ids, keeping WITH exceptions whole", () => {
+    expect(licenceIds("GPL-2.0-only OR BSD-3-Clause")).toEqual(["GPL-2.0-only", "BSD-3-Clause"]);
+    expect(licenceIds("(MIT OR Apache-2.0 WITH LLVM-exception) AND  ISC")).toEqual(["MIT", "Apache-2.0 WITH LLVM-exception", "ISC"]);
+  });
+
+  it("names the identified licence of a crate that declares only a licence file", () => {
+    const n = normaliseCargoAbout(about("Unknown", ["MIT"]));
+    expect(n.packages[0].licence).toBe("MIT (identified from its licence file; Cargo.toml names no SPDX licence)");
+  });
+
+  it("records the elected licence next to the expression", () => {
+    const n = normaliseCargoAbout(about("GPL-2.0-only OR BSD-3-Clause", ["BSD-3-Clause"]), { elect: { ittapi: "BSD-3-Clause" } });
+    expect(n.packages[0].licence).toBe("GPL-2.0-only OR BSD-3-Clause (used under BSD-3-Clause)");
+    // A fully permissive choice needs no election and prints unchanged.
+    expect(electedLicence("x 1", "x", "MIT OR Apache-2.0", ["MIT"], {})).toBeNull();
+  });
+
+  it("refuses a non-permissive alternative without an election, or with a wrong one", () => {
+    expect(() => normaliseCargoAbout(about("GPL-2.0-only OR BSD-3-Clause", ["BSD-3-Clause"]))).toThrow(/includes GPL-2\.0-only; add the licence it is used under to elect/);
+    expect(() => normaliseCargoAbout(about("GPL-2.0-only OR BSD-3-Clause", ["BSD-3-Clause"]), { elect: { ittapi: "MIT" } })).toThrow(/not a permissive alternative/);
+    expect(() => normaliseCargoAbout(about("GPL-2.0-only OR BSD-3-Clause", ["BSD-3-Clause"]), { elect: { ittapi: "GPL-2.0-only" } })).toThrow(/not a permissive alternative/);
+    expect(() => electedLicence("y 1", "y", "GPL-2.0-only AND MIT", ["MIT"], { y: "MIT" })).toThrow(/not a permissive alternative/);
+    expect(() => electedLicence("y 1", "y", "GPL-2.0-only OR MIT OR BSD-3-Clause", ["BSD-3-Clause"], { y: "MIT" })).toThrow(/cargo-about resolved BSD-3-Clause/);
+  });
+});
+
+describe("mergeTargets", () => {
+  const T = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"];
+  const scan = (target, packages, texts, extra = {}) => ({ component: "app", source: "core@1", tool: "cargo-about 0.9.2", target, packages, texts, ...extra });
+  const mit = { id: "MIT", body: "MIT body", notices: {} };
+  const pkg = (name, texts = ["k1"]) => ({ name, version: "1.0.0", licence: "MIT", texts, url: null });
+
+  it("unions the packages of every target, each once with the targets it is on", () => {
+    const m = mergeTargets(
+      [
+        scan("x86_64-pc-windows-msvc", [pkg("serde"), pkg("windows-sys", ["k2"])], { k1: mit, k2: { id: "Apache-2.0", body: "Apache", notices: {} } }),
+        scan("aarch64-apple-darwin", [pkg("serde"), pkg("core-foundation")], { k1: mit }),
+      ],
+      T,
+    );
+    expect(m.packages.map((p) => [p.name, p.targets])).toEqual([
+      ["core-foundation", ["aarch64-apple-darwin"]],
+      ["serde", ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]],
+      ["windows-sys", ["x86_64-pc-windows-msvc"]],
+    ]);
+    expect(Object.keys(m.texts).sort()).toEqual(["k1", "k2"]);
+    expect(m.tool).toBe("cargo-about 0.9.2, aarch64-apple-darwin, x86_64-pc-windows-msvc");
+  });
+
+  it("names Go platforms in the tool line", () => {
+    const m = mergeTargets([scan(T[0], [], {}, { platform: "darwin/arm64" }), scan(T[1], [], {}, { platform: "windows/amd64" })], T);
+    expect(m.tool).toBe("cargo-about 0.9.2, darwin/arm64, windows/amd64");
+  });
+
+  it("refuses a missing target, mixed sources and a package whose licence differs by target", () => {
+    expect(() => mergeTargets([scan(T[0], [], {})], T)).toThrow(/scanned for \[aarch64-apple-darwin\]/);
+    expect(() => mergeTargets([scan(T[0], [], {}), scan(T[1], [], {}, { source: "core@2" })], T)).toThrow(/re-run collect/);
+    expect(() => mergeTargets([scan(T[0], [pkg("a")], { k1: mit }), scan(T[1], [{ ...pkg("a"), licence: "Apache-2.0" }], { k1: mit })], T)).toThrow(/a 1\.0\.0 is MIT on aarch64-apple-darwin but Apache-2\.0/);
+  });
+
+  it("renders the targets in the header and marks target-only packages", () => {
+    const m = mergeTargets([scan(T[0], [pkg("serde")], { k1: mit }), scan(T[1], [pkg("serde"), pkg("windows-sys")], { k1: mit })], T);
+    const text = renderNotices([m], { targets: T });
+    expect(noticeTargets(text)).toEqual(T);
+    expect(noticeComponents(text)).toEqual(["app"]);
+    expect(text).toContain("serde 1.0.0  MIT  [T1]\n");
+    expect(text).toContain("windows-sys 1.0.0  MIT  [T1]  (on x86_64-pc-windows-msvc only)\n");
   });
 });
 
@@ -308,6 +393,31 @@ describe("the committed config and notices", () => {
 
   it("keeps MPL-2.0 the only copyleft licence on the permissive list", () => {
     expect([...PERMISSIVE].filter((l) => /GPL|MPL|EPL|CDDL|SSPL|BUSL/.test(l))).toEqual(["MPL-2.0"]);
+  });
+
+  it("covers every shipped target: the notices header lists all four, as configured", () => {
+    const cfg = readConfig(repoRoot);
+    const FOUR = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
+    expect(cfg.targets).toEqual(FOUR);
+    expect(cfg.go[0].platforms.map((p) => p.target)).toEqual(FOUR);
+    const text = fs.readFileSync(path.join(repoRoot, cfg.output), "utf8");
+    expect(noticeTargets(text)).toEqual(FOUR);
+    // Every Rust component line names all four targets; Kubo names all four platforms.
+    const lines = text.split("\n");
+    for (const e of cfg.rust) {
+      const line = lines.find((l) => l.startsWith(`  ${e.component}: `));
+      for (const t of FOUR) expect(line, e.component).toContain(t);
+    }
+    const kubo = lines.find((l) => l.startsWith("  kubo: "));
+    for (const p of ["darwin/arm64", "linux/amd64", "linux/arm64", "windows/amd64"]) expect(kubo).toContain(p);
+    // The rc.4 licence findings are recorded, not Unknown.
+    expect(text).toMatch(/^ittapi 0\.4\.0  GPL-2\.0-only OR BSD-3-Clause \(used under BSD-3-Clause\)/m);
+    expect(text).toMatch(/^github\.com\/alexbrainman\/goissue34681 \S+  BSD-3-Clause /m);
+    expect(text).toMatch(/^priority-queue \S+  LGPL-3\.0-or-later OR MPL-2\.0 \(used under MPL-2\.0\)/m);
+    // No package line says Unknown (a crate with only a licence file names the licence identified).
+    const packageLines = lines.slice(0, lines.indexOf("## Licence texts"));
+    expect(packageLines.filter((l) => /  Unknown  /.test(l))).toEqual([]);
+    expect(text).toMatch(/^nova-snark 0\.75\.0  MIT \(identified from its licence file; Cargo\.toml names no SPDX licence\)/m);
   });
 
   it("CLI check passes on the committed notices", () => {

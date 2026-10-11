@@ -1,6 +1,6 @@
 ---
 created: 2026-10-04
-branch: hup/n6-size-licence (addendum section 8 on hup/n7-size-licence-release-prep, 2026-10-04; sections 9 and 10 on release/v0.5.0-gates, 2026-10-06)
+branch: hup/n6-size-licence (addendum section 8 on hup/n7-size-licence-release-prep, 2026-10-04; sections 9 and 10 on release/v0.5.0-gates, 2026-10-06; 9.2 item 4, 9.3 a/b/d/e and 9.5 updated for v0.5.0-rc.4 on licence/v050-rc4-notices-all-targets, 2026-10-11)
 author: Larry Klosowski + Claude Opus 5.5
 status: prepared for the v0.5.0 owner signature (section 10), unsigned
 ---
@@ -271,7 +271,7 @@ Read from the four `src-tauri/tauri.bundle-*.conf.json` files, `src-tauri/tauri.
 | What | Inventory entry | Result |
 |---|---|---|
 | Eight sidecars: citrate node, node-agent, mem-mcp, llama-server, ipfs (Kubo), comms-member-daemon, cluster-daemon, Hermes | one entry each (`externalBin:`) | covered; Rust and Go notices regenerated (9.2) |
-| llama runtime libraries (`llama/*`) | `llama.cpp` | covered; vendored-library texts added (9.2), web UI open (9.3) |
+| llama runtime libraries (`llama/*`) | `llama.cpp` | covered; vendored-library texts added (9.2), web UI removed from the macOS build at rc.4, Windows rebuild pending (9.3 a) |
 | BGE model and its GGUF, Gemma 4 GGUF (node flavour only) | `bge-base-en-v1.5`, `gemma-4-e4b` | covered |
 | skills, skills bundle, docs corpus, knowledge corpus, capsules, contract templates, `licenses/*` | first-party and per-source entries | covered; the 15 corpus source ids in the spec equal the inventory's `corpus:` covers |
 | **The webview** (Vite build of `src/`, `frontendDist`) | **none before this review** | **gap, fixed** (9.2) |
@@ -307,16 +307,38 @@ The staged knowledge corpus is not in this checkout; the release corpus (checkli
    citrate-cluster `755cf21`, citrate-agent-runtime `397a6b1` (node-agent, comms and Kubo
    unchanged). Every package still resolves to the permissive list (MPL-2.0 the only file-level
    copyleft, 14 packages, all unmodified) or to the webview's reviewed OFL-1.1.
+4. **v0.5.0-rc.4 (2026-10-11): the notices covered only the macOS target, and the llama runtime
+   compiled in code with no notice.** The pre-signature check (core #279, #266) found that the
+   Linux and Windows builds pull in target-only crates the aarch64-apple-darwin scan never saw (GTK
+   on Linux; windows-sys and webview2-com on Windows; `ittapi`, offered as GPL-2.0-only OR
+   BSD-3-Clause, on x86_64 Linux and Windows) and a Windows-only Kubo module
+   (`github.com/alexbrainman/goissue34681`) the scanner reported as Unknown. Fixed:
+   `third-party-notices` scans every Rust component for all four shipped targets
+   (aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
+   x86_64-pc-windows-msvc) and Kubo for darwin/arm64, linux/amd64, linux/arm64 and windows/amd64,
+   and merges them into the one notices file (the union of the packages, each licence text once,
+   a package that is not on every target marked with its targets; the header lists the four
+   targets). A crate offered under a choice that includes a non-permissive licence now needs a
+   recorded election: `ittapi` and `ittapi-sys` are used under BSD-3-Clause, `priority-queue`
+   (LGPL-3.0-or-later OR MPL-2.0) under MPL-2.0. `goissue34681` is BSD-3-Clause under the Go
+   authors' licence: its files say "Copyright 2019 The Go Authors ... governed by a BSD-style
+   license that can be found in the LICENSE file" and its repository has no LICENSE of its own,
+   so the Go LICENSE text applies (as for `whyrusleeping/base32`). `nova-snark`, which declares
+   only a licence file, is listed as the MIT that file holds. Separately, llama-server and
+   llama-common link BoringSSL statically (llama.cpp's release builds use
+   `LLAMA_BUILD_BORINGSSL=ON`), and libmtmd compiles llama.cpp's vendored SHA-256 code; their
+   texts (BoringSSL 0.20260903.0 with fiat-crypto, Apache-2.0; SHA-256, public domain;
+   rotate-bits, MIT) are now in `llama.cpp-vendored.LICENSE`, re-checked at tag b10909.
 
 ### 9.3 Still open (engineering actions, not legal judgments)
 
 | # | Item | Blocks the 0.5.0 signature? | Action |
 |---|---|---|---|
-| a | llama-server embeds llama.cpp's web UI (default build option `LLAMA_BUILD_WEBUI=ON`). Core never serves it (`--no-webui`), but its npm packages ship inside the binary without notices | yes, unless fixed or accepted | Build the bundled llama-server with `-DLLAMA_BUILD_WEBUI=OFF` on every OS (recommended), or generate the web UI's notices from its lockfile |
-| b | The notices must match the binaries actually bundled. The node is rebuilt at the new genesis commit and Hermes after the pending runtime changes (checklist B4, A7, B5) | yes | Re-run docs/RELEASE.md step 7 from those revisions after B5; the file header records them |
+| a | llama-server embeds llama.cpp's web UI. Core never serves it (`--no-webui`), but its npm packages ship inside the binary without notices | yes, unless fixed or accepted | **Done for macOS (v0.5.0-rc.4).** The macOS runtime is llama.cpp b10909 built from source with `-DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF` (at b10909 the first alone still embeds the downloaded prebuilt UI), pinned as `llama-runtime-arm64-b10909-nowebui.tar.gz` and `llama-server-aarch64-apple-darwin-b10909-nowebui` (docs/RELEASE.md section 3); it embeds 0 UI assets and `GET /` answers 404. Linux (b9438) was already built without it. **Windows:** the rc.4 installer must carry a llama-server built from source at b10909 with the same two options (docs/RELEASE_WINDOWS.md), not the upstream zip; done when the Windows lane posts its rc.4 build |
+| b | The notices must match the binaries actually bundled, on every target | yes | **Done (v0.5.0-rc.4).** Regenerated from the revisions the v0.5.0 binaries are built from (app and webview: the rc.4 tree; citrate-chain `2979a15`, citrate-agent-runtime `626486b`, citrate-memories `0e9d488`, citrate-comms `9cd12c4`, citrate-cluster `755cf21`, citrate-node-agent `1d8cb8e`, Kubo v0.42.0) for all four shipped targets (9.2 item 4); the file header records the revisions and targets, and `third-party-notices check` refuses a file whose targets differ from release/notices.json |
 | c | The release knowledge corpus records `gradient-papers` and `agentile` at a `-dirty` commit (4.8); `gradient-papers` is still not its own repository | yes, if the corpus ships | Build the release corpus from clean checkouts and pass `licence-inventory --corpus`; if `gradient-papers` cannot be clean in time, leave it out of the 0.5.0 corpus |
-| d | frontend-skills has no LICENSE file upstream (owner decision: add it) | no (the README grant stands meanwhile) | Add the MIT LICENSE to `saulbuilds/frontend-skills` |
-| e | The source-offer page at citrate.ai/source-offer is not published yet; the gate says "source offer published" | yes (gate text) | Publish the text in 9.5 on citrate-landing and link it from Settings > About > Licences |
+| d | frontend-skills' licence | no | **Decided (owner, 2026-10-11): Apache-2.0**, as the upstream repository states (supersedes the earlier MIT intent); the inventory records `skills-frontend` as Apache-2.0, review ok. Housekeeping upstream, not blocking: the README's License section at the pinned commit still says MIT and there is no top-level LICENSE file (only LICENSE-hyperframes) |
+| e | The source offer must be published; the gate says "source offer published" | yes (gate text) | **Done.** The text in 9.5 is live at https://citrate.ai/source-offer (citrate-landing #94, 2026-10-10), contact support@citrate.ai (owner decision 2026-10-11, citrate-landing #98). The link from Settings > About > Licences in the app is deferred to 0.5.1 |
 | f | Slither and SearXNG are described as Citrate-packed wheelhouses (`to_be_built`), which would be Citrate conveying the GPL/AGPL code, while the owner chose upstream fetch with no re-host | no (neither can install in 0.5.0) | Before either installs (0.5.1, after the component key ceremony): fetch each pinned wheel from upstream by URL and sha256, or record a decision to host them with the source offer |
 | g | Licence of the citrate node and Hermes sidecar binaries (4.6: Apache-2.0 files vs the BUSL list in the federation NOTICE) | no; the owner signs with the item named as open | Resolve with counsel (owner decision 2026-10-04); attestation 10.8 records it |
 
@@ -337,8 +359,10 @@ The staged knowledge corpus is not in this checkout; the release corpus (checkli
 
 ### 9.5 Source offer (owner decision 2026-10-04: option A, upstream links at pinned commits)
 
-To publish at `https://citrate.ai/source-offer` and in Settings > About > Licences. Supersedes
-the placeholders of section 5; the contact address is the one placeholder left for the owner.
+Published at `https://citrate.ai/source-offer` (citrate-landing #94, 2026-10-10); the link from
+Settings > About > Licences in the app follows in 0.5.1. Supersedes the placeholders of section 5.
+Contact address: support@citrate.ai (owner decision 2026-10-11; the page first went live with
+hello@citrate.ai and was corrected in citrate-landing #98).
 
 > Citrate Core includes or can download open-source software licensed under the GNU GPL v3 and
 > the GNU AGPL v3: the Medusa and Slither documentation in Hermes's knowledge library, and the
@@ -363,7 +387,7 @@ the placeholders of section 5; the contact address is the one placeholder left f
 > Every download is checked against the SHA-256 recorded in the signed component manifest, so
 > what you run is byte for byte the upstream release named above. The licence texts are in the
 > app under Resources/licenses. If you cannot get the source from these links, write to
-> &lt;contact address&gt; and we will send it to you, for at least three years from the date you
+> support@citrate.ai and we will send it to you, for at least three years from the date you
 > received the software.
 
 Fill the two docs commits from the release corpus `manifest.json` when it is staged (A9).
