@@ -1,15 +1,20 @@
 {
   "$comment": [
     "HUP gate g3-licence: what scripts/third-party-notices.mjs scans for the third-party notices of the code compiled into the installer.",
-    "rust: one entry per Rust sidecar crate (and the app), scanned with cargo-about (release/about.toml) at <federation-root>/<repo>/<manifest> for target, with the features the release build uses. repo '.' is this repo.",
-    "go: Kubo's cmd/ipfs at the pinned version (keep in step with the kubo entry in release/licences.json), plus the Go standard library. clarify resolves modules go-licenses cannot classify: spdx plus the licence file inside the module (GOROOT/LICENSE for code under the Go authors' BSD licence that ships no file).",
+    "rust: one entry per Rust sidecar crate (and the app), scanned with cargo-about (release/about.toml) at <federation-root>/<repo>/<manifest> once per release target in targets, with the features the release build uses, then merged (the union of the crates; a crate that is not on every target lists the targets it is on). repo '.' is this repo.",
+    "go: Kubo's cmd/ipfs at the pinned version (keep in step with the kubo entry in release/licences.json), scanned once per platform (one per release target, as GOOS/GOARCH) and merged like rust, plus the Go standard library. clarify resolves modules go-licenses cannot classify: spdx plus the licence file inside the module (GOROOT/LICENSE for code under the Go authors' BSD licence that ships no file: whyrusleeping/base32, and alexbrainman/goissue34681, a Windows-only copy of Go's os code whose files say 'Copyright 2019 The Go Authors ... governed by a BSD-style license that can be found in the LICENSE file' and whose upstream repository has no LICENSE file of its own).",
+    "targets: every target triple an installer ships (macOS arm64, Linux x86_64 and aarch64, Windows x86_64); the notices header lists them. elect: crates offered under a choice that includes a licence outside the permissive list, with the permissive licence Citrate uses them under (cargo-about must have resolved exactly that licence's text); such a crate without an election is refused.",
     "first_party_sources: package sources that are Citrate's own (left out of the notices; the inventory entry covers them). Path crates are always first party.",
     "npm: the webview bundle (tauri.conf.json frontendDist), built by Vite with nothing written; only the packages whose modules or assets end up in the output are listed. allow: licences reviewed for this component only (OFL-1.1: the @fontsource fonts, bundled unmodified with their licence and copyright, which OFL-1.1 section 2 permits). clarify: a package with no licence file of its own (the Tauri JS plugins ship only LICENSE.spdx, declaring MIT OR Apache-2.0 for the Tauri Programme) takes the named files; run npm ci first.",
     "Re-run collect and render whenever a sidecar is rebuilt for a release (docs/RELEASE.md, Cutting a release)."
   ],
   "version": 1,
   "output": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
-  "target": "aarch64-apple-darwin",
+  "targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+  "elect": {
+    "ittapi": "BSD-3-Clause",
+    "ittapi-sys": "BSD-3-Clause"
+  },
   "first_party_sources": [
     "git+https://github.com/CitrateNetwork/",
     "git+ssh://git@github.com/CitrateNetwork/",
@@ -45,9 +50,14 @@
       "module": "github.com/ipfs/kubo",
       "version": "v0.42.0",
       "package": "./cmd/ipfs",
-      "goos": "darwin",
-      "goarch": "arm64",
+      "platforms": [
+        { "target": "aarch64-apple-darwin", "goos": "darwin", "goarch": "arm64" },
+        { "target": "x86_64-unknown-linux-gnu", "goos": "linux", "goarch": "amd64" },
+        { "target": "aarch64-unknown-linux-gnu", "goos": "linux", "goarch": "arm64" },
+        { "target": "x86_64-pc-windows-msvc", "goos": "windows", "goarch": "amd64" }
+      ],
       "clarify": {
+        "github.com/alexbrainman/goissue34681": { "spdx": "BSD-3-Clause", "file": "GOROOT/LICENSE" },
         "github.com/jackpal/go-nat-pmp": { "spdx": "Apache-2.0", "file": "LICENSE" },
         "github.com/multiformats/go-base36": { "spdx": "Apache-2.0", "file": "LICENSE.md" },
         "github.com/whyrusleeping/cbor": { "spdx": "Apache-2.0", "file": "LICENSE" },
