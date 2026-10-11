@@ -2,6 +2,7 @@
 // search path (installed components first) and the pinned solc; the Hermes manager passes these
 // keys and nothing else.
 use super::*;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,6 +30,7 @@ impl Tmp {
         let p = self.0.join(rel);
         std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
         std::fs::write(&p, "#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
 }
