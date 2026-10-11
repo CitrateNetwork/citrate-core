@@ -78,15 +78,68 @@ gh release create runtime-deps --prerelease --title "Runtime deps (bundle inputs
   src-tauri/binaries/citrate-aarch64-apple-darwin \
   src-tauri/binaries/mem-mcp-aarch64-apple-darwin \
   src-tauri/binaries/node-agent-aarch64-apple-darwin \
-  src-tauri/binaries/llama-server-aarch64-apple-darwin \
   src-tauri/models/gemma-4-E4B-it-Q4_0.gguf
-# llama dylibs as one tarball:
-tar -czf /tmp/llama-runtime-arm64.tar.gz -C src-tauri/llama .
-gh release upload runtime-deps /tmp/llama-runtime-arm64.tar.gz
 ```
 
-The staged llama runtime carries each dylib three times (`libggml.dylib`, `libggml.0.dylib`,
-`libggml.0.23.0.dylib`) plus llama.cpp tool libraries llama-server never loads. Before a build,
+#### The llama runtime (`llama-server` + dylibs), built with the web UI off (v0.5.0-rc.4)
+
+The macOS llama runtime is llama.cpp **b10909** (commit `a2878d30d`) built from source with the
+options of upstream's `macos-arm64` release job (its `.github/workflows/release.yml` at that tag)
+plus the web UI switched off. llama-server's built-in web UI is an npm bundle with no notices;
+the app never serves it (`--no-webui`), so it is not shipped at all. At b10909
+`-DLLAMA_BUILD_WEBUI=OFF` alone is not enough: the default `LLAMA_USE_PREBUILT_UI=ON` downloads
+the prebuilt UI and embeds it, so turn that off too. The build must say `UI: embedded 0 assets`.
+
+```bash
+git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp && git checkout b10909
+# full history: the build number (10909) is `git rev-list --count HEAD`
+cmake -B build \
+  -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+  -DCMAKE_INSTALL_RPATH='@loader_path' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+  -DLLAMA_FATAL_WARNINGS=ON -DLLAMA_BUILD_BORINGSSL=ON \
+  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON \
+  -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON \
+  -DLLAMA_BUILD_WEBUI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+  -DGGML_MACHINE_SUPPORTS_i8mm=OFF -DGGML_MACHINE_SUPPORTS_sve=OFF -DGGML_MACHINE_SUPPORTS_sme=OFF
+cmake --build build --config Release -j "$(sysctl -n hw.logicalcpu)"
+```
+
+The three `GGML_MACHINE_SUPPORTS_*=OFF` pin ggml's native CPU probe to what upstream's M1 runner
+found (dotprod, no i8mm, SVE or SME). Built natively on an M2 or later the probe adds i8mm, and
+the library then crashes on M1 Macs; the SVE probe also hangs on some Macs. Check with
+`otool -tv build/bin/libggml-cpu.0.dylib | grep -cw smmla` (must be 0).
+
+Package the flat dependency closure of llama-server (what `scripts/prune-llama-runtime.mjs`
+keeps) and a sidecar copy with the app's rpath, each Developer ID signed:
+
+```bash
+ID="Developer ID Application: Larry Klosowski (DDHUG44QC7)"
+mkdir -p rt && cp build/bin/llama-server rt/ && cp LICENSE rt/LICENSE-llama.cpp.txt
+for f in libllama-server-impl.dylib libllama-common.0.dylib libmtmd.0.dylib libllama.0.dylib \
+  libggml.0.dylib libggml-cpu.0.dylib libggml-blas.0.dylib libggml-metal.0.dylib \
+  libggml-rpc.0.dylib libggml-base.0.dylib; do cp -L "build/bin/$f" rt/; done
+for f in rt/*.dylib rt/llama-server; do codesign --force --options runtime --timestamp --sign "$ID" "$f"; done
+(cd rt && shasum -a 256 $(ls | sort) > llama-server.sha256)
+cp build/bin/llama-server llama-server-aarch64-apple-darwin-b10909-nowebui
+install_name_tool -add_rpath @loader_path/../Resources/llama llama-server-aarch64-apple-darwin-b10909-nowebui
+codesign --force --options runtime --timestamp --sign "$ID" llama-server-aarch64-apple-darwin-b10909-nowebui
+# a reproducible tarball (sorted entries, fixed mtime, uid/gid 0, gzip mtime 0) of rt/ as
+# llama-runtime-arm64-b10909-nowebui.tar.gz, then upload both under NEW names and pin them:
+gh release upload runtime-deps llama-runtime-arm64-b10909-nowebui.tar.gz \
+  llama-server-aarch64-apple-darwin-b10909-nowebui -R CitrateNetwork/citrate-core
+```
+
+A local build stages them as release.yml does: extract the tarball into `src-tauri/llama/` and
+copy the sidecar to `src-tauri/binaries/llama-server-aarch64-apple-darwin`. Before pinning, check
+with a small model in a scratch directory that `GET /health` answers, a chat completion returns
+text, `GET /` returns 404 (no UI even without `--no-webui`) and `--list-devices` shows Metal.
+Windows builds llama-server from source at the same tag with `-DLLAMA_BUILD_WEBUI=OFF
+-DLLAMA_USE_PREBUILT_UI=OFF` and upstream's `windows-cpu` x64 options (docs/RELEASE_WINDOWS.md);
+the Linux build (b9438) is already web-UI-free.
+
+A runtime packed from a whole CMake install tree (as before rc.4) carries each dylib three times
+(`libggml.dylib`, `libggml.0.dylib`, `libggml.0.23.0.dylib`) plus llama.cpp tool libraries
+llama-server never loads; the rc.4 tarball is already the closure. Before a build,
 `node scripts/prune-llama-runtime.mjs --dir src-tauri/llama` keeps only llama-server's dependency
 closure (read with `otool -L`; it refuses if a needed library is missing) and saves about 34 MB.
 release.yml runs it after extracting the tarball; run it on a local staging too (HUP-S11.0).
