@@ -833,7 +833,8 @@ fn render_exit(status: &std::process::ExitStatus) -> String {
 /// bounded: it returns AS SOON AS an `err` line is present (the common case,
 /// since a line-buffered pipe flushes on newline before the child exits), else
 /// polls up to a small cap. Kept tiny so it does not slow the crash/restart hot
-/// path (the fork-bomb-bound negative control churns many restarts in <400ms).
+/// path (the fork-bomb-bound negative control observes restart progress within
+/// its bounded observation window).
 fn drain_grace(shared: &Arc<Shared>) {
     let deadline = std::time::Instant::now() + Duration::from_millis(20);
     loop {
