@@ -478,7 +478,7 @@ export function Agent({ store, s }: SurfaceProps) {
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
               <span style={{ fontSize: 13.5, fontWeight: 500 }}>Awaiting your review</span>
               {st.approvals.length > 0 && (
-                <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+                <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
                   {st.approvals.length}
                 </span>
               )}

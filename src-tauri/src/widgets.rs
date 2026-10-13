@@ -227,7 +227,11 @@ pub(crate) const SDK_JS: &str = r#"(function () {
   });
 })();"#;
 
-const BASE_CSS: &str = "html,body{margin:0;padding:0}body{font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8e6e1;background:transparent;padding:10px;box-sizing:border-box;overflow:hidden}@media (prefers-color-scheme: light){body{color:#1d1b18}}";
+/// rc.5 FIX 3: widgets render only on the always-dark Instrument panel (the WidgetsPanel pins
+/// `data-register="instrument"`), so the document uses one fixed light-on-dark palette (the
+/// register's `--tx-1`). It used to switch to near-black text when the OS was in light mode,
+/// which put black text on the dark-green panel. `onColor.contrast.test.ts` checks AA.
+const BASE_CSS: &str = ":root{color-scheme:dark}html,body{margin:0;padding:0}body{font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e9efe7;background:transparent;padding:10px;box-sizing:border-box;overflow:hidden}";
 
 /// The widget document's CSP. `dev` adds the Vite dev server to `frame-ancestors`.
 pub(crate) fn widget_csp(dev: bool) -> String {
