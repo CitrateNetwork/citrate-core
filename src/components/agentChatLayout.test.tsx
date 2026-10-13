@@ -141,3 +141,21 @@ describe("pop-out windows scroll their own content", () => {
     expect(main).toMatch(/classList\.add\("popout-root"\)/);
   });
 });
+
+// rc.5 FIX 5: a toolchain refusal in the chat offers a way to the toolchain step.
+describe("AgentChat toolchain action", () => {
+  it("shows 'Open toolchain settings' only on a toolchain refusal", () => {
+    const base = { who: "Workflow", text: "", chips: [], streaming: false } as const;
+    store.setState({
+      ...freshState("p1"),
+      chatStatus: "ready",
+      chatMsgs: [
+        { ...base, id: "a", error: "This workflow needs the contract toolchain.", toolchainHelp: true },
+        { ...base, id: "b", error: "the session refused the workflow" },
+      ],
+    });
+    const html = renderToStaticMarkup(<AgentChat store={store} s={store.state} />);
+    expect(html.match(/data-testid="open-toolchain-settings"/g)?.length).toBe(1);
+    expect(html).toContain("Open toolchain settings");
+  });
+});

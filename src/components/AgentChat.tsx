@@ -197,6 +197,11 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             {m.error && (
               <span role="alert" style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--danger)" }}>
                 <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-line" }}>The agent didn't finish this reply: {m.error}</span>
+                {m.toolchainHelp && (
+                  <button className="btn btn-sm" data-testid="open-toolchain-settings" onClick={() => store.openToolchainSettings()}>
+                    Open toolchain settings
+                  </button>
+                )}
                 <button className="btn btn-sm" onClick={() => void store.retryChat(m.id)}>
                   Retry
                 </button>

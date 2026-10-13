@@ -3,8 +3,8 @@
 //
 // The member's switch for Hermes's forge, slither, aderyn and medusa tools, which programs core
 // found (and solc 0.8.36), the install command for each missing one on this OS, a Re-check that
-// re-runs core's probe, and Restart Hermes (changes apply when Hermes next starts). Shown in
-// Settings > App and as step 1 of the Agent surface's "Build a contract" panel. The app does not
+// re-runs core's probe, and Restart Hermes (changes apply when Hermes next starts). Step 1 of
+// the Agent surface's "Build a contract" panel (Agent > Contracts > Toolchain). The app does not
 // install these tools in 0.5.0; everything shown is core's real probe result.
 // =====================================================================
 import { useEffect, useState, type CSSProperties } from "react";

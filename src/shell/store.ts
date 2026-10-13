@@ -2458,6 +2458,12 @@ export class Store {
     speakReply(this.speech, text, this.state.hermesPersona?.tts_voice ?? null);
   }
 
+  /** rc.5 FIX 5: open Agent > Contracts > Toolchain (the chat's "Open toolchain settings"). */
+  openToolchainSettings(): void {
+    this.setState({ agentTabRequest: "contracts" });
+    this.go("agent");
+  }
+
   /** HUP-S3.3 — run a saved brief's workflow (the brief card's button). */
   runBriefWorkflow(brief: Brief): Promise<void> {
     return this.runTrackWorkflow(brief.workflow);
@@ -2546,7 +2552,7 @@ export class Store {
         patch((m) => ({ ...m, error: why }));
         if (isToolchainRefusal(why)) {
           const st = await bridge.contracts.toolchainSettings().catch(() => null);
-          patch((m) => ({ ...m, error: actionableWorkflowError(why, st, hostOs()) }));
+          patch((m) => ({ ...m, error: actionableWorkflowError(why, st, hostOs()), toolchainHelp: true }));
         }
         endTurn("failed");
       }

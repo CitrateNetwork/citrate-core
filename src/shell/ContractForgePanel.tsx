@@ -11,7 +11,7 @@
 //      parses them itself, holds Medusa to this machine's tier budget, and shows READY or
 //      NOT READY. Nothing here signs or deploys; a deploy still stops at the Signature Ceremony.
 // =====================================================================
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { ContractsDomain } from "../bridge/domains";
 import {
   initialValues,
@@ -35,7 +35,7 @@ const head: CSSProperties = { fontSize: 12.5, fontWeight: 500 };
 const mono: CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11 };
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
+export function ContractForgePanel({ ops, restartHermes }: { ops: ContractForgeOps; restartHermes?: () => Promise<void> }) {
   const [cat, setCat] = useState<TemplateCatalog | null>(null);
   const [catErr, setCatErr] = useState<string | null>(null);
   const [tid, setTid] = useState("erc20");
@@ -49,6 +49,11 @@ export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
   const [gate, setGate] = useState<ToolchainGateResult | null>(null);
   const [gateErr, setGateErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Stable, so the card probes once per mount (and on Re-check), not on every render.
+  const tcOps = useMemo(
+    () => ({ toolchainSettings: () => ops.toolchainSettings(), toolchainSetEnabled: (on: boolean) => ops.toolchainSetEnabled(on), restartHermes }),
+    [ops, restartHermes],
+  );
 
   useEffect(() => {
     let live = true;
@@ -111,10 +116,10 @@ export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
     <div className="surface" data-testid="contract-forge" style={{ display: "flex", flexDirection: "column", padding: "12px 16px", gap: 8 }}>
       <span style={{ fontSize: 13.5, fontWeight: 500 }}>Build a contract</span>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div id="contract-toolchain" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <span style={head}>1. Toolchain</span>
         {/* rc.5 FIX 5: the shared card (status, install commands, Re-check). */}
-        <ToolchainCard ops={ops} />
+        <ToolchainCard ops={tcOps} />
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--line-1)", paddingTop: 8 }}>

@@ -22,7 +22,7 @@ import type { ToolchainStatus } from "./contractForge";
 export type HostOs = "macos" | "linux" | "windows";
 
 /** Where the switch lives in the app. */
-export const TOOLCHAIN_SWITCH_PATH = "Settings > App > Hermes · contract toolchain";
+export const TOOLCHAIN_SWITCH_PATH = "Agent > Contracts > Toolchain";
 
 export const WINDOWS_UNSUPPORTED =
   "The contract toolchain is not supported on Windows in 0.5.0: the app cannot find or run forge, slither, aderyn or medusa there yet.";

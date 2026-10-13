@@ -127,7 +127,12 @@ describe("track workflows from chat", () => {
     });
     await store.sendChat("/run contract-build");
     const m = lastMsg();
-    expect(m.error).toContain("Turn on Settings > App > Hermes · contract toolchain, then restart Hermes.");
+    expect(m.error).toContain("Turn on Agent > Contracts > Toolchain, then restart Hermes.");
+    // The message carries a way there.
+    expect(m.toolchainHelp).toBe(true);
+    store.openToolchainSettings();
+    expect(store.state.route).toBe("agent");
+    expect(store.state.agentTabRequest).toBe("contracts");
     expect(m.error).not.toContain("which is off in this app");
     probe.mockRestore();
   });
@@ -155,6 +160,16 @@ describe("track workflows from chat", () => {
     await store.sendChat("/run contract-build");
     expect(lastMsg().error).toContain("slither: pipx install slither-analyzer");
     probe.mockRestore();
+  });
+
+  it("any other refusal gets no toolchain action", async () => {
+    store.provider = chatProvider({
+      runWorkflow: vi.fn(async () => {
+        throw new Error("WORKFLOW_REFUSED: this workflow needs journal_read, which this conversation does not offer");
+      }),
+    });
+    await store.sendChat("/run status-note");
+    expect(lastMsg().toolchainHelp).toBeFalsy();
   });
 
   it("without the sidecar loop the chat says how to turn it on and nothing runs", async () => {

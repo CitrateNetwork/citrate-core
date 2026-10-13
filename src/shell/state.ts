@@ -131,6 +131,8 @@ export interface ChatMsg {
   error?: string;
   /** HUP-S0.7 — the user text to resend on Retry. */
   retryText?: string;
+  /** rc.5 FIX 5 — the error is the contract-toolchain refusal: offer "Open toolchain settings". */
+  toolchainHelp?: boolean;
   /** HUP-S1.4 — an accepted brief, shown as a card in the thread (text holds its markdown). */
   brief?: Brief;
 }
@@ -317,6 +319,11 @@ export interface AppState {
    * live chain read every session.
    */
   membershipActivating: boolean;
+  /**
+   * rc.5 FIX 5: a one-shot request for the Agent surface to open a tab (the chat's "Open toolchain
+   * settings" asks for "contracts"). The Agent surface consumes and clears it. Not persisted.
+   */
+  agentTabRequest: "overview" | "contracts" | null;
   s5: "idle" | "verifying" | "settling" | "settled";
   s5c: number;
   s5n: number;
@@ -728,6 +735,7 @@ export function freshState(pid: string): AppState {
     s3: "idle",
     s3PollExhausted: false,
     membershipActivating: false,
+    agentTabRequest: null,
     s5: "idle",
     s5c: 0,
     s5n: 0,

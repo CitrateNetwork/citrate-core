@@ -48,18 +48,6 @@ import { NodeMcpPanel } from "../nodeMcp/NodeMcpPanel";
 import { desktopNodeMcpIo } from "../nodeMcp/nodeMcp";
 import { WebSearchSettings } from "./WebSearchSettings";
 import { TERMINAL_ACCESS_HINT, TERMINAL_ACCESS_LABEL } from "../agent/terminalAccess";
-import { ToolchainCard, type ToolchainCardOps } from "../shell/ToolchainCard";
-import { startRuntime, stopRuntime } from "../shell/slices/agent";
-
-/** rc.5 FIX 5: the desktop toolchain card's ops; Restart Hermes stops and starts the sidecar. */
-const desktopToolchainOps: ToolchainCardOps = {
-  toolchainSettings: () => bridge.contracts.toolchainSettings(),
-  toolchainSetEnabled: (on) => bridge.contracts.toolchainSetEnabled(on),
-  restartHermes: async () => {
-    await stopRuntime("hermes");
-    await startRuntime("hermes");
-  },
-};
 import { PrivacySection } from "../privacy/PrivacySection";
 import { TelemetryConsent } from "../privacy/TelemetryConsent";
 import { desktopPrivacyIo } from "../privacy/privacyIo";
@@ -1197,15 +1185,6 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 onReadAloud={(on) => store.setHermesReadAloud(on)}
                 speechVoices={browserSpeech().voices()}
               />
-            </div>
-            {/* rc.5 FIX 5: Hermes's contract toolchain (the switch, per-tool status, install commands). */}
-            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-contract-toolchain">
-              <span className="eyebrow">Hermes · contract toolchain</span>
-              {BRIDGE_MODE === "tauri" ? (
-                <ToolchainCard ops={desktopToolchainOps} />
-              ) : (
-                <span style={{ fontSize: 12, color: "var(--tx-3)" }}>The contract toolchain runs beside the desktop app.</span>
-              )}
             </div>
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
               <span className="eyebrow">Updates · signed manifests</span>
