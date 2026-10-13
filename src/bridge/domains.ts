@@ -95,6 +95,12 @@ export interface AuthDomain {
   status(): Promise<AuthStatus>;
   /** Run the loopback-PKCE sign-in; opens the system browser. Returns status. */
   login(): Promise<AuthStatus>;
+  /**
+   * rc.5 FIX 2 — abort the in-flight browser sign-in (the Cancel button). The pending
+   * `login()` then rejects with "auth: sign-in cancelled". Resolves true when an
+   * attempt was waiting.
+   */
+  cancelLogin(): Promise<boolean>;
   /** Live /userinfo entitlement re-check (the federation RP rule). */
   userinfo(): Promise<AuthStatus>;
   /** Silent refresh from the vaulted refresh token (survives restart). */

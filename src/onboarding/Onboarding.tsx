@@ -165,7 +165,7 @@ function S1({ store, s }: { store: Store; s: AppState }) {
       <div style={eyebrow}>S1 · Sign in</div>
       <div style={h1}>Sign in with your Citrate identity</div>
       <p style={body}>
-        This app never shows credential fields. Your system browser opens auth.citrate.ai — passkey, email, Google, or sign-in-with-Ethereum. That is the anti-phishing
+        This app never shows credential fields. Your system browser opens auth.citrate.ai: passkey, email, Google, or sign-in-with-Ethereum. That is the anti-phishing
         posture, not a shortcut.
       </p>
       {s.s1 === "idle" && (
@@ -183,7 +183,7 @@ function S1({ store, s }: { store: Store; s: AppState }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 500 }}>Waiting for your browser…</div>
             <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-              auth.citrate.ai · loopback PKCE · 127.0.0.1:49821
+              auth.citrate.ai · loopback PKCE
             </div>
           </div>
           <div style={{ flex: 1 }}></div>

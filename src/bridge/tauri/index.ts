@@ -100,6 +100,9 @@ export function createTauriBridge(): Omit<BridgeContract, "mode"> {
       async login(): Promise<AuthStatus> {
         return invoke<AuthStatus>("auth_login");
       },
+      async cancelLogin(): Promise<boolean> {
+        return invoke<boolean>("auth_login_cancel");
+      },
       async userinfo(): Promise<AuthStatus> {
         return invoke<AuthStatus>("auth_userinfo");
       },

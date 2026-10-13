@@ -1667,6 +1667,19 @@ export class Store {
     this.save();
   }
 
+  /**
+   * rc.5 FIX 2: abort the in-flight browser sign-in (Cancel while "Waiting for your
+   * browser"). The pending `authLogin` then rejects with "sign-in cancelled". Never
+   * throws: a failed cancel leaves the 300 s callback timeout as the backstop.
+   */
+  async cancelSignIn(): Promise<void> {
+    try {
+      await bridge.auth.cancelLogin();
+    } catch {
+      /* honest no-op: the Rust wait still ends at its timeout */
+    }
+  }
+
   /** Live /userinfo entitlement re-check, folded into the entitlement engine. */
   async authUserinfo(): Promise<void> {
     const st = await bridge.auth.userinfo();
@@ -5107,6 +5120,10 @@ export class Store {
   }
   onS1Cancel(): void {
     if (this._s1t) clearTimeout(this._s1t);
+    // rc.5 FIX 2: the sign-in runs in the system browser, so closing the tab sends
+    // nothing back. Cancel the Rust loopback wait too, so a late browser completion
+    // cannot sign the member in behind a screen that says cancelled.
+    if (BRIDGE_MODE === "tauri") void this.cancelSignIn();
     this.setState({ s1: "idle" });
   }
   onS2Start(): void {

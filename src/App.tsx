@@ -195,7 +195,7 @@ function AuthGate() {
           Sign in to continue
         </div>
         <p style={{ fontSize: 14.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
-          Citrate Core signs out on every launch. Confirm it's you — your system browser opens auth.citrate.ai
+          Citrate Core signs out on every launch. Confirm it's you: your system browser opens auth.citrate.ai
           (passkey, email, Google, or sign-in-with-Ethereum). Credentials never touch this app.
         </p>
       </div>
@@ -213,6 +213,11 @@ function AuthGate() {
             <div style={{ fontSize: 14, fontWeight: 500 }}>Waiting for your browser…</div>
             <div className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>auth.citrate.ai · loopback PKCE</div>
           </div>
+          {/* rc.5 FIX 2: the sign-in is in the system browser; closing that tab sends
+              nothing back, so Cancel ends the wait here. */}
+          <button className="btn btn-ghost btn-sm" onClick={() => void store.cancelSignIn()}>
+            Cancel
+          </button>
         </div>
       )}
       {err && <div style={{ fontSize: 12.5, color: "var(--danger)", maxWidth: 420 }}>{err}</div>}
