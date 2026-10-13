@@ -54,6 +54,17 @@ const CONTRACT_KINDS: { id: string; name: string; desc: string }[] = [
 export function Agent({ store, s }: SurfaceProps) {
   const st = agentSlice.use();
   const [tab, setTab] = useState<Tab>("overview");
+  // rc.5 FIX 5: the chat's "Open toolchain settings" asks for the Contracts tab; consume it once
+  // and bring the toolchain step into view.
+  useEffect(() => {
+    const want = s.agentTabRequest;
+    if (!want) return;
+    setTab(want);
+    store.setState({ agentTabRequest: null });
+    if (want === "contracts") {
+      setTimeout(() => document.getElementById("contract-toolchain")?.scrollIntoView({ block: "start" }), 0);
+    }
+  }, [s.agentTabRequest, store]);
   const [attachOpen, setAttachOpen] = useState(false);
   const [openSkill, setOpenSkill] = useState<string | null>(null);
   const skillArg = useRef<HTMLInputElement>(null);
@@ -238,9 +249,8 @@ export function Agent({ store, s }: SurfaceProps) {
             <>
               {/* #62 — the chat, front and center on the Agent surface (same shared pane as the
                   Dashboard). Talk to the agent here; skills/approvals/registry sit below. */}
-              <div style={{ display: "flex", height: 460, minHeight: 0 }}>
-                <AgentChat store={store} s={s} />
-              </div>
+              {/* rc.5 FIX 4: the pane fits the window itself (was a fixed 460 px box). */}
+              <AgentChat store={store} s={s} />
               {/* status */}
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -448,7 +458,13 @@ export function Agent({ store, s }: SurfaceProps) {
                 {gateRefusal && <DeployGateCard record={gateRefusal.record} initcodeHash={gateRefusal.initcodeHash} />}
               </div>
               {/* HUP-S6.2 / S6.3 / S6.9 — templates, the toolchain switch, and the gate from Hermes's runs. */}
-              <ContractForgePanel ops={bridge.contracts} />
+              <ContractForgePanel
+                ops={bridge.contracts}
+                restartHermes={async () => {
+                  await stopRuntime("hermes");
+                  await startRuntime("hermes");
+                }}
+              />
               {/* HUP-S6.6 — after the deploy: verify, switch the site to 40204, pin, export. */}
               <PostDeployPanel
                 ops={bridge.contracts}
@@ -478,7 +494,7 @@ export function Agent({ store, s }: SurfaceProps) {
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
               <span style={{ fontSize: 13.5, fontWeight: 500 }}>Awaiting your review</span>
               {st.approvals.length > 0 && (
-                <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "#0e0f0c", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+                <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
                   {st.approvals.length}
                 </span>
               )}

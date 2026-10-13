@@ -26,6 +26,7 @@ commands.allow = [
   "custody_keyring_status",
   "auth_status",
   "auth_login",
+  "auth_login_cancel",
   "auth_userinfo",
   "auth_refresh",
   "auth_logout",

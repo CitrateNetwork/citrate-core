@@ -300,7 +300,7 @@ export function Models({ store }: SurfaceProps) {
             </button>
             <button
               className="btn btn-sm"
-              style={{ background: "var(--danger)", borderColor: "var(--danger)", color: "#fff" }}
+              style={{ background: "var(--danger)", borderColor: "var(--danger)", color: "var(--on-danger)" }}
               disabled={!!st.deletingFile}
               aria-busy={st.deletingFile === confirming.file}
               onClick={() => void confirmDelete(confirming)}

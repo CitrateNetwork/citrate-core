@@ -16,6 +16,8 @@ const rootEl = document.getElementById("root") as HTMLElement;
 const popout = popoutKindFromLabel(windowLabel());
 
 if (popout) {
+  // rc.5 FIX 4: pop-out content taller than its window scrolls instead of being clipped.
+  rootEl.classList.add("popout-root");
   // HUP-S5.4: a pop-out window renders only its own view. It never imports the app store, so it
   // starts no polling and never writes the member's saved state.
   void import("./popout/PopoutRoot").then(({ PopoutRoot }) =>

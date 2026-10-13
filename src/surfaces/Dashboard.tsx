@@ -174,7 +174,9 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 316px", gap: 16, flex: 1, minHeight: 420 }}>
+      {/* rc.5 FIX 4: items align to the start, so the chat sizes itself to the window instead of
+          stretching to the right rail's height (which pushed the composer below the fold). */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 316px", gap: 16, alignItems: "start" }}>
         {/* chat pane — shared component, also mounted on the Agent surface (#62) */}
         <AgentChat store={store} s={s} />
 

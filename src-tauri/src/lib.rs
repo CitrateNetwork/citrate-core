@@ -454,6 +454,8 @@ pub fn run() {
             // command returns a token (ADV-8 boundary; see oidc::tests).
             oidc::auth_status,
             oidc::auth_login,
+            // FIX 2 (rc.5): abort the in-flight system-browser sign-in (Cancel button).
+            oidc::auth_login_cancel,
             oidc::auth_userinfo,
             oidc::auth_refresh,
             oidc::auth_logout,
@@ -1230,6 +1232,7 @@ mod tests {
         for cmd in [
             "auth_status",
             "auth_login",
+            "auth_login_cancel",
             "auth_userinfo",
             "auth_refresh",
             "auth_logout",

@@ -50,6 +50,7 @@ import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
+import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -296,6 +297,45 @@ export function entitlementSafeguardFromChain(
   if (!isGrantOnChain(g) || !g.hasSbt) return null; // no on-chain membership proof
   return { tier: "commercial", entitlement: "active" };
 }
+
+/**
+ * v0.5.0-rc.5 FIX 1c: is the member's grant visibly IN FLIGHT on chain while the
+ * `/userinfo` tier claim has not caught up?
+ *
+ * True when the entitlement reads `lapsed` WITHOUT a genuine past expiry, the full
+ * on-chain proof (`isGrantOnChain && hasSbt`) is NOT yet there (that case is
+ * `entitlementSafeguardFromChain`, which restores `active`), but the chain already
+ * shows part of the grant: the member SBT is minted or stake is attributed. The banner
+ * then says "activating" instead of the red lapse.
+ *
+ * Honesty (Rule 1): this never unlocks anything. It only changes the banner from
+ * "lapsed" to a neutral notice; `active` still needs the claim or the full chain proof.
+ * A malformed stake value fails closed (false).
+ */
+export function membershipActivatingFromChain(
+  st: { entitlement: string; authExpiresAt: string | null },
+  g: { attributedStakeWei: string; hasSbt: boolean },
+): boolean {
+  if (st.entitlement !== "lapsed") return false;
+  if (isExpiredClaim(st.authExpiresAt)) return false; // a real expiry is a real lapse
+  if (isGrantOnChain(g) && g.hasSbt) return false; // full proof: the safeguard restores active
+  if (g.hasSbt) return true;
+  try {
+    return BigInt(g.attributedStakeWei) > 0n;
+  } catch {
+    return false;
+  }
+}
+
+/** FIX 1a: the post-checkout entitlement poll cadence. */
+export const ENTITLEMENT_POLL_MS = 10_000;
+/**
+ * FIX 1a: the poll's bound. Must outlast one 10-minute core-membership grant reconcile
+ * (`/api/cron/reconcile-grants`), so a grant the webhook missed is still picked up.
+ */
+export const ENTITLEMENT_POLL_MAX_MS = 15 * 60_000;
+/** FIX 1b: at most one focus/visibility entitlement re-check per 30 s. */
+export const FOCUS_RECHECK_MIN_MS = 30_000;
 
 
 /**
@@ -605,6 +645,11 @@ export class Store {
   private _saveT: ReturnType<typeof setTimeout> | null = null;
   private _toastT: ReturnType<typeof setTimeout> | null = null;
   private _s1t: ReturnType<typeof setTimeout> | null = null;
+  // FIX 1a: the single post-checkout entitlement poll (timer + deadline).
+  private entitlementPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private entitlementPollDeadline = 0;
+  // FIX 1b: when the last focus/visibility re-check ran (throttle).
+  private lastFocusRecheckAt = Number.NEGATIVE_INFINITY;
   provider: ChatProvider | null = null;
   // element refs (imperative, like the design)
   chatScrollEl: HTMLElement | null = null;
@@ -693,6 +738,9 @@ export class Store {
       // pay a second time for a membership they already hold. Ask the chain once on
       // launch; a granted member lands on Continue instead of a checkout button.
       if (this.state.stage === "s3") void this.settleS3IfAlreadyGranted();
+      // FIX 1b: re-read the entitlement when the member comes back to the window (e.g.
+      // from the browser checkout), so a new claim shows without a restart.
+      this.installEntitlementFocusRecheck();
       // WATCHDOG. The supervisor retries a crashed node with backoff and then gives
       // up; nothing told the member. Poll the gap between intent and reality and say
       // so ONCE per outage, with the real reason from the node's own crash record.
@@ -1581,6 +1629,7 @@ export class Store {
     } else if (st.tier) {
       patch.tier = st.tier;
       patch.entitlement = "active";
+      patch.membershipActivating = false; // the claim landed: nothing left to activate
     } else {
       // Signed in but the authority granted NO tier — fail closed to free so an
       // ungranted session can never inherit a prior session's persisted paid
@@ -1619,14 +1668,140 @@ export class Store {
     this.save();
   }
 
+  /**
+   * rc.5 FIX 2: abort the in-flight browser sign-in (Cancel while "Waiting for your
+   * browser"). The pending `authLogin` then rejects with "sign-in cancelled". Never
+   * throws: a failed cancel leaves the 300 s callback timeout as the backstop.
+   */
+  async cancelSignIn(): Promise<void> {
+    try {
+      await bridge.auth.cancelLogin();
+    } catch {
+      /* honest no-op: the Rust wait still ends at its timeout */
+    }
+  }
+
   /** Live /userinfo entitlement re-check, folded into the entitlement engine. */
   async authUserinfo(): Promise<void> {
     const st = await bridge.auth.userinfo();
     this.applyAuthStatus(st);
   }
 
+  /**
+   * v0.5.0-rc.5 FIX 1: re-read the entitlement from BOTH sources and fold them in one
+   * synchronous step (no lapsed flash between the claim and the chain read):
+   *  - the live `/userinfo` claim (`applyAuthStatus`);
+   *  - while the claim does not read active, the on-chain grant (Tauri, with a wallet):
+   *    the full proof restores `active` via `entitlementSafeguardFromChain` (the same
+   *    rule the launch reconcile uses); partial evidence marks "activating".
+   * A chain read failure folds the claim alone (honest). Throws only if `/userinfo`
+   * itself fails, so callers decide whether that is fatal.
+   */
+  async refreshEntitlement(): Promise<void> {
+    const st = await bridge.auth.userinfo();
+    let grant: GrantStatus | null = null;
+    const member = st.walletAddr || this.state.walletAddr;
+    const claimActive = !!st.tier && !isExpiredClaim(st.expiresAt);
+    if (BRIDGE_MODE === "tauri" && member && !claimActive) {
+      try {
+        grant = await bridge.membership.grantStatus(member);
+      } catch {
+        grant = null; // transient RPC error: fold the claim alone, never fabricate
+      }
+    }
+    this.applyAuthStatus(st);
+    if (!grant) return;
+    const guard = entitlementSafeguardFromChain(this.state, grant);
+    if (guard) {
+      this.setState({ ...guard, membershipActivating: false });
+      this.save();
+      return;
+    }
+    const activating = membershipActivatingFromChain(this.state, grant);
+    if (activating !== this.state.membershipActivating) this.setState({ membershipActivating: activating });
+  }
+
+  /**
+   * FIX 1a: after a membership checkout opens (from ANY entry point: onboarding S3,
+   * Settings renew, the lapsed banner), poll the entitlement every ~10 s until it reads
+   * active, for at most ~15 min. Single instance: a second checkout only extends the
+   * window. Cancelled on sign-out. Tauri only (the sim has no server to wait for).
+   */
+  startEntitlementPoll(): void {
+    if (BRIDGE_MODE !== "tauri") return;
+    this.entitlementPollDeadline = Date.now() + ENTITLEMENT_POLL_MAX_MS;
+    if (this.entitlementPollTimer) return;
+    this.entitlementPollTimer = setTimeout(() => void this.entitlementPollTick(), ENTITLEMENT_POLL_MS);
+  }
+
+  /** FIX 1a: is the post-checkout entitlement poll running? */
+  entitlementPollActive(): boolean {
+    return this.entitlementPollTimer !== null;
+  }
+
+  /** FIX 1a: cancel the post-checkout entitlement poll (sign-out). */
+  stopEntitlementPoll(): void {
+    if (this.entitlementPollTimer) clearTimeout(this.entitlementPollTimer);
+    this.entitlementPollTimer = null;
+  }
+
+  private async entitlementPollTick(): Promise<void> {
+    if (!this.state.signedIn) {
+      this.stopEntitlementPoll();
+      return;
+    }
+    try {
+      await this.refreshEntitlement();
+    } catch {
+      /* transient: keep polling until the bound; never fabricate */
+    }
+    // Cancelled (sign-out) while the read was in flight.
+    if (this.entitlementPollTimer === null || !this.state.signedIn) {
+      this.entitlementPollTimer = null;
+      return;
+    }
+    const done = this.state.entitlement === "active" && !this.state.membershipActivating;
+    if (done || Date.now() >= this.entitlementPollDeadline) {
+      this.entitlementPollTimer = null;
+      return;
+    }
+    this.entitlementPollTimer = setTimeout(() => void this.entitlementPollTick(), ENTITLEMENT_POLL_MS);
+  }
+
+  /**
+   * FIX 1b: re-check the entitlement when the window regains focus or becomes visible
+   * (the member coming back from the browser checkout). Throttled to one re-check per
+   * 30 s and only while signed in. Returns a function that removes the listeners.
+   */
+  installEntitlementFocusRecheck(): () => void {
+    if (typeof window === "undefined" || typeof document === "undefined") return () => {};
+    const onFocus = () => void this.recheckEntitlementOnFocus();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void this.recheckEntitlementOnFocus();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }
+
+  private async recheckEntitlementOnFocus(): Promise<void> {
+    if (!this.state.signedIn) return;
+    const now = Date.now();
+    if (now - this.lastFocusRecheckAt < FOCUS_RECHECK_MIN_MS) return;
+    this.lastFocusRecheckAt = now;
+    try {
+      await this.refreshEntitlement();
+    } catch {
+      /* honest no-op: the last folded entitlement stands */
+    }
+  }
+
   /** Sign out: revoke + clear the vault slot + wipe the session, then reset. */
   async authLogout(): Promise<void> {
+    this.stopEntitlementPoll();
     await bridge.auth.logout();
     this.setState({
       tier: "free",
@@ -1635,6 +1810,7 @@ export class Store {
       // false membership badge on a signed-out/free account (Rule 1).
       entitlement: "lapsed",
       citrateRole: "member",
+      membershipActivating: false,
       alfMember: false, // clear the ALF flag on sign-out — a signed-out account is not an ALF member (Rule 1)
       org: null,
       signedIn: false,
@@ -1728,6 +1904,8 @@ export class Store {
     try {
       // Pass the signed-in email as login_hint so the browser checkout targets THIS account.
       await bridge.membership.checkout(this.state.authEmail ?? undefined);
+      // FIX 1a: watch for the new entitlement so the banner clears without a restart.
+      this.startEntitlementPoll();
     } catch (err) {
       this.toast("Could not open checkout — " + String((err as Error).message ?? err));
     }
@@ -2280,6 +2458,12 @@ export class Store {
     speakReply(this.speech, text, this.state.hermesPersona?.tts_voice ?? null);
   }
 
+  /** rc.5 FIX 5: open Agent > Contracts > Toolchain (the chat's "Open toolchain settings"). */
+  openToolchainSettings(): void {
+    this.setState({ agentTabRequest: "contracts" });
+    this.go("agent");
+  }
+
   /** HUP-S3.3 — run a saved brief's workflow (the brief card's button). */
   runBriefWorkflow(brief: Brief): Promise<void> {
     return this.runTrackWorkflow(brief.workflow);
@@ -2363,7 +2547,13 @@ export class Store {
         patch((m) => ({ ...m, error: "stopped by you" }));
         endTurn("stopped");
       } else {
-        patch((m) => ({ ...m, error: workflowRefusal(e) }));
+        // rc.5 FIX 5: the toolchain refusal becomes what to do (switch, install, restart).
+        const why = workflowRefusal(e);
+        patch((m) => ({ ...m, error: why }));
+        if (isToolchainRefusal(why)) {
+          const st = await bridge.contracts.toolchainSettings().catch(() => null);
+          patch((m) => ({ ...m, error: actionableWorkflowError(why, st, hostOs()), toolchainHelp: true }));
+        }
         endTurn("failed");
       }
     }
@@ -4943,6 +5133,10 @@ export class Store {
   }
   onS1Cancel(): void {
     if (this._s1t) clearTimeout(this._s1t);
+    // rc.5 FIX 2: the sign-in runs in the system browser, so closing the tab sends
+    // nothing back. Cancel the Rust loopback wait too, so a late browser completion
+    // cannot sign the member in behind a screen that says cancelled.
+    if (BRIDGE_MODE === "tauri") void this.cancelSignIn();
     this.setState({ s1: "idle" });
   }
   onS2Start(): void {
@@ -5018,6 +5212,9 @@ export class Store {
           // the poll below simply never settles. The user can retry (S3 re-enterable).
         });
         this.pollMembership();
+        // FIX 1a: S3 settles on the chain grant; the claim can land later. Keep watching
+        // the entitlement so the member never sits on a stale "lapsed" banner.
+        this.startEntitlementPoll();
       })();
       return;
     }
