@@ -309,6 +309,14 @@ export interface AppState {
    * the chain; it never re-opens checkout, so it can never double-charge).
    */
   s3PollExhausted: boolean;
+  /**
+   * v0.5.0-rc.5 FIX 1c: the on-chain grant is in flight (SBT minted or stake attributed)
+   * while the `/userinfo` tier claim has not landed yet. The banner shows a neutral
+   * "Membership activating" notice instead of the red lapse. Never unlocks paid
+   * features (entitlement stays as the claim says). Not persisted: re-derived from a
+   * live chain read every session.
+   */
+  membershipActivating: boolean;
   s5: "idle" | "verifying" | "settling" | "settled";
   s5c: number;
   s5n: number;
@@ -719,6 +727,7 @@ export function freshState(pid: string): AppState {
     s2: "none",
     s3: "idle",
     s3PollExhausted: false,
+    membershipActivating: false,
     s5: "idle",
     s5c: 0,
     s5n: 0,
