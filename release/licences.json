@@ -9,9 +9,9 @@
   "version": 1,
   "reviewed": "2026-10-04",
   "sign_off": {
-    "status": "pending owner sign-off",
-    "by": null,
-    "date": null
+    "status": "signed",
+    "by": "Larry Klosowski",
+    "date": "2026-10-13"
   },
   "app": {
     "name": "Citrate Core",
@@ -438,8 +438,8 @@
       "copyleft": "network",
       "licence_texts": ["src-tauri/licenses/medusa.LICENSE"],
       "source_offer": "Source of the chunked docs: https://github.com/crytic/medusa at the commit recorded in the corpus manifest.json and NOTICE.md (docs/src). Draft offer text in docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "Inclusion is the owner's decision (2026-10-01). Open: how the source offer is published (upstream link at the pinned commit, or a Citrate mirror) and counsel's confirmation that chunked docs beside a BUSL app are an aggregate."
+      "review": "ok",
+      "note": "Inclusion: owner decision 2026-10-01. Source offer: owner decision 2026-10-04, option A, the upstream link at the commit recorded in the corpus manifest.json and NOTICE.md (docs/src), published at citrate.ai/source-offer (LICENCE_REVIEW 9.5); the AGPL text ships in src-tauri/licenses. Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13)."
     },
     {
       "id": "slither-docs",
@@ -452,8 +452,8 @@
       "copyleft": "network",
       "licence_texts": ["src-tauri/licenses/slither.LICENSE"],
       "source_offer": "Source of the chunked docs: https://github.com/crytic/slither at the commit recorded in the corpus manifest.json and NOTICE.md (docs/src). Draft offer text in docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "As medusa-docs: source offer publication and counsel's aggregate confirmation."
+      "review": "ok",
+      "note": "Inclusion: owner decision 2026-10-01. Source offer: owner decision 2026-10-04, option A, the upstream link at the commit recorded in the corpus manifest.json and NOTICE.md (docs/src), published at citrate.ai/source-offer (LICENCE_REVIEW 9.5); the AGPL text ships in src-tauri/licenses. Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13)."
     },
     {
       "id": "solc",
@@ -466,8 +466,8 @@
       "copyleft": "strong",
       "licence_texts": [],
       "source_offer": "Corresponding source: https://github.com/ethereum/solidity at the tag and commit in components/toolchain-bundle.json. Draft offer text in docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "The updater fetches upstream binaries by URL and hash, so Citrate does not host them today. If the owner mirrors them on the Citrate CDN, Citrate conveys the binaries and must publish the source offer and ship the GPL text with them."
+      "review": "ok",
+      "note": "Owner decision 2026-10-04 (g3-licence): fetched from upstream by the URL and sha256 pinned in components/toolchain-bundle.json, no Citrate re-host; source offer option A (upstream links at the pinned commits), published at citrate.ai/source-offer (LICENCE_REVIEW 9.5). Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13). Cannot install in 0.5.0: the production component key slot is empty."
     },
     {
       "id": "aderyn",
@@ -480,8 +480,8 @@
       "copyleft": "strong",
       "licence_texts": [],
       "source_offer": "Corresponding source: https://github.com/Cyfrin/aderyn at the release in components/toolchain-bundle.json. Draft offer text in docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "As solc: mirror or upstream fetch is the owner's call."
+      "review": "ok",
+      "note": "Owner decision 2026-10-04 (g3-licence): fetched from upstream by the URL and sha256 pinned in components/toolchain-bundle.json, no Citrate re-host; source offer option A (upstream links at the pinned commits), published at citrate.ai/source-offer (LICENCE_REVIEW 9.5). Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13). Cannot install in 0.5.0: the production component key slot is empty."
     },
     {
       "id": "slither",
@@ -494,8 +494,8 @@
       "copyleft": "network",
       "licence_texts": [],
       "source_offer": "Corresponding source: https://github.com/crytic/slither at the release in components/toolchain-bundle.json. Draft offer text in docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "The wheelhouse is to_be_built, so Citrate would build and host it: that is conveying, so the GPL/AGPL texts and the source offer must ship with it. Section 13 does not bite while slither runs unmodified on the member's own machine."
+      "review": "ok",
+      "note": "Owner decision 2026-10-04 (g3-licence): fetched from upstream by the URL and sha256 pinned in components/toolchain-bundle.json, no Citrate re-host; source offer option A (upstream links at the pinned commits), published at citrate.ai/source-offer (LICENCE_REVIEW 9.5). Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13). Cannot install in 0.5.0: the production component key slot is empty. Before it installs (0.5.1), the wheelhouse marked to_be_built is fetched as pinned upstream wheels by URL and sha256, or a decision to host it is recorded with its source offer (LICENCE_REVIEW 9.3 f)."
     },
     {
       "id": "medusa",
@@ -508,8 +508,8 @@
       "copyleft": "network",
       "licence_texts": [],
       "source_offer": "Corresponding source: https://github.com/crytic/medusa at the release in components/toolchain-bundle.json. Draft offer text in docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "As solc: mirror or upstream fetch is the owner's call."
+      "review": "ok",
+      "note": "Owner decision 2026-10-04 (g3-licence): fetched from upstream by the URL and sha256 pinned in components/toolchain-bundle.json, no Citrate re-host; source offer option A (upstream links at the pinned commits), published at citrate.ai/source-offer (LICENCE_REVIEW 9.5). Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13). Cannot install in 0.5.0: the production component key slot is empty."
     },
     {
       "id": "foundry",
@@ -564,8 +564,8 @@
       "copyleft": "weak",
       "licence_texts": [],
       "source_offer": "Chromium source: https://chromium.googlesource.com/chromium/src at the revision recorded in components/toolchain-bundle.json; the bundled third-party notices are listed at chrome://credits. Offer text to be added to docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "A managed first-run download (components/toolchain-bundle.json), not installed until its signed component manifest exists (@rule8 component-key ceremony). These are Google builds whose ABOUT file points to the Google Chrome Terms of Service: whether Citrate may re-host the archives or the updater fetches them from Google's URL, and which notices ship with them, is pending owner and legal sign-off."
+      "review": "ok",
+      "note": "Owner decision 2026-10-04 (g3-licence): the updater fetches the Chrome for Testing archives from Google's URL pinned by sha256, no Citrate re-host; Chromium source at the revision in components/toolchain-bundle.json, its third-party notices at chrome://credits. Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13). Cannot install in 0.5.0: the production component key slot is empty."
     },
     {
       "id": "searxng",
@@ -578,8 +578,8 @@
       "copyleft": "network",
       "licence_texts": [],
       "source_offer": "Corresponding source: the unmodified upstream archive pinned by URL and sha256 in components/toolchain-bundle.json. Offer text to be added to docs/LICENCE_REVIEW.md.",
-      "review": "owner",
-      "gap": "A first-run component (Python source plus a hash-locked wheelhouse, not built or signed yet). Hermes runs it unmodified on 127.0.0.1 only, so no network users are served; a distributed bundle still carries the AGPL text and the source offer, and any modification would have to be published under the AGPL. The distribution approach is pending owner sign-off."
+      "review": "ok",
+      "note": "Owner decision 2026-10-04 (g3-licence): fetched from upstream by the URL and sha256 pinned in components/toolchain-bundle.json, no Citrate re-host; source offer option A (upstream links at the pinned commits), published at citrate.ai/source-offer (LICENCE_REVIEW 9.5). Settled at the v0.5.0 signature (LICENCE_REVIEW 10.9, 2026-10-13). Cannot install in 0.5.0: the production component key slot is empty. Hermes runs it unmodified on 127.0.0.1 only. Before it installs (0.5.1), the wheelhouse is fetched as pinned upstream wheels, or a decision to host it is recorded with its source offer (LICENCE_REVIEW 9.3 f)."
     }
   ]
 }

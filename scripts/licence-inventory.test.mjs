@@ -130,11 +130,23 @@ describe("the committed inventory", () => {
     }
   });
 
-  it("stays pending owner sign-off, so --require-sign-off fails", () => {
-    expect(committed.sign_off.status).toBe("pending owner sign-off");
-    const r = spawnSync(process.execPath, [SCRIPT, "--require-sign-off"], { cwd: repoRoot, encoding: "utf8" });
-    expect(r.status).toBe(1);
-    expect(r.stderr + r.stdout).toMatch(/sign-off/);
+  it("is signed for v0.5.0 (LICENCE_REVIEW 10.9), so --require-sign-off passes", () => {
+    expect(committed.sign_off).toEqual({ status: "signed", by: "Larry Klosowski", date: "2026-10-13" });
+    const r = spawnSync(process.execPath, [SCRIPT, "--require-notices", "--require-sign-off"], { cwd: repoRoot, encoding: "utf8" });
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/sign-off: signed/);
+  });
+
+  it("records the 2026-10-04 owner decisions as ok and leaves only the counsel items (10.8) open", () => {
+    const settled = ["solc", "aderyn", "slither", "medusa", "chromium", "searxng", "medusa-docs", "slither-docs"];
+    for (const id of settled) {
+      const c = committed.components.find((x) => x.id === id);
+      expect(c.review, id).toBe("ok");
+      expect(c.note, id).toMatch(/owner decision 2026-10-04/i);
+    }
+    const open = committed.components.filter((c) => c.review === "owner").map((c) => c.id).sort();
+    expect(open).toEqual(["citrate-node", "hermes-sidecar"]);
   });
 });
 
@@ -270,6 +282,16 @@ describe("CLI", () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/licence inventory: OK/);
     expect(r.stdout).toMatch(/owner decisions open: \d+/);
+  });
+
+  it("exits 1 under --require-sign-off while the inventory is unsigned", () => {
+    const root = fixtureRepo();
+    write(root, "release/licences.json", fixtureInventory());
+    const plain = spawnSync(process.execPath, [SCRIPT, "--repo", root], { encoding: "utf8" });
+    expect(plain.status).toBe(0);
+    const r = spawnSync(process.execPath, [SCRIPT, "--repo", root, "--require-sign-off"], { encoding: "utf8" });
+    expect(r.status).toBe(1);
+    expect(r.stderr + r.stdout).toMatch(/sign-off/);
   });
 
   it("exits 1 on a defect and 2 on a usage error", () => {
