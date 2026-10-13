@@ -1,8 +1,7 @@
 // WCAG 2.x contrast maths shared by the colour-contrast tests (HUP-S10.6, rc.5 FIX 3).
 // jsdom cannot compute colours, so these tests read the real token values from the CSS and
-// composite alpha colours over the surface they sit on.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+// composite alpha colours over the surface they sit on. Pure (no Node imports): the app's own
+// tsconfig type-checks this file too.
 
 export type RGBA = [number, number, number, number];
 
@@ -44,5 +43,3 @@ export function cssBlock(css: string, selector: string): Record<string, string> 
   for (const m of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) out[m[1]] = m[2].trim();
   return out;
 }
-
-export const readStyle = (file: string): string => readFileSync(join(__dirname, "../styles", file), "utf8");

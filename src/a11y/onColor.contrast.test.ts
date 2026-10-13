@@ -17,7 +17,9 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { AA, contrast, cssBlock, over, parseColor, readStyle, type RGBA } from "./contrastMath";
+import { AA, contrast, cssBlock, over, parseColor, type RGBA } from "./contrastMath";
+
+const readStyle = (file: string): string => readFileSync(join(__dirname, "../styles", file), "utf8");
 
 const tokensCss = readStyle("tokens.css");
 const foundationCss = readStyle("foundation.css");
