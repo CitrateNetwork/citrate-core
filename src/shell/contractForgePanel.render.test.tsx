@@ -123,6 +123,23 @@ describe("Feature: build a contract from a template (US-6.4)", () => {
     expect(($(el, "cf-tc-toggle") as HTMLInputElement).checked).toBe(true);
   });
 
+  // rc.5 FIX 5: Agent > Contracts > Toolchain shows install commands, Re-check and Restart Hermes.
+  it("step 1 lists the install command for each missing tool, re-checks, and restarts Hermes", async () => {
+    const o = ops();
+    const restart = vi.fn(async () => {});
+    const el = await render(<ContractForgePanel ops={o} restartHermes={restart} />);
+    expect(el.querySelector("#contract-toolchain")).toBeTruthy();
+    expect($(el, "tc-install-aderyn")?.textContent).toMatch(/^aderyn: /);
+    expect($(el, "tc-install-medusa")?.textContent).toMatch(/^medusa: /);
+    expect($(el, "tc-install-forge")).toBeNull();
+    expect($(el, "tc-applies")?.textContent).toContain("Changes apply when Hermes restarts.");
+    const probes = (o.toolchainSettings as ReturnType<typeof vi.fn>).mock.calls.length;
+    await click($(el, "tc-recheck"));
+    expect((o.toolchainSettings as ReturnType<typeof vi.fn>).mock.calls.length).toBe(probes + 1);
+    await click($(el, "tc-restart"));
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the form from the catalog with defaults and sends only filled values", async () => {
     const o = ops();
     const el = await render(<ContractForgePanel ops={o} />);

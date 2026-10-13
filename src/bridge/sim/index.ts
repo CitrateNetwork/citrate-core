@@ -263,6 +263,11 @@ export function createSimBridge(host: SimHost): Omit<BridgeContract, "mode"> {
         // shim just reflects the current persona claim.
         return simAuthStatus(s());
       },
+      async cancelLogin(): Promise<boolean> {
+        assertSimAllowed("auth.cancelLogin");
+        // The sim sign-in is a timer the Store cancels itself; nothing waits here.
+        return false;
+      },
       async userinfo(): Promise<AuthStatus> {
         assertSimAllowed("auth.userinfo");
         return simAuthStatus(s());

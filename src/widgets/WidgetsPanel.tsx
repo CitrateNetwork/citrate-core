@@ -28,7 +28,7 @@ export function WidgetsPanel({ sources, api = widgetsApi() }: { sources: WidgetS
 
   if (!api) {
     return (
-      <div className="surface" data-testid="widgets-panel">
+      <div className="surface" data-testid="widgets-panel" data-register="instrument">
         <div style={head}>
           <span style={{ fontSize: 13.5, fontWeight: 500 }}>Widgets</span>
         </div>
@@ -51,7 +51,7 @@ export function WidgetsPanel({ sources, api = widgetsApi() }: { sources: WidgetS
   };
 
   return (
-    <div className="surface" data-testid="widgets-panel" style={{ display: "flex", flexDirection: "column" }}>
+    <div className="surface" data-testid="widgets-panel" data-register="instrument" style={{ display: "flex", flexDirection: "column" }}>
       <div style={head}>
         <span style={{ fontSize: 13.5, fontWeight: 500 }}>Widgets</span>
         <button className="btn btn-sm" data-testid="widgets-gallery-toggle" style={{ marginLeft: "auto" }} onClick={() => setGallery((g) => !g)}>

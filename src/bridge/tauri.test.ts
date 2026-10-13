@@ -80,6 +80,9 @@ const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => 
     case "auth_logout":
     case "kyc_start":
       return undefined;
+    // rc.5 FIX 2 — abort the in-flight system-browser sign-in; true = one was waiting.
+    case "auth_login_cancel":
+      return true;
     // CORE-D3.C — membership_checkout opens the checkout popup and returns void.
     // The money + grant are server-side; the store polls /userinfo for the grant.
     case "membership_checkout":
@@ -568,6 +571,12 @@ describe("tauri adapter — auth domain invokes real OIDC commands (A3.3)", () =
     await expect(bridge.auth.kycStart()).resolves.toBeUndefined();
     expect(invokeMock).toHaveBeenCalledWith("auth_logout", undefined);
     expect(invokeMock).toHaveBeenCalledWith("kyc_start", undefined);
+  });
+
+  it("cancelLogin invokes auth_login_cancel (rc.5 FIX 2: the browser sign-in has no window to close)", async () => {
+    const bridge = createTauriBridge();
+    await expect(bridge.auth.cancelLogin()).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("auth_login_cancel", undefined);
   });
 });
 

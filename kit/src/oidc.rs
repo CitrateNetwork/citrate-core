@@ -332,6 +332,72 @@ impl CancelToken {
 }
 
 // ---------------------------------------------------------------------------
+// System-browser presentation (v0.5.0-rc.5 FIX 2)
+// ---------------------------------------------------------------------------
+
+/// "Open this URL in the user's default browser". The sign-in authorize page is
+/// presented through THIS seam instead of an embedded webview: macOS blocks WebAuthn
+/// in an embedded WKWebView, so passkeys (and browser wallet extensions) failed in
+/// the old in-app popup. Production wraps tauri-plugin-opener; tests record the URL.
+pub trait SystemBrowser: Send + Sync {
+    fn open_url(&self, url: &str) -> Result<()>;
+}
+
+/// Present the authorize `url` in the system browser. Presentation only: the URL is
+/// the public authorize URL built by `login_with_cancel` (client_id, loopback
+/// redirect_uri, PKCE S256 challenge, state, nonce, scope); no token or verifier is
+/// ever in it, and state/nonce/PKCE are verified exactly as before when the browser
+/// redirects to the loopback. Anything that is not an http(s) URL is refused before
+/// the opener is called (fail closed; the authority is https, the test mock http).
+pub fn present_in_system_browser(browser: &dyn SystemBrowser, url: &str) -> Result<()> {
+    let parsed = url::Url::parse(url).map_err(|_| AuthError::Network)?;
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+        return Err(AuthError::Network);
+    }
+    browser.open_url(url)
+}
+
+/// The single in-flight sign-in attempt (FIX 2). With the authorize page in the
+/// system browser there is no window whose close can cancel the wait, so the abort is
+/// explicit: the app's Cancel button (`cancel_login`), or a new attempt, which
+/// supersedes and cancels the previous one. The 300 s callback timeout still bounds
+/// an abandoned tab. Nothing here touches PKCE/state/nonce/validation.
+#[derive(Default)]
+struct LoginAttempts(Mutex<Option<CancelToken>>);
+
+impl LoginAttempts {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<CancelToken>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn begin(&self) -> CancelToken {
+        let token = CancelToken::new();
+        let mut cur = self.lock();
+        if let Some(prev) = cur.replace(token.clone()) {
+            prev.cancel();
+        }
+        token
+    }
+
+    fn end(&self, token: &CancelToken) {
+        let mut cur = self.lock();
+        if cur.as_ref().is_some_and(|t| Arc::ptr_eq(&t.0, &token.0)) {
+            *cur = None;
+        }
+    }
+
+    fn cancel(&self) -> bool {
+        match self.lock().take() {
+            Some(t) => {
+                t.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Loopback listener (ADV-4/6/10)
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +1088,8 @@ pub struct AuthManager {
     cfg: AuthorityConfig,
     http: Box<dyn HttpClient>,
     session: Mutex<Option<AuthSession>>,
+    /// FIX 2: the in-flight system-browser sign-in, cancellable from the UI.
+    attempts: LoginAttempts,
 }
 
 impl AuthManager {
@@ -1030,7 +1098,28 @@ impl AuthManager {
             cfg,
             http,
             session: Mutex::new(None),
+            attempts: LoginAttempts::default(),
         }
+    }
+
+    /// FIX 2: register a new sign-in attempt and return its cancel token. A prior
+    /// attempt still waiting on its loopback is cancelled (it returns
+    /// `SignInCancelled` and releases its port).
+    pub fn begin_login_attempt(&self) -> CancelToken {
+        self.attempts.begin()
+    }
+
+    /// FIX 2: deregister `token`'s attempt once its flow returned. A late end of a
+    /// superseded attempt leaves the newer registration alone.
+    pub fn end_login_attempt(&self, token: &CancelToken) {
+        self.attempts.end(token)
+    }
+
+    /// FIX 2: cancel the in-flight sign-in (the app's Cancel button). Returns whether
+    /// an attempt was in flight. The awaiting flow returns `SignInCancelled` with no
+    /// partial session.
+    pub fn cancel_login(&self) -> bool {
+        self.attempts.cancel()
     }
 
     /// Recover a poisoned session lock instead of bricking auth (same DR-5 policy
@@ -1884,7 +1973,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 // test enumerates these and asserts none carries token bytes.
 // ---------------------------------------------------------------------------
 
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{Manager, State};
 
 /// Managed Tauri state: the process-wide auth manager.
 pub struct AuthState(pub AuthManager);
@@ -1893,77 +1982,17 @@ fn err_str(e: AuthError) -> String {
     e.to_string()
 }
 
-/// The dedicated in-app sign-in popup window label (CORE-D3.0). A single,
-/// well-known label so a stale popup from a prior aborted attempt is reused/closed
-/// rather than leaking a second window.
-const AUTH_POPUP_LABEL: &str = "auth-popup";
+/// Production `SystemBrowser`: tauri-plugin-opener (the same opener `kyc_start_sync`
+/// uses), which hands the URL to the user's default browser.
+struct TauriOpener(tauri::AppHandle);
 
-/// Build + show the branded in-app sign-in popup (CORE-D3.0) navigated to the
-/// authority authorize `url`, and wire its close/destroy event to `cancel` so a
-/// user who dismisses the popup aborts the in-flight flow honestly (Rule 1). The
-/// popup is a DEDICATED window (label `auth-popup`), not the main window: ~480×720,
-/// centered, focused, non-resizable, titled "Sign in · Citrate".
-///
-/// The `url` is the public authorize URL ONLY (client_id, redirect_uri, PKCE
-/// challenge, state, nonce, scope) — no token or verifier is ever placed in it.
-/// If the window cannot be created (headless / CI), returns an honest `Network`
-/// error rather than panicking.
-fn open_auth_popup(
-    app: &tauri::AppHandle,
-    url: &str,
-    cancel: &CancelToken,
-) -> Result<tauri::WebviewWindow> {
-    let external = url.parse::<tauri::Url>().map_err(|_| AuthError::Network)?;
-
-    // macOS requires WebviewWindow/NSWindow creation on the MAIN thread. `auth_login`
-    // is a sync #[tauri::command] that runs OFF the main thread (so the blocking
-    // loopback wait doesn't freeze the UI), so building the window directly here fails
-    // silently on macOS and the popup never appears. We MARSHAL the creation onto the
-    // main thread via `run_on_main_thread` and hand the handle back over a channel.
-    let app_main = app.clone();
-    let cancel_on_close = cancel.clone();
-    let (tx, rx) =
-        std::sync::mpsc::channel::<std::result::Result<tauri::WebviewWindow, tauri::Error>>();
-    app.run_on_main_thread(move || {
-        // Close any stale popup from a prior aborted attempt (also a main-thread op).
-        if let Some(existing) = app_main.get_webview_window(AUTH_POPUP_LABEL) {
-            let _ = existing.close();
-        }
-        let built =
-            WebviewWindowBuilder::new(&app_main, AUTH_POPUP_LABEL, WebviewUrl::External(external))
-                .title("Sign in · Citrate")
-                .inner_size(480.0, 720.0)
-                .resizable(false)
-                .center()
-                .focused(true)
-                .build();
-        if let Ok(ref window) = built {
-            // Wire the user-close abort (registered ON the main thread with the window):
-            // a user close before the callback signals cancellation so the awaiting
-            // login returns SignInCancelled, the loopback listener is torn down, and no
-            // partial session is created. Firing after completion is a harmless no-op.
-            let c = cancel_on_close.clone();
-            window.on_window_event(move |event| {
-                if matches!(
-                    event,
-                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-                ) {
-                    c.cancel();
-                }
-            });
-        }
-        let _ = tx.send(built);
-    })
-    .map_err(|_| AuthError::Network)?;
-
-    match rx.recv() {
-        Ok(Ok(window)) => Ok(window),
-        Ok(Err(e)) => {
-            // Surface the real cause (previously swallowed to a blank Network error).
-            eprintln!("[auth] popup WebviewWindow build failed on main thread: {e}");
-            Err(AuthError::Network)
-        }
-        Err(_) => Err(AuthError::Network),
+impl SystemBrowser for TauriOpener {
+    fn open_url(&self, url: &str) -> Result<()> {
+        use tauri_plugin_opener::OpenerExt;
+        self.0
+            .opener()
+            .open_url(url.to_string(), None::<&str>)
+            .map_err(|_| AuthError::Network)
     }
 }
 
@@ -1984,60 +2013,59 @@ pub fn auth_status_sync(state: State<'_, AuthState>) -> std::result::Result<Auth
     Ok(state.0.status())
 }
 
-/// `auth_login` — run the loopback-PKCE flow, presenting the authorize page in an
-/// IN-APP popup `WebviewWindow` (CORE-D3.0) instead of kicking the user out to the
-/// system browser. Returns claim-derived status (never a token). Needs the custody
-/// vault (unlocked) to store the refresh token.
+/// `auth_login` — run the loopback-PKCE flow, presenting the authorize page in the
+/// user's SYSTEM browser (v0.5.0-rc.5 FIX 2). Returns claim-derived status (never a
+/// token). Needs the custody vault (unlocked) to store the refresh token.
 ///
-/// PRESENTATION SWAP ONLY: the entire A3 security flow — discovery + trust anchor,
-/// loopback bind (127.0.0.1), PKCE S256, state, nonce, code exchange, RS256
-/// id_token validation, refresh-token custody — is byte-for-byte unchanged. The
-/// only change is HOW the user reaches the authorize page: the popup navigates to
-/// the SAME authorize URL, and the SAME loopback listener catches the `code`+
-/// `state` when the authority 30x-redirects the popup's top-level navigation to
+/// Why the system browser: macOS blocks WebAuthn inside an embedded WKWebView, so the
+/// old in-app popup (CORE-D3.0) could not use passkeys or browser wallet extensions.
+/// RFC 8252 recommends the system browser for native apps anyway.
+///
+/// PRESENTATION SWAP ONLY: discovery + trust anchor, loopback bind (127.0.0.1), PKCE
+/// S256, state, nonce, code exchange, RS256 id_token validation and refresh-token
+/// custody are unchanged. The browser navigates to the SAME authorize URL and the SAME
+/// loopback listener catches `code` + `state` when the authority redirects to
 /// `http://127.0.0.1:<port>/auth/callback`.
 ///
-/// Lifecycle: the popup opens when the flow starts and is CLOSED programmatically
-/// the moment the flow resolves — success, timeout, or error. If the USER closes
-/// the popup first, the popup's close event fires the `CancelToken`, the awaiting
-/// flow returns `SignInCancelled`, the loopback listener is torn down, and no
-/// partial session is created (Rule 1). No orphaned listener, no hang.
+/// Abort: closing the browser tab sends nothing to the loopback, so the wait ends by
+/// the app's Cancel (`auth_login_cancel`), a new sign-in attempt (which supersedes this
+/// one), or the 300 s timeout. Every exit returns cleanly with no partial session.
 #[tauri::command]
 pub async fn auth_login(
     app: tauri::AppHandle,
     auth: State<'_, AuthState>,
     custody: State<'_, crate::custody::CustodyState>,
 ) -> std::result::Result<AuthStatus, String> {
-    // ASYNC so Tauri runs this OFF the main thread. The loopback-PKCE flow blocks
-    // (waits up to CALLBACK_TIMEOUT for the popup's redirect to hit the 127.0.0.1
-    // listener); on the main thread that would freeze the whole UI (the popup could
-    // not even render). Off the main thread, the blocking wait occupies a runtime
-    // worker while the main thread stays free to render the popup + service the
-    // `run_on_main_thread` window creation inside `open_auth_popup`.
-    // A per-attempt cancel token shared with the popup's close event.
-    let cancel = CancelToken::new();
-    // The popup is created lazily INSIDE the open_browser closure — after the
-    // loopback listener is bound and the authorize URL is built — so we navigate
-    // straight to the real authorize URL (no blank flash). We hold the window
-    // handle so we can close it programmatically on every exit path.
-    let popup: Mutex<Option<tauri::WebviewWindow>> = Mutex::new(None);
-
+    // ASYNC so Tauri runs this OFF the main thread: the loopback wait blocks for up to
+    // CALLBACK_TIMEOUT while the member authenticates in their browser.
+    let cancel = auth.0.begin_login_attempt();
+    let browser = TauriOpener(app.clone());
     let result = auth.0.login_with_cancel(&custody.0, &cancel, |url| {
-        let window = open_auth_popup(&app, url, &cancel)?;
-        *popup.lock().unwrap_or_else(|e| e.into_inner()) = Some(window);
-        Ok(())
+        present_in_system_browser(&browser, url)
     });
+    auth.0.end_login_attempt(&cancel);
 
-    // Programmatically close the popup on EVERY outcome (success / timeout / error /
-    // cancel), on the MAIN thread (macOS window ops). On a user-close the window is
-    // already gone — close() is a harmless no-op. No popup is left after the flow ends.
-    if let Some(window) = popup.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    // Bring the app back to the front after a completed sign-in (the member was in
+    // their browser). Best-effort, on the main thread; a failure changes nothing.
+    if result.is_ok() {
+        let app_main = app.clone();
         let _ = app.run_on_main_thread(move || {
-            let _ = window.close();
+            if let Some(w) = app_main.get_webview_window("main") {
+                let _ = w.set_focus();
+            }
         });
     }
 
     result.map_err(err_str)
+}
+
+/// `auth_login_cancel` — abort the in-flight browser sign-in (the Cancel button while
+/// "Waiting for your browser"). The awaiting `auth_login` returns
+/// `auth: sign-in cancelled` and releases its loopback port; no session is created.
+/// Returns whether an attempt was in flight. No token crosses here.
+#[tauri::command]
+pub async fn auth_login_cancel(auth: State<'_, AuthState>) -> std::result::Result<bool, String> {
+    Ok(auth.0.cancel_login())
 }
 
 /// `auth_userinfo` — live `/userinfo` entitlement re-check. Claim-derived only.

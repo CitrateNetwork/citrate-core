@@ -6,6 +6,7 @@
 //  - "Read replies aloud" (off by default) speaks the answer with the persona's voice.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { store } from "./store";
+import { bridge } from "../bridge";
 import { PERSIST_KEYS, freshState } from "./state";
 import type { ChatProvider, TurnActivityEvent, WorkflowRunOpts } from "../agent/harness";
 import type { WorkflowRunView } from "../agent/learn";
@@ -106,6 +107,69 @@ describe("track workflows from chat", () => {
     expect(m.error ?? m.text).toContain("toolchain");
     expect(m.error ?? "").not.toContain("WORKFLOW_REFUSED");
     expect(store.state.chatStatus).toBe("ready");
+  });
+
+  // rc.5 FIX 5: the toolchain refusal becomes what to do, from core's own toolchain status.
+  it("a toolchain refusal with the switch off says where the switch is and to restart Hermes", async () => {
+    const probe = vi.spyOn(bridge.contracts, "toolchainSettings").mockResolvedValue({
+      settings: { enabled: false },
+      programs: ["forge", "slither", "aderyn", "medusa"].map((p) => ({ program: p, tool: p, path: "/x/" + p })),
+      solc: "/x/solc",
+      searchPath: [],
+      notices: [],
+      appliesOnRestart: true,
+      loadError: null,
+    });
+    store.provider = chatProvider({
+      runWorkflow: vi.fn(async () => {
+        throw new Error("WORKFLOW_REFUSED: this workflow needs the contract toolchain (aderyn_scan, forge_test, medusa_fuzz, slither_scan), which is off in this app");
+      }),
+    });
+    await store.sendChat("/run contract-build");
+    const m = lastMsg();
+    expect(m.error).toContain("Turn on Agent > Contracts > Toolchain, then restart Hermes.");
+    // The message carries a way there.
+    expect(m.toolchainHelp).toBe(true);
+    store.openToolchainSettings();
+    expect(store.state.route).toBe("agent");
+    expect(store.state.agentTabRequest).toBe("contracts");
+    expect(m.error).not.toContain("which is off in this app");
+    probe.mockRestore();
+  });
+
+  it("a toolchain refusal with tools missing lists each one with its install command", async () => {
+    const probe = vi.spyOn(bridge.contracts, "toolchainSettings").mockResolvedValue({
+      settings: { enabled: true },
+      programs: [
+        { program: "forge", tool: "forge_test", path: "/x/forge" },
+        { program: "slither", tool: "slither_scan", path: null },
+        { program: "aderyn", tool: "aderyn_scan", path: "/x/aderyn" },
+        { program: "medusa", tool: "medusa_fuzz", path: "/x/medusa" },
+      ],
+      solc: "/x/solc",
+      searchPath: [],
+      notices: [],
+      appliesOnRestart: true,
+      loadError: null,
+    });
+    store.provider = chatProvider({
+      runWorkflow: vi.fn(async () => {
+        throw new Error("WORKFLOW_REFUSED: this workflow needs the contract toolchain (slither_scan), which is off in this app");
+      }),
+    });
+    await store.sendChat("/run contract-build");
+    expect(lastMsg().error).toContain("slither: pipx install slither-analyzer");
+    probe.mockRestore();
+  });
+
+  it("any other refusal gets no toolchain action", async () => {
+    store.provider = chatProvider({
+      runWorkflow: vi.fn(async () => {
+        throw new Error("WORKFLOW_REFUSED: this workflow needs journal_read, which this conversation does not offer");
+      }),
+    });
+    await store.sendChat("/run status-note");
+    expect(lastMsg().toolchainHelp).toBeFalsy();
   });
 
   it("without the sidecar loop the chat says how to turn it on and nothing runs", async () => {

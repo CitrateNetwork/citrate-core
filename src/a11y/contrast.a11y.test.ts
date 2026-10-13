@@ -8,41 +8,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ORIGIN_COLORS } from "../shell/state";
+import { AA, contrast, cssBlock, over, parseColor, type RGBA } from "./contrastMath";
 
 const tokensCss = readFileSync(join(__dirname, "../styles/tokens.css"), "utf8");
-
-function block(selector: string): Record<string, string> {
-  const i = tokensCss.indexOf(selector);
-  if (i < 0) throw new Error(`no ${selector} block`);
-  const body = tokensCss.slice(tokensCss.indexOf("{", i) + 1, tokensCss.indexOf("}", i));
-  const out: Record<string, string> = {};
-  for (const m of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) out[m[1]] = m[2].trim();
-  return out;
-}
-
-type RGBA = [number, number, number, number];
-function parse(c: string): RGBA {
-  const h = c.match(/^#([0-9a-f]{6})$/i);
-  if (h) return [0, 2, 4].map((i) => parseInt(h[1].slice(i, i + 2), 16)).concat(1) as RGBA;
-  const m = c.match(/^rgba?\(([^)]+)\)$/);
-  if (!m) throw new Error(`cannot parse colour ${c}`);
-  const p = m[1].split(",").map((x) => Number(x.trim()));
-  return [p[0], p[1], p[2], p[3] ?? 1];
-}
-const over = (fg: RGBA, bg: RGBA): RGBA => [0, 1, 2].map((i) => fg[i] * fg[3] + bg[i] * (1 - fg[3])).concat(1) as RGBA;
-function luminance(c: RGBA): number {
-  const [r, g, b] = c.slice(0, 3).map((v) => {
-    const s = v / 255;
-    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-export function contrast(a: RGBA, b: RGBA): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-const AA = 4.5;
+const block = (selector: string) => cssBlock(tokensCss, selector);
+const parse = parseColor;
 
 // [text token, surface token]: every pairing the S10.6 surfaces render.
 const PAIRS: [string, string][] = [
