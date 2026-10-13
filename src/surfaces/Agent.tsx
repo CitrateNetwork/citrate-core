@@ -238,9 +238,8 @@ export function Agent({ store, s }: SurfaceProps) {
             <>
               {/* #62 — the chat, front and center on the Agent surface (same shared pane as the
                   Dashboard). Talk to the agent here; skills/approvals/registry sit below. */}
-              <div style={{ display: "flex", height: 460, minHeight: 0 }}>
-                <AgentChat store={store} s={s} />
-              </div>
+              {/* rc.5 FIX 4: the pane fits the window itself (was a fixed 460 px box). */}
+              <AgentChat store={store} s={s} />
               {/* status */}
               <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
