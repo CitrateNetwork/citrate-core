@@ -1253,3 +1253,75 @@ describe("store.selectModel / routerActive — router selection primitive", () =
     expect(store.routerActive(choices).id).toBe("gateway");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Linked wallets + unlink. The list is the authority's registry, read live; an
+// unlink never assumes the outcome: the claim is re-read afterwards.
+// ---------------------------------------------------------------------------
+describe("linked wallets — list and unlink", () => {
+  const A = "0x" + "ab".repeat(20);
+  const B = "0x" + "cd".repeat(20);
+
+  beforeEach(() => {
+    store.setState({ signedIn: true, linkedWallets: null, linkedWalletsErr: null });
+    vi.spyOn(store, "authUserinfo").mockResolvedValue(undefined);
+    vi.spyOn(store, "refreshWallet").mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    store.setState({ signedIn: false, linkedWallets: null, linkedWalletsErr: null });
+  });
+
+  it("stores the authority's list with its canonical flags", async () => {
+    vi.spyOn(bridge.wallet, "linkedList").mockResolvedValue([
+      { address: A, canonical: true, linked_at: "2026-09-30T01:00:00.000Z" },
+      { address: B, canonical: false, linked_at: "2026-09-30T02:00:00.000Z" },
+    ]);
+    await store.refreshLinkedWallets();
+    expect(store.state.linkedWallets?.map((w) => [w.address, w.canonical])).toEqual([
+      [A, true],
+      [B, false],
+    ]);
+    expect(store.state.linkedWalletsErr).toBeNull();
+  });
+
+  it("a failed read clears the list and records why, never an empty list", async () => {
+    store.setState({ linkedWallets: [{ address: A, canonical: true, linked_at: "" }] });
+    vi.spyOn(bridge.wallet, "linkedList").mockRejectedValue(new Error("authority 500"));
+    await store.refreshLinkedWallets();
+    expect(store.state.linkedWallets).toBeNull();
+    expect(store.state.linkedWalletsErr).toContain("authority 500");
+  });
+
+  it("signed out reads nothing from the authority", async () => {
+    store.setState({ signedIn: false });
+    const spy = vi.spyOn(bridge.wallet, "linkedList");
+    await store.refreshLinkedWallets();
+    expect(spy).not.toHaveBeenCalled();
+    expect(store.state.linkedWallets).toBeNull();
+  });
+
+  it("unlink calls the authority, then RE-READS the claim, balances and list", async () => {
+    const unlinkSpy = vi.spyOn(bridge.wallet, "unlink").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(bridge.wallet, "linkedList").mockResolvedValue([{ address: B, canonical: true, linked_at: "" }]);
+    const broadcastSpy = vi.spyOn(bridge.signing, "broadcast");
+    await store.unlinkWallet(A);
+    expect(unlinkSpy).toHaveBeenCalledWith(A);
+    expect(store.authUserinfo).toHaveBeenCalled();
+    expect(store.refreshWallet).toHaveBeenCalled();
+    expect(listSpy).toHaveBeenCalled();
+    expect(store.state.linkedWallets?.[0].address).toBe(B);
+    // An unlink is a registry call, never a transaction.
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it("a refused unlink toasts the reason and re-reads nothing", async () => {
+    vi.spyOn(bridge.wallet, "unlink").mockRejectedValue(new Error("the authority did not unlink the wallet: 403"));
+    const toastSpy = vi.spyOn(store, "toast");
+    await store.unlinkWallet(A);
+    expect(toastSpy).toHaveBeenCalledWith("Wallet not unlinked: the authority did not unlink the wallet: 403");
+    // Member-facing copy: no em-dashes.
+    expect(String(toastSpy.mock.calls[0]?.[0])).not.toContain("\u2014");
+    expect(store.authUserinfo).not.toHaveBeenCalled();
+  });
+});

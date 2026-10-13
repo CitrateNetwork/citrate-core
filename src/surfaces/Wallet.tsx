@@ -71,7 +71,21 @@ export function Wallet({ store, s }: SurfaceProps) {
     // build this replaces the sim seed with the member's real history; in web-dev
     // the sim adapter echoes state.activity (unchanged).
     void store.refreshActivity();
+    // The REAL identity ↔ wallet registry (every link, with the pay-to flag).
+    void store.refreshLinkedWallets();
   }, [store]);
+
+  // Unlink is two-step: the first click opens an inline confirmation that names
+  // the consequence (pay-to moves / this device unlinks); only the second acts.
+  const [confirmUnlink, setConfirmUnlink] = useState<string | null>(null);
+  const [unlinking, setUnlinking] = useState(false);
+  const onUnlink = (address: string) => {
+    setUnlinking(true);
+    void store.unlinkWallet(address).finally(() => {
+      setUnlinking(false);
+      setConfirmUnlink(null);
+    });
+  };
 
   // input refs (imperative, matching the design's sendToEl/… element refs)
   const sendToEl = useRef<HTMLInputElement | null>(null);
@@ -215,11 +229,26 @@ export function Wallet({ store, s }: SurfaceProps) {
   });
   const txEmpty = activityRows.length === 0;
 
-  // Primary is the REAL claim wallet. The extra linked wallet + agent SBT are
-  // sim-persona cosmetics only — never shown to a real signed-in user (Rule 1).
-  const linkedWallets = [{ addr: short(s.walletAddr), label: "smart wallet · primary" }].concat(
-    !s.signedIn && s.persona !== "p1" ? [{ addr: short(makeAddr(P.name + "x")), label: "linked · SIWE proof" }] : [],
-  );
+  // Signed in: the REAL registry rows from the authority, each unlinkable.
+  // Signed out: the claim wallet plus the sim-persona cosmetic row, never shown
+  // to a real signed-in user (Rule 1) and never unlinkable.
+  const custodyLc = (s.custodyAddr || "").toLowerCase();
+  const realLinks = s.signedIn ? s.linkedWallets : null;
+  const linkedWallets: { addr: string; full: string | null; label: string; canonical: boolean; thisDevice: boolean }[] = realLinks
+    ? realLinks.map((w) => {
+        const thisDevice = custodyLc !== "" && w.address.toLowerCase() === custodyLc;
+        const label = [w.canonical ? "pay-to" : "linked", thisDevice ? "this device" : ""].filter(Boolean).join(" · ");
+        return { addr: short(w.address), full: w.address, label, canonical: w.canonical, thisDevice };
+      })
+    : s.signedIn
+      ? []
+      : [{ addr: short(s.walletAddr), full: null, label: "smart wallet · primary", canonical: false, thisDevice: false }].concat(
+          s.persona !== "p1" ? [{ addr: short(makeAddr(P.name + "x")), full: null, label: "linked · SIWE proof", canonical: false, thisDevice: false }] : [],
+        );
+  // What the authority would serve as pay-to if `address` were unlinked: the
+  // first remaining link in link order (the registry's own rule), else the
+  // predicted smart-wallet address.
+  const nextPayTo = (address: string) => realLinks?.find((w) => w.address.toLowerCase() !== address.toLowerCase())?.address ?? null;
   const agents = !s.signedIn && s.persona === "p3" ? [{ name: "research-runner", id: "AgentSBT #221 · parent #4187" }] : [];
   const agentsEmpty = agents.length === 0;
 
@@ -550,19 +579,64 @@ export function Wallet({ store, s }: SurfaceProps) {
 
           <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
             <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Linked wallets</div>
-            {linkedWallets.map((lw, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                <span className="mono" style={{ fontSize: 12, flex: 1 }}>
-                  {lw.addr}
-                </span>
-                <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-                  {lw.label}
-                </span>
-              </div>
-            ))}
+            {s.signedIn && s.linkedWalletsErr && (
+              <p style={{ fontSize: 12.5, color: "var(--warn)", margin: 0, padding: "11px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                Could not read linked wallets: {s.linkedWalletsErr}{" "}
+                <button className="btn btn-ghost btn-sm" onClick={() => void store.refreshLinkedWallets()}>
+                  Retry
+                </button>
+              </p>
+            )}
+            {s.signedIn && s.linkedWallets && s.linkedWallets.length === 0 && (
+              <p style={{ fontSize: 12.5, color: "var(--tx-3)", margin: 0, padding: "11px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                No wallets linked. The authority pays your predicted smart-wallet address until you link one.
+              </p>
+            )}
+            {linkedWallets.map((lw, i) => {
+              const full = lw.full;
+              const confirming = full !== null && confirmUnlink === full;
+              const next = full ? nextPayTo(full) : null;
+              return (
+                <div key={full ?? i} style={{ display: "flex", flexDirection: "column", gap: 8, padding: "11px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span className="mono" style={{ fontSize: 12, flex: 1 }} title={full ?? undefined}>
+                      {lw.addr}
+                    </span>
+                    <span className="mono" style={{ fontSize: 10, letterSpacing: ".08em", textTransform: "uppercase", color: lw.canonical ? "var(--accent-text)" : "var(--tx-3)" }}>
+                      {lw.label}
+                    </span>
+                    {full && !confirming && (
+                      <button className="btn btn-ghost btn-sm" disabled={unlinking} onClick={() => setConfirmUnlink(full)}>
+                        Unlink
+                      </button>
+                    )}
+                  </div>
+                  {full && confirming && (
+                    <div role="alert" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px", border: "1px solid var(--warn)", borderRadius: 8, background: "var(--warn-bg)" }}>
+                      <span style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+                        Unlink {lw.addr} from your Citrate identity? No funds move, and the wallet keeps its balance.
+                        {lw.canonical &&
+                          (next
+                            ? ` This is your pay-to wallet: payouts will go to ${short(next)} instead.`
+                            : " This is your pay-to wallet and your only link: payouts will return to your predicted smart-wallet address, which no key can spend from, until you link a wallet again.")}
+                        {lw.thisDevice && " This is this device's wallet: node rewards and the membership grant need it linked, so you will be asked to link it again."}
+                      </span>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="btn btn-secondary btn-sm" disabled={unlinking} onClick={() => onUnlink(full)}>
+                          {unlinking ? "Unlinking…" : "Unlink wallet"}
+                        </button>
+                        <button className="btn btn-ghost btn-sm" disabled={unlinking} onClick={() => setConfirmUnlink(null)}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             <div style={{ padding: "10px 16px" }}>
               <span className="mono" style={{ fontSize: 11, color: "var(--tx-3)" }}>
-                Link another wallet with a SIWE proof — identity registry list / link / unlink.
+                Wallets proven to your identity with a signed challenge. The pay-to wallet receives grants and payouts.
               </span>
             </div>
           </div>
