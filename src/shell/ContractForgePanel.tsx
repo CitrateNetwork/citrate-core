@@ -21,9 +21,9 @@ import {
   type TemplateCatalog,
   type TemplateRenderView,
   type ToolchainGateResult,
-  type ToolchainStatus,
 } from "../agent/contractForge";
 import { DeployGateCard } from "./DeployGateCard";
+import { ToolchainCard } from "./ToolchainCard";
 
 export type ContractForgeOps = Pick<
   ContractsDomain,
@@ -36,8 +36,6 @@ const mono: CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11 };
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
-  const [tc, setTc] = useState<ToolchainStatus | null>(null);
-  const [tcErr, setTcErr] = useState<string | null>(null);
   const [cat, setCat] = useState<TemplateCatalog | null>(null);
   const [catErr, setCatErr] = useState<string | null>(null);
   const [tid, setTid] = useState("erc20");
@@ -54,7 +52,6 @@ export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
 
   useEffect(() => {
     let live = true;
-    ops.toolchainSettings().then((s) => live && setTc(s), (e) => live && setTcErr(msg(e)));
     ops.templateList().then(
       (c) => {
         if (!live) return;
@@ -73,19 +70,6 @@ export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
   }, [ops]);
 
   const tmpl = cat?.templates.find((t) => t.id === tid) ?? null;
-
-  const toggle = async () => {
-    if (!tc) return;
-    setBusy(true);
-    try {
-      setTc(await ops.toolchainSetEnabled(!tc.settings.enabled));
-      setTcErr(null);
-    } catch (e) {
-      setTcErr(msg(e));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const render = async () => {
     if (!tmpl) return;
@@ -129,25 +113,8 @@ export function ContractForgePanel({ ops }: { ops: ContractForgeOps }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <span style={head}>1. Toolchain</span>
-        {tcErr && <span data-testid="cf-tc-error" style={{ ...note, color: "var(--danger)" }}>{tcErr}</span>}
-        {tc && (
-          <>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-              <input type="checkbox" data-testid="cf-tc-toggle" checked={tc.settings.enabled} disabled={busy} onChange={() => void toggle()} />
-              Let Hermes run forge, slither, aderyn and medusa in folders you granted (applies when Hermes next starts)
-            </label>
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {tc.programs.map((p) => (
-                <li key={p.program} data-testid={"cf-tc-" + p.program} style={{ ...note, color: p.path ? "var(--tx-2)" : "var(--danger)" }}>
-                  {p.program}: {p.path ? "found" : "not installed (its gate item fails)"}
-                </li>
-              ))}
-            </ul>
-            {tc.notices.map((n, i) => (
-              <span key={i} style={note}>{n}</span>
-            ))}
-          </>
-        )}
+        {/* rc.5 FIX 5: the shared card (status, install commands, Re-check). */}
+        <ToolchainCard ops={ops} />
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6, borderTop: "1px solid var(--line-1)", paddingTop: 8 }}>

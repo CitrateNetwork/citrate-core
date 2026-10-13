@@ -50,6 +50,7 @@ import { fenceUntrusted } from "../agent/untrusted";
 import { ESCALATE_TOOL_NAME, escalationApproval, isEscalationDeclined, runEscalationTool, withEscalationTool } from "../agent/escalation";
 import { validateNewSkill, runPrompt, migrateLegacyUserSkills } from "../agent/userSkills";
 import { withPersonaMessage } from "../agent/personas";
+import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
@@ -2540,7 +2541,13 @@ export class Store {
         patch((m) => ({ ...m, error: "stopped by you" }));
         endTurn("stopped");
       } else {
-        patch((m) => ({ ...m, error: workflowRefusal(e) }));
+        // rc.5 FIX 5: the toolchain refusal becomes what to do (switch, install, restart).
+        const why = workflowRefusal(e);
+        patch((m) => ({ ...m, error: why }));
+        if (isToolchainRefusal(why)) {
+          const st = await bridge.contracts.toolchainSettings().catch(() => null);
+          patch((m) => ({ ...m, error: actionableWorkflowError(why, st, hostOs()) }));
+        }
         endTurn("failed");
       }
     }

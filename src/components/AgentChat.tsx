@@ -196,7 +196,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             </div>
             {m.error && (
               <span role="alert" style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--danger)" }}>
-                <span style={{ flex: 1, minWidth: 0 }}>The agent didn't finish this reply: {m.error}</span>
+                <span style={{ flex: 1, minWidth: 0, whiteSpace: "pre-line" }}>The agent didn't finish this reply: {m.error}</span>
                 <button className="btn btn-sm" onClick={() => void store.retryChat(m.id)}>
                   Retry
                 </button>

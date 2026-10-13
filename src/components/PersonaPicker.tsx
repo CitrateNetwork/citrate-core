@@ -27,6 +27,7 @@ import {
   type CustomPersonaForm,
 } from "../agent/personas";
 import { voiceLabel, type SpeechVoice } from "../agent/speech";
+import { shortToolchainHint } from "../agent/toolchainGuidance";
 
 /** The three sidecar calls the picker needs (bridge.agentHarness implements them). */
 export interface PersonaApi {
@@ -243,7 +244,7 @@ export function PersonaPicker({
             <span key={w.id} style={note}>
               <span className="mono">{w.id}</span>
               {w.is_default ? " (default)" : ""}: {w.summary} ({evidenceLabel(w.evidence)})
-              {w.unavailable ? `; not available here: ${w.unavailable}` : ""}
+              {w.unavailable ? `; not available here: ${shortToolchainHint(w.unavailable)}` : ""}
             </span>
           ))}
           <span style={note}>
