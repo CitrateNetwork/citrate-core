@@ -1,6 +1,6 @@
 ---
 created: 2026-10-04
-branch: hup/n6-size-licence (addendum section 8 on hup/n7-size-licence-release-prep, 2026-10-04; sections 9 and 10 on release/v0.5.0-gates, 2026-10-06; 9.2 item 4, 9.3 a/b/d/e and 9.5 updated for v0.5.0-rc.4 on licence/v050-rc4-notices-all-targets, 2026-10-11; section 10 signature recorded on release/v050-final-notes, 2026-10-13)
+branch: hup/n6-size-licence (addendum section 8 on hup/n7-size-licence-release-prep, 2026-10-04; sections 9 and 10 on release/v0.5.0-gates, 2026-10-06; 9.2 item 4, 9.3 a/b/d/e and 9.5 updated for v0.5.0-rc.4 on licence/v050-rc4-notices-all-targets, 2026-10-11; section 10 signature recorded on release/v050-final-notes, 2026-10-13, covering v0.5.0-rc.5)
 author: Larry Klosowski + Claude Opus 5.5
 status: signed for v0.5.0 (section 10, 2026-10-13; 10.8 stays open with counsel)
 ---
@@ -434,4 +434,4 @@ Date: 2026-10-13
 
 Status: **SIGNED**
 
-Covers the v0.5.0 macOS and Linux artifacts built from v0.5.0-rc.4 (2e23a124). The Windows installer is covered when built from the same tag with llama.cpp WEBUI=OFF (Windows lane).
+Covers the v0.5.0 macOS and Linux artifacts built from v0.5.0-rc.5 (b487d9c4); rc.5 changes no bundled component or notice relative to rc.4. The Windows installer is covered when built from the same tag with llama.cpp WEBUI=OFF (Windows lane).
