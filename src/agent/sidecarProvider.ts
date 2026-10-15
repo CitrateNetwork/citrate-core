@@ -11,7 +11,7 @@ import { ChatPlan } from "./chatPlan";
 import { TurnStopped, untilStopped, usageEventOf, type ChatProvider, type ReattachResult, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
 import type { ActionPendingView, McpPendingView, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import type { WorkflowRunView } from "./learn";
-import { needsWorkspace, projectCreatedOf, PROJECT_CREATE_TOOL } from "./projects/projects";
+import { needsWorkspace, projectCreatedOf } from "./projects/projects";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
 export interface SidecarSessionApi {
