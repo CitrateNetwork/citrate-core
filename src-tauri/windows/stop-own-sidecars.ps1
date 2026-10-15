@@ -23,14 +23,25 @@ param(
     # Comma-separated sidecar names without ".exe" (a single string: -File passes no arrays).
     [Parameter(Mandatory = $true)][string]$Names,
     [int]$GraceSeconds = 5,
-    [int]$KillWaitSeconds = 5
+    [int]$KillWaitSeconds = 5,
+    # The installer starts this script without a console, so it also appends each log line here
+    # (UTF-16LE, no BOM) and replays the file into its details (#305). Optional.
+    [string]$LogPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 function Write-Log([string]$Message) {
-    Write-Output "citrate-installer: $Message"
+    $line = "citrate-installer: $Message"
+    Write-Output $line
+    if ($LogPath -ne '') {
+        try {
+            [System.IO.File]::AppendAllText($LogPath, "$line`r`n", (New-Object System.Text.UnicodeEncoding($false, $false)))
+        } catch {
+            # Logging never changes what the step does.
+        }
+    }
 }
 
 try {

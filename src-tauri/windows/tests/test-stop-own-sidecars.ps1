@@ -10,7 +10,9 @@
 #             <install>\unlisted.exe                                (in the folder, not a sidecar)
 #
 # Twice: calling stop-own-sidecars.ps1 directly, and through the NSIS hook compiled into
-# hook-harness.nsi (when -MakeNsis is given). Every process it starts is cleaned up.
+# hook-harness.nsi (when -MakeNsis is given). Then (#305) the hook built with a stop script that
+# never returns: the hook must end it, and what it started, within its outer bound, and the
+# install must continue. Every process it starts is cleaned up.
 #
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File test-stop-own-sidecars.ps1 [-MakeNsis <makensis.exe>]
 [CmdletBinding()]
@@ -133,7 +135,8 @@ try {
     if ($MakeNsis -ne '') {
         $harness = Join-Path $base 'hook-harness.exe'
         $ErrorActionPreference = 'Continue'
-        & $MakeNsis -V2 "-DHOOKS=$hooks" "-DOUTFILE=$harness" $harnessSrc | ForEach-Object { Write-Host "     | $_" }
+        $result = Join-Path $base 'hook-result.txt'
+        & $MakeNsis -V2 "-DHOOKS=$hooks" "-DOUTFILE=$harness" "-DCITRATE_HOOK_TEST_RESULT_FILE=$result" $harnessSrc | ForEach-Object { Write-Host "     | $_" }
         $mk = $LASTEXITCODE
         $ErrorActionPreference = 'Stop'
         Check ($mk -eq 0) "makensis builds the hook harness (got $mk)"
@@ -144,7 +147,55 @@ try {
             $null = $run.Handle  # keep the handle so ExitCode is readable after the wait
             $run.WaitForExit()
             Check ($run.ExitCode -eq 0) "the hook harness exits 0 (got $($run.ExitCode))"
+            $got = if (Test-Path -LiteralPath $result) { (Get-Content -LiteralPath $result -Raw).Trim() } else { '<none>' }
+            if (Test-Path -LiteralPath "$result.log") {
+                Get-Content -LiteralPath "$result.log" -Encoding Unicode | ForEach-Object { Write-Host "     | $_" }
+            }
+            Check ($got -eq '0') "the hook reports the script's exit code 0 (got $got)"
             Assert-Outcome $pids 'NSIS hook'
+            Stop-All
+        }
+
+        # 6. #305: a stop step that never returns (PowerShell or the CIM query hanging). Built with
+        # an 8 s bound and a script that starts a child process, then sleeps for ten minutes.
+        $hang = Join-Path $base 'hang.ps1'
+        $hangPid = Join-Path $base 'hang.pid'
+        $hangChild = Join-Path $base 'hang-child.pid'
+        $hangResult = Join-Path $base 'hang-result.txt'
+        $hangHarness = Join-Path $base 'hang-harness.exe'
+        Set-Content -LiteralPath $hang -Encoding ASCII -Value @"
+`$PID | Set-Content -LiteralPath '$hangPid'
+`$c = Start-Process -FilePath '$sleeper' -PassThru -WindowStyle Hidden
+`$c.Id | Set-Content -LiteralPath '$hangChild'
+Start-Sleep -Seconds 600
+"@
+        $ErrorActionPreference = 'Continue'
+        & $MakeNsis -V2 "-DHOOKS=$hooks" "-DOUTFILE=$hangHarness" '-DCITRATE_STOP_TIMEOUT_MS=8000' "-DCITRATE_STOP_SCRIPT_SRC=$hang" "-DCITRATE_HOOK_TEST_RESULT_FILE=$hangResult" $harnessSrc | ForEach-Object { Write-Host "     | $_" }
+        $mk = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        Check ($mk -eq 0) "makensis builds the hung-hook harness (got $mk)"
+        if ($mk -eq 0) {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $run = Start-Process -FilePath $hangHarness -ArgumentList @('/S', "/D=$install") -PassThru
+            $null = $run.Handle
+            $exited = $run.WaitForExit(90000)
+            $sw.Stop()
+            if (-not $exited) { Stop-Process -Id $run.Id -Force -ErrorAction SilentlyContinue }
+            Check $exited 'the hung-hook harness finishes instead of waiting on the stop step'
+            $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+            # 8 s bound + up to 5 s reap, plus start-up slack on a hosted runner.
+            Check ($exited -and $sw.Elapsed.TotalSeconds -lt 30) "it finishes within the outer bound (took $secs s)"
+            if ($exited) { Check ($run.ExitCode -eq 0) "the install continues after a timeout (exit $($run.ExitCode))" }
+            $got = if (Test-Path -LiteralPath $hangResult) { (Get-Content -LiteralPath $hangResult -Raw).Trim() } else { '<none>' }
+            Check ($got -eq 'timeout') "the hook reports the timeout (got $got)"
+            Check (Test-Path -LiteralPath $hangChild) 'the hung script ran (so the bound covered running code, not only start-up)'
+            foreach ($f in @($hangPid, $hangChild)) {
+                if (Test-Path -LiteralPath $f) {
+                    $id = [int](Get-Content -LiteralPath $f -Raw).Trim()
+                    $started.Add($id)
+                    Check (-not (Is-Alive $id)) "the process the hook started is gone afterwards ($([System.IO.Path]::GetFileName($f)), pid $id)"
+                }
+            }
             Stop-All
         }
     } else {
