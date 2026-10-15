@@ -8,8 +8,11 @@
 //! the toolchain search path when it starts Hermes ([`sidecar_env`]). Changes apply the next time
 //! Hermes starts.
 //!
-//! **Default off, and off changes nothing.** With the switch off no variable is passed, and the
-//! sidecar behaves exactly as before.
+//! **On for a new install** (HGW-W4, core #290, owner decision 2026-10-15): no settings file means
+//! on. A member who switched it off keeps that choice (the stored file wins), and an unreadable or
+//! corrupt file counts as off (a permission never widens on a read error). **Off changes
+//! nothing:** no variable is passed, and the sidecar behaves exactly as before. On does not widen
+//! anything either: a missing tool still refuses honestly, and the deploy gate still fails closed.
 //!
 //! **Search path.** The installed component versions (`<app data>/components`, HUP-S6.1) come
 //! first, then the usual per-user and system tool folders. A tool found nowhere stays an honest
@@ -43,11 +46,19 @@ pub const PROGRAMS: [(&str, &str); 4] = [
     ("medusa", "medusa_fuzz"),
 ];
 
-/// The member's choice. Off by default.
+/// The member's choice. `Default` (off) is the fallback for a file that cannot be read; a new
+/// install, with no file, starts [`ToolchainSettings::new_install`] (on).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ToolchainSettings {
     pub enabled: bool,
+}
+
+impl ToolchainSettings {
+    /// HGW-W4: what a member who never set the switch gets: on.
+    pub fn new_install() -> Self {
+        ToolchainSettings { enabled: true }
+    }
 }
 
 /// One program and where it was found.
@@ -73,12 +84,12 @@ pub struct ToolchainStatus {
     pub load_error: Option<String>,
 }
 
-/// The stored settings; a missing file is the default, a corrupt one is an error.
+/// The stored settings; a missing file is a new install (on), a corrupt one is an error.
 pub fn load(dir: &Path) -> Result<ToolchainSettings, String> {
     match std::fs::read_to_string(dir.join(SETTINGS_FILE)) {
         Ok(text) => serde_json::from_str(&text)
             .map_err(|_| "the toolchain settings file is not valid; it stays off".to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ToolchainSettings::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ToolchainSettings::new_install()),
         Err(_) => Err("the toolchain settings file could not be read; it stays off".into()),
     }
 }

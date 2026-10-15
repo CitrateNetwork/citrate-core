@@ -13,7 +13,7 @@
 //
 // Sessions open with the body build_session_body makes (pinned by session-body-v1.json, which the
 // Rust test build_session_body_matches_the_live_parity_fixture checks too), the app's annotated
-// tool list, and no max_steps override, exactly as the app does today.
+// tool list, and the 24-step build budget (HGW-W5), exactly as the app does today.
 //
 // The live suite runs only when CITRATE_HERMES_LIVE_BIN names a sidecar binary
 // (scripts/hermes-live-parity.sh sets it from a built Citrate Core.app). With
@@ -105,6 +105,8 @@ export function liveSessionBody(systemPrompt: string, toolsJson: string, baseUrl
     contextTokens,
     maxTokens: Math.min(AI_MAX_TOKENS, Math.floor(contextTokens / 4)),
     hicAware: true,
+    // HGW-W5 (core #291): the member's sessions are build sessions (24 steps, runtime cap 32).
+    maxSteps: LIVE_SESSION_MAX_STEPS,
   };
 }
 
@@ -240,12 +242,11 @@ export function httpSessionApi(controlUrl: string, token: string, bodyFor: (syst
 // Where the live path legitimately differs from the scripted-client runners.
 // ---------------------------------------------------------------------------------------------
 /**
- * The sidecar's default `max_steps` (agent-sidecar sessions.rs). The app opens sessions without
- * overriding it, so live turns run under it. Whether chat keeps 8 or moves to another cap is
- * the owner decision `default_turn_cap`; the recommended default (8 for both, pending sign-off)
- * makes the scripted fixture agree with this value.
+ * The `maxSteps` the app's session body carries (HGW-W5, core #291: 24, inside the runtime's cap
+ * of 32), so live turns run under it. The scripted fixtures keep the TS loop's cap of 8; the
+ * turn-cap override below derives the live expectation from this value.
  */
-export const LIVE_SESSION_MAX_STEPS = 8;
+export const LIVE_SESSION_MAX_STEPS = 24;
 
 type LiveOverride = { why: string; expect: Expect };
 
@@ -509,11 +510,11 @@ describe("live parity support (HUP-S1.9)", () => {
     expect(liveSessionBody(i.systemPrompt, JSON.stringify(i.tools), i.baseUrl, i.bearer, i.model, i.contextTokens)).toEqual(BODY_FIXTURE.body);
   });
 
-  it("the app's annotated tools all pass the body builder, with no max_steps override", () => {
+  it("the app's annotated tools all pass the body builder, with the 24-step build budget", () => {
     const body = liveSessionBody(SYSTEM_PROMPT, JSON.stringify(annotatedAgentTools()), "http://127.0.0.1:1/v1", "", "m", 8192);
     expect(body.tools.length).toBe(annotatedAgentTools().length);
     expect(body.tools.every((t) => t.host === "core")).toBe(true);
-    expect("maxSteps" in body).toBe(false);
+    expect(body.maxSteps).toBe(24);
     expect(body.maxTokens).toBe(2048);
   });
 
