@@ -673,3 +673,9 @@ pub async fn hermes_projects_forget(
 #[cfg(test)]
 #[path = "hermes_projects_tests.rs"]
 mod tests;
+
+// The live proof with the real sidecar and renderer (env-gated: CITRATE_E2E_PROJECTS_SIDECAR_BIN
+// and CITRATE_E2E_TEMPLATES_BIN).
+#[cfg(test)]
+#[path = "hermes_projects_e2e_tests.rs"]
+mod e2e_tests;
