@@ -148,6 +148,9 @@ try {
             $run.WaitForExit()
             Check ($run.ExitCode -eq 0) "the hook harness exits 0 (got $($run.ExitCode))"
             $got = if (Test-Path -LiteralPath $result) { (Get-Content -LiteralPath $result -Raw).Trim() } else { '<none>' }
+            if (Test-Path -LiteralPath "$result.log") {
+                Get-Content -LiteralPath "$result.log" -Encoding Unicode | ForEach-Object { Write-Host "     | $_" }
+            }
             Check ($got -eq '0') "the hook reports the script's exit code 0 (got $got)"
             Assert-Outcome $pids 'NSIS hook'
             Stop-All
