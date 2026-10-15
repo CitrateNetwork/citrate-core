@@ -1325,6 +1325,13 @@ export interface McpPendingView {
   expiresInSecs: number;
 }
 
+/** HGW-W3: Hermes's projects folder (Rust `hermes_projects::WorkspaceView`). */
+export interface ProjectsWorkspaceView {
+  root: string;
+  exists: boolean;
+  granted: boolean;
+}
+
 /** HGW-W1: one sidecar action the sidecar holds for the member (`GET /sessions/:id/approvals/pending`):
  *  an effectful sidecar-hosted call (file tools, toolchain, capsules) after the session read
  *  untrusted content, or a `project_create`. An allow releases that one call with `subject`. */
@@ -1493,6 +1500,14 @@ export interface AgentHarnessDomain {
   actionDecide(sessionId: string, id: string, allow: boolean, subject: string): Promise<void>;
   /** HUP-S4.1: the running sidecar's MCP servers (connected / failed / tools). */
   mcpRuntime(): Promise<McpRuntimeView>;
+  /** HGW-W3: ~/Citrate/Projects, whether it exists and whether Hermes may work in it. */
+  projectsWorkspace(): Promise<ProjectsWorkspaceView>;
+  /** HGW-W3: the member approved the workspace card: create the folder and grant it (read and
+   *  write, subtree), recorded and sent to open conversations like a Settings grant. */
+  projectsWorkspaceGrant(): Promise<ProjectsWorkspaceView>;
+  /** HGW-W3: remember a folder project_create returned, so later conversations send it as a
+   *  project root. Rejects for anything that is not a Hermes project directly in the folder. */
+  projectsRecord(path: string): Promise<string[]>;
 }
 
 /** HUP-S2.2 — the OS sandbox a held command would run in, as the sidecar describes it. */

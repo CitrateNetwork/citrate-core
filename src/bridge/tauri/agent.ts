@@ -8,7 +8,7 @@
 // harmlessly ignored here). Every chain effect a skill proposes stays ceremony-gated (Rule 3) —
 // this bridge starts/stops the sidecar and reads its state; it never signs.
 import { invoke } from "./invoke";
-import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView, McpPendingView, McpRuntimeView, ActionPendingView } from "../domains";
+import type { AgentApproval, AgentHarnessDomain, AgentHarnessStatus, AgentSkill, AgentSkillsDomain, LocalSkill, RegistrySkill, SkillMigrationReport, SessionEventsPage, InterviewTrack, BriefDraft, HermesMcpView, HermesPersona, TrackWorkflow, TrackWorkflowStart, ShellPendingView, McpPendingView, McpRuntimeView, ActionPendingView, ProjectsWorkspaceView } from "../domains";
 import type { CeremonyView } from "../types";
 import type { CheckpointList, UndoOutcome } from "../../agent/fileChanges";
 import type { StepDiff } from "../../popout/diffModel";
@@ -183,6 +183,15 @@ export const tauriAgentHarness: AgentHarnessDomain = {
   },
   mcpRuntime() {
     return invoke<McpRuntimeView>("mcp_servers_runtime");
+  },
+  projectsWorkspace() {
+    return invoke<ProjectsWorkspaceView>("hermes_projects_workspace");
+  },
+  projectsWorkspaceGrant() {
+    return invoke<ProjectsWorkspaceView>("hermes_projects_workspace_grant");
+  },
+  projectsRecord(path) {
+    return invoke<string[]>("hermes_projects_record", { path });
   },
 };
 
