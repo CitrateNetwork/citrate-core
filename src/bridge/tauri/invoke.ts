@@ -74,6 +74,11 @@ const LONG: Record<string, number> = {
   hermes_shell_decide: 45_000,
   hermes_mcp_pending: 45_000,
   hermes_mcp_decide: 45_000,
+  // HGW-W3: the projects workspace grant is sent to each open conversation (like a Settings grant).
+  hermes_projects_workspace_grant: 270_000,
+  // HGW-W1: the held sidecar actions after taint and the member's decision.
+  hermes_action_pending: 45_000,
+  hermes_action_decide: 45_000,
   // HUP-S1.4: interviewer tracks + briefs (same loopback control bound).
   hermes_tracks: 45_000,
   hermes_brief_create: 45_000,

@@ -66,6 +66,14 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
+/// HGW-W5 (core #291): the sidecar-wide step budget (runtime `sessions::max_steps_from_env`).
+pub const MAX_STEPS_ENV: &str = "CITRATE_HERMES_MAX_STEPS";
+/// HGW-W5: model steps a member's (build) turn may take: create, write, run, read the error, fix,
+/// run again. Sent as `maxSteps` on every interactive session and as the sidecar-wide default.
+pub const BUILD_MAX_STEPS: u32 = 24;
+/// The runtime's hard cap on `maxSteps` (agent-sidecar `sessions::MAX_STEPS_CAP`).
+pub const RUNTIME_MAX_STEPS_CAP: u32 = 32;
+const _: () = assert!(BUILD_MAX_STEPS <= RUNTIME_MAX_STEPS_CAP);
 
 /// Supervision bearer length (256-bit), matching the node-agent scheme.
 const TOKEN_LEN: usize = 32;
@@ -594,6 +602,8 @@ impl HermesManager {
                 HERMES_TOKEN_FILE_ENV.to_string(),
                 self.token_path.to_string_lossy().to_string(),
             ),
+            // HGW-W5: a session that names no budget gets the build budget too.
+            (MAX_STEPS_ENV.to_string(), BUILD_MAX_STEPS.to_string()),
         ];
         // Point the child at the seeded capsule dir so it boots with skills, not an empty catalog.
         if let Some(dir) = &self.capsules_dir {
@@ -658,6 +668,7 @@ impl HermesManager {
                     || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::fl_trajectories::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::hermes_projects::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -1580,6 +1591,37 @@ pub(crate) fn manager_for<R: tauri::Runtime>(
     manager(app)
 }
 
+/// HGW-W3: the template renderer for `project_create`, resolved at each Hermes start: the bundled
+/// `citrate-templates` program, the bundled templates folder and the machine's effective tier.
+/// `None` while the program is not bundled (the sidecar then refuses template requests, honestly).
+fn project_renderer<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> impl Fn() -> Option<crate::hermes_projects::Renderer> + Send + Sync + 'static {
+    let app = app.clone();
+    move || {
+        use tauri::Manager;
+        let bin = crate::supervisor::resolve_external_bin(&app, "citrate-templates").ok()?;
+        let res = app.path().resource_dir().ok();
+        let templates = crate::template_forge::templates_root(res.as_deref()).ok()?;
+        let data = app.path().app_data_dir().ok()?;
+        let tier = crate::tier::build_report(
+            crate::tier::probe(&data),
+            crate::tier::load_override(&app).ok().flatten(),
+        )
+        .effective;
+        let tier = match crate::template_forge::renderer_tier(tier) {
+            citrate_templates::Tier::T0 => "T0",
+            citrate_templates::Tier::T1 => "T1",
+            citrate_templates::Tier::T2 => "T2",
+        };
+        Some(crate::hermes_projects::Renderer {
+            bin,
+            templates,
+            tier: tier.to_string(),
+        })
+    }
+}
+
 /// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
 /// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
 /// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
@@ -1647,11 +1689,19 @@ pub(crate) fn manager<R: tauri::Runtime>(
             // Terminal commands (shell_run): `1` when the member's switch is on (the default),
             // pinned empty when off.
             let terminal = crate::hermes_terminal::file_env_source(base.clone());
+            // HGW-W3: `project_create` in ~/Citrate/Projects (templates when the renderer ships).
+            let projects = crate::hermes_projects::file_env_source(
+                crate::hermes_projects::projects_root(
+                    &app.path().home_dir().map_err(|e| e.to_string())?,
+                ),
+                project_renderer(app),
+            );
             std::sync::Arc::new(move || {
                 let mut env = web();
                 env.extend(toolchain());
                 env.extend(trajectories());
                 env.extend(terminal());
+                env.extend(projects());
                 env
             })
         });
@@ -2155,14 +2205,18 @@ pub fn build_session_body(
         // window so a small window still leaves room for the prompt.
         "maxTokens": crate::ai::AI_MAX_TOKENS.min(context_tokens / 4),
         "hicAware": true,
+        // HGW-W5 (core #291): the member's sessions are build sessions (runtime cap 32).
+        "maxSteps": BUILD_MAX_STEPS,
     })
     .to_string())
 }
 
-/// HUP-S10.3 — the body for a DAEMON run's session: exactly the chat body plus `unattended: true`,
-/// so the sidecar starts the session in the HIC downgrade (every effectful call needs the member's
+/// HUP-S10.3 — the body for a DAEMON run's session: the chat body plus `unattended: true`, so the
+/// sidecar starts the session in the HIC downgrade (every effectful call needs the member's
 /// explicit decision from the first step). A sidecar that predates the flag ignores it; core marks
-/// every effectful daemon call HIC-required on its own as well (`src/daemons/runner.ts`).
+/// every effectful daemon call HIC-required on its own as well (`src/daemons/runner.ts`). A
+/// scheduled run is not a build session, so it drops `maxSteps` and keeps the sidecar's default
+/// (HGW-W5).
 pub fn build_daemon_session_body(
     system_prompt: &str,
     tools_json: &str,
@@ -2182,6 +2236,7 @@ pub fn build_daemon_session_body(
     let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     if let Some(o) = v.as_object_mut() {
         o.insert("unattended".into(), serde_json::Value::Bool(true));
+        o.remove("maxSteps");
     }
     Ok(v.to_string())
 }
@@ -2275,8 +2330,25 @@ pub async fn hermes_session_open(
         // change saved meanwhile is still sent to this session.
         let store = crate::agent_grants::GrantStore::for_app(&app)?;
         let m = manager(&app)?;
+        // HGW-W3: projects Hermes created before go back as `projectRoots` while the workspace
+        // grant in this same document is live.
+        use tauri::Manager;
+        let hermes_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("hermes");
+        let projects_root = crate::hermes_projects::projects_root(
+            &app.path().home_dir().map_err(|e| e.to_string())?,
+        );
         crate::agent_grants::open_with_grants(&store, &body, |b| {
-            m.session_open(b).map_err(|e| e.to_string())
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            let b =
+                crate::hermes_projects::with_project_roots(b, &hermes_dir, &projects_root, now)?;
+            m.session_open(&b).map_err(|e| e.to_string())
         })
     })
     .await
@@ -2360,6 +2432,11 @@ pub mod shell;
 // bearer-authed control).
 #[path = "hermes_mcp_cards.rs"]
 pub mod mcp_cards;
+
+// HGW-W1: the member's decision on an action card the sidecar holds after taint (child module:
+// reuses the bearer-authed control).
+#[path = "hermes_action_cards.rs"]
+pub mod action_cards;
 
 #[cfg(test)]
 mod brief_tests {

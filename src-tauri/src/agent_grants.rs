@@ -781,6 +781,20 @@ pub async fn agent_grants_add_folder(
     .await
 }
 
+/// HGW-W3: grant `root` the way Settings > Folder access does (recorded, sent to open sessions),
+/// for a grant the member approved on a card elsewhere in the app (the projects workspace card).
+pub(crate) fn grant_folder_for_app(
+    app: &tauri::AppHandle,
+    root: &Path,
+    read: bool,
+    write: bool,
+) -> Result<GrantsChange, String> {
+    change(app, |s, now| {
+        let ids = s.add_folder(root, read, write, now)?;
+        Ok(added_event(s, &ids))
+    })
+}
+
 /// **agent_grants_revoke** — revoke a grant now.
 #[tauri::command]
 pub async fn agent_grants_revoke(

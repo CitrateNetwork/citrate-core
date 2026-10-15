@@ -256,6 +256,10 @@ export interface NodeStatusView {
   notice?: string;
   /** Set while the last start was refused by a holder of the chain database or a node port. */
   blocked?: NodeBlocker;
+  /** Set while the block producer is armed. */
+  miningArmed?: boolean;
+  /** Why block production is held (the mining gate in node.rs); unset while armed. */
+  miningHold?: string;
 }
 
 export interface NodeDomain {
@@ -1321,6 +1325,32 @@ export interface McpPendingView {
   expiresInSecs: number;
 }
 
+/** HGW-W3: Hermes's projects folder (Rust `hermes_projects::WorkspaceView`). */
+export interface ProjectsWorkspaceView {
+  root: string;
+  exists: boolean;
+  granted: boolean;
+}
+
+/** HGW-W1: one sidecar action the sidecar holds for the member (`GET /sessions/:id/approvals/pending`):
+ *  an effectful sidecar-hosted call (file tools, toolchain, capsules) after the session read
+ *  untrusted content, or a `project_create`. An allow releases that one call with `subject`. */
+export interface ActionPendingView {
+  id: string;
+  callId: string;
+  tool: string;
+  hic: string;
+  /** The exact arguments that will be used (canonical JSON); the decision must carry it back. */
+  subject: string;
+  /** One line for a person: the tool and its main argument. */
+  summary: string;
+  /** Why the member is asked. */
+  hicReason: string;
+  /** Every tool that brought untrusted content into the session since it was last clean. */
+  taintSources: string[];
+  expiresInSecs: number;
+}
+
 /** HUP-S4.3 — one server row (Rust `McpServerView`). */
 export interface HermesMcpServer {
   name: string;
@@ -1462,8 +1492,22 @@ export interface AgentHarnessDomain {
    *  `MCP_DECISION_REFUSED: ` when it no longer matches what is waiting. On Allow of an `open_url`
    *  request, core opens the address the sidecar holds in the system browser. */
   mcpDecide(sessionId: string, id: string, allow: boolean, subject: string): Promise<void>;
+  /** HGW-W1: the sidecar actions held for the member's decision in a session (an effectful
+   *  sidecar-hosted call after the session read untrusted content, or `project_create`). */
+  actionPending(sessionId: string): Promise<ActionPendingView[]>;
+  /** HGW-W1: allow or decline one held action, bound to the subject (canonical arguments) shown.
+   *  Rejects with `ACTION_DECISION_REFUSED: ` when it no longer matches what is waiting. */
+  actionDecide(sessionId: string, id: string, allow: boolean, subject: string): Promise<void>;
   /** HUP-S4.1: the running sidecar's MCP servers (connected / failed / tools). */
   mcpRuntime(): Promise<McpRuntimeView>;
+  /** HGW-W3: ~/Citrate/Projects, whether it exists and whether Hermes may work in it. */
+  projectsWorkspace(): Promise<ProjectsWorkspaceView>;
+  /** HGW-W3: the member approved the workspace card: create the folder and grant it (read and
+   *  write, subtree), recorded and sent to open conversations like a Settings grant. */
+  projectsWorkspaceGrant(): Promise<ProjectsWorkspaceView>;
+  /** HGW-W3: remember a folder project_create returned, so later conversations send it as a
+   *  project root. Rejects for anything that is not a Hermes project directly in the folder. */
+  projectsRecord(path: string): Promise<string[]>;
 }
 
 /** HUP-S2.2 — the OS sandbox a held command would run in, as the sidecar describes it. */

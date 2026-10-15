@@ -85,6 +85,7 @@ mod membership;
 mod memory;
 // HUP-S3.1 — first-run import of the bundled knowledge corpus into the memory store.
 mod knowledge_import;
+mod mining_gate;
 mod model;
 mod model_register;
 mod model_registry;
@@ -144,6 +145,8 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
+// HGW-W3: the projects folder Hermes creates projects in (~/Citrate/Projects).
+mod hermes_projects;
 // Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
@@ -373,6 +376,9 @@ pub fn run() {
             // and is handed to the spawned node via the CITRATE_STORAGE_KEY env.
             // node_status reads REAL height/peers from the node's local RPC.
             app.manage(node::build_node_state(&app.handle().clone())?);
+            // Mining watchdog: an armed producer is disarmed (respawned as a follower) as soon
+            // as the mining gate stops allowing production (`mining_gate`). Off the main thread.
+            node::spawn_mining_watchdog(app.handle().clone());
             // CORE-C1.2 — the AgentManager: the node-agent under the
             // SidecarSupervisor with a bearer-authed supervision surface. @rule8:
             // the per-session bearer is minted with OsRng, handed to the child via
@@ -704,6 +710,9 @@ pub fn run() {
             hermes::shell::hermes_shell_pending,
             hermes::mcp_cards::hermes_mcp_pending,
             hermes::mcp_cards::hermes_mcp_decide,
+            // HGW-W1: the member decides each tainted sidecar action the sidecar holds.
+            hermes::action_cards::hermes_action_pending,
+            hermes::action_cards::hermes_action_decide,
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,
@@ -727,6 +736,9 @@ pub fn run() {
             hermes_web::hermes_web_settings_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
+            hermes_projects::hermes_projects_workspace,
+            hermes_projects::hermes_projects_workspace_grant,
+            hermes_projects::hermes_projects_record,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).
@@ -1170,6 +1182,7 @@ mod tests {
                     || code.contains("read_grant_status(")
                     || code.contains("remote_network_tip(")
                     || code.contains("arm_mining_if_synced(")
+                    || code.contains("recheck_mining(")
                     || code.contains("read_self_stake(")
                     || code.contains("read_claimable(");
                 if touches_network {

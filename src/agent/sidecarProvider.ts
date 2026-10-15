@@ -9,7 +9,7 @@
 import { parseFileChange, isFileTool } from "./fileChanges";
 import { ChatPlan } from "./chatPlan";
 import { TurnStopped, untilStopped, usageEventOf, type ChatProvider, type ReattachResult, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
-import type { McpPendingView, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
+import type { ActionPendingView, McpPendingView, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import type { WorkflowRunView } from "./learn";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
@@ -37,6 +37,19 @@ export interface SidecarSessionApi {
   mcpPending?(id: string): Promise<McpPendingView[]>;
   /** HUP-S4.1: the member's decision, bound to the subject (arguments or URL) shown. */
   mcpDecide?(id: string, approvalId: string, allow: boolean, subject: string): Promise<void>;
+  /** HGW-W1: the sidecar actions held for the member after taint, and `project_create` (absent =
+   *  not supported). */
+  actionPending?(id: string): Promise<ActionPendingView[]>;
+  /** HGW-W1: the member's decision, bound to the subject (canonical arguments) shown. */
+  actionDecide?(id: string, approvalId: string, allow: boolean, subject: string): Promise<void>;
+}
+
+/** HGW-W1: the sidecar tool that always asks the member on an action card (it creates a folder). */
+export const PROJECT_CREATE_TOOL = "project_create";
+
+/** HGW-W1: sidecar tools with their own approval routes (not the action cards). */
+function ownCardTool(name: string): boolean {
+  return name === SHELL_RUN_TOOL || name.startsWith(MCP_TOOL_PREFIX) || name.startsWith("browser_");
 }
 
 /** HUP-S4.1: every MCP tool the sidecar offers is named `mcp__<server>__<tool>`. */
@@ -44,6 +57,29 @@ export const MCP_TOOL_PREFIX = "mcp__";
 
 /** HUP-S2.2 — the sidecar-hosted tool whose every call the member decides. */
 export const SHELL_RUN_TOOL = "shell_run";
+
+/**
+ * HGW-W3: what a `project_create` result means for core: the folder it created (an `ok` result
+ * whose JSON carries `ok: true` and an absolute `path`), or that the projects folder is missing or
+ * not granted (the sidecar's refusal names it). Anything else (a decline, a bad name) is null.
+ */
+export function projectOutcomeOf(status: string, content: unknown): TurnActivityEvent | null {
+  const text = typeof content === "string" ? content : "";
+  if (status === "ok") {
+    try {
+      const v: unknown = JSON.parse(text);
+      if (v && typeof v === "object") {
+        const o = v as { ok?: unknown; path?: unknown };
+        if (o.ok === true && typeof o.path === "string" && o.path.startsWith("/")) return { kind: "project_created", path: o.path };
+      }
+    } catch {
+      /* not a project result */
+    }
+    return null;
+  }
+  if (/the projects folder .* (does not exist yet|is not granted for reading and writing)/.test(text)) return { kind: "projects_workspace_needed" };
+  return null;
+}
 
 /** HUP-S2.2 (US-2.2 AC3) — sidecar tools whose results are command runs for the Activity log. */
 const COMMAND_RUN_TOOLS = new Set([SHELL_RUN_TOOL, "forge_test", "slither_scan", "aderyn_scan", "medusa_fuzz"]);
@@ -107,6 +143,10 @@ export interface SidecarProviderOptions {
   mcpPollMs?: number;
   /** HUP-S4.1: how long to keep looking while an MCP call is in flight (a task can run long). */
   mcpWaitMs?: number;
+  /** HGW-W1: pause between looks for an action card held for an in-flight sidecar call (ms). */
+  actionPollMs?: number;
+  /** HGW-W1: how long to keep looking for it (the sidecar declines a card after 300 s). */
+  actionWaitMs?: number;
   /** HUP-S1.1: save the session so a reloaded view can pick it back up (absent = not saved). */
   store?: SidecarSessionStore;
 }
@@ -226,6 +266,9 @@ export function createSidecarProvider(
   const shellWaitMs = options.shellWaitMs ?? 10_000;
   const mcpPollMs = options.mcpPollMs ?? 250;
   const mcpWaitMs = options.mcpWaitMs ?? 20 * 60_000;
+  const actionPollMs = options.actionPollMs ?? 250;
+  // The sidecar declines a card after 300 s without a decision; look a little longer than that.
+  const actionWaitMs = options.actionWaitMs ?? 310_000;
   const store = options.store;
   let sessionId: string | null = null;
   let lastSeq = 0;
@@ -256,6 +299,8 @@ export function createSidecarProvider(
   // HUP-S2.2: sidecar-hosted command calls of the current turn (call id -> tool name), so their
   // results are reported to the Activity log as command runs.
   const sidecarRunCalls = new Map<string, string>();
+  // HGW-W3: project_create calls of the current turn, so their results can be reported.
+  const sidecarProjectCalls = new Set<string>();
 
   // HUP-S7.6: turns run one at a time. A stopped turn keeps draining its session events (to its
   // `done`) after the caller has moved on, so the next turn starts from the right sequence number
@@ -423,6 +468,51 @@ export function createSidecarProvider(
       }
     }
 
+    /**
+     * HGW-W1: while the sidecar-hosted call `callId` waits on an action card (an effectful call
+     * after the session read untrusted content, or a `project_create`), put the card in front of
+     * the member and send the decision bound to the subject shown. Stops once the sidecar answered
+     * the call, the turn stopped, or after `actionWaitMs`. A failed decision is reported and never
+     * retried as an approval.
+     */
+    async function decideAction(callId: string, laterInPage: boolean): Promise<void> {
+      if (!api.actionPending || !api.actionDecide || laterInPage) return;
+      const deadline = Date.now() + actionWaitMs;
+      const decided = new Set<string>();
+      for (;;) {
+        if (stopping) return;
+        const list = await api.actionPending(id).catch(() => [] as ActionPendingView[]);
+        for (const card of list.filter((p) => p.callId === callId && !decided.has(p.id))) {
+          decided.add(card.id);
+          let allow = false;
+          callbacks.onActivity?.({ kind: "approval", callId, tool: card.tool, state: "pending" });
+          if (callbacks.onActionApproval) {
+            try {
+              allow = (await untilStopped(callbacks.onActionApproval(card), signal)) === true;
+            } catch (e) {
+              if (e instanceof TurnStopped) stopOnce();
+              allow = false;
+            }
+          }
+          if (stopping) allow = false;
+          try {
+            await api.actionDecide(id, card.id, allow, card.subject);
+            callbacks.onActivity?.({ kind: "approval", callId, tool: card.tool, state: allow ? "approved" : "declined" });
+          } catch (e) {
+            callbacks.onActivity?.({ kind: "approval", callId, tool: card.tool, state: "failed" });
+            callbacks.onActivity?.({
+              kind: "notice",
+              text: `Your decision on ${card.tool} did not reach Hermes (${e instanceof Error ? e.message : String(e)}). It was not run.`,
+            });
+          }
+        }
+        const peek = await api.events(id, lastSeq, 0).catch(() => null);
+        if (peek?.events.some((e) => e.event.type === "tool_result" && e.event.call_id === callId)) return;
+        if (Date.now() >= deadline) return;
+        await sleep(actionPollMs);
+      }
+    }
+
     // HUP-S7.6 (US-7.4 AC1): a chat turn's plan, from the tool calls the model asks for. A workflow
     // run reports its own plan (the sidecar's `plan` event), so it gets none from here.
     const plan = new ChatPlan();
@@ -468,6 +558,10 @@ export function createSidecarProvider(
               // A run that happened is reported even while a stopped turn drains (US-2.2 AC3).
               callbacks.onActivity?.(commandRunOf(callId, runTool, String(ev.status), String(ev.content ?? "")));
             }
+            if (sidecarProjectCalls.delete(callId)) {
+              const project = projectOutcomeOf(String(ev.status), ev.content);
+              if (project) callbacks.onActivity?.(project);
+            }
             const fileTool = sidecarFileCalls.get(callId);
             if (fileTool !== undefined) {
               sidecarFileCalls.delete(callId);
@@ -481,6 +575,7 @@ export function createSidecarProvider(
             const c = ev.call as { id?: unknown; name?: unknown } | undefined;
             if (c && typeof c.id === "string" && typeof c.name === "string" && isFileTool(c.name)) sidecarFileCalls.set(c.id, c.name);
             if (c && typeof c.id === "string" && typeof c.name === "string" && COMMAND_RUN_TOOLS.has(c.name)) sidecarRunCalls.set(c.id, c.name);
+            if (c && typeof c.id === "string" && c.name === PROJECT_CREATE_TOOL) sidecarProjectCalls.add(c.id);
             if (!stopping && c && typeof c.id === "string" && c.name === SHELL_RUN_TOOL) {
               const cid = c.id;
               callbacks.onStatus("tool");
@@ -493,6 +588,21 @@ export function createSidecarProvider(
               callbacks.onStatus("tool");
               const answered = fresh.some((e) => e.event.type === "tool_result" && e.event.call_id === cid);
               await decideMcp(cid, answered);
+              continue;
+            }
+            // HGW-W1: a tainted effectful sidecar call, or a project_create, waits on an action card.
+            if (
+              !stopping &&
+              c &&
+              typeof c.id === "string" &&
+              typeof c.name === "string" &&
+              !ownCardTool(c.name) &&
+              (ev.hic === "required" || c.name === PROJECT_CREATE_TOOL)
+            ) {
+              const cid = c.id;
+              callbacks.onStatus("tool");
+              const answered = fresh.some((e) => e.event.type === "tool_result" && e.event.call_id === cid);
+              await decideAction(cid, answered);
               continue;
             }
           }
