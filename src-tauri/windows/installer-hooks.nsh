@@ -19,7 +19,7 @@
 ; Outer bound (#305): the script's own waits start only once PowerShell is up and the process
 ; list has been read, and on some machines PowerShell start-up or the CIM query does not return.
 ; So the step runs PowerShell itself (CreateProcess, no window) inside a job object of its own
-; and waits at most CITRATE_STOP_TIMEOUT_MS for it, start-up included. On timeout it ends that
+; and waits at most CITRATE_STOP_TIMEOUT_MS (60 s) for it, start-up included. On timeout it ends that
 ; job (the PowerShell it started and anything that PowerShell started, nothing else), says so in
 ; the details, and the install continues (fail-open, as above). The script's log is written to a
 ; file and replayed into the details, since the process has no console to capture.
@@ -37,11 +37,14 @@
 ; keeps the two lists equal.
 !define CITRATE_SIDECARS "citrate,node-agent,mem-mcp,llama-server,ipfs,comms-member-daemon,cluster-daemon,hermes"
 
-; Outer bound for the whole stop step, PowerShell start-up included: 30 s. The script's own
-; worst case is about 10 s (5 s graceful wait + 5 s after terminate) plus the process-list reads.
-; After a timeout, up to CITRATE_STOP_REAP_MS more for the ended job's processes to be gone.
+; Outer bound for the whole stop step, PowerShell start-up included: 60 s. The script's own
+; worst case is about 10 s (5 s graceful wait + 5 s after terminate) plus the process-list reads,
+; but a cold or busy machine can take tens of seconds just to start PowerShell and answer the CIM
+; query (a hosted CI runner took over 30 s once), and a timeout there would skip stopping
+; sidecars that a normal run stops. After a timeout, up to CITRATE_STOP_REAP_MS more for the
+; ended job's processes to be gone.
 !ifndef CITRATE_STOP_TIMEOUT_MS
-  !define CITRATE_STOP_TIMEOUT_MS 30000
+  !define CITRATE_STOP_TIMEOUT_MS 60000
 !endif
 !define CITRATE_STOP_REAP_MS 5000
 ; The script compiled into the installer (the hook test swaps in one that never returns).
@@ -152,6 +155,7 @@
     FileOpen $6 "${CITRATE_HOOK_TEST_RESULT_FILE}" w
     FileWrite $6 $8
     FileClose $6
+    CopyFiles /SILENT "$PLUGINSDIR\citrate-stop-own-sidecars.log" "${CITRATE_HOOK_TEST_RESULT_FILE}.log"
   !endif
   Pop $9
   Pop $8
