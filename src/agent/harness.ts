@@ -70,6 +70,16 @@ export type TurnActivityEvent =
       durationMs: number | null;
       timedOut: boolean;
       sandbox: string | null;
+      /** HGW-W11: "auto" when the run matched the auto-approve list (no card), "member" when the
+       *  member approved it on a card, null when the result does not say. */
+      approval?: "auto" | "member" | null;
+      /** HGW-W11: the auto-approve rule an "auto" run matched. */
+      autoRule?: string | null;
+      /** HGW-W6: the end of stderr (or of stdout when stderr was empty) of a failed run. */
+      failureTail?: string | null;
+      /** HGW-W2: git changes the run made that would start a program outside the sandbox, which
+       *  the runtime undid after it (one line each). */
+      gitWarnings?: string[];
     }
   /** HUP-S2.2: something the member should know that is not a run (e.g. a decision that failed). */
   | { kind: "notice"; text: string }

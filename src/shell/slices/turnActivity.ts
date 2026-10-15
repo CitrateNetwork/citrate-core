@@ -33,6 +33,14 @@ export interface RunRow {
   timedOut: boolean;
   /** The OS sandbox summary the run reported, or null when it reported none. */
   sandbox: string | null;
+  /** HGW-W11: "auto" (on the auto-approve list, no card), "member" (approved on a card), or null. */
+  approval?: "auto" | "member" | null;
+  /** HGW-W11: the auto-approve rule an "auto" run matched. */
+  autoRule?: string | null;
+  /** HGW-W6: the end of stderr (or stdout) of a failed run. */
+  failureTail?: string | null;
+  /** HGW-W2: risky git changes the run made, which the runtime undid. */
+  gitWarnings?: string[];
   /** When core received the result (ms since epoch). */
   at: number;
 }
@@ -200,6 +208,10 @@ export function commandRan(ev: Extract<TurnActivityEvent, { kind: "command_run" 
     durationMs: ev.durationMs,
     timedOut: ev.timedOut,
     sandbox: ev.sandbox,
+    ...(ev.approval ? { approval: ev.approval } : {}),
+    ...(ev.autoRule ? { autoRule: ev.autoRule } : {}),
+    ...(ev.failureTail ? { failureTail: ev.failureTail } : {}),
+    ...(ev.gitWarnings && ev.gitWarnings.length > 0 ? { gitWarnings: ev.gitWarnings } : {}),
     at: now,
   };
   turnActivity.set((s) => ({ runs: (s.runs ?? []).concat([row]).slice(-MAX_RUN_ROWS) }));
