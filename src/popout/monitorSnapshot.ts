@@ -435,6 +435,11 @@ function isRunRow(v: unknown): v is RunRow {
     numOrNull(v.durationMs) &&
     typeof v.timedOut === "boolean" &&
     strOrNull(v.sandbox) &&
+    // HGW-W6/W11: optional (an older sender has none).
+    (v.approval === undefined || v.approval === null || v.approval === "auto" || v.approval === "member") &&
+    (v.autoRule === undefined || strOrNull(v.autoRule)) &&
+    (v.failureTail === undefined || strOrNull(v.failureTail)) &&
+    (v.gitWarnings === undefined || (Array.isArray(v.gitWarnings) && v.gitWarnings.every((w) => typeof w === "string"))) &&
     typeof v.at === "number"
   );
 }

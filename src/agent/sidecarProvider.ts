@@ -127,6 +127,9 @@ export function isSessionGone(e: unknown): boolean {
 
 const SUMMARY_CHARS = 300;
 const clipText = (t: string) => (t.length > SUMMARY_CHARS ? t.slice(0, SUMMARY_CHARS) + "…" : t);
+/** HGW-W6: a failure tail keeps its END (the cause), like the runtime's own tail. */
+const TAIL_CHARS = 2048;
+const clipTail = (t: string) => (t.length > TAIL_CHARS ? "…" + t.slice(t.length - TAIL_CHARS) : t);
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const numOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
@@ -153,6 +156,13 @@ export function commandRunOf(callId: string, tool: string, status: string, conte
   }
   const run = isRecord(env.run) ? env.run : {};
   const sandbox = isRecord(run.sandbox) && typeof run.sandbox.summary === "string" ? run.sandbox.summary : null;
+  // HGW-W11: how the run was approved (runtime #83: `run.approval = {mode, rule, project}`).
+  const appr = isRecord(run.approval) ? run.approval : null;
+  const approval = appr?.mode === "auto" || appr?.mode === "member" ? appr.mode : null;
+  const autoRule = approval === "auto" && typeof appr?.rule === "string" ? appr.rule : null;
+  // HGW-W6: the end of stderr, else of stdout, on a failed run (runtime #82, at most 2 KiB).
+  const tail = [run.stderr_tail, run.stdout_tail].find((t): t is string => typeof t === "string" && t.trim() !== "");
+  const gitWarnings = Array.isArray(run.git_warnings) ? run.git_warnings.filter((w): w is string => typeof w === "string").map(clipText) : [];
   return {
     ...base,
     status: env.status,
@@ -161,6 +171,11 @@ export function commandRunOf(callId: string, tool: string, status: string, conte
     durationMs: numOrNull(run.duration_ms),
     timedOut: run.timed_out === true || env.status === "timed_out",
     sandbox,
+    // Only what the result carries (an older sidecar reports none of these).
+    ...(approval ? { approval } : {}),
+    ...(autoRule ? { autoRule } : {}),
+    ...(tail !== undefined ? { failureTail: clipTail(tail) } : {}),
+    ...(gitWarnings.length > 0 ? { gitWarnings } : {}),
   };
 }
 

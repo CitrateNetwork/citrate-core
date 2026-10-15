@@ -401,6 +401,21 @@ export function ActivityMonitor({
                   <span className="mono" style={{ color: "var(--tx-3)" }}>{r.durationMs === null ? "" : runDuration(r.durationMs)}</span>
                 </span>
                 {r.summary ? <span style={{ ...note, overflowWrap: "anywhere" }}>{r.summary}</span> : null}
+                {r.approval === "auto" ? (
+                  <span data-testid="mon-run-auto" style={{ ...note, overflowWrap: "anywhere" }}>
+                    ran without a card (auto-approve list{r.autoRule ? `: ${r.autoRule}` : ""})
+                  </span>
+                ) : null}
+                {r.failureTail ? (
+                  <pre data-testid="mon-run-tail" className="mono" style={{ ...note, margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 160, overflow: "auto" }}>
+                    {r.failureTail}
+                  </pre>
+                ) : null}
+                {(r.gitWarnings ?? []).map((w) => (
+                  <span key={w} data-testid="mon-run-git" style={{ ...note, color: "var(--warn)", overflowWrap: "anywhere" }}>
+                    undone after the run: {w}
+                  </span>
+                ))}
                 <span style={{ ...note, overflowWrap: "anywhere" }}>{r.sandbox ?? "no OS sandbox reported"}</span>
               </li>
             ))}
