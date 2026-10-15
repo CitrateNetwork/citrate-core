@@ -210,6 +210,8 @@ commands.allow = [
   "hermes_shell_pending",
   "hermes_mcp_pending",
   "hermes_mcp_decide",
+  "hermes_action_pending",
+  "hermes_action_decide",
   "hermes_shell_decide",
   "hermes_session_open_unattended",
   "hermes_session_close",
