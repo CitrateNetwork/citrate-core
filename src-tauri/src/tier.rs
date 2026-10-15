@@ -485,7 +485,9 @@ pub async fn tier_recommend(app_h: tauri::AppHandle) -> Result<TierReport, Strin
 }
 
 /// Blocking body of [`tier_recommend`]; reached only through [`crate::blocking::off_main`].
-pub fn tier_recommend_sync(app: tauri::AppHandle) -> Result<TierReport, String> {
+pub fn tier_recommend_sync<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<TierReport, String> {
     use tauri::Manager;
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let facts = probe(&data_dir);

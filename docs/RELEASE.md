@@ -145,6 +145,9 @@ closure (read with `otool -L`; it refuses if a needed library is missing) and sa
 release.yml runs it after extracting the tarball; run it on a local staging too (HUP-S11.0).
 `scripts/build-hermes.sh` installs the Hermes sidecar with `strip -x` (about 4 MB; `--no-strip`
 keeps the symbols for debugging).
+`scripts/build-citrate-templates.sh` installs `binaries/citrate-templates-<triple>` (HGW-W3,
+about 0.7 MB stripped): the template renderer Hermes's `project_create` runs in its sandbox. The
+macOS and Linux overlays declare it, so a bundle build needs it like the other sidecars.
 Refresh this release whenever a sidecar or the model changes (e.g. a DGX node rebuild).
 
 #### The BGE embedding GGUF (`bge-base-en-v1.5-f16.gguf`, HUP-S1.2 / US-1.4)

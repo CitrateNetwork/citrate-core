@@ -251,6 +251,23 @@
       "note": "Citrate's own contract templates; every Solidity source carries an SPDX MIT header so members may use the rendered contracts freely. Pinned libraries (OpenZeppelin, Solady, forge-std) are separate entries."
     },
     {
+      "id": "citrate-templates-renderer",
+      "name": "Contract template renderer (templates/renderer, bundled as binaries/citrate-templates)",
+      "spdx": "BUSL-1.1",
+      "first_party": true,
+      "ships_as": "installer",
+      "covers": ["externalBin:binaries/citrate-templates"],
+      "copyleft": "none",
+      "licence_texts": [],
+      "source_offer": null,
+      "review": "ok",
+      "note": "Added 2026-10-15 (HGW-W3, core #289): the renderer Hermes's project_create runs to render a bundled template. First party (this repo); its crates (serde, serde_json, sha2, sha3) are a subset of the app's and are listed under the app's notices.",
+      "third_party_notices": {
+        "file": "src-tauri/licenses/THIRD-PARTY-NOTICES.txt",
+        "source": "citrate-core templates/renderer (its crates are listed under the app component)"
+      }
+    },
+    {
       "id": "licence-texts",
       "name": "Third-party licence texts (this inventory's texts)",
       "spdx": "LicenseRef-various",

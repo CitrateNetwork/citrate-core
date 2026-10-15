@@ -83,6 +83,7 @@ scripts/build-sidecar.sh        --target "$TRIPLE"   # citrate node (gated; --ch
 scripts/build-comms-daemon.sh   --target "$TRIPLE"   # comms-member-daemon (--comms to override)
 scripts/build-cluster-daemon.sh --target "$TRIPLE"   # cluster-daemon      (--cluster to override)
 scripts/build-hermes.sh         --target "$TRIPLE"   # hermes/agent-sidecar (--agent-runtime to override)
+scripts/build-citrate-templates.sh --target "$TRIPLE" # citrate-templates renderer (HGW-W3)
 ```
 
 Note `build-sidecar.sh` refuses a host≠target mismatch unless the artefact for

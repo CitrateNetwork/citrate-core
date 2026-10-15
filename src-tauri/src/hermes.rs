@@ -668,6 +668,7 @@ impl HermesManager {
                     || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::fl_trajectories::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::hermes_projects::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -1657,11 +1658,17 @@ pub(crate) fn manager<R: tauri::Runtime>(
             // Terminal commands (shell_run): `1` when the member's switch is on (the default),
             // pinned empty when off.
             let terminal = crate::hermes_terminal::file_env_source(base.clone());
+            // HGW-W3: projects on, the bundled template renderer, the member's git identity.
+            let projects = crate::hermes_projects::file_env_source(
+                app.clone(),
+                app.path().home_dir().map_err(|e| e.to_string())?,
+            );
             std::sync::Arc::new(move || {
                 let mut env = web();
                 env.extend(toolchain());
                 env.extend(trajectories());
                 env.extend(terminal());
+                env.extend(projects());
                 env
             })
         });
@@ -2291,7 +2298,10 @@ pub async fn hermes_session_open(
         let store = crate::agent_grants::GrantStore::for_app(&app)?;
         let m = manager(&app)?;
         crate::agent_grants::open_with_grants(&store, &body, |b| {
-            m.session_open(b).map_err(|e| e.to_string())
+            // HGW-W3: the member's live projects (created by Hermes, or marked) travel with the
+            // session as projectRoots, checked against the grants this session receives.
+            let b = crate::hermes_projects::session_body_with_projects(&app, b)?;
+            m.session_open(&b).map_err(|e| e.to_string())
         })
     })
     .await

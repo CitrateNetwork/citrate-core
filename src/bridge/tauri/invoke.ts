@@ -87,6 +87,8 @@ const LONG: Record<string, number> = {
   agent_grants_revoke: 270_000,
   agent_grants_full_access_confirm: 270_000,
   agent_grants_reset: 270_000,
+  // HGW-W3: allowing the projects workspace is a folder grant (sent to each open conversation).
+  hermes_projects_workspace_enable: 270_000,
   // HUP-S10.1: one image generation; Rust bounds it at 600 s (local server) / 300 s (provider).
   media_generate_image: 630_000,
   // HUP-S10.2: Google API calls; Rust bounds each at the 15 s HTTP timeout.

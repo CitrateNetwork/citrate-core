@@ -35,6 +35,8 @@ import { ContractForgePanel } from "../shell/ContractForgePanel";
 import { bridge } from "../bridge";
 import { openContractReader } from "../popout/appHost";
 import { LearnedPanel } from "../shell/LearnedPanel";
+import { ProjectsPanel } from "../agent/projects/ProjectsPanel";
+import { desktopProjectsIo } from "../agent/projects/projects";
 import { SECTION_ROOT, columnGrid, SCROLL_COLUMN, CHAT_COLUMN, useNarrow, SectionSwitch } from "../components/sectionLayout";
 
 type Tab = "overview" | "contracts";
@@ -409,6 +411,9 @@ export function Agent({ store, s }: SurfaceProps) {
               ))
             )}
           </div>
+
+          {/* HGW-W3 (core #289): the projects folder and the projects Hermes works in. */}
+          <ProjectsPanel io={desktopProjectsIo} />
 
           {/* HUP-S3.4 — what Hermes proposes to keep, with the verifier evidence; you decide. */}
           <LearnedPanel store={store} running={running} />

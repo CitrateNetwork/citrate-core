@@ -56,6 +56,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView, ActionPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { desktopProjectsIo, enableWorkspace, notifyProjectsChanged, recordCreated, WORKSPACE_HIC_REASON, WORKSPACE_TITLE } from "../agent/projects/projects";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -1074,7 +1075,13 @@ export class Store {
           () => this.sidecarSystemPrompt(),
           () => withEscalationTool(annotatedAgentTools(), escalationReady),
           () => this.sidecarPersonaChoice(),
-          { store: sessionStore },
+          {
+            store: sessionStore,
+            // HGW-W3: keep each project Hermes creates (sent back as projectRoots), and offer the
+            // workspace card when project_create finds the projects folder not set up.
+            onProjectCreated: (proj) => void this.recordHermesProject(proj),
+            onProjectsWorkspaceNeeded: () => void this.askProjectsWorkspace(),
+          },
         );
         this.reflectProvider();
         if (firstSidecarBuild) void this.resumeSidecarSession(this.provider);
@@ -3110,6 +3117,63 @@ export class Store {
       hic: { reason: SHELL_RUN_HIC_REASON },
     });
     return r === "approved";
+  }
+
+  /**
+   * HGW-W3 (core #289): keep a project Hermes created with project_create. Core checks that it is
+   * in the projects folder and carries the runtime's marker; from the next conversation on, Hermes
+   * gets it as a project (projectRoots).
+   */
+  async recordHermesProject(p: { name: string; path: string }): Promise<void> {
+    if (BRIDGE_MODE !== "tauri") return;
+    try {
+      await recordCreated(await desktopProjectsIo(), p.path);
+      notifyProjectsChanged();
+    } catch (e) {
+      this.toast(`Hermes created ${p.name}, but it could not be added to your projects: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** HGW-W3: one workspace card at a time. */
+  private projectsCardOpen = false;
+
+  /**
+   * HGW-W3 (core #289): project_create found the projects folder missing or not shared. Ask the
+   * member once, on an explicit card, to let Hermes create and work in ~/Citrate/Projects. Allow
+   * creates the folder and shares it for reading and writing (a recorded grant, revocable in
+   * Settings > Folder access); anything else creates nothing.
+   */
+  async askProjectsWorkspace(): Promise<void> {
+    if (BRIDGE_MODE !== "tauri" || this.projectsCardOpen) return;
+    this.projectsCardOpen = true;
+    try {
+      const io = await desktopProjectsIo();
+      const now = await io.invoke<{ workspaceReady: boolean }>("hermes_projects_view", {});
+      if (now.workspaceReady) return;
+      const r = await this.requestSig({
+        origin: "chat agent",
+        requester: "Hermes · projects folder",
+        title: WORKSPACE_TITLE,
+        chainless: true,
+        rows: [],
+        cost: "none, no chain transaction",
+        sponsor: "explicit decision required",
+        sponsorColor: "var(--tx-3)",
+        card: fieldsCard("project_create", { effect: "write", trust: "trusted" }, { folder: "~/Citrate/Projects", access: "read and write, the folder and everything in it", revoke: "Settings > Folder access" }, "create and work in ~/Citrate/Projects"),
+        hic: { reason: WORKSPACE_HIC_REASON },
+      });
+      if (r !== "approved") {
+        this.toast("Nothing was created. Hermes can create projects once you allow ~/Citrate/Projects (Agent > Projects).");
+        return;
+      }
+      await enableWorkspace(io);
+      notifyProjectsChanged();
+      this.toast("Hermes can now create projects in ~/Citrate/Projects. Ask it again to create the project.");
+    } catch (e) {
+      this.toast(`The projects folder was not set up: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.projectsCardOpen = false;
+    }
   }
 
   /** HUP-S10.2 — the Rust command seam for the everyday tools (null in the web preview). */

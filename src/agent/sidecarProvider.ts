@@ -11,6 +11,7 @@ import { ChatPlan } from "./chatPlan";
 import { TurnStopped, untilStopped, usageEventOf, type ChatProvider, type ReattachResult, type SendOpts, type ToolCall, type ToolCallMeta, type TurnActivityEvent, type WorkflowRunOpts } from "./harness";
 import type { ActionPendingView, McpPendingView, SessionPersonaChoice, ShellPendingView } from "../bridge/domains";
 import type { WorkflowRunView } from "./learn";
+import { needsWorkspace, projectCreatedOf, PROJECT_CREATE_TOOL } from "./projects/projects";
 
 /** The session calls this provider needs (bridge.agentHarness in the app; a fake in tests). */
 export interface SidecarSessionApi {
@@ -126,6 +127,12 @@ export interface SidecarProviderOptions {
   actionWaitMs?: number;
   /** HUP-S1.1: save the session so a reloaded view can pick it back up (absent = not saved). */
   store?: SidecarSessionStore;
+  /** HGW-W3: the runtime's project_create created a project; core keeps it (sent back as
+   *  projectRoots on later sessions). Absent = not kept. */
+  onProjectCreated?: (p: { name: string; path: string }) => void;
+  /** HGW-W3: project_create was refused because the projects folder is not set up; core offers
+   *  the member the workspace card. Absent = nothing is offered. */
+  onProjectsWorkspaceNeeded?: () => void;
 }
 
 /** HUP-S1.1 — said when the saved session is gone because Hermes restarted. */
@@ -261,6 +268,8 @@ export function createSidecarProvider(
   // HUP-S2.2: sidecar-hosted command calls of the current turn (call id -> tool name), so their
   // results are reported to the Activity log as command runs.
   const sidecarRunCalls = new Map<string, string>();
+  // HGW-W3: the runtime's project_create calls of the current turn, so their results are kept.
+  const sidecarProjectCalls = new Set<string>();
 
   // HUP-S7.6: turns run one at a time. A stopped turn keeps draining its session events (to its
   // `done`) after the caller has moved on, so the next turn starts from the right sequence number
@@ -518,6 +527,14 @@ export function createSidecarProvider(
               // A run that happened is reported even while a stopped turn drains (US-2.2 AC3).
               callbacks.onActivity?.(commandRunOf(callId, runTool, String(ev.status), String(ev.content ?? "")));
             }
+            if (sidecarProjectCalls.delete(callId)) {
+              // HGW-W3: a project that was created is kept even while a stopped turn drains.
+              const status = String(ev.status);
+              const content = String(ev.content ?? "");
+              const made = projectCreatedOf(status, content);
+              if (made) options.onProjectCreated?.(made);
+              else if (needsWorkspace(status, content)) options.onProjectsWorkspaceNeeded?.();
+            }
             const fileTool = sidecarFileCalls.get(callId);
             if (fileTool !== undefined) {
               sidecarFileCalls.delete(callId);
@@ -531,6 +548,7 @@ export function createSidecarProvider(
             const c = ev.call as { id?: unknown; name?: unknown } | undefined;
             if (c && typeof c.id === "string" && typeof c.name === "string" && isFileTool(c.name)) sidecarFileCalls.set(c.id, c.name);
             if (c && typeof c.id === "string" && typeof c.name === "string" && COMMAND_RUN_TOOLS.has(c.name)) sidecarRunCalls.set(c.id, c.name);
+            if (c && typeof c.id === "string" && c.name === PROJECT_CREATE_TOOL) sidecarProjectCalls.add(c.id);
             if (!stopping && c && typeof c.id === "string" && c.name === SHELL_RUN_TOOL) {
               const cid = c.id;
               callbacks.onStatus("tool");
@@ -707,6 +725,7 @@ export function createSidecarProvider(
     started.clear();
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
+    sidecarProjectCalls.clear();
     const reused = sessionId !== null;
     let id = await ensureSession();
     // Start from the session's current end: a turn sent from elsewhere (the CLI, an MCP client)
@@ -787,6 +806,7 @@ export function createSidecarProvider(
     for (const c of saved.inFlight) inFlight.add(c);
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
+    sidecarProjectCalls.clear();
     const fresh = page.events.filter((e) => e.seq > saved.lastSeq);
     // The sidecar keeps a bounded event log: if events after the saved point were dropped while
     // the view was away, say so instead of skipping them silently.
@@ -837,6 +857,7 @@ export function createSidecarProvider(
     started.clear();
     sidecarFileCalls.clear();
     sidecarRunCalls.clear();
+    sidecarProjectCalls.clear();
     const start = api.trackWorkflowRun.bind(api);
     const {
       id,

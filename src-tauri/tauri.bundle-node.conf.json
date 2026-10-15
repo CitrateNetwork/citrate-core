@@ -13,7 +13,7 @@
       "binaries/ipfs",
       "binaries/comms-member-daemon",
       "binaries/cluster-daemon",
-      "binaries/hermes"
+      "binaries/hermes", "binaries/citrate-templates"
     ],
     "resources": [
       "llama/*",

@@ -764,6 +764,21 @@ pub async fn agent_grants_view(app: tauri::AppHandle) -> Result<GrantsView, Stri
     crate::blocking::off_main(move || Ok(GrantStore::for_app(&app)?.view(now_secs()))).await
 }
 
+/// Grant `root` for reading and/or writing as a member decision: recorded (HUP-S2.6) and sent to
+/// every open agent session, exactly like the Settings panel. Also used by the projects workspace
+/// card (HGW-W3), where the member allows `~/Citrate/Projects`.
+pub(crate) fn grant_folder_for_app<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    root: &Path,
+    read: bool,
+    write: bool,
+) -> Result<GrantsChange, String> {
+    change(app, |s, now| {
+        let ids = s.add_folder(root, read, write, now)?;
+        Ok(added_event(s, &ids))
+    })
+}
+
 /// **agent_grants_add_folder** — grant a folder the member picked, for reading and/or writing.
 #[tauri::command]
 pub async fn agent_grants_add_folder(
@@ -772,13 +787,8 @@ pub async fn agent_grants_add_folder(
     read: bool,
     write: bool,
 ) -> Result<GrantsChange, String> {
-    crate::blocking::off_main(move || {
-        change(&app, |s, now| {
-            let ids = s.add_folder(Path::new(&path), read, write, now)?;
-            Ok(added_event(s, &ids))
-        })
-    })
-    .await
+    crate::blocking::off_main(move || grant_folder_for_app(&app, Path::new(&path), read, write))
+        .await
 }
 
 /// **agent_grants_revoke** — revoke a grant now.

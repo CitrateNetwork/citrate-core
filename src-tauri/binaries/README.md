@@ -2,8 +2,10 @@
 
 Sidecars are bundled as **Tauri `externalBin`s**: the `citrate` node (C1.1), the
 `node-agent` (C1.2), the `mem-mcp` memory daemon (C3), `llama-server`, `ipfs`, the
-`hermes` agent, and the `comms-member-daemon` (CX-S3 — the wallet-owned OpenMLS
-member + in-process relay that Groups run on). All externalBin declarations live in
+`hermes` agent, the `comms-member-daemon` (CX-S3 — the wallet-owned OpenMLS
+member + in-process relay that Groups run on) and, on macOS and Linux, the
+`citrate-templates` renderer Hermes's `project_create` runs (HGW-W3; build it with
+`scripts/build-citrate-templates.sh`; `CITRATE_TEMPLATES_BIN` overrides it in dev). All externalBin declarations live in
 SEPARATE overlay configs, `tauri.bundle-node.conf.json` / `tauri.local-run.conf.json`,
 NOT in the base `tauri.conf.json`.
 
