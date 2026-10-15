@@ -58,6 +58,29 @@ export const MCP_TOOL_PREFIX = "mcp__";
 /** HUP-S2.2 — the sidecar-hosted tool whose every call the member decides. */
 export const SHELL_RUN_TOOL = "shell_run";
 
+/**
+ * HGW-W3: what a `project_create` result means for core: the folder it created (an `ok` result
+ * whose JSON carries `ok: true` and an absolute `path`), or that the projects folder is missing or
+ * not granted (the sidecar's refusal names it). Anything else (a decline, a bad name) is null.
+ */
+export function projectOutcomeOf(status: string, content: unknown): TurnActivityEvent | null {
+  const text = typeof content === "string" ? content : "";
+  if (status === "ok") {
+    try {
+      const v: unknown = JSON.parse(text);
+      if (v && typeof v === "object") {
+        const o = v as { ok?: unknown; path?: unknown };
+        if (o.ok === true && typeof o.path === "string" && o.path.startsWith("/")) return { kind: "project_created", path: o.path };
+      }
+    } catch {
+      /* not a project result */
+    }
+    return null;
+  }
+  if (/the projects folder .* (does not exist yet|is not granted for reading and writing)/.test(text)) return { kind: "projects_workspace_needed" };
+  return null;
+}
+
 /** HUP-S2.2 (US-2.2 AC3) — sidecar tools whose results are command runs for the Activity log. */
 const COMMAND_RUN_TOOLS = new Set([SHELL_RUN_TOOL, "forge_test", "slither_scan", "aderyn_scan", "medusa_fuzz"]);
 
@@ -261,6 +284,8 @@ export function createSidecarProvider(
   // HUP-S2.2: sidecar-hosted command calls of the current turn (call id -> tool name), so their
   // results are reported to the Activity log as command runs.
   const sidecarRunCalls = new Map<string, string>();
+  // HGW-W3: project_create calls of the current turn, so their results can be reported.
+  const sidecarProjectCalls = new Set<string>();
 
   // HUP-S7.6: turns run one at a time. A stopped turn keeps draining its session events (to its
   // `done`) after the caller has moved on, so the next turn starts from the right sequence number
@@ -518,6 +543,10 @@ export function createSidecarProvider(
               // A run that happened is reported even while a stopped turn drains (US-2.2 AC3).
               callbacks.onActivity?.(commandRunOf(callId, runTool, String(ev.status), String(ev.content ?? "")));
             }
+            if (sidecarProjectCalls.delete(callId)) {
+              const project = projectOutcomeOf(String(ev.status), ev.content);
+              if (project) callbacks.onActivity?.(project);
+            }
             const fileTool = sidecarFileCalls.get(callId);
             if (fileTool !== undefined) {
               sidecarFileCalls.delete(callId);
@@ -531,6 +560,7 @@ export function createSidecarProvider(
             const c = ev.call as { id?: unknown; name?: unknown } | undefined;
             if (c && typeof c.id === "string" && typeof c.name === "string" && isFileTool(c.name)) sidecarFileCalls.set(c.id, c.name);
             if (c && typeof c.id === "string" && typeof c.name === "string" && COMMAND_RUN_TOOLS.has(c.name)) sidecarRunCalls.set(c.id, c.name);
+            if (c && typeof c.id === "string" && c.name === PROJECT_CREATE_TOOL) sidecarProjectCalls.add(c.id);
             if (!stopping && c && typeof c.id === "string" && c.name === SHELL_RUN_TOOL) {
               const cid = c.id;
               callbacks.onStatus("tool");

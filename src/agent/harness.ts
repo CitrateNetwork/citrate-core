@@ -81,7 +81,11 @@ export type TurnActivityEvent =
    *  (src/agent/chatPlan.ts), reported again each time the model asks for another tool. */
   | { kind: "plan"; steps: string[]; source?: "chat" }
   /** HUP-S7.6: an approval the member is asked for (pending) and its decision. */
-  | { kind: "approval"; callId: string; tool: string; state: "pending" | "approved" | "declined" | "failed" };
+  | { kind: "approval"; callId: string; tool: string; state: "pending" | "approved" | "declined" | "failed" }
+  /** HGW-W3: Hermes created a project folder (the absolute path `project_create` returned). */
+  | { kind: "project_created"; path: string }
+  /** HGW-W3: `project_create` was refused because ~/Citrate/Projects is missing or not granted. */
+  | { kind: "projects_workspace_needed" };
 
 /** HUP-S7.6 — the usage a model server reported, from core's `citrate_usage` key on a returned
  *  message (src-tauri/src/ai.rs reported_usage) or the sidecar's `usage` event. Null when absent
