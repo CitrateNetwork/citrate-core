@@ -7,7 +7,8 @@
 //! - **`start`** mints/loads a 32-byte storage master key from the OS keyring
 //!   (the A2 custody keyring pattern — never on disk in clear), then spawns the
 //!   bundled `citrate` binary under the supervisor with an explicit `--data-dir`
-//!   and the storage key handed in ONLY via the `CITRATE_STORAGE_KEY` env var.
+//!   and the storage key handed in through an owner-only key file whose PATH is in
+//!   `CITRATE_STORAGE_KEY_FILE` (the key itself is never in the child's env or argv).
 //!   The node opens its RocksDB encrypted-at-rest (AES-256-GCM per value) with
 //!   that key, so a raw-disk grep of the data dir yields ciphertext.
 //! - **`status`** reads the node's REAL sync state from its local JSON-RPC
@@ -20,11 +21,14 @@
 //! The key is minted with `OsRng` on first `start`, stored under keyring account
 //! [`KEYRING_NODE_STORAGE_ACCOUNT`] in service `ai.citrate.core` (the same
 //! service the custody vault uses), and is held in memory only as a
-//! [`Zeroizing`] hex string for the duration of the spawn call. It is passed to
-//! the child through an env var (argv would leak it to `ps`); the child converts
-//! it back to 32 raw bytes. The plaintext key is NEVER written to the data dir
-//! or any config file — only the encrypted DB and the wrong-key-detecting
-//! `encryption.meta` commitment land on disk.
+//! [`Zeroizing`] hex string for the duration of the spawn call. It is handed to
+//! the child as an owner-only (0600) key file in an owner-only directory next to
+//! the data dir (`NodeManager::storage_key_path`), written at start and removed at stop; the
+//! child's env carries only the file's PATH (`CITRATE_STORAGE_KEY_FILE`), so the
+//! key is not in the child's process environment, in anything the child starts,
+//! or in a crash report that captures env, and argv never carries it (`ps`). The
+//! file stays while the supervisor runs because a supervised restart re-reads it.
+//! The key is never written to the data dir or a config file.
 //!
 //! ## C1.0b-1 — node restart policy (decided here)
 //! A citrate-node that legitimately restarts (config reload, transient network
@@ -81,9 +85,14 @@ const NODE_HEALTHY_AFTER: Duration = Duration::from_secs(90);
 /// one points at OUR local node's status surface.
 const NODE_LOCAL_RPC_URL: &str = "http://127.0.0.1:8545";
 
-/// The env var the node reads its 32-byte storage key from (hex). Matches the
-/// node-side `at_rest_encryption_from_env` (citrate-chain node/src/main.rs).
-const NODE_STORAGE_KEY_ENV: &str = "CITRATE_STORAGE_KEY";
+/// The env var naming the owner-only file the node reads its 32-byte storage key
+/// from (hex). Matches the node-side `at_rest_encryption_from_env` (citrate-chain
+/// node/src/main.rs). The inline `CITRATE_STORAGE_KEY` env is never set by the app.
+const NODE_STORAGE_KEY_FILE_ENV: &str = "CITRATE_STORAGE_KEY_FILE";
+
+/// The key file's name, inside an owner-only (0700) directory next to the node data dir
+/// (outside it, so a chain-data reset never touches it).
+const NODE_STORAGE_KEY_FILE: &str = "storage.key";
 
 /// CONSENSUS-CRITICAL launch env the fleet producer runs (DGX_NODE_SYNC_WEDGE_RESPONSE
 /// 2026-07-22). VALIDATOR-S1 / §R' epoch-reward + validator-registry snapshot are OFF
@@ -591,10 +600,23 @@ impl NodeManager {
         }
     }
 
+    /// The owner-only file the storage key is handed to the node in (see the module doc).
+    /// `<app data>/node.secrets/storage.key` for the data dir `<app data>/node`.
+    pub(crate) fn storage_key_path(&self) -> PathBuf {
+        let name = self
+            .data_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "node".to_string());
+        self.data_dir
+            .with_file_name(format!("{name}.secrets"))
+            .join(NODE_STORAGE_KEY_FILE)
+    }
+
     /// Build the [`SidecarSpec`] for the node: explicit binary, `--data-dir`,
-    /// and the storage key in the env (NOT argv — argv would leak the key to a
-    /// `ps` listing). `--network testnet` joins the public testnet.
-    fn build_spec(&self, storage_key_hex: &str) -> SidecarSpec {
+    /// and the PATH of the storage key file in the env (never the key itself, and
+    /// nothing secret in argv). `--network testnet` joins the public testnet.
+    fn build_spec(&self) -> SidecarSpec {
         let mut args = vec![
             "--network".to_string(),
             "testnet".to_string(),
@@ -639,8 +661,8 @@ impl NodeManager {
         let mut spec = SidecarSpec::new("citrate-node", self.bin.clone(), args);
         spec.env = vec![
             (
-                NODE_STORAGE_KEY_ENV.to_string(),
-                storage_key_hex.to_string(),
+                NODE_STORAGE_KEY_FILE_ENV.to_string(),
+                self.storage_key_path().to_string_lossy().to_string(),
             ),
             // The node's `tracing` output is piped (not a TTY) into the log tail the
             // UI renders; emit PLAIN text so ANSI colour escapes don't surface as
@@ -710,15 +732,34 @@ impl NodeManager {
         // Consensus safety (40204 reroll): never open another genesis's chain DB.
         self.prepare_data_dir_for_genesis()?;
         let key_hex = self.storage_key_hex()?;
-        let spec = self.build_spec(&key_hex);
+        citrate_core_kit::fsutil::write_secret_file(&self.storage_key_path(), key_hex.as_bytes())
+            .map_err(|e| NodeError::Keyring(format!("cannot write the node storage key file: {e}")))?;
+        drop(key_hex);
+        let spec = self.build_spec();
         // C1.0b-1: default fork-bomb-bounded backoff, but a node-tuned
         // sustained-healthy window (see the module doc).
         let mut config = SupervisorConfig::new(spec, self.crash_record_path.clone());
         config.backoff = BackoffPolicy::new();
         config.healthy_after = NODE_HEALTHY_AFTER;
-        let sup = Supervisor::start(config).map_err(|e| NodeError::Spawn(e.to_string()))?;
+        let sup = match Supervisor::start(config) {
+            Ok(sup) => sup,
+            Err(e) => {
+                self.remove_storage_key_file();
+                return Err(NodeError::Spawn(e.to_string()));
+            }
+        };
         *guard = Some(sup);
         Ok(())
+    }
+
+    /// Remove the storage key file (best-effort; absent is fine).
+    fn remove_storage_key_file(&self) {
+        let path = self.storage_key_path();
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[node] cannot remove {}: {e}", path.display());
+            }
+        }
     }
 
     /// Stop the node: graceful supervisor release (SIGTERM → grace → SIGKILL),
@@ -734,6 +775,8 @@ impl NodeManager {
             // Dropping the supervisor joins the monitor thread (no orphan).
             drop(sup);
         }
+        // The node has exited: its storage key file is no longer needed.
+        self.remove_storage_key_file();
     }
 
     /// Read the node's real status: supervisor state + (when running) live

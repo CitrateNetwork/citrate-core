@@ -192,6 +192,39 @@ fn storage_key_is_minted_into_keyring_on_start() {
     mgr.stop();
 }
 
+/// The storage key reaches the node only through an owner-only key file named in
+/// `CITRATE_STORAGE_KEY_FILE`: the key is in no env var and no argv of the child, the file
+/// holds exactly the keyring key, is 0600 while the node runs, and is gone after stop.
+#[test]
+fn storage_key_reaches_the_node_only_through_an_owner_only_file() {
+    let (mgr, fake, _data) = stub_manager("key-file");
+    mgr.start().expect("stub node starts");
+    let key = fake
+        .get(KEYRING_NODE_STORAGE_ACCOUNT)
+        .unwrap()
+        .expect("storage key minted into keyring");
+    let key_hex = hex::encode(&key);
+
+    let spec = mgr.build_spec();
+    assert!(
+        !spec.env.iter().any(|(k, v)| k == "CITRATE_STORAGE_KEY" || v.contains(&key_hex)),
+        "the key itself is never in the child env"
+    );
+    assert!(!spec.args.iter().any(|a| a.contains(&key_hex)), "never in argv");
+
+    let path = mgr.storage_key_path();
+    assert!(!path.starts_with(&mgr.data_dir), "outside the chain data dir");
+    assert_eq!(std::fs::read_to_string(&path).expect("key file"), key_hex);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "owner-only key file");
+    }
+    mgr.stop();
+    assert!(!path.exists(), "the key file is removed once the node stopped");
+}
+
 /// Agent precompiles are active from genesis on 40204 (reroll 2026-10-05, owner decision
 /// 2026-10-04): the node binary's release pin sets the height to 0, and on a release network a
 /// config or env height that disagrees with the pin stops the node at start-up (citrate-chain
@@ -200,7 +233,7 @@ fn storage_key_is_minted_into_keyring_on_start() {
 #[test]
 fn spawn_env_never_sets_an_agent_precompile_height() {
     let (mgr, _fake, _data) = stub_manager("agent-height");
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     assert!(
         !spec.env.iter().any(|(k, _)| k == "CITRATE_AGENT_PRECOMPILES_HEIGHT"),
         "the node's release pin is the only source of the agent precompile height"
@@ -226,14 +259,19 @@ fn spawn_env_never_sets_an_agent_precompile_height() {
 #[test]
 fn spawn_env_carries_the_fleet_consensus_vars() {
     let (mgr, _fake, _data) = stub_manager("consensus-env");
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     let get = |k: &str| {
         spec.env
             .iter()
             .find(|(n, _)| n == k)
             .map(|(_, v)| v.as_str())
     };
-    assert_eq!(get(NODE_STORAGE_KEY_ENV), Some("00"), "storage key still passed");
+    let key_path = mgr.storage_key_path();
+    assert_eq!(
+        get(NODE_STORAGE_KEY_FILE_ENV),
+        Some(key_path.to_string_lossy().as_ref()),
+        "the storage key file path is still passed"
+    );
     assert_eq!(get(NODE_BLOCK_V2_ENV), Some("1"), "v2 execute-on-receive explicit");
     // RESOLVED 2026-09-12 (`srp-s5-diskfix` reroll): `2000`, read live from rpc-1
     // (142.93.58.145) — both the running citrate-node process env and the
@@ -290,7 +328,7 @@ fn spawn_is_follower_until_armed_then_mines() {
     mgr.set_coinbase("0xd12c00c377eb4615a7ae934df509c903a29ecb6c".to_string());
 
     // Coinbase known but NOT armed → follower (no mining flags).
-    let follower = mgr.build_spec("00");
+    let follower = mgr.build_spec();
     assert!(
         !follower.args.iter().any(|a| a == "--mine"),
         "a coinbase alone must NOT arm mining — the node syncs as a follower first",
@@ -304,7 +342,7 @@ fn spawn_is_follower_until_armed_then_mines() {
     // Arm (as the caught-up gate would) → the next spawn carries --mine --coinbase.
     mgr.arm_mining();
     assert!(mgr.is_mining_armed(), "armed after arm_mining");
-    let producer = mgr.build_spec("00");
+    let producer = mgr.build_spec();
     assert!(producer.args.iter().any(|a| a == "--mine"), "mining armed");
     let ci = producer
         .args
@@ -337,7 +375,7 @@ fn is_caught_up_gate_only_true_near_the_tip() {
 #[test]
 fn spawn_args_omit_mining_when_no_coinbase() {
     let (mgr, _fake, _data) = stub_manager("coinbase-unset");
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     assert!(
         !spec.args.iter().any(|a| a == "--mine"),
         "no mining without a coinbase",
@@ -356,7 +394,7 @@ fn set_coinbase_is_reflected_in_the_next_spawn() {
     mgr.set_coinbase("0x0000000000000000000000000000000000000001".to_string());
     // The coinbase only reaches the argv once the producer is armed (caught up).
     mgr.arm_mining();
-    let spec = mgr.build_spec("00");
+    let spec = mgr.build_spec();
     let ci = spec.args.iter().position(|a| a == "--coinbase").unwrap();
     assert_eq!(
         spec.args.get(ci + 1).map(String::as_str),
