@@ -256,6 +256,10 @@ export interface NodeStatusView {
   notice?: string;
   /** Set while the last start was refused by a holder of the chain database or a node port. */
   blocked?: NodeBlocker;
+  /** Set while the block producer is armed. */
+  miningArmed?: boolean;
+  /** Why block production is held (the mining gate in node.rs); unset while armed. */
+  miningHold?: string;
 }
 
 export interface NodeDomain {
