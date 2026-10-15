@@ -37,6 +37,8 @@ import type { AiProviderStatus, ConnectionInfo } from "../bridge/domains";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { GrantsPanel } from "../agent/grants/GrantsPanel";
 import { desktopGrantsIo } from "../agent/grants/grants";
+import { BuildSettingsPanel } from "../agent/building/BuildSettingsPanel";
+import { desktopBuildSettingsIo } from "../agent/building/buildSettings";
 import type { GoogleServiceStatus } from "../agent/schedule/schedule";
 import { invoke } from "../bridge/tauri/invoke";
 import { EscalationSettings } from "./EscalationSettings";
@@ -1165,6 +1167,16 @@ export function Settings({ store, s }: { store: Store; s: AppState }) {
                 {TERMINAL_ACCESS_LABEL}
               </label>
               <span style={{ fontSize: 11.5, color: "var(--tx-3)", lineHeight: 1.5 }}>{TERMINAL_ACCESS_HINT}</span>
+            </div>
+            {/* HGW-W11 — the auto-approve list (D-16 as amended) and the member's commit identity. */}
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-building">
+              <span className="eyebrow">Hermes · building</span>
+              <BuildSettingsPanel
+                io={desktopBuildSettingsIo}
+                onRestarted={() => {
+                  if (store.state.hermesSidecarLoop) void store.rebuildProvider();
+                }}
+              />
             </div>
             {/* HUP-S2.1 — the member's folder grants for Hermes (sent to every agent conversation). */}
             <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 8 }} id="hermes-folder-access">
