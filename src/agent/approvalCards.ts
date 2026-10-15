@@ -14,7 +14,7 @@
 // =====================================================================
 import type { CeremonyView } from "../bridge/types";
 import type { ToolAnnotation } from "./toolAnnotations";
-import type { McpPendingView, ShellPendingView } from "../bridge/domains";
+import type { ActionPendingView, McpPendingView, ShellPendingView } from "../bridge/domains";
 
 export interface CardRow {
   k: string;
@@ -260,4 +260,33 @@ export function projectsWorkspaceCard(root: string, exists: boolean): ApprovalCa
       { k: "Revoke", v: "Settings > Folder access" },
     ],
   };
+}
+
+/** HGW-W1: why a sidecar action after taint needs the member (fallback banner text). */
+export const ACTION_HIC_REASON =
+  "Hermes read content from an outside source in this chat, so this action needs your explicit decision (HIC). It runs once, only with the arguments shown; the next action asks again.";
+
+/** HGW-W1: why creating a project always needs the member. */
+export const PROJECT_CREATE_HIC_REASON =
+  "Hermes wants to create a new project folder. Every new project needs your explicit decision (HIC); Hermes may then build inside that folder only.";
+
+/**
+ * HGW-W1: the card for a held sidecar action: the tool, the exact arguments that will be used (by
+ * name), and every source that tainted the session. A `project_create` leads with the folder.
+ */
+export function actionRequestCard(p: ActionPendingView): ApprovalCard {
+  let args: Record<string, unknown> = {};
+  try {
+    const v: unknown = JSON.parse(p.subject);
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) args = v as Record<string, unknown>;
+  } catch {
+    args = { arguments: p.subject };
+  }
+  const rows: CardRow[] = [
+    { k: "Tool", v: p.tool },
+    ...Object.entries(args).map(([k, v]) => ({ k: `Argument ${k}`, v: clip(typeof v === "string" ? v : JSON.stringify(v)) })),
+  ];
+  if (p.taintSources.length > 0) rows.push({ k: "Outside content from", v: p.taintSources.join(", ") });
+  const detail = p.tool === "project_create" && typeof args.name === "string" ? `create the project ${args.name}` : p.summary || p.tool;
+  return { kind: "fields", tool: p.tool, summary: summaryLine({ effect: "write", trust: "untrusted" }, detail), rows };
 }

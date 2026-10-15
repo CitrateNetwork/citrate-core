@@ -706,6 +706,9 @@ pub fn run() {
             hermes::shell::hermes_shell_pending,
             hermes::mcp_cards::hermes_mcp_pending,
             hermes::mcp_cards::hermes_mcp_decide,
+            // HGW-W1: the member decides each tainted sidecar action the sidecar holds.
+            hermes::action_cards::hermes_action_pending,
+            hermes::action_cards::hermes_action_decide,
             hermes::shell::hermes_shell_decide,
             hermes::hermes_bridge_pending,
             hermes::hermes_resolve,

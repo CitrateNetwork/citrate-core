@@ -2418,6 +2418,11 @@ pub mod shell;
 #[path = "hermes_mcp_cards.rs"]
 pub mod mcp_cards;
 
+// HGW-W1: the member's decision on an action card the sidecar holds after taint (child module:
+// reuses the bearer-authed control).
+#[path = "hermes_action_cards.rs"]
+pub mod action_cards;
+
 #[cfg(test)]
 mod brief_tests {
     include!("hermes_brief_tests.rs");

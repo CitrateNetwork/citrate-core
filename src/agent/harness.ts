@@ -17,7 +17,7 @@
 
 import type { WorkflowRunView } from "./learn";
 import type { FileChange } from "./fileChanges";
-import type { ShellPendingView, McpPendingView } from "../bridge/domains";
+import type { ActionPendingView, ShellPendingView, McpPendingView } from "../bridge/domains";
 import { MEMORY_SEARCH_TOOL } from "./knowledgeSearch.ts";
 import { ChatPlan } from "./chatPlan.ts";
 
@@ -131,6 +131,10 @@ export interface SendOpts {
      *  the session read untrusted content, or a server asking to open a page. Resolves true only on
      *  an explicit approval. Absent = every such request is declined. */
     onMcpApproval?: (pending: McpPendingView) => Promise<boolean>;
+    /** HGW-W1: ask the member about a held sidecar action: an effectful sidecar-hosted call after
+     *  the session read untrusted content, or a `project_create`. Resolves true only on an explicit
+     *  approval. Absent = every such action is declined. */
+    onActionApproval?: (pending: ActionPendingView) => Promise<boolean>;
   };
 }
 
