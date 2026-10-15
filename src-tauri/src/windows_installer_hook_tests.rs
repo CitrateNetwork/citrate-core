@@ -126,3 +126,122 @@ fn the_hook_runs_the_main_app_check_before_stopping_sidecars() {
         "the old app must be gone before its sidecars are stopped"
     );
 }
+
+/// The body of the stop-step macro the pre-install hook expands.
+fn stop_macro() -> &'static str {
+    HOOKS
+        .split("!macro CITRATE_STOP_OWN_SIDECARS")
+        .nth(1)
+        .and_then(|s| s.split("!macroend").next())
+        .expect("CITRATE_STOP_OWN_SIDECARS body")
+}
+
+/// A `!define NAME <int>` in installer-hooks.nsh (the first, i.e. the shipped default).
+fn hook_define_ms(name: &str) -> u64 {
+    let prefix = format!("!define {name} ");
+    HOOKS
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix(prefix.as_str()))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| panic!("installer-hooks.nsh defines {name} as a number"))
+}
+
+/// A `[int]$Name = <int>` parameter default in stop-own-sidecars.ps1.
+fn script_default_secs(name: &str) -> u64 {
+    let needle = format!("[int]${name} = ");
+    let at = STOP_SCRIPT
+        .find(needle.as_str())
+        .unwrap_or_else(|| panic!("stop script has {needle:?}"))
+        + needle.len();
+    STOP_SCRIPT[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("a number")
+}
+
+#[test]
+fn the_stop_step_waits_for_powershell_with_a_finite_outer_bound() {
+    // #305: PowerShell start-up or the CIM query can hang; the wait on it must be bounded.
+    let body = stop_macro();
+    for unbounded in ["nsexec::", "execwait", "execshellwait", "execdos::"] {
+        assert!(
+            !body.to_ascii_lowercase().contains(unbounded),
+            "the stop step must not wait through {unbounded:?} (no outer bound)"
+        );
+    }
+    assert!(body.contains("kernel32::CreateProcessW("));
+    assert!(body.contains("WaitForSingleObject(p r4, i ${CITRATE_STOP_TIMEOUT_MS})"));
+    let bound = hook_define_ms("CITRATE_STOP_TIMEOUT_MS");
+    assert!(
+        (10_000..=120_000).contains(&bound),
+        "a bound of 10-120 s, got {bound} ms"
+    );
+    // The script's own worst case fits inside the bound, so a healthy machine never hits it.
+    let own = (script_default_secs("GraceSeconds") + script_default_secs("KillWaitSeconds")) * 1000;
+    assert!(
+        own * 2 <= bound,
+        "the script's own waits ({own} ms) must sit well inside the outer bound ({bound} ms)"
+    );
+    assert!(hook_define_ms("CITRATE_STOP_REAP_MS") <= 10_000);
+}
+
+#[test]
+fn a_timeout_ends_only_what_the_stop_step_started() {
+    let body = stop_macro();
+    // Started suspended, put in a job of its own, then resumed: nothing runs outside the job.
+    assert!(HOOKS.contains("!define CITRATE_CREATE_FLAGS 0x08000004"));
+    let create = body.find("CreateProcessW(").expect("create");
+    let assign = body
+        .find("AssignProcessToJobObject(p r9, p r4)")
+        .expect("assign");
+    let resume = body.find("ResumeThread(p r5)").expect("resume");
+    assert!(
+        create < assign && assign < resume,
+        "create suspended, join the job, then resume"
+    );
+    // On timeout: that job (or, without a job, that one process handle), nothing by name.
+    let timeout = body.find("StrCpy $8 \"timeout\"").expect("timeout branch");
+    let after = &body[timeout..];
+    assert!(after.contains("TerminateJobObject(p r9, i 1)"));
+    assert!(after.contains("TerminateProcess(p r4, i 1)"));
+    assert!(after.contains("WaitForSingleObject(p r4, i ${CITRATE_STOP_REAP_MS})"));
+    for h in [
+        "CloseHandle(p r5)",
+        "CloseHandle(p r4)",
+        "CloseHandle(p r9)",
+    ] {
+        assert!(body.contains(h), "the step closes {h}");
+    }
+}
+
+#[test]
+fn a_timeout_is_reported_and_the_install_continues() {
+    let body = stop_macro();
+    assert!(
+        body.contains("${If} $8 == \"timeout\"")
+            && body.contains("did not finish within ${CITRATE_STOP_TIMEOUT_MS} ms and was stopped (result timeout); installing continues"),
+        "a timeout is a visible detail line"
+    );
+    assert!(body.contains("could not be started (result error); installing continues"));
+    // Fail-open: the step never stops the installer.
+    let lower = body.to_ascii_lowercase();
+    for stop in ["abort", "quit", "seterrorlevel", "messagebox"] {
+        assert!(
+            !lower.contains(stop),
+            "the stop step must not {stop:?} the install"
+        );
+    }
+    // The script's log is replayed into the details, and the result file exists only in test builds.
+    assert!(STOP_SCRIPT.contains("[string]$LogPath = ''"));
+    assert!(body.contains("-LogPath \"$PLUGINSDIR\\citrate-stop-own-sidecars.log\""));
+    assert!(body.contains("FileReadUTF16LE"));
+    let test_only = body
+        .find("!ifdef CITRATE_HOOK_TEST_RESULT_FILE")
+        .expect("test-only result file");
+    assert!(body[..test_only]
+        .find("CITRATE_HOOK_TEST_RESULT_FILE")
+        .is_none());
+}

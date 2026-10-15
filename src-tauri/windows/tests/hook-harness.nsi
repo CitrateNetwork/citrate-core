@@ -4,6 +4,9 @@
 ; test-stop-own-sidecars.ps1 on a hosted Windows runner; never shipped.
 ;
 ; makensis /DHOOKS=<path to installer-hooks.nsh> /DOUTFILE=<harness.exe> hook-harness.nsi
+;   optional (#305 test builds): /DCITRATE_HOOK_TEST_RESULT_FILE=<file> records the stop step's
+;   result; /DCITRATE_STOP_SCRIPT_SRC=<ps1> and /DCITRATE_STOP_TIMEOUT_MS=<ms> swap in a script
+;   that never returns and a shorter bound.
 ; <harness.exe> /S /D=<install dir>        (/D= must be last and unquoted)
 
 Unicode true
