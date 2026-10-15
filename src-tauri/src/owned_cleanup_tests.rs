@@ -114,7 +114,9 @@ fn the_owned_list_matches_the_bundled_sidecars() {
                 .as_str()
                 .and_then(|s| s.rsplit('/').next())
                 .expect("externalBin entry");
-            if name == "llama-server" {
+            // llama-server ships in its resource folder (see above); citrate-templates (HGW-W3)
+            // is a one-shot program the sidecar runs in its sandbox, never a service left running.
+            if name == "llama-server" || name == "citrate-templates" {
                 continue;
             }
             assert!(

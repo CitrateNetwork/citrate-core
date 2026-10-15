@@ -236,3 +236,134 @@ fn the_new_commands_are_in_the_main_window_acl() {
         assert!(acl.contains(&format!("\"{c}\"")), "{c}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// HGW-W3 add-on: folders the member marked as projects, the Projects list, and Forget.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_member_marks_only_a_folder_granted_for_reading_and_writing() {
+    let t = Tmp::new("mark");
+    let hermes = t.0.join("hermes");
+    let site = t.0.join("work/site");
+    std::fs::create_dir_all(&site).expect("site");
+    let work = t.0.join("work");
+    let read_only = doc(vec![grant("g-1", &work, Access::Read)]);
+    assert!(mark_project(&hermes, &read_only, &site, NOW).is_err(), "read alone is not enough");
+    assert!(mark_project(&hermes, &doc(vec![]), &site, NOW).is_err(), "not granted");
+    assert!(mark_project(&hermes, &rw(&work), Path::new("relative/site"), NOW).is_err());
+    assert!(mark_project(&hermes, &rw(&work), &work.join("missing"), NOW).is_err());
+    mark_project(&hermes, &rw(&work), &site, NOW).expect("mark");
+    mark_project(&hermes, &rw(&work), &site, NOW).expect("again");
+    let list = projects_list(&hermes, &t.0.join("Projects"), &rw(&work), NOW);
+    assert_eq!(list.projects.len(), 1, "one row per folder");
+    let row = &list.projects[0];
+    assert_eq!(row.path, site.display().to_string());
+    assert_eq!(row.name, "site");
+    assert_eq!(row.origin, "member");
+    assert!(row.exists && row.shared);
+}
+
+#[test]
+fn marked_folders_travel_as_project_roots_while_granted_without_the_workspace() {
+    let t = Tmp::new("markroots");
+    let hermes = t.0.join("hermes");
+    let root = t.0.join("Projects");
+    let work = t.0.join("work");
+    let site = work.join("site");
+    std::fs::create_dir_all(&site).expect("site");
+    mark_project(&hermes, &rw(&work), &site, NOW).expect("mark");
+    // The projects folder does not exist and is not granted; the marked folder still goes.
+    assert_eq!(
+        project_roots(&hermes, &root, &rw(&work), NOW),
+        vec![site.display().to_string()]
+    );
+    // Its grant revoked: it stays on the list, but is no longer sent (the runtime would refuse
+    // the whole session for it).
+    let mut revoked = rw(&work);
+    revoked.grants[1].revoked_at = Some(NOW - 1);
+    assert!(project_roots(&hermes, &root, &revoked, NOW).is_empty());
+    let list = projects_list(&hermes, &root, &revoked, NOW);
+    assert!(list.projects[0].exists && !list.projects[0].shared);
+}
+
+#[test]
+fn recording_a_hermes_project_keeps_the_marked_folders() {
+    let t = Tmp::new("keep");
+    let hermes = t.0.join("hermes");
+    let root = t.0.join("Projects");
+    std::fs::create_dir_all(&root).expect("root");
+    let work = t.0.join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    mark_project(&hermes, &rw(&work), &work, NOW).expect("mark");
+    let a = project(&root, "a", "hermes");
+    record_project(&hermes, &root, &a).expect("record");
+    let mut both = rw(&root);
+    both.grants.extend(rw(&work).grants.into_iter().map(|mut g| {
+        g.id = format!("{}w", g.id);
+        g
+    }));
+    let list = projects_list(&hermes, &root, &both, NOW);
+    let origins: Vec<(&str, &str)> = list
+        .projects
+        .iter()
+        .map(|r| (r.name.as_str(), r.origin.as_str()))
+        .collect();
+    assert_eq!(origins, vec![("a", "hermes"), ("work", "member")]);
+    assert!(list.workspace.granted);
+    assert_eq!(project_roots(&hermes, &root, &both, NOW).len(), 2);
+}
+
+#[test]
+fn forget_takes_a_project_off_the_list_and_keeps_its_files() {
+    let t = Tmp::new("forget");
+    let hermes = t.0.join("hermes");
+    let root = t.0.join("Projects");
+    std::fs::create_dir_all(&root).expect("root");
+    let a = project(&root, "a", "hermes");
+    record_project(&hermes, &root, &a).expect("record");
+    let work = t.0.join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    mark_project(&hermes, &rw(&work), &work, NOW).expect("mark");
+    forget_project(&hermes, &a.display().to_string()).expect("forget a");
+    forget_project(&hermes, &work.display().to_string()).expect("forget work");
+    assert!(forget_project(&hermes, "/not/on/the/list").is_err());
+    assert!(projects_list(&hermes, &root, &rw(&root), NOW).projects.is_empty());
+    assert!(a.is_dir() && work.is_dir(), "forget never deletes files");
+    assert!(project_roots(&hermes, &root, &rw(&root), NOW).is_empty());
+}
+
+#[test]
+fn the_list_shows_a_missing_hermes_project_without_sending_it() {
+    let t = Tmp::new("missing");
+    let hermes = t.0.join("hermes");
+    let root = t.0.join("Projects");
+    std::fs::create_dir_all(&root).expect("root");
+    let a = project(&root, "a", "hermes");
+    record_project(&hermes, &root, &a).expect("record");
+    std::fs::remove_dir_all(&a).expect("rm");
+    let list = projects_list(&hermes, &root, &rw(&root), NOW);
+    assert_eq!(list.projects.len(), 1);
+    assert!(!list.projects[0].exists && !list.projects[0].shared);
+    assert!(project_roots(&hermes, &root, &rw(&root), NOW).is_empty());
+}
+
+#[test]
+fn the_list_commands_are_in_the_main_window_acl() {
+    let acl = include_str!("../permissions/main-window.toml");
+    for c in [
+        "hermes_projects_list",
+        "hermes_projects_mark",
+        "hermes_projects_forget",
+    ] {
+        assert!(acl.contains(&format!("\"{c}\"")), "{c}");
+    }
+}
+
+#[test]
+fn core_offers_no_project_create_tool_of_its_own() {
+    // Owner decision 2026-10-15: the tool lives in the runtime; a core tool with the same name
+    // would be refused at session create while CITRATE_HERMES_PROJECTS=1.
+    assert!(!include_str!("../../src/agent/harness.ts").contains("name: \"project_create\""));
+    assert!(!include_str!("../../src/agent/toolAnnotations.ts").contains("project_create"));
+}

@@ -48,6 +48,11 @@
       "baselineBytes": 53174368,
       "source": "local v0.4.2 build 2026-09-30"
     },
+    "macos-aarch64/bin/citrate-templates": {
+      "maxBytes": 2000000,
+      "baselineBytes": 710984,
+      "source": "HGW-W3 (core #289): scripts/build-citrate-templates.sh, aarch64-apple-darwin release, strip -x, 2026-10-15 (not yet measured in a bundle)"
+    },
     "macos-aarch64/bin/citrate-core": {
       "maxBytes": 40000000,
       "baselineBytes": 35851840,

@@ -56,6 +56,7 @@ import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
 import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView, ActionPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
+import { notifyProjectsChanged } from "../agent/projects/projects";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
 import { layoutGraph } from "./memGraph";
 import { buildPeopleDirectory } from "../surfaces/peopleDirectory";
@@ -3179,9 +3180,13 @@ export class Store {
    */
   projectActivity(ev: TurnActivityEvent): boolean {
     if (ev.kind === "project_created") {
-      bridge.agentHarness.projectsRecord(ev.path).catch((e: unknown) => {
-        this.toast(`Hermes created ${ev.path}, but the app could not remember it for later conversations (${e instanceof Error ? e.message : String(e)}).`);
-      });
+      bridge.agentHarness.projectsRecord(ev.path).then(
+        // HGW-W3 add-on: the Projects list on the Agent surface shows it at once.
+        () => notifyProjectsChanged(),
+        (e: unknown) => {
+          this.toast(`Hermes created ${ev.path}, but the app could not remember it for later conversations (${e instanceof Error ? e.message : String(e)}).`);
+        },
+      );
       return true;
     }
     if (ev.kind === "projects_workspace_needed") {
@@ -3219,6 +3224,7 @@ export class Store {
     }
     try {
       const after = await bridge.agentHarness.projectsWorkspaceGrant();
+      notifyProjectsChanged();
       this.toast(`Hermes may now create projects in ${after.root}. Ask Hermes again to create the project.`);
     } catch (e) {
       this.projectsWorkspaceOffered = false;
