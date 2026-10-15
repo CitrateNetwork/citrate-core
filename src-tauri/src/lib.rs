@@ -727,6 +727,9 @@ pub fn run() {
             hermes_web::hermes_web_settings_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
+            hermes::build_settings::hermes_build_settings_get,
+            hermes::build_settings::hermes_build_settings_set,
+            hermes::build_settings::hermes_auto_approve_list,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).

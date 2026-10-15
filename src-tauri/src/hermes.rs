@@ -658,6 +658,7 @@ impl HermesManager {
                     || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::fl_trajectories::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || build_settings::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -1647,11 +1648,14 @@ pub(crate) fn manager<R: tauri::Runtime>(
             // Terminal commands (shell_run): `1` when the member's switch is on (the default),
             // pinned empty when off.
             let terminal = crate::hermes_terminal::file_env_source(base.clone());
+            // HGW-W11: the auto-approve switch and the member's commit identity, pinned.
+            let building = build_settings::file_env_source(base.clone());
             std::sync::Arc::new(move || {
                 let mut env = web();
                 env.extend(toolchain());
                 env.extend(trajectories());
                 env.extend(terminal());
+                env.extend(building());
                 env
             })
         });
@@ -2360,6 +2364,11 @@ pub mod shell;
 // bearer-authed control).
 #[path = "hermes_mcp_cards.rs"]
 pub mod mcp_cards;
+
+// HGW-W11: the auto-approve switch and list, and the member's commit identity (child module:
+// reuses the bearer-authed control).
+#[path = "hermes_build_settings.rs"]
+pub mod build_settings;
 
 #[cfg(test)]
 mod brief_tests {
