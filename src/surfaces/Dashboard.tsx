@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { useBlockNumber, useReadContract } from "wagmi";
 import book from "../../src-tauri/addresses/40204.json";
 import { AgentChat } from "../components/AgentChat";
@@ -9,6 +10,7 @@ import { federationUrl } from "../data/links";
 import { WidgetsPanel } from "../widgets/WidgetsPanel";
 import { DaemonsPanel } from "../daemons/DaemonsPanel";
 import { appWidgetSources } from "../widgets/appSources";
+import { SECTION_ROOT, columnGrid, SCROLL_COLUMN, CHAT_COLUMN, useNarrow, SectionSwitch } from "../components/sectionLayout";
 
 const RANK: Record<string, number> = { free: 0, pilot: 1, enterprise: 2 };
 const fmtI = (n: number) => Math.round(n).toLocaleString("en-US");
@@ -155,10 +157,18 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
   // The agent chat (transcript + model picker + voice + auto-scroll) now lives in the shared
   // <AgentChat> component, mounted here and on the Agent surface (#62).
 
+  // HGW: the section is exactly the window; the chat and the right rail each scroll on their own.
+  // A narrow window shows one column at a time behind a switch (the chat stays mounted).
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const narrow = useNarrow(sectionRef);
+  const [pane, setPane] = useState<"chat" | "activity">("chat");
+  const showChat = !narrow || pane === "chat";
+  const showRail = !narrow || pane === "activity";
+
   return (
-    <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: "100%", boxSizing: "border-box" }}>
+    <div ref={sectionRef} data-section="dashboard" style={SECTION_ROOT}>
       {/* vitals strip */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, background: "var(--line-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-2)", overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1, background: "var(--line-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-2)", overflow: "hidden", flexShrink: 0 }}>
         {vitals.map((v) => (
           <div key={v.label} style={{ background: "var(--srf-1)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }} title={v.tip}>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--tx-3)", whiteSpace: "nowrap" }}>
@@ -174,14 +184,27 @@ export function Dashboard({ store, s }: { store: Store; s: AppState }) {
         ))}
       </div>
 
-      {/* rc.5 FIX 4: items align to the start, so the chat sizes itself to the window instead of
-          stretching to the right rail's height (which pushed the composer below the fold). */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 316px", gap: 16, alignItems: "start" }}>
+      {narrow && (
+        <SectionSwitch
+          label="Hermes section"
+          options={[
+            { id: "chat", label: "Chat" },
+            { id: "activity", label: "Activity" },
+          ]}
+          value={pane}
+          onChange={setPane}
+        />
+      )}
+
+      {/* HGW: one bounded row; every column clips or scrolls itself (no page scroll). */}
+      <div data-testid="dashboard-columns" style={columnGrid(narrow ? "minmax(0,1fr)" : "minmax(0,1fr) 316px")}>
         {/* chat pane — shared component, also mounted on the Agent surface (#62) */}
-        <AgentChat store={store} s={s} />
+        <div style={{ ...CHAT_COLUMN, display: showChat ? "flex" : "none" }}>
+          <AgentChat store={store} s={s} />
+        </div>
 
         {/* right rail */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0, overflow: "auto" }}>
+        <div data-testid="dashboard-rail" style={{ ...SCROLL_COLUMN, display: showRail ? "grid" : "none" }}>
           {/* HUP-S10.3 — widgets (sandboxed tiles) and daemons (scheduled tasks inside a budget) */}
           <WidgetsPanel sources={appWidgetSources} />
           <DaemonsPanel />

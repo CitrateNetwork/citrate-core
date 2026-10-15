@@ -35,6 +35,7 @@ import { ContractForgePanel } from "../shell/ContractForgePanel";
 import { bridge } from "../bridge";
 import { openContractReader } from "../popout/appHost";
 import { LearnedPanel } from "../shell/LearnedPanel";
+import { SECTION_ROOT, columnGrid, SCROLL_COLUMN, CHAT_COLUMN, useNarrow, SectionSwitch } from "../components/sectionLayout";
 
 type Tab = "overview" | "contracts";
 
@@ -54,12 +55,18 @@ const CONTRACT_KINDS: { id: string; name: string; desc: string }[] = [
 export function Agent({ store, s }: SurfaceProps) {
   const st = agentSlice.use();
   const [tab, setTab] = useState<Tab>("overview");
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const narrow = useNarrow(sectionRef);
+  const [pane, setPane] = useState<"main" | "rail">("main");
+  const showMain = !narrow || pane === "main";
+  const showRail = !narrow || pane === "rail";
   // rc.5 FIX 5: the chat's "Open toolchain settings" asks for the Contracts tab; consume it once
   // and bring the toolchain step into view.
   useEffect(() => {
     const want = s.agentTabRequest;
     if (!want) return;
     setTab(want);
+    setPane("main");
     store.setState({ agentTabRequest: null });
     if (want === "contracts") {
       setTimeout(() => document.getElementById("contract-toolchain")?.scrollIntoView({ block: "start" }), 0);
@@ -162,372 +169,393 @@ export function Agent({ store, s }: SurfaceProps) {
       ? { fg: "var(--danger)", bd: "var(--danger)", bg: "var(--danger-bg)", text: "error" }
       : { fg: "var(--tx-3)", bd: "var(--line-2)", bg: "transparent", text: "not running" };
 
-  return (
-    <div style={{ padding: "20px 26px 24px", display: "flex", flexDirection: "column", gap: 16, minHeight: "100%", boxSizing: "border-box" }}>
-      {/* header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Agents</span>
-        <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + pillTone.bd, color: pillTone.fg, background: pillTone.bg, flexShrink: 0 }}>
-          {pillTone.text}
-        </span>
-        <span style={{ display: "flex", gap: 2, background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 2, flexShrink: 0 }}>
-          {([["overview", "Overview"], ["contracts", "Contracts"]] as const).map(([id, label]) => {
-            const on = tab === id;
+  // HGW: the section is exactly the window. Two columns, each scrolling on its own: the tab's
+  // main column (the chat on Overview, the contract tools on Contracts) and one side column
+  // (approvals first, since the sidebar badge sends people here, then the roster and, on
+  // Overview, the agent's panels). A narrow window shows one column at a time behind a switch.
+  const railPanels = (
+    <>
+      <div className="surface" style={{ display: "flex", flexDirection: "column", borderColor: st.approvals.length ? "var(--warn)" : "var(--line-1)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>Awaiting your review</span>
+          {st.approvals.length > 0 && (
+            <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
+              {st.approvals.length}
+            </span>
+          )}
+        </div>
+        {st.approvals.length === 0 ? (
+          <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
+            Nothing pending. When the agent proposes a chain, code, or shell action, it stops here — nothing happens in your name without your say-so.
+          </p>
+        ) : (
+          st.approvals.map((ap) => {
+            const kc = KIND_COLOR[ap.kind];
             return (
-              <button key={id} onClick={() => setTab(id)} style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: on ? 500 : 400, padding: "5px 12px", border: "none", borderRadius: 5, cursor: "pointer", background: on ? "var(--srf-2)" : "transparent", color: on ? "var(--tx-1)" : "var(--tx-2)" }}>
-                {label}
-              </button>
-            );
-          })}
-        </span>
-        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".06em", color: "var(--tx-3)" }}>
-          keyless · every sensitive action stops at the ceremony
-        </span>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 340px", gap: 16, alignItems: "start" }}>
-        {/* ---------- main column ---------- */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
-          {/* attached agents */}
-          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-              <span style={{ fontSize: 13.5, fontWeight: 500 }}>Attached to your node</span>
-              <button className="btn btn-ghost btn-sm" onClick={() => setAttachOpen((v) => !v)} style={{ marginLeft: "auto" }}>
-                {attachOpen ? "Close" : "Attach agent"}
-              </button>
-            </div>
-            {attachOpen && (
-              <div style={{ display: "flex", flexDirection: "column", borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
-                {RUNTIME_OPTIONS.map((ro) => {
-                  const attached = st.attached.some((a) => a.id === ro.id);
-                  return (
-                    <div key={ro.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                      <span className="mono" style={{ width: 30, height: 30, borderRadius: "var(--r-1)", border: "1px solid var(--line-2)", background: "#fff", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>
-                        {ro.glyph}
-                      </span>
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{ro.label}</span>
-                        <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 1 }}>{ro.sub}</span>
-                      </span>
-                      <button className="btn btn-secondary btn-sm" disabled={attached} onClick={() => { attachRuntime(ro.id); setAttachOpen(false); }}>
-                        {attached ? "Attached" : "Attach"}
-                      </button>
-                    </div>
-                  );
-                })}
-                <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "10px 16px" }}>
-                  every runtime attaches keyless — whatever the agent, its chain, code, and shell actions stop at your ceremony
-                </p>
+              <div key={ap.id} style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 999, border: "1px solid " + kc.bd, color: kc.fg }}>{ap.kind}</span>
+                  <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)" }}>agent:{sel.id}</span>
+                </div>
+                <span style={{ fontSize: 12.5, lineHeight: 1.55 }}>{ap.summary}</span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn btn-primary btn-sm" onClick={() => approve(ap)}>Review &amp; approve</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => reject(ap)}>Reject</button>
+                </div>
               </div>
-            )}
-            {st.attached.map((ar) => {
-              const on = ar.id === st.selected;
+            );
+          })
+        )}
+      </div>
+      {/* attached agents */}
+      <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>Attached to your node</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setAttachOpen((v) => !v)} style={{ marginLeft: "auto" }}>
+            {attachOpen ? "Close" : "Attach agent"}
+          </button>
+        </div>
+        {attachOpen && (
+          <div style={{ display: "flex", flexDirection: "column", borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
+            {RUNTIME_OPTIONS.map((ro) => {
+              const attached = st.attached.some((a) => a.id === ro.id);
               return (
-                <div key={ar.id} onClick={() => selectRuntime(ar.id)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", borderLeft: "2px solid " + (on ? "var(--accent)" : "transparent"), background: on ? "var(--srf-1)" : "transparent", cursor: "pointer" }}>
-                  <span className="mono" style={{ width: 30, height: 30, borderRadius: "var(--r-1)", border: "1px dashed var(--line-2)", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>
-                    {ar.glyph}
+                <div key={ro.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  <span className="mono" style={{ width: 30, height: 30, borderRadius: "var(--r-1)", border: "1px solid var(--line-2)", background: "#fff", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>
+                    {ro.glyph}
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ width: 7, height: 7, borderRadius: 999, background: dotColor(ar.state), flexShrink: 0, animation: ar.state === "starting" ? "ccPulse 1.4s var(--ease-standard) infinite" : "none" }}></span>
-                      <span style={{ fontSize: 13, fontWeight: 500 }}>{ar.label}</span>
-                    </span>
-                    <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {ar.state === "error" && ar.error ? ar.error : ar.sub}
-                    </span>
+                    <span style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{ro.label}</span>
+                    <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 1 }}>{ro.sub}</span>
                   </span>
-                  {ar.wired && ar.state === "off" && <button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); void startRuntime(ar.id); }}>Start</button>}
-                  {ar.state === "starting" && <button className="btn btn-secondary btn-sm" disabled>Starting…</button>}
-                  {ar.state === "running" && <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); void stopRuntime(ar.id); }}>Stop</button>}
-                  {!ar.wired && ar.state !== "starting" && <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); void startRuntime(ar.id); }}>Start</button>}
+                  <button className="btn btn-secondary btn-sm" disabled={attached} onClick={() => { attachRuntime(ro.id); setAttachOpen(false); }}>
+                    {attached ? "Attached" : "Attach"}
+                  </button>
                 </div>
               );
             })}
+            <p className="mono" style={{ fontSize: 10, color: "var(--tx-3)", margin: 0, padding: "10px 16px" }}>
+              every runtime attaches keyless — whatever the agent, its chain, code, and shell actions stop at your ceremony
+            </p>
+          </div>
+        )}
+        {st.attached.map((ar) => {
+          const on = ar.id === st.selected;
+          return (
+            <div key={ar.id} onClick={() => selectRuntime(ar.id)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: "1px solid var(--line-1)", borderLeft: "2px solid " + (on ? "var(--accent)" : "transparent"), background: on ? "var(--srf-1)" : "transparent", cursor: "pointer" }}>
+              <span className="mono" style={{ width: 30, height: 30, borderRadius: "var(--r-1)", border: "1px dashed var(--line-2)", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, flexShrink: 0 }}>
+                {ar.glyph}
+              </span>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: 999, background: dotColor(ar.state), flexShrink: 0, animation: ar.state === "starting" ? "ccPulse 1.4s var(--ease-standard) infinite" : "none" }}></span>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>{ar.label}</span>
+                </span>
+                <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {ar.state === "error" && ar.error ? ar.error : ar.sub}
+                </span>
+              </span>
+              {ar.wired && ar.state === "off" && <button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); void startRuntime(ar.id); }}>Start</button>}
+              {ar.state === "starting" && <button className="btn btn-secondary btn-sm" disabled>Starting…</button>}
+              {ar.state === "running" && <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); void stopRuntime(ar.id); }}>Stop</button>}
+              {!ar.wired && ar.state !== "starting" && <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); void startRuntime(ar.id); }}>Start</button>}
+            </div>
+          );
+        })}
+      </div>
+      {tab === "overview" && (
+        <>
+          {/* status */}
+          <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 999, background: dotColor(sel.state), flexShrink: 0 }}></span>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 15, fontWeight: 500 }}>
+                  {running ? `${sel.label} is running` : sel.state === "error" ? `${sel.label} couldn't start` : `${sel.label} is attached, not started`}
+                </span>
+                <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
+                  {running ? `${st.status.skills} skill${st.status.skills === 1 ? "" : "s"} · ${st.status.pendingApprovals} awaiting review` : sel.wired ? "start it to load its skills" : "adapter pending — Hermes is the wired runtime"}
+                </span>
+              </span>
+            </div>
+            {sel.state === "error" && sel.error && (
+              <div style={{ border: "1px solid var(--danger)", background: "var(--danger-bg)", borderRadius: "var(--r-1)", padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5, color: "var(--danger)" }}>{sel.error}</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => void startRuntime(sel.id)}>Retry</button>
+              </div>
+            )}
+            <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
+              This agent holds no key and signs nothing. It runs skills on your node; anything that touches the chain, your code, or your shell stops for your review.
+            </p>
           </div>
 
-          {tab === "overview" && (
-            <>
-              {/* #62 — the chat, front and center on the Agent surface (same shared pane as the
-                  Dashboard). Talk to the agent here; skills/approvals/registry sit below. */}
-              {/* rc.5 FIX 4: the pane fits the window itself (was a fixed 460 px box). */}
-              <AgentChat store={store} s={s} />
-              {/* status */}
-              <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 999, background: dotColor(sel.state), flexShrink: 0 }}></span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "block", fontSize: 15, fontWeight: 500 }}>
-                      {running ? `${sel.label} is running` : sel.state === "error" ? `${sel.label} couldn't start` : `${sel.label} is attached, not started`}
-                    </span>
-                    <span className="mono" style={{ display: "block", fontSize: 10.5, color: "var(--tx-3)", marginTop: 2 }}>
-                      {running ? `${st.status.skills} skill${st.status.skills === 1 ? "" : "s"} · ${st.status.pendingApprovals} awaiting review` : sel.wired ? "start it to load its skills" : "adapter pending — Hermes is the wired runtime"}
-                    </span>
-                  </span>
-                </div>
-                {sel.state === "error" && sel.error && (
-                  <div style={{ border: "1px solid var(--danger)", background: "var(--danger-bg)", borderRadius: "var(--r-1)", padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}>
-                    <span style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5, color: "var(--danger)" }}>{sel.error}</span>
-                    <button className="btn btn-ghost btn-sm" onClick={() => void startRuntime(sel.id)}>Retry</button>
-                  </div>
-                )}
-                <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-2)", margin: 0 }}>
-                  This agent holds no key and signs nothing. It runs skills on your node; anything that touches the chain, your code, or your shell stops for your review.
-                </p>
-              </div>
-
-              {/* skills */}
-              <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Skills</span>
-                  <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-                    {st.skills.length} installed
-                  </span>
-                </div>
-                {!running ? (
-                  <p style={{ fontSize: 12.5, lineHeight: 1.65, color: "var(--tx-2)", margin: 0, padding: "18px 20px" }}>
-                    Skills belong to a running agent. Start one above — its skills load here the moment it runs.
-                  </p>
-                ) : st.skills.length === 0 ? (
-                  <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
-                    No skills installed. Skills arrive as capsules — install one from the Commissary or drop a signed capsule into the agent's skill directory.
-                  </p>
-                ) : (
-                  st.skills.map((sk) => {
-                    const open = openSkill === sk.name;
-                    return (
-                      <div key={sk.name} style={{ display: "flex", flexDirection: "column", borderBottom: "1px solid var(--line-1)" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-                          <span style={{ flex: 1, minWidth: 0 }}>
-                            <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{sk.name}</span>
-                            <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5 }}>{sk.description}</span>
-                          </span>
-                          <button className="btn btn-ghost btn-sm" onClick={() => setOpenSkill(open ? null : sk.name)}>{open ? "Close" : "Run"}</button>
-                        </div>
-                        {open && (
-                          <div style={{ display: "flex", gap: 10, padding: "0 16px 14px", alignItems: "center" }}>
-                            <input ref={skillArg} className="input" placeholder="arguments — JSON or plain text (optional)" style={{ flex: 1 }} />
-                            <button className="btn btn-primary btn-sm" onClick={() => runSkill(sk.name)}>Run skill</button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-
-              {/* HUP-S4.3 + S4.2 — MCP servers Hermes may use (memory graph, CitrateScan, this node); all off by default. */}
-              <HermesMcpPanel />
-
-              {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
-                  These are the skills published on-chain (SkillRegistry 0x896cd293…); Hermes ships
-                  WITH them. Rule 1: read straight from the registry, honest-empty on RPC failure. */}
-              <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Skill registry</span>
-                  <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
-                    {st.registrySkills.length} on-chain
-                  </span>
-                </div>
-                {st.registrySkills.length === 0 ? (
-                  <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
-                    Nothing published on-chain yet, or the registry couldn't be read. Skills registered to 40204 (SkillRegistry) appear here — every node sees the same list.
-                  </p>
-                ) : (
-                  st.registrySkills.map((rs) => (
-                    <div key={rs.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{rs.name}</span>
-                          <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".04em", color: "var(--tx-3)" }}>v{rs.version}</span>
-                          <span className="mono" style={{ fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "1px 7px", borderRadius: 999, border: "1px solid " + (rs.manifestCid ? "var(--ok)" : "var(--line-2)"), color: rs.manifestCid ? "var(--ok)" : "var(--tx-3)" }}>
-                            {rs.manifestCid ? "published" : "no capsule"}
-                          </span>
-                        </span>
-                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 3, lineHeight: 1.5 }}>{rs.description || "—"}</span>
-                        <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          owner {rs.owner}{rs.manifestCid ? ` · ${rs.manifestCid}` : ""}
-                        </span>
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* your skills (P5) — member-authored prompt-skills, run against the active
-                  model (router → Gemma/gateway/local). Persist locally; any chain action a
-                  run proposes still stops at the ceremony. */}
-              <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>Your skills</span>
-                  <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)", marginRight: 10 }}>
-                    {s.localSkills.length} yours
-                  </span>
-                  <button className="btn btn-ghost btn-sm" onClick={() => setAddSkillOpen((v) => !v)}>
-                    {addSkillOpen ? "Close" : "Add skill"}
-                  </button>
-                </div>
-                {addSkillOpen && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
-                    <input ref={uskName} className="input" placeholder="Skill name — e.g. Daily node digest" />
-                    <textarea ref={uskInstr} className="input" placeholder="Instruction — what the skill should do (runs against your active model)" spellCheck style={{ minHeight: 66, resize: "vertical" }} />
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <span className="mono" style={{ flex: 1, fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
-                        runs against your active model — any chain action it proposes stops at your ceremony
-                      </span>
-                      <button className="btn btn-primary btn-sm" onClick={addUserSkill}>Save skill</button>
-                    </div>
-                  </div>
-                )}
-                {s.localSkills.length === 0 && !addSkillOpen ? (
-                  <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
-                    None yet. Add a prompt-skill — a named instruction you run against your active model. It's saved on this device and lists here.
-                  </p>
-                ) : (
-                  s.localSkills.map((sk) => (
-                    <div key={sk.slug} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{sk.name}</span>
-                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sk.description}</span>
-                      </span>
-                      <button className="btn btn-primary btn-sm" onClick={() => void store.runUserSkill(sk.slug)}>Run</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => void store.removeUserSkill(sk.slug)} title="Remove skill">✕</button>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* HUP-S3.4 — what Hermes proposes to keep, with the verifier evidence; you decide. */}
-              <LearnedPanel store={store} running={running} />
-
-              {/* recent runs */}
-              <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Recent runs</div>
-                {st.runs.length === 0 ? (
-                  <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-                    Nothing yet. When you run a skill it appears here with its outcome — and a link to the approval if it needed one.
-                  </p>
-                ) : (
-                  st.runs.map((rr) => {
-                    const c = rr.status === "done" ? "var(--ok)" : rr.status === "failed" ? "var(--danger)" : rr.status === "awaiting" ? "var(--warn)" : "var(--tx-3)";
-                    return (
-                      <div key={rr.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                        <span style={{ width: 7, height: 7, borderRadius: 999, background: c, flexShrink: 0 }}></span>
-                        <span style={{ flex: 1, minWidth: 0 }}>
-                          <span className="mono" style={{ display: "block", fontSize: 12, fontWeight: 500 }}>{rr.name}</span>
-                          <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{rr.detail}</span>
-                        </span>
-                        <span className="mono" style={{ fontSize: 10, letterSpacing: ".06em", color: c, whiteSpace: "nowrap" }}>{rr.status}</span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </>
-          )}
-
-          {tab === "contracts" && (
-            <>
-              <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
-                <span style={{ fontSize: 13.5, fontWeight: 500 }}>Deploy to 40204</span>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {CONTRACT_KINDS.map((ck) => (
-                    <button key={ck.id} className={"btn btn-sm " + (ctKind === ck.id ? "btn-secondary" : "btn-ghost")} onClick={() => setCtKind(ck.id)}>
-                      {ck.name}
-                    </button>
-                  ))}
-                </div>
-                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>{CONTRACT_KINDS.find((k) => k.id === ctKind)!.desc}</span>
-                <input ref={ctName} className="input" placeholder="Contract name — e.g. GuildTreasury" />
-                <textarea
-                  ref={ctBytecode}
-                  className="input"
-                  placeholder="Compiled deploy bytecode (0x…) — from forge/solc, or your agent after it compiles"
-                  spellCheck={false}
-                  style={{ minHeight: 66, fontFamily: "var(--font-mono)", fontSize: 11, resize: "vertical" }}
-                />
-                <input ref={ctArgs} className="input" placeholder="ABI-encoded constructor args (0x…) — optional" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }} />
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <span className="mono" style={{ flex: 1, fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
-                    the unsigned creation tx stops at your ceremony — you review the init code and approve
-                  </span>
-                  <button className="btn btn-primary btn-sm" onClick={deploy}>Deploy</button>
-                </div>
-                <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
-                  deploys need a READY deploy gate for this exact bytecode: forge tests pass, Slither and Aderyn report no High findings, a Medusa campaign passes its call budget, and a fork dry run succeeds
-                </span>
-                {gateRefusal && <DeployGateCard record={gateRefusal.record} initcodeHash={gateRefusal.initcodeHash} />}
-              </div>
-              {/* HUP-S6.2 / S6.3 / S6.9 — templates, the toolchain switch, and the gate from Hermes's runs. */}
-              <ContractForgePanel
-                ops={bridge.contracts}
-                restartHermes={async () => {
-                  await stopRuntime("hermes");
-                  await startRuntime("hermes");
-                }}
-              />
-              {/* HUP-S6.6 — after the deploy: verify, switch the site to 40204, pin, export. */}
-              <PostDeployPanel
-                ops={bridge.contracts}
-                lastDeployTx={s.activity.find((a) => a.kind === "Deploy contract")?.hash ?? null}
-                openReader={(address) => void openContractReader(address)}
-              />
-              <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>On the network</span>
-                  {/* HUP-S6.7 — read any 40204 contract in its own window. */}
-                  <button className="btn btn-sm btn-ghost" data-testid="open-contract-reader" style={{ marginLeft: 10 }} onClick={() => void openContractReader()}>
-                    Contract reader
-                  </button>
-                  <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>owned by your wallet</span>
-                </div>
-                <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-                  Nothing deployed yet. Paste compiled deploy bytecode above — the unsigned creation transaction stops at your ceremony, and confirmed deployments appear here.
-                </p>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* ---------- right rail ---------- */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div className="surface" style={{ display: "flex", flexDirection: "column", borderColor: st.approvals.length ? "var(--warn)" : "var(--line-1)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-              <span style={{ fontSize: 13.5, fontWeight: 500 }}>Awaiting your review</span>
-              {st.approvals.length > 0 && (
-                <span className="mono tabular" style={{ fontSize: 10, minWidth: 18, height: 18, padding: "0 5px", borderRadius: 999, background: "var(--citrate-yellow)", color: "var(--on-highlight)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>
-                  {st.approvals.length}
-                </span>
-              )}
+          {/* skills */}
+          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+            <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+              <span style={{ fontSize: 13.5, fontWeight: 500 }}>Skills</span>
+              <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
+                {st.skills.length} installed
+              </span>
             </div>
-            {st.approvals.length === 0 ? (
-              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
-                Nothing pending. When the agent proposes a chain, code, or shell action, it stops here — nothing happens in your name without your say-so.
+            {!running ? (
+              <p style={{ fontSize: 12.5, lineHeight: 1.65, color: "var(--tx-2)", margin: 0, padding: "18px 20px" }}>
+                Skills belong to a running agent. Start one above — its skills load here the moment it runs.
+              </p>
+            ) : st.skills.length === 0 ? (
+              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
+                No skills installed. Skills arrive as capsules — install one from the Commissary or drop a signed capsule into the agent's skill directory.
               </p>
             ) : (
-              st.approvals.map((ap) => {
-                const kc = KIND_COLOR[ap.kind];
+              st.skills.map((sk) => {
+                const open = openSkill === sk.name;
                 return (
-                  <div key={ap.id} style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 999, border: "1px solid " + kc.bd, color: kc.fg }}>{ap.kind}</span>
-                      <span className="mono" style={{ fontSize: 9.5, color: "var(--tx-3)" }}>agent:{sel.id}</span>
+                  <div key={sk.name} style={{ display: "flex", flexDirection: "column", borderBottom: "1px solid var(--line-1)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{sk.name}</span>
+                        <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5 }}>{sk.description}</span>
+                      </span>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setOpenSkill(open ? null : sk.name)}>{open ? "Close" : "Run"}</button>
                     </div>
-                    <span style={{ fontSize: 12.5, lineHeight: 1.55 }}>{ap.summary}</span>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button className="btn btn-primary btn-sm" onClick={() => approve(ap)}>Review &amp; approve</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => reject(ap)}>Reject</button>
-                    </div>
+                    {open && (
+                      <div style={{ display: "flex", gap: 10, padding: "0 16px 14px", alignItems: "center" }}>
+                        <input ref={skillArg} className="input" placeholder="arguments — JSON or plain text (optional)" style={{ flex: 1 }} />
+                        <button className="btn btn-primary btn-sm" onClick={() => runSkill(sk.name)}>Run skill</button>
+                      </div>
+                    )}
                   </div>
                 );
               })
             )}
           </div>
-          <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
-            <span className="eyebrow">How this stays yours</span>
-            <p style={{ fontSize: 12, lineHeight: 1.65, color: "var(--tx-2)", margin: 0 }}>
-              The agent proposes; you dispose. A <span className="mono" style={{ fontSize: 11 }}>chain</span> approval routes through the Signature Ceremony and produces exactly one signature. Approving once never signs twice; a rejected item never returns. Stopping the agent leaves pending items unexecuted.
-            </p>
+
+          {/* HUP-S4.3 + S4.2 — MCP servers Hermes may use (memory graph, CitrateScan, this node); all off by default. */}
+          <HermesMcpPanel />
+
+          {/* on-chain skill registry — a live 40204 read, independent of the running sidecar.
+              These are the skills published on-chain (SkillRegistry 0x896cd293…); Hermes ships
+              WITH them. Rule 1: read straight from the registry, honest-empty on RPC failure. */}
+          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+            <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+              <span style={{ fontSize: 13.5, fontWeight: 500 }}>Skill registry</span>
+              <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>
+                {st.registrySkills.length} on-chain
+              </span>
+            </div>
+            {st.registrySkills.length === 0 ? (
+              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
+                Nothing published on-chain yet, or the registry couldn't be read. Skills registered to 40204 (SkillRegistry) appear here — every node sees the same list.
+              </p>
+            ) : (
+              st.registrySkills.map((rs) => (
+                <div key={rs.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{rs.name}</span>
+                      <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".04em", color: "var(--tx-3)" }}>v{rs.version}</span>
+                      <span className="mono" style={{ fontSize: 9, letterSpacing: ".08em", textTransform: "uppercase", padding: "1px 7px", borderRadius: 999, border: "1px solid " + (rs.manifestCid ? "var(--ok)" : "var(--line-2)"), color: rs.manifestCid ? "var(--ok)" : "var(--tx-3)" }}>
+                        {rs.manifestCid ? "published" : "no capsule"}
+                      </span>
+                    </span>
+                    <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 3, lineHeight: 1.5 }}>{rs.description || "—"}</span>
+                    <span className="mono" style={{ display: "block", fontSize: 9.5, color: "var(--tx-3)", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      owner {rs.owner}{rs.manifestCid ? ` · ${rs.manifestCid}` : ""}
+                    </span>
+                  </span>
+                </div>
+              ))
+            )}
           </div>
+
+          {/* your skills (P5) — member-authored prompt-skills, run against the active
+              model (router → Gemma/gateway/local). Persist locally; any chain action a
+              run proposes still stops at the ceremony. */}
+          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+            <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+              <span style={{ fontSize: 13.5, fontWeight: 500 }}>Your skills</span>
+              <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)", marginRight: 10 }}>
+                {s.localSkills.length} yours
+              </span>
+              <button className="btn btn-ghost btn-sm" onClick={() => setAddSkillOpen((v) => !v)}>
+                {addSkillOpen ? "Close" : "Add skill"}
+              </button>
+            </div>
+            {addSkillOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", background: "var(--srf-1)" }}>
+                <input ref={uskName} className="input" placeholder="Skill name — e.g. Daily node digest" />
+                <textarea ref={uskInstr} className="input" placeholder="Instruction — what the skill should do (runs against your active model)" spellCheck style={{ minHeight: 66, resize: "vertical" }} />
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <span className="mono" style={{ flex: 1, fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                    runs against your active model — any chain action it proposes stops at your ceremony
+                  </span>
+                  <button className="btn btn-primary btn-sm" onClick={addUserSkill}>Save skill</button>
+                </div>
+              </div>
+            )}
+            {s.localSkills.length === 0 && !addSkillOpen ? (
+              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: "18px 20px" }}>
+                None yet. Add a prompt-skill — a named instruction you run against your active model. It's saved on this device and lists here.
+              </p>
+            ) : (
+              s.localSkills.map((sk) => (
+                <div key={sk.slug} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span className="mono" style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{sk.name}</span>
+                    <span style={{ display: "block", fontSize: 12, color: "var(--tx-2)", marginTop: 2, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sk.description}</span>
+                  </span>
+                  <button className="btn btn-primary btn-sm" onClick={() => void store.runUserSkill(sk.slug)}>Run</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => void store.removeUserSkill(sk.slug)} title="Remove skill">✕</button>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* HUP-S3.4 — what Hermes proposes to keep, with the verifier evidence; you decide. */}
+          <LearnedPanel store={store} running={running} />
+
+          {/* recent runs */}
+          <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line-1)", fontSize: 13.5, fontWeight: 500 }}>Recent runs</div>
+            {st.runs.length === 0 ? (
+              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
+                Nothing yet. When you run a skill it appears here with its outcome — and a link to the approval if it needed one.
+              </p>
+            ) : (
+              st.runs.map((rr) => {
+                const c = rr.status === "done" ? "var(--ok)" : rr.status === "failed" ? "var(--danger)" : rr.status === "awaiting" ? "var(--warn)" : "var(--tx-3)";
+                return (
+                  <div key={rr.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                    <span style={{ width: 7, height: 7, borderRadius: 999, background: c, flexShrink: 0 }}></span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span className="mono" style={{ display: "block", fontSize: 12, fontWeight: 500 }}>{rr.name}</span>
+                      <span className="mono" style={{ display: "block", fontSize: 10, color: "var(--tx-3)", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{rr.detail}</span>
+                    </span>
+                    <span className="mono" style={{ fontSize: 10, letterSpacing: ".06em", color: c, whiteSpace: "nowrap" }}>{rr.status}</span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+      <div className="surface" style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <span className="eyebrow">How this stays yours</span>
+        <p style={{ fontSize: 12, lineHeight: 1.65, color: "var(--tx-2)", margin: 0 }}>
+          The agent proposes; you dispose. A <span className="mono" style={{ fontSize: 11 }}>chain</span> approval routes through the Signature Ceremony and produces exactly one signature. Approving once never signs twice; a rejected item never returns. Stopping the agent leaves pending items unexecuted.
+        </p>
+      </div>
+    </>
+  );
+
+  return (
+    <div ref={sectionRef} data-section="agent" style={SECTION_ROOT}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, flexShrink: 0 }}>
+        {/* header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 420, fontSize: 24 }}>Agents</span>
+          <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", padding: "2px 9px", borderRadius: 999, border: "1px solid " + pillTone.bd, color: pillTone.fg, background: pillTone.bg, flexShrink: 0 }}>
+            {pillTone.text}
+          </span>
+          <span style={{ display: "flex", gap: 2, background: "var(--srf-1)", border: "1px solid var(--line-1)", borderRadius: "var(--r-1)", padding: 2, flexShrink: 0 }}>
+            {([["overview", "Overview"], ["contracts", "Contracts"]] as const).map(([id, label]) => {
+              const on = tab === id;
+              return (
+                <button key={id} onClick={() => setTab(id)} style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: on ? 500 : 400, padding: "5px 12px", border: "none", borderRadius: 5, cursor: "pointer", background: on ? "var(--srf-2)" : "transparent", color: on ? "var(--tx-1)" : "var(--tx-2)" }}>
+                  {label}
+                </button>
+              );
+            })}
+          </span>
+          <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: ".06em", color: "var(--tx-3)" }}>
+            keyless · every sensitive action stops at the ceremony
+          </span>
+        </div>
+        {narrow && (
+          <SectionSwitch
+            label="Agent section"
+            options={[
+              { id: "main", label: tab === "overview" ? "Chat" : "Contracts" },
+              { id: "rail", label: "Workbench", badge: st.approvals.length },
+            ]}
+            value={pane}
+            onChange={setPane}
+          />
+        )}
+      </div>
+
+      <div data-testid="agent-columns" style={columnGrid(narrow ? "minmax(0,1fr)" : "minmax(0,1fr) 340px")}>
+        {/* ---------- main column ---------- */}
+        {tab === "overview" ? (
+          <div style={{ ...CHAT_COLUMN, display: showMain ? "flex" : "none" }}>
+            {/* #62: the chat, front and center on the Agent surface (same shared pane as the
+                Dashboard), now the full height of its column. */}
+            <AgentChat store={store} s={s} />
+          </div>
+        ) : (
+          <div data-testid="agent-contracts-scroll" style={{ ...SCROLL_COLUMN, display: showMain ? "grid" : "none" }}>
+            <div className="surface" style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 500 }}>Deploy to 40204</span>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {CONTRACT_KINDS.map((ck) => (
+                  <button key={ck.id} className={"btn btn-sm " + (ctKind === ck.id ? "btn-secondary" : "btn-ghost")} onClick={() => setCtKind(ck.id)}>
+                    {ck.name}
+                  </button>
+                ))}
+              </div>
+              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>{CONTRACT_KINDS.find((k) => k.id === ctKind)!.desc}</span>
+              <input ref={ctName} className="input" placeholder="Contract name — e.g. GuildTreasury" />
+              <textarea
+                ref={ctBytecode}
+                className="input"
+                placeholder="Compiled deploy bytecode (0x…) — from forge/solc, or your agent after it compiles"
+                spellCheck={false}
+                style={{ minHeight: 66, fontFamily: "var(--font-mono)", fontSize: 11, resize: "vertical" }}
+              />
+              <input ref={ctArgs} className="input" placeholder="ABI-encoded constructor args (0x…) — optional" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }} />
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <span className="mono" style={{ flex: 1, fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                  the unsigned creation tx stops at your ceremony — you review the init code and approve
+                </span>
+                <button className="btn btn-primary btn-sm" onClick={deploy}>Deploy</button>
+              </div>
+              <span className="mono" style={{ fontSize: 10, color: "var(--tx-3)", lineHeight: 1.6 }}>
+                deploys need a READY deploy gate for this exact bytecode: forge tests pass, Slither and Aderyn report no High findings, a Medusa campaign passes its call budget, and a fork dry run succeeds
+              </span>
+              {gateRefusal && <DeployGateCard record={gateRefusal.record} initcodeHash={gateRefusal.initcodeHash} />}
+            </div>
+            {/* HUP-S6.2 / S6.3 / S6.9 — templates, the toolchain switch, and the gate from Hermes's runs. */}
+            <ContractForgePanel
+              ops={bridge.contracts}
+              restartHermes={async () => {
+                await stopRuntime("hermes");
+                await startRuntime("hermes");
+              }}
+            />
+            {/* HUP-S6.6 — after the deploy: verify, switch the site to 40204, pin, export. */}
+            <PostDeployPanel
+              ops={bridge.contracts}
+              lastDeployTx={s.activity.find((a) => a.kind === "Deploy contract")?.hash ?? null}
+              openReader={(address) => void openContractReader(address)}
+            />
+            <div className="surface" style={{ display: "flex", flexDirection: "column" }}>
+              <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-1)" }}>
+                <span style={{ fontSize: 13.5, fontWeight: 500 }}>On the network</span>
+                {/* HUP-S6.7 — read any 40204 contract in its own window. */}
+                <button className="btn btn-sm btn-ghost" data-testid="open-contract-reader" style={{ marginLeft: 10 }} onClick={() => void openContractReader()}>
+                  Contract reader
+                </button>
+                <span className="mono" style={{ marginLeft: "auto", fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--tx-3)" }}>owned by your wallet</span>
+              </div>
+              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx-3)", margin: 0, padding: 16 }}>
+                Nothing deployed yet. Paste compiled deploy bytecode above — the unsigned creation transaction stops at your ceremony, and confirmed deployments appear here.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ---------- side column ---------- */}
+        <div data-testid="agent-rail" style={{ ...SCROLL_COLUMN, display: showRail ? "grid" : "none" }}>
+          {railPanels}
         </div>
       </div>
     </div>

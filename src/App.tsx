@@ -18,6 +18,7 @@ import { Dashboard, Wallet, Node, Storage, Comms, Commissary, Settings, Journal,
 import { Models, StorageFiles, Groups, Cluster, Train, Agent, Connections, Community, People } from "./surfaces";
 import { SignedForYou } from "./budgets/SignedForYou";
 import { entitlementBanner, BANNER_TONE_TOKENS } from "./shell/entitlementBanner";
+import { FILL_ROUTES, surfaceContainerStyle } from "./components/sectionLayout";
 
 const queryClient = new QueryClient();
 
@@ -151,7 +152,11 @@ function Shell({ s }: { s: AppState }) {
           </div>
         )}
         <HubTabs route={s.route} />
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{surface}</div>
+        {/* HGW: the Hermes section (Dashboard, Agent) fills this box and scrolls per column; every
+            other surface keeps the page scroll. */}
+        <div data-testid="surface-scroller" data-fill={FILL_ROUTES.has(s.route) ? "" : undefined} style={surfaceContainerStyle(s.route)}>
+          {surface}
+        </div>
       </main>
     </div>
   );
