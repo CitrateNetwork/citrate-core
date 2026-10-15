@@ -658,6 +658,7 @@ impl HermesManager {
                     || crate::forge_toolchain::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::fl_trajectories::SIDECAR_ENV_KEYS.contains(&k.as_str())
                     || crate::hermes_terminal::SIDECAR_ENV_KEYS.contains(&k.as_str())
+                    || crate::hermes_projects::SIDECAR_ENV_KEYS.contains(&k.as_str())
             }));
         }
         let health_url = format!("http://{}/health", self.control_addr);
@@ -1580,6 +1581,37 @@ pub(crate) fn manager_for<R: tauri::Runtime>(
     manager(app)
 }
 
+/// HGW-W3: the template renderer for `project_create`, resolved at each Hermes start: the bundled
+/// `citrate-templates` program, the bundled templates folder and the machine's effective tier.
+/// `None` while the program is not bundled (the sidecar then refuses template requests, honestly).
+fn project_renderer<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> impl Fn() -> Option<crate::hermes_projects::Renderer> + Send + Sync + 'static {
+    let app = app.clone();
+    move || {
+        use tauri::Manager;
+        let bin = crate::supervisor::resolve_external_bin(&app, "citrate-templates").ok()?;
+        let res = app.path().resource_dir().ok();
+        let templates = crate::template_forge::templates_root(res.as_deref()).ok()?;
+        let data = app.path().app_data_dir().ok()?;
+        let tier = crate::tier::build_report(
+            crate::tier::probe(&data),
+            crate::tier::load_override(&app).ok().flatten(),
+        )
+        .effective;
+        let tier = match crate::template_forge::renderer_tier(tier) {
+            citrate_templates::Tier::T0 => "T0",
+            citrate_templates::Tier::T1 => "T1",
+            citrate_templates::Tier::T2 => "T2",
+        };
+        Some(crate::hermes_projects::Renderer {
+            bin,
+            templates,
+            tier: tier.to_string(),
+        })
+    }
+}
+
 /// Lazily build/borrow the manager. A resolve failure (an ENV override set-but-missing, or no
 /// resource dir) is returned every call until fixed — never a half-inited global. A missing bundled
 /// binary is NOT an error here; `start` reports `BinaryNotFound` (honest, Rule 1).
@@ -1647,11 +1679,19 @@ pub(crate) fn manager<R: tauri::Runtime>(
             // Terminal commands (shell_run): `1` when the member's switch is on (the default),
             // pinned empty when off.
             let terminal = crate::hermes_terminal::file_env_source(base.clone());
+            // HGW-W3: `project_create` in ~/Citrate/Projects (templates when the renderer ships).
+            let projects = crate::hermes_projects::file_env_source(
+                crate::hermes_projects::projects_root(
+                    &app.path().home_dir().map_err(|e| e.to_string())?,
+                ),
+                project_renderer(app),
+            );
             std::sync::Arc::new(move || {
                 let mut env = web();
                 env.extend(toolchain());
                 env.extend(trajectories());
                 env.extend(terminal());
+                env.extend(projects());
                 env
             })
         });
@@ -2275,8 +2315,25 @@ pub async fn hermes_session_open(
         // change saved meanwhile is still sent to this session.
         let store = crate::agent_grants::GrantStore::for_app(&app)?;
         let m = manager(&app)?;
+        // HGW-W3: projects Hermes created before go back as `projectRoots` while the workspace
+        // grant in this same document is live.
+        use tauri::Manager;
+        let hermes_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("hermes");
+        let projects_root = crate::hermes_projects::projects_root(
+            &app.path().home_dir().map_err(|e| e.to_string())?,
+        );
         crate::agent_grants::open_with_grants(&store, &body, |b| {
-            m.session_open(b).map_err(|e| e.to_string())
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            let b =
+                crate::hermes_projects::with_project_roots(b, &hermes_dir, &projects_root, now)?;
+            m.session_open(&b).map_err(|e| e.to_string())
         })
     })
     .await

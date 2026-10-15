@@ -29,7 +29,7 @@ import {
 } from "./state";
 import type { CeremonyView } from "../bridge/types";
 import { NODE_LOG_TEMPLATES } from "../data/seed";
-import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped } from "../agent/harness";
+import { createDemoProvider, createSidecarDownProvider, createAgentProvider, createLocalStoppedProvider, ChatProvider, ToolCall, ToolCallMeta, AGENT_SYSTEM_PROMPT, TurnStopped, type TurnActivityEvent } from "../agent/harness";
 import { createSidecarProvider, localSessionStore } from "../agent/sidecarProvider";
 import { annotatedAgentTools, annotationFor } from "../agent/toolAnnotations";
 import { approveAndStartRound, formatPlanForAgent, proposalFromToolArgs } from "../fl/flRounds";
@@ -38,7 +38,7 @@ import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, wit
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
 import type { FlRoundPlan } from "../bridge/domains";
-import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, projectsWorkspaceCard, PROJECTS_WORKSPACE_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
@@ -616,6 +616,8 @@ export class Store {
   private nodeWatchdog: ReturnType<typeof setInterval> | null = null;
   /** True while an outage has already been reported, so we warn once, not every 30s. */
   private nodeOutageNotified = false;
+  // HGW-W3: the projects workspace card is offered at most once per app run.
+  private projectsWorkspaceOffered = false;
   private modelTimer: ReturnType<typeof setInterval> | null = null;
   private serveRouteTimer: ReturnType<typeof setInterval> | null = null;
   private nodeStarting = false;
@@ -2522,6 +2524,7 @@ export class Store {
           onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
           onMcpApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
+            if (this.projectActivity(ev)) return;
             if (ev.kind === "file_change") {
               recordFileChange(ev.change, msgId);
               void refreshUndoPanel(bridge.agentHarness);
@@ -2538,7 +2541,7 @@ export class Store {
               planReported(ev.steps);
             } else if (ev.kind === "approval") {
               approvalNoted(ev.callId, ev.tool, ev.state);
-            } else if (!ac.signal.aborted) noteStep(ev.step);
+            } else if (ev.kind === "step" && !ac.signal.aborted) noteStep(ev.step);
           },
         },
       });
@@ -2706,6 +2709,7 @@ export class Store {
           },
           onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
           onActivity: (ev) => {
+            if (this.projectActivity(ev)) return;
             if (ev.kind === "file_change") {
               ensure();
               recordFileChange(ev.change, msgId);
@@ -3017,6 +3021,7 @@ export class Store {
           onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
           onMcpApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveMcpRequest(p)),
           onActivity: (ev) => {
+            if (this.projectActivity(ev)) return;
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
               ensure();
@@ -3133,6 +3138,60 @@ export class Store {
       hic: { reason: page ? MCP_OPEN_URL_HIC_REASON : p.reason || MCP_CALL_HIC_REASON },
     });
     return r === "approved";
+  }
+
+  /**
+   * HGW-W3: what a project_create result means for the app. A created folder is remembered, so
+   * later conversations may keep working on it; a refusal because ~/Citrate/Projects is missing or
+   * not granted offers the workspace card. True when `ev` was one of these.
+   */
+  projectActivity(ev: TurnActivityEvent): boolean {
+    if (ev.kind === "project_created") {
+      bridge.agentHarness.projectsRecord(ev.path).catch((e: unknown) => {
+        this.toast(`Hermes created ${ev.path}, but the app could not remember it for later conversations (${e instanceof Error ? e.message : String(e)}).`);
+      });
+      return true;
+    }
+    if (ev.kind === "projects_workspace_needed") {
+      void this.offerProjectsWorkspace();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * HGW-W3: the one workspace card: "Let Hermes create and work in ~/Citrate/Projects" (read and
+   * write, the folder and everything in it, revocable in Settings > Folder access). On Approve the
+   * app creates the folder and grants it; nothing is created or granted otherwise.
+   */
+  async offerProjectsWorkspace(): Promise<void> {
+    if (this.projectsWorkspaceOffered) return;
+    this.projectsWorkspaceOffered = true;
+    const ws = await bridge.agentHarness.projectsWorkspace().catch(() => null);
+    if (!ws || ws.granted) return;
+    const r = await this.requestSig({
+      origin: "chat agent",
+      requester: "Hermes",
+      title: "Let Hermes create and work in ~/Citrate/Projects",
+      chainless: true,
+      rows: [],
+      cost: "none, no chain transaction",
+      sponsor: "explicit decision required",
+      sponsorColor: "var(--tx-3)",
+      card: projectsWorkspaceCard(ws.root, ws.exists),
+      hic: { reason: PROJECTS_WORKSPACE_HIC_REASON },
+    });
+    if (r !== "approved") {
+      this.toast("Hermes will not create projects. You can allow it later in Settings > Folder access.");
+      return;
+    }
+    try {
+      const after = await bridge.agentHarness.projectsWorkspaceGrant();
+      this.toast(`Hermes may now create projects in ${after.root}. Ask Hermes again to create the project.`);
+    } catch (e) {
+      this.projectsWorkspaceOffered = false;
+      this.toast(`The projects folder could not be set up (${e instanceof Error ? e.message : String(e)}). Nothing was granted.`);
+    }
   }
 
   async handleTool(call: ToolCall, asstId: string, ensure: () => void, meta?: ToolCallMeta, signal?: AbortSignal): Promise<string> {

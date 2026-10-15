@@ -144,6 +144,8 @@ mod hermes_web;
 mod owned_browser;
 // Hermes terminal commands: the member's switch for the sidecar's shell_run (on by default).
 mod hermes_terminal;
+// HGW-W3: the projects folder Hermes creates projects in (~/Citrate/Projects).
+mod hermes_projects;
 // Deleting a downloaded model (member-only, Models screen; never an agent tool).
 mod invite_seal;
 mod invites;
@@ -727,6 +729,9 @@ pub fn run() {
             hermes_web::hermes_web_settings_set,
             hermes_terminal::hermes_terminal_get,
             hermes_terminal::hermes_terminal_set,
+            hermes_projects::hermes_projects_workspace,
+            hermes_projects::hermes_projects_workspace_grant,
+            hermes_projects::hermes_projects_record,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).

@@ -242,3 +242,22 @@ export function mcpRequestCard(p: McpPendingView): ApprovalCard {
   if (p.hints) rows.push({ k: "Hints", v: hintsText(p.hints) });
   return { kind: "fields", tool: p.tool, summary: summaryLine({ effect: "write", trust: "untrusted" }, `use ${p.remoteTool} on MCP server ${p.server}`), rows };
 }
+
+/** HGW-W3: why letting Hermes work in the projects folder needs the member. */
+export const PROJECTS_WORKSPACE_HIC_REASON =
+  "Hermes wants a folder of its own for the projects you ask it to build. Approving lets Hermes create project folders there and read and write inside them; each new project still asks you first, and you can revoke this in Settings > Folder access.";
+
+/** HGW-W3: the workspace card: the folder, the access asked for, and where to take it back. */
+export function projectsWorkspaceCard(root: string, exists: boolean): ApprovalCard {
+  return {
+    kind: "fields",
+    tool: "projects_workspace",
+    summary: summaryLine({ effect: "write", trust: "trusted" }, `create and work in ${root}`),
+    rows: [
+      { k: "Folder", v: root + (exists ? "" : " (created on Approve)") },
+      { k: "Access", v: "read and write, this folder and everything in it" },
+      { k: "Each new project", v: "asks you first, on its own card" },
+      { k: "Revoke", v: "Settings > Folder access" },
+    ],
+  };
+}
