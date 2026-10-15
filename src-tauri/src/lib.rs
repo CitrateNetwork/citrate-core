@@ -739,6 +739,10 @@ pub fn run() {
             hermes_projects::hermes_projects_workspace,
             hermes_projects::hermes_projects_workspace_grant,
             hermes_projects::hermes_projects_record,
+            // HGW-W3 add-on: the Projects list on the Agent surface.
+            hermes_projects::hermes_projects_list,
+            hermes_projects::hermes_projects_mark,
+            hermes_projects::hermes_projects_forget,
             model_delete::model_delete_states,
             model_delete::model_delete,
             // HUP-S6.3 — the toolchain switch (off by default; applies at the next Hermes start).

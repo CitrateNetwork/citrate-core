@@ -20,6 +20,13 @@
 //!   configuration. A folder is sent only while the workspace grant is live and the folder exists
 //!   (the sidecar refuses a session whose project root is not granted).
 //!
+//! - **Marked folders and the Projects list** (Agent surface): the member may mark an existing
+//!   folder as a project ([`mark_project`]); it must be granted for reading and writing, and it is
+//!   sent as a `projectRoots` entry while that stays true, whether or not the projects folder is
+//!   set up. The list ([`projects_list`]) shows every known and marked project with whether it
+//!   still exists and still goes to Hermes; Forget ([`forget_project`]) takes one off the list and
+//!   never touches its files.
+//!
 //! Data sources (Rule 7): the grant store (`agent-grants.json`, [`crate::agent_grants`]), the
 //! filesystem (the projects folder and each project's `.citrate/project.json`), and the known
 //! projects file. Nothing here runs a command, signs or holds a key (Rule 3).
@@ -161,25 +168,40 @@ pub fn ensure_root(root: &Path) -> Result<(), String> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct KnownFile {
     version: u32,
+    /// Projects Hermes created (`project_create`).
     projects: Vec<String>,
+    /// Folders the member marked as projects (absent in files written before the Projects list).
+    #[serde(default)]
+    marked: Vec<String>,
 }
 
-fn load_known(hermes_dir: &Path) -> Vec<String> {
+fn load_file(hermes_dir: &Path) -> KnownFile {
     std::fs::read_to_string(hermes_dir.join(PROJECTS_FILE))
         .ok()
         .and_then(|t| serde_json::from_str::<KnownFile>(&t).ok())
-        .map(|k| k.projects)
         .unwrap_or_default()
 }
 
+fn load_known(hermes_dir: &Path) -> Vec<String> {
+    load_file(hermes_dir).projects
+}
+
 fn save_known(hermes_dir: &Path, projects: &[String]) -> Result<(), String> {
+    let marked = load_file(hermes_dir).marked;
+    save_file(
+        hermes_dir,
+        &KnownFile {
+            version: 1,
+            projects: projects.to_vec(),
+            marked,
+        },
+    )
+}
+
+fn save_file(hermes_dir: &Path, file: &KnownFile) -> Result<(), String> {
     std::fs::create_dir_all(hermes_dir)
         .map_err(|_| "cannot create the Hermes data folder".to_string())?;
-    let text = serde_json::to_string_pretty(&KnownFile {
-        version: 1,
-        projects: projects.to_vec(),
-    })
-    .map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
     let tmp = hermes_dir.join(format!("{PROJECTS_FILE}.tmp"));
     std::fs::write(&tmp, text).map_err(|_| "cannot write the projects list".to_string())?;
     std::fs::rename(&tmp, hermes_dir.join(PROJECTS_FILE))
@@ -241,17 +263,140 @@ pub fn record_project(hermes_dir: &Path, root: &Path, path: &Path) -> Result<Vec
     Ok(known)
 }
 
-/// The known projects to send with a conversation: only while the workspace grant is live, and
-/// only folders that still pass [`checked_project`].
+/// The projects to send with a conversation: the known ones only while the workspace grant is
+/// live and only folders that still pass [`checked_project`], then each marked folder that still
+/// exists and is still granted for reading and writing ([`marked_live`]).
 pub fn project_roots(hermes_dir: &Path, root: &Path, doc: &GrantState, now: u64) -> Vec<String> {
-    if !root.is_dir() || !workspace_granted(doc, root, now) {
-        return Vec::new();
+    let mut out: Vec<String> = if root.is_dir() && workspace_granted(doc, root, now) {
+        load_known(hermes_dir)
+            .into_iter()
+            .filter_map(|p| checked_project(root, Path::new(&p)).ok())
+            .map(|p| p.display().to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for m in load_file(hermes_dir).marked {
+        if marked_live(doc, Path::new(&m), now) && !out.contains(&m) {
+            out.push(m);
+        }
     }
-    load_known(hermes_dir)
-        .into_iter()
-        .filter_map(|p| checked_project(root, Path::new(&p)).ok())
-        .map(|p| p.display().to_string())
-        .collect()
+    out
+}
+
+/// A marked folder that may go to Hermes: still the same real folder (its stored path is the
+/// canonical one), outside every protected location, under live read and write grants.
+fn marked_live(doc: &GrantState, path: &Path, now: u64) -> bool {
+    std::fs::canonicalize(path).ok().as_deref() == Some(path)
+        && path.is_dir()
+        && crate::agent_grants::denied_location(path).is_none()
+        && workspace_granted(doc, path, now)
+}
+
+/// HGW-W3 add-on: the member marks an existing folder as a project. It must be granted for
+/// reading and writing (the runtime checks the same before it accepts a project root).
+pub fn mark_project(
+    hermes_dir: &Path,
+    doc: &GrantState,
+    path: &Path,
+    now: u64,
+) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("pick the folder by its full path".into());
+    }
+    let canon = std::fs::canonicalize(path)
+        .map_err(|_| format!("{} is not an existing folder", path.display()))?;
+    if !canon.is_dir() {
+        return Err(format!("{} is not a folder", canon.display()));
+    }
+    if let Some(why) = crate::agent_grants::denied_location(&canon) {
+        return Err(format!(
+            "{} is a protected location ({why}) and cannot be a project",
+            canon.display()
+        ));
+    }
+    if !workspace_granted(doc, &canon, now) {
+        return Err(format!(
+            "{} is not shared with Hermes for reading and writing; share it in Settings > Folder access first",
+            canon.display()
+        ));
+    }
+    let mut file = load_file(hermes_dir);
+    let c = canon.display().to_string();
+    if file.marked.contains(&c) || file.projects.contains(&c) {
+        return Ok(());
+    }
+    if file.marked.len() >= MAX_KNOWN {
+        return Err(format!(
+            "at most {MAX_KNOWN} marked folders are kept; forget one first"
+        ));
+    }
+    file.version = 1;
+    file.marked.push(c);
+    save_file(hermes_dir, &file)
+}
+
+/// HGW-W3 add-on: take a project off the list (known or marked). Its files are not touched.
+pub fn forget_project(hermes_dir: &Path, path: &str) -> Result<(), String> {
+    let mut file = load_file(hermes_dir);
+    let before = file.projects.len() + file.marked.len();
+    file.projects.retain(|p| p != path);
+    file.marked.retain(|p| p != path);
+    if file.projects.len() + file.marked.len() == before {
+        return Err(format!("{path} is not on the projects list"));
+    }
+    file.version = 1;
+    save_file(hermes_dir, &file)
+}
+
+/// One row of the Projects list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRow {
+    pub path: String,
+    pub name: String,
+    /// `hermes` (created with project_create) or `member` (marked).
+    pub origin: String,
+    /// The folder is still there.
+    pub exists: bool,
+    /// It goes to Hermes as a project in new conversations.
+    pub shared: bool,
+}
+
+/// What the Projects list on the Agent surface shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectsList {
+    pub workspace: WorkspaceView,
+    pub projects: Vec<ProjectRow>,
+}
+
+/// HGW-W3 add-on: the Projects list: the workspace, then every known project, then every marked
+/// folder, each with whether it still exists and whether it is sent as a project root.
+pub fn projects_list(hermes_dir: &Path, root: &Path, doc: &GrantState, now: u64) -> ProjectsList {
+    let sent = project_roots(hermes_dir, root, doc, now);
+    let file = load_file(hermes_dir);
+    let row = |p: &str, origin: &str| ProjectRow {
+        path: p.to_string(),
+        name: Path::new(p)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.to_string()),
+        origin: origin.to_string(),
+        exists: Path::new(p).is_dir(),
+        shared: sent.iter().any(|s| s == p),
+    };
+    let mut projects: Vec<ProjectRow> = file.projects.iter().map(|p| row(p, "hermes")).collect();
+    projects.extend(
+        file.marked
+            .iter()
+            .filter(|m| !file.projects.contains(m))
+            .map(|m| row(m, "member")),
+    );
+    ProjectsList {
+        workspace: workspace_view(doc, root, now),
+        projects,
+    }
 }
 
 /// Add `projectRoots` to a `POST /sessions` body that carries its grant document (`grants`).
@@ -338,6 +483,62 @@ pub async fn hermes_projects_workspace_grant(
     crate::blocking::off_main(move || grant_workspace(&app)).await
 }
 
+fn hermes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("hermes"))
+}
+
+/// **hermes_projects_list**: the Projects list on the Agent surface (main window only). Reads
+/// `projects.json`, the grant store and the filesystem.
+#[tauri::command]
+pub async fn hermes_projects_list(app: tauri::AppHandle) -> Result<ProjectsList, String> {
+    crate::blocking::off_main(move || {
+        let doc = crate::agent_grants::GrantStore::for_app(&app)?.document_for_agent();
+        Ok(projects_list(
+            &hermes_dir(&app)?,
+            &app_root(&app)?,
+            &doc,
+            now_secs(),
+        ))
+    })
+    .await
+}
+
+/// **hermes_projects_mark**: the member marks a folder (picked in the native dialog) as a project
+/// (main window only). It must be granted for reading and writing.
+#[tauri::command]
+pub async fn hermes_projects_mark(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<ProjectsList, String> {
+    crate::blocking::off_main(move || {
+        let doc = crate::agent_grants::GrantStore::for_app(&app)?.document_for_agent();
+        let dir = hermes_dir(&app)?;
+        mark_project(&dir, &doc, Path::new(&path), now_secs())?;
+        Ok(projects_list(&dir, &app_root(&app)?, &doc, now_secs()))
+    })
+    .await
+}
+
+/// **hermes_projects_forget**: take a project off the list; its files stay (main window only).
+#[tauri::command]
+pub async fn hermes_projects_forget(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<ProjectsList, String> {
+    crate::blocking::off_main(move || {
+        let doc = crate::agent_grants::GrantStore::for_app(&app)?.document_for_agent();
+        let dir = hermes_dir(&app)?;
+        forget_project(&dir, &path)?;
+        Ok(projects_list(&dir, &app_root(&app)?, &doc, now_secs()))
+    })
+    .await
+}
+
 /// **hermes_projects_record**: remember a project Hermes just created (the path `project_create`
 /// returned), so later conversations may keep working on it (main window only).
 #[tauri::command]
@@ -361,3 +562,9 @@ pub async fn hermes_projects_record(
 mod tests {
     include!("hermes_projects_tests.rs");
 }
+
+// The live proof with the real sidecar and renderer (env-gated: CITRATE_E2E_PROJECTS_SIDECAR_BIN
+// and CITRATE_E2E_TEMPLATES_BIN).
+#[cfg(test)]
+#[path = "hermes_projects_e2e_tests.rs"]
+mod e2e_tests;
