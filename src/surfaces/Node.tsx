@@ -246,6 +246,17 @@ export function Node({ store, s }: SurfaceProps) {
         </div>
       )}
 
+      {/* The mining gate (node.rs) is holding block production; the reason says why. */}
+      {s.miningHold && (
+        <div
+          role="status"
+          className="surface"
+          style={{ padding: "12px 16px", borderLeft: "3px solid var(--tx-3)", display: "flex", flexDirection: "column", gap: 4 }}
+        >
+          <span style={{ fontSize: 12.5, color: "var(--tx-2)", overflowWrap: "anywhere" }}>{s.miningHold}</span>
+        </div>
+      )}
+
       {/* ===================== OPERATIONS ===================== */}
       {s.nTab === "ops" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
