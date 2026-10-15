@@ -38,7 +38,7 @@ import { applyHermesSummary, daemonBullet, ensureDailyEntry, hermesDayLines, wit
 import { loadDaySources } from "../journal/daySources";
 import type { DaemonRunEntry } from "../daemons/api";
 import type { FlRoundPlan } from "../bridge/domains";
-import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
+import { cardForCall, chainCard, commandCard, diffCard, fieldsCard, shellRunCard, SHELL_RUN_HIC_REASON, mcpRequestCard, MCP_CALL_HIC_REASON, MCP_OPEN_URL_HIC_REASON, actionRequestCard, ACTION_HIC_REASON, PROJECT_CREATE_HIC_REASON, type ApprovalCard, type HicRequirement } from "../agent/approvalCards";
 import type { DeployGateLookup, DeployGateRecord } from "../agent/deployGate";
 import { canSelect, resolveActive, type ModelChoice } from "../agent/modelRouter";
 import { formatJournalForAgent } from "../agent/journalRead";
@@ -53,7 +53,7 @@ import { withPersonaMessage } from "../agent/personas";
 import { actionableWorkflowError, hostOs, isToolchainRefusal } from "../agent/toolchainGuidance";
 import { RUN_USAGE, parseRunCommand, personaChoice, sidecarLoopNeeded, verifierChip, workflowRefusal, workflowSummary } from "../agent/trackWorkflows";
 import { browserSpeech, speakReply, type SpeechEngine } from "../agent/speech";
-import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView } from "../bridge/domains";
+import type { Brief, GrantStatus, GroupRole, HermesPersona, SessionPersonaChoice, ShellPendingView, McpPendingView, ActionPendingView } from "../bridge/domains";
 import { bindSimHost, bridge } from "../bridge";
 import { BRIDGE_MODE } from "../bridge/mode";
 import { syncTerminalAccess, type TerminalAccessIo } from "../agent/terminalAccess";
@@ -1066,6 +1066,9 @@ export class Store {
             // HUP-S4.1: MCP requests the sidecar holds (effectful calls after taint, pages to open).
             mcpPending: (id) => h.mcpPending(id),
             mcpDecide: (id, approvalId, allow, subject) => h.mcpDecide(id, approvalId, allow, subject),
+            // HGW-W1: sidecar actions held after taint (and project_create), decided by the member.
+            actionPending: (id) => h.actionPending(id),
+            actionDecide: (id, approvalId, allow, subject) => h.actionDecide(id, approvalId, allow, subject),
           },
           // HUP-S3.3: the base prompt and live context; the persona travels as the choice below.
           () => this.sidecarSystemPrompt(),
@@ -2521,6 +2524,7 @@ export class Store {
           // HUP-S2.2: every held shell_run is decided by the member on its card.
           onCommandApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveShellRun(p)),
           onMcpApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveMcpRequest(p)),
+          onActionApproval: (p) => (ac.signal.aborted ? Promise.resolve(false) : this.approveActionRequest(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               recordFileChange(ev.change, msgId);
@@ -3016,6 +3020,7 @@ export class Store {
           // HUP-S2.2: every held shell_run is decided by the member on its card.
           onCommandApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveShellRun(p)),
           onMcpApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveMcpRequest(p)),
+          onActionApproval: (p) => (stopped() ? Promise.resolve(false) : this.approveActionRequest(p)),
           onActivity: (ev) => {
             if (ev.kind === "file_change") {
               // HUP-S2.9: a change that happened is shown with Undo even if the turn was stopped.
@@ -3131,6 +3136,29 @@ export class Store {
       sponsorColor: "var(--tx-3)",
       card: mcpRequestCard(p),
       hic: { reason: page ? MCP_OPEN_URL_HIC_REASON : p.reason || MCP_CALL_HIC_REASON },
+    });
+    return r === "approved";
+  }
+
+  /**
+   * HGW-W1: put a held sidecar action in front of the member with the HIC banner: an effectful
+   * sidecar-hosted call after the session read untrusted content (the tool, the exact arguments,
+   * every taint source), or a project_create. True only when the member pressed Approve; the
+   * approval releases that one call, and the next action asks again.
+   */
+  async approveActionRequest(p: ActionPendingView): Promise<boolean> {
+    const project = p.tool === "project_create";
+    const r = await this.requestSig({
+      origin: "chat agent",
+      requester: "Hermes",
+      title: project ? "Create a project folder" : "Approve a Hermes action",
+      chainless: true,
+      rows: [],
+      cost: "none, no chain transaction",
+      sponsor: "explicit decision required",
+      sponsorColor: "var(--tx-3)",
+      card: actionRequestCard(p),
+      hic: { reason: p.hicReason || (project ? PROJECT_CREATE_HIC_REASON : ACTION_HIC_REASON) },
     });
     return r === "approved";
   }

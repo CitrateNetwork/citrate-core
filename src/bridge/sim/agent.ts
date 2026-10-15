@@ -170,6 +170,13 @@ export function simAgentHarness(_host: SimHost): AgentHarnessDomain {
     async mcpDecide() {
       throw new Error("MCP_DECISION_REFUSED: MCP requests are held by the Hermes sidecar in the desktop app");
     },
+    // HGW-W1: sidecar actions are held by the Hermes sidecar; nothing is held here.
+    async actionPending() {
+      return [];
+    },
+    async actionDecide() {
+      throw new Error("ACTION_DECISION_REFUSED: actions are held by the Hermes sidecar in the desktop app");
+    },
     async mcpRuntime() {
       return { running: false };
     },
