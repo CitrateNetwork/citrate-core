@@ -165,8 +165,9 @@ pub fn evaluate(ev: &MiningEvidence) -> Result<(), MiningHold> {
 /// The heights the producer count reads: `PRODUCER_SAMPLES` heights `PRODUCER_STEP` apart,
 /// ending at `tip`, newest first, never below 1.
 pub fn sample_heights(tip: u64) -> Vec<u64> {
-    (0..PRODUCER_SAMPLES)
-        .map(|i| tip.saturating_sub(i * PRODUCER_STEP))
+    (0..PRODUCER_WINDOW)
+        .step_by(PRODUCER_STEP as usize)
+        .map(|offset| tip.saturating_sub(offset))
         .filter(|h| *h >= 1)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
