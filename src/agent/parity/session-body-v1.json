@@ -48,6 +48,7 @@
     "maxToolsPerRequest": 8,
     "contextTokens": 16384,
     "maxTokens": 2048,
-    "hicAware": true
+    "hicAware": true,
+    "maxSteps": 24
   }
 }

@@ -247,7 +247,31 @@ fn build_session_body_matches_the_live_parity_fixture() {
     .unwrap();
     let got: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(got, fx["body"], "build_session_body drifted from session-body-v1.json");
-    // No max_steps override: the session runs with the sidecar's own default (the owner's turn-cap
-    // decision, 6 vs 8, is still open).
-    assert!(got.get("maxSteps").is_none());
+    // HGW-W5 (core #291): the member's sessions are build sessions and carry the 24-step budget.
+    assert_eq!(got["maxSteps"], 24);
+}
+
+// HGW-W5 (core #291): a build turn may take 24 model steps (create, write, run, read the error,
+// fix, run again), never more than the runtime's cap of 32.
+#[test]
+fn build_sessions_carry_24_steps_inside_the_runtime_cap() {
+    let v: serde_json::Value = serde_json::from_str(
+        &build_session_body("p", TOOLS, "http://127.0.0.1:1/v1", "", "m", 8192).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["maxSteps"], 24, "{v}");
+    // `BUILD_MAX_STEPS <= RUNTIME_MAX_STEPS_CAP` is checked at compile time in hermes.rs.
+    assert!(v["maxSteps"].as_u64().is_some_and(|n| n <= u64::from(RUNTIME_MAX_STEPS_CAP)));
+    assert_eq!(RUNTIME_MAX_STEPS_CAP, 32);
+}
+
+// HGW-W5: the sidecar-wide default is set too, so a session that names no budget (a daemon run,
+// a client other than this app) gets the same 24 steps.
+#[test]
+fn the_sidecar_starts_with_the_24_step_default() {
+    let dir = std::env::temp_dir().join(format!("hsteps-{}", std::process::id()));
+    let m = HermesManager::new(dir.join("bin"), dir.join("t"), dir.join("c"));
+    let env = m.spec_env_for_test();
+    let v = env.iter().find(|(k, _)| k == MAX_STEPS_ENV).map(|(_, v)| v.as_str());
+    assert_eq!(v, Some("24"), "{env:?}");
 }

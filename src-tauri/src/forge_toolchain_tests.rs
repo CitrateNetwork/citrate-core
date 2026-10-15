@@ -40,12 +40,36 @@ impl Drop for Tmp {
     }
 }
 
+// HGW-W4 (core #290): a new install (no settings file) has the toolchain on; off still emits
+// nothing, and the corrupt-file fallback (`Default`) stays off.
 #[test]
-fn off_by_default_and_off_emits_nothing() {
+fn on_for_a_new_install_and_off_emits_nothing() {
     let t = Tmp::new();
-    assert_eq!(load(&t.0).expect("load"), ToolchainSettings::default());
-    assert!(!ToolchainSettings::default().enabled);
+    assert!(load(&t.0).expect("load").enabled, "no settings file = on");
+    assert_eq!(load(&t.0).expect("load"), ToolchainSettings::new_install());
+    assert!(
+        !ToolchainSettings::default().enabled,
+        "the fallback for a bad file is off"
+    );
     assert!(sidecar_env(&ToolchainSettings::default(), &t.places()).is_empty());
+    let src = file_env_source(t.0.clone(), t.places());
+    assert!(
+        src().iter().any(|(k, v)| k == TOOLCHAIN_ENV && v == "1"),
+        "a new install starts Hermes with the toolchain on"
+    );
+}
+
+// HGW-W4: a member who turned it off stays off across the upgrade (the stored choice wins).
+#[test]
+fn an_explicit_off_is_kept() {
+    let t = Tmp::new();
+    save(&t.0, &ToolchainSettings { enabled: false }).expect("save");
+    assert!(!load(&t.0).expect("load").enabled);
+    let src = file_env_source(t.0.clone(), t.places());
+    assert!(src().is_empty(), "the member's off is kept");
+    // A 0.5.0 file written when the member switched it off reads the same.
+    std::fs::write(t.0.join(SETTINGS_FILE), r#"{ "enabled": false }"#).expect("write");
+    assert!(!load(&t.0).expect("load").enabled);
 }
 
 #[test]

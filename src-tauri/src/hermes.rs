@@ -66,6 +66,14 @@ const HERMES_TOKEN_FILE_ENV: &str = "CITRATE_HERMES_TOKEN_FILE";
 const HERMES_CAPSULES_ENV: &str = "CITRATE_HERMES_CAPSULES";
 /// Env override for the bundled `hermes` binary path (dev/tests).
 pub const HERMES_BIN_ENV: &str = "CITRATE_HERMES_BIN";
+/// HGW-W5 (core #291): the sidecar-wide step budget (runtime `sessions::max_steps_from_env`).
+pub const MAX_STEPS_ENV: &str = "CITRATE_HERMES_MAX_STEPS";
+/// HGW-W5: model steps a member's (build) turn may take: create, write, run, read the error, fix,
+/// run again. Sent as `maxSteps` on every interactive session and as the sidecar-wide default.
+pub const BUILD_MAX_STEPS: u32 = 24;
+/// The runtime's hard cap on `maxSteps` (agent-sidecar `sessions::MAX_STEPS_CAP`).
+pub const RUNTIME_MAX_STEPS_CAP: u32 = 32;
+const _: () = assert!(BUILD_MAX_STEPS <= RUNTIME_MAX_STEPS_CAP);
 
 /// Supervision bearer length (256-bit), matching the node-agent scheme.
 const TOKEN_LEN: usize = 32;
@@ -594,6 +602,8 @@ impl HermesManager {
                 HERMES_TOKEN_FILE_ENV.to_string(),
                 self.token_path.to_string_lossy().to_string(),
             ),
+            // HGW-W5: a session that names no budget gets the build budget too.
+            (MAX_STEPS_ENV.to_string(), BUILD_MAX_STEPS.to_string()),
         ];
         // Point the child at the seeded capsule dir so it boots with skills, not an empty catalog.
         if let Some(dir) = &self.capsules_dir {
@@ -2155,14 +2165,18 @@ pub fn build_session_body(
         // window so a small window still leaves room for the prompt.
         "maxTokens": crate::ai::AI_MAX_TOKENS.min(context_tokens / 4),
         "hicAware": true,
+        // HGW-W5 (core #291): the member's sessions are build sessions (runtime cap 32).
+        "maxSteps": BUILD_MAX_STEPS,
     })
     .to_string())
 }
 
-/// HUP-S10.3 — the body for a DAEMON run's session: exactly the chat body plus `unattended: true`,
-/// so the sidecar starts the session in the HIC downgrade (every effectful call needs the member's
+/// HUP-S10.3 — the body for a DAEMON run's session: the chat body plus `unattended: true`, so the
+/// sidecar starts the session in the HIC downgrade (every effectful call needs the member's
 /// explicit decision from the first step). A sidecar that predates the flag ignores it; core marks
-/// every effectful daemon call HIC-required on its own as well (`src/daemons/runner.ts`).
+/// every effectful daemon call HIC-required on its own as well (`src/daemons/runner.ts`). A
+/// scheduled run is not a build session, so it drops `maxSteps` and keeps the sidecar's default
+/// (HGW-W5).
 pub fn build_daemon_session_body(
     system_prompt: &str,
     tools_json: &str,
@@ -2182,6 +2196,7 @@ pub fn build_daemon_session_body(
     let mut v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     if let Some(o) = v.as_object_mut() {
         o.insert("unattended".into(), serde_json::Value::Bool(true));
+        o.remove("maxSteps");
     }
     Ok(v.to_string())
 }
