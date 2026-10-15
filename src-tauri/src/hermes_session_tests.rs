@@ -260,8 +260,8 @@ fn build_sessions_carry_24_steps_inside_the_runtime_cap() {
     )
     .unwrap();
     assert_eq!(v["maxSteps"], 24, "{v}");
-    assert_eq!(BUILD_MAX_STEPS, 24);
-    assert!(BUILD_MAX_STEPS <= RUNTIME_MAX_STEPS_CAP);
+    // `BUILD_MAX_STEPS <= RUNTIME_MAX_STEPS_CAP` is checked at compile time in hermes.rs.
+    assert!(v["maxSteps"].as_u64().is_some_and(|n| n <= u64::from(RUNTIME_MAX_STEPS_CAP)));
     assert_eq!(RUNTIME_MAX_STEPS_CAP, 32);
 }
 
