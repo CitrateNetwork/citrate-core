@@ -653,6 +653,9 @@ export class Store {
   provider: ChatProvider | null = null;
   // element refs (imperative, like the design)
   chatScrollEl: HTMLElement | null = null;
+  /** HGW: the mounted chat's follow (keeps the end in view only while the member has not
+   *  scrolled up to read). Set by AgentChat; scrollChat defers to it. */
+  chatFollow: (() => void) | null = null;
   chatInputEl: HTMLInputElement | null = null;
   jChatScrollEl: HTMLElement | null = null;
   jChatInputEl: HTMLInputElement | null = null;
@@ -3073,7 +3076,8 @@ export class Store {
   }
   scrollChat(): void {
     requestAnimationFrame(() => {
-      if (this.chatScrollEl) this.chatScrollEl.scrollTop = this.chatScrollEl.scrollHeight;
+      if (this.chatFollow) this.chatFollow();
+      else if (this.chatScrollEl) this.chatScrollEl.scrollTop = this.chatScrollEl.scrollHeight;
       if (this.jChatScrollEl) this.jChatScrollEl.scrollTop = this.jChatScrollEl.scrollHeight;
     });
   }

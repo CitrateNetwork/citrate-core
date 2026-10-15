@@ -25,7 +25,7 @@ import { appendFinal, createDictation, type Dictation } from "../agent/dictation
 import type { Store } from "../shell/store";
 import type { AppState } from "../shell/state";
 import { LocalModelAsk } from "./LocalModelAsk";
-import { shouldFollow, useFitToViewport } from "./chatLayout";
+import { useStickToBottom } from "./useStickToBottom";
 
 const SUGGESTIONS = ["What is my staking position?", "Break down my earnings", "Journal: node held through the night", "Network status"];
 
@@ -70,13 +70,34 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
   const [buildAsk, setBuildAsk] = useState(false);
   const openPlan = () => setPlanGoal(store.chatInputEl ? store.chatInputEl.value.trim() : "");
 
-  // rc.5 FIX 4: the pane fits the window (composer always visible); only the list scrolls.
-  const paneRef = useRef<HTMLDivElement | null>(null);
-  const paneHeight = useFitToViewport(paneRef);
-  // Follow new messages unless the member scrolled up; sending always jumps back to the latest.
-  const follow = useRef(true);
+  // HGW: the pane fills its column (CSS, no measuring); only the message list scrolls. The list
+  // stays on the latest message (useStickToBottom) until the member scrolls up to read, and every
+  // new turn, whatever started it, brings it back.
+  let lastOutgoingId: string | undefined;
+  for (let i = s.chatMsgs.length - 1; i >= 0; i--) {
+    const w = s.chatMsgs[i].who;
+    if (w === "You" || w === "Brief") {
+      lastOutgoingId = s.chatMsgs[i].id;
+      break;
+    }
+  }
+  const stick = useStickToBottom({ messageCount: s.chatMsgs.length, busy: chatBusy, lastOutgoingId });
+  const { listRef: stickListRef, follow: stickFollow, rearm } = stick;
+  const setList = useCallback(
+    (el: HTMLDivElement | null) => {
+      store.chatScrollEl = el;
+      stickListRef(el);
+    },
+    [store, stickListRef],
+  );
+  useEffect(() => {
+    store.chatFollow = stickFollow;
+    return () => {
+      if (store.chatFollow === stickFollow) store.chatFollow = null;
+    };
+  }, [store, stickFollow]);
   const send = (text: string) => {
-    follow.current = true;
+    rearm();
     return store.sendChat(text);
   };
 
@@ -112,20 +133,11 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
     else { d.start(); setMicOn(true); }
   };
 
-  // Post-commit auto-scroll (keyed on chatMsgs) so the stream follows, unless the member has
-  // scrolled up to read (tracked on scroll, so a long streamed chunk does not drop the follow).
-  useEffect(() => {
-    const el = store.chatScrollEl;
-    if (!el || !follow.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [s.chatMsgs, store]);
-
   return (
     <div
-      ref={paneRef}
       className="surface"
       data-testid="agent-chat"
-      style={{ display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden", flex: "none", height: paneHeight }}
+      style={{ display: "flex", flexDirection: "column", flex: 1, height: "100%", minHeight: 0, overflow: "hidden", boxSizing: "border-box" }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line-1)", flexShrink: 0 }}>
         <span style={{ fontSize: 14, fontWeight: 500 }}>Agent</span>
@@ -173,12 +185,17 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
           <ModelPicker choices={routerChoices} activeId={s.activeModelId} onSelect={onPickModel} />
         </div>
       )}
+      <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div
-        ref={(el) => { store.chatScrollEl = el; }}
+        ref={setList}
         data-testid="chat-messages"
-        onScroll={(e) => { follow.current = shouldFollow(e.currentTarget); }}
-        style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}
+        role="region"
+        aria-label="Conversation"
+        tabIndex={0}
+        {...stick.listHandlers}
+        style={{ flex: 1, minHeight: 0, overflow: "auto", overscrollBehavior: "contain", outline: "none" }}
       >
+        <div ref={stick.contentRef} data-testid="chat-content" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
         {s.chatMsgs.map((m) => (
           <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             <span className="mono" style={{ fontSize: 9.5, letterSpacing: ".13em", textTransform: "uppercase", color: m.who === "You" ? "var(--tx-3)" : "var(--accent-text)" }}>
@@ -261,6 +278,27 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             </span>
           </div>
         )}
+        </div>
+      </div>
+      {/* HGW: reading back detaches the follow; this brings the member to the latest message. */}
+      {!stick.pinned && (
+        <button
+          type="button"
+          className="btn btn-sm btn-secondary"
+          data-testid="chat-jump-latest"
+          aria-label="Jump to latest message"
+          onClick={stick.jumpToLatest}
+          style={{ position: "absolute", right: 16, bottom: 12, display: "inline-flex", alignItems: "center", gap: 6, borderRadius: 999, boxShadow: "0 2px 10px rgba(0,0,0,.18)" }}
+        >
+          <span aria-hidden>↓</span>
+          Latest
+          {stick.unseen > 0 && (
+            <span className="mono tabular" style={{ fontSize: 10, padding: "1px 6px", borderRadius: 999, background: "var(--accent)", color: "var(--on-accent)" }}>
+              {stick.unseen} new
+            </span>
+          )}
+        </button>
+      )}
       </div>
       {/* rc.5 FIX 4: suggestions and the plan card share one bounded area that scrolls on its own,
           so a tall card can never push the composer out of the pane. */}
@@ -285,6 +323,7 @@ export function AgentChat({ store, s }: { store: Store; s: AppState }) {
             goal={planGoal}
             api={bridge.agentHarness}
             onAccept={(brief, markdown) => {
+              rearm();
               store.acceptBrief(brief, markdown);
               setPlanGoal(null);
               setBuildAsk(false);

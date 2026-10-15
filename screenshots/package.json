@@ -6,12 +6,14 @@
   "description": "Reproducible docs screenshot harness for Citrate Core (runs the app in sim mode via Playwright).",
   "type": "module",
   "scripts": {
-    "capture": "playwright test",
-    "capture:headed": "playwright test --headed",
+    "capture": "playwright test capture.spec.ts",
+    "capture:headed": "playwright test capture.spec.ts --headed",
+    "layout": "playwright test layout.spec.ts",
     "install-browser": "playwright install chromium",
     "postinstall": "playwright install chromium",
     "precapture": "playwright install chromium",
-    "precapture:headed": "playwright install chromium"
+    "precapture:headed": "playwright install chromium",
+    "prelayout": "playwright install chromium"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"
