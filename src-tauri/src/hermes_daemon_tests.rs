@@ -111,11 +111,18 @@ fn a_daemon_session_body_is_the_chat_body_marked_unattended() -> std::result::Re
         daemon["hicAware"], true,
         "core still promises to ask a person"
     );
+    // HGW-W5: a scheduled run is not a build session; it keeps the sidecar's default budget.
+    assert!(daemon.get("maxSteps").is_none(), "{daemon}");
+    assert_eq!(chat["maxSteps"], BUILD_MAX_STEPS);
     let mut stripped = daemon.clone();
+    let mut chat_only = chat.clone();
     if let Some(o) = stripped.as_object_mut() {
         o.remove("unattended");
     }
-    assert_eq!(stripped, chat, "nothing else differs");
+    if let Some(o) = chat_only.as_object_mut() {
+        o.remove("maxSteps");
+    }
+    assert_eq!(stripped, chat_only, "nothing else differs");
     // Malformed tools are refused the same way.
     assert!(build_daemon_session_body("p", "{}", "http://127.0.0.1:1/v1", "", "m", 8192).is_err());
     Ok(())
